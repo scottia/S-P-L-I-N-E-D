@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=assets/branding/splined-logo.png alt="S:P:L:I:N:E:D" width="820">
+  <img src=assets/branding/2CD0B55C-328E-48AF-A1A5-DD11147C9977.png alt="S:P:L:I:N:E:D" width="820">
 </p>
 
   <h2 align="center">SƎARCHABLƎ:PІXƎL:LІNKS:ІDƎNTІFІƎD:NORMALІZƎD:ƎNRІCHƎD:DƎFІNƎD</h2>
