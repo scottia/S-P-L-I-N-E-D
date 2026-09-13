@@ -1,0 +1,613 @@
+name: SPLINED CI and Release
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - "[0-9]*.[0-9]*.[0-9]*"
+
+  pull_request:
+    branches:
+      - main
+      - dev
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing numeric release tag to build, for example 1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate — ${{ matrix.name }}
+    if: >-
+      ${{
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false) ||
+        github.event_name == 'pull_request'
+      }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: Linux / Ubuntu
+            os: ubuntu-latest
+          - name: macOS
+            os: macos-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Require committed Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f Cargo.lock ]; then
+            echo "ERROR: Cargo.lock is required for SPLINED application builds."
+            echo "Generate it with Cargo, review it, and commit it to version control."
+            exit 1
+          fi
+
+      - name: Install stable Rust with rustfmt and clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default stable
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test locked dependency graph
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Clippy locked dependency graph
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Build locked release
+        run: cargo build --locked --release
+
+      - name: Verify Cargo.lock was not modified
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code -- Cargo.lock
+
+  release-preflight:
+    name: Release — Preflight
+    if: >-
+      ${{
+        startsWith(github.ref, 'refs/tags/') ||
+        github.event_name == 'workflow_dispatch'
+      }}
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+
+    steps:
+      - name: Checkout repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and verify release tag
+        id: release
+        shell: bash
+        env:
+          MANUAL_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$MANUAL_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+
+          if [ -z "$TAG" ]; then
+            echo "ERROR: Release tag could not be determined."
+            exit 1
+          fi
+
+          if [[ ! "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Release tag must use numeric semantic versioning, for example 1.0.0."
+            echo "Received: $TAG"
+            exit 1
+          fi
+
+          git fetch --force origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/tags/$TAG:refs/tags/$TAG"
+
+          TAG_COMMIT=$(git rev-parse "refs/tags/$TAG^{commit}")
+
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo "ERROR: Release tag $TAG does not point to a commit contained in main."
+            echo "Tag commit: $TAG_COMMIT"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$TAG_COMMIT" >> "$GITHUB_OUTPUT"
+
+          echo "Release tag:    $TAG"
+          echo "Release commit: $TAG_COMMIT"
+
+  build-release:
+    name: Build Release — ${{ matrix.name }}
+    needs:
+      - release-preflight
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            artifact: splined-windows-x86_64
+            source: target/release/splined.exe
+            setup: setup-splined.exe
+            archive: splined-windows-x86_64.zip
+
+          - name: Linux / Ubuntu
+            os: ubuntu-latest
+            artifact: splined-linux-x86_64
+            source: target/release/splined
+            setup: setup-splined
+            archive: splined-linux-x86_64.tar.gz
+
+          - name: macOS
+            os: macos-latest
+            artifact: splined-macos
+            source: target/release/splined
+            setup: setup-splined
+            archive: splined-macos.tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout exact tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release-preflight.outputs.commit }}
+
+      - name: Verify exact release commit
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.release-preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          ACTUAL_COMMIT=$(git rev-parse HEAD)
+          echo "Expected commit: $EXPECTED_COMMIT"
+          echo "Actual commit:   $ACTUAL_COMMIT"
+
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Checkout does not match the resolved release tag commit."
+            exit 1
+          fi
+
+      - name: Require committed Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f Cargo.lock ]; then
+            echo "ERROR: Cargo.lock is required for SPLINED release builds."
+            exit 1
+          fi
+
+      - name: Install stable Rust with rustfmt and clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default stable
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+          rustfmt --version
+          cargo clippy --version
+
+      - name: Prepare release version from tag using Cargo-owned lockfile reconciliation
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          PYTHON=$(command -v python3 || command -v python)
+
+          "$PYTHON" - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8-sig"))
+          lock = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))
+
+          manifest_version = manifest["package"]["version"]
+          root_packages = [
+              package for package in lock["package"]
+              if package["name"] == "splined"
+          ]
+
+          if len(root_packages) != 1:
+              raise SystemExit(
+                  "Expected exactly one splined root package in Cargo.lock; "
+                  f"found {len(root_packages)}."
+              )
+
+          lock_version = root_packages[0]["version"]
+
+          if manifest_version != lock_version:
+              raise SystemExit(
+                  "Committed Cargo.toml and Cargo.lock root versions differ: "
+                  f"Cargo.toml={manifest_version}, Cargo.lock={lock_version}."
+              )
+
+          print(f"Committed Cargo root version verified: {manifest_version}")
+          PY
+
+          cp Cargo.lock Cargo.lock.before-release
+
+          "$PYTHON" - <<'PY'
+          from pathlib import Path
+          import os
+          import tomllib
+
+          version = os.environ["RELEASE_VERSION"]
+          path = Path("Cargo.toml")
+
+          text = path.read_text(encoding="utf-8-sig")
+          lines = text.splitlines(keepends=True)
+
+          in_package = False
+          changed = 0
+
+          for index, line in enumerate(lines):
+              stripped = line.strip()
+
+              if stripped.startswith("[") and stripped.endswith("]"):
+                  in_package = stripped == "[package]"
+                  continue
+
+              if not in_package:
+                  continue
+
+              key, separator, _ = stripped.partition("=")
+
+              if separator and key.strip() == "version":
+                  newline = "\n" if line.endswith("\n") else ""
+                  indent = line[:len(line) - len(line.lstrip())]
+                  lines[index] = f'{indent}version = "{version}"{newline}'
+                  changed += 1
+
+          if changed != 1:
+              raise SystemExit(
+                  "Expected exactly one [package] version in Cargo.toml; "
+                  f"found {changed}."
+              )
+
+          path.write_text("".join(lines), encoding="utf-8")
+
+          actual = tomllib.loads(
+              path.read_text(encoding="utf-8")
+          )["package"]["version"]
+
+          if actual != version:
+              raise SystemExit(
+                  f"Cargo.toml release version mismatch: expected={version}, actual={actual}"
+              )
+
+          print(f"Temporary Cargo.toml release version: {actual}")
+          PY
+
+          # Cargo owns Cargo.lock. This is the only intentionally unlocked Cargo
+          # command in the release path. The existing lockfile remains the dependency
+          # authority; Cargo may reconcile only the root SPLINED package version.
+          cargo check
+
+          "$PYTHON" - <<'PY'
+          from pathlib import Path
+          import os
+          import tomllib
+
+          expected = os.environ["RELEASE_VERSION"]
+
+          before = tomllib.loads(
+              Path("Cargo.lock.before-release").read_text(encoding="utf-8")
+          )
+          after = tomllib.loads(
+              Path("Cargo.lock").read_text(encoding="utf-8")
+          )
+          manifest = tomllib.loads(
+              Path("Cargo.toml").read_text(encoding="utf-8")
+          )
+
+          before_roots = [
+              package for package in before["package"]
+              if package["name"] == "splined"
+          ]
+          after_roots = [
+              package for package in after["package"]
+              if package["name"] == "splined"
+          ]
+
+          if len(before_roots) != 1 or len(after_roots) != 1:
+              raise SystemExit(
+                  "Expected exactly one splined root package before and after release preparation."
+              )
+
+          if manifest["package"]["version"] != expected:
+              raise SystemExit(
+                  "Cargo.toml does not match release tag after preparation."
+              )
+
+          if after_roots[0]["version"] != expected:
+              raise SystemExit(
+                  "Cargo.lock root package does not match release tag after Cargo reconciliation."
+              )
+
+          before_dependencies = [
+              package for package in before["package"]
+              if package["name"] != "splined"
+          ]
+          after_dependencies = [
+              package for package in after["package"]
+              if package["name"] != "splined"
+          ]
+
+          if before_dependencies != after_dependencies:
+              raise SystemExit(
+                  "ERROR: Cargo changed dependency lock data during release preparation."
+              )
+
+          before_root = dict(before_roots[0])
+          after_root = dict(after_roots[0])
+          before_root["version"] = "<release-version>"
+          after_root["version"] = "<release-version>"
+
+          if before_root != after_root:
+              raise SystemExit(
+                  "ERROR: Cargo changed root lock metadata other than the SPLINED version."
+              )
+
+          print(f"Cargo.toml verified: {expected}")
+          print(f"Cargo.lock root verified: {expected}")
+          print("Dependency lock data unchanged.")
+          print("Root lock metadata unchanged except version.")
+          PY
+
+          rm Cargo.lock.before-release
+
+          git diff --check -- Cargo.toml Cargo.lock
+
+          echo
+          echo "Temporary release metadata diff:"
+          git diff -- Cargo.toml Cargo.lock
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Recheck locked dependency graph
+        run: cargo check --locked
+
+      - name: Test tagged source with locked dependency graph
+        run: cargo test --locked --all-targets --all-features
+
+      - name: Clippy tagged source with locked dependency graph
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Build tagged release with locked dependency graph
+        run: cargo build --locked --release --verbose
+
+      - name: Verify compiled release version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.release-preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          ACTUAL_VERSION=$("${{ matrix.source }}" --version | tr -d '\r')
+          EXPECTED_VERSION="SPLINED $RELEASE_VERSION"
+
+          echo "Expected: $EXPECTED_VERSION"
+          echo "Actual:   $ACTUAL_VERSION"
+
+          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "ERROR: Compiled SPLINED version does not match release tag."
+            exit 1
+          fi
+
+      - name: Prepare release package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf release-package release-assets
+          mkdir -p release-package release-assets
+
+          if [ ! -f "${{ matrix.source }}" ]; then
+            echo "ERROR: Expected release binary was not created: ${{ matrix.source }}"
+            exit 1
+          fi
+
+          if [ ! -f README.md ]; then
+            echo "ERROR: README.md was not found."
+            exit 1
+          fi
+
+          cp "${{ matrix.source }}" "release-package/${{ matrix.setup }}"
+          cp README.md release-package/README.md
+
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            chmod +x "release-package/${{ matrix.setup }}"
+          fi
+
+          echo "Package contents:"
+          ls -lah release-package
+
+      - name: Create Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Compress-Archive `
+            -Path "release-package/*" `
+            -DestinationPath "release-assets/${{ matrix.archive }}" `
+            -Force
+
+          Write-Host "Windows archive:"
+          Get-Item "release-assets/${{ matrix.archive }}"
+
+      - name: Create Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tar \
+            -C release-package \
+            -czf "release-assets/${{ matrix.archive }}" \
+            "${{ matrix.setup }}" \
+            README.md
+
+          echo "Archive:"
+          ls -lh "release-assets/${{ matrix.archive }}"
+
+          echo "Archive contents:"
+          tar -tzf "release-assets/${{ matrix.archive }}"
+
+      - name: Upload packaged build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-assets/${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish — ${{ needs.release-preflight.outputs.tag }}
+    needs:
+      - release-preflight
+      - build-release
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all packaged builds
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: release-assets
+          pattern: splined-*
+          merge-multiple: true
+
+      - name: Verify release archives and create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f release-assets/splined-windows-x86_64.zip
+          test -f release-assets/splined-linux-x86_64.tar.gz
+          test -f release-assets/splined-macos.tar.gz
+
+          (
+            cd release-assets
+            sha256sum \
+              splined-windows-x86_64.zip \
+              splined-linux-x86_64.tar.gz \
+              splined-macos.tar.gz \
+              > SHA256SUMS.txt
+          )
+
+          echo "Release archives:"
+          ls -lh release-assets
+          echo
+          cat release-assets/SHA256SUMS.txt
+
+      - name: Create GitHub Release if missing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release already exists: $RELEASE_TAG"
+          else
+            echo "Creating GitHub Release: $RELEASE_TAG"
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "S:P:L:I:N:E:D $RELEASE_TAG" \
+              --generate-notes
+          fi
+
+      - name: Upload archives and checksums to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          gh release upload "$RELEASE_TAG" \
+            release-assets/splined-windows-x86_64.zip \
+            release-assets/splined-linux-x86_64.tar.gz \
+            release-assets/splined-macos.tar.gz \
+            release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Show published release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-preflight.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"

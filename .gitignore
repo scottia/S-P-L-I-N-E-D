@@ -1,0 +1,12 @@
+/target
+
+# Local environment and secret material
+.env
+.env.*
+!.env.example
+/credentials/
+/secrets/
+*.credential.json
+*credentials*.json
+*secret*.json
+*.splined-backup
