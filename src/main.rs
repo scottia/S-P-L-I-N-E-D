@@ -23,6 +23,7 @@ mod cli;
 use cli::Cli;
 
 const LASTFM_AUTH_TIMEOUT_SECS: u64 = 60;
+const HELP_COLUMN_WIDTH: usize = 38;
 
 fn setup_only_bootstrap() -> Result<bool, String> {
     if !running_as_setup_executable()? {
@@ -181,6 +182,26 @@ fn ensure_musicbrainz_bootstrap(
     Ok(())
 }
 
+fn green_value(value: &str) -> String {
+    use std::io::IsTerminal;
+
+    if io::stdout().is_terminal() {
+        format!("\x1b[32m[{value}]\x1b[0m")
+    } else {
+        format!("[{value}]")
+    }
+}
+
+fn red_value(value: &str) -> String {
+    use std::io::IsTerminal;
+
+    if io::stdout().is_terminal() {
+        format!("\x1b[31m[{value}]\x1b[0m")
+    } else {
+        format!("[{value}]")
+    }
+}
+
 fn effective_verbosity(configured: Verbosity, mode: Mode) -> Verbosity {
     match mode {
         Mode::Read => match configured {
@@ -195,76 +216,203 @@ fn lastfm_authorization_pending(error: &str) -> bool {
     error.contains("API error 14:")
 }
 
-fn configured_display(value: &str) -> &str {
+fn help_row(label: &str, value: &str) {
+    println!("  {label:<HELP_COLUMN_WIDTH$}{value}");
+}
+
+fn help_cont(value: &str) {
+    help_row("", value);
+}
+
+fn configured_display(value: &str) -> String {
     if value.trim().is_empty() {
-        "not configured"
+        "not configured".to_string()
     } else {
-        value
+        value.to_string()
     }
 }
 
 fn print_dynamic_help(config: Option<&Config>) {
+    let unavailable = "config unavailable".to_string();
+    let library = config
+        .map(|config| configured_display(&config.library.music_library))
+        .unwrap_or_else(|| unavailable.clone());
+    let scan_dir = config
+        .map(|config| configured_display(&config.scan.scan_library_dir))
+        .unwrap_or_else(|| unavailable.clone());
+    let cache_dir = config
+        .map(|config| config.scan.cache_dir.clone())
+        .unwrap_or_else(|| unavailable.clone());
+    let sample_dir = config
+        .map(|config| samples_dir(&config.scan.cache_dir).display().to_string())
+        .unwrap_or_else(|| unavailable.clone());
+    let credential_dir = config
+        .map(|config| config.credentials.credential_dir.clone())
+        .unwrap_or_else(|| unavailable.clone());
+    let ignored_subs = config
+        .map(|config| config.library.ignored_subs.join(", "))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "none".to_string());
+    let config_version = config
+        .map(|config| config.config_version.to_string())
+        .unwrap_or_else(|| unavailable.clone());
+    let mode = config
+        .map(|config| format!("{:?}", config.mode).to_ascii_lowercase())
+        .unwrap_or_else(|| unavailable.clone());
+    let verbosity = config
+        .map(|config| format!("{:?}", config.verbosity).to_ascii_lowercase())
+        .unwrap_or_else(|| unavailable.clone());
+    let library_scan = config
+        .map(|config| config.scan.library_scan.to_string())
+        .unwrap_or_else(|| unavailable.clone());
+    let scan_mode_value = config
+        .map(|config| config.scan.scan_mode.to_string())
+        .unwrap_or_else(|| unavailable.clone());
+    let sample_write = config
+        .map(|config| config.samples.sample_write.to_string())
+        .unwrap_or_else(|| unavailable.clone());
+    let preserve_file = config
+        .map(|config| config.output.preserve_file.to_string())
+        .unwrap_or_else(|| unavailable.clone());
+    let output_file_name = config
+        .map(|config| config.output.file_name.clone())
+        .unwrap_or_else(|| unavailable.clone());
+    let output_formats = config
+        .map(|config| config.output.file_formats.join(","))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| unavailable.clone());
+    let configured_sources = config
+        .map(|config| config.sources.cover_sources.join(","))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| unavailable.clone());
+    let configured_exclusions = config
+        .map(|config| {
+            if config.sources.exclude_cover_sources.is_empty() {
+                "none".to_string()
+            } else {
+                config.sources.exclude_cover_sources.join(",")
+            }
+        })
+        .unwrap_or_else(|| unavailable.clone());
+
     println!("SPLINED artwork discovery and evaluation engine");
     println!();
     println!("Usage: splined.exe [OPTIONS]");
     println!();
-    println!("Options:");
-    println!("  --config                       Show/create SPLINED configuration");
-    println!("  --scan                         Preview configured music library scan");
-    println!("  --scan-dir                     Run configured operational scan directory");
-    println!("  -p, --preserve-file <BOOL>     Override preserve behavior for this run");
-    println!("  -s, --cover-sources <SOURCE>   Replace configured source order");
-    println!("  -o, --only-cover-sources       Use only specified sources");
-    println!("  -e, --exclude-cover-sources    Exclude specified sources");
-    println!("  --release-mbid <MBID>          Discover artwork for a MusicBrainz release");
-    println!("  --mb-oauth-login               Authorize MusicBrainz OAuth");
-    println!("  --lastfm-credentials           Configure Last.fm API credentials");
-    println!("  --lastfm-login                 Authorize Last.fm account");
-    println!("  --fanarttv-credentials         Configure Fanart.tv API credentials");
-    println!("  -h, --help                     Show this help");
-    println!("  -V, --version                  Show version");
 
-    if let Some(config) = config {
-        println!();
-        println!("Current portable configuration:");
-        println!(
-            "  Music library:       {}",
-            configured_display(&config.library.music_library)
-        );
-        println!(
-            "  Scan directory:      {}",
-            configured_display(&config.scan.scan_library_dir)
-        );
-        println!("  Cache directory:     {}", config.scan.cache_dir);
-        println!(
-            "  Sample directory:    {}",
-            samples_dir(&config.scan.cache_dir).display()
-        );
-        println!(
-            "  Credential directory:{}",
-            config.credentials.credential_dir
-        );
-        println!(
-            "  Ignored directories: {}",
-            if config.library.ignored_subs.is_empty() {
-                "none".to_string()
-            } else {
-                config.library.ignored_subs.join(", ")
-            }
-        );
-        println!(
-            "  Sources:             {}",
-            config.sources.cover_sources.join(", ")
-        );
-        println!(
-            "  Excluded sources:    {}",
-            if config.sources.exclude_cover_sources.is_empty() {
-                "none".to_string()
-            } else {
-                config.sources.exclude_cover_sources.join(", ")
-            }
-        );
-    }
+    println!("Media Directories:");
+    help_row("Library:", &green_value(&library));
+    help_row("Scan Directory:", &green_value(&scan_dir));
+    help_row("Cache Directory:", &green_value(&cache_dir));
+    help_row("Sample Directory:", &green_value(&sample_dir));
+    help_row("Credential Directory:", &green_value(&credential_dir));
+    help_row("Ignore Sub-Directories:", &red_value(&ignored_subs));
+    println!();
+
+    println!("Configuration:");
+    help_row("--config", "Open SPLINED configuration");
+    help_row("Config Version", &green_value(&config_version));
+    help_row("Mode", &green_value(&mode));
+    help_row("Verbosity", &green_value(&verbosity));
+    println!();
+
+    println!("System Modes:");
+    help_row(
+        "read",
+        "Review/discovery mode; album directories are never modified",
+    );
+    help_cont("[samples].sample_write=true may still write selected review samples");
+    help_cont("Error/Warn/Info verbosity is elevated to Debug");
+    help_row(
+        "write",
+        "Live album artwork mutation using the selected candidate",
+    );
+    help_row("library_scan", &green_value(&library_scan));
+    help_cont("Configuration switch for --scan; it does not choose Read/Write mode");
+    help_row("scan_mode", &green_value(&scan_mode_value));
+    help_cont("Configuration switch for --scan-dir; it does not choose Read/Write mode");
+    println!();
+
+    println!("Library Scanning:");
+    help_row(
+        "--scan",
+        "Use [library].music_library with the configured top-level mode",
+    );
+    help_cont("Current --scan path remains the library scan preview/inventory path");
+    help_row(
+        "--scan-dir",
+        "Run the operational scan of [scan].scan_library_dir",
+    );
+    help_cont("Obeys top-level mode=read/write, samples, preserve-file and output settings");
+    println!();
+
+    println!("Samples:");
+    help_row("[samples].sample_write", &green_value(&sample_write));
+    help_cont("true writes exactly one selected source image per resolved album");
+    help_cont("Works in both Read review cycles and Write runs");
+    help_row("Sample Directory", &green_value(&sample_dir));
+    help_cont("Derived automatically as <[scan].cache_dir>\\samples");
+    help_row("Sample Naming", "<artist>.<album>.sample.<extension>");
+    help_cont("Samples preserve the selected source bytes before resize/conversion");
+    help_row(
+        "Sample Lifecycle",
+        "Cleared at the beginning of every scan run",
+    );
+    println!();
+
+    println!("Output:");
+    help_row("-p, --preserve-file <BOOL>", &green_value(&preserve_file));
+    help_cont("true  -> preserve differing files as cover-(2), cover-(3), ...");
+    help_cont("false -> replace the canonical <file_name>.<format> in Write mode");
+    help_cont("CLI value overrides [output].preserve_file for the current run");
+    help_row("[output].file_name", &green_value(&output_file_name));
+    help_row("[output].file_formats", &green_value(&output_formats));
+    println!();
+
+    println!("<SOURCE> Tags:");
+    help_row(
+        "-s, --cover-sources",
+        "Replace configured cover sources for this run",
+    );
+    help_cont(&green_value(&configured_sources));
+    help_row(
+        "-o, --only-cover-sources",
+        "Use only these cover sources for this run",
+    );
+    help_cont(&green_value("not set"));
+    help_row(
+        "-e, --exclude-cover-sources",
+        "Exclude cover sources for this run",
+    );
+    help_cont(&green_value(&configured_exclusions));
+    println!();
+
+    println!("API/OAuth:");
+    help_row(
+        "--release-mbid",
+        "MusicBrainz release MBID for artwork discovery",
+    );
+    help_row(
+        "--mb-oauth-login",
+        "Authorize SPLINED with MusicBrainz OAuth",
+    );
+    help_row(
+        "--lastfm-credentials",
+        "Configure SPLINED Last.fm API credentials",
+    );
+    help_row(
+        "--lastfm-login",
+        "Authorize SPLINED with a Last.fm user account",
+    );
+    help_row(
+        "--fanarttv-credentials",
+        "Configure SPLINED Fanart.tv API credentials",
+    );
+    println!();
+
+    println!("Help:");
+    help_row("-h, --help", "Help, Tips & Config Assistance");
+    help_row("-V, --version", "Version");
 }
 
 fn report_migration(report: &MigrationReport) {
