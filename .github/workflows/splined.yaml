@@ -8,11 +8,6 @@ on:
     tags:
       - "[0-9]*.[0-9]*.[0-9]*"
 
-  pull_request:
-    branches:
-      - main
-      - dev
-
   workflow_dispatch:
     inputs:
       tag:
@@ -23,6 +18,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: splined-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && github.event_name != 'workflow_dispatch' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -31,8 +30,7 @@ jobs:
     name: Validate — ${{ matrix.name }}
     if: >-
       ${{
-        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false) ||
-        github.event_name == 'pull_request'
+        github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false
       }}
 
     strategy:
@@ -179,6 +177,7 @@ jobs:
             artifact: splined-windows-x86_64
             source: target/release/splined.exe
             setup: setup-splined.exe
+            readme: README-WINDOWS.txt
             archive: splined-windows-x86_64.zip
 
           - name: Linux / Ubuntu
@@ -186,6 +185,7 @@ jobs:
             artifact: splined-linux-x86_64
             source: target/release/splined
             setup: setup-splined
+            readme: README-LINUX.txt
             archive: splined-linux-x86_64.tar.gz
 
           - name: macOS
@@ -193,6 +193,7 @@ jobs:
             artifact: splined-macos
             source: target/release/splined
             setup: setup-splined
+            readme: README-MACOS.txt
             archive: splined-macos.tar.gz
 
     runs-on: ${{ matrix.os }}
@@ -471,13 +472,14 @@ jobs:
             exit 1
           fi
 
-          if [ ! -f README.md ]; then
-            echo "ERROR: README.md was not found."
+          if [ ! -f "release/${{ matrix.readme }}" ]; then
+            echo "ERROR: Platform release instructions were not found:"
+            echo "release/${{ matrix.readme }}"
             exit 1
           fi
 
           cp "${{ matrix.source }}" "release-package/${{ matrix.setup }}"
-          cp README.md release-package/README.md
+          cp "release/${{ matrix.readme }}" "release-package/${{ matrix.readme }}"
 
           if [ "${{ runner.os }}" != "Windows" ]; then
             chmod +x "release-package/${{ matrix.setup }}"
@@ -510,7 +512,7 @@ jobs:
             -C release-package \
             -czf "release-assets/${{ matrix.archive }}" \
             "${{ matrix.setup }}" \
-            README.md
+            "${{ matrix.readme }}"
 
           echo "Archive:"
           ls -lh "release-assets/${{ matrix.archive }}"
