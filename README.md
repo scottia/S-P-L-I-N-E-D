@@ -27,8 +27,8 @@ That is the core idea — intentionally simple.
 - 🧪 **Sample output** saves one chosen image per album for easy review
 - 🛡️ **Preserve mode** can keep existing artwork instead of overwriting it
 - ⚙️ **Config driven** — library, scan, cache, credential, and output locations are changeable
-- 📦 **Portable Windows layout** keeps application-owned files together while paths remain configurable
-- 🐧 **Linux / Docker** is planned using the same Rust codebase
+- 📦 **Portable Windows, Linux, and macOS releases** keep application-owned files together while paths remain configurable
+- 🔁 **Upgrade-safe bootstrap** replaces the program executable while preserving config, cache, and credentials
 
 ---
 
@@ -200,12 +200,17 @@ cargo build --release
 
 ## 📦 Portable release
 
-The Windows release uses a portable application layout.
+Release archives contain a temporary platform setup launcher plus a platform-specific `README-*.txt` instruction file. The repository homepage `README.md` is not included in release archives.
+
+Run setup from the final application directory. A successful fresh setup installs the permanent executable and creates the portable application-owned directories. A successful upgrade replaces the permanent executable while preserving existing portable data.
+
+After setup completes, the temporary setup launcher and platform instruction file are removed automatically. On Windows, deletion of the running setup executable is completed immediately after that process exits.
+
+The resulting Windows layout is:
 
 ```text
 splined\
 ├─ splined.exe
-├─ README.md
 ├─ config\
 │  └─ config.toml
 ├─ cache\
@@ -213,9 +218,9 @@ splined\
 └─ credentials\
 ```
 
-Place S:P:L:I:N:E:D in a directory and run it. On first launch, the application creates the application-owned folders and default configuration it needs.
+For an upgrade, extract the new archive into the existing SPLINED application directory and run the new setup executable. Setup stages the replacement executable and attempts to restore the previous executable if replacement fails. Existing `config`, `cache`, and `credentials` data is left in place.
 
-Configuration paths remain user-controlled. If you move the application or choose to store config, cache, samples, or credentials elsewhere, update the configured paths as needed.
+S:P:L:I:N:E:D does not automatically discover, import, or move another installation. Move or copy portable data manually when changing application directories.
 
 ---
 
@@ -231,23 +236,23 @@ Credential files contain sensitive information and should **never be committed t
 
 ## 🐧 Linux / Docker
 
-A Linux / Docker release is planned after the Windows portable release.
+S:P:L:I:N:E:D ships a native Linux release built from the same Rust engine as Windows and macOS.
 
-The intent is to use the **same Rust engine** on Windows and Linux so artwork selection behaves the same everywhere.
+Docker or other container deployments can use the Linux build with configuration, cache, credentials, and media exposed through user-selected mounted storage.
 
 ---
 
 ## 🧭 Project status
 
-S:P:L:I:N:E:D 1.0.0 establishes the first portable Windows release foundation.
+S:P:L:I:N:E:D 1.0.0 establishes the portable release foundation.
 
-Artwork discovery, MusicBrainz-assisted album resolution, candidate evaluation, Read / Write scanning, samples, preserve behavior, portable application bootstrap, and credential file protection are implemented.
+Artwork discovery, MusicBrainz-assisted album resolution, candidate evaluation, Read / Write scanning, samples, preserve behavior, portable application bootstrap, credential file protection, and native release packaging are implemented.
 
 Current focus:
 
-- 📦 Windows release packaging and validation
-- 🧪 portable relocation testing
-- 🐧 Linux / Docker packaging afterward
+- 📦 platform-specific release packaging and installer validation
+- 🧪 fresh-install and executable-only upgrade acceptance testing
+- 🔎 privacy/provenance auditing before public publication
 
 ---
 

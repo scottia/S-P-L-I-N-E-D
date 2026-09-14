@@ -73,6 +73,15 @@ const FINAL_EXECUTABLE_NAME: &str = "splined.exe";
 #[cfg(not(windows))]
 const FINAL_EXECUTABLE_NAME: &str = "splined";
 
+#[cfg(windows)]
+const RELEASE_README_NAME: &str = "README-WINDOWS.txt";
+
+#[cfg(target_os = "macos")]
+const RELEASE_README_NAME: &str = "README-MACOS.txt";
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+const RELEASE_README_NAME: &str = "README-LINUX.txt";
+
 fn setup_executable_name_matches(file_name: &str) -> bool {
     #[cfg(windows)]
     {
@@ -167,19 +176,69 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
     Ok(Some(final_exe))
 }
 
-fn install_final_executable() -> Result<Option<PathBuf>, String> {
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
+fn remove_release_readme(parent: &Path) {
+    let readme = parent.join(RELEASE_README_NAME);
 
-    install_final_executable_from(&current_exe)
+    if readme.exists()
+        && let Err(error) = fs::remove_file(&readme)
+    {
+        eprintln!(
+            "Warning: SPLINED setup completed, but release instructions could not be removed: {}: {error}",
+            readme.display()
+        );
+    }
+}
+
+#[cfg(windows)]
+fn remove_setup_executable_after_exit(current_exe: &Path) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut command = std::process::Command::new("cmd.exe");
+    command
+        .arg("/C")
+        .arg("ping 127.0.0.1 -n 3 >nul & del /F /Q \"%SPLINED_SETUP_EXE%\"")
+        .env("SPLINED_SETUP_EXE", current_exe)
+        .creation_flags(CREATE_NO_WINDOW);
+
+    if let Err(error) = command.spawn() {
+        eprintln!(
+            "Warning: SPLINED setup completed, but automatic setup launcher cleanup could not be scheduled for {}: {error}",
+            current_exe.display()
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn remove_setup_executable_after_exit(current_exe: &Path) {
+    if let Err(error) = fs::remove_file(current_exe) {
+        eprintln!(
+            "Warning: SPLINED setup completed, but the setup launcher could not be removed: {}: {error}",
+            current_exe.display()
+        );
+    }
 }
 
 fn finish_setup_executable() -> Result<(), String> {
-    if let Some(final_exe) = install_final_executable()? {
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
+
+    if let Some(final_exe) = install_final_executable_from(&current_exe)? {
+        let parent = current_exe
+            .parent()
+            .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
+
+        remove_release_readme(parent);
+        remove_setup_executable_after_exit(&current_exe);
+
         println!("SPLINED setup complete.");
         println!();
         println!("Permanent executable:");
         println!("  {}", final_exe.display());
+        println!();
+        println!("Existing config, cache, and credentials were preserved.");
+        println!("Temporary setup files are removed automatically.");
         println!();
         println!("Use this executable for future SPLINED launches.");
         println!();
@@ -312,6 +371,21 @@ mod tests {
         fs::write(&layout.config_file, "custom").unwrap();
         create_new_install(&layout, DEFAULT_CONFIG).unwrap();
         assert_eq!(fs::read_to_string(&layout.config_file).unwrap(), "custom");
+    }
+
+    #[test]
+    fn release_readme_cleanup_removes_only_release_instruction_file() {
+        let dir = TempDir::new().unwrap();
+        let readme = dir.path().join(RELEASE_README_NAME);
+        let protected = dir.path().join("config.toml");
+
+        fs::write(&readme, b"temporary release instructions").unwrap();
+        fs::write(&protected, b"preserve me").unwrap();
+
+        remove_release_readme(dir.path());
+
+        assert!(!readme.exists());
+        assert_eq!(fs::read(&protected).unwrap(), b"preserve me");
     }
 
     #[test]
