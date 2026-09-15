@@ -106,6 +106,104 @@ jobs:
           git diff --check
           git diff --exit-code -- Cargo.lock
 
+  validate-python-docker:
+    name: Validate — Python / Docker
+    if: >-
+      ${{
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false)
+      }}
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Verify Python and release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import tomllib
+
+          cargo = tomllib.loads(
+              Path("Cargo.toml").read_text(encoding="utf-8-sig")
+          )
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+
+          version_match = re.search(
+              r'^VERSION = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+          if not version_match:
+              raise SystemExit("VERSION declaration not found in python/splined.py")
+
+          user_agent_match = re.search(
+              r'^USER_AGENT = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+          if not user_agent_match:
+              raise SystemExit("USER_AGENT declaration not found in python/splined.py")
+
+          cargo_version = cargo["package"]["version"]
+          python_version = version_match.group(1)
+          expected_user_agent = (
+              f"SPLINED/{python_version} "
+              "(https://github.com/scottia/S-P-L-I-N-E-D)"
+          )
+
+          if cargo_version != python_version:
+              raise SystemExit(
+                  "Rust/Python version mismatch: "
+                  f"Cargo.toml={cargo_version}, Python={python_version}"
+              )
+
+          if user_agent_match.group(1) != expected_user_agent:
+              raise SystemExit(
+                  "Unexpected production USER_AGENT: "
+                  f"{user_agent_match.group(1)!r}"
+              )
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"SPLINED_VERSION={python_version}\n")
+
+          print(f"Rust version:   {cargo_version}")
+          print(f"Python version: {python_version}")
+          print(f"User-Agent:     {expected_user_agent}")
+          PY
+
+          python3 -m py_compile python/splined.py
+
+      - name: Build Docker validation image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            --tag splined-ci:candidate \
+            ./python
+
+      - name: Verify Docker validation image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACTUAL=$(docker run --rm splined-ci:candidate -V | tr -d '\r')
+          EXPECTED="SPLINED $SPLINED_VERSION"
+
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "ERROR: Docker candidate does not report the source version."
+            exit 1
+          fi
   release-preflight:
     name: Release — Preflight
     if: >-
@@ -170,6 +268,99 @@ jobs:
           echo "Release tag:    $TAG"
           echo "Release commit: $TAG_COMMIT"
 
+      - name: Verify committed release metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          git checkout --detach "$RELEASE_COMMIT"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import tomllib
+
+          expected = os.environ["RELEASE_TAG"]
+
+          cargo = tomllib.loads(
+              Path("Cargo.toml").read_text(encoding="utf-8-sig")
+          )
+          lock = tomllib.loads(
+              Path("Cargo.lock").read_text(encoding="utf-8")
+          )
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+
+          cargo_version = cargo["package"]["version"]
+
+          root_packages = [
+              package
+              for package in lock["package"]
+              if package["name"] == "splined"
+          ]
+          if len(root_packages) != 1:
+              raise SystemExit(
+                  "Expected exactly one splined root package in Cargo.lock"
+              )
+
+          lock_version = root_packages[0]["version"]
+
+          version_match = re.search(
+              r'^VERSION = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+          if not version_match:
+              raise SystemExit("VERSION declaration not found in python/splined.py")
+
+          python_version = version_match.group(1)
+
+          user_agent_match = re.search(
+              r'^USER_AGENT = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+          if not user_agent_match:
+              raise SystemExit("USER_AGENT declaration not found in python/splined.py")
+
+          expected_user_agent = (
+              f"SPLINED/{expected} "
+              "(https://github.com/scottia/S-P-L-I-N-E-D)"
+          )
+
+          values = {
+              "release tag": expected,
+              "Cargo.toml": cargo_version,
+              "Cargo.lock": lock_version,
+              "Python": python_version,
+          }
+
+          for label, value in values.items():
+              print(f"{label}: {value}")
+
+          if not (
+              cargo_version
+              == lock_version
+              == python_version
+              == expected
+          ):
+              raise SystemExit(
+                  "Committed release metadata does not match the release tag"
+              )
+
+          if user_agent_match.group(1) != expected_user_agent:
+              raise SystemExit(
+                  "Committed USER_AGENT does not match the release tag"
+              )
+
+          print(f"User-Agent: {expected_user_agent}")
+          print("Committed release metadata verified.")
+          PY
+
+          git diff --exit-code
   build-release:
     name: Build Release — ${{ matrix.name }}
     needs:
@@ -256,182 +447,6 @@ jobs:
           rustfmt --version
           cargo clippy --version
 
-      - name: Prepare release version from tag using Cargo-owned lockfile reconciliation
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.release-preflight.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          PYTHON=$(command -v python3 || command -v python)
-
-          "$PYTHON" - <<'PY'
-          from pathlib import Path
-          import tomllib
-
-          manifest = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8-sig"))
-          lock = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))
-
-          manifest_version = manifest["package"]["version"]
-          root_packages = [
-              package for package in lock["package"]
-              if package["name"] == "splined"
-          ]
-
-          if len(root_packages) != 1:
-              raise SystemExit(
-                  "Expected exactly one splined root package in Cargo.lock; "
-                  f"found {len(root_packages)}."
-              )
-
-          lock_version = root_packages[0]["version"]
-
-          if manifest_version != lock_version:
-              raise SystemExit(
-                  "Committed Cargo.toml and Cargo.lock root versions differ: "
-                  f"Cargo.toml={manifest_version}, Cargo.lock={lock_version}."
-              )
-
-          print(f"Committed Cargo root version verified: {manifest_version}")
-          PY
-
-          cp Cargo.lock Cargo.lock.before-release
-
-          "$PYTHON" - <<'PY'
-          from pathlib import Path
-          import os
-          import tomllib
-
-          version = os.environ["RELEASE_VERSION"]
-          path = Path("Cargo.toml")
-
-          text = path.read_text(encoding="utf-8-sig")
-          lines = text.splitlines(keepends=True)
-
-          in_package = False
-          changed = 0
-
-          for index, line in enumerate(lines):
-              stripped = line.strip()
-
-              if stripped.startswith("[") and stripped.endswith("]"):
-                  in_package = stripped == "[package]"
-                  continue
-
-              if not in_package:
-                  continue
-
-              key, separator, _ = stripped.partition("=")
-
-              if separator and key.strip() == "version":
-                  newline = "\n" if line.endswith("\n") else ""
-                  indent = line[:len(line) - len(line.lstrip())]
-                  lines[index] = f'{indent}version = "{version}"{newline}'
-                  changed += 1
-
-          if changed != 1:
-              raise SystemExit(
-                  "Expected exactly one [package] version in Cargo.toml; "
-                  f"found {changed}."
-              )
-
-          path.write_text("".join(lines), encoding="utf-8")
-
-          actual = tomllib.loads(
-              path.read_text(encoding="utf-8")
-          )["package"]["version"]
-
-          if actual != version:
-              raise SystemExit(
-                  f"Cargo.toml release version mismatch: expected={version}, actual={actual}"
-              )
-
-          print(f"Temporary Cargo.toml release version: {actual}")
-          PY
-
-          # Cargo owns Cargo.lock. This is the only intentionally unlocked Cargo
-          # command in the release path. The existing lockfile remains the dependency
-          # authority; Cargo may reconcile only the root SPLINED package version.
-          cargo check
-
-          "$PYTHON" - <<'PY'
-          from pathlib import Path
-          import os
-          import tomllib
-
-          expected = os.environ["RELEASE_VERSION"]
-
-          before = tomllib.loads(
-              Path("Cargo.lock.before-release").read_text(encoding="utf-8")
-          )
-          after = tomllib.loads(
-              Path("Cargo.lock").read_text(encoding="utf-8")
-          )
-          manifest = tomllib.loads(
-              Path("Cargo.toml").read_text(encoding="utf-8")
-          )
-
-          before_roots = [
-              package for package in before["package"]
-              if package["name"] == "splined"
-          ]
-          after_roots = [
-              package for package in after["package"]
-              if package["name"] == "splined"
-          ]
-
-          if len(before_roots) != 1 or len(after_roots) != 1:
-              raise SystemExit(
-                  "Expected exactly one splined root package before and after release preparation."
-              )
-
-          if manifest["package"]["version"] != expected:
-              raise SystemExit(
-                  "Cargo.toml does not match release tag after preparation."
-              )
-
-          if after_roots[0]["version"] != expected:
-              raise SystemExit(
-                  "Cargo.lock root package does not match release tag after Cargo reconciliation."
-              )
-
-          before_dependencies = [
-              package for package in before["package"]
-              if package["name"] != "splined"
-          ]
-          after_dependencies = [
-              package for package in after["package"]
-              if package["name"] != "splined"
-          ]
-
-          if before_dependencies != after_dependencies:
-              raise SystemExit(
-                  "ERROR: Cargo changed dependency lock data during release preparation."
-              )
-
-          before_root = dict(before_roots[0])
-          after_root = dict(after_roots[0])
-          before_root["version"] = "<release-version>"
-          after_root["version"] = "<release-version>"
-
-          if before_root != after_root:
-              raise SystemExit(
-                  "ERROR: Cargo changed root lock metadata other than the SPLINED version."
-              )
-
-          print(f"Cargo.toml verified: {expected}")
-          print(f"Cargo.lock root verified: {expected}")
-          print("Dependency lock data unchanged.")
-          print("Root lock metadata unchanged except version.")
-          PY
-
-          rm Cargo.lock.before-release
-
-          git diff --check -- Cargo.toml Cargo.lock
-
-          echo
-          echo "Temporary release metadata diff:"
-          git diff -- Cargo.toml Cargo.lock
 
       - name: Verify formatting
         run: cargo fmt --all -- --check
@@ -534,11 +549,225 @@ jobs:
           path: release-assets/${{ matrix.archive }}
           if-no-files-found: error
 
+  docker-release:
+    name: Release — Docker
+    needs:
+      - release-preflight
+
+    runs-on: ubuntu-latest
+
+    env:
+      IMAGE_NAME: scottia/splined
+      RELEASE_VERSION: ${{ needs.release-preflight.outputs.tag }}
+
+    steps:
+      - name: Checkout exact tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.release-preflight.outputs.commit }}
+
+      - name: Verify exact release commit
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.release-preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          ACTUAL_COMMIT=$(git rev-parse HEAD)
+
+          echo "Expected commit: $EXPECTED_COMMIT"
+          echo "Actual commit:   $ACTUAL_COMMIT"
+
+          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+            echo "ERROR: Docker checkout does not match the release tag commit."
+            exit 1
+          fi
+
+      - name: Verify Python release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          expected = os.environ["RELEASE_VERSION"]
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+
+          version_match = re.search(
+              r'^VERSION = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+          if not version_match:
+              raise SystemExit("VERSION declaration not found")
+
+          actual = version_match.group(1)
+          if actual != expected:
+              raise SystemExit(
+                  f"Python VERSION mismatch: expected={expected}, actual={actual}"
+              )
+
+          expected_user_agent = (
+              f'SPLINED/{expected} '
+              '(https://github.com/scottia/S-P-L-I-N-E-D)'
+          )
+
+          user_agent_match = re.search(
+              r'^USER_AGENT = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+          if not user_agent_match:
+              raise SystemExit("USER_AGENT declaration not found")
+
+          if user_agent_match.group(1) != expected_user_agent:
+              raise SystemExit(
+                  "Production USER_AGENT does not match release metadata"
+              )
+
+          print(f"Python version: {actual}")
+          print(f"User-Agent: {expected_user_agent}")
+          PY
+
+          python3 -m py_compile python/splined.py
+
+      - name: Build release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker build --pull \
+            --tag "$IMAGE_NAME:release-candidate" \
+            ./python
+
+      - name: Verify container version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ACTUAL=$(
+            docker run --rm "$IMAGE_NAME:release-candidate" -V \
+              | tr -d '\r'
+          )
+          EXPECTED="SPLINED $RELEASE_VERSION"
+
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "ERROR: Docker release image version mismatch."
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        shell: bash
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "ERROR: DOCKERHUB_TOKEN repository secret is not configured."
+            exit 1
+          fi
+
+          printf '%s' "$DOCKERHUB_TOKEN" \
+            | docker login \
+                --username scottia \
+                --password-stdin
+
+      - name: Push numbered and latest tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker tag \
+            "$IMAGE_NAME:release-candidate" \
+            "$IMAGE_NAME:$RELEASE_VERSION"
+
+          docker tag \
+            "$IMAGE_NAME:release-candidate" \
+            "$IMAGE_NAME:latest"
+
+          docker push "$IMAGE_NAME:$RELEASE_VERSION"
+          docker push "$IMAGE_NAME:latest"
+
+      - name: Verify published Docker digests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_INFO=$(
+            docker buildx imagetools inspect \
+              "$IMAGE_NAME:$RELEASE_VERSION"
+          )
+
+          LATEST_INFO=$(
+            docker buildx imagetools inspect \
+              "$IMAGE_NAME:latest"
+          )
+
+          echo "$VERSION_INFO"
+          echo
+          echo "$LATEST_INFO"
+          echo
+
+          VERSION_DIGEST=$(
+            printf '%s\n' "$VERSION_INFO" \
+              | awk '/^Digest:/ {print $2; exit}'
+          )
+
+          LATEST_DIGEST=$(
+            printf '%s\n' "$LATEST_INFO" \
+              | awk '/^Digest:/ {print $2; exit}'
+          )
+
+          if [ -z "$VERSION_DIGEST" ] || [ -z "$LATEST_DIGEST" ]; then
+            echo "ERROR: Could not resolve published Docker digest."
+            exit 1
+          fi
+
+          if [ "$VERSION_DIGEST" != "$LATEST_DIGEST" ]; then
+            echo "ERROR: Numbered and latest Docker tags differ."
+            echo "Version digest: $VERSION_DIGEST"
+            echo "Latest digest:  $LATEST_DIGEST"
+            exit 1
+          fi
+
+          mkdir -p release-assets
+
+          cat > release-assets/DOCKER_IMAGE.txt <<EOF
+          S:P:L:I:N:E:D Docker release
+
+          Image: $IMAGE_NAME
+          Version tag: $IMAGE_NAME:$RELEASE_VERSION
+          Latest tag: $IMAGE_NAME:latest
+          Digest: $VERSION_DIGEST
+          Immutable reference: $IMAGE_NAME@$VERSION_DIGEST
+          EOF
+
+          cat release-assets/DOCKER_IMAGE.txt
+
+      - name: Upload Docker release metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-docker-metadata
+          path: release-assets/DOCKER_IMAGE.txt
+          if-no-files-found: error
+
+      - name: Log out of Docker Hub
+        if: always()
+        shell: bash
+        run: docker logout || true
   publish:
     name: Publish — ${{ needs.release-preflight.outputs.tag }}
     needs:
       - release-preflight
       - build-release
+      - docker-release
 
     runs-on: ubuntu-latest
 
@@ -561,6 +790,7 @@ jobs:
           test -f release-assets/splined-windows-x86_64.zip
           test -f release-assets/splined-linux-x86_64.tar.gz
           test -f release-assets/splined-macos.tar.gz
+          test -f release-assets/DOCKER_IMAGE.txt
 
           (
             cd release-assets
@@ -609,6 +839,7 @@ jobs:
             release-assets/splined-linux-x86_64.tar.gz \
             release-assets/splined-macos.tar.gz \
             release-assets/SHA256SUMS.txt \
+            release-assets/DOCKER_IMAGE.txt \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
