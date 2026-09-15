@@ -173,7 +173,6 @@ The stable Docker image is published as:
 
 ```text
 scottia/splined:latest
-scottia/splined:1.0.1
 ```
 
 Use `latest` to follow the current stable image. Pin a numbered tag such as `1.0.1` when you want a deployment to remain reproducible until you deliberately change it.
@@ -285,14 +284,14 @@ These are optional and depend on the Docker host:
 ```yaml
 services:
   splined:
-    image: scottia/splined:1.0.1
+    image: scottia/splined:latest
     container_name: splined
     restart: unless-stopped
-    user: "1000:1000"
+    user: ""
     security_opt:
       - no-new-privileges:true
     environment:
-      TZ: America/Chicago
+      TZ: ""
       SPLINED_CONFIG: /config/config.toml
     volumes:
       - /path/to/music:/music:rw
@@ -313,7 +312,7 @@ docker run --rm \
   -v /path/to/splined/config:/config:rw \
   -v /path/to/splined/cache:/cache:rw \
   -v /path/to/splined/credentials:/credentials:rw \
-  scottia/splined:1.0.1 -V
+  scottia/splined:latest -V
 ```
 
 The Docker image starts S:P:L:I:N:E:D in idle mode when no command is supplied, which allows `docker compose exec` to be used for normal CLI commands.
