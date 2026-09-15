@@ -175,7 +175,7 @@ The stable Docker image is published as:
 scottia/splined:latest
 ```
 
-Use `latest` to follow the current stable image. Pin a numbered tag such as `1.0.1` when you want a deployment to remain reproducible until you deliberately change it.
+Use `latest` to follow the current stable image. For a reproducible deployment, use the tag shown on the [latest GitHub release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest) and pin the image as `scottia/splined:<release-tag>`.
 
 ### Minimal Docker Compose
 
@@ -388,7 +388,7 @@ Credential files contain sensitive information and should **never be committed t
 
 ## 🐧 Linux
 
-For Linux and server deployments, Docker Compose is the recommended starting point. The stable container image uses the validated Python v1.0.1 runtime under `python/` and keeps configuration, cache, credentials, and media outside the image through mounted storage.
+For Linux and server deployments, Docker Compose is the recommended starting point. The stable container image uses the validated Python runtime associated with the current GitHub release tag under `python/` and keeps configuration, cache, credentials, and media outside the image through mounted storage.
 
 The repository also retains the native Rust/reference implementation and portable release tooling.
 
@@ -396,7 +396,7 @@ The repository also retains the native Rust/reference implementation and portabl
 
 ## 🧭 Project status
 
-S:P:L:I:N:E:D 1.0.1 is the current stable release.
+The current stable S:P:L:I:N:E:D version is identified by the [latest GitHub release tag](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest).
 
 Artwork discovery, MusicBrainz-assisted album resolution, candidate evaluation, Read / Write scanning, samples, preserve behavior, scan completion timeout/history, credential handling, Docker packaging, and portable application foundations are implemented.
 
