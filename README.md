@@ -7,7 +7,7 @@
 
 ## 🎨 What is S:P:L:I:N:E:D?
 
-**S:P:L:I:N:E:D** is a small Rust utility for finding and managing album artwork in a music library.
+**S:P:L:I:N:E:D** is a small utility for finding and managing album artwork in a music library.
 
 It checks the album, asks several artwork sources for possible covers, compares the results, and picks the image that best matches your preferred size and quality range.
 
@@ -27,6 +27,7 @@ That is the core idea — intentionally simple.
 - 🧪 **Sample output** saves one chosen image per album for easy review
 - 🛡️ **Preserve mode** can keep existing artwork instead of overwriting it
 - ⚙️ **Config driven** — library, scan, cache, credential, and output locations are changeable
+- 🐳 **Docker image** provides a simple Linux/server deployment path
 - 📦 **Portable Windows, Linux, and macOS releases** keep application-owned files together while paths remain configurable
 - 🔁 **Upgrade-safe bootstrap** replaces the program executable while preserving config, cache, and credentials
 
@@ -56,8 +57,7 @@ Current provider support includes:
 - 🎧 Last.fm
 - 💿 Cover Art Archive
 - 🔵 Deezer
-
-Discogs remains available in configuration for future provider work.
+- 🟠 Discogs
 
 Sources can be reordered or excluded in the config.
 
@@ -167,6 +167,159 @@ Your real library, test library, cache, and credential paths can all be changed 
 
 ---
 
+## 🐳 Docker — recommended Linux/server deployment
+
+The stable Docker image is published as:
+
+```text
+scottia/splined:latest
+scottia/splined:1.0.1
+```
+
+Use `latest` to follow the current stable image. Pin a numbered tag such as `1.0.1` when you want a deployment to remain reproducible until you deliberately change it.
+
+### Minimal Docker Compose
+
+For most Docker hosts, this is the recommended starting point:
+
+```yaml
+services:
+  splined:
+    image: scottia/splined:latest
+    container_name: splined
+    restart: unless-stopped
+    volumes:
+      - /path/to/music:/music:rw
+      - /path/to/splined/config:/config:rw
+      - /path/to/splined/cache:/cache:rw
+      - /path/to/splined/credentials:/credentials:rw
+```
+
+The image already defaults to:
+
+```text
+SPLINED_CONFIG=/config/config.toml
+```
+
+Put `config.toml` in the host directory mounted at `/config`. Paths inside that config should refer to the **container paths** such as `/music`, `/cache`, and `/credentials`, not the host-side paths.
+
+### Persistent mounts
+
+| Container path | Purpose | Typical access |
+| --- | --- | --- |
+| `/music` | Music library | `ro` for Read mode, `rw` for Write mode |
+| `/config` | `config.toml` | `rw` |
+| `/cache` | cache, history, debug logs, samples | `rw` |
+| `/credentials` | provider credential JSON files | `rw` |
+
+If S:P:L:I:N:E:D will only run in Read mode, mounting the library read-only is a useful additional safeguard:
+
+```yaml
+      - /path/to/music:/music:ro
+```
+
+Write mode requires `/music` to be writable.
+
+### Private Docker Hub authentication
+
+If the Docker Hub repository requires authentication, log in on the Docker host before pulling:
+
+```bash
+docker login -u scottia
+```
+
+A Docker Hub Personal Access Token is preferred over the account password.
+
+If your normal Docker commands use `sudo`, perform the login with the same privilege level so Docker reads the same credential store:
+
+```bash
+sudo docker login -u scottia
+```
+
+Then pull and start the service:
+
+```bash
+docker compose pull splined
+docker compose up -d splined
+```
+
+### Common Docker commands
+
+Verify the running container:
+
+```bash
+docker compose exec splined splined -V
+```
+
+Show help:
+
+```bash
+docker compose exec splined splined --help
+```
+
+Run a scan using the configured scan directory:
+
+```bash
+docker compose exec splined splined --scan-dir
+```
+
+Follow container output:
+
+```bash
+docker compose logs -f splined
+```
+
+Update a `latest` deployment:
+
+```bash
+docker compose pull splined
+docker compose up -d splined
+```
+
+For a pinned deployment, change the image tag in Compose first, then pull and recreate the service.
+
+### Standard hardening / host-permission options
+
+These are optional and depend on the Docker host:
+
+```yaml
+services:
+  splined:
+    image: scottia/splined:1.0.1
+    container_name: splined
+    restart: unless-stopped
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: America/Chicago
+      SPLINED_CONFIG: /config/config.toml
+    volumes:
+      - /path/to/music:/music:rw
+      - /path/to/splined/config:/config:rw
+      - /path/to/splined/cache:/cache:rw
+      - /path/to/splined/credentials:/credentials:rw
+```
+
+Use a UID/GID that has the required access to the mounted host directories. `no-new-privileges:true` is appropriate for normal operation and prevents the container process from gaining additional privileges.
+
+### One-shot `docker run`
+
+Compose is the normal deployment method, but the image can also be run directly:
+
+```bash
+docker run --rm \
+  -v /path/to/music:/music:rw \
+  -v /path/to/splined/config:/config:rw \
+  -v /path/to/splined/cache:/cache:rw \
+  -v /path/to/splined/credentials:/credentials:rw \
+  scottia/splined:1.0.1 -V
+```
+
+The Docker image starts S:P:L:I:N:E:D in idle mode when no command is supplied, which allows `docker compose exec` to be used for normal CLI commands.
+
+---
+
 ## ▶️ Basic usage
 
 Show the current help and configured directories:
@@ -181,7 +334,7 @@ Scan the configured test / album directory:
 splined.exe --scan-dir
 ```
 
-Build from source:
+Build the native Rust/reference implementation from source:
 
 ```powershell
 cargo build --release
@@ -234,25 +387,21 @@ Credential files contain sensitive information and should **never be committed t
 
 ---
 
-## 🐧 Linux / Docker
+## 🐧 Linux
 
-S:P:L:I:N:E:D ships a native Linux release built from the same Rust engine as Windows and macOS.
+For Linux and server deployments, Docker Compose is the recommended starting point. The stable container image uses the validated Python v1.0.1 runtime under `python/` and keeps configuration, cache, credentials, and media outside the image through mounted storage.
 
-Docker or other container deployments can use the Linux build with configuration, cache, credentials, and media exposed through user-selected mounted storage.
+The repository also retains the native Rust/reference implementation and portable release tooling.
 
 ---
 
 ## 🧭 Project status
 
-S:P:L:I:N:E:D 1.0.0 establishes the portable release foundation.
+S:P:L:I:N:E:D 1.0.1 is the current stable release.
 
-Artwork discovery, MusicBrainz-assisted album resolution, candidate evaluation, Read / Write scanning, samples, preserve behavior, portable application bootstrap, credential file protection, and native release packaging are implemented.
+Artwork discovery, MusicBrainz-assisted album resolution, candidate evaluation, Read / Write scanning, samples, preserve behavior, scan completion timeout/history, credential handling, Docker packaging, and portable application foundations are implemented.
 
-Current focus:
-
-- 📦 platform-specific release packaging and installer validation
-- 🧪 fresh-install and executable-only upgrade acceptance testing
-- 🔎 privacy/provenance auditing before public publication
+The stable Docker release workflow validates the committed Python source, builds the image, verifies the container version, and publishes both the numbered release tag and `latest`.
 
 ---
 
