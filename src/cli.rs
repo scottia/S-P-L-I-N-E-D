@@ -1,5 +1,9 @@
 use clap::{ArgAction, Parser};
 
+fn bare_command_scan_dir() -> bool {
+    std::env::args_os().len() == 1
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "splined",
@@ -17,8 +21,8 @@ pub struct Cli {
     #[arg(long, conflicts_with = "scan_dir")]
     pub scan: bool,
 
-    /// Scan the configured scan directory
-    #[arg(long, conflicts_with = "scan")]
+    /// Scan the configured scan directory; bare `splined` scans the current directory
+    #[arg(long, conflicts_with = "scan", default_value_t = bare_command_scan_dir())]
     pub scan_dir: bool,
 
     /// Preserve existing artwork instead of replacing it
