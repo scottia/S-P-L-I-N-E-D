@@ -104,6 +104,13 @@ pub struct FanartTvConfig {
     pub credential_file: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SplineAiConfig {
+    pub enabled: bool,
+    pub endpoint: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_config_version")]
@@ -128,6 +135,8 @@ pub struct Config {
     pub lastfm: LastFmConfig,
     #[serde(default)]
     pub musicbrainz: MusicBrainzConfig,
+    #[serde(default)]
+    pub splineai: SplineAiConfig,
     #[serde(default)]
     pub output: OutputConfig,
     pub range: RangeConfig,
@@ -225,6 +234,15 @@ impl Default for FanartTvConfig {
     }
 }
 
+impl Default for SplineAiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         let musicbrainz = MusicBrainzConfig {
@@ -244,6 +262,7 @@ impl Default for Config {
             fanarttv: FanartTvConfig::default(),
             lastfm: LastFmConfig::default(),
             musicbrainz,
+            splineai: SplineAiConfig::default(),
             output: OutputConfig::default(),
             range: RangeConfig::default(),
             sources: SourcesConfig::default(),
@@ -308,6 +327,7 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
         "credentials.credential_dir",
     )?;
     config.library.ignored_subs = normalize_ignored_subs(&config.library.ignored_subs);
+    config.splineai.endpoint = config.splineai.endpoint.trim().to_string();
 
     config.sources.cover_sources = normalize_source_list(
         &config.sources.cover_sources,
@@ -541,6 +561,8 @@ mod tests {
         assert!(config.library.ignored_subs.is_empty());
         assert!(config.samples.sample_write);
         assert_eq!(config.credentials.credential_dir, "credentials");
+        assert!(!config.splineai.enabled);
+        assert!(config.splineai.endpoint.is_empty());
         assert_eq!(
             config.output.file_formats,
             vec!["jpeg".to_string(), "png".to_string(), "webp".to_string()]
@@ -559,8 +581,11 @@ mod tests {
         let parsed: Config = toml::from_str(&text).expect("default config should parse");
 
         assert!(!text.contains("[read]"));
+        assert!(text.contains("[splineai]"));
         assert_eq!(parsed.scan.cache_dir, "cache");
         assert_eq!(parsed.credentials.credential_dir, "credentials");
+        assert!(!parsed.splineai.enabled);
+        assert!(parsed.splineai.endpoint.is_empty());
         assert!(parsed.scan.scan_library_dir.is_empty());
         assert!(parsed.library.music_library.is_empty());
         assert!(parsed.library.ignored_subs.is_empty());
