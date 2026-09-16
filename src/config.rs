@@ -374,6 +374,15 @@ pub fn load_config() -> Result<Config, String> {
     let root = app_root()?;
     resolve_runtime_paths(&mut config, &root);
 
+    // A completely bare native invocation is the operational scan command.
+    // Keep explicit --scan-dir behavior config-driven, but make `splined`
+    // itself scan the caller's current working directory recursively.
+    if std::env::args_os().len() == 1 {
+        let current_dir = std::env::current_dir()
+            .map_err(|error| format!("Unable to determine current working directory: {error}"))?;
+        config.scan.scan_library_dir = current_dir.to_string_lossy().into_owned();
+    }
+
     Ok(config)
 }
 
@@ -646,7 +655,8 @@ mod tests {
         assert_eq!(config.scan.cache_dir, root.join("cache").to_string_lossy());
         assert_eq!(
             config.credentials.credential_dir,
-            root.join("credentials").to_string_lossy()
+            root.join("credentials")
+                .to_string_lossy()
         );
         assert_eq!(
             config.lastfm.credential_file,
