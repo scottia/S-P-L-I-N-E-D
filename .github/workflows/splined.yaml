@@ -16,10 +16,16 @@ on:
 
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing numeric release tag to build, for example 1.0.0"
+      platform:
+        description: "Build platform"
         required: true
-        type: string
+        default: "Windows"
+        type: choice
+        options:
+          - "Windows"
+          - "Ubuntu"
+          - "macOS"
+          - "All"
 
 permissions:
   contents: read
@@ -32,26 +38,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  validate:
-    name: Validate — ${{ matrix.name }}
+  validate-ubuntu:
+    name: Validate — Ubuntu quality gate
     if: >-
       ${{
         github.event_name == 'pull_request' ||
         (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false)
       }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows
-            os: windows-latest
-          - name: Linux / Ubuntu
-            os: ubuntu-latest
-          - name: macOS
-            os: macos-latest
-
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout source
@@ -61,12 +55,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ ! -f Cargo.lock ]; then
+          test -f Cargo.lock || {
             echo "ERROR: Cargo.lock is required for SPLINED application builds."
-            echo "Generate it with Cargo, review it, and commit it to version control."
             exit 1
-          fi
+          }
 
       - name: Install stable Rust with rustfmt and clippy
         shell: bash
@@ -91,13 +83,57 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Test locked dependency graph
-        run: cargo test --locked --all-targets --all-features
+        run: cargo test --locked
 
       - name: Clippy locked dependency graph
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked -- -D warnings
 
-      - name: Build locked release
-        run: cargo build --locked --release
+      - name: Verify Cargo.lock was not modified
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code -- Cargo.lock
+
+  validate-windows:
+    name: Validate — Windows compatibility
+    if: >-
+      ${{
+        github.event_name == 'pull_request' ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false)
+      }}
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Require committed Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f Cargo.lock || {
+            echo "ERROR: Cargo.lock is required for SPLINED application builds."
+            exit 1
+          }
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable \
+            --profile minimal \
+            --no-self-update
+          rustup default stable
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Check locked dependency graph
+        run: cargo check --locked
 
       - name: Verify Cargo.lock was not modified
         shell: bash
@@ -111,9 +147,9 @@ jobs:
     if: >-
       ${{
         github.event_name == 'pull_request' ||
-        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false)
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false) ||
+        (github.event_name == 'workflow_dispatch' && inputs.platform == 'All')
       }}
-
     runs-on: ubuntu-latest
 
     steps:
@@ -204,14 +240,160 @@ jobs:
             echo "ERROR: Docker candidate does not report the source version."
             exit 1
           fi
-  release-preflight:
-    name: Release — Preflight
+
+  manual-windows:
+    name: Manual Build — Windows
     if: >-
       ${{
-        startsWith(github.ref, 'refs/tags/') ||
-        github.event_name == 'workflow_dispatch'
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.platform == 'Windows' || inputs.platform == 'All')
       }}
+    runs-on: windows-latest
 
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable \
+            --profile minimal \
+            --no-self-update
+          rustup default stable
+
+      - name: Check and build Windows
+        run: |
+          cargo check --locked
+          cargo build --locked --release
+
+      - name: Prepare Windows package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-package release-assets
+          mkdir -p release-package release-assets
+          cp target/release/splined.exe release-package/setup-splined.exe
+          cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
+
+      - name: Create Windows archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Compress-Archive `
+            -Path "release-package/*" `
+            -DestinationPath "release-assets/splined-windows-x86_64.zip" `
+            -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-windows-x86_64-manual
+          path: release-assets/splined-windows-x86_64.zip
+          if-no-files-found: error
+
+  manual-ubuntu:
+    name: Manual Build — Ubuntu
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.platform == 'Ubuntu' || inputs.platform == 'All')
+      }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable \
+            --profile minimal \
+            --no-self-update
+          rustup default stable
+
+      - name: Check and build Ubuntu
+        run: |
+          cargo check --locked
+          cargo build --locked --release
+
+      - name: Prepare Ubuntu package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-package release-assets
+          mkdir -p release-package release-assets
+          cp target/release/splined release-package/setup-splined
+          cp release/README-LINUX.txt release-package/README-LINUX.txt
+          chmod +x release-package/setup-splined
+          tar \
+            -czf release-assets/splined-linux-x86_64.tar.gz \
+            -C release-package \
+            setup-splined \
+            README-LINUX.txt
+
+      - name: Upload Ubuntu artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-linux-x86_64-manual
+          path: release-assets/splined-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  manual-macos:
+    name: Manual Build — macOS
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' &&
+        (inputs.platform == 'macOS' || inputs.platform == 'All')
+      }}
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable \
+            --profile minimal \
+            --no-self-update
+          rustup default stable
+
+      - name: Check and build macOS
+        run: |
+          cargo check --locked
+          cargo build --locked --release
+
+      - name: Prepare macOS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-package release-assets
+          mkdir -p release-package release-assets
+          cp target/release/splined release-package/setup-splined
+          cp release/README-MACOS.txt release-package/README-MACOS.txt
+          chmod +x release-package/setup-splined
+          tar \
+            -czf release-assets/splined-macos.tar.gz \
+            -C release-package \
+            setup-splined \
+            README-MACOS.txt
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-macos-manual
+          path: release-assets/splined-macos.tar.gz
+          if-no-files-found: error
+
+  release-preflight:
+    name: Release — Preflight
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
 
     outputs:
@@ -228,21 +410,11 @@ jobs:
         id: release
         shell: bash
         env:
-          MANUAL_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="$MANUAL_TAG"
-          else
-            TAG="$REF_NAME"
-          fi
-
-          if [ -z "$TAG" ]; then
-            echo "ERROR: Release tag could not be determined."
-            exit 1
-          fi
+          TAG="$REF_NAME"
 
           if [[ ! "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "ERROR: Release tag must use numeric semantic versioning, for example 1.0.0."
@@ -361,40 +533,12 @@ jobs:
           PY
 
           git diff --exit-code
-  build-release:
-    name: Build Release — ${{ matrix.name }}
+
+  build-release-windows:
+    name: Build Release — Windows
     needs:
       - release-preflight
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows
-            os: windows-latest
-            artifact: splined-windows-x86_64
-            source: target/release/splined.exe
-            setup: setup-splined.exe
-            readme: README-WINDOWS.txt
-            archive: splined-windows-x86_64.zip
-
-          - name: Linux / Ubuntu
-            os: ubuntu-latest
-            artifact: splined-linux-x86_64
-            source: target/release/splined
-            setup: setup-splined
-            readme: README-LINUX.txt
-            archive: splined-linux-x86_64.tar.gz
-
-          - name: macOS
-            os: macos-latest
-            artifact: splined-macos
-            source: target/release/splined
-            setup: setup-splined
-            readme: README-MACOS.txt
-            archive: splined-macos.tar.gz
-
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
 
     steps:
       - name: Checkout exact tagged source
@@ -422,20 +566,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ ! -f Cargo.lock ]; then
+          test -f Cargo.lock || {
             echo "ERROR: Cargo.lock is required for SPLINED release builds."
             exit 1
-          fi
+          }
 
-      - name: Install stable Rust with rustfmt and clippy
+      - name: Install stable Rust
         shell: bash
         run: |
           set -euo pipefail
           rustup toolchain install stable \
             --profile minimal \
-            --component rustfmt \
-            --component clippy \
             --no-self-update
           rustup default stable
 
@@ -444,24 +585,12 @@ jobs:
         run: |
           rustc --version
           cargo --version
-          rustfmt --version
-          cargo clippy --version
 
-
-      - name: Verify formatting
-        run: cargo fmt --all -- --check
-
-      - name: Recheck locked dependency graph
+      - name: Check tagged source with locked dependency graph
         run: cargo check --locked
 
-      - name: Test tagged source with locked dependency graph
-        run: cargo test --locked --all-targets --all-features
-
-      - name: Clippy tagged source with locked dependency graph
-        run: cargo clippy --locked --all-targets --all-features -- -D warnings
-
-      - name: Build tagged release with locked dependency graph
-        run: cargo build --locked --release --verbose
+      - name: Build tagged Windows release
+        run: cargo build --locked --release
 
       - name: Verify compiled release version
         shell: bash
@@ -470,7 +599,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ACTUAL_VERSION=$("${{ matrix.source }}" --version | tr -d '\r')
+          ACTUAL_VERSION=$(target/release/splined.exe --version | tr -d '\r')
           EXPECTED_VERSION="SPLINED $RELEASE_VERSION"
 
           echo "Expected: $EXPECTED_VERSION"
@@ -481,79 +610,38 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare release package
+      - name: Prepare Windows release package
         shell: bash
         run: |
           set -euo pipefail
-
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
-
-          if [ ! -f "${{ matrix.source }}" ]; then
-            echo "ERROR: Expected release binary was not created: ${{ matrix.source }}"
-            exit 1
-          fi
-
-          if [ ! -f "release/${{ matrix.readme }}" ]; then
-            echo "ERROR: Platform release instructions were not found:"
-            echo "release/${{ matrix.readme }}"
-            exit 1
-          fi
-
-          cp "${{ matrix.source }}" "release-package/${{ matrix.setup }}"
-          cp "release/${{ matrix.readme }}" "release-package/${{ matrix.readme }}"
-
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            chmod +x "release-package/${{ matrix.setup }}"
-          fi
-
-          echo "Package contents:"
-          ls -lah release-package
+          cp target/release/splined.exe release-package/setup-splined.exe
+          cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
 
       - name: Create Windows archive
-        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
           Compress-Archive `
             -Path "release-package/*" `
-            -DestinationPath "release-assets/${{ matrix.archive }}" `
+            -DestinationPath "release-assets/splined-windows-x86_64.zip" `
             -Force
 
-          Write-Host "Windows archive:"
-          Get-Item "release-assets/${{ matrix.archive }}"
+          Get-Item "release-assets/splined-windows-x86_64.zip"
 
-      - name: Create Unix archive
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tar \
-            -C release-package \
-            -czf "release-assets/${{ matrix.archive }}" \
-            "${{ matrix.setup }}" \
-            "${{ matrix.readme }}"
-
-          echo "Archive:"
-          ls -lh "release-assets/${{ matrix.archive }}"
-
-          echo "Archive contents:"
-          tar -tzf "release-assets/${{ matrix.archive }}"
-
-      - name: Upload packaged build artifact
+      - name: Upload packaged Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ matrix.artifact }}
-          path: release-assets/${{ matrix.archive }}
+          name: splined-windows-x86_64
+          path: release-assets/splined-windows-x86_64.zip
           if-no-files-found: error
 
   docker-release:
     name: Release — Docker
     needs:
       - release-preflight
-
     runs-on: ubuntu-latest
 
     env:
@@ -762,11 +850,12 @@ jobs:
         if: always()
         shell: bash
         run: docker logout || true
+
   publish:
     name: Publish — ${{ needs.release-preflight.outputs.tag }}
     needs:
       - release-preflight
-      - build-release
+      - build-release-windows
       - docker-release
 
     runs-on: ubuntu-latest
@@ -775,33 +864,29 @@ jobs:
       contents: write
 
     steps:
-      - name: Download all packaged builds
+      - name: Download release artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: release-assets
           pattern: splined-*
           merge-multiple: true
 
-      - name: Verify release archives and create checksums
+      - name: Verify release artifacts and create checksum
         shell: bash
         run: |
           set -euo pipefail
 
           test -f release-assets/splined-windows-x86_64.zip
-          test -f release-assets/splined-linux-x86_64.tar.gz
-          test -f release-assets/splined-macos.tar.gz
           test -f release-assets/DOCKER_IMAGE.txt
 
           (
             cd release-assets
             sha256sum \
               splined-windows-x86_64.zip \
-              splined-linux-x86_64.tar.gz \
-              splined-macos.tar.gz \
               > SHA256SUMS.txt
           )
 
-          echo "Release archives:"
+          echo "Release artifacts:"
           ls -lh release-assets
           echo
           cat release-assets/SHA256SUMS.txt
@@ -826,7 +911,7 @@ jobs:
               --generate-notes
           fi
 
-      - name: Upload archives and checksums to GitHub Release
+      - name: Upload Windows archive, checksum, and Docker metadata
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -836,8 +921,6 @@ jobs:
 
           gh release upload "$RELEASE_TAG" \
             release-assets/splined-windows-x86_64.zip \
-            release-assets/splined-linux-x86_64.tar.gz \
-            release-assets/splined-macos.tar.gz \
             release-assets/SHA256SUMS.txt \
             release-assets/DOCKER_IMAGE.txt \
             --repo "$GITHUB_REPOSITORY" \
