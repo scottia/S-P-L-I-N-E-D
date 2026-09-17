@@ -131,6 +131,60 @@ def resolve_path(config_file: Path, raw: str) -> Path:
     return p if p.is_absolute() else (config_file.parent / p).resolve()
 
 
+DEFAULT_CACHE_DIR = Path("/_cache")
+DEFAULT_LOG_DIR = Path("/_logs")
+DEFAULT_HISTORY_DIR = Path("/logs/_history")
+DEFAULT_CREDENTIAL_DIR = Path("/credentials")
+
+
+def runtime_cache_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
+    configured = str(section(cfg, "scan").get("cache_dir", "")).strip()
+    if configured:
+        return resolve_path(config_file, configured)
+    return DEFAULT_CACHE_DIR
+
+
+def runtime_credential_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
+    configured = str(section(cfg, "credentials").get("credential_dir", "")).strip()
+    if configured:
+        return resolve_path(config_file, configured)
+    return DEFAULT_CREDENTIAL_DIR
+
+
+def runtime_log_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
+    env = os.environ.get("SPLINED_LOG_DIR", "").strip()
+    if env:
+        return Path(env)
+    configured = str(section(cfg, "scan").get("log_dir", "")).strip()
+    if configured:
+        return resolve_path(config_file, configured)
+    return DEFAULT_LOG_DIR
+
+
+def runtime_history_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
+    env = os.environ.get("SPLINED_HISTORY_DIR", "").strip()
+    if env:
+        return Path(env)
+    configured = str(section(cfg, "scan").get("history_dir", "")).strip()
+    if configured:
+        return resolve_path(config_file, configured)
+    return DEFAULT_HISTORY_DIR
+
+
+def ensure_runtime_directories(
+    config_file: Path,
+    cfg: dict[str, Any],
+    cache: Path,
+) -> tuple[Path, Path]:
+    logs = runtime_log_dir(config_file, cfg)
+    history = runtime_history_dir(config_file, cfg)
+    for path in (cache, logs, history):
+        if path.exists() and (path.is_symlink() or not path.is_dir()):
+            raise SplinedError(f"Unsafe SPLINED runtime directory: {path}")
+        path.mkdir(parents=True, exist_ok=True)
+    return logs, history
+
+
 def normalize_sources(values: Any, label: str, allow_empty: bool) -> list[str]:
     out: list[str] = []
     if not isinstance(values, list):
@@ -166,8 +220,8 @@ SOURCE_HISTORY_VERSION = 1
 SOURCE_HISTORY_FILE = "chosen-source-history.json"
 
 
-def source_history_path(cache: Path) -> Path:
-    return cache / "history" / SOURCE_HISTORY_FILE
+def source_history_path(history_dir: Path) -> Path:
+    return history_dir / SOURCE_HISTORY_FILE
 
 
 def empty_source_history() -> dict[str, Any]:
@@ -287,8 +341,8 @@ SCAN_COMPLETION_HISTORY_VERSION = 1
 SCAN_COMPLETION_HISTORY_FILE = "scan-completed-history.json"
 
 
-def scan_completion_history_path(cache: Path) -> Path:
-    return cache / "history" / SCAN_COMPLETION_HISTORY_FILE
+def scan_completion_history_path(history_dir: Path) -> Path:
+    return history_dir / SCAN_COMPLETION_HISTORY_FILE
 
 
 def empty_scan_completion_history() -> dict[str, Any]:
@@ -330,24 +384,31 @@ def save_scan_completion_history(path: Path, history: dict[str, Any]) -> None:
         pass
 
 
+
 def scan_timeout_hours(cfg: dict[str, Any]) -> float:
     raw = section(cfg, "scan").get("scan_mode_timeout", 24)
     if isinstance(raw, bool):
-        raise SplinedError("[scan].scan_mode_timeout must be a non-negative number of hours.")
+        if raw is False:
+            return 0.0
+        raise SplinedError("[scan].scan_mode_timeout must be a non-negative number of hours, 'off', or false.")
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value == "off":
+            return 0.0
+        raw = value
     try:
         value = float(raw)
     except (TypeError, ValueError) as exc:
-        raise SplinedError(
-            "[scan].scan_mode_timeout must be a non-negative number of hours."
-        ) from exc
+        raise SplinedError("[scan].scan_mode_timeout must be a non-negative number of hours, 'off', or false.") from exc
     if value < 0:
         raise SplinedError("[scan].scan_mode_timeout cannot be negative.")
     return value
 
 
 def format_timeout_hours(value: float) -> str:
+    if value <= 0:
+        return "off"
     return str(int(value)) if float(value).is_integer() else f"{value:g}"
-
 
 def album_scan_fingerprint(album: AlbumDir) -> str:
     digest = hashlib.sha256()
@@ -621,11 +682,11 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
         _DEBUG_PATH = None
         return None
 
-    scan = section(cfg, "scan")
-    cache = resolve_path(config_file, str(scan.get("cache_dir", "cache")))
-    debug_dir = cache / "debug"
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    _DEBUG_PATH = debug_dir / "splined_debug.log"
+    log_dir = runtime_log_dir(config_file, cfg)
+    if log_dir.exists() and (log_dir.is_symlink() or not log_dir.is_dir()):
+        raise SplinedError(f"Unsafe SPLINED log directory: {log_dir}")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    _DEBUG_PATH = log_dir / "splined_debug.log"
 
     # Append across runs with a visible session delimiter.
     with _DEBUG_PATH.open("a", encoding="utf-8") as handle:
@@ -661,7 +722,7 @@ class Http:
 
 
 def credential_file(config_file: Path, cfg: dict[str, Any], provider: str) -> Path:
-    cdir = resolve_path(config_file, str(section(cfg, "credentials").get("credential_dir", "credentials")))
+    cdir = runtime_credential_dir(config_file, cfg)
     pcfg = section(cfg, provider)
     key = "token_file" if provider == "musicbrainz" else "credential_file"
     default = "musicbrainz.json" if provider == "musicbrainz" else f"{provider}.json"
@@ -1640,10 +1701,26 @@ def image_format(image: Image.Image) -> str:
     raise SplinedError(f"Unsupported SPLINED downloaded artwork format: {f or 'unknown'}")
 
 
-def clean_cache(cache: Path) -> None:
+def prepare_run_cache(cache: Path) -> None:
+    """Reset the disposable runtime cache once at the start of an operational scan."""
+    if cache.exists():
+        if cache.is_symlink() or not cache.is_dir():
+            raise SplinedError(f"Refusing to clean unsafe SPLINED cache directory: {cache}")
+        if cache.parent == cache or not cache.name:
+            raise SplinedError(f"Refusing to clean unsafe SPLINED cache path: {cache}")
+        for path in cache.iterdir():
+            if path.is_symlink():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
     cache.mkdir(parents=True, exist_ok=True)
-    # Only ephemeral candidate files are removed. cache/history/ is persistent
-    # and intentionally excluded from all per-run cleanup.
+
+
+def clean_cache(cache: Path) -> None:
+    """Remove only transient downloaded provider candidates during a running scan."""
+    cache.mkdir(parents=True, exist_ok=True)
     for p in cache.iterdir():
         if p.name.startswith("splined-candidate-") and p.is_file() and not p.is_symlink():
             p.unlink()
@@ -1652,6 +1729,22 @@ def clean_cache(cache: Path) -> None:
 
 def cache_extension_from_format(fmt: str) -> str:
     return EXTENSIONS.get(fmt, "bin")
+
+
+
+SQUARE_EQUIVALENT_TOLERANCE = 0.005
+MAX_AUTO_CROP_DEVIATION = 0.02
+
+
+def aspect_deviation(width: int, height: int) -> float:
+    longest = max(int(width), int(height))
+    if longest <= 0:
+        return 0.0
+    return abs(int(width) - int(height)) / longest
+
+
+def aspect_ratio(width: int, height: int) -> float:
+    return (float(width) / float(height)) if int(height) else 0.0
 
 
 def output_settings(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -1702,10 +1795,12 @@ def classify_range(short_side: int, cfg: dict[str, Any]) -> str:
     return "AboveLadder"
 
 
+
 def project_dimensions(width: int, height: int, cfg: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
     settings = output_settings(cfg)
     ideal = int(section(cfg, "range").get("ideal", 1800))
-    w, h = width, height
+    w, h = int(width), int(height)
+    source_deviation = aspect_deviation(w, h)
 
     operations = {
         "squared": False,
@@ -1715,20 +1810,28 @@ def project_dimensions(width: int, height: int, cfg: dict[str, Any]) -> tuple[in
         "rounded_to": 0,
         "resized": False,
         "upscaled": False,
+        "aspect_deviation": source_deviation,
+        "square_equivalent": source_deviation <= SQUARE_EQUIVALENT_TOLERANCE,
+        "crop_guarded": False,
     }
 
-    # 1. Preserve aspect ratio and center-crop the long edge.
-    if settings["square_mode"] == "crop":
-        side = min(w, h)
-        operations["squared"] = True
-        operations["cropped"] = (w != h)
-        w = side
-        h = side
+    # Evaluate shape before any squaring operation.
+    if settings["square_mode"] == "crop" and w != h:
+        if source_deviation <= SQUARE_EQUIVALENT_TOLERANCE:
+            pass
+        elif source_deviation <= MAX_AUTO_CROP_DEVIATION:
+            side = min(w, h)
+            w = side
+            h = side
+            operations["squared"] = True
+            operations["cropped"] = True
+        else:
+            operations["crop_guarded"] = True
 
-    # 2. Optional square rounding happens before range resize.
-    #    1426x1414 -> crop 1414x1414 -> round 1408x1408.
+    # square_round_to is crop/output normalization only; it never reclassifies
+    # an existing source and cannot turn exact 1800x1800 into 1792x1792.
     round_to = settings["square_round_to"]
-    if settings["square"] and w == h and round_to > 1 and w >= round_to:
+    if operations["cropped"] and w == h and round_to > 1 and w >= round_to:
         rounded_side = (w // round_to) * round_to
         if rounded_side > 0 and rounded_side != w:
             w = rounded_side
@@ -1736,7 +1839,7 @@ def project_dimensions(width: int, height: int, cfg: dict[str, Any]) -> tuple[in
             operations["rounded"] = True
             operations["rounded_to"] = round_to
 
-    # 3. Apply final range resize. Downscale above ideal; never upscale unless enabled.
+    # Existing SPLINED short-side range policy, always proportional.
     short_side = min(w, h)
     if short_side > ideal:
         scale = ideal / short_side
@@ -1755,18 +1858,23 @@ def project_dimensions(width: int, height: int, cfg: dict[str, Any]) -> tuple[in
 
 def project_candidate(c: Candidate, cfg: dict[str, Any], target: str) -> dict[str, Any]:
     settings = output_settings(cfg)
+    source_deviation = aspect_deviation(c.width, c.height)
+
     if settings["evaluate_final_image"]:
         width, height, ops = project_dimensions(c.width, c.height, cfg)
     else:
         width, height = c.width, c.height
         ops = {
-            "squared": width == height,
+            "squared": False,
             "cropped": False,
             "square_mode": "off",
             "rounded": False,
             "rounded_to": 0,
             "resized": False,
             "upscaled": False,
+            "aspect_deviation": source_deviation,
+            "square_equivalent": source_deviation <= SQUARE_EQUIVALENT_TOLERANCE,
+            "crop_guarded": False,
         }
 
     short_side = min(width, height)
@@ -1776,7 +1884,7 @@ def project_candidate(c: Candidate, cfg: dict[str, Any], target: str) -> dict[st
         "width": width,
         "height": height,
         "short_side": short_side,
-        "square": width == height,
+        "square": source_deviation <= SQUARE_EQUIVALENT_TOLERANCE,
         "format": target,
         "range_type": range_type,
         "distance": abs(short_side - ideal),
@@ -1789,6 +1897,10 @@ def project_candidate(c: Candidate, cfg: dict[str, Any], target: str) -> dict[st
         "rounded_to": int(ops.get("rounded_to", 0) or 0),
         "resized": bool(ops.get("resized", False)),
         "upscaled": bool(ops.get("upscaled", False)),
+        "aspect_deviation": source_deviation,
+        "aspect_ratio": aspect_ratio(c.width, c.height),
+        "square_equivalent": source_deviation <= SQUARE_EQUIVALENT_TOLERANCE,
+        "crop_guarded": bool(ops.get("crop_guarded", False)),
     }
 
 def target_format_for_candidate(c: Candidate, format_order: list[str]) -> str:
@@ -2546,7 +2658,7 @@ def run_scan_dir(
     mbcfg = section(cfg, "musicbrainz")
 
     root, library_root = resolve_scan_root(config_file, cfg, scan_words)
-    cache = resolve_path(config_file, str(scan.get("cache_dir", "cache")))
+    cache = runtime_cache_dir(config_file, cfg)
     ignored = [str(x) for x in library.get("ignored_subs", [])]
     fmt_order = formats(cfg)
     preserve = bool(output.get("preserve_file", True))
@@ -2554,12 +2666,13 @@ def run_scan_dir(
     samples_enabled = bool(samples_cfg.get("sample_write", True))
 
     output_settings(cfg)
-    cache.mkdir(parents=True, exist_ok=True)
+    _, history_dir = ensure_runtime_directories(config_file, cfg, cache)
+    prepare_run_cache(cache)
     sample_dir = prepare_samples(cache)
     discovered_albums, ignored_dirs = inventory(root, ignored)
 
     timeout_hours = scan_timeout_hours(cfg)
-    completion_path = scan_completion_history_path(cache)
+    completion_path = scan_completion_history_path(history_dir)
     completion_history = load_scan_completion_history(completion_path)
     completion_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2588,7 +2701,7 @@ def run_scan_dir(
         albums=len(discovered_albums),
         postponed=len(postponed_albums),
     )
-    history_path = source_history_path(cache)
+    history_path = source_history_path(history_dir)
     source_history = load_source_history(history_path)
     # Ensure persistent history folders exist before the first write.
     history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2674,6 +2787,7 @@ def run_scan_dir(
     print(f"  {cyan('Samples:'):14} {green('enabled') if samples_enabled else red('disabled')}")
     print(f"  {cyan('Cache:'):14} {white(str(cache))}")
     print(f"  {cyan('Sample Dir:'):14} {white(str(sample_dir))}")
+    print(f"  {cyan('History:'):14} {white(str(history_dir))}")
     if _DEBUG_ENABLED and _DEBUG_PATH is not None:
         print(f"  {cyan('Debug Log:'):14} {white(str(_DEBUG_PATH))}")
     print()
@@ -2693,7 +2807,7 @@ def run_scan_dir(
     )
     print(
         ljust_color(cyan("Timeout:"), 14)
-        + bracketed_text(format_timeout_hours(timeout_hours) + "h", green)
+        + bracketed_text(format_timeout_hours(timeout_hours) + ("" if timeout_hours <= 0 else "h"), green)
         + white(" completed-album reprocessing window")
     )
     print(ljust_color(cyan("Providers:"), 14) + bracketed_list(provider_list, green))
@@ -3251,7 +3365,7 @@ def run_release_discovery(config_file: Path, cfg: dict[str, Any], sources: list[
     if rel.release_group_id:
         print(f"Release Group MBID: {rel.release_group_id}")
 
-    cache = resolve_path(config_file, str(section(cfg, "scan").get("cache_dir", "cache")))
+    cache = runtime_cache_dir(config_file, cfg)
     fmt_order = formats(cfg)
     refs, diag = discover_all(http, config_file, cfg, rel, sources)
     candidates, download_diag = download_candidates(http, refs, sources, cache)
@@ -3288,10 +3402,11 @@ def run_scan_preview(
     ignored = [str(x) for x in library.get("ignored_subs", [])]
     albums, ignored_dirs = inventory(root, ignored)
 
-    cache = resolve_path(config_file, str(scan.get("cache_dir", "cache")))
+    cache = runtime_cache_dir(config_file, cfg)
+    history_dir = runtime_history_dir(config_file, cfg)
     timeout_hours = scan_timeout_hours(cfg)
     completion_history = load_scan_completion_history(
-        scan_completion_history_path(cache)
+        scan_completion_history_path(history_dir)
     )
 
     eligible = 0
@@ -3587,8 +3702,10 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     sources = section(cfg, "sources")
     output = section(cfg, "output")
 
-    cache = resolve_path(path, str(scan.get("cache_dir", "cache")))
-    cdir = resolve_path(path, str(credentials.get("credential_dir", "credentials")))
+    cache = runtime_cache_dir(path, cfg)
+    logs = runtime_log_dir(path, cfg)
+    history_dir = runtime_history_dir(path, cfg)
+    cdir = runtime_credential_dir(path, cfg)
     ignored = library.get("ignored_subs", [])
     ignored = ignored if isinstance(ignored, list) else []
 
@@ -3598,7 +3715,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     excluded = excluded if isinstance(excluded, list) else []
     fmts = formats(cfg)
 
-    history = load_source_history(source_history_path(cache))
+    history = load_source_history(source_history_path(history_dir))
 
     print("SPLINED artwork discovery and evaluation engine\n")
     print("Usage: splined [OPTIONS]\n")
@@ -3616,6 +3733,9 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      --config-edit", "Edit config.toml using micro")
     help_row("      Config File", green(f"[{path}]"))
     help_row("      Credential Directory", green(f"[{cdir}]"))
+    help_row("      Cache Directory", green(f"[{cache}]"))
+    help_row("      Log Directory", green(f"[{logs}]"))
+    help_row("      History Directory", green(f"[{history_dir}]"))
     print()
 
     print("System Modes:")
@@ -3775,6 +3895,8 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
 
 def print_config(path: Path, cfg: dict[str, Any]) -> None:
     scan=section(cfg,"scan"); lib=section(cfg,"library"); creds=section(cfg,"credentials"); out=section(cfg,"output")
+    logs = runtime_log_dir(path, cfg)
+    history_dir = runtime_history_dir(path, cfg)
     print(
         f"Config file: {path}\n"
         f"Config version: {cfg.get('config_version')}\n"
@@ -3783,13 +3905,15 @@ def print_config(path: Path, cfg: dict[str, Any]) -> None:
         f"Music library: {lib.get('music_library','')}\n"
         f"Scan directory: {scan.get('scan_library_dir','')}\n"
         f"Scan mode timeout: {format_timeout_hours(scan_timeout_hours(cfg))} hours\n"
-        f"Cache directory: {resolve_path(path,str(scan.get('cache_dir','cache')))}\n"
-        f"Credential directory: {resolve_path(path,str(creds.get('credential_dir','credentials')))}\n"
+        f"Cache directory: {runtime_cache_dir(path, cfg)}\n"
+        f"Log directory: {logs}\n"
+        f"History directory: {history_dir}\n"
+        f"Credential directory: {runtime_credential_dir(path, cfg)}\n"
         f"Square output: {out.get('square', False)}\n"
         f"Square mode: {out.get('square_mode', 'crop' if out.get('square', False) else 'off')}\n"
         f"Square round to: {out.get('square_round_to', 0)}\n"
         f"Evaluate final image: {out.get('evaluate_final_image', out.get('square', False))}\n"
-        f"Debug log: {resolve_path(path, str(scan.get('cache_dir', 'cache'))) / 'debug' / 'splined_debug.log'}"
+        f"Debug log: {logs / 'splined_debug.log'}"
     )
 
 
@@ -3831,6 +3955,9 @@ def main() -> int:
     if args.idle: return idle()
     try:
         path,cfg=load_config()
+        scan_cfg = section(cfg, "scan")
+        runtime_cache = runtime_cache_dir(path, cfg)
+        ensure_runtime_directories(path, cfg, runtime_cache)
         init_debug_log(path, cfg)
         if args.preserve_file is not None: section(cfg,"output")["preserve_file"] = args.preserve_file=="true"
         if args.help or len(sys.argv)==1: print_help(path,cfg); return 0
