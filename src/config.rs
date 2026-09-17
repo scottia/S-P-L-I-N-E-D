@@ -655,8 +655,7 @@ mod tests {
         assert_eq!(config.scan.cache_dir, root.join("_cache").to_string_lossy());
         assert_eq!(
             config.credentials.credential_dir,
-            root.join("credentials")
-                .to_string_lossy()
+            root.join("credentials").to_string_lossy()
         );
         assert_eq!(
             config.lastfm.credential_file,
