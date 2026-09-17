@@ -638,225 +638,11 @@ jobs:
           path: release-assets/splined-windows-x86_64.zip
           if-no-files-found: error
 
-  docker-release:
-    name: Release — Docker
-    needs:
-      - release-preflight
-    runs-on: ubuntu-latest
-
-    env:
-      IMAGE_NAME: scottia/splined
-      RELEASE_VERSION: ${{ needs.release-preflight.outputs.tag }}
-
-    steps:
-      - name: Checkout exact tagged source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.release-preflight.outputs.commit }}
-
-      - name: Verify exact release commit
-        shell: bash
-        env:
-          EXPECTED_COMMIT: ${{ needs.release-preflight.outputs.commit }}
-        run: |
-          set -euo pipefail
-
-          ACTUAL_COMMIT=$(git rev-parse HEAD)
-
-          echo "Expected commit: $EXPECTED_COMMIT"
-          echo "Actual commit:   $ACTUAL_COMMIT"
-
-          if [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
-            echo "ERROR: Docker checkout does not match the release tag commit."
-            exit 1
-          fi
-
-      - name: Verify Python release metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import os
-          import re
-
-          expected = os.environ["RELEASE_VERSION"]
-          source = Path("python/splined.py").read_text(encoding="utf-8")
-
-          version_match = re.search(
-              r'^VERSION = "([^"]+)"$',
-              source,
-              re.MULTILINE,
-          )
-          if not version_match:
-              raise SystemExit("VERSION declaration not found")
-
-          actual = version_match.group(1)
-          if actual != expected:
-              raise SystemExit(
-                  f"Python VERSION mismatch: expected={expected}, actual={actual}"
-              )
-
-          expected_user_agent = (
-              f'SPLINED/{expected} '
-              '(https://github.com/scottia/S-P-L-I-N-E-D)'
-          )
-
-          user_agent_match = re.search(
-              r'^USER_AGENT = "([^"]+)"$',
-              source,
-              re.MULTILINE,
-          )
-          if not user_agent_match:
-              raise SystemExit("USER_AGENT declaration not found")
-
-          if user_agent_match.group(1) != expected_user_agent:
-              raise SystemExit(
-                  "Production USER_AGENT does not match release metadata"
-              )
-
-          print(f"Python version: {actual}")
-          print(f"User-Agent: {expected_user_agent}")
-          PY
-
-          python3 -m py_compile python/splined.py
-
-      - name: Build release image
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          docker build --pull \
-            --tag "$IMAGE_NAME:release-candidate" \
-            ./python
-
-      - name: Verify container version
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ACTUAL=$(
-            docker run --rm "$IMAGE_NAME:release-candidate" -V \
-              | tr -d '\r'
-          )
-          EXPECTED="SPLINED $RELEASE_VERSION"
-
-          echo "Expected: $EXPECTED"
-          echo "Actual:   $ACTUAL"
-
-          if [ "$ACTUAL" != "$EXPECTED" ]; then
-            echo "ERROR: Docker release image version mismatch."
-            exit 1
-          fi
-
-      - name: Log in to Docker Hub
-        shell: bash
-        env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [ -z "${DOCKERHUB_TOKEN:-}" ]; then
-            echo "ERROR: DOCKERHUB_TOKEN repository secret is not configured."
-            exit 1
-          fi
-
-          printf '%s' "$DOCKERHUB_TOKEN" \
-            | docker login \
-                --username scottia \
-                --password-stdin
-
-      - name: Push numbered and latest tags
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          docker tag \
-            "$IMAGE_NAME:release-candidate" \
-            "$IMAGE_NAME:$RELEASE_VERSION"
-
-          docker tag \
-            "$IMAGE_NAME:release-candidate" \
-            "$IMAGE_NAME:latest"
-
-          docker push "$IMAGE_NAME:$RELEASE_VERSION"
-          docker push "$IMAGE_NAME:latest"
-
-      - name: Verify published Docker digests
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          VERSION_INFO=$(
-            docker buildx imagetools inspect \
-              "$IMAGE_NAME:$RELEASE_VERSION"
-          )
-
-          LATEST_INFO=$(
-            docker buildx imagetools inspect \
-              "$IMAGE_NAME:latest"
-          )
-
-          echo "$VERSION_INFO"
-          echo
-          echo "$LATEST_INFO"
-          echo
-
-          VERSION_DIGEST=$(
-            printf '%s\n' "$VERSION_INFO" \
-              | awk '/^Digest:/ {print $2; exit}'
-          )
-
-          LATEST_DIGEST=$(
-            printf '%s\n' "$LATEST_INFO" \
-              | awk '/^Digest:/ {print $2; exit}'
-          )
-
-          if [ -z "$VERSION_DIGEST" ] || [ -z "$LATEST_DIGEST" ]; then
-            echo "ERROR: Could not resolve published Docker digest."
-            exit 1
-          fi
-
-          if [ "$VERSION_DIGEST" != "$LATEST_DIGEST" ]; then
-            echo "ERROR: Numbered and latest Docker tags differ."
-            echo "Version digest: $VERSION_DIGEST"
-            echo "Latest digest:  $LATEST_DIGEST"
-            exit 1
-          fi
-
-          mkdir -p release-assets
-
-          cat > release-assets/DOCKER_IMAGE.txt <<EOF
-          S:P:L:I:N:E:D Docker release
-
-          Image: $IMAGE_NAME
-          Version tag: $IMAGE_NAME:$RELEASE_VERSION
-          Latest tag: $IMAGE_NAME:latest
-          Digest: $VERSION_DIGEST
-          Immutable reference: $IMAGE_NAME@$VERSION_DIGEST
-          EOF
-
-          cat release-assets/DOCKER_IMAGE.txt
-
-      - name: Upload Docker release metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: splined-docker-metadata
-          path: release-assets/DOCKER_IMAGE.txt
-          if-no-files-found: error
-
-      - name: Log out of Docker Hub
-        if: always()
-        shell: bash
-        run: docker logout || true
-
   publish:
     name: Publish — ${{ needs.release-preflight.outputs.tag }}
     needs:
       - release-preflight
       - build-release-windows
-      - docker-release
 
     runs-on: ubuntu-latest
 
@@ -871,13 +657,12 @@ jobs:
           pattern: splined-*
           merge-multiple: true
 
-      - name: Verify release artifacts and create checksum
+      - name: Verify Windows release artifact and create checksum
         shell: bash
         run: |
           set -euo pipefail
 
           test -f release-assets/splined-windows-x86_64.zip
-          test -f release-assets/DOCKER_IMAGE.txt
 
           (
             cd release-assets
@@ -911,7 +696,7 @@ jobs:
               --generate-notes
           fi
 
-      - name: Upload Windows archive, checksum, and Docker metadata
+      - name: Upload Windows archive and checksum
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -922,7 +707,6 @@ jobs:
           gh release upload "$RELEASE_TAG" \
             release-assets/splined-windows-x86_64.zip \
             release-assets/SHA256SUMS.txt \
-            release-assets/DOCKER_IMAGE.txt \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
