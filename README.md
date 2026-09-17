@@ -58,7 +58,7 @@ Current provider support includes:
 - 🔵 Deezer
 - 🟠 Discogs
 
-Sources can be reordered or excluded in the config.
+Sources can be reordered or excluded in the config. The entered \<config> order does not imply the actual source order when the \<source> (s) are queried.
 
 ---
 
@@ -89,7 +89,7 @@ When enabled, each resolved album gets one selected sample:
 Example:
 
 ```text
-10,000 Maniacs.Our Time in Eden.sample.jpg
+<artists>.<album>.sample.jpg
 ```
 
 Samples are stored under:
@@ -161,7 +161,7 @@ S:P:L:I:N:E:D separates disposable runtime data from persistent state.
 | Cache | `/_cache` | Disposable; cleared/prepared for each operational scan |
 | Samples | `/_cache/samples` | Disposable; recreated for the current scan |
 | Logs | `/_logs` | Persistent |
-| History | `/logs/_history` | Persistent |
+| History | `/_logs/_history` | Persistent |
 
 The current persistent history files include:
 
