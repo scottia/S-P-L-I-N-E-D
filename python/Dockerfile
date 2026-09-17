@@ -22,6 +22,7 @@ RUN python3 -m py_compile /app/splined.py /app/splined_scan.py \
     && chmod 0555 /app/splined.py /app/splined_scan.py \
     && ln -s /app/splined_scan.py /usr/local/bin/splined
 
+# Persistent runtime data; history lives under /_logs/_history.
 VOLUME ["/config", "/music", "/_cache", "/_logs", "/credentials"]
 
 ENTRYPOINT ["python3", "/app/splined_scan.py"]
