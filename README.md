@@ -45,6 +45,12 @@ Choose the installation method that matches where S:P:L:I:N:E:D will run.
 
 Portable users should download the appropriate archive from the [latest GitHub release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest), extract it into the final application directory, and run the included setup launcher. Each release archive includes its platform-specific installation instructions.
 
+Docker image:
+
+```text
+ghcr.io/scottia/splined:latest
+```
+
 Docker users should start with the [Docker installation guide](docker/README.md) for the minimal Compose example, persistent mounts, container paths, and basic usage.
 
 ---
