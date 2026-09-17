@@ -20,7 +20,7 @@ RUN python3 -m py_compile /app/splined.py /app/splined_scan.py \
     && chmod 0555 /app/splined.py /app/splined_scan.py \
     && ln -s /app/splined_scan.py /usr/local/bin/splined
 
-VOLUME ["/config", "/music", "/cache", "/credentials"]
+VOLUME ["/config", "/music", "/_cache", "/_logs", "/logs/_history", "/credentials"]
 
 ENTRYPOINT ["python3", "/app/splined_scan.py"]
 CMD ["--idle"]
