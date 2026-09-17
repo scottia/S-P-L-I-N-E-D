@@ -1,0 +1,134 @@
+name: Publish GHCR Image
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+  push:
+    branches:
+      - release/v1.0.2-dev
+    paths:
+      - .github/workflows/ghcr-publish.yml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: splined-ghcr-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/scottia/splined
+
+jobs:
+  publish:
+    name: Build, verify, and publish GHCR image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve and verify version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION=$(python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import tomllib
+
+          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8-sig"))
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+          match = re.search(r'^VERSION = "([^"]+)"$', source, re.MULTILINE)
+          if not match:
+              raise SystemExit("VERSION declaration not found in python/splined.py")
+
+          cargo_version = cargo["package"]["version"]
+          python_version = match.group(1)
+          if cargo_version != python_version:
+              raise SystemExit(
+                  f"Rust/Python version mismatch: Cargo.toml={cargo_version}, Python={python_version}"
+              )
+
+          print(python_version)
+          PY
+          )
+
+          RELEASE_TAG="v${VERSION}"
+
+          if [ "${{ github.event_name }}" = "release" ] && [ "${{ github.event.release.tag_name }}" != "$RELEASE_TAG" ]; then
+            echo "ERROR: GitHub release tag must match source version: $RELEASE_TAG"
+            echo "Received: ${{ github.event.release.tag_name }}"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "SPLINED version: $VERSION"
+          echo "Container tags: latest, $RELEASE_TAG"
+
+      - name: Log in to GitHub Container Registry
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build image
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --tag "$IMAGE_NAME:latest" \
+            --tag "$IMAGE_NAME:$RELEASE_TAG" \
+            ./python
+
+      - name: Verify built image
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ACTUAL=$(docker run --rm "$IMAGE_NAME:latest" -V | tr -d '\r')
+          EXPECTED="SPLINED $VERSION"
+
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "ERROR: Container image version verification failed."
+            exit 1
+          fi
+
+      - name: Publish image tags
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_NAME:$RELEASE_TAG"
+          docker push "$IMAGE_NAME:latest"
+
+      - name: Publish summary
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          {
+            echo "## GHCR package published"
+            echo
+            echo "- \`$IMAGE_NAME:$RELEASE_TAG\`"
+            echo "- \`$IMAGE_NAME:latest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
