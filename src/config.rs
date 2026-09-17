@@ -19,7 +19,7 @@ pub const SUPPORTED_COVER_SOURCES: [&str; 6] = [
 // the compiled application.
 pub const DEFAULT_MUSIC_LIBRARY: &str = "";
 pub const DEFAULT_SCAN_LIBRARY_DIR: &str = "";
-pub const DEFAULT_CACHE_DIR: &str = "cache";
+pub const DEFAULT_CACHE_DIR: &str = "_cache";
 pub const DEFAULT_SAMPLE_DIR: &str = DEFAULT_CACHE_DIR;
 pub const DEFAULT_CREDENTIAL_DIR: &str = "credentials";
 pub const DEFAULT_IGNORED_SUBS: [&str; 0] = [];
@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(config.verbosity, Verbosity::Info);
         assert!(config.scan.scan_mode);
         assert!(!config.scan.library_scan);
-        assert_eq!(config.scan.cache_dir, "cache");
+        assert_eq!(config.scan.cache_dir, "_cache");
         assert!(config.scan.scan_library_dir.is_empty());
         assert!(config.library.music_library.is_empty());
         assert!(config.library.ignored_subs.is_empty());
@@ -591,7 +591,7 @@ mod tests {
 
         assert!(!text.contains("[read]"));
         assert!(text.contains("[splineai]"));
-        assert_eq!(parsed.scan.cache_dir, "cache");
+        assert_eq!(parsed.scan.cache_dir, "_cache");
         assert_eq!(parsed.credentials.credential_dir, "credentials");
         assert!(!parsed.splineai.enabled);
         assert!(parsed.splineai.endpoint.is_empty());
@@ -652,7 +652,7 @@ mod tests {
 
         resolve_runtime_paths(&mut config, root);
 
-        assert_eq!(config.scan.cache_dir, root.join("cache").to_string_lossy());
+        assert_eq!(config.scan.cache_dir, root.join("_cache").to_string_lossy());
         assert_eq!(
             config.credentials.credential_dir,
             root.join("credentials")
