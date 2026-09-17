@@ -10,6 +10,7 @@ on:
       - release/v1.0.2-dev
     paths:
       - .github/workflows/ghcr-publish.yml
+      - python/**
 
 permissions:
   contents: read
