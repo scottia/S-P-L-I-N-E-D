@@ -203,7 +203,7 @@ services:
       - /path/to/music:/music:rw
       - /path/to/splined/_cache:/_cache:rw
       - /path/to/splined/_logs:/_logs:rw
-      - /path/to/splined/_logs/_history:/logs/_history:rw
+      - /path/to/splined/_logs/_history:/_logs/_history:rw
       - /path/to/splined/config:/config:rw
       - /path/to/splined/credentials:/credentials:rw
 ```
@@ -237,7 +237,7 @@ credential_dir = "/credentials"
 | `/config` | `config.toml` | `rw` |
 | `/_cache` | Disposable candidate/cache data and samples | `rw` |
 | `/_logs` | Persistent log files | `rw` |
-| `/logs/_history` | Persistent completion/source/bypass history | `rw` |
+| `/_logs/_history` | Persistent completion/source/bypass history | `rw` |
 | `/credentials` | Provider credential JSON files | `rw` |
 
 If S:P:L:I:N:E:D will only run in Read mode, mounting the library read-only is a useful additional safeguard:
@@ -318,7 +318,7 @@ docker run --rm \
   -v /path/to/music:/music:rw \
   -v /path/to/splined/_cache:/_cache:rw \
   -v /path/to/splined/_logs:/_logs:rw \
-  -v /path/to/splined/_logs/_history:/logs/_history:rw \
+  -v /path/to/splined/_logs/_history:/_logs/_history:rw \
   -v /path/to/splined/config:/config:rw \
   -v /path/to/splined/credentials:/credentials:rw \
   scottia/splined:latest -V
