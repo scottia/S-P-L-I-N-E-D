@@ -17,15 +17,19 @@ FRESH INSTALL
 
    chmod +x ./setup-splined
 
-3. SPLINED creates the permanent executable and portable data layout:
+3. SPLINED creates the permanent executable and application-owned layout:
 
    ./splined
    config/config.toml
-   cache/samples/
    credentials/
+   docker_builds/
+   _cache/samples/
+   _logs/_history/
 
    The credentials directory starts empty. SPLINED does not import an old
    OS-level configuration or credentials into a fresh portable install.
+
+   _cache is disposable runtime data. Logs and history are kept under _logs.
 
 4. After setup succeeds, the temporary release files are removed:
 
@@ -52,11 +56,13 @@ UPGRADE AN EXISTING PORTABLE INSTALL
 
    If replacement fails, setup attempts to restore the previous executable.
 
-4. Existing portable data is preserved and is not replaced by setup:
+4. Persistent application data is preserved and is not replaced by setup:
 
    config/
-   cache/
    credentials/
+   _logs/
+
+   _cache is disposable and is recreated as needed by scan operations.
 
 5. After a successful upgrade, setup-splined and README-LINUX.txt are
    removed from the application directory.
@@ -71,8 +77,11 @@ FINAL PORTABLE LAYOUT
    splined
    config/
       config.toml
-   cache/
-      samples/
    credentials/
+   docker_builds/
+   _cache/
+      samples/
+   _logs/
+      _history/
 
 No executable rename is required.
