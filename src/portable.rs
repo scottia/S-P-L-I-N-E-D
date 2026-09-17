@@ -12,22 +12,30 @@ pub struct AppLayout {
     pub config_file: PathBuf,
     pub cache_dir: PathBuf,
     pub samples_dir: PathBuf,
+    pub logs_dir: PathBuf,
+    pub history_dir: PathBuf,
     pub credentials_dir: PathBuf,
+    pub docker_builds_dir: PathBuf,
 }
 
 impl AppLayout {
     pub fn from_root(root: PathBuf) -> Self {
         let config_dir = root.join("config");
-        let cache_dir = root.join("cache");
+        let cache_dir = root.join("_cache");
+        let logs_dir = root.join("_logs");
         let credentials_dir = root.join("credentials");
+        let docker_builds_dir = root.join("docker_builds");
 
         Self {
             config_file: config_dir.join("config.toml"),
             samples_dir: cache_dir.join("samples"),
+            history_dir: logs_dir.join("_history"),
             root,
             config_dir,
             cache_dir,
+            logs_dir,
             credentials_dir,
+            docker_builds_dir,
         }
     }
 }
@@ -237,7 +245,8 @@ fn finish_setup_executable() -> Result<(), String> {
         println!("Permanent executable:");
         println!("  {}", final_exe.display());
         println!();
-        println!("Existing config, cache, and credentials were preserved.");
+        println!("Existing config, credentials, logs, and history were preserved.");
+        println!("Disposable cache is recreated as needed by scan operations.");
         println!("Temporary setup files are removed automatically.");
         println!();
         println!("Use this executable for future SPLINED launches.");
@@ -265,7 +274,10 @@ fn create_owned_directories(layout: &AppLayout) -> Result<(), String> {
         &layout.config_dir,
         &layout.cache_dir,
         &layout.samples_dir,
+        &layout.logs_dir,
+        &layout.history_dir,
         &layout.credentials_dir,
+        &layout.docker_builds_dir,
     ] {
         fs::create_dir_all(path).map_err(|error| {
             format!(
@@ -338,9 +350,12 @@ mod tests {
         let layout = AppLayout::from_root(root.clone());
 
         assert_eq!(layout.config_file, root.join("config").join("config.toml"));
-        assert_eq!(layout.cache_dir, root.join("cache"));
-        assert_eq!(layout.samples_dir, root.join("cache").join("samples"));
+        assert_eq!(layout.cache_dir, root.join("_cache"));
+        assert_eq!(layout.samples_dir, root.join("_cache").join("samples"));
+        assert_eq!(layout.logs_dir, root.join("_logs"));
+        assert_eq!(layout.history_dir, root.join("_logs").join("_history"));
         assert_eq!(layout.credentials_dir, root.join("credentials"));
+        assert_eq!(layout.docker_builds_dir, root.join("docker_builds"));
     }
 
     #[test]
@@ -365,7 +380,10 @@ mod tests {
             DEFAULT_CONFIG
         );
         assert!(layout.samples_dir.is_dir());
+        assert!(layout.logs_dir.is_dir());
+        assert!(layout.history_dir.is_dir());
         assert!(layout.credentials_dir.is_dir());
+        assert!(layout.docker_builds_dir.is_dir());
         assert_eq!(fs::read_dir(&layout.credentials_dir).unwrap().count(), 0);
 
         fs::write(&layout.config_file, "custom").unwrap();
@@ -406,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_executable_upgrades_program_without_touching_portable_data() {
+    fn setup_executable_upgrades_program_without_touching_persistent_data() {
         let dir = TempDir::new().unwrap();
         let layout = AppLayout::from_root(dir.path().to_path_buf());
         create_owned_directories(&layout).unwrap();
@@ -417,10 +435,14 @@ mod tests {
         fs::write(&setup, b"new executable").unwrap();
         fs::write(&installed, b"old executable").unwrap();
         fs::write(&layout.config_file, b"custom portable config").unwrap();
-        fs::write(layout.cache_dir.join("candidate.jpg"), b"existing cache").unwrap();
         fs::write(
             layout.credentials_dir.join("lastfm.json"),
             b"existing credential",
+        )
+        .unwrap();
+        fs::write(
+            layout.history_dir.join("scan-completed-history.json"),
+            b"existing history",
         )
         .unwrap();
 
@@ -435,12 +457,12 @@ mod tests {
             b"custom portable config"
         );
         assert_eq!(
-            fs::read(layout.cache_dir.join("candidate.jpg")).unwrap(),
-            b"existing cache"
-        );
-        assert_eq!(
             fs::read(layout.credentials_dir.join("lastfm.json")).unwrap(),
             b"existing credential"
+        );
+        assert_eq!(
+            fs::read(layout.history_dir.join("scan-completed-history.json")).unwrap(),
+            b"existing history"
         );
         assert!(setup.is_file());
     }
