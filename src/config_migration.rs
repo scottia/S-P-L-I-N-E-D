@@ -160,7 +160,7 @@ fn legacy_sample_cache_root(sample_dir: &str) -> String {
     let lower = trimmed.to_ascii_lowercase();
 
     if matches!(lower.as_str(), "sample" | "samples" | "_sample_covers") {
-        return "cache".to_string();
+        return "_cache".to_string();
     }
 
     for suffix in [
@@ -173,7 +173,7 @@ fn legacy_sample_cache_root(sample_dir: &str) -> String {
             let parent_len = trimmed.len().saturating_sub(suffix.len());
             let parent = &trimmed[..parent_len];
             return if parent.is_empty() {
-                "cache".to_string()
+                "_cache".to_string()
             } else {
                 parent.to_string()
             };
@@ -347,7 +347,7 @@ ladder = 3600
         let migrated = std::fs::read_to_string(&path).expect("migrated config should read");
         let parsed = parse_config(&migrated).expect("migrated config should parse");
 
-        assert_eq!(parsed.scan.cache_dir, "cache");
+        assert_eq!(parsed.scan.cache_dir, "_cache");
         assert!(!migrated.contains("[read]"));
     }
 
