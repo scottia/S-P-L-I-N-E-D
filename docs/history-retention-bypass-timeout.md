@@ -3,8 +3,6 @@
 This page explains the persistent execution-state model used by S:P:L:I:N:E:D and how the Windows GUI derives album/artist status from the same authority used by the scanner.
 
 > **Windows target:** v3.0.0 Stable with Config v5.
->
-> **Repository note:** exact Config v5 field names should be verified against the finalized Windows source when it is integrated. The behavior below is the intended public contract.
 
 ---
 
@@ -371,7 +369,7 @@ History/bypass updates should not:
 
 # Related documentation
 
-- [Media Filter and status colors](media-filter-status-colors.md)
+- [Select Media and status colors](media-filter-status-colors.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Installation and first run](installation-first-run.md)
-- [Backup and portable layout](backup-portable-layout.md) *(planned)*
+- [Installation and first run](installation-first-run.md)

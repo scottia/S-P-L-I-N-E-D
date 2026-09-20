@@ -1,94 +1,75 @@
-S:P:L:I:N:E:D — macOS SETUP
-========================================
-
-SEARCHABLE:PIXEL:LINKS:IDENTIFIED:NORMALIZED:ENRICHED:DEFINED
+S:P:L:I:N:E:D — macOS PORTABLE
+=========================================
 
 FRESH INSTALL
 -------------
 
-1. Extract the entire archive into the final directory where you want
-   SPLINED to live.
+1. Extract the complete archive into the final directory where SPLINED will
+   live.
 
-2. Run:
+2. Restore executable permission if necessary:
 
-   ./setup-splined
+   chmod +x ./splined
 
-   If executable permission needs to be restored:
+3. Run SPLINED directly:
 
-   chmod +x ./setup-splined
+   ./splined --help
 
-3. SPLINED creates the permanent executable and application-owned layout:
-
-   ./splined
-   config/config.toml
-   credentials/
-   docker_builds/
-   _cache/samples/
-   _logs/_history/
-
-   The credentials directory starts empty. SPLINED does not import an old
-   OS-level configuration or credentials into a fresh portable install.
-
-   _cache is disposable runtime data. Logs and history are kept under _logs.
-
-4. After setup succeeds, the temporary release files are removed:
-
-   ./setup-splined
-   README-MACOS.txt
-
-5. For all future launches, use:
-
-   ./splined
-
-
-UPGRADE AN EXISTING PORTABLE INSTALL
-------------------------------------
-
-1. Extract the new archive into the existing SPLINED application directory.
-
-2. Run:
-
-   ./setup-splined
-
-3. Setup stages and replaces the permanent program executable:
-
-   ./splined
-
-   If replacement fails, setup attempts to restore the previous executable.
-
-4. Persistent application data is preserved and is not replaced by setup:
-
-   config/
-   credentials/
-   _logs/
-
-   _cache is disposable and is recreated as needed by scan operations.
-
-5. After a successful upgrade, setup-splined and README-MACOS.txt are
-   removed from the application directory.
-
-SPLINED does not automatically discover, import, or move another SPLINED
-installation. Move or copy portable data manually when changing directories.
-
-
-macOS SECURITY
---------------
-
-Because SPLINED is distributed directly, macOS may require first-run
-approval in Privacy & Security before allowing the executable to run.
-
-
-FINAL PORTABLE LAYOUT
----------------------
+4. SPLINED creates and uses its application-owned layout as required:
 
    splined
    config/
       config.toml
    credentials/
-   docker_builds/
    _cache/
       samples/
    _logs/
       _history/
 
-No executable rename is required.
+The native portable runtime may also create docker_builds/ for local container
+build artifacts. It is not required for normal scanning.
+
+No setup launcher or executable rename is required.
+
+
+UPGRADE AN EXISTING PORTABLE INSTALL
+------------------------------------
+
+1. Stop SPLINED.
+
+2. Back up these persistent locations:
+
+   config/
+   credentials/
+   _logs/
+
+   If history has been configured elsewhere, back up that location too.
+
+3. Extract the new application files into the existing directory, replacing
+   the program files while preserving the persistent locations above.
+
+4. Restore executable permission when needed and run:
+
+   chmod +x ./splined
+   ./splined --help
+
+_cache/ is disposable and is recreated as needed.
+
+SPLINED does not automatically discover, import, or move another portable
+installation. Copy persistent data deliberately when changing directories.
+
+
+macOS SECURITY
+--------------
+
+Because SPLINED is distributed directly, macOS may require first-run approval
+in Privacy & Security before allowing the executable to run.
+
+
+SAFETY
+------
+
+Write mode changes files in album directories. Test with a backup, snapshot,
+copy, or staging library first.
+
+Credential JSON files may contain secrets. Do not publish or commit them.

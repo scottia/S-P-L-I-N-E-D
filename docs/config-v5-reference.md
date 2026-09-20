@@ -1,136 +1,159 @@
 # Config v5 Reference — Windows GUI v3.0.0 Stable
 
-This page documents the **Windows GUI Config v5 contract** for S:P:L:I:N:E:D v3.0.0 Stable.
+This page documents the finalized Windows Config v5 contract. The complete,
+secret-free example is [`config.example.toml`](../config.example.toml).
 
-> **Important:** the repository currently still contains an older Config v4 example used by the existing root/Python-side code. Do **not** treat `config.example.toml` as the final Windows v3.0.0 Config v5 schema until the finalized Windows source is integrated and the repository example is updated.
-
-Config schema version and application version are separate concepts:
+Application release and configuration schema versions are separate:
 
 ```text
 Windows GUI release: 3.0.0 Stable
-Windows config schema: 5
+Windows schema:      Config v5
 ```
 
-The Python/Docker implementation has its own release/version state and may temporarily use a different config schema during synchronization.
+The Python/Docker runtime remains separately supported and currently uses
+Config v4. Use [`docker/config.example.toml`](../docker/config.example.toml)
+for that runtime.
 
----
+## Location and path rules
 
-## Core principles
-
-Config v5 follows these rules:
-
-1. **Portable by default.** Application-owned paths remain relative to the SPLINED application root unless explicitly configured otherwise.
-2. **Credentials are separate from configuration.** `config.toml` identifies the credential directory; secrets remain in provider credential files.
-3. **GUI-only preferences are separate.** Appearance/UI state such as System/Light/Dark belongs in GUI-local UI settings rather than the main operational config.
-4. **Global policy remains the default.** Per-source policy is opt-in through Source Override.
-5. **Range Type is authoritative.** Advanced numeric source constraints refine the policy rather than replacing the global Range Type model.
-6. **History/bypass/timeout state is runtime authority, not decoration.** The GUI derives tree state from the same execution authority.
-7. **Backward compatibility should be deliberate.** Old/legacy fields may be accepted for migration, but Config v5 should not emit obsolete provider credential filename references.
-
----
-
-# File location
-
-Portable Windows installations use an application-owned configuration directory:
+The portable Windows default is:
 
 ```text
 SPLINED/
 ├── splined.exe
-└── config/
-    └── config.toml
+├── config/
+│   ├── config.toml
+│   └── ui.toml
+├── credentials/
+├── _cache/
+└── _logs/
+    └── _history/
 ```
 
-The main file is:
+Relative runtime paths are resolved from the SPLINED application directory.
+External, NAS, and UNC paths remain absolute. An optional `config.location`
+file stores the configured config path without moving credential data into the
+main config.
 
-```text
-config/config.toml
-```
+## General settings
 
-The GUI is the preferred editor for Config v5.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `config_version` | `5` | Operational schema version |
+| `mode` | `"read"` | `read` evaluates; `write` may install artwork |
+| `verbosity` | `"info"` | Runtime logging verbosity |
 
-When manually editing TOML, validate the file before a production run.
+## `[library]`
 
----
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `music_library` | empty | Main media-library root |
+| `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans |
 
-# Config version
+## `[scan]`
 
-The file identifies its schema version:
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `scan_library_dir` | empty | Configured scan target |
+| `scan_mode` | `true` | Enables configured scan-directory behavior |
+| `library_scan` | `false` | Enables full-library scanning |
+| `scan_mode_timeout` | `24` | Hours before completed albums are eligible again; `0` disables timeout |
+| `cache_dir` | `"_cache"` | Disposable candidate/sample cache |
+| `log_dir` | `"_logs"` | Diagnostic log location |
+| `history_dir` | `"_logs/_history"` | Completion, chosen-source, bypass, and timeout authority |
 
-```toml
-config_version = 5
-```
+## `[output]`
 
-Do not change this value to match the application release number.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `file_name` | `"cover"` | Output filename stem, without path or extension |
+| `file_formats` | JPEG, PNG, WebP | Enabled formats in preference order |
+| `preserve_file` | `true` | Preserve existing artwork according to current replacement policy |
+| `square` | `true` | Enable square output policy |
+| `square_mode` | `"crop"` | `crop` or `off` |
+| `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
+| `upscale_below_ideal` | `false` | Permit enlargement below Ideal |
+| `evaluate_final_image` | `true` | Rank the image SPLINED would actually write |
 
----
+WebP source artwork is preserved by the local-artwork policy. When better
+static artwork replaces a matching JPEG/PNG cover, SPLINED avoids accumulating
+numbered copies and removes the matching obsolete static cover according to the
+active replacement rules.
 
-# General behavior
+## `[range]`
 
-Config v5 retains the core operational concepts used throughout SPLINED:
+Artwork is classified by its short side.
 
-- Read / Write behavior
-- logging verbosity
-- scan configuration
-- media library path
-- ignored/excluded directories
-- sample/cache behavior
-- credential directory
-- output formats
-- artwork geometry/output policy
-- global artwork Resolution Range
-- enabled artwork sources
-- per-source policies
-- history / retention / bypass / timeout behavior
+| Key | Default |
+| --- | ---: |
+| `min` | 1200 |
+| `ideal` | 1800 |
+| `max` | 2400 |
+| `ladder` | 3600 |
 
-Exact table/key names for the finalized Windows-specific additions should be verified against the v3.0.0 source at repository integration time. This page documents the public behavior that the final schema must preserve.
+| Range Type | Default short side |
+| --- | ---: |
+| `BelowMinimum` | below 1200 |
+| `LowerRange` | 1200–1799 |
+| `Ideal` | 1800 |
+| `UpperRange` | 1801–2400 |
+| `Ladder` | 2401–3600 |
+| `AboveLadder` | above 3600 |
 
----
+The required ordering is `min < ideal <= max < ladder`.
 
-# Credential directory
+## `[sources]`
 
-Config v5 stores the credential **directory**, not provider secrets.
+`cover_sources` stores artwork-source priority. Supported artwork sources are
+Deezer, iTunes, Fanart.tv, Last.fm, Cover Art Archive, and Discogs.
+`exclude_cover_sources` disables listed artwork sources without changing
+their saved priority.
 
-Conceptually:
+MusicBrainz is metadata authority and is not added to `cover_sources`.
 
-```toml
-[credentials]
-credential_dir = "credentials"
-```
+## `[source_policies.<provider>]`
 
-Provider credentials live beneath that directory.
+Config v5 supports source policies for every artwork provider and MusicBrainz.
 
-Typical portable layout:
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | derived/enabled | Whether the source may be used |
+| `source_override` | `false` | Activates saved provider-specific policy |
+| `minimum_range_type` | `"LowerRange"` | Minimum normal artwork range |
+| `allow_below_minimum_fallback` | `false` | Allows only the adjacent lower range as fallback |
+| `minimum_short_side` | absent | Optional explicit short-side minimum |
+| `maximum_short_side` | absent | Optional explicit short-side maximum |
+| `minimum_width` | absent | Optional explicit width minimum |
+| `minimum_height` | absent | Optional explicit height minimum |
+| `primary_image_only` | `true` | Uses provider primary/front metadata where available |
 
-```text
-credentials/
-├── musicbrainz.json
-├── lastfm.json
-├── fanarttv.json
-├── discogs.json
-└── ...
-```
+Artwork-specific fields are not written for MusicBrainz. Its policy contains
+only `enabled` and `source_override`.
 
-Config v5 should not require normal users to specify provider filenames such as:
+When Source Override is off, the source uses the global range. Saved custom
+policy values remain available and are not erased. When fallback is on, only
+the single range immediately below the configured minimum becomes a fallback;
+it does not become a normally accepted range.
 
-```text
-credential_file = "lastfm.json"
-credential_file = "fanarttv.json"
-token_file = "musicbrainz.json"
-```
+See [Source policies and Range Types](source-policies-range-types.md).
 
-Standard provider filenames should resolve internally beneath the configured credential directory unless an intentionally supported backward-compatible override exists.
+## `[samples]`
 
-Secrets, OAuth tokens, refresh tokens, API keys, and client secrets must never be committed to source control.
+`sample_write = true` writes review samples beneath the configured cache.
 
----
+## `[credentials]`
 
-# MusicBrainz credential/runtime options
+`credential_dir = "credentials"` is the only normal credential setting in
+Config v5. Standard provider JSON names are resolved internally beneath that
+directory.
 
-MusicBrainz authentication data and MusicBrainz runtime options are logically separate from the main Config v5 source policy.
+Authentication values, API keys, OAuth tokens, shared secrets, and provider
+filenames are not written to `config.toml`.
 
-The MusicBrainz credential document must be updated non-destructively. Existing authentication/token fields must survive option changes.
+### MusicBrainz runtime options
 
-Current runtime option defaults are:
+MusicBrainz authentication and runtime options share the credential document
+but are updated independently. Defaults used when no options object exists:
 
 ```json
 {
@@ -142,417 +165,50 @@ Current runtime option defaults are:
 }
 ```
 
-Changing these options must not remove or invalidate existing MusicBrainz authentication data.
+SPLINED reads the existing JSON, merges changed options, preserves
+authentication and unknown fields, and atomically replaces the file. Changing
+source policy does not rewrite the credential.
 
-The main config continues to reference the credential directory, not the token value itself.
+See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
----
+## `[logging]` and `[history]`
 
-# Artwork Resolution Range
-
-SPLINED classifies artwork using the image **short side**.
-
-Default global scale:
-
-| Range Type | Short side |
-| --- | ---: |
-| `BelowMinimum` | `< 1200` |
-| `LowerRange` | `1200–1799` |
-| `Ideal` | `1800` |
-| `UpperRange` | `1801–2400` |
-| `Ladder` | `2401–3600` |
-| `AboveLadder` | `> 3600` |
-
-The default range anchors are:
-
-```text
-Minimum = 1200
-Ideal   = 1800
-Maximum = 2400
-Ladder  = 3600
-```
-
-A non-square image is classified by the shorter dimension.
-
-Examples:
-
-```text
-600 x 900    -> short side 600  -> BelowMinimum
-1200 x 1600  -> short side 1200 -> LowerRange
-1800 x 1800  -> Ideal
-2000 x 2400  -> short side 2000 -> UpperRange
-3000 x 4200  -> short side 3000 -> Ladder
-4000 x 5000  -> short side 4000 -> AboveLadder
-```
-
----
-
-# Source Enabled vs Source Override
-
-These are separate concepts.
-
-## Source Enabled
-
-Controls whether the provider may be queried.
-
-```text
-Enabled = No
-```
-
-means the provider is not queried.
-
-```text
-Enabled = Yes
-```
-
-means the provider is available to the artwork-discovery pipeline.
-
-## Source Override
-
-Controls whether the provider uses a source-specific policy.
-
-```text
-Source Override = No
-```
-
-means the provider uses the normal global SPLINED artwork policy.
-
-```text
-Source Override = Yes
-```
-
-means the provider uses its own configured source policy.
-
-Disabling Source Override must not erase the source's saved custom values. Those values should remain available if the override is re-enabled later.
-
----
-
-# Per-source policy
-
-Each supported artwork source may persist its own applicable policy values.
-
-The Windows GUI supports the following concepts where meaningful for the provider:
-
-- Source Enabled
-- Source Override
-- Minimum Range Type
-- Allow BelowMinimum fallback
-- optional advanced minimum short side
-- optional advanced maximum short side
-- optional minimum width
-- optional minimum height
-- Primary image only where provider metadata supports it
-
-Not every provider supports every capability. Unsupported controls should be disabled/explained rather than pretending to enforce unavailable metadata.
-
----
-
-# Minimum Range Type
-
-When a source override is enabled, Minimum Range Type establishes the normal minimum category accepted for that provider.
-
-Example:
-
-```text
-Source: Discogs
-Source Override: Yes
-Minimum Range Type: LowerRange
-```
-
-produces the conceptual policy:
-
-| Range | Result |
-| --- | --- |
-| BelowMinimum | Reject, or fallback if explicitly allowed |
-| LowerRange | Accept |
-| Ideal | Accept |
-| UpperRange | Accept |
-| Ladder | Accept |
-| AboveLadder | Accept unless another constraint rejects it |
-
----
-
-# BelowMinimum fallback
-
-`Allow BelowMinimum fallback` is a **per-source** policy.
-
-When disabled:
-
-```text
-BelowMinimum -> REJECT
-```
-
-When enabled:
-
-```text
-BelowMinimum -> FALLBACK
-```
-
-Fallback does not mean the image becomes normally preferred. It means an otherwise below-minimum candidate may remain available when no normally acceptable candidate satisfies the effective policy.
-
-This is intentionally not a global blanket rejection of all artwork below 1200 px. Different providers can have different source-specific fallback value.
-
----
-
-# Advanced dimension constraints
-
-Advanced numeric fields are additional constraints.
-
-Blank fields mean no additional restriction beyond the effective Range Type/global policy.
-
-The normal Range Type threshold remains the primary derived/default authority.
-
-Example:
-
-```text
-Minimum Range Type = LowerRange
-Derived short-side minimum = 1200
-```
-
-If the user explicitly sets:
-
-```text
-Minimum short side = 1500
-```
-
-then the effective result becomes:
-
-| Range / size | Result |
-| --- | --- |
-| `< 1200` | Reject/fallback according to policy |
-| `1200–1499` | Reject because of explicit minimum short side |
-| `1500–1799` | Accept |
-| `1800+` | Accept unless another constraint rejects it |
-
-The GUI should distinguish a value derived from Range Type from an explicit user-entered constraint.
-
----
-
-# Primary image only
-
-`Primary image only` must rely on provider metadata.
-
-It does **not** mean SPLINED visually recognizes that an image is a front cover.
-
-The current Windows policy does not attempt semantic visual classification of:
-
-- front cover
-- rear cover
-- disc
-- booklet
-- jewel case
-- other photographed/scanned objects
-
-Future SPLINEDAI functionality may provide semantic image classification, but Config v5 source policy does not assume that capability today.
-
-If a provider does not expose meaningful primary-image metadata, the control should be disabled with an explanatory tooltip.
-
----
-
-# Output formats
-
-Output formats remain a **global output policy** unless the finalized Config v5 source explicitly defines otherwise.
-
-Supported static output types currently include:
-
-```text
-JPEG
-PNG
-WebP
-```
-
-Do not silently reinterpret these as per-source output-format settings.
-
----
-
-# Artwork geometry / square policy
-
-SPLINED preserves aspect ratio while applying the configured output policy.
-
-The Windows configuration can control concepts including:
-
-- square/crop behavior
-- square rounding
-- whether upscaling below Ideal is permitted
-- evaluating candidates by the image SPLINED would actually write
-
-The final v3.0.0 Config v5 key names should be documented from the source once integrated into the repository.
-
-Policy principle:
-
-> Candidate ranking should reflect the final image SPLINED would write, not merely provider-reported dimensions.
-
----
-
-# Library and scan paths
-
-Config v5 maintains distinct concepts for:
-
-- main media library
-- scan target
-- cache
-- credentials
-- logs/history
-
-Portable Windows paths should remain application-relative where practical.
-
-Avoid embedding machine-specific development paths in public examples.
-
-Ignored/excluded directory entries must persist correctly when Settings is reopened.
-
----
-
-# History, processed state, bypass, and timeout
-
-The GUI tree must derive state from the same runtime authority used by execution.
-
-It must not maintain a second independent persistent interpretation.
-
-Album-level states include:
-
-| State | Color | Meaning |
+| Key | Default | Meaning |
 | --- | --- | --- |
-| Default/unprocessed | White | Normally eligible |
-| Processed/history | Orange | Not auto-selected; may be manually reprocessed |
-| Bypassed | Red | Requires explicit bypass override/prompt |
-| Timeout-active | Purple | Temporarily protected by configured scan timeout |
+| `logging.retention_days` | `14` | Diagnostic-log retention |
+| `history.enabled` | `true` | Enables persistent status authority |
+| `history.retention_days` | `0` | History retention; `0` means forever |
 
-Artist aggregate states include:
+History supplies processed, timeout, chosen-source, and bypass state. Shortening
+or disabling it can remove the authority needed for status colors. `_cache/`
+is disposable and is not the history authority.
 
-| Artist state | Color | Rule |
-| --- | --- | --- |
-| Unprocessed | White | All eligible albums unprocessed, no bypass |
-| Partial | Purple | Mix of processed and unprocessed, no bypass |
-| Complete | Green | All eligible albums processed, no bypass |
-| Contains bypass | Blue | At least one red/bypassed album; blue takes precedence |
+## `[splineai]`
 
-Artist aggregate precedence:
+Config v5 retains `enabled = false` and an empty `endpoint` as an internal
+placeholder. Windows v3.0.0 Stable does not enable AI image processing.
 
-```text
-BLUE  -> any bypassed album exists
-GREEN -> all eligible albums processed, none bypassed
-PURPLE -> mixed processed/unprocessed, none bypassed
-WHITE -> all eligible albums unprocessed, none bypassed
-```
+## GUI-only `ui.toml`
 
-Album timeout purple and Artist partial purple are separate internal meanings even though they share a visual color.
+`config/ui.toml` is deliberately separate from operational Config v5. It
+stores presentation and transient GUI state, including:
 
----
+- System/Light/Dark theme;
+- status/confirmation and hover preferences;
+- Select Media expansion, filters, and transient selected paths;
+- filtered Read/Write mode;
+- main, Settings, Compare, and Preview sizes/positions;
+- splitter distances and Settings tab positions.
 
-# Artist selection rules
+Editing `ui.toml` does not change source policy, credentials, history, or
+artwork-writing rules.
 
-Selecting an Artist normally:
+## Validation
 
-- auto-selects eligible White/unprocessed Albums
-- does not auto-select Orange/processed Albums
-- does not auto-select timeout-active Purple Albums
-- requires explicit bypass confirmation for Red Albums
+The Windows Settings **Validate Saved Config** action and **Save and Continue**
+use the same Config v5 validation. The native command line also validates the
+schema before execution.
 
-Manual selection may allow deliberate Orange reprocessing and temporary bypass override according to the existing execution policy.
-
-A temporary bypass override must not silently delete the saved bypass record.
-
----
-
-# Media Filter
-
-Media Filter is a GUI view/selection filter over the already loaded in-memory library model.
-
-It must not:
-
-- rewrite Config v5 merely because a filter is used
-- alter history
-- delete bypass state
-- change timeout authority
-- rescan the filesystem on every keystroke
-
-Supported concepts include:
-
-- live Artist text filtering
-- live Album text filtering
-- status/color filtering
-
-Filtering a row out of view should not silently mutate its underlying execution/selection/history state.
-
----
-
-# Appearance / UI settings
-
-System / Light / Dark appearance is a GUI-local preference and should remain separate from Config v5 operational policy.
-
-Other purely presentational settings should follow the same separation unless they materially affect execution.
-
-This prevents cosmetic configuration from changing the operational config schema unnecessarily.
-
----
-
-# Config v5 compatibility expectations
-
-A Config v5 implementation should:
-
-- preserve unknown/future values where practical during non-destructive edits
-- avoid reconstructing credential JSON from a minimal hard-coded schema
-- retain saved source override values when override is temporarily disabled
-- persist ignored/excluded folders correctly
-- separate GUI appearance state from operational config
-- distinguish Config schema version from application version
-- avoid reintroducing provider credential filenames into the normal main config
-
----
-
-# Python / Docker compatibility
-
-The Python/Docker runtime is a separate supported implementation.
-
-During the transition to Windows Config v5, the repository may temporarily expose:
-
-```text
-Windows GUI -> Config v5
-Python/Docker -> older synchronized/compatible schema
-```
-
-Do not change a working Python/Docker config merely because the Windows GUI uses Config v5 unless the Python runtime release explicitly adds that migration.
-
-The Docker runtime currently resolves its primary configuration from:
-
-```text
-/config/config.toml
-```
-
-and provider credentials from:
-
-```text
-/credentials
-```
-
-See [`../docker/README.md`](../docker/README.md).
-
----
-
-# Manual editing
-
-TOML is strict syntax.
-
-Before manually editing:
-
-1. Keep a known-good copy.
-2. Use a plain UTF-8/ASCII-safe editor.
-3. Avoid JSON punctuation in TOML sections.
-4. Run the application's config validation/check command after editing where available.
-
-A parse error reported at end-of-file often means an earlier quote, array, or table construct was left incomplete.
-
----
-
-# Repository integration requirement
-
-When the finalized Windows v3.0.0 Stable source is added to the repository, this page must be reconciled against the actual Config v5 structs/serialization before release publication.
-
-That integration should also:
-
-- add/update the authoritative Config v5 example
-- remove stale Config v4 statements from Windows-specific documentation
-- keep Python/Docker version/schema differences explicit
-- preserve the credential-directory-only normal configuration model
-
-Until that integration is complete, this document is the Windows **behavioral reference**, while exact newly introduced v5 key names remain source-verified at integration time.
+The current Python/Docker implementation rejects Config v5 because it expects
+Config v4; use the Docker-specific example rather than changing the version
+number in the Windows example.

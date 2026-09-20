@@ -43,7 +43,7 @@ Choose the installation method that matches where S:P:L:I:N:E:D will run.
 | **macOS Portable** | Native macOS installation | [`release/README-MACOS.txt`](release/README-MACOS.txt) |
 | **Docker** | Linux servers, NAS, and container deployments | [`docker/README.md`](docker/README.md) · [`python/Dockerfile`](python/Dockerfile) |
 
-Portable users should download the appropriate archive from the [latest GitHub release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest), extract it into the final application directory, and run the included setup launcher. Each release archive includes its platform-specific installation instructions.
+Portable users should download the appropriate archive from the [latest GitHub release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest), extract it into the final application directory, and run `splined.exe` on Windows or `./splined` on Linux/macOS. No setup-launcher rename step is required.
 
 Docker image:
 
@@ -57,7 +57,8 @@ Docker users should start with the [Docker installation guide](docker/README.md)
 
 ## 📚 Documentation
 
-The versioned project documentation lives under [`docs/`](docs/README.md).
+The versioned repository documentation under [`docs/`](docs/README.md) is
+the canonical public help system.
 
 Start with:
 
@@ -65,7 +66,8 @@ Start with:
 - [Installation and first run](docs/installation-first-run.md)
 - [Windows Config v5 reference](docs/config-v5-reference.md)
 
-Repository documentation is intended to remain the technical source of truth. The GitHub Wiki, once enabled, can provide a friendlier navigation layer around these versioned pages.
+Windows GUI v3.0.0 Stable opens the documentation home from **Help > Help**
+and from the Help button in its About dialog.
 
 ---
 
@@ -95,7 +97,9 @@ Current provider support includes:
 - 🔵 Deezer
 - 🟠 Discogs
 
-Sources can be reordered or excluded in the config. The entered `<config>` order does not imply the actual source order when the `<source>`(s) are queried.
+Sources can be reordered, enabled, or excluded. Source priority breaks
+otherwise equal scoring decisions; configured sources may still be queried
+before the final candidate ranking.
 
 ---
 
@@ -139,11 +143,19 @@ The operational picker can also save a persistent album bypass. A saved bypass i
 
 S:P:L:I:N:E:D uses a TOML config file.
 
-For the current configuration structure, available sections, and example values, see [`config.example.toml`](config.example.toml).
+Windows GUI v3.0.0 Stable and the current native parser use **Config v5**:
 
-Windows GUI v3.0.0 Stable uses **Config v5**; see the [Windows Config v5 reference](docs/config-v5-reference.md). The repository's existing example configuration may continue to reflect the Python/root implementation until the finalized Windows source is integrated.
+- [Config v5 example](config.example.toml)
+- [Config v5 reference](docs/config-v5-reference.md)
 
-Portable installations use application-relative paths by default. Docker deployments use container paths; see the [Docker installation guide](docker/README.md) for the minimal Docker-specific path configuration.
+Python/Docker is a separate supported implementation and currently uses
+Config v4:
+
+- [Python/Docker example](docker/config.example.toml)
+- [Docker installation guide](docker/README.md)
+
+Portable paths are application-relative by default. Docker uses explicit
+container paths.
 
 ---
 

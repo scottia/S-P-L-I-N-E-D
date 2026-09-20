@@ -1,57 +1,31 @@
-# S:P:L:I:N:E:D example configuration
-# Copy to config/config.toml and adjust paths/settings for the installation.
+# S:P:L:I:N:E:D Config v5 example
+# Windows v3.0.0 Stable and the current native Config v5 parser use this
+# application-relative, secret-free configuration.
 
-config_version = 4
+config_version = 5
 mode = "read"
 verbosity = "info"
-
-[scan]
-scan_mode = true
-library_scan = false
-scan_mode_timeout = 24
-cache_dir = "_cache"
-scan_library_dir = ""
 
 [library]
 music_library = ""
 ignored_subs = []
 
-[samples]
-sample_write = true
-
-[credentials]
-credential_dir = "credentials"
-
-[fanarttv]
-credential_file = "fanarttv.json"
-
-[lastfm]
-credential_file = "lastfm.json"
-
-[discogs]
-credential_file = "discogs.json"
-
-[musicbrainz]
-oauth = false
-client_id = ""
-callback_uri = "urn:ietf:wg:oauth:2.0:oob"
-scope = "profile"
-token_file = "musicbrainz.json"
-retry_max = 2
-mb_min_delay = 1.05
-mb_recording_timeout = 7.0
-
-[splineai]
-enabled = false
-endpoint = ""
+[scan]
+scan_library_dir = ""
+scan_mode = true
+library_scan = false
+scan_mode_timeout = 24
+cache_dir = "_cache"
+log_dir = "_logs"
+history_dir = "_logs/_history"
 
 [output]
-preserve_file = true
-file_formats = ["jpeg", "png", "webp"]
 file_name = "cover"
-square = false
-square_mode = "off"
-square_round_to = 0
+file_formats = ["jpeg", "png", "webp"]
+preserve_file = true
+square = true
+square_mode = "crop"
+square_round_to = 16
 upscale_below_ideal = false
 evaluate_final_image = true
 
@@ -65,14 +39,70 @@ ladder = 3600
 cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs"]
 exclude_cover_sources = []
 
-# Docker deployments normally use container paths instead of the relative
-# portable defaults above, for example:
-#
-# [scan]
-# cache_dir = "/_cache"
-#
-# [library]
-# music_library = "/music"
-#
-# [credentials]
-# credential_dir = "/credentials"
+# Source Override activates the source-specific artwork policy. With it off,
+# the source uses the global [range] policy while retaining these saved values.
+[source_policies.deezer]
+enabled = true
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+[source_policies.itunes]
+enabled = true
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+[source_policies.fanarttv]
+enabled = true
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+[source_policies.lastfm]
+enabled = true
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+[source_policies.coverartarchive]
+enabled = true
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+[source_policies.discogs]
+enabled = true
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+# MusicBrainz is metadata authority, not an artwork source. Source Override
+# activates the runtime options stored non-destructively in its credential JSON.
+[source_policies.musicbrainz]
+enabled = true
+source_override = false
+
+[samples]
+sample_write = true
+
+[credentials]
+credential_dir = "credentials"
+
+[logging]
+retention_days = 14
+
+[history]
+enabled = true
+retention_days = 0 # 0 keeps history forever
+
+# Reserved placeholder retained by Config v5; no AI processing is enabled.
+[splineai]
+enabled = false
+endpoint = ""

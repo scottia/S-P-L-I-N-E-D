@@ -3,8 +3,6 @@
 This page explains how S:P:L:I:N:E:D evaluates artwork size, how global Resolution Range policy works, and how per-source overrides refine that policy.
 
 > **Windows target:** v3.0.0 Stable with Config v5.
->
-> **Repository note:** exact Config v5 key names for the finalized Windows source will be source-verified when that source is integrated. The behavioral rules below are the intended public contract.
 
 ---
 
@@ -339,7 +337,7 @@ below-minimum - Fallback
 
 These labels describe the candidate's effective range/policy result.
 
-They should not be confused with Media Filter/tree status colors, which represent album/artist execution state rather than image quality.
+They should not be confused with Select Media/tree status colors, which represent album/artist execution state rather than image quality.
 
 ---
 
@@ -416,7 +414,9 @@ If the scan log reports candidates hidden by active source policy, discovery suc
 
 For the broader Windows configuration model, see [Config v5 reference](config-v5-reference.md).
 
-Exact serialized Config v5 key names for new Windows source-policy fields should be verified against the finalized v3.0.0 source during repository integration.
+Exact serialized Config v5 keys and defaults are listed in the
+[Config v5 reference](config-v5-reference.md) and
+[`config.example.toml`](../config.example.toml).
 
 ---
 
@@ -424,4 +424,4 @@ Exact serialized Config v5 key names for new Windows source-policy fields should
 
 - [Config v5 reference](config-v5-reference.md)
 - [Credentials and provider setup](credentials-providers.md)
-- [Media Filter and status colors](media-filter-status-colors.md)
+- [Select Media and status colors](media-filter-status-colors.md)

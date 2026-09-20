@@ -1,16 +1,17 @@
-# Media Filter and Status Colors
+# Select Media and Status Colors
 
-This page documents the Windows GUI Media Filter, live Artist/Album filtering, status-color filters, and the meaning of tree colors in S:P:L:I:N:E:D.
+This page documents the Windows GUI **Select Media** control, live
+Artist/Album filtering, status filters, and tree colors.
 
 > **Windows target:** v3.0.0 Stable with Config v5.
->
-> **Repository note:** exact control labels should be verified against the finalized Windows source when it is integrated. The behavior below is the intended public contract.
 
 ---
 
-## Media Filter purpose
+## Select Media purpose
 
-Media Filter changes what is shown in the already-loaded library tree. It is a view/selection aid, not a separate scan engine.
+**Select Media** is the single collapsible control beneath Media Library
+Selection. It changes the visible in-memory tree and provides selection and
+filtered-scan shortcuts; it is not a separate scan engine.
 
 The filter should operate against the in-memory library model and should not rescan the filesystem on every keystroke.
 
@@ -29,7 +30,7 @@ A row filtered out of view remains part of the underlying library model unless a
 
 # Artist and Album text filters
 
-The Media Filter provides live text filtering for:
+Select Media provides live text filtering for:
 
 ```text
 Artist
@@ -177,30 +178,16 @@ Status filters should work together with Artist/Album text filters without trigg
 
 ---
 
-# Select / All / None
+# Select Mode
 
-The Media Library Selection controls operate on the current authoritative library model and selection rules.
+The Select Mode group contains mutually exclusive selection actions:
 
-Normal behavior should respect history/bypass/timeout state rather than blindly checking every visible row.
+- **Select [ALL]** selects normally eligible albums across the loaded model;
+- **Select [NONE]** clears transient selection;
+- **Select [FILTERED]** selects albums in the current visible filter result.
 
-Conceptually:
-
-## Select
-
-Applies the normal eligibility rules:
-
-- White eligible albums can be selected;
-- Orange processed albums are skipped by normal automatic selection;
-- Purple timeout-active albums remain protected;
-- Red bypassed albums require explicit override.
-
-## All
-
-If the GUI exposes an All operation, it should still respect any explicit safety/override rules defined by the application rather than silently deleting bypass/timeout authority.
-
-## None
-
-Clears transient GUI selection only. It should not erase history, bypass, or timeout records.
+The selected mode displays its checked state. Selection actions respect
+history, bypass, and timeout authority and never erase persistent records.
 
 ---
 
@@ -233,16 +220,20 @@ Likewise, a temporary override of a Red album should not silently remove its per
 
 ---
 
-# Scan Bypass controls
+# Scan Mode
 
-The Windows Media Filter area may expose scan-bypass controls such as filtered Read/Write behavior or selection of filtered results.
+The Scan Mode group contains mutually exclusive:
 
-These controls are operational shortcuts, not replacements for the persistent album bypass state represented by Red.
+- **Filtered Scan [READ]**;
+- **Filtered Scan [WRITE]**.
+
+These are operational shortcuts for the current filtered selection, not
+replacements for the persistent album bypass represented by Red.
 
 Do not confuse:
 
 ```text
-Scan Bypass control
+Scan Mode control
 ```
 
 with:
@@ -251,13 +242,9 @@ with:
 Persistent saved album bypass
 ```
 
-The exact v3.0.0 labels should be documented from the finalized Windows source during integration.
-
----
-
 # Auto Mode
 
-Auto Mode changes how the current eligible selection proceeds through the existing scan lifecycle.
+**AUTO LAUNCH** starts the existing launch workflow for the eligible selection.
 
 It must still respect:
 
@@ -387,7 +374,7 @@ Check history/retention availability and configured history/log paths.
 
 For the full persistence/selection model, see [History, retention, bypass, and timeout](history-retention-bypass-timeout.md).
 
-Media Filter must consume that authority; it does not replace it.
+Select Media consumes that authority; it does not replace it.
 
 ---
 
@@ -396,4 +383,4 @@ Media Filter must consume that authority; it does not replace it.
 - [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Source policies and Range Types](source-policies-range-types.md)
-- [Windows GUI walkthrough](windows-gui-guide.md) *(planned)*
+- [Documentation home](README.md)

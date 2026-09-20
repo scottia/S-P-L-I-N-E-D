@@ -8,11 +8,9 @@ Docker is the simplest deployment method for Linux servers, NAS systems, and oth
 ghcr.io/scottia/splined:latest
 ```
 
-To pin a specific release instead of following `latest`:
-
-```text
-ghcr.io/scottia/splined:v1.0.2
-```
+To pin a release instead of following `latest`, select an available image
+tag from the GitHub package or release listing. Concrete version tags are not
+used in this evergreen installation example.
 
 ## Quick start
 
@@ -36,7 +34,13 @@ Change only the host paths on the left side of each mount.
 
 No port mapping is required for normal CLI operation.
 
-Before first use, place `config.toml` in the host directory mounted at `/config`. The repository [`config.example.toml`](../config.example.toml) is the reference configuration template.
+Before first use, copy
+[`docker/config.example.toml`](config.example.toml) to `config.toml` in the
+host directory mounted at `/config`.
+
+The Python/Docker runtime is separately supported and currently requires
+Config v4. The repository-root `config.example.toml` is the Windows/native
+Config v5 example and is not interchangeable with the Docker example.
 
 S:P:L:I:N:E:D creates its runtime cache, sample, log, and history directories as needed. A typical host layout becomes:
 
@@ -124,6 +128,7 @@ You do not need a separate history mount. Advanced deployments may split any doc
 
 ## Related files
 
-- [`../config.example.toml`](../config.example.toml) — configuration template
+- [`config.example.toml`](config.example.toml) — Python/Docker Config v4 template
+- [`../config.example.toml`](../config.example.toml) — Windows/native Config v5 template
 - [`../python/Dockerfile`](../python/Dockerfile) — container image definition
 - [`../python/requirements.txt`](../python/requirements.txt) — Python runtime dependencies

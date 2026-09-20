@@ -1,0 +1,51 @@
+# S:P:L:I:N:E:D Python/Docker configuration example
+# The Python/Docker runtime is a separate supported implementation and
+# currently requires Config v4. Credential filenames are resolved internally
+# beneath /credentials and do not need to appear in this file.
+
+config_version = 4
+mode = "read"
+verbosity = "info"
+
+[scan]
+scan_mode = true
+library_scan = false
+scan_mode_timeout = 24
+cache_dir = "/_cache"
+log_dir = "/_logs"
+history_dir = "/_logs/_history"
+scan_library_dir = "/music"
+
+[library]
+music_library = "/music"
+ignored_subs = []
+
+[samples]
+sample_write = true
+
+[credentials]
+credential_dir = "/credentials"
+
+[splineai]
+enabled = false
+endpoint = ""
+
+[output]
+preserve_file = true
+file_formats = ["jpeg", "png", "webp"]
+file_name = "cover"
+square = false
+square_mode = "off"
+square_round_to = 0
+upscale_below_ideal = false
+evaluate_final_image = true
+
+[range]
+min = 1200
+ideal = 1800
+max = 2400
+ladder = 3600
+
+[sources]
+cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs"]
+exclude_cover_sources = []

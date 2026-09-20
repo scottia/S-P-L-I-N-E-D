@@ -1,10 +1,8 @@
 # Credentials and Provider Setup
 
-This page documents how S:P:L:I:N:E:D stores provider credentials, how those credentials relate to Config v5, and what users should expect when enabling artwork providers.
+This page documents how S:P:L:I:N:E:D stores provider credentials, how those credentials relate to Config v5, and how providers are configured.
 
 > **Windows target:** v3.0.0 Stable with Config v5.
->
-> **Repository note:** the finalized Windows source has not yet been integrated into the repository. Exact GUI labels should be verified against the final v3.0.0 source before publication, but the credential architecture described here is the intended public behavior.
 
 ---
 
@@ -42,7 +40,9 @@ Typical Docker mapping:
 /credentials/
 ```
 
-The normal Config v5 workflow should not require users to repeat standard provider filenames in `config.toml`. Standard filenames are resolved beneath the configured credential directory unless an intentionally supported compatibility override exists.
+Config v5 does not require users to repeat standard provider filenames in
+`config.toml`. Standard filenames are resolved beneath the configured
+credential directory.
 
 ---
 
@@ -62,7 +62,7 @@ Credential files are **sensitive data**. Never commit them to GitHub, attach the
 
 ## Filesystem protection
 
-When SPLINED creates a credential file, it should apply restrictive user-specific filesystem permissions where the selected storage supports them.
+When SPLINED creates a credential file, it applies restrictive user-specific filesystem permissions where the selected storage supports them.
 
 If the storage location cannot provide user-specific ACL protection, SPLINED should warn clearly rather than claiming stronger protection than the filesystem can provide.
 
@@ -171,7 +171,9 @@ The Python implementation currently expects a `token` value when Discogs authent
 
 Never expose the token in diagnostic output.
 
-The repository currently contains implementation differences between the native/root source and Python source around Discogs provider execution. Until the finalized Windows v3.0.0 source is integrated, treat Windows and Python/Docker Discogs behavior as separate supported implementation details rather than assuming identical execution paths.
+Windows/native and Python/Docker are separate supported implementations.
+Provider behavior should not be assumed identical across runtimes unless a
+release explicitly documents parity.
 
 ---
 
@@ -219,11 +221,13 @@ A provider can still fail because of network connectivity, rate limiting, upstre
 
 # Creating credentials in the Windows GUI
 
-The finalized Windows GUI should expose credential creation/status from its Paths/credential area rather than requiring users to hand-edit JSON for normal setup.
+Use **File > Credentials...** or **Settings > Advanced > Library, Paths &
+Processing > Credentials / Status...** rather than hand-editing JSON for
+normal setup.
 
-Expected workflow:
+Workflow:
 
-1. Open the relevant Settings/Paths credential control.
+1. Open either credential control.
 2. Choose the provider.
 3. Enter or authorize the provider credential.
 4. SPLINED writes the provider JSON beneath the configured credential directory.
