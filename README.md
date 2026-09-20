@@ -55,6 +55,20 @@ Docker users should start with the [Docker installation guide](docker/README.md)
 
 ---
 
+## 📚 Documentation
+
+The versioned project documentation lives under [`docs/`](docs/README.md).
+
+Start with:
+
+- [Documentation home](docs/README.md)
+- [Installation and first run](docs/installation-first-run.md)
+- [Windows Config v5 reference](docs/config-v5-reference.md)
+
+Repository documentation is intended to remain the technical source of truth. The GitHub Wiki, once enabled, can provide a friendlier navigation layer around these versioned pages.
+
+---
+
 ## 📏 Artwork size defaults
 
 S:P:L:I:N:E:D is designed to prefer artwork close to a practical target rather than simply choosing the largest file available.
@@ -126,6 +140,8 @@ The operational picker can also save a persistent album bypass. A saved bypass i
 S:P:L:I:N:E:D uses a TOML config file.
 
 For the current configuration structure, available sections, and example values, see [`config.example.toml`](config.example.toml).
+
+Windows GUI v3.0.0 Stable uses **Config v5**; see the [Windows Config v5 reference](docs/config-v5-reference.md). The repository's existing example configuration may continue to reflect the Python/root implementation until the finalized Windows source is integrated.
 
 Portable installations use application-relative paths by default. Docker deployments use container paths; see the [Docker installation guide](docker/README.md) for the minimal Docker-specific path configuration.
 
