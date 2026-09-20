@@ -104,7 +104,7 @@ pub struct FanartTvConfig {
     pub credential_file: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SplineAiConfig {
     pub enabled: bool,
@@ -230,15 +230,6 @@ impl Default for FanartTvConfig {
     fn default() -> Self {
         Self {
             credential_file: "fanarttv.json".to_string(),
-        }
-    }
-}
-
-impl Default for SplineAiConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            endpoint: String::new(),
         }
     }
 }
