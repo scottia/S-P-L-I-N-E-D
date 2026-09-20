@@ -29,21 +29,28 @@ Windows GUI Config v5 concepts, path rules, artwork ranges, source policies, cre
 
 ## Configuration and providers
 
-These pages are the next documentation set to be added:
+### [Credentials and provider setup](credentials-providers.md)
+Credential-directory architecture, provider JSON files, filesystem ACL protection, provider-specific setup, backup guidance, and security rules.
 
-- **Credentials and provider setup** — provider credential storage, filesystem protection, provider-specific setup, and credential-path behavior.
-- **MusicBrainz OAuth** — authentication flow, token storage, runtime options, reauthorization, and troubleshooting.
-- **Source policies and Range Types** — global artwork range policy, per-source overrides, fallback behavior, advanced dimensions, and provider capability notes.
+### [MusicBrainz OAuth](musicbrainz-oauth.md)
+OAuth authorization, token storage, runtime options, refresh behavior, non-destructive credential updates, reauthorization, and recovery.
+
+### [Source policies and Range Types](source-policies-range-types.md)
+Global artwork Resolution Range, per-source overrides, BelowMinimum fallback, advanced dimensions, provider capabilities, and final-image evaluation.
 
 ---
 
 ## Windows GUI
 
-Planned public guides:
+### [Media Filter and status colors](media-filter-status-colors.md)
+Live Artist/Album filtering, status filters, album and artist color meanings, selection behavior, filter performance, and accessibility expectations.
+
+### [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
+Persistent history authority, processed state, retention, bypass protection, timeout-active albums, aggregate artist state, manual reprocessing, and backup behavior.
+
+Planned public guide:
 
 - **Windows GUI walkthrough** — main screen, media tree, candidate review, Launch / Stop lifecycle, Settings, status displays, and help surfaces.
-- **Media Filter and status colors** — live Artist/Album filtering, status filters, and tree-state meanings.
-- **History, retention, bypass, and timeout** — persistent history, processed state, temporary reprocessing, bypass authority, timeout-active albums, and retention behavior.
 
 ### Status color summary
 
