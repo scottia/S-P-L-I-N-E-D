@@ -1,6 +1,8 @@
 # S:P:L:I:N:E:D Config v5 example
-# Windows v3.0.0 Stable and the current native Config v5 parser use this
-# application-relative, secret-free configuration.
+# Windows GUI v3.0.0 Stable uses this application-relative, secret-free
+# configuration. The existing repository-root native and Python/Docker
+# implementations remain separate Config v4 runtimes until the finalized
+# Windows source is integrated into the repository.
 
 config_version = 5
 mode = "read"

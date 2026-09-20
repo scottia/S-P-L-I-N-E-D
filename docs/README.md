@@ -8,8 +8,8 @@ These versioned repository pages are the canonical public documentation for
 S:P:L:I:N:E:D has separate supported runtimes:
 
 - **Windows GUI:** v3.0.0 Stable, using Config v5.
-- **Native command line:** follows the version and Config v5 implementation in
-  the root Rust source.
+- **Existing repository-root native command line:** separate Config v4
+  implementation until the finalized Windows v3.0.0 source is integrated.
 - **Python/Docker:** a separate runtime and release line; the current container
   entrypoint uses Config v4.
 
@@ -32,8 +32,8 @@ button in **About S:P:L:I:N:E:D**.
 
 ## Configuration examples
 
-- [`../config.example.toml`](../config.example.toml) is the neutral Config v5
-  example for Windows v3.0.0 Stable and the current native Config v5 parser.
+- [`../config.example.toml`](../config.example.toml) is the Windows GUI
+  v3.0.0 Stable Config v5 example.
 - [`../docker/config.example.toml`](../docker/config.example.toml) is the
   current Python/Docker Config v4 example.
 

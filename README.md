@@ -143,18 +143,19 @@ The operational picker can also save a persistent album bypass. A saved bypass i
 
 S:P:L:I:N:E:D uses a TOML config file.
 
-Windows GUI v3.0.0 Stable and the current native parser use **Config v5**:
+Windows GUI v3.0.0 Stable uses **Config v5**:
 
-- [Config v5 example](config.example.toml)
-- [Config v5 reference](docs/config-v5-reference.md)
+- [Windows Config v5 example](config.example.toml)
+- [Windows Config v5 reference](docs/config-v5-reference.md)
 
-Python/Docker is a separate supported implementation and currently uses
-Config v4:
+The existing repository-root native command-line implementation remains a
+separate Config v4 runtime until the finalized Windows v3.0.0 source is
+integrated into the repository. Python/Docker also remains Config v4:
 
 - [Python/Docker example](docker/config.example.toml)
 - [Docker installation guide](docker/README.md)
 
-Portable paths are application-relative by default. Docker uses explicit
+Portable Windows paths are application-relative by default. Docker uses explicit
 container paths.
 
 ---

@@ -14,6 +14,11 @@ The Python/Docker runtime remains separately supported and currently uses
 Config v4. Use [`docker/config.example.toml`](../docker/config.example.toml)
 for that runtime.
 
+The existing repository-root native command-line implementation also remains a
+separate Config v4 implementation until the finalized Windows v3.0.0 source is
+integrated into the repository. Do not treat the Windows Config v5 example as
+an input file for that older root parser.
+
 ## Location and path rules
 
 The portable Windows default is:
@@ -206,9 +211,11 @@ artwork-writing rules.
 ## Validation
 
 The Windows Settings **Validate Saved Config** action and **Save and Continue**
-use the same Config v5 validation. The native command line also validates the
-schema before execution.
+use the same Config v5 validation used by the Windows v3.0.0 runtime before
+execution.
 
 The current Python/Docker implementation rejects Config v5 because it expects
 Config v4; use the Docker-specific example rather than changing the version
-number in the Windows example.
+number in the Windows example. The existing repository-root native command-line
+implementation likewise remains Config v4 until the finalized Windows source is
+integrated.

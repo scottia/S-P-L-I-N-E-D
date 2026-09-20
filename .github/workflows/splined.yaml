@@ -274,7 +274,7 @@ jobs:
           set -euo pipefail
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
-          cp target/release/splined.exe release-package/setup-splined.exe
+          cp target/release/splined.exe release-package/splined.exe
           cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
 
       - name: Create Windows archive
@@ -326,13 +326,13 @@ jobs:
           set -euo pipefail
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
-          cp target/release/splined release-package/setup-splined
+          cp target/release/splined release-package/splined
           cp release/README-LINUX.txt release-package/README-LINUX.txt
-          chmod +x release-package/setup-splined
+          chmod +x release-package/splined
           tar \
             -czf release-assets/splined-linux-x86_64.tar.gz \
             -C release-package \
-            setup-splined \
+            splined \
             README-LINUX.txt
 
       - name: Upload Ubuntu artifact
@@ -375,13 +375,13 @@ jobs:
           set -euo pipefail
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
-          cp target/release/splined release-package/setup-splined
+          cp target/release/splined release-package/splined
           cp release/README-MACOS.txt release-package/README-MACOS.txt
-          chmod +x release-package/setup-splined
+          chmod +x release-package/splined
           tar \
             -czf release-assets/splined-macos.tar.gz \
             -C release-package \
-            setup-splined \
+            splined \
             README-MACOS.txt
 
       - name: Upload macOS artifact
@@ -616,7 +616,7 @@ jobs:
           set -euo pipefail
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
-          cp target/release/splined.exe release-package/setup-splined.exe
+          cp target/release/splined.exe release-package/splined.exe
           cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
 
       - name: Create Windows archive
