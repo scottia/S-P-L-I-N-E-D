@@ -940,6 +940,7 @@ async fn main() {
 
     let resolved_sources = match resolve_sources(
         &config.sources,
+        &config.source_policies,
         cli.cover_sources.as_deref(),
         cli.only_cover_sources.as_deref(),
         &cli.exclude_cover_sources,

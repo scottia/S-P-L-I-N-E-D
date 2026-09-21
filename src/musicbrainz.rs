@@ -4,6 +4,7 @@ use rand::Rng;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -18,6 +19,10 @@ const OAUTH_ERROR_PREVIEW_CHARS: usize = 500;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MusicBrainzConfig {
+    #[serde(skip)]
+    pub enabled: bool,
+    #[serde(skip)]
+    pub source_override: bool,
     pub retry_max: u8,
     pub mb_min_delay: f64,
     pub mb_recording_timeout: f64,
@@ -31,7 +36,9 @@ pub struct MusicBrainzConfig {
 impl Default for MusicBrainzConfig {
     fn default() -> Self {
         Self {
-            retry_max: 2,
+            enabled: true,
+            source_override: false,
+            retry_max: 4,
             mb_min_delay: 1.05,
             mb_recording_timeout: 7.0,
             oauth: false,
@@ -46,6 +53,8 @@ impl Default for MusicBrainzConfig {
 impl PartialEq for MusicBrainzConfig {
     fn eq(&self, other: &Self) -> bool {
         self.retry_max == other.retry_max
+            && self.enabled == other.enabled
+            && self.source_override == other.source_override
             && self.mb_min_delay.to_bits() == other.mb_min_delay.to_bits()
             && self.mb_recording_timeout.to_bits() == other.mb_recording_timeout.to_bits()
             && self.oauth == other.oauth
@@ -58,19 +67,72 @@ impl PartialEq for MusicBrainzConfig {
 
 impl Eq for MusicBrainzConfig {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MusicBrainzOptions {
+    pub retry_max: u8,
+    pub min_delay: f64,
+    pub recording_timeout: u64,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for MusicBrainzOptions {
+    fn default() -> Self {
+        Self {
+            retry_max: 4,
+            min_delay: 1.05,
+            recording_timeout: 7,
+            extra: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OAuthCredential {
+    pub oauth_enabled: bool,
+    pub client_id: String,
     pub client_secret: String,
+    pub callback_uri: String,
+    pub oauth_scope: String,
+    pub options: MusicBrainzOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_unix: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for OAuthCredential {
+    fn default() -> Self {
+        Self {
+            oauth_enabled: false,
+            client_id: String::new(),
+            client_secret: String::new(),
+            callback_uri: "urn:ietf:wg:oauth:2.0:oob".to_string(),
+            oauth_scope: "profile".to_string(),
+            options: MusicBrainzOptions::default(),
+            access_token: None,
+            refresh_token: None,
+            token_type: None,
+            expires_at_unix: None,
+            scope: None,
+            extra: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestMode {
+    Disabled,
     Anonymous,
     OAuthBearer,
 }
@@ -213,30 +275,86 @@ impl MusicBrainzClient {
             .build()
             .map_err(|error| format!("Unable to create MusicBrainz HTTP client: {error}"))?;
 
-        if config.oauth {
-            let token_path = resolve_token_path(&config.token_file)?;
-            let credential = load_credential(&token_path)?;
+        let token_path = if config.token_file.trim().is_empty() {
+            None
+        } else {
+            Some(resolve_token_path(&config.token_file)?)
+        };
+        let credential = token_path
+            .as_ref()
+            .filter(|path| path.exists())
+            .map(|path| load_credential(path))
+            .transpose()?;
+        let mut effective_config = config.clone();
+        if config.source_override
+            && let Some(credential) = credential.as_ref()
+        {
+            validate_options(&credential.options)?;
+            effective_config.retry_max = credential.options.retry_max;
+            effective_config.mb_min_delay = credential.options.min_delay;
+            effective_config.mb_recording_timeout = credential.options.recording_timeout as f64;
+        }
+        let oauth_enabled = config.oauth
+            || credential
+                .as_ref()
+                .map(|value| value.oauth_enabled || credential_access_token(value).is_some())
+                .unwrap_or(false);
 
-            if credential.client_secret.trim().is_empty() {
+        if oauth_enabled {
+            let token_path = token_path.ok_or_else(|| {
+                "MusicBrainz OAuth is enabled but its fixed credential path is unavailable."
+                    .to_string()
+            })?;
+            let credential = credential.ok_or_else(|| {
+                format!(
+                    "MusicBrainz OAuth is enabled but the credential file does not exist: {}",
+                    token_path.display()
+                )
+            })?;
+            effective_config.oauth = true;
+            if !credential.client_id.trim().is_empty() {
+                effective_config.client_id = credential.client_id.trim().to_string();
+            }
+            if !credential.callback_uri.trim().is_empty() {
+                effective_config.callback_uri = credential.callback_uri.trim().to_string();
+            }
+            if !credential.oauth_scope.trim().is_empty() {
+                effective_config.scope = credential.oauth_scope.trim().to_string();
+            }
+            validate_config(&effective_config)?;
+
+            if credential.client_secret.trim().is_empty()
+                && credential_access_token(&credential).is_none()
+            {
                 return Err(format!(
-                    "MusicBrainz OAuth credential file contains no client_secret: {}",
+                    "MusicBrainz OAuth credential file contains neither a usable token nor client_secret: {}",
                     token_path.display()
                 ));
             }
 
+            let mode = if effective_config.enabled {
+                RequestMode::OAuthBearer
+            } else {
+                RequestMode::Disabled
+            };
             Ok(Self {
                 client,
-                config: config.clone(),
-                mode: RequestMode::OAuthBearer,
+                config: effective_config,
+                mode,
                 token_path: Some(token_path),
                 credential: Mutex::new(Some(credential)),
                 last_request: Mutex::new(None),
             })
         } else {
+            let mode = if effective_config.enabled {
+                RequestMode::Anonymous
+            } else {
+                RequestMode::Disabled
+            };
             Ok(Self {
                 client,
-                config: config.clone(),
-                mode: RequestMode::Anonymous,
+                config: effective_config,
+                mode,
                 token_path: None,
                 credential: Mutex::new(None),
                 last_request: Mutex::new(None),
@@ -252,10 +370,27 @@ impl MusicBrainzClient {
         self.token_path.as_deref()
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
+    }
+
+    pub fn retry_max(&self) -> u8 {
+        self.config.retry_max
+    }
+
+    pub fn min_delay(&self) -> f64 {
+        self.config.mb_min_delay
+    }
+
+    pub fn recording_timeout_seconds(&self) -> f64 {
+        self.config.mb_recording_timeout
+    }
+
     pub fn begin_authorization(&self) -> Result<AuthorizationSession, String> {
         if !self.config.oauth {
             return Err("MusicBrainz OAuth is disabled in SPLINED configuration.".to_string());
         }
+        validate_oauth_application(&self.config)?;
 
         let code_verifier = random_urlsafe(48);
         let state = random_urlsafe(32);
@@ -349,6 +484,7 @@ impl MusicBrainzClient {
     }
 
     pub async fn lookup_release(&self, release_mbid: &str) -> Result<Release, String> {
+        self.ensure_enabled()?;
         validate_mbid(release_mbid)?;
         let url = format!("{API_BASE_URL}/release/{release_mbid}");
         let access_token = if self.config.oauth {
@@ -428,6 +564,7 @@ impl MusicBrainzClient {
         &self,
         recording_mbid: &str,
     ) -> Result<RecordingLookup, String> {
+        self.ensure_enabled()?;
         validate_mbid(recording_mbid)?;
         let url = format!("{API_BASE_URL}/recording/{recording_mbid}");
         let access_token = if self.config.oauth {
@@ -508,6 +645,7 @@ impl MusicBrainzClient {
         query: &str,
         limit: u8,
     ) -> Result<Vec<RecordingSearchHit>, String> {
+        self.ensure_enabled()?;
         let query = query.trim();
         if query.is_empty() {
             return Err("MusicBrainz recording search query cannot be empty.".to_string());
@@ -597,8 +735,7 @@ impl MusicBrainzClient {
             .clone()
             .ok_or_else(|| "MusicBrainz OAuth credential state is unavailable.".to_string())?;
 
-        if let Some(access_token) = credential.access_token.as_deref()
-            && !access_token.trim().is_empty()
+        if let Some(access_token) = credential_access_token(&credential)
             && !credential_is_expired(&credential)?
         {
             return Ok(access_token.to_string());
@@ -618,6 +755,13 @@ impl MusicBrainzClient {
             .await
             .clone()
             .ok_or_else(|| "MusicBrainz OAuth credential state is unavailable.".to_string())?;
+        validate_oauth_application(&self.config)?;
+        if current.client_secret.trim().is_empty() {
+            return Err(
+                "MusicBrainz OAuth refresh requires client_secret in the credential file."
+                    .to_string(),
+            );
+        }
         let refresh_token = current
             .refresh_token
             .as_deref()
@@ -688,6 +832,14 @@ impl MusicBrainzClient {
 
     fn recording_timeout(&self) -> Duration {
         Duration::from_secs_f64(self.config.mb_recording_timeout)
+    }
+
+    fn ensure_enabled(&self) -> Result<(), String> {
+        if self.config.enabled {
+            Ok(())
+        } else {
+            Err("MusicBrainz source is disabled by source policy.".to_string())
+        }
     }
 }
 
@@ -780,24 +932,131 @@ pub fn load_credential(path: &Path) -> Result<OAuthCredential, String> {
         )
     })?;
 
-    serde_json::from_str(&body).map_err(|error| {
+    let credential: OAuthCredential = serde_json::from_str(&body).map_err(|error| {
         format!(
             "Invalid MusicBrainz OAuth credential file {}: {error}",
             path.display()
         )
-    })
+    })?;
+    validate_options(&credential.options)?;
+    Ok(credential)
 }
 
 pub fn save_credential(path: &Path, credential: &OAuthCredential) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(credential)
+    validate_options(&credential.options)?;
+    let update = serde_json::to_value(credential)
+        .map_err(|error| format!("Unable to serialize MusicBrainz OAuth credential: {error}"))?;
+    let mut update = update.as_object().cloned().ok_or_else(|| {
+        "MusicBrainz OAuth credential did not serialize as an object.".to_string()
+    })?;
+    let mut merged = read_existing_object(path)?.unwrap_or_default();
+
+    // Token refresh/authentication writes must never reset source options.
+    if merged.contains_key("options") {
+        update.remove("options");
+    }
+    for (key, value) in update {
+        let empty_string = value.as_str().is_some_and(|text| text.is_empty());
+        if (value.is_null() || empty_string) && merged.contains_key(&key) {
+            continue;
+        }
+        merged.insert(key, value);
+    }
+
+    if !merged.contains_key("options") {
+        merged.insert(
+            "options".to_string(),
+            serde_json::to_value(&credential.options).map_err(|error| {
+                format!("Unable to serialize MusicBrainz runtime options: {error}")
+            })?,
+        );
+    }
+    let json = serde_json::to_string_pretty(&merged)
         .map_err(|error| format!("Unable to serialize MusicBrainz OAuth credential: {error}"))?;
     let body = format!("{json}\n");
 
     replace_text_file(path, &body, "MusicBrainz OAuth credential", |candidate| {
-        serde_json::from_str::<OAuthCredential>(candidate)
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(candidate)
+            .and_then(|_| serde_json::from_str::<OAuthCredential>(candidate).map(|_| ()))
+            .map_err(|error| format!("Invalid staged MusicBrainz OAuth credential: {error}"))
+    })
+}
+
+pub fn merge_credential_options(path: &Path, options: &MusicBrainzOptions) -> Result<(), String> {
+    validate_options(options)?;
+    let mut document = read_existing_object(path)?.ok_or_else(|| {
+        format!(
+            "MusicBrainz credential file does not exist; refusing to create an options-only credential: {}",
+            path.display()
+        )
+    })?;
+    let mut option_document = document
+        .get("options")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    option_document.insert(
+        "retry_max".to_string(),
+        serde_json::json!(options.retry_max),
+    );
+    option_document.insert(
+        "min_delay".to_string(),
+        serde_json::json!(options.min_delay),
+    );
+    option_document.insert(
+        "recording_timeout".to_string(),
+        serde_json::json!(options.recording_timeout),
+    );
+    document.insert(
+        "options".to_string(),
+        serde_json::Value::Object(option_document),
+    );
+    let body = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&document)
+            .map_err(|error| format!("Unable to serialize MusicBrainz runtime options: {error}"))?
+    );
+    replace_text_file(path, &body, "MusicBrainz OAuth credential", |candidate| {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(candidate)
             .map(|_| ())
             .map_err(|error| format!("Invalid staged MusicBrainz OAuth credential: {error}"))
     })
+}
+
+fn read_existing_object(
+    path: &Path,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    recover_backup_if_needed(path, "MusicBrainz OAuth credential")?;
+    let body = std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Unable to read MusicBrainz OAuth credential file {}: {error}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&body)
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "Invalid MusicBrainz OAuth credential file {}: {error}",
+                path.display()
+            )
+        })
+}
+
+fn validate_options(options: &MusicBrainzOptions) -> Result<(), String> {
+    if options.retry_max > 20 {
+        return Err("MusicBrainz retry_max must be between 0 and 20.".to_string());
+    }
+    if !options.min_delay.is_finite() || options.min_delay <= 0.0 {
+        return Err("MusicBrainz min_delay must be a finite number greater than 0.".to_string());
+    }
+    if options.recording_timeout == 0 {
+        return Err("MusicBrainz recording_timeout must be greater than 0.".to_string());
+    }
+    Ok(())
 }
 
 fn credential_from_token_response(
@@ -818,10 +1077,24 @@ fn credential_from_token_response(
 fn credential_is_expired(credential: &OAuthCredential) -> Result<bool, String> {
     let expires_at = match credential.expires_at_unix {
         Some(value) => value,
-        None => return Ok(true),
+        None => return Ok(false),
     };
     let now = unix_now()?;
     Ok(now.saturating_add(EXPIRY_SAFETY_SECONDS) >= expires_at)
+}
+
+fn credential_access_token(credential: &OAuthCredential) -> Option<&str> {
+    credential
+        .access_token
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            credential
+                .extra
+                .get("token")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        })
 }
 
 fn unix_now() -> Result<u64, String> {
@@ -886,20 +1159,30 @@ fn validate_config(config: &MusicBrainzConfig) -> Result<(), String> {
             "MusicBrainz mb_recording_timeout must be a finite number greater than 0.".to_string(),
         );
     }
-    if !config.oauth {
-        return Ok(());
+    if config.token_file.trim().is_empty() && config.oauth {
+        return Err("MusicBrainz OAuth is enabled but token_file is empty.".to_string());
     }
+    Ok(())
+}
+
+fn validate_oauth_application(config: &MusicBrainzConfig) -> Result<(), String> {
     if config.client_id.trim().is_empty() {
-        return Err("MusicBrainz OAuth is enabled but client_id is empty.".to_string());
+        return Err(
+            "MusicBrainz OAuth authorization requires client_id in the credential file."
+                .to_string(),
+        );
     }
     if config.callback_uri.trim().is_empty() {
-        return Err("MusicBrainz OAuth is enabled but callback_uri is empty.".to_string());
+        return Err(
+            "MusicBrainz OAuth authorization requires callback_uri in the credential file."
+                .to_string(),
+        );
     }
     if config.scope.trim().is_empty() {
-        return Err("MusicBrainz OAuth is enabled but scope is empty.".to_string());
-    }
-    if config.token_file.trim().is_empty() {
-        return Err("MusicBrainz OAuth is enabled but token_file is empty.".to_string());
+        return Err(
+            "MusicBrainz OAuth authorization requires oauth_scope in the credential file."
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -932,12 +1215,10 @@ mod tests {
         let dir = TempDir::new().expect("temporary secure directory should create");
         let path = dir.path().join("musicbrainz.json");
         let credential = OAuthCredential {
+            oauth_enabled: true,
+            client_id: "fixture-client".to_string(),
             client_secret: "fixture-secret".to_string(),
-            access_token: Some("fixture-access".to_string()),
-            refresh_token: Some("fixture-refresh".to_string()),
-            token_type: Some("Bearer".to_string()),
-            expires_at_unix: Some(u64::MAX),
-            scope: Some("profile".to_string()),
+            ..OAuthCredential::default()
         };
         save_credential(&path, &credential).expect("fixture credential should save");
         (dir, path)
@@ -946,7 +1227,7 @@ mod tests {
     #[test]
     fn oauth_is_optional_by_default() {
         let config = MusicBrainzConfig::default();
-        assert_eq!(config.retry_max, 2);
+        assert_eq!(config.retry_max, 4);
         assert_eq!(config.mb_min_delay, 1.05);
         assert_eq!(config.mb_recording_timeout, 7.0);
         assert!(!config.oauth);
@@ -974,17 +1255,140 @@ mod tests {
     }
 
     #[test]
-    fn oauth_client_uses_configured_credential_file() {
+    fn oauth_client_uses_fixed_credential_json_without_toml_oauth_fields() {
         let (_dir, path) = secure_fixture();
         let config = MusicBrainzConfig {
-            oauth: true,
-            client_id: "fixture-client".to_string(),
             token_file: path.to_string_lossy().into_owned(),
             ..MusicBrainzConfig::default()
         };
         let client = MusicBrainzClient::new(&config).expect("OAuth client should create");
         assert_eq!(client.request_mode(), &RequestMode::OAuthBearer);
         assert_eq!(client.token_path(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn adding_default_options_preserves_existing_token_and_unknown_fields() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("musicbrainz.json");
+        std::fs::write(
+            &path,
+            r#"{"token":"fixture-token","future_auth":{"nonce":"keep-me"}}"#,
+        )
+        .unwrap();
+
+        merge_credential_options(&path, &MusicBrainzOptions::default()).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["token"], "fixture-token");
+        assert_eq!(saved["future_auth"]["nonce"], "keep-me");
+        assert_eq!(saved["options"]["retry_max"], 4);
+        assert_eq!(saved["options"]["min_delay"], 1.05);
+        assert_eq!(saved["options"]["recording_timeout"], 7);
+    }
+
+    #[test]
+    fn legacy_token_only_document_remains_an_authenticated_client() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("musicbrainz.json");
+        std::fs::write(&path, r#"{"token":"fixture-token"}"#).unwrap();
+        let config = MusicBrainzConfig {
+            token_file: path.to_string_lossy().into_owned(),
+            ..MusicBrainzConfig::default()
+        };
+        let client = MusicBrainzClient::new(&config).unwrap();
+        assert_eq!(client.request_mode(), &RequestMode::OAuthBearer);
+    }
+
+    #[test]
+    fn custom_options_and_unknown_nested_option_survive_authentication_save() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("musicbrainz.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "oauth_enabled": true,
+                "client_id": "fixture-client",
+                "client_secret": "fixture-secret",
+                "access_token": "fixture-access",
+                "options": {
+                    "retry_max": 9,
+                    "min_delay": 1.75,
+                    "recording_timeout": 13,
+                    "future_option": "keep-me"
+                },
+                "future_root": "keep-root"
+            }"#,
+        )
+        .unwrap();
+
+        let mut credential = load_credential(&path).unwrap();
+        assert_eq!(credential.options.retry_max, 9);
+        assert_eq!(credential.options.min_delay, 1.75);
+        assert_eq!(credential.options.recording_timeout, 13);
+        credential.refresh_token = Some("fixture-refresh".to_string());
+        save_credential(&path, &credential).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["access_token"], "fixture-access");
+        assert_eq!(saved["options"]["retry_max"], 9);
+        assert_eq!(saved["options"]["min_delay"], 1.75);
+        assert_eq!(saved["options"]["recording_timeout"], 13);
+        assert_eq!(saved["options"]["future_option"], "keep-me");
+        assert_eq!(saved["future_root"], "keep-root");
+    }
+
+    #[test]
+    fn changing_only_retry_max_preserves_other_options_and_token() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("musicbrainz.json");
+        std::fs::write(
+            &path,
+            r#"{"token":"fixture-token","options":{"retry_max":6,"min_delay":1.25,"recording_timeout":11}}"#,
+        )
+        .unwrap();
+        let mut options = load_credential(&path).unwrap().options;
+        options.retry_max = 8;
+        merge_credential_options(&path, &options).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["token"], "fixture-token");
+        assert_eq!(saved["options"]["retry_max"], 8);
+        assert_eq!(saved["options"]["min_delay"], 1.25);
+        assert_eq!(saved["options"]["recording_timeout"], 11);
+    }
+
+    #[test]
+    fn source_override_activates_json_runtime_options() {
+        let (_dir, path) = secure_fixture();
+        let mut credential = load_credential(&path).unwrap();
+        credential.options.retry_max = 7;
+        credential.options.min_delay = 1.45;
+        credential.options.recording_timeout = 12;
+        merge_credential_options(&path, &credential.options).unwrap();
+        let config = MusicBrainzConfig {
+            source_override: true,
+            token_file: path.to_string_lossy().into_owned(),
+            ..MusicBrainzConfig::default()
+        };
+        let client = MusicBrainzClient::new(&config).unwrap();
+        assert_eq!(client.retry_max(), 7);
+        assert_eq!(client.min_delay(), 1.45);
+        assert_eq!(client.recording_timeout_seconds(), 12.0);
+    }
+
+    #[test]
+    fn disabled_source_policy_prevents_musicbrainz_queries_without_touching_credentials() {
+        let (_dir, path) = secure_fixture();
+        let config = MusicBrainzConfig {
+            enabled: false,
+            token_file: path.to_string_lossy().into_owned(),
+            ..MusicBrainzConfig::default()
+        };
+        let client = MusicBrainzClient::new(&config).unwrap();
+        assert_eq!(client.request_mode(), &RequestMode::Disabled);
+        assert!(!client.is_enabled());
     }
 
     #[test]

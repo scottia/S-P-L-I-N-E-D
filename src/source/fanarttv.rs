@@ -1,4 +1,4 @@
-use crate::credentials::{load_fanarttv_credential, resolve_credential_path};
+use crate::credentials::{FANARTTV_API_VERSION, load_fanarttv_credential, resolve_credential_path};
 use crate::source::{
     ArtworkProvider, ArtworkQuery, ArtworkReference, ProviderContext, ProviderDiscoveryFuture,
 };
@@ -7,11 +7,18 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const API_BASE_URL: &str = "https://webservice.fanart.tv/v3/music/albums";
+const API_BASE_URL: &str = "https://webservice.fanart.tv/v3.2/music/albums";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Deserialize)]
 struct AlbumResponse {
+    #[serde(default)]
+    albums: Vec<Album>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Album {
+    release_group_id: String,
     #[serde(default)]
     albumcover: Vec<AlbumCover>,
 }
@@ -69,7 +76,21 @@ impl FanartTv {
         }
 
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err("Fanart.tv credentials were rejected.".to_string());
+            return Err(format!(
+                "Fanart.tv {FANARTTV_API_VERSION} credentials were rejected."
+            ));
+        }
+
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| format!(" Retry after {value} seconds."))
+                .unwrap_or_default();
+            return Err(format!(
+                "Fanart.tv {FANARTTV_API_VERSION} rate limit was reached.{retry_after}"
+            ));
         }
 
         if status != StatusCode::OK {
@@ -92,8 +113,14 @@ impl FanartTv {
         })?;
 
         Ok(payload
-            .albumcover
+            .albums
             .into_iter()
+            .filter(|album| {
+                album
+                    .release_group_id
+                    .eq_ignore_ascii_case(release_group_mbid)
+            })
+            .flat_map(|album| album.albumcover)
             .filter(|cover| !cover.url.trim().is_empty())
             .map(|cover| ArtworkReference {
                 source: "fanarttv".to_string(),
@@ -145,10 +172,19 @@ mod tests {
     fn album_response_parses_album_covers() {
         let json = r#"
         {
-            "albumcover": [
+            "name": "Fixture Artist",
+            "image_count": 1,
+            "albums": [
                 {
-                    "id": "12345",
-                    "url": "https://assets.fanart.tv/fanart/music/example/albumcover/example.jpg"
+                    "release_group_id": "1b022e01-4da6-387b-8658-8678046e4cef",
+                    "albumcover": [
+                        {
+                            "id": "12345",
+                            "url": "https://assets.fanart.tv/fanart/music/example/albumcover/example.jpg",
+                            "width": "1000",
+                            "height": "1000"
+                        }
+                    ]
                 }
             ]
         }
@@ -156,14 +192,21 @@ mod tests {
 
         let response: AlbumResponse = serde_json::from_str(json).expect("fixture should parse");
 
-        assert_eq!(response.albumcover.len(), 1);
-        assert_eq!(response.albumcover[0].id, "12345");
-        assert!(response.albumcover[0].url.contains("fanart.tv"));
+        assert_eq!(response.albums.len(), 1);
+        assert_eq!(response.albums[0].albumcover.len(), 1);
+        assert_eq!(response.albums[0].albumcover[0].id, "12345");
+        assert!(response.albums[0].albumcover[0].url.contains("fanart.tv"));
     }
 
     #[test]
-    fn missing_albumcover_defaults_to_empty() {
+    fn missing_albums_defaults_to_empty() {
         let response: AlbumResponse = serde_json::from_str("{}").expect("fixture should parse");
-        assert!(response.albumcover.is_empty());
+        assert!(response.albums.is_empty());
+    }
+
+    #[test]
+    fn v3_object_shaped_albums_are_not_accepted_as_v32() {
+        let json = r#"{"albums":{"release-group-id":{"albumcover":[]}}}"#;
+        assert!(serde_json::from_str::<AlbumResponse>(json).is_err());
     }
 }

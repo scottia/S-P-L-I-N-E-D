@@ -65,9 +65,8 @@ fn apply_user_only_file_protection(_path: &Path) -> bool {
 
 fn warn_unavailable_credential_protection() {
     println!();
-    println!("This storage location does not support SPLINED's normal");
-    println!("user-only file protection. Consider storing credentials");
-    println!("in a private or encrypted location.");
+    println!("Credential file created; user-specific filesystem ACL protection");
+    println!("is unavailable on this storage location.");
 }
 
 pub fn recover_backup_if_needed(path: &Path, label: &str) -> Result<(), String> {

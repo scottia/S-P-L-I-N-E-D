@@ -3,12 +3,14 @@ use std::pin::Pin;
 
 pub mod coverartarchive;
 pub mod deezer;
+pub mod discogs;
 pub mod fanarttv;
 pub mod itunes;
 pub mod lastfm;
 
 use coverartarchive::CoverArtArchive;
 use deezer::Deezer;
+use discogs::Discogs;
 use fanarttv::FanartTv;
 use itunes::ITunes;
 use lastfm::LastFm;
@@ -63,13 +65,14 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn from_source_order(source_order: &[String]) -> Result<Self, String> {
-        Self::from_source_order_with_credentials(source_order, "", "")
+        Self::from_source_order_with_credentials(source_order, "", "", "")
     }
 
     pub fn from_source_order_with_credentials(
         source_order: &[String],
         fanarttv_credential_file: &str,
         lastfm_credential_file: &str,
+        discogs_credential_file: &str,
     ) -> Result<Self, String> {
         let mut providers: Vec<Box<dyn ArtworkProvider>> = Vec::new();
 
@@ -80,7 +83,7 @@ impl ProviderRegistry {
                 "fanarttv" => providers.push(Box::new(FanartTv::new(fanarttv_credential_file)?)),
                 "lastfm" => providers.push(Box::new(LastFm::new(lastfm_credential_file)?)),
                 "coverartarchive" => providers.push(Box::new(CoverArtArchive::new()?)),
-                "discogs" => {}
+                "discogs" => providers.push(Box::new(Discogs::new(discogs_credential_file)?)),
                 _ => {
                     return Err(format!(
                         "Unsupported SPLINED cover source in provider registry: {source}"
@@ -131,16 +134,22 @@ mod tests {
             "coverartarchive".to_string(),
             "discogs".to_string(),
         ];
-        let registry = ProviderRegistry::from_source_order(&source_order).unwrap();
+        let registry = ProviderRegistry::from_source_order_with_credentials(
+            &source_order,
+            "fanarttv.json",
+            "lastfm.json",
+            "discogs.json",
+        )
+        .unwrap();
         assert_eq!(
             registry.names(),
-            vec!["deezer", "itunes", "lastfm", "coverartarchive"]
+            vec!["deezer", "itunes", "lastfm", "coverartarchive", "discogs"]
         );
     }
 
     #[test]
     fn registry_can_be_empty_when_no_live_provider_is_enabled() {
-        let source_order = vec!["discogs".to_string()];
+        let source_order = Vec::new();
         let registry = ProviderRegistry::from_source_order(&source_order).unwrap();
         assert!(registry.is_empty());
     }

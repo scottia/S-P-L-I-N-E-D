@@ -8,7 +8,8 @@ use crate::source::coverartarchive::CoverArtArchive;
 use crate::source::{
     ArtworkProvider, ArtworkQuery, ArtworkReference, ProviderContext, ProviderRegistry,
 };
-use std::collections::HashSet;
+use crate::source_policy::{SourcePolicyConfig, best_candidate_index, reference_allowed};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -33,6 +34,14 @@ pub struct PipelineResult {
     pub candidates: Vec<PipelineCandidate>,
     pub best_index: Option<usize>,
     pub diagnostics: Vec<PipelineDiagnostic>,
+}
+
+#[derive(Clone, Copy)]
+pub struct RegistryPipelineOptions<'a> {
+    pub source_order: &'a [String],
+    pub range: &'a Range,
+    pub format_order: &'a [StaticFormat],
+    pub source_policies: &'a BTreeMap<String, SourcePolicyConfig>,
 }
 
 impl PipelineResult {
@@ -105,15 +114,19 @@ pub async fn run_registry_pipeline(
     source_order: &[String],
     range: &Range,
     format_order: &[StaticFormat],
+    source_policies: &BTreeMap<String, SourcePolicyConfig>,
 ) -> Result<PipelineResult, String> {
     let cache = DownloadCache::new()?;
     run_registry_pipeline_with_cache(
         registry,
         query,
         context,
-        source_order,
-        range,
-        format_order,
+        RegistryPipelineOptions {
+            source_order,
+            range,
+            format_order,
+            source_policies,
+        },
         &cache,
     )
     .await
@@ -191,41 +204,34 @@ pub async fn run_registry_pipeline_with_cache_dir(
     registry: &ProviderRegistry,
     query: &ArtworkQuery,
     context: &ProviderContext,
-    source_order: &[String],
-    range: &Range,
-    format_order: &[StaticFormat],
+    options: RegistryPipelineOptions<'_>,
     cache_dir: &Path,
 ) -> Result<PipelineResult, String> {
     prepare_persistent_cache_dir(cache_dir)?;
     let cache = DownloadCache::new_persistent(cache_dir)?;
 
-    run_registry_pipeline_with_cache(
-        registry,
-        query,
-        context,
-        source_order,
-        range,
-        format_order,
-        &cache,
-    )
-    .await
+    run_registry_pipeline_with_cache(registry, query, context, options, &cache).await
 }
 
 async fn run_registry_pipeline_with_cache(
     registry: &ProviderRegistry,
     query: &ArtworkQuery,
     context: &ProviderContext,
-    source_order: &[String],
-    range: &Range,
-    format_order: &[StaticFormat],
+    options: RegistryPipelineOptions<'_>,
     cache: &DownloadCache,
 ) -> Result<PipelineResult, String> {
     let (references, mut discovery_diagnostics) =
         discover_all_providers(registry, query, context).await;
 
-    let mut result =
-        run_artwork_pipeline_with_cache(references, source_order, range, format_order, cache)
-            .await?;
+    let mut result = run_artwork_pipeline_with_cache(
+        references,
+        options.source_order,
+        options.range,
+        options.format_order,
+        Some(options.source_policies),
+        cache,
+    )
+    .await?;
     discovery_diagnostics.append(&mut result.diagnostics);
     result.diagnostics = discovery_diagnostics;
 
@@ -251,7 +257,8 @@ pub async fn run_artwork_pipeline(
     format_order: &[StaticFormat],
 ) -> Result<PipelineResult, String> {
     let cache = DownloadCache::new()?;
-    run_artwork_pipeline_with_cache(references, source_order, range, format_order, &cache).await
+    run_artwork_pipeline_with_cache(references, source_order, range, format_order, None, &cache)
+        .await
 }
 
 async fn run_artwork_pipeline_with_cache(
@@ -259,13 +266,17 @@ async fn run_artwork_pipeline_with_cache(
     source_order: &[String],
     range: &Range,
     format_order: &[StaticFormat],
+    source_policies: Option<&BTreeMap<String, SourcePolicyConfig>>,
     cache: &DownloadCache,
 ) -> Result<PipelineResult, String> {
     let mut candidates = Vec::new();
     let mut diagnostics = Vec::new();
 
     for reference in references {
-        if !reference.front {
+        let allowed = source_policies
+            .map(|policies| reference_allowed(policies, &reference.source, reference.front))
+            .unwrap_or(reference.front);
+        if !allowed {
             continue;
         }
 
@@ -307,11 +318,14 @@ async fn run_artwork_pipeline_with_cache(
         .map(|item| item.downloaded.candidate.clone())
         .collect();
 
-    let best_index = best_candidate(&candidate_values, range, format_order).and_then(|best| {
-        candidate_values
-            .iter()
-            .position(|candidate| candidate == best)
-    });
+    let best_index = match source_policies {
+        Some(policies) => best_candidate_index(&candidate_values, range, format_order, policies),
+        None => best_candidate(&candidate_values, range, format_order).and_then(|best| {
+            candidate_values
+                .iter()
+                .position(|candidate| candidate == best)
+        }),
+    };
 
     Ok(PipelineResult {
         candidates,

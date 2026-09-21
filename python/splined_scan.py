@@ -73,7 +73,7 @@ def candidate_key(candidate: core.Candidate, cfg: dict[str, Any], format_order: 
         1 if projected["converted"] else 0,
     )
     return (
-        0 if projected["acceptable"] else 1,
+        {"accept": 0, "fallback": 1, "reject": 2}.get(projected["policy_status"], 2),
         projected["distance"],
         range_rank,
         transform_penalty,
@@ -937,7 +937,7 @@ def run_scan_dir(
     sample_dir = core.prepare_samples(cache)
     timeout_hours = core.scan_timeout_hours(cfg)
     completion_path = core.scan_completion_history_path(history_dir)
-    completion_history = core.load_scan_completion_history(completion_path)
+    completion_history = core.load_scan_completion_history(completion_path, cfg)
     completion_path.parent.mkdir(parents=True, exist_ok=True)
 
     bypass_path = bypass_history_path(history_dir)
@@ -971,7 +971,11 @@ def run_scan_dir(
     _, mbmode = core.mb_headers(config_file, cfg)
     summary = core.Summary(albums=len(discovered_albums), postponed=len(postponed_albums))
     history_path = core.source_history_path(history_dir)
-    source_history = core.load_source_history(history_path)
+    source_history = (
+        core.load_source_history(history_path)
+        if bool(core.section(cfg, "history").get("enabled", True))
+        else core.empty_source_history()
+    )
     history_path.parent.mkdir(parents=True, exist_ok=True)
     api_queried: set[str] = set()
 
@@ -1291,7 +1295,7 @@ def run_scan_dir(
                         track_count=None,
                     )
 
-                remote, download_diag = core.download_candidates(http, refs, sources, cache)
+                remote, download_diag = core.download_candidates(http, refs, sources, cache, cfg)
                 diagnostics += download_diag
                 candidates = local_fallback + remote
 

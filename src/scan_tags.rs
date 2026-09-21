@@ -1,7 +1,11 @@
 use crate::scan::AlbumDirectory;
 use crate::scan_musicbrainz::LocalTrackEvidence;
-use lofty::file::{TaggedFile, TaggedFileExt};
+use lofty::config::ParseOptions;
+use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
+use lofty::id3::v2::{Frame, Id3v2Tag};
+use lofty::mpeg::MpegFile;
 use lofty::tag::ItemKey;
+use std::fs::File;
 use std::path::Path;
 
 pub fn read_album_track_evidence(
@@ -31,6 +35,8 @@ fn evidence_from_tagged_file(
 ) -> Result<LocalTrackEvidence, String> {
     let title = read_required(tagged_file, &ItemKey::TrackTitle, "TITLE", path)?;
     let artist = read_required(tagged_file, &ItemKey::TrackArtist, "ARTIST", path)?;
+    let musicbrainz_album_id = read_optional(tagged_file, &ItemKey::MusicBrainzReleaseId)
+        .or_else(|| read_mpeg_txxx_album_id(path, tagged_file.file_type()));
 
     Ok(LocalTrackEvidence {
         path: path.to_path_buf(),
@@ -38,10 +44,55 @@ fn evidence_from_tagged_file(
         artist,
         album: read_optional(tagged_file, &ItemKey::AlbumTitle),
         album_artist: read_optional(tagged_file, &ItemKey::AlbumArtist),
-        musicbrainz_album_id: read_optional(tagged_file, &ItemKey::MusicBrainzReleaseId),
+        musicbrainz_album_id,
         musicbrainz_track_id: read_optional(tagged_file, &ItemKey::MusicBrainzRecordingId),
         compilation: read_optional(tagged_file, &ItemKey::FlagCompilation),
     })
+}
+
+// Mp3tag and other taggers commonly store the release MBID in an ID3v2 TXXX
+// frame named MUSICBRAINZ_ALBUMID. Lofty's generic ID3 mapping recognizes the
+// canonical spaced name, but intentionally discards unmapped TXXX frames while
+// converting to TaggedFile. Read the concrete ID3 tag as a compatibility
+// fallback so the native Windows core matches SPLINED's Python behavior.
+fn read_mpeg_txxx_album_id(path: &Path, file_type: FileType) -> Option<String> {
+    if file_type != FileType::Mpeg {
+        return None;
+    }
+
+    let mut file = File::open(path).ok()?;
+    let mpeg = MpegFile::read_from(
+        &mut file,
+        ParseOptions::new()
+            .read_properties(false)
+            .read_cover_art(false),
+    )
+    .ok()?;
+
+    musicbrainz_album_id_from_id3v2(mpeg.id3v2()?)
+}
+
+fn musicbrainz_album_id_from_id3v2(tag: &Id3v2Tag) -> Option<String> {
+    tag.into_iter().find_map(|frame| match frame {
+        Frame::UserText(frame) if is_musicbrainz_album_id_description(&frame.description) => frame
+            .content
+            .split('\0')
+            .find_map(|value| clean_value(Some(value))),
+        _ => None,
+    })
+}
+
+fn is_musicbrainz_album_id_description(description: &str) -> bool {
+    let normalized: String = description
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+
+    matches!(
+        normalized.as_str(),
+        "musicbrainzalbumid" | "musicbrainzreleaseid"
+    )
 }
 
 fn read_required(
@@ -82,6 +133,7 @@ fn clean_value(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use lofty::file::FileType;
+    use lofty::id3::v2::Id3v2Tag;
     use lofty::tag::{ItemKey, Tag, TagType};
 
     const RELEASE_ID: &str = "11111111-1111-1111-1111-111111111111";
@@ -131,6 +183,42 @@ mod tests {
     #[test]
     fn maps_id3v2_common_musicbrainz_and_compilation_fields() {
         assert_expected_evidence(TagType::Id3v2, FileType::Mpeg, None);
+    }
+
+    #[test]
+    fn maps_mp3tag_musicbrainz_albumid_txxx_variant() {
+        let mut tag = Id3v2Tag::new();
+        tag.insert_user_text("MUSICBRAINZ_ALBUMID".to_string(), RELEASE_ID.to_string());
+
+        assert_eq!(
+            musicbrainz_album_id_from_id3v2(&tag).as_deref(),
+            Some(RELEASE_ID)
+        );
+    }
+
+    #[test]
+    fn maps_case_and_separator_variants_without_accepting_release_group_id() {
+        for description in [
+            "MusicBrainz Album Id",
+            "MusicBrainz Album ID",
+            "musicbrainz_albumid",
+            "MUSICBRAINZ-RELEASE-ID",
+        ] {
+            let mut tag = Id3v2Tag::new();
+            tag.insert_user_text(description.to_string(), RELEASE_ID.to_string());
+            assert_eq!(
+                musicbrainz_album_id_from_id3v2(&tag).as_deref(),
+                Some(RELEASE_ID),
+                "description {description:?} should be recognized"
+            );
+        }
+
+        let mut release_group = Id3v2Tag::new();
+        release_group.insert_user_text(
+            "MUSICBRAINZ_RELEASEGROUPID".to_string(),
+            RELEASE_ID.to_string(),
+        );
+        assert_eq!(musicbrainz_album_id_from_id3v2(&release_group), None);
     }
 
     #[test]

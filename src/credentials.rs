@@ -12,11 +12,30 @@ pub struct LastFmCredential {
     pub subscriber: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub const FANARTTV_API_VERSION: &str = "v3.2";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FanartTvCredential {
     pub api_key: String,
     pub client_key: String,
+    pub api_version: String,
+}
+
+impl Default for FanartTvCredential {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            client_key: String::new(),
+            api_version: FANARTTV_API_VERSION.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct DiscogsCredential {
+    pub token: String,
 }
 
 // Portable policy: credential paths must come from the portable configuration.
@@ -77,6 +96,33 @@ pub fn load_fanarttv_credential(path: &Path) -> Result<FanartTvCredential, Strin
     Ok(credential)
 }
 
+pub fn load_discogs_credential(path: &Path) -> Result<DiscogsCredential, String> {
+    recover_backup_if_needed(path, "Discogs credential")?;
+
+    let body = std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Unable to read Discogs credential file {}: {error}",
+            path.display()
+        )
+    })?;
+
+    let credential: DiscogsCredential = serde_json::from_str(&body).map_err(|error| {
+        format!(
+            "Invalid Discogs credential file {}: {error}",
+            path.display()
+        )
+    })?;
+
+    if credential.token.trim().is_empty() {
+        return Err(format!(
+            "Discogs credential file contains no token: {}",
+            path.display()
+        ));
+    }
+
+    Ok(credential)
+}
+
 pub fn save_lastfm_credential(path: &Path, credential: &LastFmCredential) -> Result<(), String> {
     validate_lastfm_credential(credential, path)?;
 
@@ -126,6 +172,13 @@ fn validate_fanarttv_credential(
     if credential.api_key.trim().is_empty() {
         return Err(format!(
             "Fanart.tv credential file contains no api_key: {}",
+            path.display()
+        ));
+    }
+
+    if credential.api_version.trim() != FANARTTV_API_VERSION {
+        return Err(format!(
+            "Fanart.tv credential file must use api_version \"{FANARTTV_API_VERSION}\": {}",
             path.display()
         ));
     }
@@ -204,6 +257,7 @@ mod tests {
         let credential = FanartTvCredential {
             api_key: "fixture-project-key".to_string(),
             client_key: "fixture-client-key".to_string(),
+            ..FanartTvCredential::default()
         };
 
         save_fanarttv_credential(&path, &credential).expect("credential should save");
@@ -218,6 +272,7 @@ mod tests {
         let credential = FanartTvCredential {
             api_key: "fixture-project-key".to_string(),
             client_key: String::new(),
+            ..FanartTvCredential::default()
         };
         assert!(save_fanarttv_credential(&path, &credential).is_ok());
     }
@@ -229,8 +284,47 @@ mod tests {
         let credential = FanartTvCredential {
             api_key: String::new(),
             client_key: "fixture-client-key".to_string(),
+            ..FanartTvCredential::default()
         };
         assert!(save_fanarttv_credential(&path, &credential).is_err());
+    }
+
+    #[test]
+    fn legacy_fanarttv_file_defaults_to_v32() {
+        let dir = TempDir::new().expect("temp directory should create");
+        let path = dir.path().join("fanarttv.json");
+        std::fs::write(
+            &path,
+            r#"{"api_key":"fixture-project-key","client_key":"fixture-client-key"}"#,
+        )
+        .expect("fixture should write");
+
+        let loaded = load_fanarttv_credential(&path).expect("legacy credential should load");
+        assert_eq!(loaded.api_version, FANARTTV_API_VERSION);
+    }
+
+    #[test]
+    fn fanarttv_rejects_non_v32_version() {
+        let dir = TempDir::new().expect("temp directory should create");
+        let path = dir.path().join("fanarttv.json");
+        let credential = FanartTvCredential {
+            api_key: "fixture-project-key".to_string(),
+            api_version: "v3".to_string(),
+            ..FanartTvCredential::default()
+        };
+
+        assert!(save_fanarttv_credential(&path, &credential).is_err());
+    }
+
+    #[test]
+    fn discogs_token_file_loads() {
+        let dir = TempDir::new().expect("temp directory should create");
+        let path = dir.path().join("discogs.json");
+        std::fs::write(&path, r#"{"token":"fixture-discogs-token"}"#)
+            .expect("fixture should write");
+
+        let loaded = load_discogs_credential(&path).expect("credential should load");
+        assert_eq!(loaded.token, "fixture-discogs-token");
     }
 
     #[test]

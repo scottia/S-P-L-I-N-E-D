@@ -1,4 +1,5 @@
 use clap::{ArgAction, Parser};
+use std::path::PathBuf;
 
 fn bare_command_scan_dir() -> bool {
     std::env::args_os().len() == 1
@@ -13,6 +14,10 @@ fn bare_command_scan_dir() -> bool {
     disable_version_flag = true
 )]
 pub struct Cli {
+    /// Use an explicit configuration file (GUI/integration use)
+    #[arg(long, value_name = "PATH")]
+    pub config_path: Option<PathBuf>,
+
     /// Open SPLINED configuration
     #[arg(long)]
     pub config: bool,
@@ -24,6 +29,10 @@ pub struct Cli {
     /// Scan the configured scan directory; bare `splined` scans the current directory
     #[arg(long, conflicts_with = "scan", default_value_t = bare_command_scan_dir())]
     pub scan_dir: bool,
+
+    /// Scan one explicit selected album/directory without rewriting config
+    #[arg(long, value_name = "PATH", conflicts_with = "scan")]
+    pub scan_dir_path: Option<PathBuf>,
 
     /// Preserve existing artwork instead of replacing it
     #[arg(short = 'p', long, value_name = "BOOL")]

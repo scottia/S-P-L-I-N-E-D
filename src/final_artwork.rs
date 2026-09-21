@@ -1,5 +1,5 @@
 use crate::candidate::{Candidate, StaticFormat};
-use crate::config::Mode;
+use crate::config::{Mode, OutputConfig};
 use crate::evaluate::is_acceptable;
 use crate::inspect::inspect_image;
 use crate::range::Range;
@@ -12,6 +12,8 @@ use std::io::Cursor;
 use std::path::Path;
 
 const JPEG_QUALITY: u8 = 95;
+const SQUARE_EQUIVALENT_TOLERANCE: f64 = 0.005;
+const MAX_AUTO_CROP_DEVIATION: f64 = 0.02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreparedArtworkInfo {
@@ -48,7 +50,191 @@ pub fn prepare_final_artwork(
     range: &Range,
     target_format: StaticFormat,
 ) -> Result<PreparedArtwork, String> {
-    if !is_acceptable(candidate, range) {
+    prepare_final_artwork_inner(candidate, source_path, range, target_format, false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectedArtwork {
+    pub width: u32,
+    pub height: u32,
+    pub cropped: bool,
+    pub resized: bool,
+    pub upscaled: bool,
+    pub acceptable: bool,
+}
+
+/// Prepare an explicit manual selection. The Python workflow permits numbered
+/// fallback selections outside the normal automatic range while still applying
+/// the configured output conversion and validation rules.
+pub fn prepare_explicit_artwork(
+    candidate: &Candidate,
+    source_path: &Path,
+    range: &Range,
+    target_format: StaticFormat,
+) -> Result<PreparedArtwork, String> {
+    prepare_final_artwork_inner(candidate, source_path, range, target_format, true)
+}
+
+pub fn prepare_configured_artwork(
+    candidate: &Candidate,
+    source_path: &Path,
+    range: &Range,
+    target_format: StaticFormat,
+    output: &OutputConfig,
+    allow_outside_range: bool,
+) -> Result<PreparedArtwork, String> {
+    let (target_width, target_height, crop_square, resized) =
+        projected_dimensions(candidate, range, output);
+    let projected_short_side = target_width.min(target_height);
+    let projected_acceptable =
+        projected_short_side >= range.min && projected_short_side <= range.ladder;
+    if !allow_outside_range && !projected_acceptable {
+        return Err(format!(
+            "Selected artwork candidate is outside the accepted SPLINED range after output policy: {}x{}.",
+            target_width, target_height
+        ));
+    }
+
+    let source = inspect_image(source_path)?;
+    if source.width != candidate.width
+        || source.height != candidate.height
+        || source.format != candidate.format
+    {
+        return Err(format!(
+            "Selected artwork changed after evaluation: expected {}x{} {:?}, found {}x{} {:?}.",
+            candidate.width,
+            candidate.height,
+            candidate.format,
+            source.width,
+            source.height,
+            source.format
+        ));
+    }
+
+    let converted = candidate.format != target_format;
+    let bytes = if !crop_square && !resized && !converted {
+        fs::read(source_path).map_err(|error| {
+            format!(
+                "Unable to read selected artwork {}: {error}",
+                source_path.display()
+            )
+        })?
+    } else {
+        let mut image = ImageReader::open(source_path)
+            .map_err(|error| {
+                format!(
+                    "Unable to open selected artwork {}: {error}",
+                    source_path.display()
+                )
+            })?
+            .with_guessed_format()
+            .map_err(|error| {
+                format!(
+                    "Unable to identify selected artwork {}: {error}",
+                    source_path.display()
+                )
+            })?
+            .decode()
+            .map_err(|error| {
+                format!(
+                    "Unable to decode selected artwork {}: {error}",
+                    source_path.display()
+                )
+            })?;
+
+        if crop_square {
+            let side = image.width().min(image.height());
+            let left = (image.width() - side) / 2;
+            let top = (image.height() - side) / 2;
+            image = image.crop_imm(left, top, side, side);
+        }
+        if image.width() != target_width || image.height() != target_height {
+            image = image.resize_exact(target_width, target_height, FilterType::Lanczos3);
+        }
+        encode_image(&image, target_format)?
+    };
+
+    let info = PreparedArtworkInfo {
+        width: target_width,
+        height: target_height,
+        format: target_format,
+        resized: resized || crop_square,
+        converted,
+    };
+    validate_prepared_bytes(&bytes, info)?;
+    Ok(PreparedArtwork { bytes, info })
+}
+
+pub fn project_configured_artwork(
+    candidate: &Candidate,
+    range: &Range,
+    output: &OutputConfig,
+) -> ProjectedArtwork {
+    let source_short_side = candidate.short_side();
+    let (width, height, cropped, resized) = projected_dimensions(candidate, range, output);
+    let short_side = width.min(height);
+    ProjectedArtwork {
+        width,
+        height,
+        cropped,
+        resized,
+        upscaled: resized && source_short_side < range.ideal,
+        acceptable: short_side >= range.min && short_side <= range.ladder,
+    }
+}
+
+fn projected_dimensions(
+    candidate: &Candidate,
+    range: &Range,
+    output: &OutputConfig,
+) -> (u32, u32, bool, bool) {
+    if !output.evaluate_final_image {
+        return (candidate.width, candidate.height, false, false);
+    }
+
+    let mut width = candidate.width;
+    let mut height = candidate.height;
+    let longest = width.max(height);
+    let deviation = if longest == 0 {
+        0.0
+    } else {
+        f64::from(width.abs_diff(height)) / f64::from(longest)
+    };
+    let crop_square = output.square
+        && output.square_mode == "crop"
+        && width != height
+        && deviation > SQUARE_EQUIVALENT_TOLERANCE
+        && deviation <= MAX_AUTO_CROP_DEVIATION;
+    if crop_square {
+        let side = width.min(height);
+        width = side;
+        height = side;
+        if output.square_round_to > 1 && side >= output.square_round_to {
+            let rounded = (side / output.square_round_to) * output.square_round_to;
+            if rounded > 0 {
+                width = rounded;
+                height = rounded;
+            }
+        }
+    }
+
+    let short_side = width.min(height);
+    let resize =
+        short_side > range.ideal || (short_side < range.ideal && output.upscale_below_ideal);
+    if resize && short_side > 0 {
+        (width, height) = dimensions_for_short_side(width, height, range.ideal);
+    }
+    (width, height, crop_square, resize)
+}
+
+fn prepare_final_artwork_inner(
+    candidate: &Candidate,
+    source_path: &Path,
+    range: &Range,
+    target_format: StaticFormat,
+    allow_outside_range: bool,
+) -> Result<PreparedArtwork, String> {
+    if !allow_outside_range && !is_acceptable(candidate, range) {
         return Err(format!(
             "Selected artwork candidate is outside the accepted SPLINED range: {}x{}.",
             candidate.width, candidate.height

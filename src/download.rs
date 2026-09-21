@@ -239,6 +239,20 @@ fn append_with_limit(target: &mut Vec<u8>, chunk: &[u8], url: &str) -> Result<()
 }
 
 impl DownloadedCandidate {
+    pub fn from_existing_path(
+        source: impl Into<String>,
+        path: PathBuf,
+        source_priority: usize,
+        url: impl Into<String>,
+    ) -> Result<Self, String> {
+        let candidate = Candidate::from_file(source, &path, source_priority)?;
+        Ok(Self {
+            candidate,
+            url: url.into(),
+            file: CandidateFile::Persistent(path),
+        })
+    }
+
     pub fn path(&self) -> &Path {
         match &self.file {
             CandidateFile::Temporary(file) => file.path(),

@@ -306,6 +306,46 @@ ladder = 3600
     }
 
     #[test]
+    fn config_v4_migrates_to_v5_with_policy_and_retention_defaults() {
+        let dir = TempDir::new().expect("temp directory should create");
+        let path = dir.path().join("config.toml");
+        let original = r#"
+config_version = 4
+mode = "read"
+verbosity = "info"
+
+[credentials]
+credential_dir = "private-credentials"
+
+[sources]
+cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs"]
+exclude_cover_sources = []
+
+[range]
+min = 1200
+ideal = 1800
+max = 2400
+ladder = 3600
+"#;
+        std::fs::write(&path, original).expect("fixture should write");
+
+        let report = migrate_config_path(&path).expect("v4 migration should succeed");
+        let migrated = std::fs::read_to_string(&path).expect("migrated config should read");
+        let parsed = parse_config(&migrated).expect("migrated config should parse");
+
+        assert_eq!(report.from_version, 4);
+        assert_eq!(report.to_version, 5);
+        assert_eq!(parsed.config_version, 5);
+        assert_eq!(parsed.credentials.credential_dir, "private-credentials");
+        assert_eq!(parsed.logging.retention_days, 14);
+        assert!(parsed.history.enabled);
+        assert_eq!(parsed.history.retention_days, 0);
+        assert!(migrated.contains("[source_policies]"));
+        assert!(!migrated.contains("credential_file"));
+        assert!(!migrated.contains("token_file"));
+    }
+
+    #[test]
     fn current_config_is_not_rewritten() {
         let dir = TempDir::new().expect("temp directory should create");
         let path = dir.path().join("config.toml");

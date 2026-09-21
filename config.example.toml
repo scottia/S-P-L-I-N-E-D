@@ -1,8 +1,6 @@
 # S:P:L:I:N:E:D Config v5 example
-# Windows GUI v3.0.0 Stable uses this application-relative, secret-free
-# configuration. The existing repository-root native and Python/Docker
-# implementations remain separate Config v4 runtimes until the finalized
-# Windows source is integrated into the repository.
+# Application-relative, secret-free example for the Windows GUI and native
+# Config v5 runtimes. Docker uses docker/config.example.toml for container paths.
 
 config_version = 5
 mode = "read"

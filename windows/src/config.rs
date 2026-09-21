@@ -253,7 +253,7 @@ pub struct Config {
     #[serde(default)]
     pub samples: SamplesConfig,
     // Legacy v1-v3 compatibility only. Accept old [read] when parsing but never
-    // emit it into a v4 config.
+    // emit it into a v5 config.
     #[serde(default, skip_serializing)]
     pub read: ReadConfig,
     #[serde(default)]
@@ -578,6 +578,7 @@ pub fn load_config() -> Result<Config, String> {
 
 pub fn resolve_sources(
     config: &SourcesConfig,
+    source_policies: &BTreeMap<String, SourcePolicyConfig>,
     cover_sources_override: Option<&[String]>,
     only_cover_sources: Option<&[String]>,
     exclude_cover_sources: &[String],
@@ -604,6 +605,11 @@ pub fn resolve_sources(
         .into_iter()
         .filter(|source| !configured_exclusions.contains(source))
         .filter(|source| !cli_exclusions.contains(source))
+        .filter(|source| {
+            source_policies
+                .get(source.as_str())
+                .is_none_or(|policy| policy.enabled)
+        })
         .collect())
 }
 

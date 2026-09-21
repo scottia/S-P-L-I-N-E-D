@@ -1,7 +1,8 @@
 use clap::Parser;
 use splined::candidate::StaticFormat;
 use splined::config::{
-    Config, Mode, Verbosity, config_path, default_toml, load_config, resolve_sources, samples_dir,
+    Config, Mode, Verbosity, config_path, default_toml, load_config, load_config_from,
+    resolve_sources, samples_dir,
 };
 use splined::config_migration::{MigrationReport, migrate_config_if_needed};
 use splined::credentials::{
@@ -129,11 +130,12 @@ fn configure_fanarttv_credentials(configured_path: &str) -> Result<(), String> {
     let credential = FanartTvCredential {
         api_key: api_key.trim().to_string(),
         client_key: client_key.trim().to_string(),
+        ..FanartTvCredential::default()
     };
     save_fanarttv_credential(&path, &credential)?;
 
     println!();
-    println!("Fanart.tv credential file written successfully.");
+    println!("Fanart.tv v3.2 credential file written successfully.");
     println!("{}", path.display());
     Ok(())
 }
@@ -142,37 +144,51 @@ fn ensure_musicbrainz_bootstrap(
     config: &splined::musicbrainz::MusicBrainzConfig,
 ) -> Result<(), String> {
     let path = resolve_token_path(&config.token_file)?;
+    let mut credential = if path.exists() {
+        load_musicbrainz_credential(&path)?
+    } else {
+        println!("MusicBrainz OAuth credential file does not exist.");
+        println!("Creating:");
+        println!("{}", path.display());
+        println!();
+        OAuthCredential::default()
+    };
 
-    if path.exists() {
-        let credential = load_musicbrainz_credential(&path)?;
-        if credential.client_secret.trim().is_empty() {
-            return Err(format!(
-                "MusicBrainz OAuth credential file exists but contains no client_secret: {}",
-                path.display()
-            ));
+    if credential.client_id.trim().is_empty() {
+        if !config.client_id.trim().is_empty() {
+            credential.client_id = config.client_id.trim().to_string();
+        } else {
+            print!("MusicBrainz application client ID: ");
+            io::stdout()
+                .flush()
+                .map_err(|error| format!("Unable to flush MusicBrainz prompt: {error}"))?;
+            let mut client_id = String::new();
+            io::stdin()
+                .read_line(&mut client_id)
+                .map_err(|error| format!("Unable to read MusicBrainz client ID: {error}"))?;
+            credential.client_id = client_id.trim().to_string();
         }
-        return Ok(());
+    }
+    if credential.client_id.is_empty() {
+        return Err("MusicBrainz client ID cannot be empty.".to_string());
     }
 
-    println!("MusicBrainz OAuth credential file does not exist.");
-    println!("Creating:");
-    println!("{}", path.display());
-    println!();
-
-    let client_secret = rpassword::prompt_password("MusicBrainz client secret: ")
-        .map_err(|error| format!("Unable to read MusicBrainz client secret: {error}"))?;
-    if client_secret.trim().is_empty() {
+    if credential.client_secret.trim().is_empty() {
+        let client_secret = rpassword::prompt_password("MusicBrainz client secret: ")
+            .map_err(|error| format!("Unable to read MusicBrainz client secret: {error}"))?;
+        credential.client_secret = client_secret.trim().to_string();
+    }
+    if credential.client_secret.is_empty() {
         return Err("MusicBrainz client secret cannot be empty.".to_string());
     }
 
-    let credential = OAuthCredential {
-        client_secret: client_secret.trim().to_string(),
-        access_token: None,
-        refresh_token: None,
-        token_type: None,
-        expires_at_unix: None,
-        scope: None,
-    };
+    credential.oauth_enabled = true;
+    if credential.callback_uri.trim().is_empty() {
+        credential.callback_uri = config.callback_uri.clone();
+    }
+    if credential.oauth_scope.trim().is_empty() {
+        credential.oauth_scope = config.scope.clone();
+    }
     save_musicbrainz_credential(&path, &credential)?;
 
     println!();
@@ -473,6 +489,13 @@ fn ensure_regular_config() -> Result<Config, String> {
     load_config()
 }
 
+fn load_selected_config(cli: &Cli) -> Result<Config, String> {
+    match cli.config_path.as_deref() {
+        Some(path) => load_config_from(path),
+        None => ensure_regular_config(),
+    }
+}
+
 async fn run_lastfm_login(config: &Config) {
     println!("SPLINED Last.fm Login");
     println!();
@@ -535,13 +558,6 @@ async fn run_lastfm_login(config: &Config) {
 async fn run_musicbrainz_login(config: &Config) {
     println!("SPLINED MusicBrainz OAuth Login");
     println!();
-
-    if !config.musicbrainz.oauth {
-        eprintln!(
-            "MusicBrainz OAuth is disabled. Set [musicbrainz] oauth = true in SPLINED config first."
-        );
-        return;
-    }
 
     if let Err(error) = ensure_musicbrainz_bootstrap(&config.musicbrainz) {
         eprintln!("{error}");
@@ -646,6 +662,9 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
         resolved_sources,
         &config.fanarttv.credential_file,
         &config.lastfm.credential_file,
+        &std::path::Path::new(&config.credentials.credential_dir)
+            .join("discogs.json")
+            .to_string_lossy(),
     ) {
         Ok(registry) => registry,
         Err(error) => {
@@ -666,6 +685,7 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
         resolved_sources,
         &range,
         &format_order,
+        &config.source_policies,
     )
     .await
     {
@@ -771,7 +791,7 @@ async fn main() {
         return;
     }
 
-    let mut config = match ensure_regular_config() {
+    let mut config = match load_selected_config(&cli) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("{error}");
@@ -809,6 +829,7 @@ async fn main() {
 
     let resolved_sources = match resolve_sources(
         &config.sources,
+        &config.source_policies,
         cli.cover_sources.as_deref(),
         cli.only_cover_sources.as_deref(),
         &cli.exclude_cover_sources,
@@ -834,6 +855,14 @@ async fn main() {
             &config.library.ignored_subs,
             &resolved_sources,
         );
+        return;
+    }
+
+    if let Some(path) = cli.scan_dir_path.as_deref() {
+        config.scan.scan_library_dir = path.to_string_lossy().into_owned();
+        if let Err(error) = run_scan_library_read_report(&config, &resolved_sources).await {
+            eprintln!("{error}");
+        }
         return;
     }
 

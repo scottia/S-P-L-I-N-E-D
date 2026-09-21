@@ -38,6 +38,21 @@ LASTFM_AUTH_URL = "https://www.last.fm/api/auth/"
 REQUEST_TIMEOUT = 20
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
+SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
+FIXED_CREDENTIAL_FILES = {
+    "fanarttv": "fanarttv.json",
+    "lastfm": "lastfm.json",
+    "discogs": "discogs.json",
+    "musicbrainz": "musicbrainz.json",
+}
+RANGE_TYPES = (
+    "BelowMinimum",
+    "LowerRange",
+    "Ideal",
+    "UpperRange",
+    "Ladder",
+    "AboveLadder",
+)
 EXTENSIONS = {"jpeg": "jpg", "png": "png", "webp": "webp"}
 
 
@@ -133,7 +148,7 @@ def resolve_path(config_file: Path, raw: str) -> Path:
 
 DEFAULT_CACHE_DIR = Path("/_cache")
 DEFAULT_LOG_DIR = Path("/_logs")
-DEFAULT_HISTORY_DIR = Path("/logs/_history")
+DEFAULT_HISTORY_DIR = Path("/_logs/_history")
 DEFAULT_CREDENTIAL_DIR = Path("/credentials")
 
 
@@ -213,7 +228,145 @@ def resolve_sources(cfg: dict[str, Any], cover: list[str] | None, only: list[str
         base = normalize_sources(cover, "--cover-sources", False)
     else:
         base = configured
-    return [s for s in base if s not in configured_exclude and s not in cli_exclude]
+    return [
+        source
+        for source in base
+        if source not in configured_exclude
+        and source not in cli_exclude
+        and source_policy(cfg, source)["enabled"]
+    ]
+
+
+def _bool_value(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise SplinedError(f"{label} must be true or false.")
+    return value
+
+
+def _optional_positive_int(value: Any, label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise SplinedError(f"{label} must be a positive integer when configured.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SplinedError(f"{label} must be a positive integer when configured.") from exc
+    if parsed <= 0:
+        raise SplinedError(f"{label} must be greater than zero when configured.")
+    return parsed
+
+
+def source_policy(cfg: dict[str, Any], source: str) -> dict[str, Any]:
+    source_key = source.strip().lower()
+    policies = section(cfg, "source_policies")
+    raw = policies.get(source_key, {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise SplinedError(f"[source_policies.{source_key}] must be a table.")
+
+    minimum_range_type = str(raw.get("minimum_range_type", "LowerRange")).strip()
+    aliases = {item.lower(): item for item in RANGE_TYPES}
+    aliases.update({
+        "below_minimum": "BelowMinimum",
+        "lower_range": "LowerRange",
+        "upper_range": "UpperRange",
+        "above_ladder": "AboveLadder",
+    })
+    normalized_range = aliases.get(minimum_range_type.lower())
+    if normalized_range is None:
+        raise SplinedError(
+            f"[source_policies.{source_key}].minimum_range_type must be one of "
+            + ", ".join(RANGE_TYPES)
+            + "."
+        )
+
+    policy = {
+        "enabled": _bool_value(raw.get("enabled", True), f"[source_policies.{source_key}].enabled"),
+        "source_override": _bool_value(
+            raw.get("source_override", False),
+            f"[source_policies.{source_key}].source_override",
+        ),
+        "minimum_range_type": normalized_range,
+        "allow_below_minimum_fallback": _bool_value(
+            raw.get("allow_below_minimum_fallback", False),
+            f"[source_policies.{source_key}].allow_below_minimum_fallback",
+        ),
+        "minimum_short_side": _optional_positive_int(
+            raw.get("minimum_short_side"),
+            f"[source_policies.{source_key}].minimum_short_side",
+        ),
+        "maximum_short_side": _optional_positive_int(
+            raw.get("maximum_short_side"),
+            f"[source_policies.{source_key}].maximum_short_side",
+        ),
+        "minimum_width": _optional_positive_int(
+            raw.get("minimum_width"),
+            f"[source_policies.{source_key}].minimum_width",
+        ),
+        "minimum_height": _optional_positive_int(
+            raw.get("minimum_height"),
+            f"[source_policies.{source_key}].minimum_height",
+        ),
+        "primary_image_only": _bool_value(
+            raw.get("primary_image_only", True),
+            f"[source_policies.{source_key}].primary_image_only",
+        ),
+    }
+    minimum = policy["minimum_short_side"]
+    maximum = policy["maximum_short_side"]
+    if minimum is not None and maximum is not None and minimum > maximum:
+        raise SplinedError(
+            f"[source_policies.{source_key}].minimum_short_side cannot exceed maximum_short_side."
+        )
+    return policy
+
+
+def source_policy_decision(
+    cfg: dict[str, Any],
+    source: str,
+    width: int,
+    height: int,
+) -> tuple[str, str]:
+    policy = source_policy(cfg, source)
+    short_side = min(width, height)
+    range_type = classify_range(short_side, cfg)
+
+    if not policy["source_override"]:
+        if range_type not in {"BelowMinimum", "AboveLadder"}:
+            return "accept", "Accepted by the global artwork range"
+        if range_type == "BelowMinimum":
+            return "reject", f"Short side {short_side}px is below the global minimum"
+        return "reject", f"Short side {short_side}px is above the global ladder"
+
+    minimum_short_side = policy["minimum_short_side"]
+    maximum_short_side = policy["maximum_short_side"]
+    minimum_width = policy["minimum_width"]
+    minimum_height = policy["minimum_height"]
+    if minimum_short_side is not None and short_side < minimum_short_side:
+        return "reject", f"Short side {short_side}px is below source minimum {minimum_short_side}px"
+    if maximum_short_side is not None and short_side > maximum_short_side:
+        return "reject", f"Short side {short_side}px is above source maximum {maximum_short_side}px"
+    if minimum_width is not None and width < minimum_width:
+        return "reject", f"Width {width}px is below source minimum {minimum_width}px"
+    if minimum_height is not None and height < minimum_height:
+        return "reject", f"Height {height}px is below source minimum {minimum_height}px"
+
+    range_rank = RANGE_TYPES.index(range_type)
+    minimum_rank = RANGE_TYPES.index(policy["minimum_range_type"])
+    if range_rank < minimum_rank:
+        if policy["allow_below_minimum_fallback"] and range_rank + 1 == minimum_rank:
+            return "fallback", "Candidate is the single range immediately below the source minimum"
+        return "reject", "Candidate range is below the source minimum"
+    return "accept", "Candidate meets the source minimum"
+
+
+def reference_allowed(cfg: dict[str, Any], source: str, front: bool) -> bool:
+    policy = source_policy(cfg, source)
+    if policy["source_override"]:
+        return not policy["primary_image_only"] or front
+    return front
 
 
 SOURCE_HISTORY_VERSION = 1
@@ -318,6 +471,8 @@ def record_source_selection(
     cfg: dict[str, Any],
     format_order: list[str],
 ) -> None:
+    if not bool(section(cfg, "history").get("enabled", True)):
+        return
     source = candidate.source
     if source not in SUPPORTED_SOURCES:
         return
@@ -352,8 +507,13 @@ def empty_scan_completion_history() -> dict[str, Any]:
     }
 
 
-def load_scan_completion_history(path: Path) -> dict[str, Any]:
+def load_scan_completion_history(
+    path: Path,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     history = empty_scan_completion_history()
+    if cfg is not None and not bool(section(cfg, "history").get("enabled", True)):
+        return history
     if not path.exists():
         return history
     try:
@@ -370,7 +530,26 @@ def load_scan_completion_history(path: Path) -> dict[str, Any]:
         for key, value in albums.items()
         if isinstance(value, dict)
     }
+    if cfg is not None:
+        retention_days = _non_negative_int(
+            section(cfg, "history").get("retention_days", 0),
+            "[history].retention_days",
+        )
+        if retention_days > 0:
+            cutoff = time.time() - retention_days * 86_400
+            history["albums"] = {
+                key: value
+                for key, value in history["albums"].items()
+                if _history_entry_timestamp(value) >= cutoff
+            }
     return history
+
+
+def _history_entry_timestamp(entry: dict[str, Any]) -> float:
+    try:
+        return float(entry.get("completed_at_unix", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def save_scan_completion_history(path: Path, history: dict[str, Any]) -> None:
@@ -437,6 +616,7 @@ def scan_policy_fingerprint(
         "mode": str(cfg.get("mode", "read")).strip().lower(),
         "sources": list(sources),
         "range": section(cfg, "range"),
+        "source_policies": section(cfg, "source_policies"),
         "output": section(cfg, "output"),
         "samples": section(cfg, "samples"),
     }
@@ -457,6 +637,8 @@ def scan_completion_status(
     timeout_hours: float,
     now: float | None = None,
 ) -> tuple[bool, float]:
+    if not bool(section(cfg, "history").get("enabled", True)):
+        return False, 0.0
     if timeout_hours <= 0:
         return False, 0.0
 
@@ -491,6 +673,10 @@ def record_scan_completion(
     sources: list[str],
     outcome: str,
 ) -> None:
+    if not bool(section(cfg, "history").get("enabled", True)):
+        return
+    if str(cfg.get("mode", "read")).strip().lower() == "read":
+        return
     albums = history.setdefault("albums", {})
     albums[str(album.path)] = {
         "completed_at_unix": time.time(),
@@ -676,16 +862,30 @@ _DEBUG_ENABLED = False
 def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
     global _DEBUG_PATH, _DEBUG_ENABLED
 
+    log_dir = runtime_log_dir(config_file, cfg)
+    if log_dir.exists() and (log_dir.is_symlink() or not log_dir.is_dir()):
+        raise SplinedError(f"Unsafe SPLINED log directory: {log_dir}")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    retention_days = _non_negative_int(
+        section(cfg, "logging").get("retention_days", 14),
+        "[logging].retention_days",
+    )
+    if retention_days > 0:
+        cutoff = time.time() - retention_days * 86_400
+        for entry in log_dir.iterdir():
+            try:
+                if entry.is_file() and not entry.is_symlink() and entry.stat().st_mtime < cutoff:
+                    entry.unlink()
+            except OSError:
+                # Diagnostic retention is best-effort and must not stop scans.
+                pass
+
     verbosity = str(cfg.get("verbosity", "info")).strip().lower()
     _DEBUG_ENABLED = verbosity == "debug"
     if not _DEBUG_ENABLED:
         _DEBUG_PATH = None
         return None
 
-    log_dir = runtime_log_dir(config_file, cfg)
-    if log_dir.exists() and (log_dir.is_symlink() or not log_dir.is_dir()):
-        raise SplinedError(f"Unsafe SPLINED log directory: {log_dir}")
-    log_dir.mkdir(parents=True, exist_ok=True)
     _DEBUG_PATH = log_dir / "splined_debug.log"
 
     # Append across runs with a visible session delimiter.
@@ -723,12 +923,12 @@ class Http:
 
 def credential_file(config_file: Path, cfg: dict[str, Any], provider: str) -> Path:
     cdir = runtime_credential_dir(config_file, cfg)
-    pcfg = section(cfg, provider)
-    key = "token_file" if provider == "musicbrainz" else "credential_file"
-    default = "musicbrainz.json" if provider == "musicbrainz" else f"{provider}.json"
-    raw = str(pcfg.get(key, default)).strip() or default
-    p = Path(raw)
-    return p if p.is_absolute() else cdir / p
+    provider_key = provider.strip().lower()
+    try:
+        filename = FIXED_CREDENTIAL_FILES[provider_key]
+    except KeyError as exc:
+        raise SplinedError(f"Unsupported SPLINED credential provider: {provider}") from exc
+    return cdir / filename
 
 
 def load_json(path: Path, label: str) -> dict[str, Any]:
@@ -800,8 +1000,62 @@ def _pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
+def musicbrainz_settings(config_file: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    policy = source_policy(cfg, "musicbrainz")
+    path = credential_file(config_file, cfg, "musicbrainz")
+    credential: dict[str, Any] = {}
+    if path.exists():
+        credential = load_json(path, "MusicBrainz")
+
+    settings: dict[str, Any] = {
+        "enabled": policy["enabled"],
+        "source_override": policy["source_override"],
+        "retry_max": 4,
+        "mb_min_delay": 1.05,
+        "mb_recording_timeout": 7.0,
+        "oauth": bool(
+            credential.get("oauth_enabled", False)
+            or str(credential.get("access_token") or "").strip()
+        ),
+        "client_id": str(credential.get("client_id") or "").strip(),
+        "callback_uri": str(
+            credential.get("callback_uri") or "urn:ietf:wg:oauth:2.0:oob"
+        ).strip(),
+        "scope": str(credential.get("oauth_scope") or "profile").strip(),
+        "credential": credential,
+        "credential_path": path,
+    }
+
+    if policy["source_override"]:
+        options = credential.get("options", {})
+        if not isinstance(options, dict):
+            raise SplinedError("MusicBrainz credential options must be a JSON object.")
+        retry_max = options.get("retry_max", 4)
+        min_delay = options.get("min_delay", 1.05)
+        recording_timeout = options.get("recording_timeout", 7)
+        if isinstance(retry_max, bool):
+            raise SplinedError("MusicBrainz retry_max must be between 0 and 20.")
+        try:
+            retry_max = int(retry_max)
+            min_delay = float(min_delay)
+            recording_timeout = float(recording_timeout)
+        except (TypeError, ValueError) as exc:
+            raise SplinedError("MusicBrainz runtime options contain invalid numeric values.") from exc
+        if not 0 <= retry_max <= 20:
+            raise SplinedError("MusicBrainz retry_max must be between 0 and 20.")
+        if not min_delay > 0:
+            raise SplinedError("MusicBrainz min_delay must be greater than 0.")
+        if not recording_timeout > 0:
+            raise SplinedError("MusicBrainz recording_timeout must be greater than 0.")
+        settings["retry_max"] = retry_max
+        settings["mb_min_delay"] = min_delay
+        settings["mb_recording_timeout"] = recording_timeout
+
+    return settings
+
+
 def _mb_refresh_token(config_file: Path, cfg: dict[str, Any], cred: dict[str, Any]) -> dict[str, Any]:
-    mb = section(cfg, "musicbrainz")
+    mb = musicbrainz_settings(config_file, cfg)
     client_id = str(mb.get("client_id") or "").strip()
     client_secret = str(cred.get("client_secret") or "").strip()
     refresh_token = str(cred.get("refresh_token") or "").strip()
@@ -839,7 +1093,9 @@ def _mb_refresh_token(config_file: Path, cfg: dict[str, Any], cred: dict[str, An
 
 
 def mb_headers(config_file: Path, cfg: dict[str, Any]) -> tuple[dict[str, str], str]:
-    mb = section(cfg, "musicbrainz")
+    mb = musicbrainz_settings(config_file, cfg)
+    if not bool(mb.get("enabled", True)):
+        return {}, "Disabled"
     if not bool(mb.get("oauth", False)):
         return {}, "Anonymous"
 
@@ -881,7 +1137,10 @@ def configure_fanarttv_credentials(config_file: Path, cfg: dict[str, Any]) -> in
     if not api_key:
         raise SplinedError("Fanart.tv API key cannot be empty.")
     client_key = getpass.getpass("Fanart.tv client key (optional): ").strip()
-    save_json_atomic(path, {"api_key": api_key, "client_key": client_key})
+    save_json_atomic(
+        path,
+        {"api_version": "v3.2", "api_key": api_key, "client_key": client_key},
+    )
     credential_created_notice(path)
     return 0
 
@@ -978,20 +1237,20 @@ def run_lastfm_login(config_file: Path, cfg: dict[str, Any]) -> int:
 
 
 def run_musicbrainz_login(config_file: Path, cfg: dict[str, Any]) -> int:
-    mb = section(cfg, "musicbrainz")
-    if not bool(mb.get("oauth", False)):
-        raise SplinedError("MusicBrainz OAuth is disabled. Set [musicbrainz] oauth = true first.")
+    mb = musicbrainz_settings(config_file, cfg)
+    if not bool(mb.get("enabled", True)):
+        raise SplinedError("MusicBrainz is disabled by [source_policies.musicbrainz].")
 
+    path = credential_file(config_file, cfg, "musicbrainz")
+    current = dict(mb.get("credential") or {})
     client_id = str(mb.get("client_id") or "").strip()
     callback_uri = str(mb.get("callback_uri") or "urn:ietf:wg:oauth:2.0:oob").strip()
     scope = str(mb.get("scope") or "profile").strip()
     if not client_id:
-        raise SplinedError("MusicBrainz OAuth client_id is empty in config.toml.")
+        client_id = input("MusicBrainz application client ID: ").strip()
+        if not client_id:
+            raise SplinedError("MusicBrainz client ID cannot be empty.")
 
-    path = credential_file(config_file, cfg, "musicbrainz")
-    current: dict[str, Any] = {}
-    if path.exists():
-        current = load_json(path, "MusicBrainz")
     client_secret = str(current.get("client_secret") or "").strip()
     if not client_secret:
         client_secret = getpass.getpass("MusicBrainz client secret: ").strip()
@@ -1040,14 +1299,19 @@ def run_musicbrainz_login(config_file: Path, cfg: dict[str, Any]) -> int:
         )
     token = r.json()
     expires_in = int(token.get("expires_in") or 0)
-    data = {
+    data = dict(current)
+    data.update({
+        "oauth_enabled": True,
+        "client_id": client_id,
         "client_secret": client_secret,
+        "callback_uri": callback_uri,
+        "oauth_scope": scope,
         "access_token": str(token.get("access_token") or "").strip() or None,
-        "refresh_token": str(token.get("refresh_token") or "").strip() or None,
+        "refresh_token": str(token.get("refresh_token") or current.get("refresh_token") or "").strip() or None,
         "token_type": str(token.get("token_type") or "Bearer").strip() or "Bearer",
         "expires_at_unix": int(time.time()) + expires_in if expires_in else None,
         "scope": str(token.get("scope") or scope).strip() or None,
-    }
+    })
     if not data["access_token"]:
         raise SplinedError("MusicBrainz OAuth token response contained no access_token.")
     save_json_atomic(path, data)
@@ -1060,7 +1324,9 @@ def run_musicbrainz_login(config_file: Path, cfg: dict[str, Any]) -> int:
 
 def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str) -> Release:
     headers, _ = mb_headers(config_file, cfg)
-    mbcfg = section(cfg, "musicbrainz")
+    mbcfg = musicbrainz_settings(config_file, cfg)
+    if not mbcfg["enabled"]:
+        raise SplinedError("MusicBrainz is disabled by [source_policies.musicbrainz].")
     timeout = float(mbcfg.get("mb_recording_timeout", 7.0))
     retry_max = int(mbcfg.get("retry_max", 2))
     min_delay = max(0.0, float(mbcfg.get("mb_min_delay", 1.05)))
@@ -1252,7 +1518,9 @@ def _mb_release_group_apple_ids(
         return []
 
     headers, _ = mb_headers(config_file, cfg)
-    mbcfg = section(cfg, "musicbrainz")
+    mbcfg = musicbrainz_settings(config_file, cfg)
+    if not mbcfg["enabled"]:
+        return []
     timeout = float(mbcfg.get("mb_recording_timeout", 7.0))
     retry_max = int(mbcfg.get("retry_max", 2))
     min_delay = max(0.0, float(mbcfg.get("mb_min_delay", 1.05)))
@@ -1467,6 +1735,8 @@ def discover_caa(http: Http, rel: Release) -> list[Ref]:
 def discover_fanart(http: Http, config_file: Path, cfg: dict[str, Any], rel: Release) -> list[Ref]:
     if not rel.release_group_id: return []
     path = credential_file(config_file, cfg, "fanarttv"); cred = load_json(path, "Fanart.tv"); key = str(cred.get("api_key") or "").strip()
+    api_version = str(cred.get("api_version") or "").strip()
+    if api_version != "v3.2": raise SplinedError(f"Fanart.tv credential file must declare api_version v3.2: {path}")
     if not key: raise SplinedError(f"Fanart.tv credential file contains no api_key: {path}")
     headers = {"api-key": key}; client = str(cred.get("client_key") or "").strip()
     if client: headers["client-key"] = client
@@ -1880,6 +2150,12 @@ def project_candidate(c: Candidate, cfg: dict[str, Any], target: str) -> dict[st
     short_side = min(width, height)
     range_type = classify_range(short_side, cfg)
     ideal = int(section(cfg, "range").get("ideal", 1800))
+    policy_status, policy_reason = source_policy_decision(
+        cfg,
+        c.source,
+        c.width,
+        c.height,
+    )
     return {
         "width": width,
         "height": height,
@@ -1888,7 +2164,9 @@ def project_candidate(c: Candidate, cfg: dict[str, Any], target: str) -> dict[st
         "format": target,
         "range_type": range_type,
         "distance": abs(short_side - ideal),
-        "acceptable": range_type not in {"BelowMinimum", "AboveLadder"},
+        "acceptable": policy_status != "reject",
+        "policy_status": policy_status,
+        "policy_reason": policy_reason,
         "converted": c.format != target,
         "squared": bool(ops.get("squared", False)),
         "cropped": bool(ops.get("cropped", False)),
@@ -1920,6 +2198,7 @@ def download_candidates(
     refs: list[Ref],
     sources: list[str],
     cache: Path,
+    cfg: dict[str, Any] | None = None,
     clean_first: bool = True,
 ) -> tuple[list[Candidate], list[tuple[str, str]]]:
     if clean_first:
@@ -1927,7 +2206,8 @@ def download_candidates(
     out: list[Candidate] = []
     diag: list[tuple[str, str]] = []
     for ref in refs:
-        if not ref.front or not ref.url:
+        allowed = ref.front if cfg is None else reference_allowed(cfg, ref.source, ref.front)
+        if not allowed or not ref.url:
             debug_log(f"download.skip source={ref.source} id={ref.id} reason=no-front-or-url")
             continue
         if is_discogs_placeholder(ref):
@@ -2002,6 +2282,7 @@ def discover_normal_ranked(
         refs,
         sources,
         cache,
+        cfg,
         clean_first=True,
     )
     diag += download_diag
@@ -2016,7 +2297,7 @@ def range_class(c: Candidate, cfg: dict[str, Any]) -> str:
 
 
 def acceptable(c: Candidate, cfg: dict[str, Any]) -> bool:
-    return range_class(c, cfg) not in {"BelowMinimum", "AboveLadder"}
+    return source_policy_decision(cfg, c.source, c.width, c.height)[0] != "reject"
 
 
 def candidate_key(c: Candidate, cfg: dict[str, Any], format_order: list[str]):
@@ -2038,7 +2319,7 @@ def candidate_key(c: Candidate, cfg: dict[str, Any], format_order: list[str]):
     )
 
     return (
-        0 if projected["acceptable"] else 1,
+        {"accept": 0, "fallback": 1, "reject": 2}.get(projected["policy_status"], 2),
         projected["distance"],
         range_rank,
         transform_penalty,
@@ -2071,7 +2352,9 @@ def musicbrainz_search_releases(
     album: str,
 ) -> list[dict[str, str]]:
     headers, _ = mb_headers(config_file, cfg)
-    mbcfg = section(cfg, "musicbrainz")
+    mbcfg = musicbrainz_settings(config_file, cfg)
+    if not mbcfg["enabled"]:
+        return []
     timeout = float(mbcfg.get("mb_recording_timeout", 7.0))
     retry_max = int(mbcfg.get("retry_max", 2))
     min_delay = max(0.0, float(mbcfg.get("mb_min_delay", 1.05)))
@@ -2655,7 +2938,7 @@ def run_scan_dir(
     library = section(cfg, "library")
     output = section(cfg, "output")
     samples_cfg = section(cfg, "samples")
-    mbcfg = section(cfg, "musicbrainz")
+    mbcfg = musicbrainz_settings(config_file, cfg)
 
     root, library_root = resolve_scan_root(config_file, cfg, scan_words)
     cache = runtime_cache_dir(config_file, cfg)
@@ -2673,7 +2956,7 @@ def run_scan_dir(
 
     timeout_hours = scan_timeout_hours(cfg)
     completion_path = scan_completion_history_path(history_dir)
-    completion_history = load_scan_completion_history(completion_path)
+    completion_history = load_scan_completion_history(completion_path, cfg)
     completion_path.parent.mkdir(parents=True, exist_ok=True)
 
     albums: list[AlbumDir] = []
@@ -2702,7 +2985,11 @@ def run_scan_dir(
         postponed=len(postponed_albums),
     )
     history_path = source_history_path(history_dir)
-    source_history = load_source_history(history_path)
+    source_history = (
+        load_source_history(history_path)
+        if bool(section(cfg, "history").get("enabled", True))
+        else empty_source_history()
+    )
     # Ensure persistent history folders exist before the first write.
     history_path.parent.mkdir(parents=True, exist_ok=True)
     api_queried: set[str] = set()
@@ -2932,7 +3219,7 @@ def run_scan_dir(
                         track_count=None,
                     )
 
-                candidates, download_diag = download_candidates(http, refs, sources, cache)
+                candidates, download_diag = download_candidates(http, refs, sources, cache, cfg)
                 diag += download_diag
 
                 # If fallback finds anything inside the normal configured range,
@@ -3368,7 +3655,7 @@ def run_release_discovery(config_file: Path, cfg: dict[str, Any], sources: list[
     cache = runtime_cache_dir(config_file, cfg)
     fmt_order = formats(cfg)
     refs, diag = discover_all(http, config_file, cfg, rel, sources)
-    candidates, download_diag = download_candidates(http, refs, sources, cache)
+    candidates, download_diag = download_candidates(http, refs, sources, cache, cfg)
     diag += download_diag
     best = select_best(candidates, cfg, fmt_order)
 
@@ -3406,7 +3693,8 @@ def run_scan_preview(
     history_dir = runtime_history_dir(config_file, cfg)
     timeout_hours = scan_timeout_hours(cfg)
     completion_history = load_scan_completion_history(
-        scan_completion_history_path(history_dir)
+        scan_completion_history_path(history_dir),
+        cfg,
     )
 
     eligible = 0
@@ -3441,7 +3729,7 @@ def run_scan_preview(
 
 APP_NAME = "SPLINED"
 VERSION = "1.0.5"
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 DEFAULT_CONFIG = Path("/config/config.toml")
 HELP_COLUMN_WIDTH = 38
 
@@ -3464,6 +3752,105 @@ def validate_filename(name: str) -> None:
         raise SplinedError("SPLINED output file_name must not include an extension; use output.file_formats instead.")
 
 
+def migrate_v4_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Load a Config v4 document with Config v5 defaults without losing data.
+
+    Python/Docker historically had no TOML writer dependency, so compatibility
+    migration is deliberately in-memory. Public examples and all newly written
+    configurations are Config v5; existing v4 mounts remain usable while an
+    administrator replaces the file with the v5 example.
+    """
+    migrated = json.loads(json.dumps(cfg))
+    migrated["config_version"] = CONFIG_VERSION
+    migrated.setdefault("source_policies", {})
+    migrated.setdefault("logging", {"retention_days": 14})
+    migrated.setdefault("history", {"enabled": True, "retention_days": 0})
+    migrated.setdefault("credentials", {}).setdefault(
+        "credential_dir",
+        str(DEFAULT_CREDENTIAL_DIR),
+    )
+    return migrated
+
+
+def _non_negative_int(value: Any, label: str) -> int:
+    if isinstance(value, bool):
+        raise SplinedError(f"{label} must be a non-negative integer.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SplinedError(f"{label} must be a non-negative integer.") from exc
+    if parsed < 0:
+        raise SplinedError(f"{label} cannot be negative.")
+    return parsed
+
+
+def validate_config_v5(cfg: dict[str, Any]) -> None:
+    mode = str(cfg.get("mode", "read")).strip().lower()
+    if mode not in {"read", "write"}:
+        raise SplinedError("SPLINED mode must be 'read' or 'write'.")
+
+    credentials = section(cfg, "credentials")
+    if not str(credentials.get("credential_dir", "")).strip():
+        raise SplinedError("[credentials].credential_dir cannot be empty.")
+
+    ranges = section(cfg, "range")
+    try:
+        minimum = int(ranges.get("min", 1200))
+        ideal = int(ranges.get("ideal", 1800))
+        maximum = int(ranges.get("max", 2400))
+        ladder = int(ranges.get("ladder", 3600))
+    except (TypeError, ValueError) as exc:
+        raise SplinedError("[range] values must be integers.") from exc
+    if minimum >= ideal:
+        raise SplinedError("[range].min must be below [range].ideal.")
+    if ideal > maximum:
+        raise SplinedError("[range].ideal cannot exceed [range].max.")
+    if maximum >= ladder:
+        raise SplinedError("[range].max must be below [range].ladder.")
+
+    normalize_sources(
+        section(cfg, "sources").get("cover_sources", []),
+        "configured cover_sources",
+        False,
+    )
+    normalize_sources(
+        section(cfg, "sources").get("exclude_cover_sources", []),
+        "configured exclude_cover_sources",
+        True,
+    )
+
+    policies = section(cfg, "source_policies")
+    for raw_source in policies:
+        source_name = str(raw_source).strip().lower()
+        if source_name not in SUPPORTED_SOURCE_POLICIES:
+            raise SplinedError(f"Unsupported SPLINED source policy provider: {raw_source}")
+        source_policy(cfg, source_name)
+
+    logging = section(cfg, "logging")
+    _non_negative_int(logging.get("retention_days", 14), "[logging].retention_days")
+    history = section(cfg, "history")
+    _bool_value(history.get("enabled", True), "[history].enabled")
+    _non_negative_int(history.get("retention_days", 0), "[history].retention_days")
+    _bool_value(section(cfg, "samples").get("sample_write", True), "[samples].sample_write")
+    _bool_value(section(cfg, "splineai").get("enabled", False), "[splineai].enabled")
+
+    formats(cfg)
+    output = section(cfg, "output")
+    validate_filename(str(output.get("file_name", "cover")))
+    square_mode = str(
+        output.get("square_mode", "crop" if output.get("square", False) else "off")
+    ).strip().lower()
+    if square_mode not in {"off", "crop"}:
+        raise SplinedError("[output].square_mode must be 'off' or 'crop'.")
+    square_round_to = _non_negative_int(
+        output.get("square_round_to", 0) or 0,
+        "[output].square_round_to",
+    )
+    if square_round_to < 0:
+        raise SplinedError("[output].square_round_to cannot be negative.")
+    scan_timeout_hours(cfg)
+
+
 def load_config() -> tuple[Path, dict[str, Any]]:
     path = config_path()
     try:
@@ -3475,26 +3862,11 @@ def load_config() -> tuple[Path, dict[str, Any]]:
         raise SplinedError(f"Configuration path is a directory, not a file: {path}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise SplinedError(f"Invalid TOML in {path}: {exc}") from exc
-    if cfg.get("config_version") != CONFIG_VERSION:
+    if cfg.get("config_version") == 4:
+        cfg = migrate_v4_config(cfg)
+    elif cfg.get("config_version") != CONFIG_VERSION:
         raise SplinedError(f"Unsupported config_version {cfg.get('config_version')!r}; expected {CONFIG_VERSION}.")
-    mode = str(cfg.get("mode", "read")).strip().lower()
-    if mode not in {"read", "write"}:
-        raise SplinedError("SPLINED mode must be 'read' or 'write'.")
-    r = section(cfg, "range")
-    mn, ideal, mx, ladder = int(r.get("min",1200)), int(r.get("ideal",1800)), int(r.get("max",2400)), int(r.get("ladder",3600))
-    if mn >= ideal: raise SplinedError("[range].min must be below [range].ideal.")
-    if ideal > mx: raise SplinedError("[range].ideal cannot exceed [range].max.")
-    if mx >= ladder: raise SplinedError("[range].max must be below [range].ladder.")
-    formats(cfg)
-    out = section(cfg, "output")
-    validate_filename(str(out.get("file_name", "cover")))
-    square_mode = str(out.get("square_mode", "crop" if out.get("square", False) else "off")).strip().lower()
-    if square_mode not in {"off", "crop"}:
-        raise SplinedError("[output].square_mode must be 'off' or 'crop'.")
-    round_to = int(out.get("square_round_to", 0) or 0)
-    if round_to < 0:
-        raise SplinedError("[output].square_round_to cannot be negative.")
-    scan_timeout_hours(cfg)
+    validate_config_v5(cfg)
     return path, cfg
 
 
@@ -3851,7 +4223,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      --fanarttv-credentials", "Configure SPLINED Fanart.tv API credentials")
     help_row(
         "      Discogs",
-        "Uses [discogs].credential_file personal token; no Discogs application/OAuth required",
+        "Uses credentials/discogs.json personal token; no Discogs application OAuth required",
     )
     print()
 

@@ -342,7 +342,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    const DEFAULT_CONFIG: &str = "config_version = 4\nmode = \"read\"\n";
+    const DEFAULT_CONFIG: &str = "config_version = 5\nmode = \"read\"\n";
 
     #[test]
     fn layout_is_root_relative() {
