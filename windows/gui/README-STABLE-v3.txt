@@ -74,6 +74,11 @@ current filtered result set and remains visibly selected afterward.
 Package contents
 ----------------
 
-The release package contains application binaries and static artwork only. It
-does not contain config.toml, credential JSON, cache data, logs, history, or
-other user data.
+splined-windows-x86_64.zip contains exactly:
+
+    splined.exe
+    README-WINDOWS.txt
+
+The Rust core, WinForms interface, watermark, and application icon are embedded
+in splined.exe. The archive contains no sidecar assets, config.toml, credential
+JSON, cache data, logs, history, or other user data.

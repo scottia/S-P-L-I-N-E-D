@@ -247,10 +247,18 @@ namespace Splined.WindowsGui
 
     internal static class ConfigStore
     {
-        public static readonly string AppRoot = Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory);
+        public static readonly string AppRoot = ResolveAppRoot();
         public static readonly string DefaultConfigPath = Path.Combine(AppRoot, "config", "config.toml");
         public static readonly string LocatorPath = Path.Combine(AppRoot, "config.location");
         public static readonly string UiPath = Path.Combine(AppRoot, "config", "ui.toml");
+
+        private static string ResolveAppRoot()
+        {
+            string configured = Environment.GetEnvironmentVariable("SPLINED_HOME");
+            return Path.GetFullPath(String.IsNullOrWhiteSpace(configured)
+                ? AppDomain.CurrentDomain.BaseDirectory
+                : configured);
+        }
 
         public static string GetConfigPath()
         {

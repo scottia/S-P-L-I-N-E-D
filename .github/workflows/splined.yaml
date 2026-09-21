@@ -154,12 +154,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $gui = "windows/target/release/splined.exe"
-          $core = "windows/target/release/splined-core.exe"
-          $watermark = "windows/target/release/splined-watermark.png"
-          foreach ($path in $gui, $core, $watermark) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Missing Windows runtime output: $path"
-            }
+          if (-not (Test-Path -LiteralPath $gui -PathType Leaf)) {
+            throw "Missing Windows runtime output: $gui"
           }
           $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($gui)
           if ($version.ProductName -ne "S:P:L:I:N:E:D v3.0.0 Stable") {
@@ -309,10 +305,6 @@ jobs:
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
           cp windows/target/release/splined.exe release-package/splined.exe
-          cp windows/target/release/splined-core.exe release-package/splined-core.exe
-          cp windows/target/release/splined-watermark.png release-package/splined-watermark.png
-          cp windows/target/release/splined-app-icon.png release-package/splined-app-icon.png
-          cp windows/target/release/app.ico release-package/app.ico
           cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
 
       - name: Create Windows archive
@@ -323,6 +315,17 @@ jobs:
             -Path "release-package/*" `
             -DestinationPath "release-assets/splined-windows-x86_64.zip" `
             -Force
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "release-assets/splined-windows-x86_64.zip"))
+          try {
+            $entries = @($archive.Entries | ForEach-Object FullName | Sort-Object)
+            $expected = @("README-WINDOWS.txt", "splined.exe")
+            if (Compare-Object $expected $entries) {
+              throw "Windows archive must contain exactly README-WINDOWS.txt and splined.exe; found: $($entries -join ', ')"
+            }
+          } finally {
+            $archive.Dispose()
+          }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -650,10 +653,6 @@ jobs:
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
           cp windows/target/release/splined.exe release-package/splined.exe
-          cp windows/target/release/splined-core.exe release-package/splined-core.exe
-          cp windows/target/release/splined-watermark.png release-package/splined-watermark.png
-          cp windows/target/release/splined-app-icon.png release-package/splined-app-icon.png
-          cp windows/target/release/app.ico release-package/app.ico
           cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
 
       - name: Create Windows archive
@@ -665,6 +664,18 @@ jobs:
             -Path "release-package/*" `
             -DestinationPath "release-assets/splined-windows-x86_64.zip" `
             -Force
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "release-assets/splined-windows-x86_64.zip"))
+          try {
+            $entries = @($archive.Entries | ForEach-Object FullName | Sort-Object)
+            $expected = @("README-WINDOWS.txt", "splined.exe")
+            if (Compare-Object $expected $entries) {
+              throw "Windows archive must contain exactly README-WINDOWS.txt and splined.exe; found: $($entries -join ', ')"
+            }
+          } finally {
+            $archive.Dispose()
+          }
 
           Get-Item "release-assets/splined-windows-x86_64.zip"
 

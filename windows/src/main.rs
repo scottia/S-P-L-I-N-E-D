@@ -1,4 +1,7 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use clap::Parser;
+use sha2::{Digest, Sha256};
 use splined::candidate::StaticFormat;
 use splined::config::{
     Config, Mode, Verbosity, config_path, default_toml, load_config, load_config_from,
@@ -14,17 +17,115 @@ use splined::musicbrainz::{
     resolve_token_path, save_credential as save_musicbrainz_credential,
 };
 use splined::pipeline::{candidate_summary, run_registry_pipeline};
-use splined::portable::{bootstrap_portable_install, running_as_setup_executable};
+use splined::portable::{APP_ROOT_ENV, bootstrap_portable_install, running_as_setup_executable};
 use splined::range::Range;
 use splined::scan_runtime::run_scan_library_read_report;
 use splined::source::{ArtworkQuery, ProviderContext, ProviderRegistry, lastfm::LastFm};
+use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
+use std::process::Command;
 
 mod cli;
 use cli::Cli;
 
 const LASTFM_AUTH_TIMEOUT_SECS: u64 = 60;
 const HELP_COLUMN_WIDTH: usize = 38;
+
+#[cfg(windows)]
+const EMBEDDED_GUI: &[u8] = include_bytes!(env!("SPLINED_EMBEDDED_GUI"));
+#[cfg(windows)]
+const CORE_PATH_ENV: &str = "SPLINED_CORE_PATH";
+
+#[cfg(windows)]
+fn launch_embedded_gui() -> Result<i32, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
+    let app_root = executable
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
+    let runtime_dir = app_root.join("_cache").join("runtime");
+    fs::create_dir_all(&runtime_dir).map_err(|error| {
+        format!(
+            "Unable to create SPLINED runtime cache {}: {error}",
+            runtime_dir.display()
+        )
+    })?;
+
+    let digest = Sha256::digest(EMBEDDED_GUI);
+    let fingerprint = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let gui_path = runtime_dir.join(format!("splined-gui-{fingerprint}.exe"));
+    if !embedded_file_matches(&gui_path, &digest)? {
+        let staged = runtime_dir.join(format!(
+            ".splined-gui-{fingerprint}-{}.tmp",
+            std::process::id()
+        ));
+        fs::write(&staged, EMBEDDED_GUI).map_err(|error| {
+            format!(
+                "Unable to stage the embedded SPLINED interface {}: {error}",
+                staged.display()
+            )
+        })?;
+        if let Err(error) = fs::rename(&staged, &gui_path) {
+            let _ = fs::remove_file(&staged);
+            return Err(format!(
+                "Unable to install the embedded SPLINED interface {}: {error}",
+                gui_path.display()
+            ));
+        }
+    }
+
+    let status = Command::new(&gui_path)
+        .current_dir(&app_root)
+        .env(APP_ROOT_ENV, &app_root)
+        .env(CORE_PATH_ENV, &executable)
+        .status()
+        .map_err(|error| format!("Unable to start the SPLINED interface: {error}"))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(windows)]
+fn embedded_file_matches(path: &Path, expected_digest: &[u8]) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let bytes = fs::read(path).map_err(|error| {
+        format!(
+            "Unable to inspect cached SPLINED interface {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(&Sha256::digest(&bytes)[..] == expected_digest)
+}
+
+#[cfg(windows)]
+fn show_gui_error(message: &str) {
+    use std::os::raw::c_void;
+    use std::ptr;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBoxW(
+            window: *mut c_void,
+            text: *const u16,
+            caption: *const u16,
+            kind: u32,
+        ) -> i32;
+    }
+
+    let text = message.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let caption = "S:P:L:I:N:E:D v3.0.0 Stable"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    unsafe {
+        MessageBoxW(ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10);
+    }
+}
 
 fn setup_only_bootstrap() -> Result<bool, String> {
     if !running_as_setup_executable()? {
@@ -746,6 +847,16 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
 
 #[tokio::main]
 async fn main() {
+    #[cfg(windows)]
+    if std::env::args_os().len() == 1 {
+        match launch_embedded_gui() {
+            Ok(0) => {}
+            Ok(code) => std::process::exit(code),
+            Err(error) => show_gui_error(&error),
+        }
+        return;
+    }
+
     match setup_only_bootstrap() {
         Ok(true) => return,
         Ok(false) => {}

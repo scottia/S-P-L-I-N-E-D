@@ -1913,11 +1913,11 @@ namespace Splined.WindowsGui
 
         private string FindCoreExecutable()
         {
-            foreach (string name in new[] { "splined-core.exe", "splined.exe" })
-            {
-                string path = Path.Combine(ConfigStore.AppRoot, name);
-                if (File.Exists(path)) return path;
-            }
+            string embeddedHost = Environment.GetEnvironmentVariable("SPLINED_CORE_PATH");
+            if (!String.IsNullOrWhiteSpace(embeddedHost) && File.Exists(embeddedHost))
+                return Path.GetFullPath(embeddedHost);
+            string path = Path.Combine(ConfigStore.AppRoot, "splined.exe");
+            if (File.Exists(path)) return path;
             return null;
         }
 

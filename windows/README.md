@@ -8,12 +8,11 @@ This directory contains the finalized native Windows application:
 - Processing core: Rust under `src/`
 
 The Cargo manifest is the reproducible Windows build entry point. On Windows,
-the build script compiles the WinForms shell and the Rust processing core into:
+the build script embeds the WinForms shell, processing core, watermark, and
+application icon into one distributable executable:
 
 ```text
 windows/target/release/splined.exe
-windows/target/release/splined-core.exe
-windows/target/release/splined-watermark.png
 ```
 
 Build and validate from the repository root:
@@ -27,8 +26,11 @@ cargo build --manifest-path windows/Cargo.toml --locked --release
 ```
 
 `gui/TEST-WINDOWS-GUI.cmd` runs the WinForms Config v5 and lifecycle regression
-suite. Generated executables, QA images, local configuration, credentials,
-cache, logs, and history are intentionally excluded from version control.
+suite. At runtime the embedded GUI is materialized only in the disposable
+`_cache/runtime/` directory; no GUI, watermark, icon, or core sidecar is part
+of the release archive. Generated executables, QA images, local configuration,
+credentials, cache, logs, and history are intentionally excluded from version
+control.
 
 The repository/native release number is independent of this application's
 v3.0.0 Stable identity. The next-patch release workflow must not rewrite this

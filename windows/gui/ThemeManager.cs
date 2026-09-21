@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -759,9 +758,7 @@ namespace Splined.WindowsGui
             {
                 if (watermarkLoadAttempted) return watermarkImage;
                 watermarkLoadAttempted = true;
-                string path = Path.Combine(ConfigStore.AppRoot, "splined-watermark.png");
-                if (!File.Exists(path)) return null;
-                try { using (Image source = Image.FromFile(path)) watermarkImage = new Bitmap(source); }
+                try { watermarkImage = EmbeddedAssets.LoadWatermark(); }
                 catch { watermarkImage = null; }
                 return watermarkImage;
             }

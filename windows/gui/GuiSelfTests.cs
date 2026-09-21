@@ -217,8 +217,9 @@ namespace Splined.WindowsGui
                         && Descendants(setup).OfType<CheckBox>().All(check => check is FluentCheckBox)
                         && Descendants(setup).OfType<TextBox>().Where(text => !(text.Parent is NumericUpDown)).All(text => text is FluentTextBox),
                         "A Settings input bypassed the shared Fluent Compact text, combo, spinner, or checkbox renderer.");
-                    Assert(File.Exists(Path.Combine(ConfigStore.AppRoot, "splined-watermark.png")),
-                        "The responsive SPLINED watermark asset is missing.");
+                    using (Bitmap embeddedWatermark = EmbeddedAssets.LoadWatermark())
+                        Assert(embeddedWatermark != null,
+                            "The responsive SPLINED watermark resource is missing.");
                     FieldInfo setupRootField = typeof(SetupForm).GetField("rootLayout", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert(setupRootField.GetValue(setup) is TableLayoutPanel
                         && !(setupRootField.GetValue(setup) is WatermarkTableLayoutPanel),
@@ -1020,10 +1021,7 @@ namespace Splined.WindowsGui
             ConfigStore.SaveUi(original);
             ThemeManager.Initialize(original.Theme);
 
-            string pngPath = Path.Combine(ConfigStore.AppRoot, "splined-app-icon.png");
-            string icoPath = Path.Combine(ConfigStore.AppRoot, "app.ico");
-            Assert(File.Exists(pngPath) && File.Exists(icoPath), "The multicolor SPLINED S icon assets are missing.");
-            using (Bitmap icon = new Bitmap(pngPath))
+            using (Bitmap icon = EmbeddedAssets.LoadApplicationIconImage())
             {
                 Assert(icon.GetPixel(0, 0).A == 0 && icon.GetPixel(icon.Width - 1, icon.Height - 1).A == 0,
                     "The SPLINED S icon did not preserve a transparent background.");
@@ -1039,21 +1037,6 @@ namespace Splined.WindowsGui
                     }
                 Assert(red > 100 && green > 100 && blue > 100,
                     "The application icon is not the multicolor angular SPLINED S.");
-            }
-            using (BinaryReader reader = new BinaryReader(File.OpenRead(icoPath)))
-            {
-                Assert(reader.ReadUInt16() == 0 && reader.ReadUInt16() == 1, "The Windows application icon resource has an invalid header.");
-                int count = reader.ReadUInt16();
-                HashSet<int> sizes = new HashSet<int>();
-                for (int index = 0; index < count; index++)
-                {
-                    int width = reader.ReadByte();
-                    reader.ReadByte();
-                    reader.ReadBytes(14);
-                    sizes.Add(width == 0 ? 256 : width);
-                }
-                Assert(new[] { 16, 24, 32, 48, 64, 128, 256 }.All(sizes.Contains),
-                    "The Windows icon resource does not contain every required application-icon resolution.");
             }
             using (Icon executableIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath))
                 Assert(executableIcon != null, "The packaged executable does not expose a Windows icon resource.");

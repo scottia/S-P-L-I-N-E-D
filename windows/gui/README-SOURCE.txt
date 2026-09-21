@@ -13,13 +13,11 @@ From the repository root on Windows run:
     cargo clippy --manifest-path windows/Cargo.toml --locked -- -D warnings
     cargo build --manifest-path windows/Cargo.toml --locked --release
 
-Expected runtime output:
+Expected distributable output:
 
     windows\target\release\splined.exe
-    windows\target\release\splined-core.exe
-    windows\target\release\splined-watermark.png
 
-BUILD-WINDOWS-GUI.cmd remains available for direct WinForms-only development.
+BUILD-WINDOWS-GUI.cmd invokes the authoritative Cargo build.
 TEST-WINDOWS-GUI.cmd runs the Config v5, selection, filtering, theme, Help,
 About, and reusable launch-lifecycle regression suite.
 
@@ -29,15 +27,17 @@ ReleaseInfo.cs is the single Windows GUI version and URL authority:
     Config v5
     https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/README.md
 
-The Rust core consumes the same Config v5 policy, credential-directory,
+The Rust host/core consumes the same Config v5 policy, credential-directory,
 history, bypass, timeout, candidate, and artwork behavior used by the GUI. The
-GUI launches splined-core.exe with redirected streams and exchanges structured
-progress and decision events with that process.
+single splined.exe embeds the WinForms GUI and its image/icon resources. At
+runtime, the host materializes the GUI only under disposable `_cache\runtime`
+and the GUI launches the same outer splined.exe with redirected streams for
+core operations.
 
-Keep splined-watermark.png beside splined.exe. The executable icon is embedded
-from app.ico at build time. No local configuration, credentials, cache, logs,
-history, generated executables, QA captures, or archives belong in source
-control.
+No watermark, application-icon, or core sidecar is required. The executable
+icon and GUI images are embedded at build time. No local configuration,
+credentials, cache, logs, history, generated executables, QA captures, or
+archives belong in source control.
 
 The repository/native release number is independent. A repository release such
 as 1.0.4 can contain this unchanged Windows v3.0.0 Stable application.

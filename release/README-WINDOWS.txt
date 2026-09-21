@@ -17,10 +17,6 @@ FRESH INSTALL
    layout as required:
 
    splined.exe
-   splined-core.exe
-   splined-watermark.png
-   splined-app-icon.png
-   app.ico
    config\
       config.toml
       ui.toml
@@ -33,9 +29,9 @@ FRESH INSTALL
 4. Begin in Read mode with a small media selection. Confirm artwork choices
    and output policy before enabling Write mode.
 
-The GUI executable, processing core, watermark, and icon resources are one
-application bundle. Keep those application files together. No setup launcher
-or executable rename is required.
+The GUI, processing core, watermark, and icon resources are embedded in
+splined.exe. No sidecar application files, setup launcher, or executable rename
+are required.
 
 
 UPGRADE AN EXISTING PORTABLE INSTALL

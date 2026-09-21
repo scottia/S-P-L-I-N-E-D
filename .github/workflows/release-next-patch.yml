@@ -431,12 +431,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $gui = "windows/target/release/splined.exe"
-          $core = "windows/target/release/splined-core.exe"
-          $watermark = "windows/target/release/splined-watermark.png"
-          foreach ($path in $gui, $core, $watermark) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Missing Windows runtime output: $path"
-            }
+          if (-not (Test-Path -LiteralPath $gui -PathType Leaf)) {
+            throw "Missing Windows runtime output: $gui"
           }
           $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($gui)
           if ($version.ProductName -ne "S:P:L:I:N:E:D v3.0.0 Stable") {
@@ -453,12 +449,19 @@ jobs:
           Remove-Item -Recurse -Force release-package, release-assets -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path release-package, release-assets | Out-Null
           Copy-Item windows/target/release/splined.exe release-package/splined.exe
-          Copy-Item windows/target/release/splined-core.exe release-package/splined-core.exe
-          Copy-Item windows/target/release/splined-watermark.png release-package/splined-watermark.png
-          Copy-Item windows/target/release/splined-app-icon.png release-package/splined-app-icon.png
-          Copy-Item windows/target/release/app.ico release-package/app.ico
           Copy-Item release/README-WINDOWS.txt release-package/README-WINDOWS.txt
           Compress-Archive -Path "release-package/*" -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "release-assets/splined-windows-x86_64.zip"))
+          try {
+            $entries = @($archive.Entries | ForEach-Object FullName | Sort-Object)
+            $expected = @("README-WINDOWS.txt", "splined.exe")
+            if (Compare-Object $expected $entries) {
+              throw "Windows archive must contain exactly README-WINDOWS.txt and splined.exe; found: $($entries -join ', ')"
+            }
+          } finally {
+            $archive.Dispose()
+          }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
