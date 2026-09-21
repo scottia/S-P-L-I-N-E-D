@@ -1836,6 +1836,13 @@ def main() -> int:
     try:
         path, cfg = core.load_config()
         validate_splineai_placeholder(cfg)
+        if args.oauth_validation:
+            if len(sys.argv) != 2:
+                raise core.SplinedError(
+                    "--oauth-validation does not accept additional command options."
+                )
+            return core.run_oauth_validation_command(path, cfg)
+
         scan_cfg = core.section(cfg, "scan")
         runtime_cache = core.runtime_cache_dir(path, cfg)
         core.ensure_runtime_directories(path, cfg, runtime_cache)

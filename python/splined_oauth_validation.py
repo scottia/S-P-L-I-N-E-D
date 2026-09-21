@@ -9,19 +9,23 @@ import requests
 import splined as core
 
 
-# Curated public records used only to prove provider connectivity. One target is
-# chosen at random per configured provider so validation does not depend on the
-# user's library or require interactive artist/album input.
+PASS = "PASS"
+FAIL = "FAIL"
+SKIP = "SKIP"
+
+
+# These are stable public catalog records. The release identifiers were checked
+# against MusicBrainz; Fanart.tv receives release-group identifiers, never
+# release identifiers.
 DISCOGS_TARGETS = (
     ("B.B. King", "Live at the Regal"),
     ("Etta James", "At Last!"),
     ("Nirvana", "Nevermind"),
 )
 
-LASTFM_TARGETS = (
-    ("B.B. King", "Live at the Regal"),
-    ("Etta James", "At Last!"),
-    ("Nirvana", "Nevermind"),
+FANARTTV_TARGETS = (
+    ("B.B. King", "Live at the Regal", "a4d2a86c-bbd6-352b-b9fa-f9da86df842c"),
+    ("Nirvana", "Nevermind", "1b022e01-4da6-387b-8658-8678046e4cef"),
 )
 
 MUSICBRAINZ_TARGETS = (
@@ -30,10 +34,15 @@ MUSICBRAINZ_TARGETS = (
     ("Etta James", "At Last!", "c0f1351c-b6c8-4c91-9a20-28d6c360eb08"),
 )
 
-FANARTTV_TARGETS = (
-    ("B.B. King", "Live at the Regal", "a4d2a86c-bbd6-352b-b9fa-f9da86df842c"),
-    ("Nirvana", "Nevermind", "1b022e01-4da6-387b-8658-8678046e4cef"),
+LASTFM_TARGETS = (
+    ("B.B. King", "Live at the Regal"),
+    ("Etta James", "At Last!"),
+    ("Nirvana", "Nevermind"),
 )
+
+
+class ProviderRequestError(RuntimeError):
+    """A deliberately secret-free provider transport/response failure."""
 
 
 def _randomized(values: tuple[Any, ...]) -> list[Any]:
@@ -42,43 +51,83 @@ def _randomized(values: tuple[Any, ...]) -> list[Any]:
     return items
 
 
-def _read_credential(path: Path, label: str) -> tuple[str, dict[str, Any] | None]:
-    if not path.exists():
-        print(f"SKIP: {label}: credential file not found: {path}")
-        return "skip", None
+def _read_credential(
+    config_file: Path,
+    cfg: dict[str, Any],
+    provider: str,
+    label: str,
+) -> tuple[str, dict[str, Any] | None]:
+    path = core.credential_file(config_file, cfg, provider)
+    if not path.is_file():
+        print(f"{SKIP}: {label}: {path.name} is not configured")
+        return SKIP, None
     try:
-        return "configured", core.load_json(path, label)
+        return "CONFIGURED", core.load_json(path, label)
     except core.SplinedError as exc:
-        print(f"FAIL: {label}: {exc}")
-        return "fail", None
+        print(f"{FAIL}: {label}: {exc}")
+        return FAIL, None
 
 
-def _request_json(method: str, url: str, **kwargs: Any) -> tuple[requests.Response, dict[str, Any]]:
+def _request_json(
+    method: str,
+    url: str,
+    **kwargs: Any,
+) -> tuple[int, dict[str, Any]]:
     headers = dict(kwargs.pop("headers", {}) or {})
     headers.setdefault("User-Agent", core.USER_AGENT)
-    response = requests.request(method, url, headers=headers, timeout=core.REQUEST_TIMEOUT, **kwargs)
     try:
-        data = response.json()
-    except ValueError:
-        data = {}
-    return response, data if isinstance(data, dict) else {}
+        response = requests.request(
+            method,
+            url,
+            headers=headers,
+            timeout=core.REQUEST_TIMEOUT,
+            **kwargs,
+        )
+    except requests.RequestException as exc:
+        # Exception messages may contain prepared URLs or headers. Keep the
+        # diagnostic useful without risking credential disclosure.
+        raise ProviderRequestError(
+            f"request failed ({type(exc).__name__})"
+        ) from None
+
+    status = int(response.status_code)
+    try:
+        try:
+            payload = response.json()
+        except ValueError:
+            raise ProviderRequestError(
+                f"provider returned invalid JSON (HTTP {status})"
+            ) from None
+    finally:
+        response.close()
+
+    if not isinstance(payload, dict):
+        raise ProviderRequestError(
+            f"provider returned an unexpected JSON value (HTTP {status})"
+        )
+    return status, payload
+
+
+def _request_failed(label: str, exc: ProviderRequestError) -> str:
+    print(f"{FAIL}: {label}: {exc}")
+    return FAIL
 
 
 def _validate_discogs(config_file: Path, cfg: dict[str, Any]) -> str:
     label = "Discogs"
-    path = core.credential_file(config_file, cfg, "discogs")
-    state, cred = _read_credential(path, label)
-    if state != "configured":
+    state, credential = _read_credential(config_file, cfg, "discogs", label)
+    if state != "CONFIGURED":
         return state
-    token = str((cred or {}).get("token") or "").strip()
+
+    token = str((credential or {}).get("token") or "").strip()
     if not token:
-        print(f"FAIL: {label}: configured credential contains no token")
-        return "fail"
+        print(f"{FAIL}: {label}: configured credential contains no token")
+        return FAIL
 
     for artist, album in _randomized(DISCOGS_TARGETS):
         print(f"Random test: {label}: {artist} - {album}")
         try:
-            response, data = _request_json(
+            status, data = _request_json(
                 "GET",
                 "https://api.discogs.com/database/search",
                 headers={"Authorization": f"Discogs token={token}"},
@@ -89,47 +138,71 @@ def _validate_discogs(config_file: Path, cfg: dict[str, Any]) -> str:
                     "per_page": 1,
                 },
             )
-        except requests.RequestException as exc:
-            print(f"FAIL: {label}: network error: {exc}")
-            return "fail"
-        if response.status_code in {401, 403}:
-            print(f"FAIL: {label}: authentication rejected (HTTP {response.status_code})")
-            return "fail"
-        if response.status_code != 200:
-            print(f"FAIL: {label}: provider returned HTTP {response.status_code}")
-            return "fail"
+        except ProviderRequestError as exc:
+            return _request_failed(label, exc)
+
+        if status in {401, 403}:
+            print(f"{FAIL}: {label}: personal access token was rejected")
+            return FAIL
+        if status != 200:
+            print(f"{FAIL}: {label}: provider returned HTTP {status}")
+            return FAIL
+
         results = data.get("results")
         if isinstance(results, list) and results:
             result = results[0] if isinstance(results[0], dict) else {}
             print(
-                "PASS: Discogs personal token accepted; "
+                f"{PASS}: Discogs personal token accepted; "
                 f"result={result.get('title') or 'release'}; "
                 f"id={result.get('id') or 'n/a'}; "
-                f"year={result.get('year') or 'n/a'}; "
-                f"cover={result.get('cover_image') or 'n/a'}"
+                f"year={result.get('year') or 'n/a'}"
             )
-            return "pass"
-        print("NO RESULT: Discogs authentication succeeded but this random target returned no release.")
-    print("FAIL: Discogs authentication succeeded, but no curated random target returned a result.")
-    return "fail"
+            return PASS
+
+    print(
+        f"{PASS}: Discogs personal token accepted; "
+        "the curated records returned no representative search result"
+    )
+    return PASS
+
+
+def _fanart_cover(
+    data: dict[str, Any],
+    release_group_mbid: str,
+) -> dict[str, Any] | None:
+    albums = data.get("albums")
+    if not isinstance(albums, list):
+        return None
+    for item in albums:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("release_group_id") or "").lower() != release_group_mbid.lower():
+            continue
+        covers = item.get("albumcover")
+        if not isinstance(covers, list):
+            return None
+        for cover in covers:
+            if isinstance(cover, dict) and str(cover.get("url") or "").strip():
+                return cover
+    return None
 
 
 def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
     label = "Fanart.tv"
-    path = core.credential_file(config_file, cfg, "fanarttv")
-    state, cred = _read_credential(path, label)
-    if state != "configured":
+    state, credential = _read_credential(config_file, cfg, "fanarttv", label)
+    if state != "CONFIGURED":
         return state
-    cred = cred or {}
-    api_key = str(cred.get("api_key") or "").strip()
-    client_key = str(cred.get("client_key") or "").strip()
-    api_version = str(cred.get("api_version") or "").strip()
+
+    credential = credential or {}
+    api_key = str(credential.get("api_key") or "").strip()
+    client_key = str(credential.get("client_key") or "").strip()
+    api_version = str(credential.get("api_version") or "").strip()
     if not api_key:
-        print(f"FAIL: {label}: configured credential contains no api_key")
-        return "fail"
-    if api_version and api_version != "v3.2":
-        print(f"FAIL: {label}: credential api_version must be v3.2")
-        return "fail"
+        print(f"{FAIL}: {label}: configured credential contains no api_key")
+        return FAIL
+    if api_version.lower() != "v3.2":
+        print(f"{FAIL}: {label}: credential api_version must be v3.2")
+        return FAIL
 
     headers = {"api-key": api_key}
     if client_key:
@@ -141,127 +214,145 @@ def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
             f"(release-group {release_group_mbid})"
         )
         try:
-            response, data = _request_json(
+            status, data = _request_json(
                 "GET",
                 f"https://webservice.fanart.tv/v3.2/music/albums/{release_group_mbid}",
                 headers=headers,
             )
-        except requests.RequestException as exc:
-            print(f"FAIL: {label}: network error: {exc}")
-            return "fail"
-        if response.status_code in {401, 403}:
-            print(f"FAIL: {label}: authentication rejected (HTTP {response.status_code})")
-            return "fail"
-        if response.status_code not in {200, 404}:
-            print(f"FAIL: {label}: provider returned HTTP {response.status_code}")
-            return "fail"
-        covers = data.get("albumcover")
-        if isinstance(covers, list) and covers:
-            cover = covers[0] if isinstance(covers[0], dict) else {}
+        except ProviderRequestError as exc:
+            return _request_failed(label, exc)
+
+        if status in {401, 403}:
+            print(f"{FAIL}: {label}: project/client key combination was rejected")
+            return FAIL
+        if status == 404:
+            continue
+        if status != 200:
+            print(f"{FAIL}: {label}: provider returned HTTP {status}")
+            return FAIL
+
+        albums = data.get("albums")
+        if not isinstance(albums, list):
+            print(f"{FAIL}: {label}: v3.2 response did not contain an albums array")
+            return FAIL
+        cover = _fanart_cover(data, release_group_mbid)
+        if cover is not None:
             print(
-                "PASS: Fanart.tv credentials accepted; "
-                f"id={cover.get('id') or 'n/a'}; "
-                f"artwork={cover.get('url') or 'n/a'}"
+                f"{PASS}: Fanart.tv v3.2 credentials accepted; "
+                f"release_group_mbid={release_group_mbid}; "
+                f"artwork_id={cover.get('id') or 'n/a'}; "
+                f"artwork={cover.get('url')}"
             )
-            return "pass"
-        if response.status_code == 200 and data and "error" not in data:
-            print("PASS: Fanart.tv credentials accepted; album record returned without albumcover artwork.")
-            return "pass"
-        print("NO RESULT: Fanart.tv accepted the request but this random release-group was not available.")
-    print("FAIL: Fanart.tv credentials were not rejected, but no curated random target returned album data.")
-    return "fail"
+            return PASS
+
+    print(
+        f"{PASS}: Fanart.tv v3.2 credentials accepted; "
+        "the curated release groups returned no album-cover result"
+    )
+    return PASS
 
 
 def _musicbrainz_artist(data: dict[str, Any]) -> str:
     parts: list[str] = []
-    for item in data.get("artist-credit", []) or []:
+    artist_credit = data.get("artist-credit")
+    if not isinstance(artist_credit, list):
+        return ""
+    for item in artist_credit:
         if isinstance(item, str):
             parts.append(item)
         elif isinstance(item, dict):
-            parts.append(str(item.get("name") or (item.get("artist") or {}).get("name") or ""))
+            artist = item.get("artist")
+            artist_name = artist.get("name") if isinstance(artist, dict) else ""
+            parts.append(str(item.get("name") or artist_name or ""))
             parts.append(str(item.get("joinphrase") or ""))
     return "".join(parts).strip()
 
 
 def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
     label = "MusicBrainz"
-    path = core.credential_file(config_file, cfg, "musicbrainz")
-    state, cred = _read_credential(path, label)
-    if state != "configured":
+    state, credential = _read_credential(config_file, cfg, "musicbrainz", label)
+    if state != "CONFIGURED":
         return state
-    cred = cred or {}
-    token = str(cred.get("access_token") or "").strip()
+
+    token = str((credential or {}).get("access_token") or "").strip()
     if not token:
-        print(f"FAIL: {label}: configured credential contains no access_token")
-        return "fail"
+        print(f"{FAIL}: {label}: configured credential contains no access_token")
+        return FAIL
+    headers = {"Authorization": f"Bearer {token}"}
 
     try:
-        response, identity = _request_json(
+        status, _identity = _request_json(
             "GET",
             "https://musicbrainz.org/oauth2/userinfo",
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
         )
-    except requests.RequestException as exc:
-        print(f"FAIL: {label}: OAuth identity network error: {exc}")
-        return "fail"
-    if response.status_code in {401, 403}:
-        print(f"FAIL: {label}: saved OAuth access token rejected (HTTP {response.status_code})")
-        return "fail"
-    if response.status_code != 200:
-        print(f"FAIL: {label}: OAuth identity returned HTTP {response.status_code}")
-        return "fail"
-    identity_name = identity.get("username") or identity.get("sub") or identity.get("name") or "authorized user"
-    print(f"PASS: MusicBrainz saved OAuth access token accepted; identity={identity_name}")
+    except ProviderRequestError as exc:
+        return _request_failed(label, exc)
+    if status in {401, 403}:
+        print(f"{FAIL}: {label}: saved OAuth access token was rejected")
+        return FAIL
+    if status != 200:
+        print(f"{FAIL}: {label}: OAuth userinfo returned HTTP {status}")
+        return FAIL
+    print(f"{PASS}: MusicBrainz OAuth bearer token was accepted")
 
     for artist, album, release_mbid in _randomized(MUSICBRAINZ_TARGETS):
         print(f"Random test: {label}: {artist} - {album} (release {release_mbid})")
         try:
-            metadata_response, data = _request_json(
+            metadata_status, data = _request_json(
                 "GET",
                 f"{core.MB_BASE}/release/{release_mbid}",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=headers,
                 params={"fmt": "json", "inc": "artist-credits+release-groups"},
             )
-        except requests.RequestException as exc:
-            print(f"FAIL: {label}: metadata network error: {exc}")
-            return "fail"
-        if metadata_response.status_code in {401, 403}:
-            print(f"FAIL: {label}: OAuth accepted by userinfo but rejected by metadata endpoint")
-            return "fail"
-        if metadata_response.status_code == 200 and data.get("id"):
-            rg = data.get("release-group") if isinstance(data.get("release-group"), dict) else {}
+        except ProviderRequestError as exc:
+            return _request_failed(label, exc)
+        if metadata_status in {401, 403}:
+            print(f"{FAIL}: {label}: metadata request rejected the saved OAuth token")
+            return FAIL
+        if metadata_status == 404:
+            continue
+        if metadata_status != 200:
+            print(f"{FAIL}: {label}: metadata endpoint returned HTTP {metadata_status}")
+            return FAIL
+        if data.get("id"):
+            release_group = data.get("release-group")
+            release_group = release_group if isinstance(release_group, dict) else {}
             print(
-                "PASS: MusicBrainz metadata lookup succeeded; "
+                f"{PASS}: MusicBrainz metadata lookup succeeded; "
                 f"artist={_musicbrainz_artist(data) or artist}; "
                 f"release={data.get('title') or album}; "
-                f"release_id={data.get('id')}; "
-                f"release_group_id={rg.get('id') or 'n/a'}"
+                f"release_mbid={data.get('id')}; "
+                f"release_group_mbid={release_group.get('id') or 'n/a'}"
             )
-            return "pass"
-        print(f"NO RESULT: MusicBrainz metadata target returned HTTP {metadata_response.status_code}.")
-    print("FAIL: MusicBrainz OAuth succeeded, but no curated random metadata target resolved.")
-    return "fail"
+            return PASS
+
+    print(
+        f"{PASS}: MusicBrainz OAuth bearer token was accepted; "
+        "the curated releases returned no metadata result"
+    )
+    return PASS
 
 
 def _validate_lastfm(config_file: Path, cfg: dict[str, Any]) -> str:
     label = "Last.fm"
-    path = core.credential_file(config_file, cfg, "lastfm")
-    state, cred = _read_credential(path, label)
-    if state != "configured":
+    state, credential = _read_credential(config_file, cfg, "lastfm", label)
+    if state != "CONFIGURED":
         return state
-    api_key = str((cred or {}).get("api_key") or "").strip()
+
+    api_key = str((credential or {}).get("api_key") or "").strip()
     if not api_key:
-        print(f"FAIL: {label}: configured credential contains no api_key")
-        return "fail"
+        print(f"{FAIL}: {label}: configured credential contains no api_key")
+        return FAIL
 
     for artist, album in _randomized(LASTFM_TARGETS):
         print(f"Random test: {label}: {artist} - {album}")
         try:
-            response, data = _request_json(
+            status, data = _request_json(
                 "GET",
                 core.LASTFM_API_URL,
                 params={
-                    "method": "album.getinfo",
+                    "method": "album.getInfo",
                     "api_key": api_key,
                     "artist": artist,
                     "album": album,
@@ -269,78 +360,73 @@ def _validate_lastfm(config_file: Path, cfg: dict[str, Any]) -> str:
                     "format": "json",
                 },
             )
-        except requests.RequestException as exc:
-            print(f"FAIL: {label}: network error: {exc}")
-            return "fail"
-        error = data.get("error")
-        if error == 10 or response.status_code in {401, 403}:
-            print(f"FAIL: {label}: API key rejected")
-            return "fail"
+        except ProviderRequestError as exc:
+            return _request_failed(label, exc)
+
+        error = str(data.get("error") or "")
+        if status in {401, 403} or error in {"10", "26"}:
+            print(f"{FAIL}: {label}: API key was rejected")
+            return FAIL
+        if status != 200:
+            print(f"{FAIL}: {label}: provider returned HTTP {status}")
+            return FAIL
+        if error in {"6", "7"}:
+            continue
         if error:
-            if error in {6, 7}:
-                print(f"NO RESULT: Last.fm accepted the API key but this random target was not found.")
-                continue
-            print(f"FAIL: {label}: API error {error}: {data.get('message') or 'unknown error'}")
-            return "fail"
-        album_data = data.get("album") if isinstance(data.get("album"), dict) else None
-        if album_data:
-            artwork = "n/a"
-            images = album_data.get("image")
-            if isinstance(images, list):
-                urls = [
-                    str(item.get("#text") or "").strip()
-                    for item in images
-                    if isinstance(item, dict) and str(item.get("#text") or "").strip()
-                ]
-                if urls:
-                    artwork = urls[-1]
-            print(
-                "PASS: Last.fm API key accepted; "
-                f"artist={album_data.get('artist') or artist}; "
-                f"album={album_data.get('name') or album}; "
-                f"mbid={album_data.get('mbid') or 'n/a'}; "
-                f"artwork={artwork}"
-            )
-            return "pass"
-        print("NO RESULT: Last.fm request succeeded but contained no album object.")
-    print("FAIL: Last.fm API key was not rejected, but no curated random target returned an album.")
-    return "fail"
+            print(f"{FAIL}: {label}: provider returned API error {error}")
+            return FAIL
+
+        album_data = data.get("album")
+        if not isinstance(album_data, dict):
+            continue
+        artwork = "n/a"
+        images = album_data.get("image")
+        if isinstance(images, list):
+            urls = [
+                str(item.get("#text") or "").strip()
+                for item in images
+                if isinstance(item, dict) and str(item.get("#text") or "").strip()
+            ]
+            if urls:
+                artwork = urls[-1]
+        print(
+            f"{PASS}: Last.fm API key accepted; "
+            f"artist={album_data.get('artist') or artist}; "
+            f"album={album_data.get('name') or album}; "
+            f"artwork={artwork}"
+        )
+        return PASS
+
+    print(
+        f"{PASS}: Last.fm API key accepted; "
+        "the curated albums returned no representative result"
+    )
+    return PASS
 
 
 def run_oauth_validation(config_file: Path, cfg: dict[str, Any]) -> int:
     credential_dir = core.runtime_credential_dir(config_file, cfg)
     print("SPLINED API/OAuth Validation")
-    print()
     print(f"Config: {config_file}")
-    print(f"Credential Directory: {credential_dir}")
-    print("Targets: random curated public artist/album records; one representative result per configured provider")
-    print("Secrets: never displayed")
+    print(f"Credential directory: {credential_dir}")
+    print("Random curated public records are used; the music library is not inspected.")
+    print("Saved credentials are tested read-only and secrets are never displayed.")
     print()
 
-    results: list[tuple[str, str]] = []
     validators = (
         ("Discogs", _validate_discogs),
         ("Fanart.tv", _validate_fanarttv),
         ("MusicBrainz", _validate_musicbrainz),
         ("Last.fm", _validate_lastfm),
     )
+    results: list[tuple[str, str]] = []
     for label, validator in validators:
-        print(f"=== {label} ===")
         result = validator(config_file, cfg)
         results.append((label, result))
-        print()
 
-    print("=== API/OAuth Validation Summary ===")
+    print()
+    print("SPLINED API/OAuth Validation Summary")
     for label, result in results:
-        print(f"{label}: {result.upper()}")
+        print(f"{label:<14}{result}")
 
-    configured = [result for _, result in results if result != "skip"]
-    failures = [result for result in configured if result != "pass"]
-    if not configured:
-        print("No configured provider credential files were found.")
-        return 0
-    if failures:
-        print("RESULT: FAIL - one or more configured providers did not complete validation.")
-        return 1
-    print("RESULT: PASS - all configured provider credentials validated successfully.")
-    return 0
+    return 1 if any(result == FAIL for _, result in results) else 0

@@ -4251,6 +4251,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      --lastfm-credentials", "Configure SPLINED Last.fm API credentials")
     help_row("      --lastfm-login", "Authorize SPLINED with a Last.fm user account")
     help_row("      --fanarttv-credentials", "Configure SPLINED Fanart.tv API credentials")
+    help_row("      --oauth-validation", "Test saved credential tokens")
     help_row(
         "      Discogs",
         "Uses credentials/discogs.json personal token; no Discogs application OAuth required",
@@ -4347,8 +4348,17 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--lastfm-credentials", action="store_true")
     p.add_argument("--lastfm-login", action="store_true")
     p.add_argument("--fanarttv-credentials", action="store_true")
+    p.add_argument("--oauth-validation", action="store_true")
     p.add_argument("--idle", action="store_true", help=argparse.SUPPRESS)
     return p
+
+
+def run_oauth_validation_command(config_file: Path, cfg: dict[str, Any]) -> int:
+    # Imported lazily so the validator can reuse this module's Config v5 and
+    # credential-path authorities without introducing a circular import.
+    from splined_oauth_validation import run_oauth_validation
+
+    return run_oauth_validation(config_file, cfg)
 
 
 def main() -> int:
@@ -4357,6 +4367,10 @@ def main() -> int:
     if args.idle: return idle()
     try:
         path,cfg=load_config()
+        if args.oauth_validation:
+            if len(sys.argv) != 2:
+                raise SplinedError("--oauth-validation does not accept additional command options.")
+            return run_oauth_validation_command(path, cfg)
         scan_cfg = section(cfg, "scan")
         runtime_cache = runtime_cache_dir(path, cfg)
         ensure_runtime_directories(path, cfg, runtime_cache)

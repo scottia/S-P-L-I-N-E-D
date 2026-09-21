@@ -364,7 +364,10 @@ jobs:
           cargo check --locked
           cargo test --locked
           cargo clippy --locked -- -D warnings
-          python3 -m py_compile python/splined.py python/splined_scan.py
+          python3 -m py_compile \
+            python/splined.py \
+            python/splined_scan.py \
+            python/splined_oauth_validation.py
 
           docker build --pull \
             --tag splined-release-candidate:${RELEASE_VERSION} \
@@ -389,6 +392,23 @@ jobs:
             --config-check | tr -d '\r')
           printf '%s\n' "$CONFIG_CHECK"
           grep -F "config_version = 5" <<<"$CONFIG_CHECK"
+
+          HELP_OUTPUT=$(docker run --rm \
+            -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+            "splined-release-candidate:${RELEASE_VERSION}" \
+            -h | tr -d '\r')
+          grep -F -- "--oauth-validation" <<<"$HELP_OUTPUT"
+
+          OAUTH_OUTPUT=$(docker run --rm \
+            -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+            "splined-release-candidate:${RELEASE_VERSION}" \
+            --oauth-validation | tr -d '\r')
+          printf '%s\n' "$OAUTH_OUTPUT"
+          grep -F "SPLINED API/OAuth Validation Summary" <<<"$OAUTH_OUTPUT"
+          grep -F "Discogs       SKIP" <<<"$OAUTH_OUTPUT"
+          grep -F "Fanart.tv     SKIP" <<<"$OAUTH_OUTPUT"
+          grep -F "MusicBrainz   SKIP" <<<"$OAUTH_OUTPUT"
+          grep -F "Last.fm       SKIP" <<<"$OAUTH_OUTPUT"
 
           git diff --check
 
