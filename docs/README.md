@@ -23,6 +23,7 @@ Do not infer one from another.
 - [Installation and first run](installation-first-run.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Credentials and provider setup](credentials-providers.md)
+- [API/OAuth credential validation](oauth-validation.md)
 - [MusicBrainz OAuth](musicbrainz-oauth.md)
 - [Source policies and Range Types](source-policies-range-types.md)
 - [Select Media and status colors](media-filter-status-colors.md)
