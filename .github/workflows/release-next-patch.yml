@@ -1,0 +1,657 @@
+name: SPLINED Release — Next Patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Release platform"
+        required: true
+        default: "Windows"
+        type: choice
+        options:
+          - "Windows"
+          - "Ubuntu"
+          - "macOS"
+          - "All"
+
+permissions:
+  contents: write
+
+# Only one version-provisioning release may run at a time. Individual OS
+# build jobs also carry their own concurrency locks below so platform builds
+# remain isolated from one another.
+concurrency:
+  group: splined-release-next-patch
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare-release:
+    name: Prepare next patch release
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+
+    steps:
+      - name: Require main branch dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "ERROR: Release provisioning must be dispatched from the main branch."
+            echo "Received ref: ${{ github.ref }}"
+            exit 1
+          fi
+
+      - name: Checkout main with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Require clean release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin main --tags
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+            echo "ERROR: Checked-out main is not current with origin/main."
+            exit 1
+          }
+          test -z "$(git status --porcelain)" || {
+            echo "ERROR: Release checkout is not clean."
+            git status --short
+            exit 1
+          }
+
+      - name: Resolve next patch version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import subprocess
+          import tomllib
+
+          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8-sig"))
+          lock = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+
+          current = cargo["package"]["version"]
+          semver = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current)
+          if not semver:
+              raise SystemExit(f"Cargo package version is not numeric SemVer: {current}")
+
+          roots = [
+              package
+              for package in lock["package"]
+              if package["name"] == "splined"
+          ]
+          if len(roots) != 1:
+              raise SystemExit("Expected exactly one splined root package in Cargo.lock")
+          lock_version = roots[0]["version"]
+
+          version_match = re.search(r'^VERSION = "([^"]+)"$', source, re.MULTILINE)
+          if not version_match:
+              raise SystemExit("VERSION declaration not found in python/splined.py")
+          python_version = version_match.group(1)
+
+          user_agent_match = re.search(r'^USER_AGENT = "([^"]+)"$', source, re.MULTILINE)
+          if not user_agent_match:
+              raise SystemExit("USER_AGENT declaration not found in python/splined.py")
+          expected_user_agent = (
+              f"SPLINED/{current} "
+              "(https://github.com/scottia/S-P-L-I-N-E-D)"
+          )
+
+          if not (current == lock_version == python_version):
+              raise SystemExit(
+                  "Current release metadata is not synchronized: "
+                  f"Cargo.toml={current}, Cargo.lock={lock_version}, Python={python_version}"
+              )
+          if user_agent_match.group(1) != expected_user_agent:
+              raise SystemExit(
+                  "Current Python USER_AGENT is not synchronized with the source version"
+              )
+
+          raw_tags = subprocess.check_output(
+              ["git", "tag", "--list"], text=True
+          ).splitlines()
+          parsed_tags = []
+          for tag in raw_tags:
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+              if match:
+                  parsed_tags.append((tuple(map(int, match.groups())), tag))
+
+          current_tuple = tuple(map(int, semver.groups()))
+          if parsed_tags:
+              highest_tuple, highest_tag = max(parsed_tags, key=lambda item: item[0])
+              if highest_tuple != current_tuple:
+                  raise SystemExit(
+                      "Current source version must match the highest existing numeric release tag "
+                      f"before calculating the next patch: source={current}, highest_tag={highest_tag}"
+                  )
+
+          major, minor, patch = current_tuple
+          next_version = f"{major}.{minor}.{patch + 1}"
+
+          for candidate in (next_version, f"v{next_version}"):
+              if candidate in raw_tags:
+                  raise SystemExit(f"Release tag already exists: {candidate}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"current={current}\n")
+              output.write(f"next={next_version}\n")
+
+          print(f"Current release version: {current}")
+          print(f"Next patch version:      {next_version}")
+          PY
+
+      - name: Install stable Rust with rustfmt and clippy
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default stable
+
+      - name: Provision release metadata
+        shell: bash
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.current }}
+          NEXT_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+
+          cp Cargo.lock /tmp/Cargo.lock.before
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          current = os.environ["CURRENT_VERSION"]
+          new = os.environ["NEXT_VERSION"]
+
+          cargo_path = Path("Cargo.toml")
+          cargo = cargo_path.read_text(encoding="utf-8-sig")
+          lines = cargo.splitlines(keepends=True)
+          in_package = False
+          changed = False
+          for index, line in enumerate(lines):
+              stripped = line.strip()
+              if stripped.startswith("[") and stripped.endswith("]"):
+                  in_package = stripped == "[package]"
+                  continue
+              if in_package and re.match(r"^\s*version\s*=", line):
+                  replacement, count = re.subn(
+                      rf'^(\s*version\s*=\s*"){re.escape(current)}("\s*)$',
+                      rf'\g<1>{new}\g<2>',
+                      line.rstrip("\r\n"),
+                  )
+                  if count != 1:
+                      raise SystemExit("Unable to update [package].version in Cargo.toml")
+                  newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+                  lines[index] = replacement + newline
+                  changed = True
+                  break
+          if not changed:
+              raise SystemExit("Cargo.toml [package].version was not updated")
+          cargo_path.write_text("".join(lines), encoding="utf-8")
+
+          python_path = Path("python/splined.py")
+          source = python_path.read_text(encoding="utf-8")
+          source, version_count = re.subn(
+              rf'^VERSION = "{re.escape(current)}"$',
+              f'VERSION = "{new}"',
+              source,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          source, ua_count = re.subn(
+              rf'^USER_AGENT = "SPLINED/{re.escape(current)} \(https://github\.com/scottia/S-P-L-I-N-E-D\)"$',
+              f'USER_AGENT = "SPLINED/{new} (https://github.com/scottia/S-P-L-I-N-E-D)"',
+              source,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if version_count != 1 or ua_count != 1:
+              raise SystemExit(
+                  f"Unable to update Python release metadata: VERSION={version_count}, USER_AGENT={ua_count}"
+              )
+          python_path.write_text(source, encoding="utf-8")
+          PY
+
+          # Cargo owns Cargo.lock. This intentionally runs once without
+          # --locked so Cargo can synchronize the root SPLINED package version.
+          cargo check
+
+      - name: Verify Cargo.lock changed only for SPLINED root version
+        shell: bash
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.current }}
+          NEXT_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import copy
+          import os
+          import tomllib
+
+          current = os.environ["CURRENT_VERSION"]
+          new = os.environ["NEXT_VERSION"]
+          before = tomllib.loads(Path("/tmp/Cargo.lock.before").read_text(encoding="utf-8"))
+          after = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))
+
+          def normalize(lock, expected_version):
+              normalized = copy.deepcopy(lock)
+              roots = [
+                  package
+                  for package in normalized["package"]
+                  if package["name"] == "splined"
+              ]
+              if len(roots) != 1:
+                  raise SystemExit("Expected exactly one splined root package in Cargo.lock")
+              if roots[0]["version"] != expected_version:
+                  raise SystemExit(
+                      "Unexpected SPLINED root version in Cargo.lock: "
+                      f"expected={expected_version}, actual={roots[0]['version']}"
+                  )
+              roots[0]["version"] = "__SPLINED_RELEASE_VERSION__"
+              return normalized
+
+          if normalize(before, current) != normalize(after, new):
+              raise SystemExit(
+                  "Cargo changed dependency lock data in addition to the SPLINED root package version"
+              )
+
+          print("Cargo.lock dependency graph is unchanged; only the SPLINED root version moved.")
+          PY
+
+      - name: Verify provisioned metadata
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import tomllib
+
+          expected = os.environ["RELEASE_VERSION"]
+          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8-sig"))
+          lock = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+
+          roots = [package for package in lock["package"] if package["name"] == "splined"]
+          if len(roots) != 1:
+              raise SystemExit("Expected exactly one splined root package in Cargo.lock")
+
+          version_match = re.search(r'^VERSION = "([^"]+)"$', source, re.MULTILINE)
+          user_agent_match = re.search(r'^USER_AGENT = "([^"]+)"$', source, re.MULTILINE)
+          if not version_match or not user_agent_match:
+              raise SystemExit("Python release metadata declarations are missing")
+
+          expected_user_agent = (
+              f"SPLINED/{expected} "
+              "(https://github.com/scottia/S-P-L-I-N-E-D)"
+          )
+          values = {
+              "Cargo.toml": cargo["package"]["version"],
+              "Cargo.lock": roots[0]["version"],
+              "Python": version_match.group(1),
+          }
+          for label, value in values.items():
+              print(f"{label}: {value}")
+          if any(value != expected for value in values.values()):
+              raise SystemExit("Provisioned release metadata is not synchronized")
+          if user_agent_match.group(1) != expected_user_agent:
+              raise SystemExit("Provisioned Python USER_AGENT is not synchronized")
+          print(f"User-Agent: {expected_user_agent}")
+          PY
+
+      - name: Validate release candidate with locked dependency graph
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+
+          cargo fmt --all -- --check
+          cargo check --locked
+          cargo test --locked
+          cargo clippy --locked -- -D warnings
+          python3 -m py_compile python/splined.py python/splined_scan.py
+
+          docker build --pull \
+            --tag splined-release-candidate:${RELEASE_VERSION} \
+            ./python
+
+          ACTUAL=$(docker run --rm "splined-release-candidate:${RELEASE_VERSION}" -V | tr -d '\r')
+          EXPECTED="SPLINED ${RELEASE_VERSION}"
+          echo "Expected Docker version: $EXPECTED"
+          echo "Actual Docker version:   $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+          git diff --check
+
+      - name: Verify only release metadata changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only | sort)
+          expected=("Cargo.lock" "Cargo.toml" "python/splined.py")
+
+          printf 'Changed files:\n'
+          printf '  %s\n' "${changed[@]}"
+
+          if [ "${changed[*]}" != "${expected[*]}" ]; then
+            echo "ERROR: Unexpected files changed while provisioning the release."
+            exit 1
+          fi
+
+      - name: Commit, tag, and push release metadata
+        id: release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Cargo.toml Cargo.lock python/splined.py
+          git commit -m "release: prepare ${RELEASE_VERSION}"
+
+          RELEASE_COMMIT=$(git rev-parse HEAD)
+          git tag -a "$RELEASE_VERSION" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
+
+          # Push the release commit and its tag together. If branch policy or
+          # another writer rejects main, neither ref should become the release.
+          git push --atomic origin HEAD:main "refs/tags/${RELEASE_VERSION}"
+
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Release version: $RELEASE_VERSION"
+          echo "Release commit:  $RELEASE_COMMIT"
+
+  build-windows:
+    name: Build Release — Windows
+    needs: prepare-release
+    if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
+    runs-on: windows-latest
+    concurrency:
+      group: splined-release-build-windows
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.commit }}
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Build locked Windows release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          EXPECTED_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.before"
+          cargo check --locked
+          cargo build --locked --release
+          git diff --exit-code -- Cargo.lock
+
+          ACTUAL=$(target/release/splined.exe --version | tr -d '\r')
+          EXPECTED="SPLINED $RELEASE_VERSION"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Package Windows release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Remove-Item -Recurse -Force release-package, release-assets -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path release-package, release-assets | Out-Null
+          Copy-Item target/release/splined.exe release-package/splined.exe
+          Copy-Item release/README-WINDOWS.txt release-package/README-WINDOWS.txt
+          Compress-Archive -Path "release-package/*" -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-windows-x86_64
+          path: release-assets/splined-windows-x86_64.zip
+          if-no-files-found: error
+
+  build-ubuntu:
+    name: Build Release — Ubuntu
+    needs: prepare-release
+    if: ${{ inputs.platform == 'Ubuntu' || inputs.platform == 'All' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: splined-release-build-ubuntu
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.commit }}
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Build locked Ubuntu release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          EXPECTED_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.before"
+          cargo check --locked
+          cargo build --locked --release
+          git diff --exit-code -- Cargo.lock
+
+          ACTUAL=$(./target/release/splined --version | tr -d '\r')
+          EXPECTED="SPLINED $RELEASE_VERSION"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Package Ubuntu release
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-package release-assets
+          mkdir -p release-package release-assets
+          cp target/release/splined release-package/splined
+          cp release/README-LINUX.txt release-package/README-LINUX.txt
+          chmod +x release-package/splined
+          tar -czf release-assets/splined-linux-x86_64.tar.gz -C release-package splined README-LINUX.txt
+
+      - name: Upload Ubuntu artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-linux-x86_64
+          path: release-assets/splined-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  build-macos:
+    name: Build Release — macOS
+    needs: prepare-release
+    if: ${{ inputs.platform == 'macOS' || inputs.platform == 'All' }}
+    runs-on: macos-latest
+    concurrency:
+      group: splined-release-build-macos
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.commit }}
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Build locked macOS release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          EXPECTED_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.before"
+          cargo check --locked
+          cargo build --locked --release
+          git diff --exit-code -- Cargo.lock
+
+          ACTUAL=$(./target/release/splined --version | tr -d '\r')
+          EXPECTED="SPLINED $RELEASE_VERSION"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Package macOS release
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release-package release-assets
+          mkdir -p release-package release-assets
+          cp target/release/splined release-package/splined
+          cp release/README-MACOS.txt release-package/README-MACOS.txt
+          chmod +x release-package/splined
+          tar -czf release-assets/splined-macos.tar.gz -C release-package splined README-MACOS.txt
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-macos
+          path: release-assets/splined-macos.tar.gz
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Release
+    needs:
+      - prepare-release
+      - build-windows
+      - build-ubuntu
+      - build-macos
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+        (needs.build-ubuntu.result == 'success' || needs.build-ubuntu.result == 'skipped') &&
+        (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: splined-release-publish
+      cancel-in-progress: false
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: release-assets
+          pattern: splined-*
+          merge-multiple: true
+
+      - name: Create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          mapfile -t assets < <(find . -maxdepth 1 -type f \( -name 'splined-*.zip' -o -name 'splined-*.tar.gz' \) -printf '%f\n' | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "ERROR: No release archives were downloaded."
+            exit 1
+          fi
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "ERROR: GitHub Release already exists: $RELEASE_VERSION"
+            exit 1
+          fi
+
+          gh release create "$RELEASE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "S:P:L:I:N:E:D $RELEASE_VERSION" \
+            --generate-notes
+
+      - name: Upload release archives and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f \( -name 'splined-*.zip' -o -name 'splined-*.tar.gz' \) | sort)
+          assets+=("release-assets/SHA256SUMS.txt")
+          gh release upload "$RELEASE_VERSION" \
+            "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Release summary
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          {
+            echo "## SPLINED release published"
+            echo
+            echo "- Version: \`$RELEASE_VERSION\`"
+            echo "- Commit: \`$RELEASE_COMMIT\`"
+            echo "- Platform selection: \`${{ inputs.platform }}\`"
+            echo "- Tag: \`$RELEASE_VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"
