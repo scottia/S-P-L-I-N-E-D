@@ -18,12 +18,22 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY splined.py /app/splined.py
 COPY splined_scan.py /app/splined_scan.py
-RUN python3 -m py_compile /app/splined.py /app/splined_scan.py \
-    && chmod 0555 /app/splined.py /app/splined_scan.py \
-    && ln -s /app/splined_scan.py /usr/local/bin/splined
+COPY splined_oauth_validation.py /app/splined_oauth_validation.py
+COPY splined_cli.py /app/splined_cli.py
+RUN python3 -m py_compile \
+        /app/splined.py \
+        /app/splined_scan.py \
+        /app/splined_oauth_validation.py \
+        /app/splined_cli.py \
+    && chmod 0555 \
+        /app/splined.py \
+        /app/splined_scan.py \
+        /app/splined_oauth_validation.py \
+        /app/splined_cli.py \
+    && ln -s /app/splined_cli.py /usr/local/bin/splined
 
 # Persistent runtime data; history lives under /_logs/_history.
 VOLUME ["/config", "/music", "/_cache", "/_logs", "/credentials"]
 
-ENTRYPOINT ["python3", "/app/splined_scan.py"]
+ENTRYPOINT ["python3", "/app/splined_cli.py"]
 CMD ["--idle"]
