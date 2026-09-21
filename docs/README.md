@@ -8,8 +8,10 @@ These versioned repository pages are the canonical public documentation for
 S:P:L:I:N:E:D has separate supported runtimes:
 
 - **Windows GUI:** v3.0.0 Stable, using Config v5.
+- **Windows source:** [`../windows/`](../windows/README.md), containing the
+  finalized GUI and its Config v5 processing core.
 - **Existing repository-root native command line:** separate Config v4
-  implementation until the finalized Windows v3.0.0 source is integrated.
+  implementation used by Linux and macOS.
 - **Python/Docker:** a separate runtime and release line; the current container
   entrypoint uses Config v4.
 

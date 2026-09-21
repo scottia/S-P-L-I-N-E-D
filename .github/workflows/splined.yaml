@@ -108,21 +108,23 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Require committed Cargo.lock
+      - name: Require committed Windows Cargo.lock
         shell: bash
         run: |
           set -euo pipefail
-          test -f Cargo.lock || {
-            echo "ERROR: Cargo.lock is required for SPLINED application builds."
+          test -f windows/Cargo.lock || {
+            echo "ERROR: windows/Cargo.lock is required for SPLINED Windows builds."
             exit 1
           }
 
-      - name: Install stable Rust
+      - name: Install stable Rust with rustfmt and clippy
         shell: bash
         run: |
           set -euo pipefail
           rustup toolchain install stable \
             --profile minimal \
+            --component rustfmt \
+            --component clippy \
             --no-self-update
           rustup default stable
 
@@ -131,16 +133,48 @@ jobs:
         run: |
           rustc --version
           cargo --version
+          rustfmt --version
+          cargo clippy --version
 
-      - name: Check locked dependency graph
-        run: cargo check --locked
+      - name: Validate finalized Windows v3 source
+        run: |
+          cargo fmt --manifest-path windows/Cargo.toml --all -- --check
+          cargo check --manifest-path windows/Cargo.toml --locked
+          cargo test --manifest-path windows/Cargo.toml --locked
+          cargo clippy --manifest-path windows/Cargo.toml --locked -- -D warnings
+          cargo build --manifest-path windows/Cargo.toml --locked --release
 
-      - name: Verify Cargo.lock was not modified
+      - name: Run WinForms regression suite
+        shell: cmd
+        working-directory: windows/gui
+        run: TEST-WINDOWS-GUI.cmd
+
+      - name: Verify Windows application identity and outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $gui = "windows/target/release/splined.exe"
+          $core = "windows/target/release/splined-core.exe"
+          $watermark = "windows/target/release/splined-watermark.png"
+          foreach ($path in $gui, $core, $watermark) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing Windows runtime output: $path"
+            }
+          }
+          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($gui)
+          if ($version.ProductName -ne "S:P:L:I:N:E:D v3.0.0 Stable") {
+            throw "Unexpected Windows product identity: $($version.ProductName)"
+          }
+          if ($version.FileVersion -ne "3.0.0.0") {
+            throw "Unexpected Windows file version: $($version.FileVersion)"
+          }
+
+      - name: Verify Windows Cargo.lock was not modified
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
-          git diff --exit-code -- Cargo.lock
+          git diff --exit-code -- windows/Cargo.lock
 
   validate-python-docker:
     name: Validate — Python / Docker
@@ -265,8 +299,8 @@ jobs:
 
       - name: Check and build Windows
         run: |
-          cargo check --locked
-          cargo build --locked --release
+          cargo check --manifest-path windows/Cargo.toml --locked
+          cargo build --manifest-path windows/Cargo.toml --locked --release
 
       - name: Prepare Windows package
         shell: bash
@@ -274,7 +308,11 @@ jobs:
           set -euo pipefail
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
-          cp target/release/splined.exe release-package/splined.exe
+          cp windows/target/release/splined.exe release-package/splined.exe
+          cp windows/target/release/splined-core.exe release-package/splined-core.exe
+          cp windows/target/release/splined-watermark.png release-package/splined-watermark.png
+          cp windows/target/release/splined-app-icon.png release-package/splined-app-icon.png
+          cp windows/target/release/app.ico release-package/app.ico
           cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
 
       - name: Create Windows archive
@@ -562,12 +600,12 @@ jobs:
             exit 1
           fi
 
-      - name: Require committed Cargo.lock
+      - name: Require committed Windows Cargo.lock
         shell: bash
         run: |
           set -euo pipefail
-          test -f Cargo.lock || {
-            echo "ERROR: Cargo.lock is required for SPLINED release builds."
+          test -f windows/Cargo.lock || {
+            echo "ERROR: windows/Cargo.lock is required for SPLINED Windows release builds."
             exit 1
           }
 
@@ -586,29 +624,24 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Check tagged source with locked dependency graph
-        run: cargo check --locked
+      - name: Check tagged Windows source with locked dependency graph
+        run: cargo check --manifest-path windows/Cargo.toml --locked
 
       - name: Build tagged Windows release
-        run: cargo build --locked --release
+        run: cargo build --manifest-path windows/Cargo.toml --locked --release
 
-      - name: Verify compiled release version
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ needs.release-preflight.outputs.tag }}
+      - name: Verify finalized Windows application identity
+        shell: pwsh
         run: |
-          set -euo pipefail
-
-          ACTUAL_VERSION=$(target/release/splined.exe --version | tr -d '\r')
-          EXPECTED_VERSION="SPLINED $RELEASE_VERSION"
-
-          echo "Expected: $EXPECTED_VERSION"
-          echo "Actual:   $ACTUAL_VERSION"
-
-          if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
-            echo "ERROR: Compiled SPLINED version does not match release tag."
-            exit 1
-          fi
+          $ErrorActionPreference = "Stop"
+          $gui = "windows/target/release/splined.exe"
+          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($gui)
+          if ($version.ProductName -ne "S:P:L:I:N:E:D v3.0.0 Stable") {
+            throw "Unexpected Windows product identity: $($version.ProductName)"
+          }
+          if ($version.FileVersion -ne "3.0.0.0") {
+            throw "Unexpected Windows file version: $($version.FileVersion)"
+          }
 
       - name: Prepare Windows release package
         shell: bash
@@ -616,7 +649,11 @@ jobs:
           set -euo pipefail
           rm -rf release-package release-assets
           mkdir -p release-package release-assets
-          cp target/release/splined.exe release-package/splined.exe
+          cp windows/target/release/splined.exe release-package/splined.exe
+          cp windows/target/release/splined-core.exe release-package/splined-core.exe
+          cp windows/target/release/splined-watermark.png release-package/splined-watermark.png
+          cp windows/target/release/splined-app-icon.png release-package/splined-app-icon.png
+          cp windows/target/release/app.ico release-package/app.ico
           cp release/README-WINDOWS.txt release-package/README-WINDOWS.txt
 
       - name: Create Windows archive

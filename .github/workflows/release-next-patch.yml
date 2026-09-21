@@ -417,21 +417,34 @@ jobs:
       - name: Build locked Windows release
         shell: bash
         env:
-          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           EXPECTED_COMMIT: ${{ needs.prepare-release.outputs.commit }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-          cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.before"
-          cargo check --locked
-          cargo build --locked --release
-          git diff --exit-code -- Cargo.lock
+          cp windows/Cargo.lock "$RUNNER_TEMP/windows-Cargo.lock.before"
+          cargo check --manifest-path windows/Cargo.toml --locked
+          cargo build --manifest-path windows/Cargo.toml --locked --release
+          git diff --exit-code -- windows/Cargo.lock
 
-          ACTUAL=$(target/release/splined.exe --version | tr -d '\r')
-          EXPECTED="SPLINED $RELEASE_VERSION"
-          echo "Expected: $EXPECTED"
-          echo "Actual:   $ACTUAL"
-          test "$ACTUAL" = "$EXPECTED"
+      - name: Verify finalized Windows application identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $gui = "windows/target/release/splined.exe"
+          $core = "windows/target/release/splined-core.exe"
+          $watermark = "windows/target/release/splined-watermark.png"
+          foreach ($path in $gui, $core, $watermark) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing Windows runtime output: $path"
+            }
+          }
+          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($gui)
+          if ($version.ProductName -ne "S:P:L:I:N:E:D v3.0.0 Stable") {
+            throw "Unexpected Windows product identity: $($version.ProductName)"
+          }
+          if ($version.FileVersion -ne "3.0.0.0") {
+            throw "Unexpected Windows file version: $($version.FileVersion)"
+          }
 
       - name: Package Windows release
         shell: pwsh
@@ -439,7 +452,11 @@ jobs:
           $ErrorActionPreference = "Stop"
           Remove-Item -Recurse -Force release-package, release-assets -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path release-package, release-assets | Out-Null
-          Copy-Item target/release/splined.exe release-package/splined.exe
+          Copy-Item windows/target/release/splined.exe release-package/splined.exe
+          Copy-Item windows/target/release/splined-core.exe release-package/splined-core.exe
+          Copy-Item windows/target/release/splined-watermark.png release-package/splined-watermark.png
+          Copy-Item windows/target/release/splined-app-icon.png release-package/splined-app-icon.png
+          Copy-Item windows/target/release/app.ico release-package/app.ico
           Copy-Item release/README-WINDOWS.txt release-package/README-WINDOWS.txt
           Compress-Archive -Path "release-package/*" -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
 

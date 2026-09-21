@@ -1,0 +1,30 @@
+[package]
+name = "splined-windows"
+version = "3.0.0"
+edition = "2024"
+build = "build.rs"
+publish = false
+
+[lib]
+name = "splined"
+path = "src/lib.rs"
+
+[[bin]]
+name = "splined-core"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.23.1"
+clap = { version = "4.6.6", features = ["derive"] }
+crossterm = "0.29.0"
+image = "0.25.10"
+lofty = "0.25.1"
+rand = "0.10.2"
+reqwest = { version = "0.13.5", features = ["form", "json", "query", "rustls"] }
+rpassword = "7.5.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+toml = "1.1.5"

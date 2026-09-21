@@ -1,5 +1,33 @@
 /target
 
+# Finalized Windows GUI build and local runtime state
+/windows/target/
+/windows/.env
+/windows/.env.*
+/windows/config/
+/windows/credentials/
+/windows/secrets/
+/windows/_cache/
+/windows/_logs/
+/windows/history/
+/windows/ui.toml
+/windows/config.location
+/windows/gui/qa-app/
+/windows/gui/qa-test/
+/windows/gui/config/
+/windows/gui/credentials/
+/windows/gui/secrets/
+/windows/gui/_cache/
+/windows/gui/_logs/
+/windows/gui/history/
+/windows/gui/ui.toml
+/windows/gui/config.location
+/windows/**/*.exe
+/windows/**/*.zip
+*.log
+*.tmp
+*.bak
+
 # Local environment and secret material
 .env
 .env.*

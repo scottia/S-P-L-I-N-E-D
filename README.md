@@ -71,6 +71,24 @@ and from the Help button in its About dialog.
 
 ---
 
+## 🧩 Source implementation layout
+
+S:P:L:I:N:E:D keeps its supported implementations separate:
+
+- [`windows/`](windows/README.md) contains the finalized Windows GUI
+  v3.0.0 Stable, its Config v5 processing core, and the reproducible Windows
+  build entry point.
+- Root [`Cargo.toml`](Cargo.toml), [`Cargo.lock`](Cargo.lock), and [`src/`](src/)
+  remain the native command-line implementation used by Linux and macOS. This
+  implementation retains Config v4 and the repository release version.
+- [`python/`](python/) is the separately supported Python/Docker Config v4
+  implementation and shares the repository release version.
+
+The Windows application version, repository release version, and configuration
+schema versions are independent.
+
+---
+
 ## 📏 Artwork size defaults
 
 S:P:L:I:N:E:D is designed to prefer artwork close to a practical target rather than simply choosing the largest file available.
@@ -148,9 +166,8 @@ Windows GUI v3.0.0 Stable uses **Config v5**:
 - [Windows Config v5 example](config.example.toml)
 - [Windows Config v5 reference](docs/config-v5-reference.md)
 
-The existing repository-root native command-line implementation remains a
-separate Config v4 runtime until the finalized Windows v3.0.0 source is
-integrated into the repository. Python/Docker also remains Config v4:
+The repository-root native command-line implementation remains a separate
+Config v4 runtime. Python/Docker also remains Config v4:
 
 - [Python/Docker example](docker/config.example.toml)
 - [Docker installation guide](docker/README.md)
