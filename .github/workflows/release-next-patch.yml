@@ -1,4 +1,4 @@
-name: SPLINED Release — Next Patch
+name: SPLINED (All OS) and GHCR
 
 on:
   workflow_dispatch:
