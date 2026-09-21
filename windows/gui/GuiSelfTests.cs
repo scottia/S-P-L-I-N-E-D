@@ -6,6 +6,8 @@ using System.Linq;
 using System.Reflection;
 using System.Collections;
 using System.Collections.Generic;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -290,7 +292,21 @@ namespace Splined.WindowsGui
                 CredentialStore.Save(loaded, "fanarttv", fanartCredential);
                 Assert(CredentialStore.Status(loaded, "fanarttv") == "v3.2 TESTED",
                     "A validated Fanart.tv v3.2 credential was not identified.");
-                CredentialStore.Save(loaded, "lastfm", new Dictionary<string, object> { { "api_key", "fixture-lastfm-key" } });
+                bool credentialProtected = CredentialStore.Save(loaded, "lastfm", new Dictionary<string, object> { { "api_key", "fixture-lastfm-key" } });
+                string protectedCredentialPath = CredentialStore.PathFor(loaded, "lastfm");
+                FileSecurity protectedCredentialAcl = File.GetAccessControl(protectedCredentialPath);
+                SecurityIdentifier currentUserSid = WindowsIdentity.GetCurrent().User;
+                bool currentUserHasFullControl = protectedCredentialAcl
+                    .GetAccessRules(true, false, typeof(SecurityIdentifier))
+                    .Cast<FileSystemAccessRule>()
+                    .Any(rule => currentUserSid != null
+                        && currentUserSid.Equals(rule.IdentityReference)
+                        && rule.AccessControlType == AccessControlType.Allow
+                        && (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl);
+                Assert(!credentialProtected || (protectedCredentialAcl.AreAccessRulesProtected && currentUserHasFullControl),
+                    "Credential save reported protection without a protected user-specific ACL.");
+                Assert(File.Exists(protectedCredentialPath),
+                    "Credential save failed when ACL protection was unavailable.");
                 Assert(CredentialStore.Status(loaded, "lastfm") == "SAVED",
                     "Last.fm artwork reads should require only the API key, not a session.");
                 CredentialStore.Save(loaded, "musicbrainz", new Dictionary<string, object>

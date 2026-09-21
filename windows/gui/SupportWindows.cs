@@ -7,6 +7,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
@@ -66,7 +68,7 @@ namespace Splined.WindowsGui
             catch { return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase); }
         }
 
-        public static void Save(ConfigState state, string provider, Dictionary<string, object> values)
+        public static bool Save(ConfigState state, string provider, Dictionary<string, object> values)
         {
             Directory.CreateDirectory(state.CredentialDir);
             Dictionary<string, object> merged = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
@@ -79,7 +81,47 @@ namespace Splined.WindowsGui
             }
             DeepMerge(merged, values);
             string body = Json.Serialize(merged);
-            ConfigStore.WriteTextAtomic(PathFor(state, provider), PrettyJson(body) + Environment.NewLine);
+            bool protectedFile = ConfigStore.WriteTextAtomic(
+                path,
+                PrettyJson(body) + Environment.NewLine,
+                ApplyUserOnlyAcl);
+            if (!protectedFile)
+            {
+                string warning = "Credential file created; user-specific filesystem ACL protection\r\n"
+                    + "is unavailable on this storage location.\r\n\r\n" + path;
+                if (Application.MessageLoop)
+                    MessageBox.Show(warning, "SPLINED credential protection",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                else
+                    Console.Error.WriteLine(warning);
+            }
+            return protectedFile;
+        }
+
+        internal static bool ApplyUserOnlyAcl(string path)
+        {
+            try
+            {
+                SecurityIdentifier user = WindowsIdentity.GetCurrent().User;
+                if (user == null) return false;
+                FileSecurity security = new FileSecurity();
+                security.SetAccessRuleProtection(true, false);
+                security.SetOwner(user);
+                security.AddAccessRule(new FileSystemAccessRule(
+                    user,
+                    FileSystemRights.FullControl,
+                    AccessControlType.Allow));
+                security.AddAccessRule(new FileSystemAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                    FileSystemRights.FullControl,
+                    AccessControlType.Allow));
+                File.SetAccessControl(path, security);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static MusicBrainzRuntimeOptions LoadMusicBrainzOptions(ConfigState state)

@@ -511,15 +511,22 @@ namespace Splined.WindowsGui
 
         public static void WriteTextAtomic(string path, string contents)
         {
+            WriteTextAtomic(path, contents, null);
+        }
+
+        internal static bool WriteTextAtomic(string path, string contents, Func<string, bool> protectStagedFile)
+        {
             string parent = Path.GetDirectoryName(path);
             if (String.IsNullOrEmpty(parent))
                 throw new InvalidOperationException("Unable to determine configuration directory for " + path);
             Directory.CreateDirectory(parent);
             string staged = Path.Combine(parent, ".splined-" + Guid.NewGuid().ToString("N") + ".tmp");
             string backup = path + ".splined-backup";
+            bool protectionApplied = protectStagedFile == null;
             try
             {
                 File.WriteAllText(staged, contents, new UTF8Encoding(false));
+                if (protectStagedFile != null) protectionApplied = protectStagedFile(staged);
                 if (File.Exists(backup)) File.Delete(backup);
                 if (File.Exists(path)) File.Move(path, backup);
                 File.Move(staged, path);
@@ -534,6 +541,7 @@ namespace Splined.WindowsGui
             {
                 if (File.Exists(staged)) File.Delete(staged);
             }
+            return protectionApplied;
         }
 
         private static string BuildConfigText(ConfigState state)
