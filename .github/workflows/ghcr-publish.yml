@@ -1,16 +1,12 @@
-name: Publish GHCR Image
+name: SPLINED GHCR Recovery Publish
 
 on:
   workflow_dispatch:
-  release:
-    types:
-      - published
-  push:
-    branches:
-      - release/v1.0.2-dev
-    paths:
-      - .github/workflows/ghcr-publish.yml
-      - python/**
+    inputs:
+      release_tag:
+        description: "Existing numeric Git release tag to republish (for example 1.0.5)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -31,42 +27,57 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
 
       - name: Resolve and verify version
         id: version
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
 
           VERSION=$(python3 - <<'PY'
           from pathlib import Path
+          import os
           import re
           import tomllib
 
           cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8-sig"))
           source = Path("python/splined.py").read_text(encoding="utf-8")
+          docker_config = tomllib.loads(
+              Path("docker/config.example.toml").read_text(encoding="utf-8")
+          )
           match = re.search(r'^VERSION = "([^"]+)"$', source, re.MULTILINE)
           if not match:
               raise SystemExit("VERSION declaration not found in python/splined.py")
 
           cargo_version = cargo["package"]["version"]
           python_version = match.group(1)
+          requested_tag = os.environ["REQUESTED_TAG"]
+          if not re.fullmatch(r"\d+\.\d+\.\d+", requested_tag):
+              raise SystemExit(f"Recovery release_tag must be numeric SemVer: {requested_tag}")
           if cargo_version != python_version:
               raise SystemExit(
                   f"Rust/Python version mismatch: Cargo.toml={cargo_version}, Python={python_version}"
               )
+          if python_version != requested_tag:
+              raise SystemExit(
+                  f"Requested tag/source mismatch: tag={requested_tag}, Python={python_version}"
+              )
+          schema = re.search(r'^CONFIG_VERSION = (\d+)$', source, re.MULTILINE)
+          if not schema or schema.group(1) != "5":
+              raise SystemExit("Recovery publishing requires Python Config v5")
+          if docker_config.get("config_version") != 5:
+              raise SystemExit("Recovery publishing requires the Docker Config v5 example")
 
           print(python_version)
           PY
           )
 
           RELEASE_TAG="v${VERSION}"
-
-          if [ "${{ github.event_name }}" = "release" ] && [ "${{ github.event.release.tag_name }}" != "$RELEASE_TAG" ]; then
-            echo "ERROR: GitHub release tag must match source version: $RELEASE_TAG"
-            echo "Received: ${{ github.event.release.tag_name }}"
-            exit 1
-          fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
@@ -112,6 +123,13 @@ jobs:
             echo "ERROR: Container image version verification failed."
             exit 1
           fi
+
+          CONFIG_CHECK=$(docker run --rm \
+            -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+            "$IMAGE_NAME:latest" \
+            --config-check | tr -d '\r')
+          printf '%s\n' "$CONFIG_CHECK"
+          grep -F "config_version = 5" <<<"$CONFIG_CHECK"
 
       - name: Publish image tags
         shell: bash

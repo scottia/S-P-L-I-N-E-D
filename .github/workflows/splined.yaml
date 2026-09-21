@@ -201,6 +201,9 @@ jobs:
               Path("Cargo.toml").read_text(encoding="utf-8-sig")
           )
           source = Path("python/splined.py").read_text(encoding="utf-8")
+          docker_config = tomllib.loads(
+              Path("docker/config.example.toml").read_text(encoding="utf-8")
+          )
 
           version_match = re.search(
               r'^VERSION = "([^"]+)"$',
@@ -236,6 +239,11 @@ jobs:
                   "Unexpected production USER_AGENT: "
                   f"{user_agent_match.group(1)!r}"
               )
+          schema_match = re.search(r'^CONFIG_VERSION = (\d+)$', source, re.MULTILINE)
+          if not schema_match or schema_match.group(1) != "5":
+              raise SystemExit("Python CONFIG_VERSION must be 5")
+          if docker_config.get("config_version") != 5:
+              raise SystemExit("docker/config.example.toml must be Config v5")
 
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
               env.write(f"SPLINED_VERSION={python_version}\n")
@@ -245,7 +253,7 @@ jobs:
           print(f"User-Agent:     {expected_user_agent}")
           PY
 
-          python3 -m py_compile python/splined.py
+          python3 -m py_compile python/splined.py python/splined_scan.py
 
       - name: Build Docker validation image
         shell: bash
@@ -260,6 +268,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          docker run --rm \
+            -e PYTHONPATH=/app \
+            -v "$PWD:/source:ro" \
+            --entrypoint python3 \
+            splined-ci:candidate \
+            -m unittest discover -s /source/python -p 'test_*.py'
+
           ACTUAL=$(docker run --rm splined-ci:candidate -V | tr -d '\r')
           EXPECTED="SPLINED $SPLINED_VERSION"
 
@@ -270,6 +285,13 @@ jobs:
             echo "ERROR: Docker candidate does not report the source version."
             exit 1
           fi
+
+          CONFIG_CHECK=$(docker run --rm \
+            -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+            splined-ci:candidate \
+            --config-check | tr -d '\r')
+          printf '%s\n' "$CONFIG_CHECK"
+          grep -F "config_version = 5" <<<"$CONFIG_CHECK"
 
   manual-windows:
     name: Manual Build — Windows

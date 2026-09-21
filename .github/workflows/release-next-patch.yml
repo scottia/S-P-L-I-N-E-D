@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 # Only one version-provisioning release may run at a time. Individual OS
 # build jobs also carry their own concurrency locks below so platform builds
@@ -57,7 +58,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --force origin main --tags
+          git fetch --force origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/dev:refs/remotes/origin/dev" \
+            --tags
+          MAIN_SHA=$(git rev-parse origin/main)
+          DEV_SHA=$(git rev-parse origin/dev)
+          if [ "$MAIN_SHA" != "$DEV_SHA" ]; then
+            echo "ERROR: dev and main must be synchronized before creating a release."
+            echo "main: $MAIN_SHA"
+            echo "dev:  $DEV_SHA"
+            exit 1
+          fi
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
             echo "ERROR: Checked-out main is not current with origin/main."
             exit 1
@@ -67,6 +79,7 @@ jobs:
             git status --short
             exit 1
           }
+          echo "Release baseline: $MAIN_SHA (dev == main)"
 
       - name: Resolve next patch version
         id: version
@@ -298,6 +311,9 @@ jobs:
           cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8-sig"))
           lock = tomllib.loads(Path("Cargo.lock").read_text(encoding="utf-8"))
           source = Path("python/splined.py").read_text(encoding="utf-8")
+          docker_config = tomllib.loads(
+              Path("docker/config.example.toml").read_text(encoding="utf-8")
+          )
 
           roots = [package for package in lock["package"] if package["name"] == "splined"]
           if len(roots) != 1:
@@ -323,8 +339,18 @@ jobs:
               raise SystemExit("Provisioned release metadata is not synchronized")
           if user_agent_match.group(1) != expected_user_agent:
               raise SystemExit("Provisioned Python USER_AGENT is not synchronized")
+          config_version_match = re.search(
+              r'^CONFIG_VERSION = (\d+)$', source, re.MULTILINE
+          )
+          if not config_version_match or config_version_match.group(1) != "5":
+              raise SystemExit("Python CONFIG_VERSION must remain 5")
+          if docker_config.get("config_version") != 5:
+              raise SystemExit("docker/config.example.toml must remain Config v5")
           print(f"User-Agent: {expected_user_agent}")
+          print("Config schema: 5")
           PY
+
+          git diff --exit-code -- windows/Cargo.toml windows/Cargo.lock
 
       - name: Validate release candidate with locked dependency graph
         shell: bash
@@ -343,11 +369,25 @@ jobs:
             --tag splined-release-candidate:${RELEASE_VERSION} \
             ./python
 
+          docker run --rm \
+            -e PYTHONPATH=/app \
+            -v "$PWD:/source:ro" \
+            --entrypoint python3 \
+            "splined-release-candidate:${RELEASE_VERSION}" \
+            -m unittest discover -s /source/python -p 'test_*.py'
+
           ACTUAL=$(docker run --rm "splined-release-candidate:${RELEASE_VERSION}" -V | tr -d '\r')
           EXPECTED="SPLINED ${RELEASE_VERSION}"
           echo "Expected Docker version: $EXPECTED"
           echo "Actual Docker version:   $ACTUAL"
           test "$ACTUAL" = "$EXPECTED"
+
+          CONFIG_CHECK=$(docker run --rm \
+            -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+            "splined-release-candidate:${RELEASE_VERSION}" \
+            --config-check | tr -d '\r')
+          printf '%s\n' "$CONFIG_CHECK"
+          grep -F "config_version = 5" <<<"$CONFIG_CHECK"
 
           git diff --check
 
@@ -383,9 +423,12 @@ jobs:
           RELEASE_COMMIT=$(git rev-parse HEAD)
           git tag -a "$RELEASE_VERSION" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
 
-          # Push the release commit and its tag together. If branch policy or
-          # another writer rejects main, neither ref should become the release.
-          git push --atomic origin HEAD:main "refs/tags/${RELEASE_VERSION}"
+          # Keep both reviewed branches and the numeric release tag on the
+          # exact same commit. Concurrent branch changes reject the whole push.
+          git push --atomic origin \
+            HEAD:refs/heads/main \
+            HEAD:refs/heads/dev \
+            "refs/tags/${RELEASE_VERSION}"
 
           echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
@@ -661,17 +704,156 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --clobber
 
-      - name: Release summary
+      - name: GitHub Release publication summary
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
         run: |
           {
-            echo "## SPLINED release published"
+            echo "## SPLINED GitHub Release published"
             echo
             echo "- Version: \`$RELEASE_VERSION\`"
             echo "- Commit: \`$RELEASE_COMMIT\`"
             echo "- Platform selection: \`${{ inputs.platform }}\`"
             echo "- Tag: \`$RELEASE_VERSION\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-ghcr:
+    name: Publish GHCR
+    needs:
+      - prepare-release
+      - publish-release
+    if: ${{ needs.prepare-release.result == 'success' && needs.publish-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: splined-release-publish-ghcr
+      cancel-in-progress: false
+    env:
+      IMAGE_NAME: ghcr.io/scottia/splined
+
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.commit }}
+
+      - name: Verify exact Config v5 release source
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import tomllib
+
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+          version = re.search(r'^VERSION = "([^"]+)"$', source, re.MULTILINE)
+          schema = re.search(r'^CONFIG_VERSION = (\d+)$', source, re.MULTILINE)
+          docker_config = tomllib.loads(
+              Path("docker/config.example.toml").read_text(encoding="utf-8")
+          )
+          expected = os.environ["RELEASE_VERSION"]
+          if not version or version.group(1) != expected:
+              raise SystemExit("Python release version does not match the prepared release")
+          if not schema or schema.group(1) != "5":
+              raise SystemExit("Refusing to publish a non-Config-v5 Python image")
+          if docker_config.get("config_version") != 5:
+              raise SystemExit("Refusing to publish with a non-v5 Docker example")
+          print(f"Python release: {expected}")
+          print("Config schema: 5")
+          PY
+
+      - name: Build and verify exact-commit image
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          VERSION_TAG="v${RELEASE_VERSION}"
+          docker build --pull \
+            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
+            --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
+            --tag "$IMAGE_NAME:$VERSION_TAG" \
+            --tag "$IMAGE_NAME:latest" \
+            ./python
+
+          ACTUAL=$(docker run --rm "$IMAGE_NAME:$VERSION_TAG" -V | tr -d '\r')
+          EXPECTED="SPLINED $RELEASE_VERSION"
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          test "$ACTUAL" = "$EXPECTED"
+
+          CONFIG_CHECK=$(docker run --rm \
+            -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+            "$IMAGE_NAME:$VERSION_TAG" \
+            --config-check | tr -d '\r')
+          printf '%s\n' "$CONFIG_CHECK"
+          grep -F "config_version = 5" <<<"$CONFIG_CHECK"
+
+      - name: Log in to GitHub Container Registry
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish version and latest tags
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_NAME:v${RELEASE_VERSION}"
+          docker push "$IMAGE_NAME:latest"
+
+  release-summary:
+    name: Final release summary
+    needs:
+      - prepare-release
+      - publish-release
+      - publish-ghcr
+    if: ${{ always() && needs.publish-release.result == 'success' && needs.publish-ghcr.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report completed one-click release
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          case "${{ inputs.platform }}" in
+            Windows) ARCHIVES='splined-windows-x86_64.zip' ;;
+            Ubuntu) ARCHIVES='splined-linux-x86_64.tar.gz' ;;
+            macOS) ARCHIVES='splined-macos.tar.gz' ;;
+            All) ARCHIVES='splined-windows-x86_64.zip, splined-linux-x86_64.tar.gz, splined-macos.tar.gz' ;;
+            *) echo "Unexpected platform selection"; exit 1 ;;
+          esac
+          {
+            echo "## SPLINED release complete"
+            echo
+            echo "- Repository version: \`$RELEASE_VERSION\`"
+            echo "- Release commit: \`$RELEASE_COMMIT\`"
+            echo "- dev SHA: \`$RELEASE_COMMIT\`"
+            echo "- main SHA: \`$RELEASE_COMMIT\`"
+            echo "- Git tag: \`$RELEASE_VERSION\`"
+            echo "- Selected platform: \`${{ inputs.platform }}\`"
+            echo "- GitHub Release: published"
+            echo "- Archives: \`$ARCHIVES\` plus \`SHA256SUMS.txt\`"
+            echo "- GHCR version tag: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
+            echo "- GHCR latest tag: \`ghcr.io/scottia/splined:latest\`"
+            echo "- Config schema: \`5\`"
+            if [ "${{ inputs.platform }}" = "Windows" ] || [ "${{ inputs.platform }}" = "All" ]; then
+              echo "- Windows application: \`v3.0.0 Stable\`"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
