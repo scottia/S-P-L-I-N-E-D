@@ -34,6 +34,13 @@ Change only the host paths on the left side of each mount.
 
 No port mapping is required for normal CLI operation.
 
+The image does not force a fixed non-root UID/GID because its five documented
+bind mounts commonly belong to different host or NAS accounts. A fixed image
+user would make otherwise valid mounts unexpectedly read-only. Operators who
+want a non-root process can add a Compose `user: "UID:GID"` value that matches
+the ownership and permissions of their host mount directories. SPLINED never
+changes host-mount ownership or broadly changes host permissions.
+
 Before first use, copy
 [`docker/config.example.toml`](config.example.toml) to `config.toml` in the
 host directory mounted at `/config`.

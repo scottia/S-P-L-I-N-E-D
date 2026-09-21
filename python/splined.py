@@ -36,6 +36,8 @@ MB_TOKEN_URL = "https://musicbrainz.org/oauth2/token"
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_AUTH_URL = "https://www.last.fm/api/auth/"
 REQUEST_TIMEOUT = 20
+MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
 SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
@@ -2192,6 +2194,34 @@ def is_discogs_placeholder(ref: Ref) -> bool:
     return url.endswith("/images/spacer.gif") or url.endswith("/spacer.gif")
 
 
+def read_bounded_artwork_response(response: requests.Response) -> bytes:
+    raw_length = str(response.headers.get("Content-Length") or "").strip()
+    if raw_length:
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            content_length = None
+        if content_length is not None and content_length > MAX_DOWNLOAD_BYTES:
+            raise SplinedError(
+                "artwork download exceeds the 25 MiB limit "
+                f"(Content-Length: {content_length} bytes)"
+            )
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > MAX_DOWNLOAD_BYTES:
+            raise SplinedError("artwork download exceeds the 25 MiB limit")
+        chunks.append(chunk)
+
+    if total == 0:
+        raise SplinedError("artwork download was empty")
+    return b"".join(chunks)
+
+
 
 def download_candidates(
     http: Http,
@@ -2218,18 +2248,19 @@ def download_candidates(
             continue
         try:
             debug_log(f"download.start source={ref.source} id={ref.id}")
-            r = http.get(ref.url, allow_redirects=True)
-            if r.status_code != 200:
-                raise SplinedError(f"artwork download returned HTTP {r.status_code}")
-            if not r.content:
-                raise SplinedError("artwork download was empty")
-            with Image.open(io.BytesIO(r.content)) as im:
+            with http.get(ref.url, allow_redirects=True, stream=True) as response:
+                if response.status_code != 200:
+                    raise SplinedError(
+                        f"artwork download returned HTTP {response.status_code}"
+                    )
+                artwork = read_bounded_artwork_response(response)
+            with Image.open(io.BytesIO(artwork)) as im:
                 fmt = image_format(im)
                 width, height = im.size
                 im.verify()
             digest = hashlib.sha256((ref.source + "\0" + ref.url).encode()).hexdigest()[:24]
             path = cache / f"splined-candidate-{digest}.{cache_extension_from_format(fmt)}"
-            path.write_bytes(r.content)
+            path.write_bytes(artwork)
             out.append(Candidate(ref, path, width, height, fmt, sources.index(ref.source)))
             debug_log(
                 f"download.done source={ref.source} id={ref.id} "
@@ -2905,11 +2936,10 @@ def run_config_edit(path: Path) -> int:
             "Mount /config read-write (:rw) to use --config-edit."
         )
 
-    # The SPLINED container intentionally runs as an unprivileged UID/GID and
-    # may not have a passwd-backed HOME. Without explicit XDG paths micro falls
-    # back to /.config, which is not writable. Give the editor disposable,
-    # user-writable state under /tmp; the actual SPLINED config remains the
-    # mounted /config/config.toml file.
+    # Do not depend on the container account having a writable, passwd-backed
+    # HOME. This also supports operators who select a host-matching UID/GID.
+    # Give the editor disposable state under /tmp; the actual SPLINED config
+    # remains the mounted /config/config.toml file.
     editor_home = Path("/tmp/splined-editor")
     xdg_config = editor_home / ".config"
     xdg_data = editor_home / ".local" / "share"

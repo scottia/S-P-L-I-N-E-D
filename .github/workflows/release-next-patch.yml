@@ -15,8 +15,7 @@ on:
           - "All"
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 # Only one version-provisioning release may run at a time. Individual OS
 # build jobs also carry their own concurrency locks below so platform builds
@@ -32,6 +31,8 @@ jobs:
   prepare-release:
     name: Prepare next patch release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     outputs:
       version: ${{ steps.release.outputs.version }}
@@ -457,6 +458,22 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
+      - name: Resolve Rust cache key
+        id: rust-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "toolchain=$(rustc -Vv | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Windows Cargo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: cargo-release-windows-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-cache.outputs.toolchain }}-${{ hashFiles('windows/Cargo.lock') }}
+
       - name: Build locked Windows release
         shell: bash
         env:
@@ -465,7 +482,6 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           cp windows/Cargo.lock "$RUNNER_TEMP/windows-Cargo.lock.before"
-          cargo check --manifest-path windows/Cargo.toml --locked
           cargo build --manifest-path windows/Cargo.toml --locked --release
           git diff --exit-code -- windows/Cargo.lock
 
@@ -535,6 +551,22 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
+      - name: Resolve Rust cache key
+        id: rust-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "toolchain=$(rustc -Vv | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Ubuntu Cargo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-ubuntu-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-cache.outputs.toolchain }}-${{ hashFiles('Cargo.lock') }}
+
       - name: Build locked Ubuntu release
         shell: bash
         env:
@@ -544,7 +576,6 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.before"
-          cargo check --locked
           cargo build --locked --release
           git diff --exit-code -- Cargo.lock
 
@@ -594,6 +625,22 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
+      - name: Resolve Rust cache key
+        id: rust-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "toolchain=$(rustc -Vv | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore macOS Cargo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-macos-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-cache.outputs.toolchain }}-${{ hashFiles('Cargo.lock') }}
+
       - name: Build locked macOS release
         shell: bash
         env:
@@ -603,7 +650,6 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
           cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.before"
-          cargo check --locked
           cargo build --locked --release
           git diff --exit-code -- Cargo.lock
 
@@ -647,6 +693,8 @@ jobs:
         (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
       }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     concurrency:
       group: splined-release-publish
       cancel-in-progress: false
@@ -726,6 +774,9 @@ jobs:
       - publish-release
     if: ${{ needs.prepare-release.result == 'success' && needs.publish-release.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     concurrency:
       group: splined-release-publish-ghcr
       cancel-in-progress: false

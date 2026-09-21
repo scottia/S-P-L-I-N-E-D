@@ -220,6 +220,6 @@ Test against a copy, staging library, backup, or snapshot first. Review selected
 
 ## 📄 License
 
-S:P:L:I:N:E:D is licensed under the [GNU GPL v3](http://www.gnu.org/licenses/gpl.html).
+S:P:L:I:N:E:D is licensed under the [GNU General Public License v3](LICENSE).
 
 Copyright 2010-2025
