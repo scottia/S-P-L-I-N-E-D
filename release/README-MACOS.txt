@@ -1,6 +1,8 @@
 S:P:L:I:N:E:D — macOS PORTABLE
 =========================================
 
+CONFIGURATION: Config v5
+
 FRESH INSTALL
 -------------
 

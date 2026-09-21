@@ -1,6 +1,8 @@
 S:P:L:I:N:E:D — LINUX PORTABLE
 =========================================
 
+CONFIGURATION: Config v5
+
 FRESH INSTALL
 -------------
 

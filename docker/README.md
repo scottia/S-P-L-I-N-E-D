@@ -38,9 +38,9 @@ Before first use, copy
 [`docker/config.example.toml`](config.example.toml) to `config.toml` in the
 host directory mounted at `/config`.
 
-The Python/Docker runtime is separately supported and currently requires
-Config v4. The repository-root `config.example.toml` is the Windows/native
-Config v5 example and is not interchangeable with the Docker example.
+The Python/Docker runtime uses Config v5. The repository-root example uses
+portable native/Windows paths; use the Docker example because it supplies the
+container-specific paths required by this deployment.
 
 S:P:L:I:N:E:D creates its runtime cache, sample, log, and history directories as needed. A typical host layout becomes:
 
@@ -128,7 +128,7 @@ You do not need a separate history mount. Advanced deployments may split any doc
 
 ## Related files
 
-- [`config.example.toml`](config.example.toml) — Python/Docker Config v4 template
-- [`../config.example.toml`](../config.example.toml) — Windows/native Config v5 template
+- [`config.example.toml`](config.example.toml) — Python/Docker Config v5 template
+- [`../config.example.toml`](../config.example.toml) — native/Windows Config v5 template
 - [`../python/Dockerfile`](../python/Dockerfile) — container image definition
 - [`../python/requirements.txt`](../python/requirements.txt) — Python runtime dependencies

@@ -1,331 +1,141 @@
 # Credentials and Provider Setup
 
-This page documents how S:P:L:I:N:E:D stores provider credentials, how those credentials relate to Config v5, and how providers are configured.
-
-> **Windows target:** v3.0.0 Stable with Config v5.
-
----
-
-## Core rule: credentials are separate from config
-
-`config.toml` identifies the **credential directory**. Provider secrets live in separate JSON files beneath that directory.
-
-Conceptually:
+All supported S:P:L:I:N:E:D runtimes use Config v5 and the same credential-directory contract. `config.toml` stores only the directory:
 
 ```toml
 [credentials]
 credential_dir = "credentials"
 ```
 
-Typical Windows portable layout:
+Docker normally uses `/credentials`. Standard filenames are fixed beneath that directory; `credential_file` and `token_file` are not Config v5 settings.
 
-```text
-SPLINED/
-├── splined.exe
-├── config/
-│   └── config.toml
-├── credentials/
-│   ├── musicbrainz.json
-│   ├── lastfm.json
-│   ├── fanarttv.json
-│   └── discogs.json
-├── _cache/
-└── _logs/
-```
+| Provider | File | Normal artwork access |
+| --- | --- | --- |
+| Fanart.tv | `fanarttv.json` | API key required |
+| Last.fm | `lastfm.json` | API key required; account session optional |
+| Discogs | `discogs.json` | Personal access token required |
+| MusicBrainz | `musicbrainz.json` | Anonymous metadata supported; OAuth optional |
+| iTunes / Apple | none | Anonymous |
+| Cover Art Archive | none | Anonymous |
+| Deezer | none | Anonymous |
 
-Typical Docker mapping:
-
-```text
-/config/config.toml
-/credentials/
-```
-
-Config v5 does not require users to repeat standard provider filenames in
-`config.toml`. Standard filenames are resolved beneath the configured
-credential directory.
-
----
-
-## Why credentials are separate
-
-Keeping credentials outside `config.toml` provides several benefits:
-
-- configuration can be shared without sharing secrets;
-- provider credentials can be replaced independently;
-- backups can apply different protection policies to config and credentials;
-- cloud/NAS/encrypted-volume storage can protect credential files without changing SPLINED configuration;
-- provider authentication can be refreshed without reconstructing the main config.
-
-Credential files are **sensitive data**. Never commit them to GitHub, attach them to issue reports, paste them into logs, or include them in public examples.
-
----
+Credential JSON is sensitive. Never commit it, attach it to an issue, or copy secrets into `config.toml`.
 
 ## Filesystem protection
 
-When SPLINED creates a credential file, it applies restrictive user-specific filesystem permissions where the selected storage supports them.
+Credential writes are atomic. Windows applies a non-inherited ACL for the current user and Local System where supported; Unix-like runtimes request mode `0600`. Config and GUI-state files do not receive credential ACL rules.
 
-If the storage location cannot provide user-specific ACL protection, SPLINED should warn clearly rather than claiming stronger protection than the filesystem can provide.
-
-Expected wording is intentionally simple:
+If the selected filesystem cannot apply user-specific protection, SPLINED reports:
 
 ```text
 Credential file created; user-specific filesystem ACL protection
 is unavailable on this storage location.
 ```
 
-SPLINED does not require its own heavy encryption layer. Users may choose operating-system, OneDrive, Google Drive, NAS, encrypted-volume, BitLocker, EFS, ZFS, Btrfs, or other storage protection appropriate to their environment.
+SPLINED does not add proprietary encryption, require DPAPI, or store secrets in the Registry. Use BitLocker, EFS, encrypted NAS/cloud storage, or another suitable encrypted volume when encryption at rest is required.
 
----
+## Fanart.tv v3.2
 
-# Provider overview
-
-SPLINED currently supports artwork discovery from:
-
-- iTunes / Apple artwork
-- Fanart.tv
-- Last.fm
-- Cover Art Archive
-- Deezer
-- Discogs
-
-Not every provider requires credentials.
-
-| Provider | Credentials normally required | Standard credential file |
-| --- | --- | --- |
-| iTunes / Apple artwork | No | — |
-| Cover Art Archive | No | — |
-| Deezer | No for normal artwork lookup | — |
-| Fanart.tv | Yes | `fanarttv.json` |
-| Last.fm | Yes | `lastfm.json` |
-| Discogs | Yes | `discogs.json` |
-| MusicBrainz metadata/OAuth | Optional or feature-dependent | `musicbrainz.json` |
-
-MusicBrainz is metadata authority/resolution infrastructure rather than an artwork source in the same sense as the providers above. Its OAuth flow is documented separately in [MusicBrainz OAuth](musicbrainz-oauth.md).
-
----
-
-# Fanart.tv
-
-Fanart.tv uses a provider credential file beneath the configured credential directory.
-
-The current repository-side credential model includes:
+Fanart.tv uses the v3.2 album endpoint. The credential contract is:
 
 ```json
 {
-  "api_key": "example-api-key",
-  "client_key": "example-client-key"
+  "api_version": "v3.2",
+  "api_key": "synthetic-api-key",
+  "client_key": "synthetic-optional-client-key"
 }
 ```
 
-Use synthetic values in examples and tests only.
+`api_version` must be `v3.2`. `client_key` is optional. The Windows credential editor always saves the v3.2 marker and validates against the v3.2 album endpoint.
 
-The Windows GUI should create or update the provider credential without exposing the secret in logs after entry.
+## Last.fm
 
-If authentication fails:
-
-1. confirm the provider is enabled;
-2. confirm `fanarttv.json` exists beneath the resolved credential directory;
-3. verify the key values were entered correctly;
-4. verify the host has outbound HTTPS access;
-5. retry after checking the provider account/key status.
-
-Do not place the API key directly in `config.toml`.
-
----
-
-# Last.fm
-
-The current credential model supports fields including:
+Normal `album.getInfo` artwork reads require only `api_key`. They do not require a username or an authorized session.
 
 ```json
 {
-  "api_key": "example-api-key",
-  "shared_secret": "example-shared-secret",
-  "username": "example-user"
+  "api_key": "synthetic-api-key",
+  "shared_secret": "synthetic-shared-secret",
+  "username": "synthetic-user",
+  "session_key": "synthetic-session-key",
+  "subscriber": false
 }
 ```
 
-A particular operation may not require every stored field, but credential updates should preserve existing fields unless the user explicitly replaces them.
+Account authorization is a separate workflow:
 
-Expected file:
+1. request a temporary token with `auth.getToken`;
+2. open the Last.fm browser authorization URL;
+3. exchange the authorized token with `auth.getSession`;
+4. retain `username`, `session_key`, and `subscriber` without losing the API key or shared secret.
+
+The native Windows/root command is `splined.exe --lastfm-login` on Windows or `./splined --lastfm-login` on Linux/macOS. It polls the pending authorization for up to 60 seconds. Python/Docker exposes `splined --lastfm-login` and performs the same Last.fm API sequence after the user confirms browser authorization.
+
+## Discogs
+
+Discogs uses a personal access token:
+
+```json
+{
+  "token": "synthetic-personal-access-token"
+}
+```
+
+All runtimes send:
 
 ```text
-credentials/lastfm.json
+Authorization: Discogs token=<token>
 ```
 
-If Last.fm discovery fails, verify the credential file, provider enablement, network access, and account/API-key status.
+The Windows saved-credential test validates the token with the Discogs API v2 `/oauth/identity` endpoint. This is not a Python-only contract and does not require a Discogs application OAuth exchange.
 
----
+## MusicBrainz
 
-# Discogs
-
-Discogs uses a provider token stored in `discogs.json`.
-
-The Python implementation currently expects a `token` value when Discogs authentication is used:
+MusicBrainz is metadata authority, not an artwork provider. Anonymous metadata requests remain available when OAuth is disabled. The standard `musicbrainz.json` can contain:
 
 ```json
 {
-  "token": "example-token"
+  "oauth_enabled": true,
+  "client_id": "synthetic-client-id",
+  "client_secret": "synthetic-client-secret",
+  "callback_uri": "urn:ietf:wg:oauth:2.0:oob",
+  "oauth_scope": "profile",
+  "access_token": "synthetic-access-token",
+  "refresh_token": "synthetic-refresh-token",
+  "token_type": "Bearer",
+  "expires_at_unix": 2000000000,
+  "scope": "profile",
+  "options": {
+    "retry_max": 4,
+    "min_delay": 1.05,
+    "recording_timeout": 7
+  }
 }
 ```
 
-Never expose the token in diagnostic output.
+The runtime supports OAuth2 authorization code with PKCE S256, token expiry tracking, refresh-token renewal, and non-destructive JSON updates. See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
-Windows/native and Python/Docker are separate supported implementations.
-Provider behavior should not be assumed identical across runtimes unless a
-release explicitly documents parity.
+## Windows GUI versus runtime authorization
 
----
+Use **File > Credentials...** or **Settings > Advanced > Library, Paths & Processing > Credentials / Status...** to edit provider fields and test saved credentials.
 
-# MusicBrainz
-
-MusicBrainz may operate with unauthenticated metadata requests or authenticated OAuth behavior depending on the feature and configuration.
-
-The standard credential file is:
+The MusicBrainz GUI test validates an already-present access token through `/oauth2/userinfo`. It does not perform the browser authorization-code exchange. Use the core command:
 
 ```text
-credentials/musicbrainz.json
+splined.exe --mb-oauth-login
 ```
 
-Authentication data and runtime request options belong in the MusicBrainz credential document and must be updated **non-destructively**.
+The root native and Python/Docker commands expose the corresponding `--mb-oauth-login` option.
 
-Changing runtime options must not erase:
+## Moving or backing up credentials
 
-- access token;
-- refresh token;
-- client ID;
-- client secret;
-- other recognized or future authentication fields.
+Changing `credential_dir` does not move existing JSON files. Close SPLINED, move the four standard files deliberately, update Config v5, verify filesystem permissions, then test provider status before deleting the old copy.
 
-See [MusicBrainz OAuth](musicbrainz-oauth.md).
+Back up `credentials/`, `config/`, and the configured history location separately. `_cache/` is disposable.
 
----
+## Related documentation
 
-# Providers that do not normally require credentials
-
-## iTunes / Apple artwork
-
-Normal artwork discovery does not require a user credential file.
-
-## Cover Art Archive
-
-Normal Cover Art Archive artwork discovery does not require a user credential file.
-
-## Deezer
-
-Normal public artwork lookup does not require a user credential file.
-
-A provider can still fail because of network connectivity, rate limiting, upstream availability, malformed responses, regional behavior, or changed provider APIs. A missing credential file is therefore not the only possible provider failure.
-
----
-
-# Creating credentials in the Windows GUI
-
-Use **File > Credentials...** or **Settings > Advanced > Library, Paths &
-Processing > Credentials / Status...** rather than hand-editing JSON for
-normal setup.
-
-Workflow:
-
-1. Open either credential control.
-2. Choose the provider.
-3. Enter or authorize the provider credential.
-4. SPLINED writes the provider JSON beneath the configured credential directory.
-5. SPLINED applies restrictive user ACL protection where supported.
-6. The GUI reports credential status without printing the secret.
-
-If a provider credential already exists, the update must preserve unrelated fields unless the operation explicitly replaces the whole credential.
-
----
-
-# Manual credential editing
-
-Manual JSON editing is supported for advanced recovery/troubleshooting but should not be the normal first-run path.
-
-When editing manually:
-
-- stop SPLINED first;
-- keep a backup of the existing credential file;
-- preserve valid JSON syntax;
-- do not remove unknown fields merely because they are not currently understood;
-- do not paste secrets into support requests;
-- restart SPLINED and verify provider status afterward.
-
-JSON files must use double quotes around object keys and string values.
-
----
-
-# Credential directory changes
-
-Changing `credential_dir` changes where SPLINED looks for provider credential files. It does **not** automatically migrate the old files.
-
-If moving credentials:
-
-1. close SPLINED;
-2. copy or move the credential files to the new directory;
-3. update Config v5 to the new credential directory;
-4. verify filesystem permissions;
-5. restart SPLINED;
-6. confirm provider status before deleting the old copy.
-
-For portable Windows installs, relative application-owned paths are preferred where practical.
-
----
-
-# Backup guidance
-
-Back up credentials separately from disposable cache data.
-
-Recommended importance:
-
-| Data | Backup priority |
-| --- | --- |
-| `credentials/` | High |
-| `config/` | High |
-| `_logs/_history/` | High if preserving scan authority/state matters |
-| `_cache/` | Low / disposable |
-
-If a credential is revoked or compromised, replace/revoke it at the provider and update the local JSON file.
-
----
-
-# Troubleshooting checklist
-
-If a provider reports missing or invalid credentials:
-
-1. confirm the provider actually requires credentials;
-2. confirm the configured credential directory resolves to the intended location;
-3. confirm the expected JSON file exists;
-4. confirm the file contains valid JSON;
-5. confirm required fields are non-empty;
-6. confirm the application user can read the file;
-7. verify outbound HTTPS/network access;
-8. check provider account/key/token validity;
-9. restart or retry the provider after correction.
-
-Do not solve a credential error by embedding secrets into `config.toml`.
-
----
-
-# Security rules
-
-Never commit or publish:
-
-- API keys;
-- shared secrets;
-- OAuth client secrets;
-- access tokens;
-- refresh tokens;
-- personal provider usernames when not required for an example;
-- real credential JSON files.
-
-Repository examples must use obviously synthetic placeholders only.
-
----
-
-# Related documentation
-
-- [Config v5 reference](config-v5-reference.md)
 - [MusicBrainz OAuth](musicbrainz-oauth.md)
+- [Config v5 reference](config-v5-reference.md)
+- [Source policies and Range Types](source-policies-range-types.md)
 - [Installation and first run](installation-first-run.md)
-- [Docker installation](../docker/README.md)

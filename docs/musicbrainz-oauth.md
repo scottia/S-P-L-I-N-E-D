@@ -1,50 +1,30 @@
 # MusicBrainz OAuth
 
-> **Windows target:** v3.0.0 Stable with Config v5.
+All supported Config v5 runtimes use `musicbrainz.json` beneath the configured
+`credential_dir`. MusicBrainz supplies release and recording metadata; it is
+not an artwork provider and its policy does not use artwork range or dimension
+controls.
 
-MusicBrainz supplies release and recording metadata. It is not an artwork
-source and does not appear in `cover_sources`.
+Anonymous metadata requests remain available while OAuth is disabled. Never
+put OAuth tokens, client secrets, or authorization codes in `config.toml`,
+logs, screenshots, commits, or support reports.
 
-## Storage
+## Credential contract
 
-Config v5 stores only the credential directory. MusicBrainz authentication,
-OAuth fields, validation metadata, and runtime options remain in the standard
-MusicBrainz JSON beneath that directory.
-
-Never put OAuth tokens, client secrets, or authorization codes in
-`config.toml`, logs, screenshots, commits, or support reports.
-
-## Windows credential screen
-
-Open **File > Credentials... > MusicBrainz OAuth** or use **Credentials /
-Status...** from Settings.
-
-The Windows credential editor exposes:
-
-- Enable MusicBrainz OAuth;
-- Client ID;
-- Client secret;
-- Callback URI;
-- OAuth scope;
-- Access token;
-- Refresh token;
-- a live credential test against MusicBrainz OAuth user information.
-
-The screen edits and validates saved credential data. It does not claim that a
-saved file is authenticated until the live test succeeds. Public metadata
-lookups can remain anonymous when OAuth is disabled.
-
-The current Python command line retains its own `--mb-oauth-login`
-authorization workflow. Windows and Python/Docker are separate supported
-interfaces.
-
-## Runtime options
-
-Windows v3.0.0 Stable stores request tuning under the credential document's
-`options` object:
+The credential document may contain:
 
 ```json
 {
+  "oauth_enabled": true,
+  "client_id": "synthetic-client-id",
+  "client_secret": "synthetic-client-secret",
+  "callback_uri": "urn:ietf:wg:oauth:2.0:oob",
+  "oauth_scope": "profile",
+  "access_token": "synthetic-access-token",
+  "refresh_token": "synthetic-refresh-token",
+  "token_type": "Bearer",
+  "expires_at_unix": 2000000000,
+  "scope": "profile",
   "options": {
     "retry_max": 4,
     "min_delay": 1.05,
@@ -53,68 +33,75 @@ Windows v3.0.0 Stable stores request tuning under the credential document's
 }
 ```
 
-| Option | Type | Default | Meaning |
-| --- | --- | ---: | --- |
-| `retry_max` | integer | 4 | Maximum retry count for retryable requests |
-| `min_delay` | number | 1.05 | Minimum seconds between requests |
-| `recording_timeout` | integer | 7 | Recording-query timeout in seconds |
+Secrets belong only in this credential JSON. `config.toml` contains the
+credential directory and `[source_policies.musicbrainz]` only.
 
-When `options` is absent, these defaults are used. Existing custom values
-round-trip unchanged until the user edits them.
+## Authorization-code flow
 
-## Non-destructive updates
+The native Windows/root and Python runtimes implement OAuth2 authorization
+code with PKCE S256 and a random state value:
 
-Every credential update follows read-modify-write behavior:
+1. create the verifier and S256 challenge;
+2. open the MusicBrainz authorization URL;
+3. receive or prompt for the returned authorization code;
+4. exchange the code using the configured client ID, client secret, callback
+   URI, and scope;
+5. save the access token, refresh token, token type, scope, and expiry;
+6. validate authenticated requests as required.
 
-1. read the existing JSON;
-2. preserve authentication fields and unknown/future fields;
-3. merge only the fields the user changed;
-4. preserve `options` when authentication changes;
-5. preserve authentication when options or source policy change;
-6. atomically replace the credential file.
+The default callback is `urn:ietf:wg:oauth:2.0:oob` and the default scope is
+`profile`. A MusicBrainz application registration must agree with the callback.
 
-Changing only `retry_max` does not change `min_delay`,
-`recording_timeout`, tokens, or other fields. Source Enabled and Source
-Override are stored in Config v5 and do not rewrite the credential JSON.
+Supported login entry points are:
 
-## Source policy
-
-`[source_policies.musicbrainz]` contains:
-
-```toml
-[source_policies.musicbrainz]
-enabled = true
-source_override = false
+```text
+splined.exe --mb-oauth-login        # Windows core
+./splined --mb-oauth-login          # Linux/macOS native
+splined --mb-oauth-login            # Python/Docker
 ```
 
-Artwork Range Type and image-dimension controls do not apply to MusicBrainz
-metadata queries. Enabling Source Override activates the saved MusicBrainz
-runtime options; disabling it retains those values.
+## Windows GUI versus runtime login
 
-## Status meanings
+The Windows credential editor under **File > Credentials...** (also reachable
+from Settings) edits credential fields and tests an already-present bearer
+token against `/oauth2/userinfo`. It does not run the browser authorization
+exchange. Use `splined.exe --mb-oauth-login` to authorize, then return to the
+GUI to inspect or test the saved credential.
 
-- **Disabled:** OAuth is off and public metadata remains available where the
-  operation permits anonymous access.
-- **Incomplete/Auth needed:** required OAuth fields or a usable access token
-  are missing.
-- **Saved:** data exists but has not necessarily passed a live test.
-- **Validated:** MusicBrainz accepted the saved bearer token through its OAuth
-  user-information endpoint.
+## Refresh and non-destructive updates
 
-An expired or revoked token requires refresh or reauthorization through the
-supported runtime workflow. SPLINED never fabricates or logs replacement
-tokens.
+When an access token is expired or within the runtime safety window, SPLINED
+uses the saved refresh token and client credentials to renew it. A response
+that omits a new refresh token retains the current one. Updates use
+read-modify-write behavior so authentication fields, `options`, and unknown
+future fields are preserved, then the credential file is atomically replaced.
+
+Credential files receive the filesystem protection described in
+[Credentials and provider setup](credentials-providers.md).
+
+## Runtime options
+
+| Option | Default | Meaning |
+| --- | ---: | --- |
+| `retry_max` | `4` | Maximum retry count for retryable requests |
+| `min_delay` | `1.05` | Minimum seconds between MusicBrainz requests |
+| `recording_timeout` | `7` | Recording-query timeout in seconds |
+
+When `[source_policies.musicbrainz].source_override` is `false`, the standard
+defaults are active while saved custom options remain retained. When it is
+`true`, the saved `options` values become active. `enabled = false` disables
+MusicBrainz participation without deleting credentials.
 
 ## Recovery
 
-If the credential JSON is malformed:
-
-1. close SPLINED;
-2. make a private backup;
-3. repair JSON only if the existing credential data is trusted;
-4. otherwise reauthorize instead of guessing token values;
-5. reopen SPLINED and run the saved-credential test;
-6. securely remove obsolete backups after recovery.
+- If the access token expires, allow automatic refresh or run the login command
+  again.
+- If refresh fails because consent or the refresh token was revoked,
+  reauthorize; do not invent token values.
+- If JSON is malformed, close SPLINED, make a private backup, repair only known
+  data or reauthorize, then run the GUI credential test or an authenticated
+  command.
+- Securely remove obsolete credential backups after recovery.
 
 ## Related documentation
 

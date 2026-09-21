@@ -164,11 +164,13 @@ A source-specific minimum affects only that provider.
 
 ---
 
-# BelowMinimum fallback
+# Adjacent-lower fallback
 
-`Allow BelowMinimum fallback` is a **per-source** rule.
+`allow_below_minimum_fallback` is a **per-source** rule. Despite its historical
+field name, it admits only the one Range Type immediately below the configured
+minimum.
 
-When disabled:
+For example, with `Minimum Range Type = LowerRange`, when disabled:
 
 ```text
 BelowMinimum -> REJECT
@@ -184,7 +186,9 @@ Fallback is not equivalent to normal acceptance.
 
 It means the candidate can remain available as a last-resort option when no normally acceptable candidate satisfies the effective policy.
 
-This prevents a blanket global rule from discarding potentially useful artwork from providers whose catalog may contain lower-resolution images.
+With `Minimum Range Type = Ideal`, `LowerRange` is the only fallback;
+`BelowMinimum` remains rejected. This prevents the option from becoming an
+unbounded relaxation of the source policy.
 
 ---
 

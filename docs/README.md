@@ -10,10 +10,10 @@ S:P:L:I:N:E:D has separate supported runtimes:
 - **Windows GUI:** v3.0.0 Stable, using Config v5.
 - **Windows source:** [`../windows/`](../windows/README.md), containing the
   finalized GUI and its Config v5 processing core.
-- **Existing repository-root native command line:** separate Config v4
-  implementation used by Linux and macOS.
-- **Python/Docker:** a separate runtime and release line; the current container
-  entrypoint uses Config v4.
+- **Repository-root native command line:** Config v5 implementation used by
+  Linux and macOS; its application version follows repository releases.
+- **Python/Docker:** Config v5 runtime whose application version follows
+  repository releases.
 
 Application release versions and configuration schema versions are independent.
 Do not infer one from another.
@@ -21,7 +21,7 @@ Do not infer one from another.
 ## Start here
 
 - [Installation and first run](installation-first-run.md)
-- [Windows Config v5 reference](config-v5-reference.md)
+- [Config v5 reference](config-v5-reference.md)
 - [Credentials and provider setup](credentials-providers.md)
 - [MusicBrainz OAuth](musicbrainz-oauth.md)
 - [Source policies and Range Types](source-policies-range-types.md)
@@ -34,10 +34,10 @@ button in **About S:P:L:I:N:E:D**.
 
 ## Configuration examples
 
-- [`../config.example.toml`](../config.example.toml) is the Windows GUI
-  v3.0.0 Stable Config v5 example.
+- [`../config.example.toml`](../config.example.toml) is the native/Windows
+  Config v5 example.
 - [`../docker/config.example.toml`](../docker/config.example.toml) is the
-  current Python/Docker Config v4 example.
+  Python/Docker Config v5 example with container paths.
 
 Both examples use the central credential-directory architecture. Provider
 secrets and normal provider credential filenames do not belong in

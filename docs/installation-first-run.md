@@ -1,7 +1,7 @@
 # Installation and First Run
 
-Choose the runtime that matches your system. Windows GUI v3.0.0 Stable and
-Python/Docker are separate supported implementations.
+Choose the runtime that matches your system. All supported implementations use
+Config v5; their application release identities remain independent.
 
 ## Windows portable
 
@@ -79,9 +79,8 @@ Use the published container image:
 ghcr.io/scottia/splined:latest
 ```
 
-The Python/Docker runtime currently uses Config v4. Begin with
-[`docker/config.example.toml`](../docker/config.example.toml), not the Windows
-Config v5 example.
+Begin with [`docker/config.example.toml`](../docker/config.example.toml). It is
+Config v5 with Docker-specific container paths.
 
 See [Docker installation](../docker/README.md) for mounts and commands.
 

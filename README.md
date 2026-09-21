@@ -64,7 +64,7 @@ Start with:
 
 - [Documentation home](docs/README.md)
 - [Installation and first run](docs/installation-first-run.md)
-- [Windows Config v5 reference](docs/config-v5-reference.md)
+- [Config v5 reference](docs/config-v5-reference.md)
 
 Windows GUI v3.0.0 Stable opens the documentation home from **Help > Help**
 and from the Help button in its About dialog.
@@ -79,10 +79,10 @@ S:P:L:I:N:E:D keeps its supported implementations separate:
   v3.0.0 Stable, its Config v5 processing core, and the reproducible Windows
   build entry point.
 - Root [`Cargo.toml`](Cargo.toml), [`Cargo.lock`](Cargo.lock), and [`src/`](src/)
-  remain the native command-line implementation used by Linux and macOS. This
-  implementation retains Config v4 and the repository release version.
-- [`python/`](python/) is the separately supported Python/Docker Config v4
-  implementation and shares the repository release version.
+  remain the native command-line implementation used by Linux and macOS. It
+  uses Config v5 and the repository release version.
+- [`python/`](python/) is the supported Python/Docker Config v5 implementation
+  and shares the repository release version.
 
 The Windows application version, repository release version, and configuration
 schema versions are independent.
@@ -161,19 +161,14 @@ The operational picker can also save a persistent album bypass. A saved bypass i
 
 S:P:L:I:N:E:D uses a TOML config file.
 
-Windows GUI v3.0.0 Stable uses **Config v5**:
+All supported runtimes use **Config v5**:
 
-- [Windows Config v5 example](config.example.toml)
-- [Windows Config v5 reference](docs/config-v5-reference.md)
+- [Native/Windows Config v5 example](config.example.toml)
+- [Docker Config v5 example](docker/config.example.toml)
+- [Config v5 reference](docs/config-v5-reference.md)
 
-The repository-root native command-line implementation remains a separate
-Config v4 runtime. Python/Docker also remains Config v4:
-
-- [Python/Docker example](docker/config.example.toml)
-- [Docker installation guide](docker/README.md)
-
-Portable Windows paths are application-relative by default. Docker uses explicit
-container paths.
+Portable native/Windows paths are application-relative by default. Docker uses
+container-specific absolute paths while preserving the same schema.
 
 ---
 
