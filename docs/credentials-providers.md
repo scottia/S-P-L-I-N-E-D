@@ -46,7 +46,9 @@ Fanart.tv uses the v3.2 album endpoint. The credential contract is:
 }
 ```
 
-`api_version` must be `v3.2`. `client_key` is optional. The Windows credential editor always saves the v3.2 marker and validates against the v3.2 album endpoint.
+`api_version` must be `v3.2` for the canonical saved credential format. `client_key` is optional. The Windows credential editor always saves the v3.2 marker and validates against the v3.2 album endpoint.
+
+Python/Docker `splined --oauth-validation` is intentionally tolerant of legacy or manually created Fanart.tv files whose `api_version` marker is missing or stale. It prints `WARN`, then tests the saved API key and optional client key against the live v3.2 release-group album endpoint. A missing or stale marker alone is not treated as an authentication failure; the live request determines credential `PASS` or `FAIL`. New or rewritten credential files should still use `"api_version": "v3.2"`.
 
 ## Last.fm
 
@@ -115,6 +117,8 @@ MusicBrainz is metadata authority, not an artwork provider. Anonymous metadata r
 
 The runtime supports OAuth2 authorization code with PKCE S256, token expiry tracking, refresh-token renewal, and non-destructive JSON updates. See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
+Python/Docker `splined --oauth-validation` is a separate read-only smoke test of the currently stored MusicBrainz bearer token. It checks `/oauth2/userinfo` and then performs one normal metadata lookup, but it does not refresh, replace, or rewrite the token during validation.
+
 ## Windows GUI versus runtime authorization
 
 Use **File > Credentials...** or **Settings > Advanced > Library, Paths & Processing > Credentials / Status...** to edit provider fields and test saved credentials.
@@ -135,6 +139,7 @@ Back up `credentials/`, `config/`, and the configured history location separatel
 
 ## Related documentation
 
+- [API/OAuth credential validation](oauth-validation.md)
 - [MusicBrainz OAuth](musicbrainz-oauth.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Source policies and Range Types](source-policies-range-types.md)
