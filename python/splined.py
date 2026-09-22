@@ -29,7 +29,7 @@ from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from PIL import Image
 
-USER_AGENT = "SPLINED/1.0.6 (https://github.com/scottia/S-P-L-I-N-E-D)"
+USER_AGENT = "SPLINED/1.0.7 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
 MB_AUTHORIZE_URL = "https://musicbrainz.org/oauth2/authorize"
 MB_TOKEN_URL = "https://musicbrainz.org/oauth2/token"
@@ -3758,7 +3758,7 @@ def run_scan_preview(
 
 
 APP_NAME = "SPLINED"
-VERSION = "1.0.6"
+VERSION = "1.0.7"
 CONFIG_VERSION = 5
 DEFAULT_CONFIG = Path("/config/config.toml")
 HELP_COLUMN_WIDTH = 38
