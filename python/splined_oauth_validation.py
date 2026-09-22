@@ -53,6 +53,57 @@ def _randomized(values: tuple[Any, ...]) -> list[Any]:
     return items
 
 
+def _print_recovery(
+    config_file: Path,
+    cfg: dict[str, Any],
+    provider: str,
+    label: str,
+    *,
+    connectivity_first: bool = False,
+) -> None:
+    path = core.credential_file(config_file, cfg, provider)
+    print("Next steps:")
+    if connectivity_first:
+        print("  1. Check network connectivity and provider availability.")
+        print("  2. Run: splined --oauth-validation")
+        print(f"  3. If only {label} continues to fail, repair its credential as follows:")
+        indent = "     "
+    else:
+        indent = "  "
+
+    if provider == "discogs":
+        print(f"{indent}Replace or repair {path.name} with a valid Discogs personal access token.")
+        print(f"{indent}Credential file: {path}")
+        print(f"{indent}Then run: splined --oauth-validation")
+        return
+
+    if provider == "fanarttv":
+        print(f"{indent}Run: splined --fanarttv-credentials")
+        print(f"{indent}Enter a valid Fanart.tv API key; the client key is optional.")
+        print(f"{indent}Then run: splined --oauth-validation")
+        return
+
+    if provider == "musicbrainz":
+        print(f"{indent}Run: splined --mb-oauth-login")
+        print(f"{indent}Complete MusicBrainz browser authorization.")
+        print(f"{indent}Then run: splined --oauth-validation")
+        print("Resolution check:")
+        print("  After validation passes, allow the access token to expire.")
+        print("  Run a normal SPLINED operation that uses MusicBrainz.")
+        print("  SPLINED should automatically refresh the token and advance expires_at_unix.")
+        print("  Then run: splined --oauth-validation")
+        print("  If expires_at_unix does not advance or validation still fails after")
+        print("  normal MusicBrainz use, the automatic OAuth refresh path is not")
+        print("  functioning correctly.")
+        return
+
+    if provider == "lastfm":
+        print(f"{indent}Run: splined --lastfm-credentials")
+        print(f"{indent}Enter a valid Last.fm API key and shared secret.")
+        print(f"{indent}Then run: splined --oauth-validation")
+        print(f"{indent}If user-account authorization is also needed, run: splined --lastfm-login")
+
+
 def _read_credential(
     config_file: Path,
     cfg: dict[str, Any],
@@ -67,6 +118,7 @@ def _read_credential(
         return "CONFIGURED", core.load_json(path, label)
     except core.SplinedError as exc:
         print(f"{FAIL}: {label}: {exc}")
+        _print_recovery(config_file, cfg, provider, label)
         return FAIL, None
 
 
@@ -110,8 +162,15 @@ def _request_json(
     return status, payload
 
 
-def _request_failed(label: str, exc: ProviderRequestError) -> str:
+def _request_failed(
+    config_file: Path,
+    cfg: dict[str, Any],
+    provider: str,
+    label: str,
+    exc: ProviderRequestError,
+) -> str:
     print(f"{FAIL}: {label}: {exc}")
+    _print_recovery(config_file, cfg, provider, label, connectivity_first=True)
     return FAIL
 
 
@@ -124,6 +183,7 @@ def _validate_discogs(config_file: Path, cfg: dict[str, Any]) -> str:
     token = str((credential or {}).get("token") or "").strip()
     if not token:
         print(f"{FAIL}: {label}: configured credential contains no token")
+        _print_recovery(config_file, cfg, "discogs", label)
         return FAIL
 
     for artist, album in _randomized(DISCOGS_TARGETS):
@@ -141,13 +201,15 @@ def _validate_discogs(config_file: Path, cfg: dict[str, Any]) -> str:
                 },
             )
         except ProviderRequestError as exc:
-            return _request_failed(label, exc)
+            return _request_failed(config_file, cfg, "discogs", label, exc)
 
         if status in {401, 403}:
             print(f"{FAIL}: {label}: personal access token was rejected")
+            _print_recovery(config_file, cfg, "discogs", label)
             return FAIL
         if status != 200:
             print(f"{FAIL}: {label}: provider returned HTTP {status}")
+            _print_recovery(config_file, cfg, "discogs", label, connectivity_first=True)
             return FAIL
 
         results = data.get("results")
@@ -201,6 +263,7 @@ def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
     api_version = str(credential.get("api_version") or "").strip()
     if not api_key:
         print(f"{FAIL}: {label}: configured credential contains no api_key")
+        _print_recovery(config_file, cfg, "fanarttv", label)
         return FAIL
     if api_version.lower() != "v3.2":
         print(
@@ -224,20 +287,23 @@ def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
                 headers=headers,
             )
         except ProviderRequestError as exc:
-            return _request_failed(label, exc)
+            return _request_failed(config_file, cfg, "fanarttv", label, exc)
 
         if status in {401, 403}:
             print(f"{FAIL}: {label}: project/client key combination was rejected")
+            _print_recovery(config_file, cfg, "fanarttv", label)
             return FAIL
         if status == 404:
             continue
         if status != 200:
             print(f"{FAIL}: {label}: provider returned HTTP {status}")
+            _print_recovery(config_file, cfg, "fanarttv", label, connectivity_first=True)
             return FAIL
 
         albums = data.get("albums")
         if not isinstance(albums, list):
             print(f"{FAIL}: {label}: v3.2 response did not contain an albums array")
+            _print_recovery(config_file, cfg, "fanarttv", label, connectivity_first=True)
             return FAIL
         cover = _fanart_cover(data, release_group_mbid)
         if cover is not None:
@@ -281,6 +347,7 @@ def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
     token = str((credential or {}).get("access_token") or "").strip()
     if not token:
         print(f"{FAIL}: {label}: configured credential contains no access_token")
+        _print_recovery(config_file, cfg, "musicbrainz", label)
         return FAIL
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -291,12 +358,14 @@ def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
             headers=headers,
         )
     except ProviderRequestError as exc:
-        return _request_failed(label, exc)
+        return _request_failed(config_file, cfg, "musicbrainz", label, exc)
     if status in {401, 403}:
         print(f"{FAIL}: {label}: saved OAuth access token was rejected")
+        _print_recovery(config_file, cfg, "musicbrainz", label)
         return FAIL
     if status != 200:
         print(f"{FAIL}: {label}: OAuth userinfo returned HTTP {status}")
+        _print_recovery(config_file, cfg, "musicbrainz", label, connectivity_first=True)
         return FAIL
     print(f"{STATUS_OK}: MusicBrainz OAuth bearer token was accepted")
 
@@ -310,14 +379,16 @@ def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
                 params={"fmt": "json", "inc": "artist-credits+release-groups"},
             )
         except ProviderRequestError as exc:
-            return _request_failed(label, exc)
+            return _request_failed(config_file, cfg, "musicbrainz", label, exc)
         if metadata_status in {401, 403}:
             print(f"{FAIL}: {label}: metadata request rejected the saved OAuth token")
+            _print_recovery(config_file, cfg, "musicbrainz", label)
             return FAIL
         if metadata_status == 404:
             continue
         if metadata_status != 200:
             print(f"{FAIL}: {label}: metadata endpoint returned HTTP {metadata_status}")
+            _print_recovery(config_file, cfg, "musicbrainz", label, connectivity_first=True)
             return FAIL
         if data.get("id"):
             release_group = data.get("release-group")
@@ -347,6 +418,7 @@ def _validate_lastfm(config_file: Path, cfg: dict[str, Any]) -> str:
     api_key = str((credential or {}).get("api_key") or "").strip()
     if not api_key:
         print(f"{FAIL}: {label}: configured credential contains no api_key")
+        _print_recovery(config_file, cfg, "lastfm", label)
         return FAIL
 
     for artist, album in _randomized(LASTFM_TARGETS):
@@ -365,19 +437,22 @@ def _validate_lastfm(config_file: Path, cfg: dict[str, Any]) -> str:
                 },
             )
         except ProviderRequestError as exc:
-            return _request_failed(label, exc)
+            return _request_failed(config_file, cfg, "lastfm", label, exc)
 
         error = str(data.get("error") or "")
         if status in {401, 403} or error in {"10", "26"}:
             print(f"{FAIL}: {label}: API key was rejected")
+            _print_recovery(config_file, cfg, "lastfm", label)
             return FAIL
         if status != 200:
             print(f"{FAIL}: {label}: provider returned HTTP {status}")
+            _print_recovery(config_file, cfg, "lastfm", label, connectivity_first=True)
             return FAIL
         if error in {"6", "7"}:
             continue
         if error:
             print(f"{FAIL}: {label}: provider returned API error {error}")
+            _print_recovery(config_file, cfg, "lastfm", label, connectivity_first=True)
             return FAIL
 
         album_data = data.get("album")
