@@ -1,0 +1,350 @@
+name: SPLINED — Publish Existing Release to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing numeric release version to publish to GHCR (example: 1.0.9)"
+        required: true
+        default: "1.0.9"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: splined-ghcr-existing-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish-ghcr:
+    name: Publish Existing Release to GHCR
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      IMAGE_NAME: ghcr.io/scottia/splined
+      RELEASE_VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Validate release version input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: version must be numeric SemVer, for example 1.0.9"
+            exit 1
+          fi
+
+          echo "Existing release requested: $RELEASE_VERSION"
+
+      - name: Checkout exact existing release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.version }}
+          fetch-depth: 0
+
+      - name: Verify exact release tag and GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags origin
+
+          TAG_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION")
+          HEAD_COMMIT=$(git rev-parse HEAD)
+
+          echo "Release tag:    $RELEASE_VERSION"
+          echo "Tag commit:     $TAG_COMMIT"
+          echo "Checkout commit:$HEAD_COMMIT"
+
+          if [ "$TAG_COMMIT" != "$HEAD_COMMIT" ]; then
+            echo "ERROR: checkout does not match release tag $RELEASE_VERSION"
+            exit 1
+          fi
+
+          if ! gh release view "$RELEASE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "ERROR: GitHub Release does not exist: $RELEASE_VERSION"
+            exit 1
+          fi
+
+          echo "PASS: existing tag and GitHub Release verified"
+
+      - name: Verify SPLINED release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import tomllib
+
+          expected = os.environ["RELEASE_VERSION"]
+
+          cargo = tomllib.loads(
+              Path("Cargo.toml").read_text(encoding="utf-8-sig")
+          )
+
+          lock = tomllib.loads(
+              Path("Cargo.lock").read_text(encoding="utf-8")
+          )
+
+          source = Path("python/splined.py").read_text(encoding="utf-8")
+
+          docker_config = tomllib.loads(
+              Path("docker/config.example.toml").read_text(encoding="utf-8")
+          )
+
+          roots = [
+              package
+              for package in lock["package"]
+              if package["name"] == "splined"
+          ]
+
+          if len(roots) != 1:
+              raise SystemExit(
+                  "Expected exactly one splined root package in Cargo.lock"
+              )
+
+          version_match = re.search(
+              r'^VERSION = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+
+          config_match = re.search(
+              r'^CONFIG_VERSION = (\d+)$',
+              source,
+              re.MULTILINE,
+          )
+
+          user_agent_match = re.search(
+              r'^USER_AGENT = "([^"]+)"$',
+              source,
+              re.MULTILINE,
+          )
+
+          if not version_match:
+              raise SystemExit(
+                  "VERSION declaration missing from python/splined.py"
+              )
+
+          if version_match.group(1) != expected:
+              raise SystemExit(
+                  f"Python VERSION mismatch: "
+                  f"expected={expected}, actual={version_match.group(1)}"
+              )
+
+          if cargo["package"]["version"] != expected:
+              raise SystemExit(
+                  f"Cargo.toml version mismatch: "
+                  f"expected={expected}, "
+                  f"actual={cargo['package']['version']}"
+              )
+
+          if roots[0]["version"] != expected:
+              raise SystemExit(
+                  f"Cargo.lock version mismatch: "
+                  f"expected={expected}, "
+                  f"actual={roots[0]['version']}"
+              )
+
+          if not config_match or config_match.group(1) != "5":
+              raise SystemExit(
+                  "Python CONFIG_VERSION must be 5"
+              )
+
+          if docker_config.get("config_version") != 5:
+              raise SystemExit(
+                  "docker/config.example.toml must use Config v5"
+              )
+
+          expected_user_agent = (
+              f"SPLINED/{expected} "
+              "(https://github.com/scottia/S-P-L-I-N-E-D)"
+          )
+
+          if (
+              not user_agent_match
+              or user_agent_match.group(1) != expected_user_agent
+          ):
+              raise SystemExit(
+                  "Python USER_AGENT does not match release version"
+              )
+
+          print(f"PASS: release version = {expected}")
+          print("PASS: Config schema = 5")
+          print(f"PASS: User-Agent = {expected_user_agent}")
+          PY
+
+      - name: Compile Python sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m py_compile \
+            python/splined.py \
+            python/splined_scan.py \
+            python/splined_oauth_validation.py
+
+          echo "PASS: Python compilation"
+
+      - name: Build exact release Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_COMMIT=$(git rev-parse HEAD)
+          VERSION_TAG="v${RELEASE_VERSION}"
+
+          docker build --pull \
+            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
+            --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
+            --tag "$IMAGE_NAME:$VERSION_TAG" \
+            --tag "$IMAGE_NAME:latest" \
+            ./python
+
+      - name: Run Python unit tests inside release image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_TAG="v${RELEASE_VERSION}"
+
+          docker run --rm \
+            -e PYTHONPATH=/app \
+            -v "$PWD:/source:ro" \
+            --entrypoint python3 \
+            "$IMAGE_NAME:$VERSION_TAG" \
+            -m unittest discover \
+            -s /source/python \
+            -p 'test_*.py'
+
+      - name: Verify container version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_TAG="v${RELEASE_VERSION}"
+
+          ACTUAL=$(
+            docker run --rm \
+              "$IMAGE_NAME:$VERSION_TAG" \
+              -V | tr -d '\r'
+          )
+
+          EXPECTED="SPLINED $RELEASE_VERSION"
+
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+
+          test "$ACTUAL" = "$EXPECTED"
+
+      - name: Verify Config v5 in container
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_TAG="v${RELEASE_VERSION}"
+
+          CONFIG_CHECK=$(
+            docker run --rm \
+              -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+              "$IMAGE_NAME:$VERSION_TAG" \
+              --config-check | tr -d '\r'
+          )
+
+          printf '%s\n' "$CONFIG_CHECK"
+
+          grep -F "config_version = 5" <<<"$CONFIG_CHECK"
+
+      - name: Verify OAuth validation command is included
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_TAG="v${RELEASE_VERSION}"
+
+          HELP_OUTPUT=$(
+            docker run --rm \
+              -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+              "$IMAGE_NAME:$VERSION_TAG" \
+              -h | tr -d '\r'
+          )
+
+          grep -F -- "--oauth-validation" <<<"$HELP_OUTPUT"
+
+          OAUTH_OUTPUT=$(
+            docker run --rm \
+              -v "$PWD/docker/config.example.toml:/config/config.toml:ro" \
+              "$IMAGE_NAME:$VERSION_TAG" \
+              --oauth-validation | tr -d '\r'
+          )
+
+          printf '%s\n' "$OAUTH_OUTPUT"
+
+          grep -F \
+            "SPLINED API/OAuth Validation Summary" \
+            <<<"$OAUTH_OUTPUT"
+
+          grep -F "Discogs       SKIP" <<<"$OAUTH_OUTPUT"
+          grep -F "Fanart.tv     SKIP" <<<"$OAUTH_OUTPUT"
+          grep -F "MusicBrainz   SKIP" <<<"$OAUTH_OUTPUT"
+          grep -F "Last.fm       SKIP" <<<"$OAUTH_OUTPUT"
+
+      - name: Log in to GitHub Container Registry
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io \
+              -u "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Publish version and latest tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION_TAG="v${RELEASE_VERSION}"
+
+          echo "Publishing:"
+          echo "  $IMAGE_NAME:$VERSION_TAG"
+          echo "  $IMAGE_NAME:latest"
+
+          docker push "$IMAGE_NAME:$VERSION_TAG"
+          docker push "$IMAGE_NAME:latest"
+
+      - name: GHCR publication summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_COMMIT=$(git rev-parse HEAD)
+
+          {
+            echo "## SPLINED existing release published to GHCR"
+            echo
+            echo "- Version: \`$RELEASE_VERSION\`"
+            echo "- Release commit: \`$RELEASE_COMMIT\`"
+            echo "- Existing Git tag: \`$RELEASE_VERSION\`"
+            echo "- GHCR version tag: \`$IMAGE_NAME:v$RELEASE_VERSION\`"
+            echo "- GHCR latest tag: \`$IMAGE_NAME:latest\`"
+            echo "- Config schema: \`5\`"
+            echo "- Branches modified: \`no\`"
+            echo "- Release created: \`no\`"
+            echo "- Tag created: \`no\`"
+          } >> "$GITHUB_STEP_SUMMARY"
