@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
 import tomllib
@@ -54,7 +55,18 @@ class OAuthValidationTests(unittest.TestCase):
 
     def _write_credential(self, provider: str, payload: dict) -> Path:
         path = self.credential_dir / f"{provider}.json"
-        path.write_text(json.dumps(payload), encoding="utf-8")
+        data = json.dumps(payload).encode("utf-8")
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
         return path
 
     @staticmethod
