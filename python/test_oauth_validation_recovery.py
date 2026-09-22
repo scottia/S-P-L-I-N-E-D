@@ -108,7 +108,12 @@ class OAuthValidationRecoveryTests(unittest.TestCase):
         self.assertNotIn("client-secret", output)
 
     def test_lastfm_rejection_prints_credentials_and_optional_login_commands(self) -> None:
-        self._write("lastfm", {"api_key": "secret", "shared_secret": "shared"})
+        api_key = "lastfm-api-key-do-not-print-7d91"
+        shared_secret = "lastfm-shared-secret-do-not-print-4c28"
+        self._write(
+            "lastfm",
+            {"api_key": api_key, "shared_secret": shared_secret},
+        )
         with patch.object(
             validation.requests,
             "request",
@@ -119,8 +124,8 @@ class OAuthValidationRecoveryTests(unittest.TestCase):
         self.assertIn("splined --lastfm-credentials", output)
         self.assertIn("splined --lastfm-login", output)
         self.assertIn("splined --oauth-validation", output)
-        self.assertNotIn("secret", output)
-        self.assertNotIn("shared", output)
+        self.assertNotIn(api_key, output)
+        self.assertNotIn(shared_secret, output)
 
 
 if __name__ == "__main__":
