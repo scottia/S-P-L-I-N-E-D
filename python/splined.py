@@ -942,6 +942,58 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     return data
 
 
+def authentication_statuses(
+    config_file: Path,
+    cfg: dict[str, Any],
+) -> tuple[tuple[str, str], ...]:
+    def credential(provider: str, label: str) -> dict[str, Any] | None:
+        path = credential_file(config_file, cfg, provider)
+        if not path.is_file():
+            return None
+        try:
+            return load_json(path, label)
+        except SplinedError:
+            return {}
+
+    discogs = credential("discogs", "Discogs")
+    fanarttv = credential("fanarttv", "Fanart.tv")
+    lastfm = credential("lastfm", "Last.fm")
+    musicbrainz = credential("musicbrainz", "MusicBrainz")
+
+    discogs_mode = (
+        "Personal Token"
+        if discogs and str(discogs.get("token") or "").strip()
+        else "Not Configured"
+    )
+    fanarttv_mode = (
+        "API Key v3.2"
+        if fanarttv and str(fanarttv.get("api_key") or "").strip()
+        else "Not Configured"
+    )
+    if lastfm and str(lastfm.get("api_key") or "").strip():
+        lastfm_mode = (
+            "API Key / Session"
+            if str(lastfm.get("session_key") or "").strip()
+            else "API Key"
+        )
+    else:
+        lastfm_mode = "Not Configured"
+    musicbrainz_mode = (
+        "OAuth Bearer"
+        if musicbrainz and str(musicbrainz.get("access_token") or "").strip()
+        else "Anonymous"
+    )
+
+    return (
+        ("Discogs", discogs_mode),
+        ("Fanart.tv", fanarttv_mode),
+        ("Last.fm", lastfm_mode),
+        ("MusicBrainz", musicbrainz_mode),
+        ("iTunes", "Anonymous"),
+        ("CoverArt", "Anonymous"),
+    )
+
+
 
 def save_json_atomic(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1059,44 +1111,91 @@ def musicbrainz_settings(config_file: Path, cfg: dict[str, Any]) -> dict[str, An
 
 
 def _mb_refresh_token(config_file: Path, cfg: dict[str, Any], cred: dict[str, Any]) -> dict[str, Any]:
-    mb = musicbrainz_settings(config_file, cfg)
-    client_id = str(mb.get("client_id") or "").strip()
+    client_id = str(cred.get("client_id") or "").strip()
     client_secret = str(cred.get("client_secret") or "").strip()
     refresh_token = str(cred.get("refresh_token") or "").strip()
-    if not client_id or not client_secret or not refresh_token:
-        return cred
+    missing = [
+        name
+        for name, value in (
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("refresh_token", refresh_token),
+        )
+        if not value
+    ]
+    if missing:
+        raise SplinedError(
+            "MusicBrainz OAuth automatic refresh cannot continue because "
+            f"musicbrainz.json is missing {', '.join(missing)}. "
+            "Run --mb-oauth-login, then --oauth-validation."
+        )
 
-    response = requests.post(
-        MB_OAUTH_ENDPOINT,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-            "client_secret": client_secret,
-        },
-        headers={"User-Agent": USER_AGENT},
-        timeout=REQUEST_TIMEOUT,
-    )
+    try:
+        response = requests.post(
+            MB_OAUTH_ENDPOINT,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            headers={"User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise SplinedError(
+            "MusicBrainz OAuth refresh request failed. Check network connectivity, "
+            "then run --oauth-validation again."
+        ) from exc
     if not response.ok:
         raise SplinedError(
-            f"MusicBrainz OAuth refresh returned HTTP {response.status_code}: "
-            f"{response.text[:300].strip()}"
+            f"MusicBrainz OAuth refresh was rejected with HTTP {response.status_code}. "
+            "Run --mb-oauth-login, then --oauth-validation."
         )
-    token = response.json()
+    try:
+        token = response.json()
+    except ValueError as exc:
+        raise SplinedError(
+            "MusicBrainz OAuth refresh returned invalid JSON. "
+            "Run --oauth-validation again; reauthorize if the failure continues."
+        ) from exc
+
+    access_token = str(token.get("access_token") or "").strip()
+    if not access_token:
+        raise SplinedError(
+            "MusicBrainz OAuth refresh returned no access_token. "
+            "Run --mb-oauth-login, then --oauth-validation."
+        )
+    try:
+        expires_in = int(token.get("expires_in") or 0)
+    except (TypeError, ValueError) as exc:
+        raise SplinedError(
+            "MusicBrainz OAuth refresh returned an invalid expires_in value."
+        ) from exc
+    if expires_in <= 0:
+        raise SplinedError(
+            "MusicBrainz OAuth refresh returned no usable token lifetime. "
+            "Run --mb-oauth-login, then --oauth-validation."
+        )
+
     now = int(time.time())
     updated = dict(cred)
-    updated["access_token"] = str(token.get("access_token") or "").strip() or None
+    updated["access_token"] = access_token
     updated["refresh_token"] = str(token.get("refresh_token") or refresh_token).strip() or None
     updated["token_type"] = str(token.get("token_type") or "Bearer").strip() or "Bearer"
     updated["scope"] = str(token.get("scope") or updated.get("scope") or "").strip() or None
-    expires_in = int(token.get("expires_in") or 0)
-    updated["expires_at_unix"] = now + expires_in if expires_in else None
+    updated["expires_at_unix"] = now + expires_in
     path = credential_file(config_file, cfg, "musicbrainz")
     save_json_atomic(path, updated)
     return updated
 
 
-def mb_headers(config_file: Path, cfg: dict[str, Any]) -> tuple[dict[str, str], str]:
+def mb_headers(
+    config_file: Path,
+    cfg: dict[str, Any],
+    *,
+    force_refresh: bool = False,
+) -> tuple[dict[str, str], str]:
     mb = musicbrainz_settings(config_file, cfg)
     if not bool(mb.get("enabled", True)):
         return {}, "Disabled"
@@ -1106,23 +1205,35 @@ def mb_headers(config_file: Path, cfg: dict[str, Any]) -> tuple[dict[str, str], 
     path = credential_file(config_file, cfg, "musicbrainz")
     cred = load_json(path, "MusicBrainz")
     token = str(cred.get("access_token") or "").strip()
-    expires_at = cred.get("expires_at_unix")
-    if expires_at is not None:
-        try:
-            if int(expires_at) <= int(time.time()) + 30:
-                cred = _mb_refresh_token(config_file, cfg, cred)
-                token = str(cred.get("access_token") or "").strip()
-        except (TypeError, ValueError):
-            pass
-
-    if not token:
-        if str(cred.get("refresh_token") or "").strip():
+    if force_refresh:
+        cred = _mb_refresh_token(config_file, cfg, cred)
+        token = str(cred.get("access_token") or "").strip()
+    else:
+        expires_at = cred.get("expires_at_unix")
+        expired = False
+        if expires_at is not None:
+            try:
+                expired = int(expires_at) <= int(time.time()) + 30
+            except (TypeError, ValueError) as exc:
+                raise SplinedError(
+                    "MusicBrainz expires_at_unix is invalid. "
+                    "Run --mb-oauth-login, then --oauth-validation."
+                ) from exc
+        if expired:
             cred = _mb_refresh_token(config_file, cfg, cred)
             token = str(cred.get("access_token") or "").strip()
+
+    if not token and str(cred.get("refresh_token") or "").strip():
+        cred = _mb_refresh_token(config_file, cfg, cred)
+        token = str(cred.get("access_token") or "").strip()
     if not token:
+        try:
+            display_path = path.resolve()
+        except OSError:
+            display_path = path
         raise SplinedError(
-            f"MusicBrainz OAuth enabled but no usable access_token exists in {path}. "
-            "Run --mb-oauth-login."
+            f"MusicBrainz OAuth enabled but no usable access_token exists in {display_path}. "
+            "Run --mb-oauth-login, then --oauth-validation."
         )
     return {"Authorization": f"Bearer {token}"}, "OAuthBearer"
 
@@ -3147,6 +3258,9 @@ def run_scan_dir(
     )
     print(ljust_color(cyan("Providers:"), 14) + bracketed_list(provider_list, green))
     print(ljust_color(cyan("Source:"), 14) + bracketed_list(sources, green))
+    print(cyan("Authentication:"))
+    for provider, auth_mode in authentication_statuses(config_file, cfg):
+        print("  " + ljust_color(cyan(provider), 14) + white(auth_mode))
     mb_rhs = (
         magenta(mbmode + ", Retry ")
         + white("[") + magenta(str(int(mbcfg.get("retry_max", 2)))) + white("]")

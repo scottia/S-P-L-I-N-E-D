@@ -26,6 +26,11 @@ class FakeResponse:
         self.status_code = status_code
         self.payload = payload
         self.closed = False
+        self.text = ""
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status_code < 400
 
     def json(self) -> object:
         return self.payload
@@ -87,6 +92,45 @@ class OAuthValidationTests(unittest.TestCase):
             splined.credential_file(self.config_file, self.cfg, "discogs"),
             expected / "discogs.json",
         )
+
+    def test_authentication_statuses_report_modes_without_secrets(self) -> None:
+        secrets = {
+            "discogs": "discogs-auth-mode-secret",
+            "fanarttv": "fanart-auth-mode-secret",
+            "lastfm": "lastfm-auth-mode-secret",
+            "session": "lastfm-session-mode-secret",
+            "musicbrainz": "musicbrainz-auth-mode-secret",
+        }
+        self._write_credential("discogs", {"token": secrets["discogs"]})
+        self._write_credential("fanarttv", {"api_key": secrets["fanarttv"]})
+        self._write_credential(
+            "lastfm",
+            {
+                "api_key": secrets["lastfm"],
+                "session_key": secrets["session"],
+            },
+        )
+        self._write_credential(
+            "musicbrainz",
+            {"access_token": secrets["musicbrainz"]},
+        )
+
+        statuses = splined.authentication_statuses(self.config_file, self.cfg)
+
+        self.assertEqual(
+            statuses,
+            (
+                ("Discogs", "Personal Token"),
+                ("Fanart.tv", "API Key v3.2"),
+                ("Last.fm", "API Key / Session"),
+                ("MusicBrainz", "OAuth Bearer"),
+                ("iTunes", "Anonymous"),
+                ("CoverArt", "Anonymous"),
+            ),
+        )
+        rendered = repr(statuses)
+        for secret in secrets.values():
+            self.assertNotIn(secret, rendered)
 
     def test_missing_credentials_are_skip_and_exit_zero(self) -> None:
         result, stdout, stderr = self._capture(
@@ -278,6 +322,132 @@ class OAuthValidationTests(unittest.TestCase):
         self.assertIn("release_mbid=", stdout)
         self.assertIn("release_group_mbid=", stdout)
         self.assertNotIn(access_token, stdout + stderr)
+
+    def test_musicbrainz_expired_token_refreshes_then_validation_passes(self) -> None:
+        old_access = "expired-access-secret"
+        new_access = "refreshed-access-secret"
+        old_expiry = 1
+        now = 1_790_100_000
+        path = self._write_credential(
+            "musicbrainz",
+            {
+                "oauth_enabled": True,
+                "client_id": "client-id-secret",
+                "client_secret": "client-secret",
+                "access_token": old_access,
+                "refresh_token": "refresh-secret",
+                "expires_at_unix": old_expiry,
+            },
+        )
+        target = validation.MUSICBRAINZ_TARGETS[0]
+        refresh = FakeResponse(
+            200,
+            {
+                "access_token": new_access,
+                "refresh_token": "rotated-refresh-secret",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+        userinfo = FakeResponse(200, {"sub": "public-user-id"})
+        metadata = FakeResponse(
+            200,
+            {
+                "id": target[2],
+                "title": target[1],
+                "artist-credit": [{"name": target[0]}],
+                "release-group": {"id": "a4d2a86c-bbd6-352b-b9fa-f9da86df842c"},
+            },
+        )
+        with (
+            patch.object(splined.time, "time", return_value=now),
+            patch.object(splined.requests, "post", return_value=refresh) as refresh_request,
+            patch.object(validation, "_randomized", return_value=[target]),
+            patch.object(
+                validation.requests,
+                "request",
+                side_effect=[userinfo, metadata],
+            ) as request,
+        ):
+            result, stdout, stderr = self._capture(
+                validation._validate_musicbrainz,
+                self.config_file,
+                self.cfg,
+            )
+
+        self.assertEqual(result, validation.PASS)
+        self.assertEqual(refresh_request.call_count, 1)
+        self.assertEqual(request.call_count, 2)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["access_token"], new_access)
+        self.assertEqual(saved["refresh_token"], "rotated-refresh-secret")
+        self.assertEqual(saved["expires_at_unix"], now + 3600)
+        self.assertGreater(saved["expires_at_unix"], old_expiry)
+        self.assertEqual(
+            request.call_args_list[0].kwargs["headers"]["Authorization"],
+            f"Bearer {new_access}",
+        )
+        self.assertIn("OAuth bearer token was accepted", stdout)
+        for secret in (old_access, new_access, "refresh-secret", "client-secret"):
+            self.assertNotIn(secret, stdout + stderr)
+
+    def test_musicbrainz_rejected_current_token_refreshes_once_and_passes(self) -> None:
+        now = 1_790_100_000
+        path = self._write_credential(
+            "musicbrainz",
+            {
+                "oauth_enabled": True,
+                "client_id": "client-id-secret",
+                "client_secret": "client-secret",
+                "access_token": "nominally-current-secret",
+                "refresh_token": "refresh-secret",
+                "expires_at_unix": now + 1800,
+            },
+        )
+        target = validation.MUSICBRAINZ_TARGETS[0]
+        refresh = FakeResponse(
+            200,
+            {
+                "access_token": "retry-access-secret",
+                "refresh_token": "refresh-secret",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            },
+        )
+        rejected = FakeResponse(401, {"error": "invalid_token"})
+        accepted = FakeResponse(200, {"sub": "public-user-id"})
+        metadata = FakeResponse(
+            200,
+            {
+                "id": target[2],
+                "title": target[1],
+                "artist-credit": [{"name": target[0]}],
+                "release-group": {"id": "a4d2a86c-bbd6-352b-b9fa-f9da86df842c"},
+            },
+        )
+        with (
+            patch.object(splined.time, "time", return_value=now),
+            patch.object(splined.requests, "post", return_value=refresh) as refresh_request,
+            patch.object(validation, "_randomized", return_value=[target]),
+            patch.object(
+                validation.requests,
+                "request",
+                side_effect=[rejected, accepted, metadata],
+            ) as request,
+        ):
+            result, stdout, stderr = self._capture(
+                validation._validate_musicbrainz,
+                self.config_file,
+                self.cfg,
+            )
+
+        self.assertEqual(result, validation.PASS)
+        self.assertEqual(refresh_request.call_count, 1)
+        self.assertEqual(request.call_count, 3)
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["expires_at_unix"], now + 3600)
+        self.assertIn("OAuth bearer token was accepted", stdout)
+        self.assertNotIn("retry-access-secret", stdout + stderr)
 
     def test_lastfm_uses_album_getinfo_api_key_without_session_fields(self) -> None:
         api_key = "lastfm-api-secret"

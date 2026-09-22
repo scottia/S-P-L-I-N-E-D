@@ -1079,6 +1079,13 @@ def run_scan_dir(
     )
     print(core.ljust_color(core.cyan("Providers:"), 14) + core.bracketed_list(provider_list, core.green))
     print(core.ljust_color(core.cyan("Source:"), 14) + core.bracketed_list(sources, core.green))
+    print(core.cyan("Authentication:"))
+    for provider, auth_mode in core.authentication_statuses(config_file, cfg):
+        print(
+            "  "
+            + core.ljust_color(core.cyan(provider), 14)
+            + core.white(auth_mode)
+        )
     mb_rhs = (
         core.magenta(mbmode + ", Retry ")
         + core.white("[") + core.magenta(str(int(mbcfg.get("retry_max", 2)))) + core.white("]")

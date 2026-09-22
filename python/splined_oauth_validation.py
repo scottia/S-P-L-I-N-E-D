@@ -88,13 +88,10 @@ def _print_recovery(
         print(f"{indent}Complete MusicBrainz browser authorization.")
         print(f"{indent}Then run: splined --oauth-validation")
         print("Resolution check:")
-        print("  After validation passes, allow the access token to expire.")
-        print("  Run a normal SPLINED operation that uses MusicBrainz.")
-        print("  SPLINED should automatically refresh the token and advance expires_at_unix.")
-        print("  Then run: splined --oauth-validation")
-        print("  If expires_at_unix does not advance or validation still fails after")
-        print("  normal MusicBrainz use, the automatic OAuth refresh path is not")
-        print("  functioning correctly.")
+        print("  Future splined --oauth-validation runs automatically refresh an expired")
+        print("  MusicBrainz access token and advance expires_at_unix before testing it.")
+        print("  If expires_at_unix does not advance or validation still fails, the saved")
+        print("  refresh grant is no longer usable; run --mb-oauth-login again.")
         return
 
     if provider == "lastfm":
@@ -340,16 +337,16 @@ def _musicbrainz_artist(data: dict[str, Any]) -> str:
 
 def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
     label = "MusicBrainz"
-    state, credential = _read_credential(config_file, cfg, "musicbrainz", label)
+    state, _credential = _read_credential(config_file, cfg, "musicbrainz", label)
     if state != "CONFIGURED":
         return state
 
-    token = str((credential or {}).get("access_token") or "").strip()
-    if not token:
-        print(f"{FAIL}: {label}: configured credential contains no access_token")
+    try:
+        headers, _mode = core.mb_headers(config_file, cfg)
+    except core.SplinedError as exc:
+        print(f"{FAIL}: {label}: automatic OAuth refresh failed: {exc}")
         _print_recovery(config_file, cfg, "musicbrainz", label)
         return FAIL
-    headers = {"Authorization": f"Bearer {token}"}
 
     try:
         status, _identity = _request_json(
@@ -360,9 +357,23 @@ def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
     except ProviderRequestError as exc:
         return _request_failed(config_file, cfg, "musicbrainz", label, exc)
     if status in {401, 403}:
-        print(f"{FAIL}: {label}: saved OAuth access token was rejected")
-        _print_recovery(config_file, cfg, "musicbrainz", label)
-        return FAIL
+        try:
+            headers, _mode = core.mb_headers(config_file, cfg, force_refresh=True)
+            status, _identity = _request_json(
+                "GET",
+                "https://musicbrainz.org/oauth2/userinfo",
+                headers=headers,
+            )
+        except core.SplinedError as exc:
+            print(f"{FAIL}: {label}: OAuth refresh after token rejection failed: {exc}")
+            _print_recovery(config_file, cfg, "musicbrainz", label)
+            return FAIL
+        except ProviderRequestError as exc:
+            return _request_failed(config_file, cfg, "musicbrainz", label, exc)
+        if status in {401, 403}:
+            print(f"{FAIL}: {label}: refreshed OAuth access token was rejected")
+            _print_recovery(config_file, cfg, "musicbrainz", label)
+            return FAIL
     if status != 200:
         print(f"{FAIL}: {label}: OAuth userinfo returned HTTP {status}")
         _print_recovery(config_file, cfg, "musicbrainz", label, connectivity_first=True)
@@ -489,7 +500,8 @@ def run_oauth_validation(config_file: Path, cfg: dict[str, Any]) -> int:
     print(f"Config: {config_file}")
     print(f"Credential directory: {credential_dir}")
     print("Random curated public records are used; the music library is not inspected.")
-    print("Saved credentials are tested read-only and secrets are never displayed.")
+    print("Saved credentials are tested and secrets are never displayed.")
+    print("Expired or rejected MusicBrainz access tokens are refreshed before retesting.")
     print()
 
     validators = (

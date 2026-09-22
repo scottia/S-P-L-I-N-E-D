@@ -1,6 +1,6 @@
 # API/OAuth validation
 
-Python/Docker exposes a single non-destructive credential validation command:
+Python/Docker exposes a single credential validation command:
 
 ```text
 splined --oauth-validation
@@ -26,7 +26,7 @@ Only configured credential files are tested. Missing provider credential files a
 
 - **Discogs** — reads `discogs.json`, validates the saved personal token with an authenticated database search, and returns one representative release result. Discogs application OAuth is not required.
 - **Fanart.tv** — reads `fanarttv.json`, tests the saved API key and optional client key against the live Fanart.tv v3.2 MusicBrainz release-group album endpoint, verifies the v3.2 `albums` response, and returns one representative album-cover result when available. The canonical credential format still records `"api_version": "v3.2"`; if that marker is missing or stale, the validator prints `WARN` and continues with the live v3.2 request. The live request determines credential `PASS` or `FAIL`.
-- **MusicBrainz** — reads `musicbrainz.json`, validates the currently stored OAuth bearer token against `/oauth2/userinfo`, then performs a normal MusicBrainz release metadata lookup and reports one representative release plus release-group MBID. This validation path is read-only: it does not refresh, replace, or rewrite the saved token.
+- **MusicBrainz** — reads `musicbrainz.json`, refreshes an expired access token before testing it, validates the resulting OAuth bearer token against `/oauth2/userinfo`, then performs a normal MusicBrainz release metadata lookup and reports one representative release plus release-group MBID. If a nominally current token is rejected, validation forces one refresh and retries once. A successful refresh atomically updates the credential and advances `expires_at_unix`.
 - **Last.fm** — reads `lastfm.json`, validates the API key using `album.getInfo`, and returns one representative album/artwork result. A Last.fm user session is not required for normal artwork reads.
 
 ## Random validation targets
@@ -92,21 +92,18 @@ splined --mb-oauth-login
 splined --oauth-validation
 ```
 
-After successful reauthorization and validation, there is an additional
-resolution check for the automatic refresh lifecycle. Once the short-lived
-access token later expires, run a normal SPLINED operation that uses
-MusicBrainz. The normal runtime should refresh the token and advance
-`expires_at_unix`. Then run:
+After successful reauthorization, the validation command participates in the
+automatic refresh lifecycle. Once the short-lived access token expires, run:
 
 ```text
 splined --oauth-validation
 ```
 
-The validator should pass again with the refreshed token. If
-`expires_at_unix` does not advance, or validation still fails after normal
-MusicBrainz use, the automatic MusicBrainz OAuth refresh path is not
-functioning correctly and the failure is no longer treated as a simple user
-reauthorization problem.
+The validator refreshes the token, atomically updates `musicbrainz.json`,
+advances `expires_at_unix`, and tests the new bearer token. If the provider
+rejects a nominally current token, the validator forces one refresh and retry.
+If renewal still fails, reauthorize with `splined --mb-oauth-login` and rerun
+the validator.
 
 ### Last.fm
 
@@ -137,4 +134,6 @@ tokens, shared secrets, Fanart.tv client keys, or Discogs personal tokens. It
 prints only credential-file status, recovery commands, configured file paths,
 and public provider-result metadata or artwork URLs.
 
-The validator does not rewrite credentials and does not refresh or replace saved tokens. It is intended as an explicit smoke test of the credentials currently stored on disk.
+Discogs, Fanart.tv, and Last.fm validation remains read-only. MusicBrainz may
+atomically rewrite `musicbrainz.json` only when it renews an expired or rejected
+access token. Other credential fields and unknown future fields are preserved.

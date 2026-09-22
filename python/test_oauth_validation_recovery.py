@@ -26,6 +26,10 @@ class FakeResponse:
     def close(self) -> None:
         return None
 
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status_code < 400
+
 
 class OAuthValidationRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -111,9 +115,35 @@ class OAuthValidationRecoveryTests(unittest.TestCase):
         self.assertIn("splined --mb-oauth-login", output)
         self.assertIn("Resolution check:", output)
         self.assertIn("expires_at_unix", output)
-        self.assertIn("automatic OAuth refresh path", output)
+        self.assertIn("automatically refresh an expired", output)
         self.assertIn("splined --oauth-validation", output)
         self.assertNotIn("access-secret", output)
+        self.assertNotIn("refresh-secret", output)
+        self.assertNotIn("client-secret", output)
+
+    def test_musicbrainz_refresh_rejection_prints_reauthorization_steps(self) -> None:
+        self._write(
+            "musicbrainz",
+            {
+                "access_token": "expired-access-secret",
+                "refresh_token": "refresh-secret",
+                "client_id": "client-id-secret",
+                "client_secret": "client-secret",
+                "expires_at_unix": 1,
+            },
+        )
+        with patch.object(
+            splined.requests,
+            "post",
+            return_value=FakeResponse(400, {"error": "invalid_grant"}),
+        ):
+            result, output = self._capture(validation._validate_musicbrainz)
+
+        self.assertEqual(result, validation.FAIL)
+        self.assertIn("OAuth refresh was rejected with HTTP 400", output)
+        self.assertIn("splined --mb-oauth-login", output)
+        self.assertIn("splined --oauth-validation", output)
+        self.assertNotIn("expired-access-secret", output)
         self.assertNotIn("refresh-secret", output)
         self.assertNotIn("client-secret", output)
 

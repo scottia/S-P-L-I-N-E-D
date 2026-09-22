@@ -117,7 +117,11 @@ MusicBrainz is metadata authority, not an artwork provider. Anonymous metadata r
 
 The runtime supports OAuth2 authorization code with PKCE S256, token expiry tracking, refresh-token renewal, and non-destructive JSON updates. See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
-Python/Docker `splined --oauth-validation` is a separate read-only smoke test of the currently stored MusicBrainz bearer token. It checks `/oauth2/userinfo` and then performs one normal metadata lookup, but it does not refresh, replace, or rewrite the token during validation.
+Python/Docker `splined --oauth-validation` refreshes an expired MusicBrainz
+access token before checking `/oauth2/userinfo`, then performs one normal
+metadata lookup. If a nominally current bearer token is rejected, it forces one
+refresh and retries once. Successful renewal atomically updates only the
+MusicBrainz credential while preserving its other fields.
 
 ## Windows GUI versus runtime authorization
 

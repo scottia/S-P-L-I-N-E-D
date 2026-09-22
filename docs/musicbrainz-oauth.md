@@ -68,7 +68,7 @@ token against `/oauth2/userinfo`. It does not run the browser authorization
 exchange. Use `splined.exe --mb-oauth-login` to authorize, then return to the
 GUI to inspect or test the saved credential.
 
-## Read-only credential validation
+## Credential validation and renewal
 
 Python/Docker also exposes:
 
@@ -76,15 +76,12 @@ Python/Docker also exposes:
 splined --oauth-validation
 ```
 
-For MusicBrainz, this command validates the **currently stored** access token
-against `/oauth2/userinfo`, then performs one normal release metadata lookup
-using a curated public release. It is a diagnostic smoke test, not a login or
-refresh path.
-
-`--oauth-validation` does **not** refresh an expired token, exchange a refresh
-token, or rewrite `musicbrainz.json`. A rejected bearer token is reported as
-`FAIL` even when a refresh token is present. Use normal runtime access or
-`--mb-oauth-login` when renewal or reauthorization is required.
+For MusicBrainz, this command compares `expires_at_unix` with the current time,
+refreshes an expired access token, validates the resulting bearer token against
+`/oauth2/userinfo`, then performs one normal release metadata lookup using a
+curated public release. If MusicBrainz rejects a nominally current token, the
+validator forces one refresh and retries once. A successful refresh atomically
+updates `musicbrainz.json` and advances `expires_at_unix`.
 
 The command never prints the access token, refresh token, client secret, or
 other saved credential values. See [API/OAuth credential validation](oauth-validation.md)
@@ -98,9 +95,9 @@ that omits a new refresh token retains the current one. Updates use
 read-modify-write behavior so authentication fields, `options`, and unknown
 future fields are preserved, then the credential file is atomically replaced.
 
-This automatic refresh behavior applies to normal runtime MusicBrainz access;
-it is intentionally not invoked by the read-only `--oauth-validation` smoke
-test.
+This automatic refresh behavior applies to both normal runtime MusicBrainz
+access and `--oauth-validation`. Discogs, Fanart.tv, and Last.fm validation does
+not rewrite their credentials.
 
 Credential files receive the filesystem protection described in
 [Credentials and provider setup](credentials-providers.md).
@@ -120,8 +117,8 @@ MusicBrainz participation without deleting credentials.
 
 ## Recovery
 
-- If the access token expires, allow automatic refresh during normal runtime access or run the login command again.
-- If `--oauth-validation` reports the stored bearer token as rejected, use normal runtime refresh or reauthorize; the validation command itself will not modify credentials.
+- If the access token expires, normal runtime access and `--oauth-validation` automatically refresh it and advance `expires_at_unix`.
+- If a nominally current token is rejected, `--oauth-validation` forces one refresh and retries before reporting failure.
 - If refresh fails because consent or the refresh token was revoked,
   reauthorize; do not invent token values.
 - If JSON is malformed, close SPLINED, make a private backup, repair only known
