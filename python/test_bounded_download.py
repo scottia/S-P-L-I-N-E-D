@@ -61,6 +61,10 @@ class FakeImage:
         return None
 
 
+class OversizedFakeImage(FakeImage):
+    size = (8192, 8193)
+
+
 class BoundedArtworkDownloadTests(unittest.TestCase):
     def test_valid_response_below_limit_is_streamed_and_closed(self) -> None:
         payload = b"synthetic-valid-image"
@@ -138,6 +142,28 @@ class BoundedArtworkDownloadTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertEqual(len(diagnostics), 1)
         self.assertIn("invalid image", diagnostics[0][1])
+        self.assertTrue(response.closed)
+
+    def test_oversized_decoded_image_is_rejected_before_cache_write(self) -> None:
+        response = FakeResponse([b"small-compressed-payload"])
+        http = FakeHttp(response)
+        reference = splined.Ref("deezer", "album-3", "https://example.invalid/bomb.png")
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            with patch.object(splined.Image, "open", return_value=OversizedFakeImage()):
+                candidates, diagnostics = splined.download_candidates(
+                    http,
+                    [reference],
+                    ["deezer"],
+                    cache,
+                )
+
+            self.assertEqual(candidates, [])
+            self.assertEqual(list(cache.iterdir()), [])
+
+        self.assertEqual(len(diagnostics), 1)
+        self.assertIn("decoded-image limit", diagnostics[0][1])
         self.assertTrue(response.closed)
 
 
