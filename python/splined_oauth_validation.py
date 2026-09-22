@@ -201,8 +201,10 @@ def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
         print(f"{FAIL}: {label}: configured credential contains no api_key")
         return FAIL
     if api_version.lower() != "v3.2":
-        print(f"{FAIL}: {label}: credential api_version must be v3.2")
-        return FAIL
+        print(
+            f"WARN: {label}: saved api_version marker is missing or not v3.2; "
+            "testing the saved credentials against the live v3.2 endpoint"
+        )
 
     headers = {"api-key": api_key}
     if client_key:
