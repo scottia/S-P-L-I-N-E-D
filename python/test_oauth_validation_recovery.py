@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import json
 import tempfile
 import tomllib
 import unittest
@@ -39,18 +38,29 @@ class OAuthValidationRecoveryTests(unittest.TestCase):
         with (REPOSITORY / "docker" / "config.example.toml").open("rb") as handle:
             self.cfg = tomllib.load(handle)
         self.cfg["credentials"]["credential_dir"] = "../credentials"
+        self.credential_payloads: dict[str, dict] = {}
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
     def _write(self, provider: str, payload: dict) -> None:
+        # Recovery tests need the credential file to exist, but credential-like
+        # test values do not need to be persisted. Keep them in memory and write
+        # only a non-sensitive placeholder document to the temporary fixture.
+        self.credential_payloads[provider] = dict(payload)
         (self.credential_dir / f"{provider}.json").write_text(
-            json.dumps(payload), encoding="utf-8"
+            "{}\n", encoding="utf-8"
         )
+
+    def _load_json(self, path: Path, _label: str) -> dict:
+        return dict(self.credential_payloads[path.stem])
 
     def _capture(self, callable_object):
         output = io.StringIO()
-        with redirect_stdout(output):
+        with (
+            redirect_stdout(output),
+            patch.object(validation.core, "load_json", side_effect=self._load_json),
+        ):
             result = callable_object(self.config_file, self.cfg)
         return result, output.getvalue()
 
