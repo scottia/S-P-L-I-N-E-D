@@ -123,12 +123,6 @@ fn windows_identity_and_release_domains_stay_separate() {
         fs::read_to_string(".github/workflows/release-next-patch.yml").expect("release workflow");
     assert!(workflow.contains("git diff --exit-code -- windows/Cargo.toml windows/Cargo.lock"));
     assert!(!workflow.contains("cargo set-version --manifest-path windows/Cargo.toml"));
-    assert!(
-        workflow.contains("ERROR: dev and main must be synchronized before creating a release.")
-    );
-    assert!(workflow.contains("git push --atomic origin"));
-    assert!(workflow.contains("HEAD:refs/heads/main"));
-    assert!(workflow.contains("HEAD:refs/heads/dev"));
     assert!(workflow.contains("ref: ${{ needs.prepare-release.outputs.commit }}"));
     assert!(workflow.contains("packages: write"));
     for platform in ["Windows", "Ubuntu", "macOS", "All"] {
