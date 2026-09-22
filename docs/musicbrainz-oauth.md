@@ -68,6 +68,28 @@ token against `/oauth2/userinfo`. It does not run the browser authorization
 exchange. Use `splined.exe --mb-oauth-login` to authorize, then return to the
 GUI to inspect or test the saved credential.
 
+## Read-only credential validation
+
+Python/Docker also exposes:
+
+```text
+splined --oauth-validation
+```
+
+For MusicBrainz, this command validates the **currently stored** access token
+against `/oauth2/userinfo`, then performs one normal release metadata lookup
+using a curated public release. It is a diagnostic smoke test, not a login or
+refresh path.
+
+`--oauth-validation` does **not** refresh an expired token, exchange a refresh
+token, or rewrite `musicbrainz.json`. A rejected bearer token is reported as
+`FAIL` even when a refresh token is present. Use normal runtime access or
+`--mb-oauth-login` when renewal or reauthorization is required.
+
+The command never prints the access token, refresh token, client secret, or
+other saved credential values. See [API/OAuth credential validation](oauth-validation.md)
+for the shared provider behavior and `PASS` / `FAIL` / `SKIP` semantics.
+
 ## Refresh and non-destructive updates
 
 When an access token is expired or within the runtime safety window, SPLINED
@@ -75,6 +97,10 @@ uses the saved refresh token and client credentials to renew it. A response
 that omits a new refresh token retains the current one. Updates use
 read-modify-write behavior so authentication fields, `options`, and unknown
 future fields are preserved, then the credential file is atomically replaced.
+
+This automatic refresh behavior applies to normal runtime MusicBrainz access;
+it is intentionally not invoked by the read-only `--oauth-validation` smoke
+test.
 
 Credential files receive the filesystem protection described in
 [Credentials and provider setup](credentials-providers.md).
@@ -94,8 +120,8 @@ MusicBrainz participation without deleting credentials.
 
 ## Recovery
 
-- If the access token expires, allow automatic refresh or run the login command
-  again.
+- If the access token expires, allow automatic refresh during normal runtime access or run the login command again.
+- If `--oauth-validation` reports the stored bearer token as rejected, use normal runtime refresh or reauthorize; the validation command itself will not modify credentials.
 - If refresh fails because consent or the refresh token was revoked,
   reauthorize; do not invent token values.
 - If JSON is malformed, close SPLINED, make a private backup, repair only known
@@ -105,6 +131,7 @@ MusicBrainz participation without deleting credentials.
 
 ## Related documentation
 
+- [API/OAuth credential validation](oauth-validation.md)
 - [Credentials and provider setup](credentials-providers.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Source policies and Range Types](source-policies-range-types.md)
