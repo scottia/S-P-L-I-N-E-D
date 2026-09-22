@@ -1,4 +1,4 @@
-name: SPLINED — Publish Existing Release to GHCR
+name: SPLINED Published > GHCR
 
 on:
   workflow_dispatch:
