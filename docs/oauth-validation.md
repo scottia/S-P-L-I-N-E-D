@@ -51,13 +51,90 @@ Each provider ends in one of these states:
 a Fanart.tv credential with a missing or stale `api_version` marker is warned
 about, then tested against the live v3.2 endpoint.
 
+When a configured provider fails, the command prints `Next steps:` immediately
+under that failure. Recovery guidance is provider-specific so a user does not
+need external documentation to determine which command or credential must be
+repaired.
+
 The final summary returns exit code `0` when every configured provider passes, or when no provider credentials are configured. It returns exit code `1` when one or more configured providers fail validation.
+
+## Provider recovery guidance
+
+### Discogs
+
+A rejected or malformed Discogs token tells the user to replace or repair the
+configured `discogs.json` personal access token, shows the credential path, and
+then rerun:
+
+```text
+splined --oauth-validation
+```
+
+Discogs does not require an application OAuth exchange.
+
+### Fanart.tv
+
+A rejected or malformed Fanart.tv credential tells the user to run:
+
+```text
+splined --fanarttv-credentials
+splined --oauth-validation
+```
+
+The API key is required and the client key remains optional.
+
+### MusicBrainz
+
+A rejected or malformed MusicBrainz OAuth credential tells the user to run:
+
+```text
+splined --mb-oauth-login
+splined --oauth-validation
+```
+
+After successful reauthorization and validation, there is an additional
+resolution check for the automatic refresh lifecycle. Once the short-lived
+access token later expires, run a normal SPLINED operation that uses
+MusicBrainz. The normal runtime should refresh the token and advance
+`expires_at_unix`. Then run:
+
+```text
+splined --oauth-validation
+```
+
+The validator should pass again with the refreshed token. If
+`expires_at_unix` does not advance, or validation still fails after normal
+MusicBrainz use, the automatic MusicBrainz OAuth refresh path is not
+functioning correctly and the failure is no longer treated as a simple user
+reauthorization problem.
+
+### Last.fm
+
+A rejected or malformed Last.fm API credential tells the user to run:
+
+```text
+splined --lastfm-credentials
+splined --oauth-validation
+```
+
+If user-account authorization is also required for that user's workflow, the
+recovery text additionally points to:
+
+```text
+splined --lastfm-login
+```
+
+A Last.fm user session is still not required for normal artwork reads.
+
+For transport failures or provider-side HTTP failures, SPLINED first tells the
+user to check network connectivity and provider availability and rerun the
+validator before replacing credentials.
 
 ## Secret handling
 
 The validation command never prints API keys, OAuth bearer tokens, refresh
 tokens, shared secrets, Fanart.tv client keys, or Discogs personal tokens. It
-prints only credential-file status and public provider-result metadata or
-artwork URLs.
+prints only credential-file status, recovery commands, configured file paths,
+and public provider-result metadata or artwork URLs.
 
 The validator does not rewrite credentials and does not refresh or replace saved tokens. It is intended as an explicit smoke test of the credentials currently stored on disk.
