@@ -1,4 +1,8 @@
 /target
+/.security-tools/
+/.venv/
+**/__pycache__/
+*.py[cod]
 
 # Finalized Windows GUI build and local runtime state
 /windows/target/

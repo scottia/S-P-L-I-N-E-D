@@ -21,6 +21,8 @@ services:
     container_name: splined
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     volumes:
       - /path/to/music:/music:rw

@@ -11,10 +11,12 @@ latest available release whenever practical.
 Please do not first disclose a suspected vulnerability in a public issue,
 discussion, pull request, or log attachment.
 
-Use GitHub Private Vulnerability Reporting for this repository when it is
-available. Include the affected version, environment, reproduction steps,
-impact, and any suggested mitigation. Remove credentials, tokens, personal
-paths, and private library data from supporting material.
+Use [GitHub Private Vulnerability Reporting](https://github.com/scottia/S-P-L-I-N-E-D/security/advisories/new)
+for this repository when it is available. Include the affected version,
+environment, reproduction steps, impact, and any suggested mitigation. Remove
+credentials, tokens, personal paths, and private library data from supporting
+material. If a credential may have been exposed, revoke or rotate it before
+sharing a redacted report.
 
 Please allow time for investigation and coordinated remediation before public
 disclosure. If private reporting is unavailable, avoid publishing exploit

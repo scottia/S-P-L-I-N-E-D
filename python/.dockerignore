@@ -3,3 +3,4 @@ __pycache__/
 *.tar
 *.tar.gz
 docker_builds/
+test_*.py

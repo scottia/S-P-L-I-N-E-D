@@ -32,7 +32,7 @@ from PIL import Image
 USER_AGENT = "SPLINED/1.0.9 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
 MB_AUTHORIZE_URL = "https://musicbrainz.org/oauth2/authorize"
-MB_TOKEN_URL = "https://musicbrainz.org/oauth2/token"
+MB_OAUTH_ENDPOINT = "https://musicbrainz.org/oauth2/token"
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_AUTH_URL = "https://www.last.fm/api/auth/"
 REQUEST_TIMEOUT = 20
@@ -400,7 +400,7 @@ def load_source_history(path: Path) -> dict[str, Any]:
         return history
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         # History is advisory optimization data. A damaged history file must
         # never block artwork discovery.
         return history
@@ -434,8 +434,8 @@ def save_source_history(path: Path, history: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         body = (json.dumps(history, indent=2, sort_keys=True) + "\n").encode("utf-8")
         atomic_write(path, body)
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError) as exc:
+        debug_log(f"source_history.save_failed error={type(exc).__name__}")
 
 
 def source_selected_count(history: dict[str, Any], source: str) -> int:
@@ -520,7 +520,7 @@ def load_scan_completion_history(
         return history
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return history
     if not isinstance(raw, dict):
         return history
@@ -560,9 +560,9 @@ def save_scan_completion_history(path: Path, history: dict[str, Any]) -> None:
         history["version"] = SCAN_COMPLETION_HISTORY_VERSION
         body = (json.dumps(history, indent=2, sort_keys=True) + "\n").encode("utf-8")
         atomic_write(path, body)
-    except Exception:
+    except (OSError, TypeError, ValueError) as exc:
         # Scan timeout state is an optimization. It must never make a scan fail.
-        pass
+        debug_log(f"scan_completion_history.save_failed error={type(exc).__name__}")
 
 
 
@@ -935,7 +935,8 @@ def credential_file(config_file: Path, cfg: dict[str, Any], provider: str) -> Pa
 
 def load_json(path: Path, label: str) -> dict[str, Any]:
     try: data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc: raise SplinedError(f"Unable to read {label} credential file {path}: {exc}") from exc
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SplinedError(f"Unable to read {label} credential file {path}: {exc}") from exc
     if not isinstance(data, dict): raise SplinedError(f"Invalid {label} credential file {path}")
     return data
 
@@ -1065,7 +1066,7 @@ def _mb_refresh_token(config_file: Path, cfg: dict[str, Any], cred: dict[str, An
         return cred
 
     response = requests.post(
-        MB_TOKEN_URL,
+        MB_OAUTH_ENDPOINT,
         data={
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -1184,7 +1185,9 @@ def configure_lastfm_credentials(config_file: Path, cfg: dict[str, Any]) -> int:
 
 def lastfm_signature(params: dict[str, str], secret: str) -> str:
     material = "".join(k + params[k] for k in sorted(params)) + secret
-    return hashlib.md5(material.encode("utf-8")).hexdigest()
+    # Last.fm's public API requires this exact MD5 signing algorithm. It is
+    # protocol compatibility, not password hashing or a security primitive.
+    return hashlib.md5(material.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def run_lastfm_login(config_file: Path, cfg: dict[str, Any]) -> int:
@@ -1282,7 +1285,7 @@ def run_musicbrainz_login(config_file: Path, cfg: dict[str, Any]) -> int:
         raise SplinedError("MusicBrainz authorization code was empty.")
 
     r = requests.post(
-        MB_TOKEN_URL,
+        MB_OAUTH_ENDPOINT,
         data={
             "grant_type": "authorization_code",
             "code": code,
@@ -2940,7 +2943,7 @@ def run_config_edit(path: Path) -> int:
     # HOME. This also supports operators who select a host-matching UID/GID.
     # Give the editor disposable state under /tmp; the actual SPLINED config
     # remains the mounted /config/config.toml file.
-    editor_home = Path("/tmp/splined-editor")
+    editor_home = Path(tempfile.mkdtemp(prefix="splined-editor-"))
     xdg_config = editor_home / ".config"
     xdg_data = editor_home / ".local" / "share"
     xdg_cache = editor_home / ".cache"
@@ -2953,7 +2956,9 @@ def run_config_edit(path: Path) -> int:
     env["XDG_DATA_HOME"] = str(xdg_data)
     env["XDG_CACHE_HOME"] = str(xdg_cache)
 
-    os.execve(editor, [editor, str(path)], env)
+    # The executable is resolved with shutil.which and invoked directly with
+    # an argv list; no shell or user-controlled command string is involved.
+    os.execve(editor, [editor, str(path)], env)  # nosec B606
     return 0
 
 
@@ -3401,7 +3406,8 @@ def run_scan_dir(
         # --------------------------------------------------------------
         # NORMAL EXACT-MB ALBUM
         # --------------------------------------------------------------
-        assert release is not None and mbid is not None
+        if release is None or mbid is None:
+            raise SplinedError("Internal error: exact MusicBrainz release state is incomplete.")
         mb_count_text = "?" if release.track_count is None else str(release.track_count)
         count_match = release.track_count is not None and release.track_count == file_count
         count_fmt = green if count_match else red

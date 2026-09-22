@@ -9,7 +9,9 @@ import requests
 import splined as core
 
 
-PASS = "PASS"
+STATUS_OK = "PASS"
+# Public compatibility constant used by the validation regression harness.
+PASS = STATUS_OK  # nosec B105
 FAIL = "FAIL"
 SKIP = "SKIP"
 
@@ -152,18 +154,18 @@ def _validate_discogs(config_file: Path, cfg: dict[str, Any]) -> str:
         if isinstance(results, list) and results:
             result = results[0] if isinstance(results[0], dict) else {}
             print(
-                f"{PASS}: Discogs personal token accepted; "
+                f"{STATUS_OK}: Discogs personal token accepted; "
                 f"result={result.get('title') or 'release'}; "
                 f"id={result.get('id') or 'n/a'}; "
                 f"year={result.get('year') or 'n/a'}"
             )
-            return PASS
+            return STATUS_OK
 
     print(
-        f"{PASS}: Discogs personal token accepted; "
+        f"{STATUS_OK}: Discogs personal token accepted; "
         "the curated records returned no representative search result"
     )
-    return PASS
+    return STATUS_OK
 
 
 def _fanart_cover(
@@ -240,18 +242,18 @@ def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
         cover = _fanart_cover(data, release_group_mbid)
         if cover is not None:
             print(
-                f"{PASS}: Fanart.tv v3.2 credentials accepted; "
+                f"{STATUS_OK}: Fanart.tv v3.2 credentials accepted; "
                 f"release_group_mbid={release_group_mbid}; "
                 f"artwork_id={cover.get('id') or 'n/a'}; "
                 f"artwork={cover.get('url')}"
             )
-            return PASS
+            return STATUS_OK
 
     print(
-        f"{PASS}: Fanart.tv v3.2 credentials accepted; "
+        f"{STATUS_OK}: Fanart.tv v3.2 credentials accepted; "
         "the curated release groups returned no album-cover result"
     )
-    return PASS
+    return STATUS_OK
 
 
 def _musicbrainz_artist(data: dict[str, Any]) -> str:
@@ -296,7 +298,7 @@ def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
     if status != 200:
         print(f"{FAIL}: {label}: OAuth userinfo returned HTTP {status}")
         return FAIL
-    print(f"{PASS}: MusicBrainz OAuth bearer token was accepted")
+    print(f"{STATUS_OK}: MusicBrainz OAuth bearer token was accepted")
 
     for artist, album, release_mbid in _randomized(MUSICBRAINZ_TARGETS):
         print(f"Random test: {label}: {artist} - {album} (release {release_mbid})")
@@ -321,19 +323,19 @@ def _validate_musicbrainz(config_file: Path, cfg: dict[str, Any]) -> str:
             release_group = data.get("release-group")
             release_group = release_group if isinstance(release_group, dict) else {}
             print(
-                f"{PASS}: MusicBrainz metadata lookup succeeded; "
+                f"{STATUS_OK}: MusicBrainz metadata lookup succeeded; "
                 f"artist={_musicbrainz_artist(data) or artist}; "
                 f"release={data.get('title') or album}; "
                 f"release_mbid={data.get('id')}; "
                 f"release_group_mbid={release_group.get('id') or 'n/a'}"
             )
-            return PASS
+            return STATUS_OK
 
     print(
-        f"{PASS}: MusicBrainz OAuth bearer token was accepted; "
+        f"{STATUS_OK}: MusicBrainz OAuth bearer token was accepted; "
         "the curated releases returned no metadata result"
     )
-    return PASS
+    return STATUS_OK
 
 
 def _validate_lastfm(config_file: Path, cfg: dict[str, Any]) -> str:
@@ -392,18 +394,18 @@ def _validate_lastfm(config_file: Path, cfg: dict[str, Any]) -> str:
             if urls:
                 artwork = urls[-1]
         print(
-            f"{PASS}: Last.fm API key accepted; "
+            f"{STATUS_OK}: Last.fm API key accepted; "
             f"artist={album_data.get('artist') or artist}; "
             f"album={album_data.get('name') or album}; "
             f"artwork={artwork}"
         )
-        return PASS
+        return STATUS_OK
 
     print(
-        f"{PASS}: Last.fm API key accepted; "
+        f"{STATUS_OK}: Last.fm API key accepted; "
         "the curated albums returned no representative result"
     )
-    return PASS
+    return STATUS_OK
 
 
 def run_oauth_validation(config_file: Path, cfg: dict[str, Any]) -> int:

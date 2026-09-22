@@ -730,7 +730,7 @@ def load_bypass_history(path: Path) -> dict[str, Any]:
         return empty
     try:
         raw = core.json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeDecodeError, core.json.JSONDecodeError):
         return empty
     if not isinstance(raw, dict) or not isinstance(raw.get("albums"), dict):
         return empty
@@ -1498,7 +1498,8 @@ def run_scan_dir(
             print()
             continue
 
-        assert release is not None and mbid is not None
+        if release is None or mbid is None:
+            raise core.SplinedError("Internal error: exact MusicBrainz release state is incomplete.")
         mb_count_text = "?" if release.track_count is None else str(release.track_count)
         count_match = release.track_count is not None and release.track_count == file_count
         count_fmt = core.green if count_match else core.red
