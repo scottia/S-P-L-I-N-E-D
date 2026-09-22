@@ -2,6 +2,31 @@ use crate::candidate::StaticFormat;
 use image::{ImageFormat, ImageReader};
 use std::path::Path;
 
+pub const MAX_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+
+fn validate_dimensions(path: &Path, width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "Invalid image dimensions {}: {}x{}",
+            path.display(),
+            width,
+            height
+        ));
+    }
+
+    if u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS {
+        return Err(format!(
+            "Image {} exceeds the decoded-image limit: {}x{} (maximum {} pixels)",
+            path.display(),
+            width,
+            height,
+            MAX_IMAGE_PIXELS
+        ));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InspectedImage {
     pub width: u32,
@@ -37,14 +62,7 @@ pub fn inspect_image(path: &Path) -> Result<InspectedImage, String> {
         )
     })?;
 
-    if width == 0 || height == 0 {
-        return Err(format!(
-            "Invalid image dimensions {}: {}x{}",
-            path.display(),
-            width,
-            height
-        ));
-    }
+    validate_dimensions(path, width, height)?;
 
     Ok(InspectedImage {
         width,
@@ -144,5 +162,12 @@ mod tests {
         let path = temp_path("jpg");
         let result = inspect_image(&path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn oversized_decoded_dimensions_are_rejected() {
+        let path = Path::new("oversized.jpg");
+        let result = validate_dimensions(path, 8192, 8193);
+        assert!(result.unwrap_err().contains("decoded-image limit"));
     }
 }

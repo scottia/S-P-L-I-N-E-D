@@ -38,6 +38,7 @@ LASTFM_AUTH_URL = "https://www.last.fm/api/auth/"
 REQUEST_TIMEOUT = 20
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+MAX_IMAGE_PIXELS = 64 * 1024 * 1024
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
 SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
@@ -2225,6 +2226,16 @@ def read_bounded_artwork_response(response: requests.Response) -> bytes:
     return b"".join(chunks)
 
 
+def validate_image_dimensions(width: int, height: int) -> None:
+    if width <= 0 or height <= 0:
+        raise SplinedError(f"artwork has invalid dimensions: {width}x{height}")
+    if width > MAX_IMAGE_PIXELS // height:
+        raise SplinedError(
+            "artwork exceeds the decoded-image limit "
+            f"({width}x{height}; maximum {MAX_IMAGE_PIXELS} pixels)"
+        )
+
+
 
 def download_candidates(
     http: Http,
@@ -2260,6 +2271,7 @@ def download_candidates(
             with Image.open(io.BytesIO(artwork)) as im:
                 fmt = image_format(im)
                 width, height = im.size
+                validate_image_dimensions(width, height)
                 im.verify()
             digest = hashlib.sha256((ref.source + "\0" + ref.url).encode()).hexdigest()[:24]
             path = cache / f"splined-candidate-{digest}.{cache_extension_from_format(fmt)}"
@@ -2666,6 +2678,7 @@ def prepare_final(
         return c.path.read_bytes(), info
 
     with Image.open(c.path) as im:
+        validate_image_dimensions(im.width, im.height)
         im.load()
 
         if projected["squared"] and projected["square_mode"] == "crop":
