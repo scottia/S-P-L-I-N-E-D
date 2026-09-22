@@ -125,6 +125,17 @@ fn windows_identity_and_release_domains_stay_separate() {
     assert!(!workflow.contains("cargo set-version --manifest-path windows/Cargo.toml"));
     assert!(workflow.contains("ref: ${{ needs.prepare-release.outputs.commit }}"));
     assert!(workflow.contains("packages: write"));
+
+    let ghcr_job = workflow
+        .split("  publish-ghcr:")
+        .nth(1)
+        .expect("publish-ghcr job")
+        .split("  release-summary:")
+        .next()
+        .expect("publish-ghcr job body");
+    assert!(ghcr_job.contains("always() &&"));
+    assert!(ghcr_job.contains("needs.publish-release.result == 'success'"));
+
     for platform in ["Windows", "Ubuntu", "macOS", "All"] {
         assert!(workflow.contains(&format!("- \"{platform}\"")));
     }

@@ -830,7 +830,12 @@ jobs:
     needs:
       - prepare-release
       - publish-release
-    if: ${{ needs.prepare-release.result == 'success' && needs.publish-release.result == 'success' }}
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        needs.publish-release.result == 'success'
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
