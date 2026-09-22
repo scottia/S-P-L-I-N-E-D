@@ -49,13 +49,14 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout main with full history
+      - name: Checkout reviewed main source with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
           fetch-depth: 0
 
-      - name: Require clean release source
+      - name: Require equivalent reviewed source trees
+        id: source
         shell: bash
         run: |
           set -euo pipefail
@@ -63,15 +64,21 @@ jobs:
             "+refs/heads/main:refs/remotes/origin/main" \
             "+refs/heads/dev:refs/remotes/origin/dev" \
             --tags
+
           MAIN_SHA=$(git rev-parse origin/main)
           DEV_SHA=$(git rev-parse origin/dev)
-          if [ "$MAIN_SHA" != "$DEV_SHA" ]; then
-            echo "ERROR: dev and main must be synchronized before creating a release."
-            echo "main: $MAIN_SHA"
-            echo "dev:  $DEV_SHA"
+          MAIN_TREE=$(git rev-parse "origin/main^{tree}")
+          DEV_TREE=$(git rev-parse "origin/dev^{tree}")
+
+          if [ "$MAIN_TREE" != "$DEV_TREE" ]; then
+            echo "ERROR: dev and main contain different source trees."
+            echo "Merge/reconcile through the normal pull-request process before releasing."
+            echo "main: $MAIN_SHA ($MAIN_TREE)"
+            echo "dev:  $DEV_SHA ($DEV_TREE)"
             exit 1
           fi
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" || {
+
+          test "$(git rev-parse HEAD)" = "$MAIN_SHA" || {
             echo "ERROR: Checked-out main is not current with origin/main."
             exit 1
           }
@@ -80,7 +87,18 @@ jobs:
             git status --short
             exit 1
           }
-          echo "Release baseline: $MAIN_SHA (dev == main)"
+
+          echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "dev_sha=$DEV_SHA" >> "$GITHUB_OUTPUT"
+          echo "source_tree=$MAIN_TREE" >> "$GITHUB_OUTPUT"
+
+          echo "Release source verified:"
+          echo "main commit: $MAIN_SHA"
+          echo "dev commit:  $DEV_SHA"
+          echo "shared tree: $MAIN_TREE"
+          if [ "$MAIN_SHA" != "$DEV_SHA" ]; then
+            echo "Commit IDs differ because reviewed squash/rebase history is allowed; source trees are identical."
+          fi
 
       - name: Resolve next patch version
         id: version
@@ -128,7 +146,7 @@ jobs:
 
           if not (current == lock_version == python_version):
               raise SystemExit(
-                  "Current release metadata is not synchronized: "
+                  "Current source metadata is not synchronized: "
                   f"Cargo.toml={current}, Cargo.lock={lock_version}, Python={python_version}"
               )
           if user_agent_match.group(1) != expected_user_agent:
@@ -148,13 +166,13 @@ jobs:
           current_tuple = tuple(map(int, semver.groups()))
           if parsed_tags:
               highest_tuple, highest_tag = max(parsed_tags, key=lambda item: item[0])
-              if highest_tuple != current_tuple:
-                  raise SystemExit(
-                      "Current source version must match the highest existing numeric release tag "
-                      f"before calculating the next patch: source={current}, highest_tag={highest_tag}"
-                  )
+              baseline_tuple = max(current_tuple, highest_tuple)
+              print(f"Highest existing numeric tag: {highest_tag}")
+          else:
+              baseline_tuple = current_tuple
+              print("No existing numeric release tag found; source version is the release baseline.")
 
-          major, minor, patch = current_tuple
+          major, minor, patch = baseline_tuple
           next_version = f"{major}.{minor}.{patch + 1}"
 
           for candidate in (next_version, f"v{next_version}"):
@@ -165,7 +183,7 @@ jobs:
               output.write(f"current={current}\n")
               output.write(f"next={next_version}\n")
 
-          print(f"Current release version: {current}")
+          print(f"Reviewed source version: {current}")
           print(f"Next patch version:      {next_version}")
           PY
 
@@ -180,7 +198,7 @@ jobs:
             --no-self-update
           rustup default stable
 
-      - name: Provision release metadata
+      - name: Provision tag-only release metadata
         shell: bash
         env:
           CURRENT_VERSION: ${{ steps.version.outputs.current }}
@@ -248,7 +266,7 @@ jobs:
           PY
 
           # Cargo owns Cargo.lock. This intentionally runs once without
-          # --locked so Cargo can synchronize the root SPLINED package version.
+          # --locked so Cargo can synchronize only the SPLINED root package version.
           cargo check
 
       - name: Verify Cargo.lock changed only for SPLINED root version
@@ -426,11 +444,13 @@ jobs:
             exit 1
           fi
 
-      - name: Commit, tag, and push release metadata
+      - name: Commit and push tag-only release metadata
         id: release
         shell: bash
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.next }}
+          BASE_MAIN_SHA: ${{ steps.source.outputs.main_sha }}
+          BASE_DEV_SHA: ${{ steps.source.outputs.dev_sha }}
         run: |
           set -euo pipefail
 
@@ -441,19 +461,37 @@ jobs:
           git commit -m "release: prepare ${RELEASE_VERSION}"
 
           RELEASE_COMMIT=$(git rev-parse HEAD)
+          test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA" || {
+            echo "ERROR: Release metadata commit is not based directly on the reviewed main tip."
+            exit 1
+          }
+
+          # Refuse to publish if either reviewed branch moved while validation ran.
+          git fetch --force origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/dev:refs/remotes/origin/dev"
+          test "$(git rev-parse origin/main)" = "$BASE_MAIN_SHA" || {
+            echo "ERROR: main changed while the release was being prepared; retry the workflow."
+            exit 1
+          }
+          test "$(git rev-parse origin/dev)" = "$BASE_DEV_SHA" || {
+            echo "ERROR: dev changed while the release was being prepared; retry the workflow."
+            exit 1
+          }
+
           git tag -a "$RELEASE_VERSION" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
 
-          # Keep both reviewed branches and the numeric release tag on the
-          # exact same commit. Concurrent branch changes reject the whole push.
-          git push --atomic origin \
-            HEAD:refs/heads/main \
-            HEAD:refs/heads/dev \
-            "refs/tags/${RELEASE_VERSION}"
+          # Security policy owns main/dev. The release workflow publishes only
+          # the immutable numeric tag; it never pushes either protected branch.
+          git push origin \
+            "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
 
           echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
           echo "Release version: $RELEASE_VERSION"
           echo "Release commit:  $RELEASE_COMMIT"
+          echo "main remains:    $BASE_MAIN_SHA"
+          echo "dev remains:     $BASE_DEV_SHA"
 
   build-windows:
     name: Build Release — Windows
@@ -781,9 +819,10 @@ jobs:
             echo "## SPLINED GitHub Release published"
             echo
             echo "- Version: \`$RELEASE_VERSION\`"
-            echo "- Commit: \`$RELEASE_COMMIT\`"
+            echo "- Release commit: \`$RELEASE_COMMIT\`"
             echo "- Platform selection: \`${{ inputs.platform }}\`"
             echo "- Tag: \`$RELEASE_VERSION\`"
+            echo "- Protected branches: unchanged"
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish-ghcr:
@@ -912,10 +951,9 @@ jobs:
           {
             echo "## SPLINED release complete"
             echo
-            echo "- Repository version: \`$RELEASE_VERSION\`"
-            echo "- Release commit: \`$RELEASE_COMMIT\`"
-            echo "- dev SHA: \`$RELEASE_COMMIT\`"
-            echo "- main SHA: \`$RELEASE_COMMIT\`"
+            echo "- Release version: \`$RELEASE_VERSION\`"
+            echo "- Tag-only release commit: \`$RELEASE_COMMIT\`"
+            echo "- Protected branches: unchanged; source equivalence was verified before release"
             echo "- Git tag: \`$RELEASE_VERSION\`"
             echo "- Selected platform: \`${{ inputs.platform }}\`"
             echo "- GitHub Release: published"
