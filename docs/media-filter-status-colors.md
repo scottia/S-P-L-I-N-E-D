@@ -1,7 +1,6 @@
 # Select Media and Status Colors
 
-This page documents the Windows GUI **Select Media** control, live
-Artist/Album filtering, status filters, and tree colors.
+This page documents the Windows GUI **Select Media** control, live Artist/Album filtering, status filters, and tree colors.
 
 > **Windows target:** v3.0.0 Stable with Config v5.
 
@@ -9,9 +8,7 @@ Artist/Album filtering, status filters, and tree colors.
 
 ## Select Media purpose
 
-**Select Media** is the single collapsible control beneath Media Library
-Selection. It changes the visible in-memory tree and provides selection and
-filtered-scan shortcuts; it is not a separate scan engine.
+**Select Media** is the single collapsible control beneath Media Library Selection. It changes the visible in-memory tree and provides selection and filtered-scan shortcuts; it is not a separate scan engine.
 
 The filter should operate against the in-memory library model and should not rescan the filesystem on every keystroke.
 
@@ -42,7 +39,7 @@ Text matching is case-insensitive.
 Examples:
 
 ```text
-Artist:  maniacs
+Artist: maniacs
 ```
 
 can match:
@@ -69,8 +66,6 @@ Artist and Album filters combine with each other and with status filters.
 
 # Status filters
 
-The Windows GUI supports status-based filtering for the authoritative tree states.
-
 Current status concepts:
 
 | Filter | Color | Meaning |
@@ -87,8 +82,6 @@ The same color may have different meaning depending on row type. Purple is the p
 ---
 
 # Album colors
-
-Album rows use:
 
 | Color | Album meaning |
 | --- | --- |
@@ -132,24 +125,18 @@ Blue therefore has priority when an artist contains one or more Red albums.
 
 # Purple is context-sensitive
 
-Purple means:
-
 ```text
 Artist row -> partial aggregate state
 Album row  -> timeout-active state
 ```
 
-These are separate execution meanings.
-
-The GUI should use row context and tooltips/status text to make the distinction clear.
+These are separate execution meanings. UI row context/status text should make the distinction clear.
 
 ---
 
 # Filtering does not alter selection authority
 
 If a checked album becomes hidden because a text/status filter changes, the application should preserve the underlying state rather than silently rewriting history or eligibility.
-
-The GUI may choose to preserve or clear a transient checkbox selection according to its explicit interaction design, but it must not confuse visibility with persistent execution state.
 
 In particular:
 
@@ -186,8 +173,7 @@ The Select Mode group contains mutually exclusive selection actions:
 - **Select [NONE]** clears transient selection;
 - **Select [FILTERED]** selects albums in the current visible filter result.
 
-The selected mode displays its checked state. Selection actions respect
-history, bypass, and timeout authority and never erase persistent records.
+Selection actions respect history, bypass, and timeout authority and never erase persistent records.
 
 ---
 
@@ -214,8 +200,6 @@ Orange albums may be deliberately reselected for another processing pass.
 
 Manual selection does not mean the old completion history must be erased first.
 
-The user is explicitly asking SPLINED to process the album again.
-
 Likewise, a temporary override of a Red album should not silently remove its persistent bypass record.
 
 ---
@@ -227,34 +211,13 @@ The Scan Mode group contains mutually exclusive:
 - **Filtered Scan [READ]**;
 - **Filtered Scan [WRITE]**.
 
-These are operational shortcuts for the current filtered selection, not
-replacements for the persistent album bypass represented by Red.
-
-Do not confuse:
-
-```text
-Scan Mode control
-```
-
-with:
-
-```text
-Persistent saved album bypass
-```
+These are operational shortcuts for the current filtered selection, not replacements for persistent album bypass.
 
 # Auto Mode
 
 **AUTO LAUNCH** starts the existing launch workflow for the eligible selection.
 
-It must still respect:
-
-- history;
-- persistent bypass;
-- timeout authority;
-- source policy;
-- Read/Write mode.
-
-Auto Mode should not make a Red or Purple album eligible merely because automation is enabled.
+It must still respect history, persistent bypass, timeout authority, source policy, and Read/Write mode.
 
 ---
 
@@ -262,12 +225,7 @@ Auto Mode should not make a Red or Purple album eligible merely because automati
 
 Library refresh/reload should recalculate colors from authoritative state.
 
-It should not:
-
-- preserve a stale color after its timeout expires;
-- turn a bypassed album White because it was temporarily hidden;
-- derive colors solely from previous GUI paint state;
-- rebuild unrelated theme state just because the library model changed.
+It should not preserve stale colors, derive colors solely from previous paint state, or rebuild unrelated theme state just because the library model changed.
 
 The tree is a presentation of current authority.
 
@@ -277,9 +235,7 @@ The tree is a presentation of current authority.
 
 If retained history is disabled, expired, missing, or unreadable, SPLINED cannot truthfully show processed/aggregate colors that depend on that history.
 
-The GUI should warn that standard folder presentation is being used or that status coloring is unavailable/reduced.
-
-It should not create a hidden GUI-only history database just to keep Orange/Green/Purple aggregate colors visible.
+The UI should warn that status coloring is unavailable/reduced rather than create a hidden UI-only history database.
 
 ---
 
@@ -304,15 +260,34 @@ each keystroke
 -> reload entire application shell
 ```
 
-Filtering should not cause unrelated title bar/theme/log/candidate panels to reconstruct.
+Filtering should not cause unrelated title/theme/log/candidate panels to reconstruct.
+
+---
+
+# Python Ratatui parity
+
+The Python Ratatui library-selection workspace should follow the same status/filter/selection authority described above rather than invent a separate TUI model.
+
+Required parity direction:
+
+- live Artist and Album filter boxes;
+- filtering begins as text is entered;
+- filtering operates against the loaded in-memory model;
+- the same White/Orange/Red/Purple/Green/Blue meanings and artist precedence;
+- artist selection cascades only to eligible child albums;
+- filtered READ/WRITE and selection shortcuts use existing SPLINED execution policy;
+- status filtering never rewrites history/bypass/timeout state;
+- mouse interaction may complement keyboard interaction for checkboxes, rows, filter focus, and scrolling.
+
+OLED and CHALK may render these states with different visual intensity, but state meaning and precedence remain unchanged.
+
+The TUI should also expose the practical source-policy configuration needed to reduce unwanted candidate clutter before expensive download/AI review, using Config v5 source-policy authority rather than presentation-only filtering.
 
 ---
 
 # Tooltips and status explanations
 
-Tooltips should explain state without requiring users to memorize colors.
-
-Useful examples:
+Useful explanations include:
 
 - Orange album: previously processed; manually selectable for reprocessing.
 - Red album: persistent bypass; explicit override required.
@@ -327,14 +302,7 @@ Color must not be the only source of meaning.
 
 # Accessibility
 
-Status should be communicated through more than color where practical:
-
-- text/tooltips;
-- icons or row context;
-- checkbox/selection behavior;
-- status descriptions.
-
-This is particularly important for Red/Orange/Green distinctions and the dual use of Purple.
+Status should be communicated through more than color where practical: text/tooltips, icons or row context, checkbox/selection behavior, and status descriptions.
 
 ---
 
@@ -342,12 +310,7 @@ This is particularly important for Red/Orange/Green distinctions and the dual us
 
 ## Artist filter returns nothing
 
-Check:
-
-- spelling/substring;
-- other active status filters;
-- Album filter is not excluding the same rows;
-- library model has finished loading.
+Check spelling/substring, other active status filters, Album filtering, and whether the library model has finished loading.
 
 ## Album is Orange but filter says Unprocessed only
 
@@ -355,7 +318,7 @@ This is expected: Orange is processed/history state and is excluded by an Unproc
 
 ## Artist is Blue but most albums are Orange/White
 
-At least one child album is Red/bypassed. Expand the artist and locate the bypassed album.
+At least one child album is Red/bypassed.
 
 ## Purple row seems ambiguous
 
@@ -383,4 +346,5 @@ Select Media consumes that authority; it does not replace it.
 - [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Source policies and Range Types](source-policies-range-types.md)
+- [Python Ratatui TUI](ratatui-tui.md)
 - [Documentation home](README.md)
