@@ -8,15 +8,11 @@ These versioned repository pages are the canonical public documentation for
 S:P:L:I:N:E:D has separate supported runtimes:
 
 - **Windows GUI:** v3.0.0 Stable, using Config v5.
-- **Windows source:** [`../windows/`](../windows/README.md), containing the
-  finalized GUI and its Config v5 processing core.
-- **Repository-root native command line:** Config v5 implementation used by
-  Linux and macOS; its application version follows repository releases.
-- **Python/Docker:** Config v5 runtime whose application version follows
-  repository releases.
+- **Windows source:** [`../windows/`](../windows/README.md), containing the finalized GUI and its Config v5 processing core.
+- **Repository-root native command line:** Config v5 implementation used by Linux and macOS; its application version follows repository releases.
+- **Python/Docker:** Config v5 runtime whose application version follows repository releases.
 
-Application release versions and configuration schema versions are independent.
-Do not infer one from another.
+Application release versions and configuration schema versions are independent. Do not infer one from another.
 
 ## Start here
 
@@ -31,21 +27,50 @@ Do not infer one from another.
 - [Python Ratatui TUI](ratatui-tui.md)
 - [Docker installation](../docker/README.md)
 
-The Windows GUI opens this page from both **Help > Help** and the **Help**
-button in **About S:P:L:I:N:E:D**.
+## Python Ratatui display model
+
+Interactive Python/Docker scans use the Ratatui TUI when stdin/stdout are interactive terminals.
+
+```text
+TUI
+    = operational / decision interface
+
+--no-tui
+    = advanced verbose / diagnostic interface
+```
+
+The TUI uses exactly two first-class themes, `OLED` and `CHALK`, and shares the same authoritative source, history, bypass, timeout, and status-color semantics as the Windows implementation.
+
+The TUI design includes live Artist/Album filtering over the in-memory library model, source-grouped candidate presentation, live authority/provider/download activity, mouse-capable interaction where the binding supports it, and actionable URL/provenance presentation instead of provider IDs in primary tables.
+
+See [Python Ratatui TUI](ratatui-tui.md).
+
+## AISPLINE Config v5 boundary
+
+Config v5 keeps AISPLINE policy under the canonical `[aisplined]` section; no Config v5 schema-version bump is required merely because AISPLINE-specific policy fields are added there.
+
+Baseline direction:
+
+```toml
+[aisplined]
+enabled = false
+endpoint = ""
+minimum_short_side = 600
+allow_below_minimum_override = false
+```
+
+The 600 px value is a default user floor, not an absolute hard lock. Explicit below-floor experimentation may be permitted by policy. When AISPLINE is disabled, no AI review, columns, controls, activity widget, or backend work is shown/performed.
+
+See [Config v5 reference](config-v5-reference.md) and [Source policies and Range Types](source-policies-range-types.md).
 
 ## Configuration examples
 
-- [`../config.example.toml`](../config.example.toml) is the native/Windows
-  Config v5 example.
-- [`../docker/config.example.toml`](../docker/config.example.toml) is the
-  Python/Docker Config v5 example with container paths.
+- [`../config.example.toml`](../config.example.toml) is the native/Windows Config v5 example.
+- [`../docker/config.example.toml`](../docker/config.example.toml) is the Python/Docker Config v5 example with container paths.
 
-Both examples use the central credential-directory architecture. Provider
-secrets and normal provider credential filenames do not belong in
-`config.toml`.
+Both examples use the central credential-directory architecture. Provider secrets and normal provider credential filenames do not belong in `config.toml`.
 
-## Windows status colors
+## Authoritative status colors
 
 | Color | Meaning |
 | --- | --- |
@@ -56,34 +81,24 @@ secrets and normal provider credential filenames do not belong in
 | Green | Artist complete |
 | Blue | Artist contains at least one bypassed album |
 
-The tree derives these states from the same album folder, history, bypass, and
-timeout authority used by execution. It does not maintain a separate persistent
-GUI status database.
+The tree/TUI derives these states from the same album folder, history, bypass, and timeout authority used by execution. It does not maintain a separate persistent UI status database.
 
 ## Python command equivalence
 
-A dedicated cross-runtime command-equivalence page is not yet published.
 Current Python command behavior remains authoritative in:
 
 - `python/splined.py --help`
 - `python/splined.py`
 - `python/splined_scan.py`
 
-Interactive Python operational scans can additionally use the
-[Ratatui TUI](ratatui-tui.md). Redirected and scripted runs retain the plain
-CLI.
-
-The Windows Settings tools retain Config v5 validation and direct access to the
-configured config and log folders without embedding a duplicate Python-help
-window.
+Interactive Python operational scans can additionally use the Ratatui TUI. Redirected/scripted runs retain the plain CLI.
 
 ## Security and safe operation
 
 - Never commit credential JSON, API keys, OAuth tokens, or secrets.
 - Use Read mode to evaluate without changing artwork in album folders.
 - Test Write mode against a copy, backup, snapshot, or staging library first.
-- Back up `config/`, `credentials/`, and the configured log/history location.
-  `_cache/` is disposable.
+- Back up `config/`, `credentials/`, and the configured log/history location. `_cache/` is disposable.
 
 ## Project links
 
