@@ -729,7 +729,7 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
             area,
         )
         return
-    if state.workflow == "startup" and time.monotonic() - state.started_at < STARTUP_SECONDS:
+    if time.monotonic() - state.started_at < STARTUP_SECONDS:
         _render_startup(frame, state, theme)
         return
     if state.workflow == "startup":
@@ -775,6 +775,11 @@ def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> None:
 
 def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     code = str(event.code)
+    if bool(getattr(event, "ctrl", False)) and code.lower() == "c":
+        state.exit_code = 130
+        state.exit_requested = True
+        adapter.cancel_wait()
+        return
     if state.dialog_open:
         decision = confirm_key(code)
         if decision is True:
@@ -892,6 +897,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
         signal.signal(signal.SIGTERM, on_sigterm)
 
     try:
+        terminal: Terminal | None = None
         try:
             terminal = Terminal()
             with terminal:
@@ -904,6 +910,11 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         handle_key(state, adapter, key)
         except BaseException as exc:
             if thread.ident is None:
+                if terminal is not None:
+                    try:
+                        terminal.restore()
+                    except Exception:
+                        pass
                 raise TuiInitializationError(
                     f"Ratatui terminal initialization failed: {exc}"
                 ) from exc
