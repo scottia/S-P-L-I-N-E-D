@@ -84,6 +84,11 @@ Config v5 with Docker-specific container paths.
 
 See [Docker installation](../docker/README.md) for mounts and commands.
 
+Interactive Python/Docker operational scans use the Ratatui TUI when stdin and
+stdout are terminals. Scripted or redirected execution remains plain. See
+[Python Ratatui TUI](ratatui-tui.md) for OLED/CHALK theme selection, keyboard
+controls, and terminal requirements.
+
 ## Persistent and disposable data
 
 Back up:

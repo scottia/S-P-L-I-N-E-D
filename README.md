@@ -28,6 +28,7 @@ You can use it in **Read** mode to review what it would choose, or in **Write** 
 - 🧭 **Persistent scan history and bypass state** are stored separately from disposable cache data
 - ⚙️ **Config driven** — library, scan, cache, credential, and output locations remain configurable
 - 🐳 **Docker image** provides a Linux/server deployment path
+- 🐀 **Ratatui TUI** provides OLED and CHALK interactive Python scan views while preserving plain automation
 - 📦 **Portable Windows, Linux, and macOS releases** keep application-owned files together
 
 ---
@@ -82,7 +83,9 @@ S:P:L:I:N:E:D keeps its supported implementations separate:
   remain the native command-line implementation used by Linux and macOS. It
   uses Config v5 and the repository release version.
 - [`python/`](python/) is the supported Python/Docker Config v5 implementation
-  and shares the repository release version.
+  and shares the repository release version. Its interactive operational scan
+  UI is rendered by Ratatui through `pyratatui`; non-TTY execution remains the
+  plain CLI.
 
 The Windows application version, repository release version, and configuration
 schema versions are independent.
@@ -185,6 +188,10 @@ Scan the configured directory:
 ```text
 splined --scan-dir
 ```
+
+Interactive Python scans select the OLED Ratatui theme by default. Use
+`--tui-theme CHALK`, or use `--no-tui` to keep plain output in a terminal. See
+the [Python Ratatui TUI guide](docs/ratatui-tui.md).
 
 A bare native invocation scans the caller's current directory recursively.
 

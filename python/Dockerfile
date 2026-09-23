@@ -19,14 +19,17 @@ RUN pip install --disable-pip-version-check --no-cache-dir -r /app/requirements.
 COPY splined.py /app/splined.py
 COPY splined_scan.py /app/splined_scan.py
 COPY splined_oauth_validation.py /app/splined_oauth_validation.py
+COPY tui /app/tui
 RUN python3 -m py_compile \
         /app/splined.py \
         /app/splined_scan.py \
         /app/splined_oauth_validation.py \
+    && python3 -m compileall -q /app/tui \
     && chmod 0555 \
         /app/splined.py \
         /app/splined_scan.py \
         /app/splined_oauth_validation.py \
+    && find /app/tui -type f -name '*.py' -exec chmod 0555 {} + \
     && ln -s /app/splined_scan.py /usr/local/bin/splined
 
 # Persistent runtime data; history lives under /_logs/_history.

@@ -181,10 +181,21 @@ History supplies processed, timeout, chosen-source, and bypass state. Shortening
 or disabling it can remove the authority needed for status colors. `_cache/`
 is disposable and is not the history authority.
 
-## `[splineai]`
+## `[aisplined]`
 
-Config v5 retains `enabled = false` and an empty `endpoint` as an internal
-placeholder. Windows v3.0.0 Stable does not enable AI image processing.
+`[aisplined]` is the canonical documentary boundary for the separate
+A:I:S:P:L:I:N:E:D companion product:
+
+```toml
+[aisplined]
+enabled = false
+endpoint = ""
+```
+
+SPLINED does not make endpoint calls or enable AI image processing. The Python
+loader accepts legacy `[splineai]` only as a compatibility alias when
+`[aisplined]` is absent. If both tables are present and their `enabled` or
+`endpoint` values disagree, validation fails rather than merging or guessing.
 
 ## GUI-only `ui.toml`
 

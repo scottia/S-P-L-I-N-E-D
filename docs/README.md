@@ -28,6 +28,7 @@ Do not infer one from another.
 - [Source policies and Range Types](source-policies-range-types.md)
 - [Select Media and status colors](media-filter-status-colors.md)
 - [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
+- [Python Ratatui TUI](ratatui-tui.md)
 - [Docker installation](../docker/README.md)
 
 The Windows GUI opens this page from both **Help > Help** and the **Help**
@@ -67,6 +68,10 @@ Current Python command behavior remains authoritative in:
 - `python/splined.py --help`
 - `python/splined.py`
 - `python/splined_scan.py`
+
+Interactive Python operational scans can additionally use the
+[Ratatui TUI](ratatui-tui.md). Redirected and scripted runs retain the plain
+CLI.
 
 The Windows Settings tools retain Config v5 validation and direct access to the
 configured config and log folders without embedding a duplicate Python-help

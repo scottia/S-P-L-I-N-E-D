@@ -110,6 +110,17 @@ Scan the configured library:
 docker compose exec splined splined --scan-dir
 ```
 
+When `docker compose exec` provides interactive stdin and stdout, operational
+scans open the Python [Ratatui TUI](../docs/ratatui-tui.md). Use `--no-tui` for
+the plain terminal stream. Automation and `docker compose exec -T` remain plain
+automatically.
+
+Select the alternate CHALK theme with:
+
+```bash
+docker compose exec splined splined --tui-theme CHALK --scan-dir
+```
+
 Scan one artist or directory:
 
 ```bash
@@ -141,3 +152,4 @@ You do not need a separate history mount. Advanced deployments may split any doc
 - [`../config.example.toml`](../config.example.toml) — native/Windows Config v5 template
 - [`../python/Dockerfile`](../python/Dockerfile) — container image definition
 - [`../python/requirements.txt`](../python/requirements.txt) — Python runtime dependencies
+- [`../docs/ratatui-tui.md`](../docs/ratatui-tui.md) — TUI activation, themes, and keys
