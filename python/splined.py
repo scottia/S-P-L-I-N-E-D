@@ -6,6 +6,7 @@ import base64
 import getpass
 import fnmatch
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -28,6 +29,9 @@ from mutagen.flac import FLAC
 from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from PIL import Image
+
+from tui.status import emit as emit_ui
+from tui.status import read_input
 
 USER_AGENT = "SPLINED/1.0.9 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
@@ -676,6 +680,10 @@ def record_scan_completion(
     sources: list[str],
     outcome: str,
 ) -> None:
+    # Presentation receives the same authoritative completion outcome even in
+    # read mode, where persistent completion history intentionally remains
+    # untouched.
+    emit_ui("history", album=str(album.path), outcome=str(outcome))
     if not bool(section(cfg, "history").get("enabled", True)):
         return
     if str(cfg.get("mode", "read")).strip().lower() == "read":
@@ -904,6 +912,7 @@ def debug_log(message: str) -> None:
     if not _DEBUG_ENABLED or _DEBUG_PATH is None:
         return
     safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
+    emit_ui("log", level="DEBUG", message=safe)
     try:
         with _DEBUG_PATH.open("a", encoding="utf-8") as handle:
             handle.write(f"{time.strftime('%H:%M:%S')} {safe}\n")
@@ -2617,7 +2626,11 @@ def musicbrainz_picker(
         )
 
     while True:
-        answer = input("MusicBrainz choice [#] or [b] back: ").strip().lower()
+        answer = read_input(
+            "MusicBrainz choice [#] or [b] back: ",
+            kind="musicbrainz",
+            options=results,
+        ).strip().lower()
         if answer in {"b", ""}:
             return None
         if answer.isdigit():
@@ -2880,6 +2893,33 @@ def render_candidate_table(
     suggested: Candidate | None = None,
     manual_fallback: bool = False,
 ) -> None:
+    candidate_items: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates, 1):
+        target = target_format_for_candidate(candidate, fmt_order)
+        projected = project_candidate(candidate, cfg, target)
+        candidate_items.append(
+            {
+                "number": index,
+                "source": provider_label(candidate.source),
+                "width": candidate.width,
+                "height": candidate.height,
+                "format": candidate.format,
+                "range_type": projected["range_type"],
+                "distance": projected["distance"],
+                "square": projected["square"],
+                "acceptable": projected["acceptable"],
+                "approved": candidate.ref.approved,
+                "id": str(candidate.ref.id),
+                "selected": candidate is selected,
+                "suggested": candidate is suggested,
+            }
+        )
+    emit_ui(
+        "candidates",
+        items=candidate_items,
+        manual_fallback=manual_fallback,
+    )
+
     columns = [
         ("[#]", 5, "right"),
         ("Source", 8, "left"),
@@ -3213,6 +3253,15 @@ def run_scan_dir(
     normal_records = [record for record in records if not record.get("fallback_reason")]
     ordered_records = fallback_records + normal_records
 
+    emit_ui(
+        "scan_start",
+        root=str(root),
+        total=len(ordered_records),
+        discovered=len(discovered_albums),
+        postponed=len(postponed_albums),
+        mode=mode,
+    )
+
     # ------------------------------------------------------------------
     # Run header.
     # ------------------------------------------------------------------
@@ -3295,6 +3344,17 @@ def run_scan_dir(
         mbid = record.get("mbid")
         release: Release | None = record.get("release")
         fallback_reason = record.get("fallback_reason")
+
+        emit_ui(
+            "album",
+            index=run_index,
+            total=len(ordered_records),
+            path=str(album.path),
+            artist=tag_artist,
+            album=tag_album,
+            authority="Fallback" if fallback_reason else "ExactAlbumId",
+            fallback_reason=str(fallback_reason or ""),
+        )
 
         print(bold(cyan(f"[{run_index}/{len(ordered_records)}] {album_path_text(album.path)}")))
 
@@ -3446,7 +3506,10 @@ def run_scan_dir(
                     f"{cyan('[m]')} MusicBrainz search/retry   "
                     f"{cyan('[b]')} bypass"
                 )
-                answer = input("  Choice: ").strip().lower()
+                answer = read_input(
+                    "  Choice: ",
+                    kind="fallback-picker",
+                ).strip().lower()
 
                 if answer == "b":
                     summary.unresolved += 1
@@ -3491,8 +3554,14 @@ def run_scan_dir(
                     continue
 
                 if answer == "f":
-                    entered_artist = input(f"  Artist [{search_artist}]: ").strip()
-                    entered_album = input(f"  Album  [{search_album}]: ").strip()
+                    entered_artist = read_input(
+                        f"  Artist [{search_artist}]: ",
+                        kind="artist",
+                    ).strip()
+                    entered_album = read_input(
+                        f"  Album  [{search_album}]: ",
+                        kind="album",
+                    ).strip()
                     if entered_artist:
                         search_artist = entered_artist
                     if entered_album:
@@ -3640,7 +3709,10 @@ def run_scan_dir(
                     f"{cyan('[#]')} choose exact candidate   "
                     f"{cyan('[b]')} bypass"
                 )
-                answer = input("  Choice: ").strip().lower()
+                answer = read_input(
+                    "  Choice: ",
+                    kind="out-of-range-picker",
+                ).strip().lower()
 
                 if answer == "b":
                     summary.resolved += 1
@@ -3799,6 +3871,13 @@ def run_scan_dir(
         + " "
         + white("Skipped") + " " + bracketed_list(skipped_list, gray)
     )
+    emit_ui(
+        "summary",
+        **vars(summary),
+        api_queried=queried_list,
+        api_skipped=skipped_list,
+        mode=mode,
+    )
     return 0 if summary.failed == 0 else 1
 
 
@@ -3928,6 +4007,8 @@ def migrate_v4_config(cfg: dict[str, Any]) -> dict[str, Any]:
     migrated.setdefault("source_policies", {})
     migrated.setdefault("logging", {"retention_days": 14})
     migrated.setdefault("history", {"enabled": True, "retention_days": 0})
+    if "aisplined" not in migrated and "splineai" not in migrated:
+        migrated["aisplined"] = {"enabled": False, "endpoint": ""}
     migrated.setdefault("credentials", {}).setdefault(
         "credential_dir",
         str(DEFAULT_CREDENTIAL_DIR),
@@ -3945,6 +4026,46 @@ def _non_negative_int(value: Any, label: str) -> int:
     if parsed < 0:
         raise SplinedError(f"{label} cannot be negative.")
     return parsed
+
+
+def _validate_aisplined_table(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SplinedError(f"{label} must be a TOML table.")
+    enabled = _bool_value(value.get("enabled", False), f"{label}.enabled")
+    endpoint = value.get("endpoint", "")
+    if not isinstance(endpoint, str):
+        raise SplinedError(f"{label}.endpoint must be a string.")
+    return {"enabled": enabled, "endpoint": endpoint}
+
+
+def aisplined_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve the canonical Config v5 companion boundary.
+
+    ``[splineai]`` is accepted only as a compatibility alias.  The two tables
+    are never merged; conflicting values are rejected instead of guessed.
+    """
+    canonical_present = "aisplined" in cfg
+    legacy_present = "splineai" in cfg
+    canonical = (
+        _validate_aisplined_table(cfg["aisplined"], "[aisplined]")
+        if canonical_present
+        else None
+    )
+    legacy = (
+        _validate_aisplined_table(cfg["splineai"], "[splineai]")
+        if legacy_present
+        else None
+    )
+    if canonical is not None and legacy is not None and canonical != legacy:
+        raise SplinedError(
+            "[aisplined] and legacy [splineai] disagree; remove the legacy "
+            "table or make enabled and endpoint identical."
+        )
+    if canonical is not None:
+        return canonical
+    if legacy is not None:
+        return legacy
+    return {"enabled": False, "endpoint": ""}
 
 
 def validate_config_v5(cfg: dict[str, Any]) -> None:
@@ -3995,7 +4116,7 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
     _bool_value(history.get("enabled", True), "[history].enabled")
     _non_negative_int(history.get("retention_days", 0), "[history].retention_days")
     _bool_value(section(cfg, "samples").get("sample_write", True), "[samples].sample_write")
-    _bool_value(section(cfg, "splineai").get("enabled", False), "[splineai].enabled")
+    aisplined_settings(cfg)
 
     formats(cfg)
     output = section(cfg, "output")
@@ -4426,6 +4547,12 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     print("Help:")
     help_row("  -h, --help", "Help, Tips & Config Assistance")
     help_row("  -V, --version", "Version")
+    print()
+    print("Ratatui TUI:")
+    help_row("      --tui", "Require Ratatui for an interactive --scan-dir run")
+    help_row("      --no-tui", "Keep the plain CLI even when stdin/stdout are terminals")
+    help_row("      --tui-theme OLED|CHALK", "Select one of the two locked TUI themes [OLED]")
+    help_row("      automatic", "Interactive operational scans use TUI; redirected/non-TTY runs stay plain")
 
 
 
@@ -4482,8 +4609,51 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--lastfm-login", action="store_true")
     p.add_argument("--fanarttv-credentials", action="store_true")
     p.add_argument("--oauth-validation", action="store_true")
+    tui_group = p.add_mutually_exclusive_group()
+    tui_group.add_argument("--tui", action="store_true")
+    tui_group.add_argument("--no-tui", action="store_true")
+    p.add_argument("--tui-theme", choices=("OLED", "CHALK"), type=str.upper, default="OLED")
     p.add_argument("--idle", action="store_true", help=argparse.SUPPRESS)
     return p
+
+
+def run_operational_interface(
+    args: argparse.Namespace,
+    worker: Any,
+) -> int:
+    """Choose TUI or plain presentation without changing engine behavior."""
+    from tui.dispatch import decide_activation
+
+    try:
+        activation = decide_activation(
+            tui=bool(args.tui),
+            no_tui=bool(args.no_tui),
+            operational=True,
+            stdin_tty=sys.stdin.isatty(),
+            stdout_tty=sys.stdout.isatty(),
+        )
+    except ValueError as exc:
+        raise SplinedError(str(exc)) from exc
+
+    if not activation.enabled:
+        return int(worker())
+
+    if importlib.util.find_spec("pyratatui") is None:
+        message = "pyratatui is not installed; install python/requirements.txt to use --tui."
+        if activation.explicit:
+            raise SplinedError(message)
+        print(f"SPLINED TUI unavailable: {message} Falling back to the plain CLI.", file=sys.stderr)
+        return int(worker())
+
+    from tui.splined_tui import TuiInitializationError, run_tui
+
+    try:
+        return run_tui(worker, args.tui_theme)
+    except TuiInitializationError as exc:
+        if activation.explicit:
+            raise SplinedError(str(exc)) from exc
+        print(f"{exc} Falling back to the plain CLI.", file=sys.stderr)
+        return int(worker())
 
 
 def run_oauth_validation_command(config_file: Path, cfg: dict[str, Any]) -> int:
@@ -4520,7 +4690,13 @@ def main() -> int:
         sources=resolve_sources(cfg,parse_sources(args.cover_sources),parse_sources(args.only_cover_sources),parse_sources(args.exclude_cover_sources) or [])
         if not sources: raise SplinedError("No SPLINED cover sources remain after exclusions.")
         if args.scan: return run_scan_preview(path,cfg,sources)
-        if args.scan_dir is not None: return run_scan_dir(path, cfg, sources, args.scan_dir)
+        if args.scan_dir is not None:
+            return run_operational_interface(
+                args,
+                lambda: run_scan_dir(path, cfg, sources, args.scan_dir),
+            )
+        if args.tui:
+            raise SplinedError("--tui is available only for an operational --scan-dir scan.")
         if args.release_mbid: return run_release_discovery(path,cfg,sources,args.release_mbid)
         print_help(path,cfg); return 0
     except SplinedError as exc:

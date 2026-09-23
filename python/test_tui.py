@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from time import monotonic
+from unittest.mock import patch
+
+from pyratatui import Rect
 
 from tui.animation import EXPANSION, STYLIZED_EXPANSION, cell_width, startup_frame
 from tui.dialogs import confirm_key
@@ -9,7 +13,15 @@ from tui.keys import Action, map_key, picker_response
 from tui.layout import Breakpoint, breakpoint, layout_spec
 from tui.palette import CHALK, OLED
 from tui.semantic import Semantic, range_semantic
-from tui.splined_tui import CandidateView, TuiAdapter, TuiState, handle_key
+from tui.splined_tui import (
+    CandidateView,
+    TuiAdapter,
+    TuiInitializationError,
+    TuiState,
+    handle_key,
+    render,
+    run_tui,
+)
 from tui.theme import ThemeName, select_theme
 
 
@@ -139,6 +151,13 @@ class KeyAndActionTests(unittest.TestCase):
         self.assertFalse(confirm_key("esc"))
         self.assertIsNone(confirm_key("x"))
 
+    def test_ctrl_c_requests_safe_terminal_exit(self):
+        state = TuiState(workflow="processing")
+        adapter = TuiAdapter()
+        handle_key(state, adapter, _Key("c", ctrl=True))
+        self.assertTrue(state.exit_requested)
+        self.assertEqual(state.exit_code, 130)
+
     def test_candidate_selection_and_confirmed_bypass_submit_engine_values(self):
         state = TuiState(workflow="picker")
         state.candidates = [
@@ -158,6 +177,71 @@ class KeyAndActionTests(unittest.TestCase):
         self.assertTrue(state.dialog_open)
         handle_key(state, adapter, _Key("y"))
         self.assertEqual(adapter.responses.get_nowait(), "b")
+
+
+class _Frame:
+    def __init__(self, width: int, height: int):
+        self.area = Rect(0, 0, width, height)
+        self.rendered = 0
+
+    def render_widget(self, widget, area):
+        self.rendered += 1
+
+    def render_stateful_table(self, widget, area, state):
+        self.rendered += 1
+
+
+class RenderingAndLifecycleTests(unittest.TestCase):
+    def test_workflow_renderers_build_at_all_responsive_sizes(self):
+        theme = select_theme("OLED")
+        candidate = CandidateView(
+            1, "iTunes", 1800, 1800, "jpeg", "Ideal", 0, True, True, True, "fixture"
+        )
+        states = []
+        for workflow in ("overview", "processing", "candidates", "summary"):
+            state = TuiState(
+                started_at=monotonic() - 10,
+                workflow=workflow,
+                album_index=1,
+                album_total=3,
+                album="Love Among the Ruins",
+                artist="10,000 Maniacs",
+                candidates=[candidate],
+                summary={"albums": 3, "resolved": 3, "failed": 0},
+                finished=workflow == "summary",
+            )
+            states.append(state)
+        history = TuiState(started_at=monotonic() - 10, tab="history")
+        history.apply("history", {"album": "A / B", "outcome": "normal-selected"})
+        states.append(history)
+        logs = TuiState(started_at=monotonic() - 10, tab="logs")
+        logs.apply("log", {"level": "WARN", "message": "provider timeout"})
+        states.append(logs)
+
+        for width, height in ((60, 18), (100, 30), (140, 40)):
+            for state in states:
+                with self.subTest(size=(width, height), workflow=state.workflow, tab=state.tab):
+                    frame = _Frame(width, height)
+                    render(frame, state, theme)
+                    self.assertGreater(frame.rendered, 0)
+
+    def test_failed_terminal_initialization_attempts_restore(self):
+        class BrokenTerminal:
+            restored = False
+
+            def __enter__(self):
+                raise OSError("no terminal")
+
+            def __exit__(self, *args):
+                return False
+
+            def restore(self):
+                BrokenTerminal.restored = True
+
+        with patch("tui.splined_tui.Terminal", BrokenTerminal):
+            with self.assertRaisesRegex(TuiInitializationError, "initialization failed"):
+                run_tui(lambda: 0)
+        self.assertTrue(BrokenTerminal.restored)
 
 
 if __name__ == "__main__":

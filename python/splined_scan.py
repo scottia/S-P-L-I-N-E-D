@@ -156,6 +156,32 @@ def render_candidate_table(
     suggested: core.Candidate | None = None,
     manual_fallback: bool = False,
 ) -> None:
+    candidate_items: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates, 1):
+        projected = project_candidate(candidate, cfg, format_order)
+        candidate_items.append(
+            {
+                "number": index,
+                "source": provider_label(candidate.source),
+                "width": candidate.width,
+                "height": candidate.height,
+                "format": candidate.format,
+                "range_type": projected["range_type"],
+                "distance": projected["distance"],
+                "square": projected["square"],
+                "acceptable": projected["acceptable"],
+                "approved": candidate.ref.approved,
+                "id": str(candidate.ref.id),
+                "selected": candidate is selected,
+                "suggested": candidate is suggested,
+            }
+        )
+    core.emit_ui(
+        "candidates",
+        items=candidate_items,
+        manual_fallback=manual_fallback,
+    )
+
     columns = [
         ("[#]", 5, "right"),
         ("Source", 8, "left"),
@@ -879,7 +905,11 @@ def local_comparison_prompt(local_candidate: core.Candidate, remote: list[core.C
         if mb_retry_available:
             menu += f"   {core.cyan('[m]')} MusicBrainz retry"
         print(menu)
-        answer = input("  Choice: ").strip().lower()
+        answer = core.read_input(
+            "  Choice: ",
+            kind="local-comparison",
+            musicbrainz=mb_retry_available,
+        ).strip().lower()
         if answer == "s":
             if suggested is None:
                 print(f"  {core.yellow('No suggested provider candidate is available.')}")
@@ -1038,6 +1068,15 @@ def run_scan_dir(
     normal_records = [record for record in records if not record.get("fallback_reason")]
     ordered_records = fallback_records + normal_records
 
+    core.emit_ui(
+        "scan_start",
+        root=str(root),
+        total=len(ordered_records),
+        discovered=len(discovered_albums),
+        postponed=len(postponed_albums),
+        mode=mode,
+    )
+
     provider_list = [source for source in sources if source != "discogs"]
     output_list = [
         f"{str(output.get('file_name', 'cover')).strip()}.{core.EXTENSIONS[fmt]}"
@@ -1116,6 +1155,17 @@ def run_scan_dir(
         mbid = record.get("mbid")
         release: core.Release | None = record.get("release")
         fallback_reason = record.get("fallback_reason")
+
+        core.emit_ui(
+            "album",
+            index=run_index,
+            total=len(ordered_records),
+            path=str(album.path),
+            artist=tag_artist,
+            album=tag_album,
+            authority="Fallback" if fallback_reason else "ExactAlbumId",
+            fallback_reason=str(fallback_reason or ""),
+        )
 
         print(core.bold(core.cyan(f"[{run_index}/{len(ordered_records)}] {core.album_path_text(album.path)}")))
 
@@ -1408,7 +1458,10 @@ def run_scan_dir(
                     menu += f"{core.cyan('[m]')} MusicBrainz retry   "
                 menu += f"{core.cyan('[b]')} bypass"
                 print(menu)
-                answer = input("  Choice: ").strip().lower()
+                answer = core.read_input(
+                    "  Choice: ",
+                    kind="fallback-picker",
+                ).strip().lower()
 
                 if answer == "b":
                     record_album_bypass(bypass_path, bypass_history, album, mbid, search_artist, search_album, "fallback-recovery")
@@ -1464,8 +1517,14 @@ def run_scan_dir(
                     continue
 
                 if answer == "f":
-                    entered_artist = input(f"  Artist [{search_artist}]: ").strip()
-                    entered_album = input(f"  Album  [{search_album}]: ").strip()
+                    entered_artist = core.read_input(
+                        f"  Artist [{search_artist}]: ",
+                        kind="artist",
+                    ).strip()
+                    entered_album = core.read_input(
+                        f"  Album  [{search_album}]: ",
+                        kind="album",
+                    ).strip()
                     if entered_artist:
                         search_artist = entered_artist
                     if entered_album:
@@ -1639,7 +1698,10 @@ def run_scan_dir(
                     f"{core.cyan('[#]')} choose exact candidate   "
                     f"{core.cyan('[b]')} bypass"
                 )
-                answer = input("  Choice: ").strip().lower()
+                answer = core.read_input(
+                    "  Choice: ",
+                    kind="out-of-range-picker",
+                ).strip().lower()
 
                 if answer == "b":
                     record_album_bypass(bypass_path, bypass_history, album, mbid, release.artist_credit, release.title, "normal-out-of-range")
@@ -1793,24 +1855,25 @@ def run_scan_dir(
         + " "
         + core.white("Skipped") + " " + core.bracketed_list(skipped_list, core.gray)
     )
+    core.emit_ui(
+        "summary",
+        **vars(summary),
+        api_queried=queried_list,
+        api_skipped=skipped_list,
+        mode=mode,
+    )
     return 0 if summary.failed == 0 else 1
 
 
-def validate_splineai_placeholder(cfg: dict[str, Any]) -> None:
-    ai = core.section(cfg, "splineai")
-    enabled = ai.get("enabled", False)
-    endpoint = ai.get("endpoint", "")
-    if not isinstance(enabled, bool):
-        raise core.SplinedError("[splineai].enabled must be true or false.")
-    if not isinstance(endpoint, str):
-        raise core.SplinedError("[splineai].endpoint must be a string.")
+def validate_aisplined_placeholder(cfg: dict[str, Any]) -> None:
+    core.aisplined_settings(cfg)
 
 
 def print_help(path: Path, cfg: dict[str, Any]) -> None:
     core.print_help(path, cfg)
-    ai = core.section(cfg, "splineai")
+    ai = core.aisplined_settings(cfg)
     print()
-    print("SPLINE AI (placeholder only):")
+    print("A:I:S:P:L:I:N:E:D companion boundary (placeholder only):")
     core.help_row("      enabled", core.green(f"[{str(bool(ai.get('enabled', False))).lower()}]"))
     core.help_row("      endpoint", core.green(f"[{str(ai.get('endpoint', ''))}]"))
     core.help_row("", "No AI image processing is enabled in this release")
@@ -1824,9 +1887,9 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
 
 def print_config(path: Path, cfg: dict[str, Any]) -> None:
     core.print_config(path, cfg)
-    ai = core.section(cfg, "splineai")
-    print(f"SPLINE AI enabled: {bool(ai.get('enabled', False))}")
-    print(f"SPLINE AI endpoint: {str(ai.get('endpoint', ''))}")
+    ai = core.aisplined_settings(cfg)
+    print(f"AISPLINED enabled: {bool(ai.get('enabled', False))}")
+    print(f"AISPLINED endpoint: {str(ai.get('endpoint', ''))}")
 
 
 def main() -> int:
@@ -1835,6 +1898,19 @@ def main() -> int:
     if _BYPASS_OVERRIDE:
         sys.argv = [sys.argv[0]] + [arg for arg in sys.argv[1:] if arg != "-bp"]
     args = core.parser().parse_args()
+    interface_only = True
+    skip_theme_value = False
+    for argument in sys.argv[1:]:
+        if skip_theme_value:
+            skip_theme_value = False
+            continue
+        if argument == "--tui-theme":
+            skip_theme_value = True
+            continue
+        if argument.startswith("--tui-theme=") or argument in {"--tui", "--no-tui"}:
+            continue
+        interface_only = False
+        break
     if args.version:
         print(f"{APP_NAME} {VERSION}")
         return 0
@@ -1843,7 +1919,7 @@ def main() -> int:
 
     try:
         path, cfg = core.load_config()
-        validate_splineai_placeholder(cfg)
+        validate_aisplined_placeholder(cfg)
         if args.oauth_validation:
             if len(sys.argv) != 2:
                 raise core.SplinedError(
@@ -1893,14 +1969,24 @@ def main() -> int:
         # Bare `splined` is intentionally the operational command.  It scans
         # the current working directory recursively, making it suitable for
         # shell/batch automation without another required subcommand.
-        if len(sys.argv) == 1:
-            return run_scan_dir(path, cfg, sources, [str(Path.cwd())])
+        if len(sys.argv) == 1 or interface_only:
+            return core.run_operational_interface(
+                args,
+                lambda: run_scan_dir(path, cfg, sources, [str(Path.cwd())]),
+            )
 
         if args.scan_dir is not None:
-            return run_scan_dir(path, cfg, sources, args.scan_dir)
+            return core.run_operational_interface(
+                args,
+                lambda: run_scan_dir(path, cfg, sources, args.scan_dir),
+            )
         if args.release_mbid:
             return core.run_release_discovery(path, cfg, sources, args.release_mbid)
 
+        if args.tui:
+            raise core.SplinedError(
+                "--tui is available only for an operational scan."
+            )
         print_help(path, cfg)
         return 0
 
