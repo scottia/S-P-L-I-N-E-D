@@ -1009,8 +1009,29 @@ def run_scan_dir(
     history_path.parent.mkdir(parents=True, exist_ok=True)
     api_queried: set[str] = set()
 
+    core.emit_ui(
+        "scan_start",
+        root=str(root),
+        total=len(albums),
+        discovered=len(discovered_albums),
+        postponed=len(postponed_albums),
+        mode=mode,
+        phase="authority",
+    )
+
     records: list[dict[str, Any]] = []
-    for album in albums:
+    for inventory_index, album in enumerate(albums, 1):
+        core.emit_ui(
+            "album",
+            index=inventory_index,
+            total=len(albums),
+            path=str(album.path),
+            artist="",
+            album=album.path.name,
+            authority="Reading tags and MusicBrainz authority",
+            fallback_reason="",
+            phase="authority",
+        )
         record: dict[str, Any] = {
             "album": album,
             "tracks": None,
@@ -1067,15 +1088,6 @@ def run_scan_dir(
     fallback_records = [record for record in records if record.get("fallback_reason")]
     normal_records = [record for record in records if not record.get("fallback_reason")]
     ordered_records = fallback_records + normal_records
-
-    core.emit_ui(
-        "scan_start",
-        root=str(root),
-        total=len(ordered_records),
-        discovered=len(discovered_albums),
-        postponed=len(postponed_albums),
-        mode=mode,
-    )
 
     provider_list = [source for source in sources if source != "discogs"]
     output_list = [
@@ -1165,6 +1177,7 @@ def run_scan_dir(
             album=tag_album,
             authority="Fallback" if fallback_reason else "ExactAlbumId",
             fallback_reason=str(fallback_reason or ""),
+            phase="processing",
         )
 
         print(core.bold(core.cyan(f"[{run_index}/{len(ordered_records)}] {core.album_path_text(album.path)}")))

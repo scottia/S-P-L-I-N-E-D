@@ -3193,12 +3193,33 @@ def run_scan_dir(
     history_path.parent.mkdir(parents=True, exist_ok=True)
     api_queried: set[str] = set()
 
+    emit_ui(
+        "scan_start",
+        root=str(root),
+        total=len(albums),
+        discovered=len(discovered_albums),
+        postponed=len(postponed_albums),
+        mode=mode,
+        phase="authority",
+    )
+
     # ------------------------------------------------------------------
     # Pre-pass. Determine which albums need fallback BEFORE rendering.
     # This guarantees fallback albums are handled first, one at a time.
     # ------------------------------------------------------------------
     records: list[dict[str, Any]] = []
-    for album in albums:
+    for inventory_index, album in enumerate(albums, 1):
+        emit_ui(
+            "album",
+            index=inventory_index,
+            total=len(albums),
+            path=str(album.path),
+            artist="",
+            album=album.path.name,
+            authority="Reading tags and MusicBrainz authority",
+            fallback_reason="",
+            phase="authority",
+        )
         record: dict[str, Any] = {
             "album": album,
             "tracks": None,
@@ -3252,15 +3273,6 @@ def run_scan_dir(
     fallback_records = [record for record in records if record.get("fallback_reason")]
     normal_records = [record for record in records if not record.get("fallback_reason")]
     ordered_records = fallback_records + normal_records
-
-    emit_ui(
-        "scan_start",
-        root=str(root),
-        total=len(ordered_records),
-        discovered=len(discovered_albums),
-        postponed=len(postponed_albums),
-        mode=mode,
-    )
 
     # ------------------------------------------------------------------
     # Run header.
@@ -3354,6 +3366,7 @@ def run_scan_dir(
             album=tag_album,
             authority="Fallback" if fallback_reason else "ExactAlbumId",
             fallback_reason=str(fallback_reason or ""),
+            phase="processing",
         )
 
         print(bold(cyan(f"[{run_index}/{len(ordered_records)}] {album_path_text(album.path)}")))

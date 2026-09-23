@@ -110,6 +110,7 @@ class TuiState:
     album_index: int = 0
     album_total: int = 0
     album_path: str = "Preparing scan inventory"
+    phase: str = "inventory"
     artist: str = ""
     album: str = ""
     authority: str = ""
@@ -136,6 +137,7 @@ class TuiState:
             self.workflow = "overview"
             self.album_total = int(payload.get("total", 0))
             self.album_path = str(payload.get("root", self.album_path))
+            self.phase = str(payload.get("phase", "authority"))
         elif event == "album":
             self.workflow = "processing"
             self.album_index = int(payload.get("index", 0))
@@ -145,6 +147,7 @@ class TuiState:
             self.album = str(payload.get("album", ""))
             self.authority = str(payload.get("authority", ""))
             self.fallback_reason = str(payload.get("fallback_reason", ""))
+            self.phase = str(payload.get("phase", "processing"))
             self.candidates.clear()
             self.release_options.clear()
             self.diagnostics.clear()
@@ -356,7 +359,7 @@ def _render_overview(frame: Any, area: Rect, state: TuiState, theme: Theme) -> N
         [Constraint.fill(1), Constraint.length(2), Constraint.length(3), Constraint.length(3), Constraint.fill(1)],
     )
     frame.render_widget(
-        Paragraph.from_string("SCANNING").centered().style(style(theme, Semantic.ACTIVE, bold=True)),
+        Paragraph.from_string(f"SCANNING · {state.phase.upper()}").centered().style(style(theme, Semantic.ACTIVE, bold=True)),
         rows[1],
     )
     if state.album_total:
@@ -860,13 +863,15 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         _submit(state, adapter, response)
 
 
-def _drain(adapter: TuiAdapter, state: TuiState) -> None:
+def _drain(adapter: TuiAdapter, state: TuiState) -> bool:
+    changed = False
     while True:
         try:
             event, payload = adapter.events.get_nowait()
         except queue.Empty:
-            return
+            return changed
         state.apply(event, payload)
+        changed = True
 
 
 def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
@@ -902,12 +907,21 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
             terminal = Terminal()
             with terminal:
                 thread.start()
+                dirty = True
+                startup_active = True
                 while not state.exit_requested and not terminated:
-                    _drain(adapter, state)
-                    terminal.draw(lambda frame: render(frame, state, theme))
+                    dirty = _drain(adapter, state) or dirty
+                    now_startup = time.monotonic() - state.started_at < STARTUP_SECONDS
+                    if startup_active and not now_startup:
+                        dirty = True
+                    startup_active = now_startup
+                    if dirty or startup_active:
+                        terminal.draw(lambda frame: render(frame, state, theme))
+                        dirty = False
                     key = terminal.poll_event(timeout_ms=80)
                     if key is not None:
                         handle_key(state, adapter, key)
+                        dirty = True
         except BaseException as exc:
             if thread.ident is None:
                 if terminal is not None:
