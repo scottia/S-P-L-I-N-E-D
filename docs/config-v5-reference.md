@@ -70,13 +70,19 @@ main config.
 | `square` | `true` | Enable square output policy |
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
-| `upscale_below_ideal` | `false` | Permit enlargement below Ideal |
+| `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement below Ideal |
 | `evaluate_final_image` | `true` | Rank the image SPLINED would actually write |
 
 WebP source artwork is preserved by the local-artwork policy. When better
 static artwork replaces a matching JPEG/PNG cover, SPLINED avoids accumulating
 numbered copies and removes the matching obsolete static cover according to the
 active replacement rules.
+
+When AISPLINE is enabled, `upscale_below_ideal = false` remains meaningful. If
+an interactive user explicitly chooses an AISPLINE enhancement that requires
+upscaling, the preferred behavior is a red warning offering a runtime-only
+override for that one album/candidate/attempt. The override does not rewrite
+Config v5 and does not enable ordinary SPLINED upscaling for later work.
 
 ## `[range]`
 
@@ -104,8 +110,8 @@ The required ordering is `min < ideal <= max < ladder`.
 
 `cover_sources` stores artwork-source priority. Supported artwork sources are
 Deezer, iTunes, Fanart.tv, Last.fm, Cover Art Archive, and Discogs.
-`exclude_cover_sources` disables listed artwork sources without changing
-their saved priority.
+`exclude_cover_sources` disables listed artwork sources without changing their
+saved priority.
 
 MusicBrainz is metadata authority and is not added to `cover_sources`.
 
@@ -132,6 +138,11 @@ When Source Override is off, the source uses the global range. Saved custom
 policy values remain available and are not erased. When fallback is on, only
 the single range immediately below the configured minimum becomes a fallback;
 it does not become a normally accepted range.
+
+Python/TUI should expose the same practical controls where supported so source
+policy can eliminate irrelevant candidates before unnecessary downloads, AI
+review, or candidate-screen clutter. This is parity with existing Config v5
+policy, not a second selection engine.
 
 See [Source policies and Range Types](source-policies-range-types.md).
 
@@ -181,26 +192,83 @@ History supplies processed, timeout, chosen-source, and bypass state. Shortening
 or disabling it can remove the authority needed for status colors. `_cache/`
 is disposable and is not the history authority.
 
+AISPLINE-enhanced provenance may also be recorded in history so a validated
+existing enhanced file can be recognized later. A history record alone must not
+resurrect a file that no longer exists or validates.
+
 ## `[aisplined]`
 
-`[aisplined]` is the canonical documentary boundary for the separate
-A:I:S:P:L:I:N:E:D companion product:
+Config v5 uses `[aisplined]` as the canonical integration and policy section for
+the separate A:I:S:P:L:I:N:E:D companion product. Adding AISPLINE policy under
+this section does **not** require a Config v5 schema-version bump.
+
+Baseline direction:
 
 ```toml
 [aisplined]
 enabled = false
 endpoint = ""
+minimum_short_side = 600
+allow_below_minimum_override = false
 ```
 
-SPLINED does not make endpoint calls or enable AI image processing. The Python
-loader accepts legacy `[splineai]` only as a compatibility alias when
-`[aisplined]` is absent. If both tables are present and their `enabled` or
-`endpoint` values disagree, validation fails rather than merging or guessing.
+Meaning:
+
+| Key | Baseline | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Whether SPLINED exposes/uses AISPLINE integration |
+| `endpoint` | empty | Where SPLINED can reach the AISPLINE runtime/interface when configured |
+| `minimum_short_side` | `600` | Default user floor for normal automatic AISPLINE review/enhancement |
+| `allow_below_minimum_override` | `false` | Whether deliberate below-floor experimentation may be offered/allowed |
+
+The 600 px floor is a practical default, not an absolute quality claim. Users
+may deliberately experiment below it when policy allows because a low-resolution
+image can still be the only available source or remain usable despite its size.
+Below-floor attempts must be explicit; they must never silently weaken the
+configured floor.
+
+When `enabled = false`:
+
+- no AISPLINE review occurs;
+- no AI columns/checkboxes appear in the TUI;
+- no AI activity widget appears;
+- no AISPLINE endpoint/model/backend work occurs.
+
+When enabled, AISPLINE review may occur on relevant local or remote candidates
+before the candidate summary is presented. The user-facing source-summary model
+is:
+
+```text
+AI SPLINED
+    yes/no result of completed AISPLINE review
+
+AI ENHANCED
+    optional user action shown as checkbox + required delta
+    examples: ☐ +300 EH, ☐ +1200 EH, N/A
+```
+
+Only one candidate per album may be selected for enhancement at a time. Selecting
+one enhancement option disables/grays the other enhancement options for that
+album until the selection is changed.
+
+A local image or an uninstalled suggested remote candidate may be handed directly
+to AISPLINE. It does not need to be installed into the album directory first.
+
+Detailed model/backend settings may later live in AISPLINE-owned JSON/runtime
+configuration if that proves cleaner. Such settings may be surfaced in the TUI,
+but this reference does not lock a JSON schema.
+
+Legacy `[splineai]` remains a compatibility concern for existing Python Config
+v5 installations; `[aisplined]` is the canonical public name. Conflicting
+canonical/legacy values must not be merged silently.
+
+See [Python Ratatui TUI](ratatui-tui.md) and the AISPLINE development policy on
+the AI development branch.
 
 ## GUI-only `ui.toml`
 
-`config/ui.toml` is deliberately separate from operational Config v5. It
-stores presentation and transient GUI state, including:
+`config/ui.toml` is deliberately separate from operational Config v5. It stores
+presentation and transient GUI state, including:
 
 - System/Light/Dark theme;
 - status/confirmation and hover preferences;
