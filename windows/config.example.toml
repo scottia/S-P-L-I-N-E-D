@@ -101,7 +101,7 @@ retention_days = 14
 enabled = true
 retention_days = 0 # 0 keeps history forever
 
-# Reserved placeholder retained by Config v5; no AI processing is enabled.
-[splineai]
+# Reserved A:I:S:P:L:I:N:E:D companion boundary; no AI processing is enabled.
+[aisplined]
 enabled = false
 endpoint = ""

@@ -116,6 +116,45 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertIn("source_policies", migrated)
         self.assertIn("logging", migrated)
         self.assertIn("history", migrated)
+        self.assertEqual(
+            migrated["aisplined"], {"enabled": False, "endpoint": ""}
+        )
+
+    def test_aisplined_is_canonical_and_disabled(self) -> None:
+        config = load_example("docker/config.example.toml")
+        self.assertIn("aisplined", config)
+        self.assertNotIn("splineai", config)
+        self.assertEqual(
+            splined.aisplined_settings(config),
+            {"enabled": False, "endpoint": ""},
+        )
+
+    def test_legacy_splineai_alias_remains_compatible(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["splineai"] = config.pop("aisplined")
+        splined.validate_config_v5(config)
+        self.assertEqual(
+            splined.aisplined_settings(config),
+            {"enabled": False, "endpoint": ""},
+        )
+
+    def test_matching_canonical_and_legacy_tables_are_not_merged(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["splineai"] = dict(config["aisplined"])
+        splined.validate_config_v5(config)
+        self.assertEqual(splined.aisplined_settings(config), config["aisplined"])
+
+    def test_conflicting_canonical_and_legacy_tables_fail_clearly(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["splineai"] = {"enabled": True, "endpoint": ""}
+        with self.assertRaisesRegex(splined.SplinedError, "disagree"):
+            splined.validate_config_v5(config)
+
+    def test_aisplined_types_are_validated_without_activating_ai(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["aisplined"]["endpoint"] = 7
+        with self.assertRaisesRegex(splined.SplinedError, "endpoint must be a string"):
+            splined.validate_config_v5(config)
 
     def test_musicbrainz_options_and_unknown_fields_survive_atomic_update(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

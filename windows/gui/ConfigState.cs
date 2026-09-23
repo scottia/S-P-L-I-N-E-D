@@ -193,8 +193,8 @@ namespace Splined.WindowsGui
 
         // Config v5 reserves SPLINEAI internally. It is deliberately not shown
         // by the Windows GUI, but these values are retained during every save.
-        public bool SplineAiEnabled;
-        public string SplineAiEndpoint = "";
+        public bool AiSplinedEnabled;
+        public string AiSplinedEndpoint = "";
 
         public ConfigState Clone()
         {
@@ -339,8 +339,18 @@ namespace Splined.WindowsGui
             state.RangeIdeal = ReadInt(text, "range", "ideal", 1800);
             state.RangeMax = ReadInt(text, "range", "max", 2400);
             state.RangeLadder = ReadInt(text, "range", "ladder", 3600);
-            state.SplineAiEnabled = ReadBool(text, "splineai", "enabled", false);
-            state.SplineAiEndpoint = ReadString(text, "splineai", "endpoint", "");
+            bool hasAiSplined = HasSection(text, "aisplined");
+            bool hasLegacySplineAi = HasSection(text, "splineai");
+            bool canonicalEnabled = ReadBool(text, "aisplined", "enabled", false);
+            string canonicalEndpoint = ReadString(text, "aisplined", "endpoint", "");
+            bool legacyEnabled = ReadBool(text, "splineai", "enabled", false);
+            string legacyEndpoint = ReadString(text, "splineai", "endpoint", "");
+            if (hasAiSplined && hasLegacySplineAi
+                && (canonicalEnabled != legacyEnabled
+                    || !String.Equals(canonicalEndpoint, legacyEndpoint, StringComparison.Ordinal)))
+                throw new InvalidDataException("[aisplined] and legacy [splineai] disagree.");
+            state.AiSplinedEnabled = hasAiSplined ? canonicalEnabled : legacyEnabled;
+            state.AiSplinedEndpoint = hasAiSplined ? canonicalEndpoint : legacyEndpoint;
             return state;
         }
 
@@ -623,9 +633,9 @@ namespace Splined.WindowsGui
             text.AppendLine("enabled = " + Bool(state.HistoryEnabled));
             text.AppendLine("retention_days = " + state.HistoryRetentionDays);
             text.AppendLine();
-            text.AppendLine("[splineai]");
-            text.AppendLine("enabled = " + Bool(state.SplineAiEnabled));
-            text.AppendLine("endpoint = " + Quote(state.SplineAiEndpoint));
+            text.AppendLine("[aisplined]");
+            text.AppendLine("enabled = " + Bool(state.AiSplinedEnabled));
+            text.AppendLine("endpoint = " + Quote(state.AiSplinedEndpoint));
             return text.ToString();
         }
 
@@ -635,6 +645,14 @@ namespace Splined.WindowsGui
                 return Regex.Replace(text, @"(?ms)^\s*\[[^\]]+\].*$", "");
             Match match = Regex.Match(text, @"(?ms)^\s*\[" + Regex.Escape(section) + @"\]\s*(.*?)(?=^\s*\[|\z)");
             return match.Success ? match.Groups[1].Value : "";
+        }
+
+        private static bool HasSection(string text, string section)
+        {
+            return Regex.IsMatch(
+                text,
+                @"(?m)^\s*\[" + Regex.Escape(section) + @"\]\s*(?:#.*)?$"
+            );
         }
 
         private static string ReadString(string text, string section, string key, string fallback)

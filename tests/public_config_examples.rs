@@ -13,7 +13,7 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "credentials",
     "logging",
     "history",
-    "splineai",
+    "aisplined",
 ];
 
 const POLICY_FIELDS: &[&str] = &[

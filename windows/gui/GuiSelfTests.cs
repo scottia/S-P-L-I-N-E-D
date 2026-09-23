@@ -41,8 +41,8 @@ namespace Splined.WindowsGui
                 state.IgnoredSubs.AddRange(excludedFolders);
                 state.Mode = "write";
                 state.ScanModeTimeout = 0;
-                state.SplineAiEnabled = true;
-                state.SplineAiEndpoint = "internal-placeholder";
+                state.AiSplinedEnabled = true;
+                state.AiSplinedEndpoint = "internal-placeholder";
                 state.SourcePolicies["discogs"] = new SourcePolicyState
                 {
                     SourceOverride = true,
@@ -70,7 +70,7 @@ namespace Splined.WindowsGui
                     && CredentialStore.PathFor(loaded, "lastfm") == Path.Combine(loaded.CredentialDir, "lastfm.json")
                     && CredentialStore.PathFor(loaded, "musicbrainz") == Path.Combine(loaded.CredentialDir, "musicbrainz.json"),
                     "Provider credential files were not derived from the credential directory.");
-                Assert(loaded.SplineAiEnabled && loaded.SplineAiEndpoint == "internal-placeholder", "Hidden SPLINEAI values were not preserved.");
+                Assert(loaded.AiSplinedEnabled && loaded.AiSplinedEndpoint == "internal-placeholder", "Hidden AISPLINED values were not preserved.");
                 SourcePolicyState discogsPolicy = loaded.SourcePolicies["discogs"];
                 Assert(discogsPolicy.SourceOverride && discogsPolicy.MinimumRangeType == "LowerRange"
                     && discogsPolicy.AllowBelowMinimumFallback && discogsPolicy.MinimumShortSide == 1500
