@@ -1,8 +1,8 @@
 """In-memory Select Media model for the Ratatui workspace.
 
-The engine supplies authoritative album states after its single inventory and
-history load.  This module only filters and manages transient selections; it
-never reads the filesystem or creates a parallel history database.
+The engine supplies stable folder identities from the disposable picker index
+and authoritative history states. This module filters and manages transient
+selection only; it never reads the filesystem or persists status authority.
 """
 
 from __future__ import annotations
@@ -48,8 +48,6 @@ class AlbumItem:
     timeout_remaining: str = ""
     selected: bool = False
     bypass_override: bool = False
-    tagged: bool = False
-    album_mbid: str = ""
 
     @property
     def auto_eligible(self) -> bool:
@@ -58,10 +56,13 @@ class AlbumItem:
 
 @dataclass(frozen=True)
 class ArtistItem:
+    path: str
     name: str
-    status: ArtistStatus
+    status: ArtistStatus | None
     album_count: int
     selected_count: int
+    indexed: bool = False
+    loaded: bool = False
 
 
 def artist_status(albums: Iterable[AlbumItem]) -> ArtistStatus:
@@ -84,6 +85,7 @@ def artist_status(albums: Iterable[AlbumItem]) -> ArtistStatus:
 class LibraryModel:
     root: str
     albums: list[AlbumItem]
+    artists: list[ArtistItem] = field(default_factory=list)
     artist_filter: str = ""
     album_filter: str = ""
     status_filters: set[AlbumStatus] = field(
@@ -94,6 +96,8 @@ class LibraryModel:
     )
     active_artist: str = ""
     inventory_loads: int = 1
+    select_new: bool = True
+    picker_index: str = ""
     _album_by_path: dict[str, AlbumItem] = field(
         default_factory=dict,
         init=False,
@@ -102,6 +106,24 @@ class LibraryModel:
 
     def __post_init__(self) -> None:
         self._album_by_path = {item.path: item for item in self.albums}
+        if not self.artists:
+            grouped = self._artist_groups()
+            self.artists = [
+                ArtistItem(
+                    name,
+                    name,
+                    artist_status(children),
+                    len(children),
+                    sum(child.selected for child in children),
+                    True,
+                    True,
+                )
+                for name, children in sorted(
+                    grouped.items(), key=lambda pair: pair[0].casefold()
+                )
+            ]
+            if self.artists and not self.active_artist:
+                self.active_artist = self.artists[0].name
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "LibraryModel":
@@ -122,19 +144,80 @@ class LibraryModel:
                 timeout_remaining=str(raw.get("timeout_remaining", "")),
                 selected=bool(raw.get("selected", status is AlbumStatus.UNPROCESSED)),
                 bypass_override=bool(raw.get("bypass_override", False)),
-                tagged=bool(raw.get("tagged", False)),
-                album_mbid=str(raw.get("album_mbid", "")),
             )
             # Protected states are never selected merely because malformed
             # presentation payload claimed they were.
             if not item.auto_eligible and not item.bypass_override:
                 item.selected = False
             items.append(item)
-        model = cls(str(payload.get("root", "")), items)
+        grouped: dict[str, list[AlbumItem]] = {}
+        for item in items:
+            grouped.setdefault(item.artist, []).append(item)
+        artists: list[ArtistItem] = []
+        for raw in payload.get("artists", []):
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name", "Unknown Artist")) or "Unknown Artist"
+            children = grouped.get(name, [])
+            indexed = bool(raw.get("indexed", False))
+            artists.append(
+                ArtistItem(
+                    str(raw.get("path", "")),
+                    name,
+                    artist_status(children) if indexed and children else None,
+                    int(raw.get("album_count", len(children))),
+                    sum(child.selected for child in children),
+                    indexed,
+                    bool(raw.get("loaded", False)),
+                )
+            )
+        if not artists:
+            artists = [
+                ArtistItem(
+                    name,
+                    name,
+                    artist_status(children),
+                    len(children),
+                    sum(child.selected for child in children),
+                    True,
+                    True,
+                )
+                for name, children in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
+            ]
+        model = cls(
+            str(payload.get("root", "")),
+            items,
+            artists,
+            select_new=bool(payload.get("select_new", True)),
+            picker_index=str(payload.get("picker_index", "")),
+        )
         artists = model.visible_artists()
         if artists:
             model.active_artist = artists[0].name
         return model
+
+    def merge_payload(self, payload: dict[str, Any]) -> None:
+        replacement = self.from_payload(payload)
+        replacement.artist_filter = self.artist_filter
+        replacement.album_filter = self.album_filter
+        replacement.status_filters = set(self.status_filters)
+        replacement.artist_status_filters = set(self.artist_status_filters)
+        replacement.select_new = self.select_new
+        names = {item.name for item in replacement.artists}
+        replacement.active_artist = (
+            self.active_artist if self.active_artist in names else replacement.active_artist
+        )
+        self.root = replacement.root
+        self.albums = replacement.albums
+        self.artists = replacement.artists
+        self.artist_filter = replacement.artist_filter
+        self.album_filter = replacement.album_filter
+        self.status_filters = replacement.status_filters
+        self.artist_status_filters = replacement.artist_status_filters
+        self.active_artist = replacement.active_artist
+        self.select_new = replacement.select_new
+        self.picker_index = replacement.picker_index
+        self._album_by_path = replacement._album_by_path
 
     def _text_matches(self, item: AlbumItem) -> bool:
         return (
@@ -159,21 +242,23 @@ class LibraryModel:
 
     def visible_artists(self) -> list[ArtistItem]:
         groups = self._artist_groups()
-        visible_paths = {item.path for item in self.visible_albums()}
         rows: list[ArtistItem] = []
-        for name in sorted(groups, key=str.casefold):
-            children = groups[name]
-            aggregate = artist_status(children)
-            if aggregate not in self.artist_status_filters:
+        for base in sorted(self.artists, key=lambda item: item.name.casefold()):
+            if self.artist_filter.casefold() not in base.name.casefold():
                 continue
-            if not any(child.path in visible_paths for child in children):
+            children = groups.get(base.name, [])
+            aggregate = artist_status(children) if base.indexed and children else None
+            if aggregate is not None and aggregate not in self.artist_status_filters:
                 continue
             rows.append(
                 ArtistItem(
-                    name=name,
+                    path=base.path,
+                    name=base.name,
                     status=aggregate,
-                    album_count=len(children),
+                    album_count=len(children) if base.indexed else 0,
                     selected_count=sum(child.selected for child in children),
+                    indexed=base.indexed,
+                    loaded=base.loaded,
                 )
             )
         return rows
@@ -186,28 +271,6 @@ class LibraryModel:
         visible = self.visible_artists()
         if visible and self.active_artist not in {row.name for row in visible}:
             self.active_artist = visible[0].name
-
-    def apply_tag_enrichment(
-        self,
-        path: str,
-        *,
-        artist: str = "",
-        album: str = "",
-        album_mbid: str = "",
-    ) -> bool:
-        item = self._album_by_path.get(path)
-        if item is None:
-            return False
-        previous_artist = item.artist
-        if artist.strip():
-            item.artist = artist.strip()
-        if album.strip():
-            item.title = album.strip()
-        item.album_mbid = album_mbid.strip()
-        item.tagged = True
-        if self.active_artist == previous_artist and item.artist != previous_artist:
-            self.active_artist = item.artist
-        return True
 
     def toggle_status(self, status: AlbumStatus) -> None:
         if status in self.status_filters:
@@ -222,11 +285,14 @@ class LibraryModel:
             self.artist_status_filters.add(status)
 
     def select_none(self) -> None:
+        self.select_new = False
         for item in self.albums:
             item.selected = False
             item.bypass_override = False
 
     def select_all(self, *, filtered: bool = False) -> None:
+        if not filtered:
+            self.select_new = True
         scope = self.visible_albums() if filtered else self.albums
         paths = {item.path for item in scope}
         for item in self.albums:
@@ -240,6 +306,18 @@ class LibraryModel:
         select = any(not item.selected for item in eligible)
         for item in eligible:
             item.selected = select
+
+    def artist(self, name: str) -> ArtistItem | None:
+        return next((item for item in self.artists if item.name == name), None)
+
+    def selection_state(self) -> dict[str, Any]:
+        return {
+            "selected": [item.path for item in self.albums if item.selected],
+            "bypass_overrides": [
+                item.path for item in self.albums if item.bypass_override
+            ],
+            "select_new": self.select_new,
+        }
 
     def toggle_album(
         self,
@@ -294,12 +372,12 @@ class LibraryModel:
                 formats[value] = formats.get(value, 0) + 1
         return {
             "path": self.root,
-            "artists": len(self._artist_groups()),
+            "artists": len(self.artists),
+            "indexed_artists": sum(item.indexed for item in self.artists),
+            "loaded_artists": sum(item.loaded for item in self.artists),
             "albums": len(self.albums),
             "visible_artists": len(self.visible_artists()),
             "visible_albums": len(self.visible_albums()),
             "selected": sum(item.selected for item in self.albums),
-            "tagged": sum(item.tagged for item in self.albums),
-            "musicbrainz": sum(bool(item.album_mbid) for item in self.albums),
             "formats": formats,
         }

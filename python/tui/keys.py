@@ -33,6 +33,7 @@ class Action(str, Enum):
     PAGE_DOWN = "page-down"
     HOME = "home"
     END = "end"
+    REFRESH = "refresh"
 
 
 def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
@@ -87,6 +88,8 @@ def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
         return Action.URL
     if value == "/":
         return Action.FILTER
+    if value == "r":
+        return Action.REFRESH
     if value in {"backspace", "delete"}:
         return Action.DELETE
     if len(value) == 1 and value.isdigit():

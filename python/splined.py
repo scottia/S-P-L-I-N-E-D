@@ -35,6 +35,13 @@ from PIL import Image
 from tui.status import active as tui_active
 from tui.status import emit as emit_ui
 from tui.status import read_input
+from tui.picker_index import (
+    PICKER_DB_NAME,
+    PickerAlbum,
+    PickerArtist,
+    PickerIndex,
+    should_ignore as picker_should_ignore,
+)
 
 USER_AGENT = "SPLINED/1.0.9 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
@@ -51,7 +58,6 @@ DOWNLOAD_CHUNK_BYTES = 64 * 1024
 MAX_IMAGE_PIXELS = 64 * 1024 * 1024
 PROVIDER_DISCOVERY_WORKERS = 4
 CANDIDATE_DOWNLOAD_WORKERS = 4
-TAG_ENRICHMENT_WORKERS = 4
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
 SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
@@ -86,15 +92,6 @@ class Track:
     album_mbid: str | None
     recording_mbid: str | None
     compilation: str | None
-
-
-@dataclass(frozen=True)
-class IndexedTrack:
-    """One representative tag read cached for this process only."""
-
-    track: Track
-    size: int
-    modified_ns: int
 
 
 @dataclass
@@ -820,17 +817,7 @@ def formats(cfg: dict[str, Any]) -> list[str]:
 
 
 def should_ignore(name: str, patterns: list[str]) -> bool:
-    # Match the Windows Config v5 contract: only '*' and '?' are wildcard
-    # operators.  Literal square brackets in common ignored names such as
-    # '[Artist Singles]' must not be interpreted as fnmatch character classes.
-    for pattern in patterns:
-        value = pattern.strip()
-        if not value:
-            continue
-        expression = "^" + re.escape(value).replace(r"\*", ".*").replace(r"\?", ".") + "$"
-        if re.fullmatch(expression, name, flags=re.IGNORECASE):
-            return True
-    return False
+    return picker_should_ignore(name, patterns)
 
 
 def _is_inventory_local_art(path: Path, configured_file_name: str) -> bool:
@@ -1006,81 +993,9 @@ def read_track(path: Path) -> Track:
     return Track(path, title, artist, album, album_artist, album_mbid, recording_mbid, compilation)
 
 
-def index_representative_track(album: AlbumDir) -> IndexedTrack:
-    """Read one representative track for non-blocking Select Media enrichment."""
-    if not album.audio_files:
-        raise SplinedError(f"SPLINED album has no audio files: {album.path}")
-    track = read_track(album.audio_files[0])
-    try:
-        stat = track.path.stat()
-    except OSError as exc:
-        raise SplinedError(
-            f"Unable to stat SPLINED representative track {track.path}: {exc}"
-        ) from exc
-    return IndexedTrack(track, stat.st_size, stat.st_mtime_ns)
-
-
-def enrich_representative_tracks(
-    albums: list[AlbumDir],
-    cancel: threading.Event,
-    on_result: Callable[[AlbumDir, IndexedTrack | None, str | None], None],
-    *,
-    workers: int = TAG_ENRICHMENT_WORKERS,
-) -> None:
-    """Enrich Select Media in the background without delaying its first paint."""
-    worker_count = max(1, min(16, int(workers)))
-    queued: deque[AlbumDir] = deque(albums)
-    pending: dict[concurrent.futures.Future[IndexedTrack], AlbumDir] = {}
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=worker_count,
-        thread_name_prefix="splined-tag-index",
-    ) as executor:
-        while (queued or pending) and not cancel.is_set():
-            while queued and len(pending) < worker_count and not cancel.is_set():
-                album = queued.popleft()
-                pending[executor.submit(index_representative_track, album)] = album
-            if not pending:
-                break
-            done, _ = concurrent.futures.wait(
-                pending,
-                timeout=0.1,
-                return_when=concurrent.futures.FIRST_COMPLETED,
-            )
-            for future in done:
-                album = pending.pop(future)
-                try:
-                    indexed = future.result()
-                except Exception as exc:
-                    on_result(album, None, str(exc))
-                else:
-                    on_result(album, indexed, None)
-        if cancel.is_set():
-            for future in pending:
-                future.cancel()
-
-
-def read_album_tracks(
-    album: AlbumDir,
-    indexed_tracks: dict[str, IndexedTrack] | None = None,
-) -> list[Track]:
-    """Read all authoritative tags, reusing a still-current representative."""
-    indexed = (indexed_tracks or {}).get(str(album.path))
-    tracks: list[Track] = []
-    for path in album.audio_files:
-        if indexed is not None and indexed.track.path == path:
-            try:
-                stat = path.stat()
-            except OSError:
-                stat = None
-            if (
-                stat is not None
-                and stat.st_size == indexed.size
-                and stat.st_mtime_ns == indexed.modified_ns
-            ):
-                tracks.append(indexed.track)
-                continue
-        tracks.append(read_track(path))
-    return tracks
+def read_album_tracks(album: AlbumDir) -> list[Track]:
+    """Read every authoritative track only after the user launches the album."""
+    return [read_track(path) for path in album.audio_files]
 
 
 def valid_mbid(value: str | None) -> str | None:
@@ -1137,288 +1052,444 @@ def prepare_tui_library_selection(
     cfg: dict[str, Any],
     sources: list[str],
     root: Path,
-    albums: list[AlbumDir],
     completion_history: dict[str, Any],
     timeout_hours: float,
     *,
+    cache: Path,
+    library_root: Path | None = None,
     bypassed_paths: set[str] | None = None,
-) -> tuple[list[AlbumDir], dict[str, IndexedTrack], set[str], set[str], list[str]]:
-    """Present the immediate inventory and return transient execution choices.
-
-    Directory/history facts produce the first usable screen. One representative
-    track per album is then read in bounded background workers to enrich display
-    names and seed an in-process cache. MusicBrainz, providers, image decoding,
-    candidate ranking, and filesystem writes still begin only after Launch.
-    """
+) -> tuple[list[AlbumDir], set[str], set[str], list[str], list[AlbumDir]]:
+    """Run root-only/lazy Select Media and return exact authoritative Albums."""
     if not tui_active():
-        return albums, {}, set(), set(), sources
+        raise SplinedError("Lazy Select Media requires an active TUI adapter.")
 
+    library = section(cfg, "library")
+    output = section(cfg, "output")
+    ignored = [str(value) for value in library.get("ignored_subs", [])]
+    index_root = library_root or root
+    picker_path = cache / PICKER_DB_NAME
     bypassed = bypassed_paths or set()
-    track_cache: dict[str, IndexedTrack] = {}
-    rows: list[dict[str, Any]] = []
-    timeout_paths: set[str] = set()
-    model_started = time.perf_counter()
-    model_now = time.time()
-    policy_fingerprint = scan_policy_fingerprint(cfg, sources)
+    fingerprint_paths = timeout_fingerprint_paths(
+        completion_history, cfg, sources, timeout_hours
+    )
     history_albums = completion_history.get("albums", {})
     if not isinstance(history_albums, dict):
         history_albums = {}
-    for album_index, album in enumerate(albums, 1):
-        album_key = str(album.path)
-        try:
-            relative_parts = album.path.relative_to(root).parts
-        except ValueError:
-            relative_parts = ()
-        artist = (
-            relative_parts[0]
-            if len(relative_parts) > 1
-            else (album.path.parent.name or "Unknown Artist")
-        )
-        title = album.path.name or "Unknown Album"
+    policy_fingerprint = scan_policy_fingerprint(cfg, sources)
+    model_now = time.time()
+    actual_albums: dict[str, AlbumDir] = {}
+    loaded_artists: set[str] = set()
+    selected_paths: set[str] = set()
+    initialized_paths: set[str] = set()
+    overrides: set[str] = set()
+    select_new = True
+    timeout_paths: set[str] = set()
+    original_configured = resolve_sources(cfg, None, None, [])
 
-        postponed, age_hours = scan_completion_status(
-            completion_history,
-            album,
-            cfg,
-            sources,
-            timeout_hours,
-            now=model_now,
-            policy_fingerprint=policy_fingerprint,
-        )
-        history_entry = history_albums.get(album_key)
-        history_outcome = (
-            str(history_entry.get("outcome", ""))
-            if isinstance(history_entry, dict)
-            else ""
-        )
-        if album_key in bypassed or "bypass" in history_outcome.casefold():
-            status = "bypassed"
-        elif postponed:
-            status = "timeout"
-            timeout_paths.add(album_key)
-        elif isinstance(history_entry, dict) or album.local_art_files:
-            status = "processed"
+    def path_is_within(path: Path, parent: Path) -> bool:
+        try:
+            path.relative_to(parent)
+            return True
+        except ValueError:
+            return False
+
+    started = time.perf_counter()
+    emit_ui(
+        "activity",
+        category="inventory",
+        state="start",
+        source="picker-index",
+        message="Opening disposable Select Media picker index",
+    )
+    index = PickerIndex.open(picker_path, index_root, ignored)
+    try:
+        if index.recovered:
+            emit_ui(
+                "log",
+                level="WARN",
+                message="Corrupt Select Media picker index was quarantined and rebuilt.",
+            )
+        try:
+            all_artists = index.reconcile_root()
+        except OSError as exc:
+            raise SplinedError(str(exc)) from exc
+
+        if root == index_root:
+            scoped_artists = all_artists
         else:
-            status = "unprocessed"
-        formats_found = [
-            "JPEG" if child.suffix.lower() in {".jpg", ".jpeg"} else child.suffix[1:].upper()
-            for child in album.local_art_files
-        ]
-        rows.append(
-            {
-                "path": album_key,
-                "artist": artist,
-                "album": title,
+            scoped_artists = [
+                artist
+                for artist in all_artists
+                if path_is_within(root, Path(artist.path))
+                or path_is_within(Path(artist.path), root)
+            ]
+        scoped_artist_paths = {artist.path for artist in scoped_artists}
+        artist_by_path = {artist.path: artist for artist in scoped_artists}
+
+        def scoped_records() -> list[PickerAlbum]:
+            records = [
+                item for item in index.albums() if item.artist_path in scoped_artist_paths
+            ]
+            if root != index_root:
+                records = [
+                    item for item in records if path_is_within(Path(item.path), root)
+                ]
+            return records
+
+        def cached_album(record: PickerAlbum) -> AlbumDir:
+            return AlbumDir(
+                Path(record.path),
+                [],
+                [Path(value) for value in record.local_art],
+            )
+
+        def refresh_artist(artist_path: str) -> None:
+            nonlocal all_artists, scoped_artists, artist_by_path
+            if artist_path in loaded_artists:
+                return
+            artist = artist_by_path.get(artist_path)
+            if artist is None:
+                raise SplinedError("The selected Artist is no longer in the library root.")
+            artist_started = time.perf_counter()
+            emit_ui(
+                "activity",
+                category="inventory",
+                state="start",
+                source="picker-index",
+                message=f"Indexing Artist folder · {artist.name}",
+            )
+            albums, _ignored = inventory(
+                Path(artist.path),
+                ignored,
+                str(output.get("file_name", "cover")),
+                fingerprint_paths=fingerprint_paths,
+            )
+            if root != index_root:
+                albums = [album for album in albums if path_is_within(album.path, root)]
+            index.replace_artist_albums(
+                artist,
+                [
+                    PickerAlbum(
+                        str(album.path),
+                        artist.path,
+                        album.path.name,
+                        tuple(str(path) for path in album.local_art_files),
+                    )
+                    for album in albums
+                ],
+            )
+            for stale in [
+                key
+                for key, album in actual_albums.items()
+                if path_is_within(album.path, Path(artist.path))
+            ]:
+                actual_albums.pop(stale, None)
+            actual_albums.update({str(album.path): album for album in albums})
+            loaded_artists.add(artist.path)
+            all_artists = index.artists()
+            scoped_artists = [
+                item for item in all_artists if item.path in scoped_artist_paths
+            ]
+            artist_by_path = {item.path: item for item in scoped_artists}
+            emit_ui(
+                "activity",
+                category="inventory",
+                state="done",
+                source="picker-index",
+                message=(
+                    f"Artist indexed · {artist.name} · {len(albums):,} Album(s) · "
+                    f"{time.perf_counter() - artist_started:.3f}s"
+                ),
+            )
+            debug_log(
+                "select_media.artist_ready "
+                f"artist={artist.name!r} albums={len(albums)} "
+                f"elapsed_seconds={time.perf_counter() - artist_started:.6f}"
+            )
+
+        def status_row(record: PickerAlbum) -> dict[str, Any]:
+            nonlocal timeout_paths
+            album = actual_albums.get(record.path) or cached_album(record)
+            history_entry = history_albums.get(record.path)
+            history_outcome = (
+                str(history_entry.get("outcome", ""))
+                if isinstance(history_entry, dict)
+                else ""
+            )
+            postponed = False
+            age_hours = 0.0
+            if record.path in actual_albums:
+                postponed, age_hours = scan_completion_status(
+                    completion_history,
+                    album,
+                    cfg,
+                    sources,
+                    timeout_hours,
+                    now=model_now,
+                    policy_fingerprint=policy_fingerprint,
+                )
+            if record.path in bypassed or "bypass" in history_outcome.casefold():
+                status = "bypassed"
+            elif postponed:
+                status = "timeout"
+                timeout_paths.add(record.path)
+            elif isinstance(history_entry, dict) or album.local_art_files:
+                status = "processed"
+            else:
+                status = "unprocessed"
+            if record.path not in initialized_paths:
+                initialized_paths.add(record.path)
+                if select_new and status == "unprocessed":
+                    selected_paths.add(record.path)
+            return {
+                "path": record.path,
+                "artist": artist_by_path.get(
+                    record.artist_path,
+                    PickerArtist(record.artist_path, Path(record.artist_path).name, True),
+                ).name,
+                "artist_path": record.artist_path,
+                "album": record.name,
                 "status": status,
-                "formats": formats_found,
-                "local_art": [str(path) for path in album.local_art_files],
-                "tagged": False,
-                "album_mbid": "",
+                "formats": [
+                    "JPEG" if Path(path).suffix.lower() in {".jpg", ".jpeg"}
+                    else Path(path).suffix[1:].upper()
+                    for path in record.local_art
+                ],
+                "local_art": list(record.local_art),
                 "timeout_remaining": (
                     format_timeout_hours(max(0.0, timeout_hours - age_hours))
                     if postponed
                     else ""
                 ),
-                "selected": status == "unprocessed",
+                "selected": record.path in selected_paths,
+                "bypass_override": record.path in overrides,
             }
-        )
-        if album_index % 250 == 0:
-            emit_ui(
-                "activity",
-                category="inventory",
-                state="start",
-                source="history",
-                message=(
-                    f"History/status reconciliation: {album_index:,} / "
-                    f"{len(albums):,} albums"
-                ),
-            )
 
-    model_elapsed = time.perf_counter() - model_started
-    debug_log(
-        "select_media.model_ready "
-        f"albums={len(rows)} elapsed_seconds={model_elapsed:.6f}"
-    )
-    emit_ui(
-        "activity",
-        category="inventory",
-        state="done",
-        source="select-media",
-        message=f"Artist/Album model ready in {model_elapsed:.3f}s",
-    )
-
-    row_by_path = {str(row["path"]): row for row in rows}
-    tag_cancel = threading.Event()
-    tag_lock = threading.Lock()
-    tag_completed = 0
-    tag_failed = 0
-    tag_updates: list[dict[str, str]] = []
-    tag_last_publish = time.monotonic()
-    tag_thread: threading.Thread | None = None
-
-    def flush_tag_updates() -> None:
-        nonlocal tag_last_publish
-        if not tag_updates:
-            return
-        emit_ui("library_enrichment", items=list(tag_updates))
-        tag_updates.clear()
-        tag_last_publish = time.monotonic()
-
-    def publish_tag_result(
-        album: AlbumDir,
-        indexed: IndexedTrack | None,
-        error: str | None,
-    ) -> None:
-        nonlocal tag_completed, tag_failed
-        album_key = str(album.path)
-        if indexed is None:
-            tag_failed += 1
-            debug_log(
-                f"select_media.tag_index_failed album={album_key!r} error={error!r}"
-            )
-        else:
-            track = indexed.track
-            artist = (track.album_artist or track.artist or "").strip()
-            title = (track.album or "").strip()
-            mbid = valid_mbid(track.album_mbid) or ""
-            with tag_lock:
-                track_cache[album_key] = indexed
-                row = row_by_path.get(album_key)
-                if row is not None:
-                    if artist:
-                        row["artist"] = artist
-                    if title:
-                        row["album"] = title
-                    row["tagged"] = True
-                    row["album_mbid"] = mbid
-            tag_updates.append(
+        def model_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            nonlocal timeout_paths
+            timeout_paths = set()
+            records = scoped_records()
+            rows = [status_row(record) for record in records]
+            counts: dict[str, int] = {}
+            for record in records:
+                counts[record.artist_path] = counts.get(record.artist_path, 0) + 1
+            artist_rows = [
                 {
-                    "path": album_key,
-                    "artist": artist,
-                    "album": title,
-                    "album_mbid": mbid,
+                    "path": artist.path,
+                    "name": artist.name,
+                    "indexed": artist.indexed,
+                    "loaded": artist.path in loaded_artists,
+                    "album_count": counts.get(artist.path, 0),
                 }
-            )
-        tag_completed += 1
-        if (
-            len(tag_updates) >= 50
-            or time.monotonic() - tag_last_publish >= 0.1
-            or tag_completed == len(albums)
-        ):
-            flush_tag_updates()
-        if tag_completed % 250 == 0 or tag_completed == len(albums):
+                for artist in scoped_artists
+            ]
+            return artist_rows, rows
+
+        def emit_library(event: str) -> None:
+            artist_rows, rows = model_payload()
             emit_ui(
-                "activity",
-                category="inventory",
-                state="done" if tag_completed == len(albums) else "start",
-                source="mutagen",
-                message=(
-                    f"Tag index: {tag_completed:,} / {len(albums):,} albums"
-                    + (f" · {tag_failed:,} unreadable" if tag_failed else "")
-                ),
+                event,
+                root=str(root),
+                artists=artist_rows,
+                albums=rows,
+                picker_index=str(picker_path),
+                indexed_artists=sum(bool(item["indexed"]) for item in artist_rows),
+                select_new=select_new,
+                config=cfg,
+                aisplined=aisplined_settings(cfg),
+                ai_runtime_available=False,
             )
 
-    def run_tag_enrichment() -> None:
-        try:
-            enrich_representative_tracks(
-                albums,
-                tag_cancel,
-                publish_tag_result,
-            )
-        finally:
-            flush_tag_updates()
-
-    original_configured = resolve_sources(cfg, None, None, [])
-    while True:
-        with tag_lock:
-            visible_rows = [dict(row) for row in rows]
-        emit_ui(
-            "library",
-            root=str(root),
-            albums=visible_rows,
-            config=cfg,
-            aisplined=aisplined_settings(cfg),
-            ai_runtime_available=False,
+        elapsed = time.perf_counter() - started
+        debug_log(
+            "select_media.root_ready "
+            f"artists={len(scoped_artists)} cached_albums={len(scoped_records())} "
+            f"elapsed_seconds={elapsed:.6f}"
         )
-        if tag_thread is None:
-            tag_thread = threading.Thread(
-                target=run_tag_enrichment,
-                name="splined-tag-index-coordinator",
-                daemon=True,
-            )
-            tag_thread.start()
-        raw = read_input("", kind="library-selection")
-        try:
-            response = json.loads(raw)
-        except (TypeError, ValueError) as exc:
-            tag_cancel.set()
-            raise SplinedError("The TUI returned an invalid library selection.") from exc
-        if not isinstance(response, dict):
-            tag_cancel.set()
-            raise SplinedError("The TUI returned an invalid library selection.")
-        action = str(response.get("action", ""))
-        if action == "save-settings":
-            from tui.source_settings import persist_policy_draft
-
-            policy = response.get("policy")
-            if not isinstance(policy, dict):
-                tag_cancel.set()
-                raise SplinedError("The TUI source-policy draft is invalid.")
-            try:
-                updated = persist_policy_draft(config_file, policy, validate_config_v5)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                tag_cancel.set()
-                raise SplinedError(f"Unable to save Config v5 source policy: {exc}") from exc
-            cfg.clear()
-            cfg.update(updated)
-            newly_configured = resolve_sources(cfg, None, None, [])
-            if sources == original_configured:
-                sources = newly_configured
-            else:
-                sources = [source for source in newly_configured if source in sources]
-            original_configured = newly_configured
-            emit_ui(
-                "activity",
-                category="policy",
-                state="done",
-                source="config-v5",
-                message="Source policy saved atomically and applied",
-            )
-            continue
-        if action != "launch":
-            tag_cancel.set()
-            raise SplinedError("The TUI library workspace did not select a scan mode.")
-        selected_paths = {
-            str(value) for value in response.get("selected", []) if str(value)
-        }
-        overrides = {
-            str(value)
-            for value in response.get("bypass_overrides", [])
-            if str(value)
-        }
-        scan_mode = str(response.get("scan_mode", "auto-selected"))
-        if scan_mode in {"filtered-read", "auto-all", "auto-selected"}:
-            cfg["mode"] = "read"
-        elif scan_mode == "filtered-write":
-            cfg["mode"] = "write"
-        else:
-            tag_cancel.set()
-            raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
-        selected = [album for album in albums if str(album.path) in selected_paths]
         emit_ui(
             "activity",
-            category="selection",
+            category="inventory",
             state="done",
-            source="select-media",
+            source="picker-index",
             message=(
-                f"Launch scope confirmed · {len(selected):,} checked album(s) "
-                f"· {scan_mode}"
+                f"Artist picker ready · {len(scoped_artists):,} Artist(s) · "
+                f"{elapsed:.3f}s"
             ),
         )
-        tag_cancel.set()
-        with tag_lock:
-            cached_tracks = dict(track_cache)
-        return selected, cached_tracks, overrides, timeout_paths, sources
+        event = "library"
+        while True:
+            emit_library(event)
+            event = "library_update"
+            raw = read_input("", kind="library-selection")
+            try:
+                response = json.loads(raw)
+            except (TypeError, ValueError) as exc:
+                raise SplinedError("The TUI returned an invalid library selection.") from exc
+            if not isinstance(response, dict):
+                raise SplinedError("The TUI returned an invalid library selection.")
+
+            if "selected" in response:
+                selected_paths = {
+                    str(value) for value in response.get("selected", []) if str(value)
+                }
+            if "bypass_overrides" in response:
+                overrides = {
+                    str(value)
+                    for value in response.get("bypass_overrides", [])
+                    if str(value)
+                }
+            if "select_new" in response:
+                select_new = bool(response.get("select_new"))
+
+            action = str(response.get("action", ""))
+            if action == "load-artist":
+                artist_path = str(response.get("artist_path", ""))
+                refresh_artist(artist_path)
+                if bool(response.get("select_after_load", False)):
+                    for row in model_payload()[1]:
+                        if row["artist_path"] == artist_path and row["status"] == "unprocessed":
+                            selected_paths.add(str(row["path"]))
+                continue
+            if action == "refresh-index":
+                full_started = time.perf_counter()
+                index.clear_inventory()
+                actual_albums.clear()
+                loaded_artists.clear()
+                for number, artist in enumerate(scoped_artists, 1):
+                    refresh_artist(artist.path)
+                    emit_ui(
+                        "activity",
+                        category="inventory",
+                        state="start",
+                        source="picker-index",
+                        message=(
+                            f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
+                            f"Albums discovered: {len(actual_albums):,}"
+                        ),
+                    )
+                emit_ui(
+                    "activity",
+                    category="inventory",
+                    state="done",
+                    source="picker-index",
+                    message=(
+                        f"Library index refreshed · {len(scoped_artists):,} Artist(s) · "
+                        f"{len(actual_albums):,} Album(s) · "
+                        f"{time.perf_counter() - full_started:.3f}s"
+                    ),
+                )
+                continue
+            if action == "save-settings":
+                from tui.source_settings import persist_policy_draft
+
+                policy = response.get("policy")
+                if not isinstance(policy, dict):
+                    raise SplinedError("The TUI source-policy draft is invalid.")
+                try:
+                    updated = persist_policy_draft(config_file, policy, validate_config_v5)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    raise SplinedError(f"Unable to save Config v5 source policy: {exc}") from exc
+                cfg.clear()
+                cfg.update(updated)
+                newly_configured = resolve_sources(cfg, None, None, [])
+                if sources == original_configured:
+                    sources = newly_configured
+                else:
+                    sources = [source for source in newly_configured if source in sources]
+                original_configured = newly_configured
+                emit_ui(
+                    "activity",
+                    category="policy",
+                    state="done",
+                    source="config-v5",
+                    message="Source policy saved atomically and applied",
+                )
+                continue
+            if action != "launch":
+                raise SplinedError("The TUI library workspace did not select a scan mode.")
+
+            scan_mode = str(response.get("scan_mode", "auto-selected"))
+            if scan_mode in {"filtered-read", "auto-all", "auto-selected"}:
+                cfg["mode"] = "read"
+            elif scan_mode == "filtered-write":
+                cfg["mode"] = "write"
+            else:
+                raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
+
+            records = scoped_records()
+            record_by_path = {record.path: record for record in records}
+            if scan_mode == "auto-all":
+                full_started = time.perf_counter()
+                for number, artist in enumerate(scoped_artists, 1):
+                    refresh_artist(artist.path)
+                    emit_ui(
+                        "activity",
+                        category="inventory",
+                        state="start",
+                        source="auto-all",
+                        message=(
+                            f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
+                            f"Albums discovered: {len(actual_albums):,}"
+                        ),
+                    )
+                emit_ui(
+                    "activity",
+                    category="inventory",
+                    state="done",
+                    source="auto-all",
+                    message=(
+                        f"Full library index ready · {len(scoped_artists):,} Artist(s) · "
+                        f"{len(actual_albums):,} Album(s) · "
+                        f"{time.perf_counter() - full_started:.3f}s"
+                    ),
+                )
+                rows = model_payload()[1]
+                selected_paths |= {
+                    str(row["path"]) for row in rows if row["status"] == "unprocessed"
+                }
+            else:
+                required_artists = {
+                    record_by_path[path].artist_path
+                    for path in selected_paths
+                    if path in record_by_path
+                }
+                for artist_path in sorted(required_artists, key=str.casefold):
+                    refresh_artist(artist_path)
+
+            rows = model_payload()[1]
+            row_by_path = {str(row["path"]): row for row in rows}
+            selected_paths = {
+                path
+                for path in selected_paths
+                if path in actual_albums
+                and path in row_by_path
+                and row_by_path[path]["status"] != "timeout"
+                and (
+                    row_by_path[path]["status"] != "bypassed"
+                    or path in overrides
+                )
+            }
+            selected = [
+                actual_albums[path]
+                for path in sorted(selected_paths, key=str.casefold)
+            ]
+            known = [
+                actual_albums[path]
+                for path in sorted(actual_albums, key=str.casefold)
+            ]
+            emit_ui(
+                "activity",
+                category="selection",
+                state="done",
+                source="select-media",
+                message=(
+                    f"Launch scope confirmed · {len(selected):,} checked album(s) "
+                    f"· {scan_mode}"
+                ),
+            )
+            return selected, overrides, timeout_paths, sources, known
+    finally:
+        index.close()
 
 
 def compact(paths: list[Path]) -> str:
@@ -2800,13 +2871,19 @@ def image_format(image: Image.Image) -> str:
 
 
 def prepare_run_cache(cache: Path) -> None:
-    """Reset the disposable runtime cache once at the start of an operational scan."""
+    """Reset transient scan data while retaining the disposable picker index."""
     if cache.exists():
         if cache.is_symlink() or not cache.is_dir():
             raise SplinedError(f"Refusing to clean unsafe SPLINED cache directory: {cache}")
         if cache.parent == cache or not cache.name:
             raise SplinedError(f"Refusing to clean unsafe SPLINED cache path: {cache}")
         for path in cache.iterdir():
+            if path.name in {
+                PICKER_DB_NAME,
+                f"{PICKER_DB_NAME}-wal",
+                f"{PICKER_DB_NAME}-shm",
+            } or path.name.startswith(f"{PICKER_DB_NAME}.corrupt-"):
+                continue
             if path.is_symlink():
                 path.unlink()
             elif path.is_dir():
@@ -3754,7 +3831,12 @@ def render_candidate_table(
                 "approved": candidate.ref.approved,
                 "id": str(candidate.ref.id),
                 "url": candidate.ref.url,
-                "provenance": "[URL]",
+                "path": str(candidate.path),
+                "provenance": (
+                    "[LOCAL]"
+                    if candidate.source in {"local", "webpstill", "embedded"}
+                    else "[Enhanced]" if candidate.source == "enhanced" else "[URL]"
+                ),
                 "selected": candidate is selected,
                 "suggested": candidate is suggested,
             }
@@ -4022,45 +4104,20 @@ def run_scan_dir(
             ),
         )
 
-    inventory_started = time.perf_counter()
-    emit_ui(
-        "activity",
-        category="inventory",
-        state="start",
-        source="filesystem",
-        message="Lightweight library inventory started",
-    )
-    discovered_albums, ignored_dirs = inventory(
-        root,
-        ignored,
-        str(output.get("file_name", "cover")),
-        fingerprint_paths=fingerprint_paths,
-        progress=inventory_progress,
-    )
-    inventory_elapsed = time.perf_counter() - inventory_started
-    emit_ui(
-        "activity",
-        category="inventory",
-        state="done",
-        source="filesystem",
-        message=(
-            f"Lightweight inventory complete: {len(discovered_albums)} album(s) "
-            f"in {inventory_elapsed:.3f}s"
-        ),
-    )
-
     albums: list[AlbumDir] = []
     postponed_albums: list[tuple[AlbumDir, float]] = []
-    track_cache: dict[str, IndexedTrack] = {}
+    discovered_albums: list[AlbumDir] = []
+    ignored_dirs: list[Path] = []
     if tui_active():
-        albums, track_cache, _, timeout_paths, sources = prepare_tui_library_selection(
+        albums, _, timeout_paths, sources, discovered_albums = prepare_tui_library_selection(
             config_file,
             cfg,
             sources,
             root,
-            discovered_albums,
             completion_history,
             timeout_hours,
+            cache=cache,
+            library_root=library_root,
         )
         postponed_albums = [
             (album, 0.0)
@@ -4069,6 +4126,19 @@ def run_scan_dir(
         ]
         mode = str(cfg.get("mode", "read")).lower()
     else:
+        inventory_started = time.perf_counter()
+        discovered_albums, ignored_dirs = inventory(
+            root,
+            ignored,
+            str(output.get("file_name", "cover")),
+            fingerprint_paths=fingerprint_paths,
+            progress=inventory_progress,
+        )
+        inventory_elapsed = time.perf_counter() - inventory_started
+        debug_log(
+            "scan.inventory_complete "
+            f"albums={len(discovered_albums)} elapsed_seconds={inventory_elapsed:.6f}"
+        )
         completion_now = time.time()
         policy_fingerprint = scan_policy_fingerprint(cfg, sources)
         for album in discovered_albums:
@@ -4148,7 +4218,7 @@ def run_scan_dir(
             "fallback_reason": None,
         }
         try:
-            tracks = read_album_tracks(album, track_cache)
+            tracks = read_album_tracks(album)
             record["tracks"] = tracks
             record["file_count"] = len(tracks)
             record["compilation"] = "Compilation" if any((t.compilation or "").strip() == "1" for t in tracks) else "Standard"

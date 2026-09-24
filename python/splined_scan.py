@@ -221,6 +221,7 @@ def render_candidate_table(
                 "approved": candidate.ref.approved,
                 "id": str(candidate.ref.id),
                 "url": candidate.ref.url,
+                "path": str(candidate.path),
                 "provenance": candidate_provenance(candidate),
                 "comparison": comparison,
                 "crop_risk": crop_risk,
@@ -1060,39 +1061,29 @@ def run_scan_dir(
             ),
         )
 
-    inventory_started = core.time.perf_counter()
-    core.emit_ui(
-        "activity",
-        category="inventory",
-        state="start",
-        source="filesystem",
-        message="Lightweight library inventory started",
-    )
-    discovered_albums, ignored_dirs = core.inventory(
-        root,
-        ignored,
-        str(output.get("file_name", "cover")),
-        fingerprint_paths=fingerprint_paths,
-        progress=inventory_progress,
-    )
-    inventory_elapsed = core.time.perf_counter() - inventory_started
-    core.emit_ui(
-        "activity",
-        category="inventory",
-        state="done",
-        source="filesystem",
-        message=(
-            f"Lightweight inventory complete: {len(discovered_albums)} album(s) "
-            f"in {inventory_elapsed:.3f}s"
-        ),
-    )
+    discovered_albums: list[core.AlbumDir] = []
+    ignored_dirs: list[Path] = []
+    if not core.tui_active():
+        inventory_started = core.time.perf_counter()
+        discovered_albums, ignored_dirs = core.inventory(
+            root,
+            ignored,
+            str(output.get("file_name", "cover")),
+            fingerprint_paths=fingerprint_paths,
+            progress=inventory_progress,
+        )
+        inventory_elapsed = core.time.perf_counter() - inventory_started
+        core.debug_log(
+            "scan.inventory_complete "
+            f"albums={len(discovered_albums)} elapsed_seconds={inventory_elapsed:.6f}"
+        )
 
-    if not discovered_albums:
-        print(core.red("ERROR: No supported audio files were found in this directory or any sub-directory:"), file=sys.stderr)
-        print(core.red(str(root)), file=sys.stderr)
-        print(file=sys.stderr)
-        print_help(config_file, cfg)
-        return 2
+        if not discovered_albums:
+            print(core.red("ERROR: No supported audio files were found in this directory or any sub-directory:"), file=sys.stderr)
+            print(core.red(str(root)), file=sys.stderr)
+            print(file=sys.stderr)
+            print_help(config_file, cfg)
+            return 2
 
     sample_dir = core.prepare_samples(cache)
 
@@ -1102,22 +1093,22 @@ def run_scan_dir(
 
     albums: list[core.AlbumDir] = []
     postponed_albums: list[tuple[core.AlbumDir, float]] = []
-    track_cache: dict[str, core.IndexedTrack] = {}
     if core.tui_active():
         bypassed_paths = (
             set()
             if _BYPASS_OVERRIDE
             else {str(value) for value in bypass_history.get("albums", {})}
         )
-        albums, track_cache, bypass_overrides, timeout_paths, sources = (
+        albums, bypass_overrides, timeout_paths, sources, discovered_albums = (
             core.prepare_tui_library_selection(
                 config_file,
                 cfg,
                 sources,
                 root,
-                discovered_albums,
                 completion_history,
                 timeout_hours,
+                cache=cache,
+                library_root=library_root,
                 bypassed_paths=bypassed_paths,
             )
         )
@@ -1211,7 +1202,7 @@ def run_scan_dir(
             "fallback_reason": None,
         }
         try:
-            tracks = core.read_album_tracks(album, track_cache)
+            tracks = core.read_album_tracks(album)
             record["tracks"] = tracks
             record["file_count"] = len(tracks)
             record["compilation"] = (

@@ -11,7 +11,6 @@ import signal
 import sys
 import threading
 import time
-import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
@@ -61,7 +60,13 @@ from .library import (
     LibraryModel,
     artist_status,
 )
-from .layout import Breakpoint, layout_spec
+from .layout import (
+    Breakpoint,
+    CandidateColumnLayout,
+    candidate_column_layout,
+    layout_spec,
+)
+from .preview import ArtworkPreview, generate_preview
 from .semantic import Semantic, log_semantic, outcome_semantic, range_semantic
 from .status import use_adapter
 from .source_settings import PolicyDraft, PRIMARY_METADATA_SOURCES
@@ -98,6 +103,7 @@ class CandidateView:
     crop_risk: str = "equal"
     ai_review: bool | None = None
     ai_key: str = ""
+    path: str = ""
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "CandidateView":
@@ -125,6 +131,7 @@ class CandidateView:
                 else None
             ),
             ai_key=str(payload.get("ai_key", payload.get("number", ""))),
+            path=str(payload.get("path", "")),
         )
 
 
@@ -222,6 +229,9 @@ class TuiState:
     ai_activity: AiActivityState = field(default_factory=AiActivityState)
     upscale_below_ideal: bool = False
     dialog_kind: str = ""
+    preview_cache: dict[str, ArtworkPreview | None] = field(default_factory=dict)
+    url_modal_open: bool = False
+    url_value: str = ""
     transient: str = ""
     help_open: bool = False
     dialog_open: bool = False
@@ -231,10 +241,13 @@ class TuiState:
     exception: BaseException | None = None
 
     def apply(self, event: str, payload: dict[str, Any]) -> None:
-        if event == "library":
+        if event in {"library", "library_update"}:
             self.workflow = "library"
             self.workspace = "library"
-            self.library = LibraryModel.from_payload(payload)
+            if event == "library" or self.library is None:
+                self.library = LibraryModel.from_payload(payload)
+            else:
+                self.library.merge_payload(payload)
             config = payload.get("config", {})
             if isinstance(config, dict):
                 self.policy = PolicyDraft.from_config(config)
@@ -245,19 +258,6 @@ class TuiState:
                     self.ai_runtime_available = bool(payload.get("ai_runtime_available", False))
                 if isinstance(output, dict):
                     self.upscale_below_ideal = bool(output.get("upscale_below_ideal", False))
-        elif event == "library_enrichment":
-            if self.library is not None and self.workflow == "library":
-                raw_items = payload.get("items")
-                items = raw_items if isinstance(raw_items, list) else [payload]
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    self.library.apply_tag_enrichment(
-                        str(item.get("path", "")),
-                        artist=str(item.get("artist", "")),
-                        album=str(item.get("album", "")),
-                        album_mbid=str(item.get("album_mbid", "")),
-                    )
         elif event == "scan_start":
             self.workflow = "overview"
             self.album_total = int(payload.get("total", 0))
@@ -598,7 +598,9 @@ def _album_status_semantic(status: AlbumStatus) -> Semantic:
     }[status]
 
 
-def _artist_status_semantic(status: ArtistStatus) -> Semantic:
+def _artist_status_semantic(status: ArtistStatus | None) -> Semantic:
+    if status is None:
+        return Semantic.MUTED
     return {
         ArtistStatus.UNPROCESSED: Semantic.TEXT,
         ArtistStatus.PARTIAL: Semantic.HISTORY,
@@ -736,10 +738,15 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
         marker = "›" if index == state.artist_index else " "
         checked = "☑" if artist.selected_count else "☐"
         semantic = _artist_status_semantic(artist.status)
+        status_label = (
+            STATUS_LABELS[artist.status]
+            if artist.status is not None
+            else "Inventory not loaded"
+        )
         lines.append(Line([
             Span(f"{marker} {checked} ", style(theme, Semantic.ACTIVE if index == state.artist_index else semantic, bold=index == state.artist_index)),
             Span(_truncate(artist.name, max(4, body.width - 27)), style(theme, semantic)),
-            Span(f"  {STATUS_LABELS[artist.status]} {artist.selected_count}/{artist.album_count}", style(theme, semantic)),
+            Span(f"  {status_label} {artist.selected_count}/{artist.album_count}", style(theme, semantic)),
         ]))
     if not lines:
         lines.append(Line([Span("No artists match the active filters.", style(theme, Semantic.MUTED))]))
@@ -810,10 +817,11 @@ def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme)
     text = (
         f"Path  {_truncate(str(stats['path']), max(8, area.width - 9))}\n"
         f"Artists  {stats['artists']} total · {stats['visible_artists']} visible\n"
-        f"Albums   {stats['albums']} total · {stats['visible_albums']} visible\n"
-        f"Selected {stats['selected']} · Tagged {stats['tagged']} · MBID {stats['musicbrainz']}\n"
+        f"Indexed  {stats['indexed_artists']} · validated now {stats['loaded_artists']}\n"
+        f"Albums   {stats['albums']} indexed · {stats['visible_albums']} visible\n"
+        f"Selected {stats['selected']}\n"
         f"Artwork  {formats}\n"
-        "[P] Source Policy Settings"
+        "[P] Source Policy · [R] Refresh Library Index"
     )
     frame.render_widget(
         Paragraph.from_string(text).block(card(theme, "MEDIA LIBRARY STATISTICS", Semantic.ACTIVE)), area
@@ -1066,58 +1074,106 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
     frame.render_stateful_table(table, area, table_state)
 
 
-def _candidate_facts(candidate: CandidateView, selected: bool) -> str:
-    marker = "›" if selected else " "
-    star = "★" if candidate.suggested else str(candidate.number)
-    return (
-        f"{marker}{star:>2} {candidate.width}×{candidate.height} "
-        f"{candidate.format.upper():<5} {candidate.range_type:<13} "
-        f"Δ{candidate.distance:<5} "
-        f"Square {'yes' if candidate.square else 'no'} · "
-        f"Accept {'yes' if candidate.acceptable else 'no'} · "
-        f"Approved {'yes' if candidate.approved else 'no'} · "
-    )
+CANDIDATE_HEADERS = {
+    "#": "#",
+    "ai_enhanced": "AI ENHANCED",
+    "ai_splined": "AI SPLINED",
+    "source": "SOURCE",
+    "resolution": "RESOLUTION",
+    "format": "FORMAT",
+    "range": "RANGE TYPE",
+    "distance": "DISTANCE",
+    "square": "SQUARE",
+    "acceptable": "ACCEPTABLE",
+    "approved": "APPROVED",
+    "url": "URL",
+}
 
 
-def _candidate_line(candidate: CandidateView, state: TuiState, theme: Theme) -> Line:
-    selected = state.candidates and state.candidates[state.selected_index] is candidate
-    semantic = range_semantic(candidate.range_type)
-    facts = _candidate_facts(candidate, bool(selected))
-    spans = [Span(facts, style(theme, Semantic.ACTIVE if selected else semantic, bold=selected))]
-    provenance = candidate.provenance or "[URL]"
-    provenance_style = style(
-        theme,
-        Semantic.DEBUG if provenance == "[URL]" else Semantic.SPECIAL if provenance == "[Enhanced]" else Semantic.ACCEPTED,
-        bold=True,
+def _candidate_value(candidate: CandidateView, column: str, state: TuiState) -> str:
+    selected = bool(
+        state.candidates and state.candidates[state.selected_index] is candidate
     )
-    if provenance == "[URL]":
-        provenance_style = provenance_style.underlined()
-    spans.append(Span(provenance, provenance_style))
-    if state.ai_enabled:
-        review = "yes" if candidate.ai_review is True else "no" if candidate.ai_review is False else "unavailable"
-        enhancement = state.ai_selection.label(candidate.ai_key) if state.ai_selection else "N/A"
-        ai_semantic = (
-            Semantic.DISABLED
-            if enhancement == "N/A" or (state.ai_selection and state.ai_selection.disabled(candidate.ai_key))
-            else Semantic.SPECIAL
+    enhancement = (
+        state.ai_selection.label(candidate.ai_key)
+        if state.ai_enabled and state.ai_selection is not None
+        else "N/A"
+    )
+    return {
+        "#": f"›{candidate.number}" if selected else "★" if candidate.suggested else str(candidate.number),
+        "ai_enhanced": enhancement,
+        "ai_splined": (
+            "✓ yes" if candidate.ai_review is True else "✕ no" if candidate.ai_review is False else "N/A"
+        ),
+        "source": candidate.source,
+        "resolution": f"{candidate.width}×{candidate.height}",
+        "format": candidate.format.upper(),
+        "range": candidate.range_type,
+        "distance": str(candidate.distance),
+        "square": "✓ yes" if candidate.square else "✕ no",
+        "acceptable": "✓ yes" if candidate.acceptable else "✕ no",
+        "approved": "✓ yes" if candidate.approved else "✕ no",
+        "url": candidate.provenance or ("[URL]" if candidate.url else "N/A"),
+    }[column]
+
+
+def _candidate_cell_style(
+    candidate: CandidateView,
+    column: str,
+    state: TuiState,
+    theme: Theme,
+) -> Style:
+    selected = bool(
+        state.candidates and state.candidates[state.selected_index] is candidate
+    )
+    semantic = Semantic.TEXT
+    if column == "range":
+        semantic = range_semantic(candidate.range_type)
+    elif column in {"square", "acceptable", "approved"}:
+        truth = {
+            "square": candidate.square,
+            "acceptable": candidate.acceptable,
+            "approved": candidate.approved,
+        }[column]
+        semantic = Semantic.ACCEPTED if truth else Semantic.REJECTED
+    elif column in {"ai_enhanced", "ai_splined"}:
+        unavailable = _candidate_value(candidate, column, state) == "N/A"
+        disabled = bool(
+            column == "ai_enhanced"
+            and state.ai_selection
+            and state.ai_selection.disabled(candidate.ai_key)
         )
-        spans.extend([
-            Span(f" · AI SPLINED {review} · ", style(theme, Semantic.SPECIAL if candidate.ai_review is not None else Semantic.DISABLED)),
-            Span(f"AI ENHANCED {enhancement}", style(theme, ai_semantic)),
-        ])
-    return Line(spans)
+        semantic = Semantic.DISABLED if unavailable or disabled else Semantic.SPECIAL
+    elif column == "url":
+        semantic = (
+            Semantic.DEBUG
+            if candidate.provenance == "[URL]"
+            else Semantic.SPECIAL
+            if candidate.provenance == "[Enhanced]"
+            else Semantic.ACCEPTED
+        )
+    elif selected:
+        semantic = Semantic.ACTIVE
+    result = style(theme, semantic, bold=selected or column == "url")
+    return result.underlined() if column == "url" and candidate.provenance == "[URL]" else result
 
 
 def _register_candidate_hits(
     state: TuiState,
     area: Rect,
-    row: int,
+    data_row: int,
     candidate: CandidateView,
+    grid: CandidateColumnLayout,
     *,
     preferred: bool = False,
 ) -> None:
     candidate_index = state.candidates.index(candidate)
-    row_area = _row_rect(area, row)
+    row_area = Rect(
+        int(area.x) + 1,
+        int(area.y) + 2 + data_row,
+        max(1, int(area.width) - 2),
+        1,
+    )
     _register_hit(
         state,
         "preferred-candidate" if preferred else "candidate-row",
@@ -1125,42 +1181,127 @@ def _register_candidate_hits(
         index=candidate_index,
         value=candidate.ai_key,
     )
-    selected = state.candidates and state.candidates[state.selected_index] is candidate
-    facts_width = len(_candidate_facts(candidate, bool(selected)))
-    provenance = candidate.provenance or "[URL]"
-    url_x = min(
-        int(row_area.x) + max(0, int(row_area.width) - len(provenance)),
-        int(area.x) + 1 + facts_width,
-    )
-    if state.ai_enabled:
-        ai_width = max(14, min(24, int(row_area.width) // 4))
+    if "ai_enhanced" in grid.columns:
         _register_hit(
             state,
             "candidate-ai",
             Rect(
-                int(row_area.x) + max(0, int(row_area.width) - ai_width),
+                int(area.x) + 1 + grid.start("ai_enhanced"),
                 int(row_area.y),
-                min(ai_width, int(row_area.width)),
+                grid.width("ai_enhanced"),
                 1,
             ),
             index=candidate_index,
             value=candidate.ai_key,
         )
-    if provenance == "[URL]" and candidate.url:
+    if "url" in grid.columns and candidate.provenance == "[URL]" and candidate.url:
         _register_hit(
             state,
             "candidate-url",
-            Rect(url_x, int(row_area.y), len(provenance), 1),
+            Rect(
+                int(area.x) + 1 + grid.start("url"),
+                int(row_area.y),
+                grid.width("url"),
+                1,
+            ),
             index=candidate_index,
             value=candidate.url,
         )
 
 
-def _candidate_header(state: TuiState, theme: Theme) -> Line:
-    prefix = " #  RESOLUTION   FORMAT RANGE TYPE    DISTANCE SQUARE · ACCEPTABLE · APPROVED · URL"
-    if state.ai_enabled:
-        prefix += " · AI SPLINED · AI ENHANCED"
-    return Line([Span(prefix, style(theme, Semantic.ACTIVE, bold=True))])
+def _render_candidate_table_group(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+    grid: CandidateColumnLayout,
+    candidates: list[CandidateView],
+    *,
+    title: str,
+    semantic: Semantic,
+    preferred: bool = False,
+) -> None:
+    header = Row(
+        [
+            Cell(CANDIDATE_HEADERS[column], style(theme, Semantic.ACTIVE, bold=True))
+            for column in grid.columns
+        ]
+    )
+    rows = [
+        Row(
+            [
+                Cell(
+                    _candidate_value(candidate, column, state),
+                    _candidate_cell_style(candidate, column, state, theme),
+                )
+                for column in grid.columns
+            ]
+        )
+        for candidate in candidates
+    ]
+    table = (
+        Table(
+            rows,
+            [Constraint.length(value) for value in grid.widths],
+            header,
+        )
+        .block(card(theme, title, semantic))
+        .column_spacing(grid.spacing)
+    )
+    frame.render_widget(table, area)
+    for row, candidate in enumerate(candidates):
+        _register_candidate_hits(
+            state,
+            area,
+            row,
+            candidate,
+            grid,
+            preferred=preferred,
+        )
+
+
+def _candidate_preview(state: TuiState, candidate: CandidateView) -> ArtworkPreview | None:
+    key = candidate.path
+    if not key:
+        return None
+    if key not in state.preview_cache:
+        state.preview_cache[key] = generate_preview(key)
+    return state.preview_cache[key]
+
+
+def _render_candidate_preview(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+    candidate: CandidateView,
+) -> None:
+    preview = _candidate_preview(state, candidate)
+    if preview is None:
+        frame.render_widget(
+            Paragraph.from_string("NO PREVIEW")
+            .centered()
+            .style(style(theme, Semantic.MUTED))
+            .block(card(theme, "ARTWORK", Semantic.MUTED)),
+            area,
+        )
+        return
+    lines = [
+        Line(
+            [
+                Span(
+                    "▀",
+                    Style().fg(Color.rgb(*top)).bg(Color.rgb(*bottom)),
+                )
+                for top, bottom in row
+            ]
+        )
+        for row in preview.rows[: max(0, int(area.height) - 2)]
+    ]
+    frame.render_widget(
+        Paragraph(Text(lines)).centered().block(card(theme, "ARTWORK", Semantic.ACTIVE)),
+        area,
+    )
 
 
 def _candidate_groups(state: TuiState) -> list[tuple[str, list[CandidateView], Semantic]]:
@@ -1266,6 +1407,24 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             area, [Constraint.length(16), Constraint.fill(1)]
         )
         _render_library_embedded(frame, library_area, state, theme)
+    preview_enabled = spec.breakpoint is Breakpoint.WIDE and int(area.width) >= 150
+    preview_width = 12 if preview_enabled else 0
+    table_width = int(area.width) - (preview_width + 1 if preview_enabled else 0)
+    grid = candidate_column_layout(
+        table_width,
+        int(area.height),
+        ai_enabled=state.ai_enabled,
+    )
+
+    def candidate_areas(panel: Rect) -> tuple[Rect, Rect | None]:
+        if not preview_enabled:
+            return panel, None
+        table_area, preview_area = _split_horizontal(
+            panel,
+            [Constraint.fill(1), Constraint.length(preview_width)],
+        )
+        return table_area, preview_area
+
     target = next((item for item in state.candidates if item.suggested or item.selected), None)
     if target is None and state.candidates:
         target = state.candidates[0]
@@ -1280,48 +1439,52 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             toward = local.distance - target.distance
             comparison = f"{target.source} {toward:+d}px toward Ideal · Shape {'equal' if local.square == target.square else 'changed'} · Crop risk {target.crop_risk}"
 
+    preferred_height = 7 if preview_enabled else 4
     if spec.stack_cards:
-        top = _split_vertical(area, [Constraint.length(3), Constraint.length(3), Constraint.length(3), Constraint.length(4), Constraint.length(4), Constraint.fill(1), Constraint.length(5)])
+        top = _split_vertical(area, [Constraint.length(3), Constraint.length(3), Constraint.length(3), Constraint.length(4), Constraint.length(preferred_height), Constraint.fill(1), Constraint.length(5)])
         summary_areas = [top[0], top[1], top[2]]
         current, preferred, groups_area, activity_area = top[3], top[4], top[5], top[6]
         label = " • ".join(part for part in (state.artist, state.album) if part) or state.album_path
         details = f"Tracks {state.track_count or '—'} · Compilation {state.compilation or '—'} · Authority {state.authority or '—'} · Tagged {state.tag_state or '—'}"
         current_text = _truncate(label, max(1, area.width - 5)) + "\n" + _truncate(details, max(1, area.width - 5))
         frame.render_widget(Paragraph.from_string(current_text).block(card(theme, "CURRENT ALBUM", Semantic.ACTIVE)), current)
-        preferred_lines = (
-            [Line([Span("No suggested candidate", style(theme, Semantic.MUTED))])]
-            if target is None
-            else [
-                Line([Span(f"★★ (S) Suggested {target.source}", style(theme, Semantic.FALLBACK, bold=True))]),
-                _candidate_line(target, state, theme),
-            ]
-        )
         preferred_semantic = Semantic.ACCEPTED if target and target.range_type == "Ideal" else Semantic.FALLBACK
-        frame.render_widget(Paragraph(Text(preferred_lines)).block(card(theme, "PREFERRED SOURCE CANDIDATE", preferred_semantic)), preferred)
-        if target is not None:
-            _register_candidate_hits(state, preferred, 1, target, preferred=True)
     else:
         top, current, preferred, groups_area, activity_area = _split_vertical(
             area,
-            [Constraint.length(4), Constraint.length(4), Constraint.length(4), Constraint.fill(1), Constraint.length(6)],
+            [Constraint.length(4), Constraint.length(4), Constraint.length(preferred_height), Constraint.fill(1), Constraint.length(6)],
         )
         summary_areas = _split_horizontal(top, [Constraint.percentage(27), Constraint.percentage(46), Constraint.fill(1)])
         label = " • ".join(part for part in (state.artist, state.album) if part) or state.album_path
         details = f"Tracks {state.track_count or '—'} · Compilation {state.compilation or '—'} · Authority {state.authority or '—'} · Tagged {state.tag_state or '—'}"
         current_text = _truncate(label, max(1, area.width - 5)) + "\n" + _truncate(details, max(1, area.width - 5))
         frame.render_widget(Paragraph.from_string(current_text).block(card(theme, "CURRENT ALBUM", Semantic.ACTIVE)), current)
-        preferred_lines = (
-            [Line([Span("No suggested candidate", style(theme, Semantic.MUTED))])]
-            if target is None
-            else [
-                Line([Span(f"★★ (S) Suggested {target.source}", style(theme, Semantic.FALLBACK, bold=True))]),
-                _candidate_line(target, state, theme),
-            ]
-        )
         preferred_semantic = Semantic.ACCEPTED if target and target.range_type == "Ideal" else Semantic.FALLBACK
-        frame.render_widget(Paragraph(Text(preferred_lines)).block(card(theme, "PREFERRED SOURCE CANDIDATE", preferred_semantic)), preferred)
-        if target is not None:
-            _register_candidate_hits(state, preferred, 1, target, preferred=True)
+
+    preferred_table, preferred_preview = candidate_areas(preferred)
+    if target is None:
+        frame.render_widget(
+            Paragraph.from_string("No suggested candidate").block(
+                card(theme, "PREFERRED SOURCE CANDIDATE", preferred_semantic)
+            ),
+            preferred_table,
+        )
+    else:
+        _render_candidate_table_group(
+            frame,
+            preferred_table,
+            state,
+            theme,
+            grid,
+            [target],
+            title=f"★★ PREFERRED SOURCE CANDIDATE · (S) SUGGESTED {target.source}",
+            semantic=preferred_semantic,
+            preferred=True,
+        )
+        if preferred_preview is not None:
+            _render_candidate_preview(
+                frame, preferred_preview, state, theme, target
+            )
 
     selected_albums = (
         [item for item in state.library.albums if item.selected]
@@ -1351,7 +1514,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         for group_index, group in enumerate(
             groups[state.group_scroll :], start=state.group_scroll
         ):
-            wanted = min(8, len(group[1]) + 3)
+            wanted = min(8, max(7 if preview_enabled else 4, len(group[1]) + 3))
             if visible_groups and remaining < 4:
                 break
             height = min(wanted, remaining) if not visible_groups else min(wanted, max(4, remaining))
@@ -1364,7 +1527,8 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             groups_area, [Constraint.length(value) for value in heights]
         )
         for panel, (group_index, name, candidates, semantic) in zip(panels, visible_groups):
-            row_capacity = max(1, panel.height - 3)
+            table_panel, preview_panel = candidate_areas(panel)
+            row_capacity = max(1, table_panel.height - 3)
             if group_index == state.group_scroll:
                 state.candidate_page_size = int(row_capacity)
                 state.candidate_row_scroll = max(
@@ -1383,12 +1547,6 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 suffix += f" · ROWS {row_start + 1}-{row_start + len(shown)}/{len(candidates)}"
             if len(groups) > len(visible_groups):
                 suffix += f" · GROUP {state.group_scroll + 1}/{len(groups)}"
-            frame.render_widget(
-                Paragraph(Text([_candidate_header(state, theme)] + [_candidate_line(item, state, theme) for item in shown])).block(
-                    card(theme, f"SOURCE CANDIDATES {name.upper()}{suffix}", semantic)
-                ),
-                panel,
-            )
             _register_hit(
                 state,
                 "candidate-scroll",
@@ -1396,8 +1554,28 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 index=group_index,
                 value=name,
             )
-            for row_offset, item in enumerate(shown, start=1):
-                _register_candidate_hits(state, panel, row_offset, item)
+            _render_candidate_table_group(
+                frame,
+                table_panel,
+                state,
+                theme,
+                grid,
+                shown,
+                title=f"SOURCE CANDIDATES {name.upper()}{suffix}",
+                semantic=semantic,
+            )
+            preview_candidate = next(
+                (
+                    item
+                    for item in shown
+                    if state.candidates[state.selected_index] is item
+                ),
+                shown[0] if shown else None,
+            )
+            if preview_panel is not None and preview_candidate is not None:
+                _render_candidate_preview(
+                    frame, preview_panel, state, theme, preview_candidate
+                )
     else:
         frame.render_widget(Paragraph.from_string("No candidates returned.").block(card(theme, "SOURCE CANDIDATES", Semantic.WARNING)), groups_area)
     _render_activity_region(frame, activity_area, state, theme)
@@ -1587,7 +1765,7 @@ def _footer_text(state: TuiState) -> str:
         if kind == "library-selection":
             if state.workspace == "policy":
                 return "↑/↓ settings · PgUp/PgDn scroll · Mouse/touch enabled · Ctrl+S Save/Apply · Esc library · ? help"
-            return "↑/↓ move · / filter · PgUp/PgDn scroll · Mouse/touch select · P policy · Ctrl+C stop · ? help"
+            return "↑/↓ move · Enter open Artist · Space select · / filter · P policy · R rebuild index · Ctrl+C stop"
         if kind in {"artist", "album", "text"}:
             return f"{state.input_request.prompt}{state.input_buffer}   Enter confirm · Esc keep current"
         if kind == "local-comparison":
@@ -1623,13 +1801,14 @@ def _render_help(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
         "Home / End     first / last row\n"
         "Mouse / touch  rows, checkboxes, filters, links, dialogs, scrolling\n"
         "P / Ctrl+S     source policy / explicit Save & Apply\n"
+        "R              explicitly rebuild the full picker index\n"
         "S              use suggested candidate\n"
         "K              keep local artwork\n"
         "F              edit fallback artist/album\n"
         "M              MusicBrainz retry/search/pick\n"
         "B              confirm bypass\n"
         "0-9            exact candidate selection\n"
-        "U              open highlighted [URL] using the system URL handler\n"
+        "U              open highlighted terminal-client [URL]\n"
         "AI ENHANCED    one candidate per album when real runtime is available\n"
         "?              close this help\n"
         "Ctrl+C         stop and restore terminal"
@@ -1694,6 +1873,36 @@ def _render_dialog(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
     )
 
 
+def _render_url_modal(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    width = min(max(48, int(area.width) - 12), 100)
+    height = min(max(8, int(area.height) - 8), 14)
+    popup = Rect(
+        int(area.x) + max(0, (int(area.width) - width) // 2),
+        int(area.y) + max(0, (int(area.height) - height) // 2),
+        width,
+        height,
+    )
+    text = Text(
+        [
+            Line([Span("[OPEN URL]", style(theme, Semantic.DEBUG, bold=True).underlined())]).centered(),
+            Line([Span(state.url_value, style(theme, Semantic.TEXT))]),
+            Line([Span("Terminal/client opens the link · Esc closes", style(theme, Semantic.MUTED))]).centered(),
+        ]
+    )
+    frame.render_widget(Clear(), popup)
+    frame.render_widget(
+        Paragraph(text).wrap(True, False).block(card(theme, "CANDIDATE URL", Semantic.DEBUG)),
+        popup,
+    )
+    label_x = int(popup.x) + max(1, (width - len("[OPEN URL]")) // 2)
+    _register_hit(
+        state,
+        "url-open",
+        Rect(label_x, int(popup.y) + 1, len("[OPEN URL]"), 1),
+        value=state.url_value,
+    )
+
+
 def render(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
     state.hit_regions.clear()
@@ -1747,6 +1956,8 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_help(frame, area, state, theme)
     if state.dialog_open:
         _render_dialog(frame, area, state, theme)
+    if state.url_modal_open:
+        _render_url_modal(frame, area, state, theme)
 
 
 def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> None:
@@ -1766,6 +1977,51 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
         state.library.select_all()
     payload = state.library.selection_payload(mode)
     _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
+
+
+def _respond_library_action(
+    state: TuiState,
+    adapter: TuiAdapter,
+    action: str,
+    **values: Any,
+) -> None:
+    """Answer one library request without leaving the Select Media workspace."""
+    if state.library is None:
+        return
+    payload = {"action": action, **state.library.selection_state(), **values}
+    adapter.respond(json.dumps(payload, separators=(",", ":")))
+    state.input_request = None
+    state.workflow = "library"
+
+
+def _open_artist(
+    state: TuiState,
+    adapter: TuiAdapter,
+    artist_name: str,
+    *,
+    select_after_load: bool = False,
+) -> None:
+    model = state.library
+    if model is None:
+        return
+    model.active_artist = artist_name
+    state.album_index_cursor = 0
+    state.album_scroll = 0
+    artist = model.artist(artist_name)
+    if artist is None:
+        return
+    if artist.loaded:
+        if select_after_load:
+            model.toggle_artist(artist_name)
+        return
+    state.transient = f"Indexing Artist folder · {artist_name}"
+    _respond_library_action(
+        state,
+        adapter,
+        "load-artist",
+        artist_path=artist.path,
+        select_after_load=select_after_load,
+    )
 
 
 def _handle_library_key(
@@ -1882,13 +2138,6 @@ def _handle_library_key(
         current = state.library_focus if state.library_focus in focus_order else (3 if state.library_focus == 4 else 5)
         state.library_focus = focus_order[(focus_order.index(current) + step) % len(focus_order)]
         return True
-    if action is Action.SETTINGS:
-        state.workspace = "policy"
-        state.library_focus = 0
-        return True
-    if action is Action.FILTER:
-        state.library_focus = 6 if state.library_focus in {5, 6} else 4
-        return True
     if state.library_focus in {4, 6}:
         if action is Action.DELETE:
             if state.library_focus == 4:
@@ -1906,6 +2155,17 @@ def _handle_library_key(
             state.album_index_cursor = 0
             state.artist_scroll = 0
             state.album_scroll = 0
+        return True
+    if action is Action.SETTINGS:
+        state.workspace = "policy"
+        state.library_focus = 0
+        return True
+    if action is Action.REFRESH:
+        state.transient = "Refreshing the complete disposable picker index…"
+        _respond_library_action(state, adapter, "refresh-index")
+        return True
+    if action is Action.FILTER:
+        state.library_focus = 6 if state.library_focus in {5, 6} else 4
         return True
     if action in {Action.LEFT, Action.RIGHT}:
         delta = -1 if action is Action.LEFT else 1
@@ -2005,8 +2265,17 @@ def _handle_library_key(
             artists = model.visible_artists()
             if artists:
                 artist = artists[state.artist_index]
-                model.active_artist = artist.name
-                model.toggle_artist(artist.name)
+                if action is Action.ACTIVATE:
+                    _open_artist(state, adapter, artist.name)
+                elif artist.indexed:
+                    model.toggle_artist(artist.name)
+                else:
+                    _open_artist(
+                        state,
+                        adapter,
+                        artist.name,
+                        select_after_load=True,
+                    )
         elif state.library_focus == 5:
             albums = model.visible_albums(active_artist_only=True)
             if albums:
@@ -2083,14 +2352,45 @@ def _open_candidate_url(state: TuiState, candidate_index: int) -> None:
     state.selected_index = candidate_index
     candidate = state.candidates[candidate_index]
     if candidate.provenance == "[URL]" and candidate.url:
-        opened = bool(webbrowser.open(candidate.url, new=2, autoraise=False))
-        state.transient = (
-            "Opened highlighted [URL]."
-            if opened
-            else "No system URL handler is available; use --no-tui to copy the full URL."
-        )
+        state.url_value = candidate.url
+        state.url_modal_open = True
+        state.transient = "Candidate link ready for the terminal client. Esc closes it."
     else:
         state.transient = "The highlighted candidate has no remote URL."
+
+
+def close_candidate_url(state: TuiState) -> None:
+    state.url_modal_open = False
+    state.url_value = ""
+    state.transient = "Returned from candidate URL."
+
+
+def osc8_link(label: str, url: str) -> str:
+    """Encode one terminal-client hyperlink without permitting control bytes."""
+    safe_url = "".join(character for character in url if ord(character) >= 32 and character != "\x7f")
+    safe_label = label.replace("\x1b", "").replace("\x07", "")
+    return f"\x1b]8;;{safe_url}\x1b\\{safe_label}\x1b]8;;\x1b\\"
+
+
+def write_terminal_links(state: TuiState, writer: Any) -> None:
+    """Attach OSC-8 metadata to the link cells drawn by Ratatui."""
+    targets = [
+        region
+        for region in state.hit_regions
+        if region.target == ("url-open" if state.url_modal_open else "candidate-url")
+        and region.value
+    ]
+    if not targets:
+        return
+    writer.write("\x1b7")
+    for region in targets:
+        label = "[OPEN URL]" if region.target == "url-open" else "[URL]"
+        writer.write(
+            f"\x1b[{region.y + 1};{region.x + 1}H\x1b[4m"
+            f"{osc8_link(label, region.value)}\x1b[0m"
+        )
+    writer.write("\x1b8")
+    writer.flush()
 
 
 def _toggle_candidate_ai(state: TuiState, candidate_index: int) -> None:
@@ -2218,14 +2518,21 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "artist-row" and model is not None:
         state.library_focus = 3
         state.artist_index = region.index
-        model.active_artist = region.value
-        state.album_index_cursor = 0
-        state.album_scroll = 0
+        _open_artist(state, adapter, region.value)
     elif region.target == "artist-checkbox" and model is not None:
         state.library_focus = 3
         state.artist_index = region.index
-        model.active_artist = region.value
-        model.toggle_artist(region.value)
+        artist = model.artist(region.value)
+        if artist is not None and artist.indexed:
+            model.active_artist = region.value
+            model.toggle_artist(region.value)
+        else:
+            _open_artist(
+                state,
+                adapter,
+                region.value,
+                select_after_load=True,
+            )
     elif region.target == "album-row" and model is not None:
         state.library_focus = 5
         state.album_index_cursor = region.index
@@ -2286,6 +2593,10 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.exit_code = 130
         state.exit_requested = True
         adapter.cancel_wait()
+        return
+    if state.url_modal_open:
+        if str(event.code).lower() in {"esc", "escape", "enter", "return", "u"}:
+            close_candidate_url(state)
         return
     if state.dialog_open:
         decision = confirm_key(code)
@@ -2406,6 +2717,21 @@ def _drain(adapter: TuiAdapter, state: TuiState) -> bool:
         changed = True
 
 
+def sync_url_mouse_capture(
+    state: TuiState,
+    input_reader: Any,
+    suspended: bool,
+) -> bool:
+    """Release capture for terminal-owned OSC-8 activation, then restore it."""
+    if state.url_modal_open and not suspended:
+        input_reader.disable_mouse_capture()
+        return True
+    if not state.url_modal_open and suspended:
+        input_reader.enable_mouse_capture()
+        return False
+    return suspended
+
+
 def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
     """Run ``worker`` behind Ratatui and return the engine's exit code.
 
@@ -2448,14 +2774,21 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                 thread.start()
                 dirty = True
                 startup_active = True
+                mouse_suspended = False
                 while not state.exit_requested and not terminated:
                     dirty = _drain(adapter, state) or dirty
+                    mouse_suspended = sync_url_mouse_capture(
+                        state, input_reader, mouse_suspended
+                    )
                     now_startup = time.monotonic() - state.started_at < STARTUP_SECONDS
                     if startup_active and not now_startup:
                         dirty = True
                     startup_active = now_startup
                     if dirty or startup_active:
                         terminal.draw(lambda frame: render(frame, state, theme))
+                        writer = getattr(sys, "__stdout__", None)
+                        if writer is not None:
+                            write_terminal_links(state, writer)
                         dirty = False
                     event = input_reader.poll_event(timeout_ms=80)
                     if event is not None:
