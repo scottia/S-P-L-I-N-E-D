@@ -9,6 +9,7 @@ from unittest import mock
 import splined
 import splined_scan
 from tui import animation
+from tui import splined_tui as tui_module
 from tui.aispline import AiActivityState, AiPhase
 from tui.library import (
     AlbumItem,
@@ -17,7 +18,7 @@ from tui.library import (
     ArtistStatus,
     LibraryModel,
 )
-from tui.picker_index import PICKER_DB_NAME, PickerIndex
+from tui.picker_index import PICKER_DB_NAME, PickerAlbum, PickerIndex
 from tui.splined_tui import (
     TuiAdapter,
     TuiState,
@@ -42,11 +43,14 @@ class _Frame:
     def __init__(self, width: int, height: int):
         self.area = Rect(0, 0, width, height)
         self.areas: list[Rect] = []
+        self.widgets: list[object] = []
 
-    def render_widget(self, _widget, area):
+    def render_widget(self, widget, area):
+        self.widgets.append(widget)
         self.areas.append(area)
 
-    def render_stateful_table(self, _widget, area, _state):
+    def render_stateful_table(self, widget, area, _state):
+        self.widgets.append(widget)
         self.areas.append(area)
 
 
@@ -98,17 +102,46 @@ class ReadinessBrandTests(unittest.TestCase):
             },
         )
         self.assertEqual(state.workflow, "startup")
+        state.apply(
+            "cache_progress",
+            {
+                "phase": "build",
+                "status": "BUILDING LIBRARY CACHE",
+                "processed": 412,
+                "total": 1032,
+                "percent": 39.922,
+                "albums": 5873,
+                "current_artist": "[Soundtracks]",
+            },
+        )
         frame = _Frame(140, 40)
         render(frame, state, select_theme("OLED"))
         self.assertGreaterEqual(len(frame.areas), 3)
-        brand_area, inventory_area = frame.areas[-2:]
-        self.assertEqual(int(brand_area.height), startup_brand_height(140, 40))
-        self.assertEqual(int(inventory_area.y), int(brand_area.height))
+        brand_areas = [
+            area
+            for area in frame.areas
+            if int(area.y) == 0
+            and int(area.height) == startup_brand_height(140, 40)
+        ]
+        self.assertEqual(len(brand_areas), 1)
+        gauges = [
+            (widget, area)
+            for widget, area in zip(frame.widgets, frame.areas)
+            if type(widget).__name__ == "Gauge"
+        ]
+        self.assertEqual(len(gauges), 1)
+        self.assertGreater(int(gauges[0][1].x), 0)
+        self.assertGreaterEqual(int(gauges[0][1].y), startup_brand_height(140, 40))
 
         state.apply("library", _library_payload())
         self.assertEqual(state.workflow, "library")
 
     def test_brand_geometry_is_responsive_and_ai_context_is_truthful(self) -> None:
+        self.assertFalse(hasattr(tui_module, "_BRAND_GLYPHS"))
+        self.assertEqual(
+            len(tui_module._solid_spectral_brand(select_theme("OLED"), "S:P:L:I:N:E:D")),
+            3,
+        )
         self.assertGreater(startup_brand_height(140, 40), context_header_height(140, 40))
         self.assertGreater(context_header_height(140, 40), context_header_height(60, 18))
         self.assertGreater(context_header_height(100, 30), context_header_height(60, 18))
@@ -120,7 +153,7 @@ class ReadinessBrandTests(unittest.TestCase):
         state.ai_activity.active = False
         self.assertFalse(ai_context_active(state))
 
-        for workflow in ("processing", "candidates", "summary"):
+        for workflow in ("processing", "candidates", "batch-report"):
             state.workflow = workflow
             state.candidates = []
             frame = _Frame(140, 40)
@@ -132,7 +165,7 @@ class ReadinessBrandTests(unittest.TestCase):
 
 
 class CountScopeTests(unittest.TestCase):
-    def test_active_album_counts_do_not_include_other_artists(self) -> None:
+    def test_complete_snapshot_counts_cover_the_whole_library(self) -> None:
         albums = [
             *[
                 AlbumItem(f"/A/U{index}", "Artist A", f"A U{index}", AlbumStatus.UNPROCESSED)
@@ -150,20 +183,23 @@ class CountScopeTests(unittest.TestCase):
                 AlbumItem(f"/B/P{index}", "Artist B", f"B P{index}", AlbumStatus.PROCESSED)
                 for index in range(5)
             ],
+            AlbumItem("/C/Bypass", "Artist C", "C Bypass", AlbumStatus.BYPASSED),
         ]
         artists = [
             ArtistItem("/A", "Artist A", ArtistStatus.PARTIAL, 12, 0, True, True),
             ArtistItem("/B", "Artist B", ArtistStatus.PARTIAL, 8, 0, True, True),
-            ArtistItem("/C", "Artist C", None, 0, 0, False, False),
+            ArtistItem("/C", "Artist C", ArtistStatus.CONTAINS_BYPASS, 1, 0, True, True),
         ]
         model = LibraryModel("/music", albums, artists, active_artist="Artist A")
-        counts = model.active_status_counts()
-        self.assertEqual(counts[AlbumStatus.UNPROCESSED], 10)
-        self.assertEqual(counts[AlbumStatus.PROCESSED], 2)
-        self.assertEqual(sum(counts.values()), 12)
+        counts = model.album_status_counts()
+        self.assertEqual(counts[AlbumStatus.UNPROCESSED], 13)
+        self.assertEqual(counts[AlbumStatus.PROCESSED], 7)
+        self.assertEqual(counts[AlbumStatus.BYPASSED], 1)
+        self.assertEqual(sum(counts.values()), 21)
         stats = model.statistics()
         self.assertEqual(stats["artists"], 3)
-        self.assertEqual(stats["indexed_artists"], 2)
+        self.assertEqual(stats["albums"], 21)
+        self.assertEqual(stats["cache"], "COMPLETE")
         self.assertEqual(stats["active_albums"], 12)
         self.assertEqual(stats["active_visible_albums"], 12)
         self.assertEqual(
@@ -171,10 +207,11 @@ class CountScopeTests(unittest.TestCase):
             2,
         )
 
-        model.album_filter = "A U1"
+        model.album_filter = "U1"
         model.select_all(filtered=True)
         self.assertTrue(any(item.selected for item in albums if item.artist == "Artist A"))
-        self.assertFalse(any(item.selected for item in albums if item.artist == "Artist B"))
+        self.assertTrue(any(item.selected for item in albums if item.artist == "Artist B"))
+        self.assertFalse(any(item.selected for item in albums if item.artist == "Artist C"))
 
 
 class HiddenDirectoryTests(unittest.TestCase):
@@ -198,11 +235,18 @@ class HiddenDirectoryTests(unittest.TestCase):
             (nested / "track.flac").write_bytes(b"audio")
 
             with PickerIndex.open(cache / PICKER_DB_NAME, root, ["[videos]"]) as index:
-                artists = index.reconcile_root()
+                artists = index.discover_artists()
                 self.assertEqual([item.name for item in artists], ["10,000 Maniacs", "Aerosmith"])
+                album_rows = []
+                for artist in artists:
+                    discovered, _ignored = splined.inventory(Path(artist.path), ["[videos]"])
+                    album_rows.extend(
+                        PickerAlbum(str(item.path), artist.path, item.path.name)
+                        for item in discovered
+                    )
+                index.promote_snapshot(artists, album_rows)
                 stored = {
-                    str(row[0])
-                    for row in index.connection.execute("SELECT artist_path FROM artists")
+                    str(row[0]) for row in index.connection.execute("SELECT artist_path FROM artists")
                 }
                 self.assertFalse(any(Path(path).name.startswith(".") for path in stored))
 
@@ -237,16 +281,62 @@ class MultiBatchSessionTests(unittest.TestCase):
         self.assertIs(calls[0][0], calls[1][0])
         self.assertIs(calls[1][0], calls[2][0])
 
-    def test_last_run_summary_returns_to_preserved_library_state(self) -> None:
+    def test_windows_style_report_returns_to_preserved_library_state(self) -> None:
         state = TuiState()
         state.apply("library", _library_payload())
         assert state.library is not None
         state.library.artist_filter = "artist"
         state.library.album_filter = "album"
         state.library.active_artist = "Artist A"
+        state.apply(
+            "album",
+            {
+                "index": 1,
+                "total": 1,
+                "path": "/music/Artist A/Album A",
+                "artist": "Artist A",
+                "album": "Album A",
+                "phase": "processing",
+            },
+        )
+        state.apply(
+            "candidates",
+            {
+                "items": [
+                    {
+                        "number": 1,
+                        "source": "iTunes",
+                        "width": 1800,
+                        "height": 1800,
+                        "format": "jpeg",
+                        "range_type": "Ideal",
+                        "distance": 0,
+                        "square": True,
+                        "acceptable": True,
+                        "approved": True,
+                        "id": "internal",
+                        "suggested": True,
+                        "url": "https://example.test/cover.jpg",
+                    }
+                ]
+            },
+        )
+        state.apply(
+            "album_material_result",
+            {
+                "outcome": "Installed",
+                "destination": "/music/Artist A/Album A/cover.jpg",
+                "file_action": "Written",
+                "source": "iTunes",
+            },
+        )
         state.apply("history", {"album": "Artist A / Album A", "outcome": "selected"})
         state.apply("summary", {"albums": 1, "resolved": 1, "failed": 0, "exit_code": 0})
         state.apply("input", {"prompt": "", "context": {"kind": "batch-summary"}})
+        self.assertEqual(state.workflow, "batch-report")
+        self.assertEqual(len(state.batch_reports), 1)
+        self.assertEqual(state.batch_reports[0].outcome, "Installed")
+        self.assertEqual(state.batch_reports[0].file_action, "Written")
         adapter = TuiAdapter()
         adapter.waiting.set()
         handle_key(state, adapter, _Key("enter"))
@@ -261,11 +351,92 @@ class MultiBatchSessionTests(unittest.TestCase):
         self.assertFalse(state.library.albums[0].selected)
         self.assertEqual(len(state.history), 1)
 
-    def test_summary_exit_waits_for_cumulative_worker_result(self) -> None:
-        state = TuiState(workflow="summary")
+    def test_report_preserves_processing_order_and_authoritative_detail_classes(self) -> None:
+        state = TuiState()
+        state.apply("scan_start", {"total": 3, "root": "/music"})
+        outcomes = (
+            ("Artist A", "Album A", "Installed", "Written", "iTunes"),
+            ("Artist B", "Album B", "Unchanged", "Retained", "Local"),
+            ("Artist C", "Album C", "Failed", "Failed", "Discogs"),
+        )
+        for index, (artist, album, outcome, action, source) in enumerate(outcomes, 1):
+            path = f"/music/{artist}/{album}"
+            state.apply(
+                "album",
+                {
+                    "index": index,
+                    "total": 3,
+                    "path": path,
+                    "artist": artist,
+                    "album": album,
+                    "authority": "ExactAlbumId",
+                    "phase": "processing",
+                },
+            )
+            state.apply(
+                "candidates",
+                {
+                    "hidden_by_source_policy": index,
+                    "items": [
+                        {
+                            "number": 1,
+                            "source": source,
+                            "width": 1800,
+                            "height": 1800,
+                            "format": "jpeg",
+                            "range_type": "Ideal",
+                            "distance": 0,
+                            "square": True,
+                            "acceptable": outcome != "Failed",
+                            "approved": True,
+                            "id": f"internal-{index}",
+                            "selected": True,
+                        }
+                    ],
+                },
+            )
+            state.apply(
+                "diagnostics",
+                {"items": [[source, f"provider note {index}"]]},
+            )
+            state.apply(
+                "album_material_result",
+                {
+                    "outcome": outcome,
+                    "destination": f"{path}/cover.jpg" if outcome != "Failed" else "",
+                    "file_action": action,
+                    "source": source,
+                    "width": 1800,
+                    "height": 1800,
+                    "format": "jpeg",
+                    "range_type": "Ideal",
+                    "distance": 0,
+                    "detail": "No acceptable candidate" if outcome == "Failed" else "",
+                },
+            )
+        state.apply("summary", {"albums": 3, "failed": 1, "exit_code": 1})
+        state.apply("input", {"prompt": "", "context": {"kind": "batch-summary"}})
+        self.assertEqual(state.workflow, "batch-report")
+        self.assertEqual(
+            [(item.position, item.artist, item.album) for item in state.batch_reports],
+            [(1, "Artist A", "Album A"), (2, "Artist B", "Album B"), (3, "Artist C", "Album C")],
+        )
+        self.assertEqual([item.outcome for item in state.batch_reports], ["Installed", "Unchanged", "Failed"])
+        self.assertEqual([item.file_action for item in state.batch_reports], ["Written", "Retained", "Failed"])
+        self.assertTrue(all(item.candidate_total >= 1 for item in state.batch_reports))
+        self.assertTrue(all(item.provider_notes for item in state.batch_reports))
+        frame = _Frame(140, 40)
+        render(frame, state, select_theme("OLED"))
+        self.assertTrue(any(region.target == "report-scroll" for region in state.hit_regions))
+
+    def test_report_pauses_scrolls_and_exit_waits_for_worker_result(self) -> None:
+        state = TuiState(workflow="batch-report")
         state.apply("input", {"prompt": "", "context": {"kind": "batch-summary"}})
         adapter = TuiAdapter()
         adapter.waiting.set()
+        handle_key(state, adapter, _Key("pagedown"))
+        self.assertGreater(state.report_scroll, 0)
+        self.assertTrue(adapter.responses.empty())
         handle_key(state, adapter, _Key("q"))
         self.assertEqual(adapter.responses.get_nowait(), "exit")
         self.assertFalse(state.exit_requested)

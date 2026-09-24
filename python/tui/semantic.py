@@ -39,7 +39,21 @@ def outcome_semantic(outcome: str) -> Semantic:
         return Semantic.FALLBACK
     if "postpon" in value or "history" in value:
         return Semantic.HISTORY
-    if "selected" in value or "kept" in value or "complete" in value:
+    if any(
+        marker in value
+        for marker in (
+            "selected",
+            "kept",
+            "complete",
+            "install",
+            "written",
+            "replace",
+            "unchanged",
+            "retain",
+            "preserve",
+            "read-only",
+        )
+    ):
         return Semantic.ACCEPTED
     return Semantic.ACTIVE
 

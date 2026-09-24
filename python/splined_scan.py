@@ -553,6 +553,7 @@ def apply_local_preflight(
             target = target_format_for_candidate(candidate, format_order)
             content, info = core.prepare_final(candidate, cfg, target)
             destination = candidate.path
+            destination_existed = destination.exists()
             unchanged = destination.read_bytes() == content
             if mode == "write" and not unchanged:
                 core.atomic_write(destination, content)
@@ -561,6 +562,7 @@ def apply_local_preflight(
         elif action_kind == "webp":
             content, info = core.prepare_final(candidate, cfg, "jpeg", allow_out_of_range=True)
             destination = album.path / f"{file_name}.jpg"
+            destination_existed = destination.exists()
             unchanged = destination.exists() and destination.read_bytes() == content
             if mode == "write" and not unchanged:
                 core.atomic_write(destination, content)
@@ -569,6 +571,7 @@ def apply_local_preflight(
         elif action_kind == "embedded-ideal":
             content, info = core.prepare_final(candidate, cfg, "jpeg")
             destination = album.path / f"{file_name}.jpg"
+            destination_existed = destination.exists()
             unchanged = destination.exists() and destination.read_bytes() == content
             if mode == "write" and not unchanged:
                 core.atomic_write(destination, content)
@@ -579,6 +582,12 @@ def apply_local_preflight(
 
     except Exception as exc:
         summary.failed += 1
+        core.emit_ui(
+            "album_material_result",
+            outcome="Failed",
+            file_action="Failed",
+            detail=str(exc),
+        )
         print(f"  {core.red('ERROR: local artwork preflight failed: ' + str(exc))}")
         return False
 
@@ -592,6 +601,29 @@ def apply_local_preflight(
     else:
         summary.read_only += 1
         display = core.bracketed_text(action, core.yellow)
+
+    projected = project_candidate(candidate, cfg, format_order)
+    file_action = (
+        "Unchanged"
+        if action == "UNCHANGED"
+        else "Replaced"
+        if action == "INSTALLED" and destination_existed
+        else "Written"
+        if action == "INSTALLED"
+        else "Preserved"
+    )
+    core.emit_ui(
+        "album_material_result",
+        outcome=action.title(),
+        destination=str(destination),
+        file_action=file_action,
+        source=provider_label(candidate.source),
+        width=candidate.width,
+        height=candidate.height,
+        format=candidate.format,
+        range_type=str(projected["range_type"]),
+        distance=int(projected["distance"]),
+    )
 
     print()
     print(f"  {core.cyan('Artwork:'):13} {display}")
@@ -658,7 +690,7 @@ def finalize(
     cfg: dict[str, Any],
     format_order: list[str],
     allow_out_of_range: bool = False,
-) -> tuple[str, Path, dict[str, Any]]:
+) -> tuple[str, Path, dict[str, Any], bool]:
     output = core.section(cfg, "output")
     preserve = bool(output.get("preserve_file", True))
     name = str(output.get("file_name", "cover")).strip()
@@ -674,20 +706,22 @@ def finalize(
     mode = str(cfg.get("mode", "read")).strip().lower()
 
     if not preserve:
+        existed = canonical.exists()
         if mode == "read":
-            unchanged = canonical.exists() and canonical.read_bytes() == content
-            return ("UNCHANGED" if unchanged else "READ-ONLY (would install)"), canonical, info
+            unchanged = existed and canonical.read_bytes() == content
+            return ("UNCHANGED" if unchanged else "READ-ONLY (would install)"), canonical, info, existed
         core.atomic_write(canonical, content)
         core.remove_numbered_cover_variants(album.path, name)
-        return "INSTALLED", canonical, info
+        return "INSTALLED", canonical, info, existed
 
     destination, unchanged = core.choose_destination(canonical, content, True)
+    existed = destination.exists()
     if unchanged:
-        return "UNCHANGED", destination, info
+        return "UNCHANGED", destination, info, existed
     if mode == "read":
-        return "READ-ONLY (would install)", destination, info
+        return "READ-ONLY (would install)", destination, info, existed
     core.atomic_write(destination, content)
-    return "INSTALLED", destination, info
+    return "INSTALLED", destination, info, existed
 
 
 def apply_selected_candidate(
@@ -707,6 +741,7 @@ def apply_selected_candidate(
         core.prepare_final(candidate, cfg, target, allow_out_of_range=allow_out_of_range)
     except Exception as exc:
         summary.failed += 1
+        core.emit_ui("album_material_result", outcome="Failed", file_action="Failed", detail=str(exc))
         print(f"  {core.red('ERROR: final artwork validation failed: ' + str(exc))}")
         return False
 
@@ -721,11 +756,12 @@ def apply_selected_candidate(
         )
     except Exception as exc:
         summary.failed += 1
+        core.emit_ui("album_material_result", outcome="Failed", file_action="Failed", detail=str(exc))
         print(f"  {core.red('ERROR: selected sample failed: ' + str(exc))}")
         return False
 
     try:
-        action, destination, info = finalize(
+        action, destination, info, destination_existed = finalize(
             album,
             candidate,
             cfg,
@@ -734,6 +770,7 @@ def apply_selected_candidate(
         )
     except Exception as exc:
         summary.failed += 1
+        core.emit_ui("album_material_result", outcome="Failed", file_action="Failed", detail=str(exc))
         print(f"  {core.red('ERROR: final artwork failed: ' + str(exc))}")
         return False
 
@@ -747,6 +784,29 @@ def apply_selected_candidate(
     else:
         summary.read_only += 1
         display = core.bracketed_text(action, core.yellow)
+
+    projected = project_candidate(candidate, cfg, format_order)
+    file_action = (
+        "Unchanged"
+        if action == "UNCHANGED"
+        else "Replaced"
+        if action == "INSTALLED" and destination_existed
+        else "Written"
+        if action == "INSTALLED"
+        else "Preserved"
+    )
+    core.emit_ui(
+        "album_material_result",
+        outcome=action.title(),
+        destination=str(destination),
+        file_action=file_action,
+        source=provider_label(candidate.source),
+        width=candidate.width,
+        height=candidate.height,
+        format=candidate.format,
+        range_type=str(projected["range_type"]),
+        distance=int(projected["distance"]),
+    )
 
     print()
     print(f"  {core.cyan('Artwork:'):13} {display}")
@@ -927,10 +987,21 @@ def keep_existing_local(album: core.AlbumDir, sample_release: core.Release, loca
         sample_path = _write_sample_if_enabled(sample_dir, sample_release, local_candidate, preserve, samples_enabled, summary)
     except Exception as exc:
         summary.failed += 1
+        core.emit_ui("album_material_result", outcome="Failed", file_action="Failed", detail=str(exc))
         print(f"  {core.red('ERROR: local artwork keep failed: ' + str(exc))}")
         return False
     summary.selected += 1
     summary.unchanged += 1
+    core.emit_ui(
+        "album_material_result",
+        outcome="Unchanged",
+        destination=str(local_candidate.path),
+        file_action="Retained",
+        source="Local",
+        width=local_candidate.width,
+        height=local_candidate.height,
+        format=local_candidate.format,
+    )
     print()
     print(f"  {core.cyan('Artwork:'):13} {core.bracketed_text('UNCHANGED', core.cyan)}")
     print(f"  {core.cyan('Sample:'):13} {core.orange(sample_path.name)}")
@@ -1207,6 +1278,23 @@ def _run_scan_dir_batch(
             "fallback_reason": None,
         }
         try:
+            if not album.audio_files:
+                hydrated, _hydrated_ignored = core.inventory(
+                    album.path,
+                    ignored,
+                    str(output.get("file_name", "cover")),
+                    fingerprint_paths={str(album.path)},
+                )
+                exact = next(
+                    (item for item in hydrated if item.path == album.path),
+                    None,
+                )
+                if exact is None:
+                    raise core.SplinedError(
+                        f"Selected Album folder no longer contains supported audio: {album.path}"
+                    )
+                album = exact
+                record["album"] = album
             tracks = core.read_album_tracks(album)
             record["tracks"] = tracks
             record["file_count"] = len(tracks)
@@ -1348,6 +1436,12 @@ def _run_scan_dir_batch(
 
         if record.get("fatal_error"):
             summary.failed += 1
+            core.emit_ui(
+                "album_material_result",
+                outcome="Failed",
+                file_action="Failed",
+                detail=str(record["fatal_error"]),
+            )
             print(f"  {core.red('ERROR: ' + str(record['fatal_error']))}\n")
             continue
 
@@ -1404,6 +1498,12 @@ def _run_scan_dir_batch(
 
         if not cleanup_competing_static(preflight["cleanup"], mode):
             summary.failed += 1
+            core.emit_ui(
+                "album_material_result",
+                outcome="Failed",
+                file_action="Failed",
+                detail="Unable to remove competing local artwork",
+            )
             print()
             continue
 
@@ -1492,6 +1592,12 @@ def _run_scan_dir_batch(
 
             if not tag_artist or not tag_album:
                 summary.unresolved += 1
+                core.emit_ui(
+                    "album_material_result",
+                    outcome="Skipped",
+                    file_action="Skipped",
+                    detail="Fallback requires tagged Artist and Album values",
+                )
                 print(f"  {core.red('Fallback requires tagged Artist + Album values.')}")
                 print(f"  {core.cyan('Artwork:'):13} {core.bracketed_text('SKIPPED', core.yellow)}\n")
                 continue
@@ -1536,6 +1642,7 @@ def _run_scan_dir_batch(
 
                 remote, download_diag = core.download_candidates(http, refs, sources, cache, cfg)
                 diagnostics += download_diag
+                core.emit_ui("diagnostics", items=diagnostics)
                 candidates = local_fallback + enhanced_candidates + remote
 
                 if local_fallback:
@@ -1775,6 +1882,7 @@ def _run_scan_dir_batch(
             source_history,
             queried_sources=api_queried,
         )
+        core.emit_ui("diagnostics", items=diagnostics)
         candidates = local_fallback + enhanced_candidates + remote
 
         if local_fallback:
@@ -2037,6 +2145,7 @@ def _run_scan_dir_batch(
         + " "
         + core.white("Skipped") + " " + core.bracketed_list(skipped_list, core.gray)
     )
+    core.debug_log(f"picker.batch.report_ready albums={len(ordered_records)}")
     core.emit_ui(
         "summary",
         **vars(summary),
@@ -2072,6 +2181,7 @@ def run_scan_dir(
                 initial_library_event=library_event,
             )
         except core.TuiSessionExit:
+            picker_session.validation_cancel.set()
             return session_exit_code
         session_exit_code = max(session_exit_code, batch_exit_code)
         answer = core.read_input(
@@ -2079,7 +2189,9 @@ def run_scan_dir(
             kind="batch-summary",
         ).strip().lower()
         if answer == "exit":
+            picker_session.validation_cancel.set()
             return session_exit_code
+        core.debug_log("picker.batch.return")
         library_event = "library_update"
 
 

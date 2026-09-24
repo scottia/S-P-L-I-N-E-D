@@ -11,6 +11,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
@@ -157,6 +158,35 @@ class ActivityEntry:
     message: str
 
 
+@dataclass
+class AlbumRunReport:
+    position: int
+    total: int
+    artist: str
+    album: str
+    path: str
+    started_at: float
+    outcome: str = "Incomplete"
+    discovery: str = "Provider search"
+    review_state: str = "Automatic"
+    candidate_total: int = 0
+    policy_hidden: int = 0
+    provider_notes: list[str] = field(default_factory=list)
+    duration_seconds: float = 0.0
+    destination: str = ""
+    file_action: str = ""
+    selected_source: str = ""
+    selected_resolution: str = ""
+    selected_format: str = ""
+    selected_range: str = ""
+    selected_distance: int | None = None
+    detail: str = ""
+
+    def finish(self) -> None:
+        if self.duration_seconds <= 0:
+            self.duration_seconds = max(0.0, time.monotonic() - self.started_at)
+
+
 @dataclass(frozen=True)
 class HitRegion:
     """One interactive rectangle registered from the current render geometry."""
@@ -194,6 +224,14 @@ class TuiState:
     albums_known: int = 0
     inventory_artist: str = ""
     inventory_recovered: bool = False
+    cache_phase: str = ""
+    cache_processed: int = 0
+    cache_total: int = 0
+    cache_percent: float | None = None
+    cache_albums: int = 0
+    cache_added: int = 0
+    cache_removed: int = 0
+    cache_changed: int = 0
     artist: str = ""
     album: str = ""
     authority: str = ""
@@ -210,6 +248,11 @@ class TuiState:
     logs: list[tuple[str, str]] = field(default_factory=list)
     history: list[HistoryEntry] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
+    batch_reports: list[AlbumRunReport] = field(default_factory=list)
+    active_report: AlbumRunReport | None = None
+    album_started: dict[str, float] = field(default_factory=dict)
+    report_scroll: int = 0
+    report_page_size: int = 1
     diagnostics: list[tuple[str, str]] = field(default_factory=list)
     activity: list[ActivityEntry] = field(default_factory=list)
     library: LibraryModel | None = None
@@ -238,7 +281,8 @@ class TuiState:
     ai_activity: AiActivityState = field(default_factory=AiActivityState)
     upscale_below_ideal: bool = False
     dialog_kind: str = ""
-    preview_cache: dict[str, ArtworkPreview | None] = field(default_factory=dict)
+    preview_cache: dict[tuple[str, int, int, int, int], ArtworkPreview | None] = field(default_factory=dict)
+    preview_identity: dict[str, tuple[int, int]] = field(default_factory=dict)
     url_modal_open: bool = False
     url_value: str = ""
     transient: str = ""
@@ -251,7 +295,26 @@ class TuiState:
     exception: BaseException | None = None
 
     def apply(self, event: str, payload: dict[str, Any]) -> None:
-        if event == "inventory_state":
+        if event == "cache_build_start":
+            self.workflow = "startup"
+            self.cache_phase = "build"
+            self.cache_processed = 0
+            self.cache_total = 0
+            self.cache_percent = None
+            self.cache_albums = 0
+        elif event == "cache_progress":
+            self.cache_phase = str(payload.get("phase", self.cache_phase))
+            self.inventory_status = str(payload.get("status", self.inventory_status))
+            self.cache_processed = int(payload.get("processed", self.cache_processed) or 0)
+            self.cache_total = int(payload.get("total", self.cache_total) or 0)
+            percent = payload.get("percent")
+            self.cache_percent = float(percent) if isinstance(percent, (int, float)) else None
+            self.cache_albums = int(payload.get("albums", self.cache_albums) or 0)
+            self.inventory_artist = str(payload.get("current_artist", ""))
+            self.cache_added = int(payload.get("added", self.cache_added) or 0)
+            self.cache_removed = int(payload.get("removed", self.cache_removed) or 0)
+            self.cache_changed = int(payload.get("changed", self.cache_changed) or 0)
+        elif event == "inventory_state":
             self.inventory_root = str(payload.get("library_root", self.inventory_root))
             self.inventory_index = str(payload.get("picker_index", self.inventory_index))
             self.inventory_status = str(payload.get("status", self.inventory_status))
@@ -269,7 +332,34 @@ class TuiState:
             if event == "library" or self.library is None:
                 self.library = LibraryModel.from_payload(payload)
             else:
-                self.library.merge_payload(payload)
+                prior_albums = self.library.visible_albums(active_artist_only=True)
+                prior_album_path = (
+                    prior_albums[self.album_index_cursor].path
+                    if 0 <= self.album_index_cursor < len(prior_albums)
+                    else ""
+                )
+                self.library.merge_payload(
+                    payload,
+                    preserve_selection=bool(payload.get("preserve_selection", False)),
+                )
+                visible_artists = self.library.visible_artists()
+                self.artist_index = next(
+                    (
+                        index
+                        for index, artist in enumerate(visible_artists)
+                        if artist.name == self.library.active_artist
+                    ),
+                    0,
+                )
+                visible_albums = self.library.visible_albums(active_artist_only=True)
+                self.album_index_cursor = next(
+                    (
+                        index
+                        for index, album in enumerate(visible_albums)
+                        if album.path == prior_album_path
+                    ),
+                    min(self.album_index_cursor, max(0, len(visible_albums) - 1)),
+                )
             config = payload.get("config", {})
             if isinstance(config, dict):
                 self.policy = PolicyDraft.from_config(config)
@@ -285,7 +375,40 @@ class TuiState:
             self.album_total = int(payload.get("total", 0))
             self.album_path = str(payload.get("root", self.album_path))
             self.phase = str(payload.get("phase", "authority"))
+            self.batch_reports.clear()
+            self.active_report = None
+            self.album_started.clear()
+            self.report_scroll = 0
         elif event == "album":
+            path = str(payload.get("path", ""))
+            # Candidate cache files can reuse names between Albums.  Identity
+            # and decoded terminal previews therefore belong to one Album
+            # decision only, while each frame inside that decision remains
+            # free of repeated stat/decode work.
+            self.preview_cache.clear()
+            self.preview_identity.clear()
+            self.album_started.setdefault(path, time.monotonic())
+            event_phase = str(payload.get("phase", "processing"))
+            if event_phase == "processing":
+                if self.active_report is not None and self.active_report.path != path:
+                    self.active_report.finish()
+                report = AlbumRunReport(
+                    int(payload.get("index", 0)),
+                    int(payload.get("total", self.album_total) or 0),
+                    str(payload.get("artist", "")) or "Unknown Artist",
+                    str(payload.get("album", "")) or path,
+                    path,
+                    self.album_started.get(path, time.monotonic()),
+                    discovery=(
+                        "Fallback"
+                        if payload.get("fallback_reason")
+                        else "MusicBrainz"
+                        if str(payload.get("authority", "")) == "ExactAlbumId"
+                        else "Provider search"
+                    ),
+                )
+                self.batch_reports.append(report)
+                self.active_report = report
             self.workflow = "processing"
             self.album_index = int(payload.get("index", 0))
             self.album_total = int(payload.get("total", self.album_total))
@@ -319,6 +442,22 @@ class TuiState:
                 0,
             )
             self.selected_index = selected
+            if self.active_report is not None:
+                hidden = int(payload.get("hidden_by_source_policy", 0) or 0)
+                self.active_report.policy_hidden = max(
+                    self.active_report.policy_hidden, hidden
+                )
+                self.active_report.candidate_total = max(
+                    self.active_report.candidate_total,
+                    len(self.candidates) + max(hidden, self.active_report.policy_hidden),
+                )
+                chosen = self.candidates[selected] if self.candidates else None
+                if chosen is not None:
+                    self.active_report.selected_source = chosen.source
+                    self.active_report.selected_resolution = f"{chosen.width}×{chosen.height}"
+                    self.active_report.selected_format = chosen.format.upper()
+                    self.active_report.selected_range = chosen.range_type
+                    self.active_report.selected_distance = chosen.distance
             ai = payload.get("aisplined", {})
             if isinstance(ai, dict):
                 self.ai_enabled = bool(ai.get("enabled", self.ai_enabled))
@@ -351,13 +490,26 @@ class TuiState:
                 (str(source), str(message))
                 for source, message in payload.get("items", [])
             ]
+            if self.active_report is not None:
+                self.active_report.provider_notes = [
+                    f"{source}: {message}" for source, message in self.diagnostics
+                ]
+                hidden = sum(
+                    "policy-filtered" in message.casefold()
+                    for _source, message in self.diagnostics
+                )
+                self.active_report.policy_hidden = hidden
+                self.active_report.candidate_total = max(
+                    self.active_report.candidate_total,
+                    len(self.candidates) + hidden,
+                )
         elif event == "input":
             context = dict(payload.get("context") or {})
             input_kind = str(context.get("kind", "picker"))
             if input_kind == "library-selection":
                 self.workflow = "library"
             elif input_kind == "batch-summary":
-                self.workflow = "summary"
+                self.workflow = "batch-report"
             else:
                 self.workflow = "picker"
             self.input_request = InputRequest(
@@ -374,26 +526,78 @@ class TuiState:
                 self.selected_index = 0
             else:
                 self.release_options.clear()
+            if self.active_report is not None and self.input_request.kind not in {
+                "library-selection",
+                "batch-summary",
+            }:
+                self.active_report.review_state = "Required"
             self.input_buffer = ""
         elif event == "history":
+            outcome = str(payload.get("outcome", "processed"))
             self.history.append(
                 HistoryEntry(
                     datetime.now().strftime("%H:%M"),
                     str(payload.get("album", self.album_path)),
-                    str(payload.get("outcome", "processed")),
+                    outcome,
                 )
             )
             self.history = self.history[-200:]
+            if self.active_report is not None:
+                lowered = outcome.casefold()
+                if "bypass" in lowered:
+                    self.active_report.outcome = "Bypassed"
+                elif "no-candidates" in lowered:
+                    self.active_report.outcome = "Skipped"
+                    self.active_report.detail = "No artwork candidates returned"
+                elif "local-kept" in lowered:
+                    self.active_report.outcome = "Unchanged"
+                    self.active_report.file_action = "Retained"
+                elif self.active_report.outcome == "Incomplete":
+                    self.active_report.outcome = "Completed"
+                self.active_report.finish()
+        elif event == "album_material_result":
+            if self.active_report is not None:
+                self.active_report.outcome = str(payload.get("outcome", "Completed"))
+                self.active_report.destination = str(payload.get("destination", ""))
+                self.active_report.file_action = str(payload.get("file_action", ""))
+                self.active_report.selected_source = str(
+                    payload.get("source", self.active_report.selected_source)
+                )
+                width = int(payload.get("width", 0) or 0)
+                height = int(payload.get("height", 0) or 0)
+                if width and height:
+                    self.active_report.selected_resolution = f"{width}×{height}"
+                self.active_report.selected_format = str(
+                    payload.get("format", self.active_report.selected_format)
+                ).upper()
+                self.active_report.selected_range = str(
+                    payload.get("range_type", self.active_report.selected_range)
+                )
+                distance = payload.get("distance")
+                if isinstance(distance, int):
+                    self.active_report.selected_distance = distance
+                self.active_report.detail = str(payload.get("detail", ""))
+                self.active_report.finish()
         elif event == "summary":
             self.summary = dict(payload)
             self.exit_code = int(payload.get("exit_code", 0) or 0)
-            self.workflow = "summary"
+            if self.active_report is not None:
+                self.active_report.finish()
+                if self.active_report.outcome == "Incomplete" and self.exit_code:
+                    self.active_report.outcome = "Failed"
+            self.candidates.clear()
+            self.activity.clear()
+            self.workflow = "batch-report"
         elif event == "log":
             level = str(payload.get("level", "INFO")).upper()
             message = str(payload.get("message", "")).strip()
             if message:
                 self.logs.append((level, message))
                 self.logs = self.logs[-500:]
+                if level == "ERROR" and self.active_report is not None:
+                    self.active_report.outcome = "Failed"
+                    self.active_report.detail = message
+                    self.active_report.finish()
         elif event == "activity":
             message = str(payload.get("message", "")).strip()
             if message:
@@ -419,7 +623,7 @@ class TuiState:
                 self.exit_requested = True
             if not self.summary:
                 self.summary = {"exit_code": self.exit_code}
-                self.workflow = "summary"
+                self.workflow = "batch-report"
 
 
 class TuiAdapter:
@@ -562,25 +766,25 @@ def _checkbox_rect(area: Rect, row: int) -> Rect:
     return Rect(int(area.x) + 2, int(area.y) + 1 + row, 3, 1)
 
 
-_BRAND_GLYPHS = {
-    "A": (" AAA ", "A   A", "AAAAA", "A   A", "A   A"),
-    "D": ("DDDD ", "D   D", "D   D", "D   D", "DDDD "),
-    "E": ("EEEEE", "E    ", "EEEE ", "E    ", "EEEEE"),
-    "I": ("IIIII", "  I  ", "  I  ", "  I  ", "IIIII"),
-    "L": ("L    ", "L    ", "L    ", "L    ", "LLLLL"),
-    "N": ("N   N", "NN  N", "N N N", "N  NN", "N   N"),
-    "P": ("PPPP ", "P   P", "PPPP ", "P    ", "P    "),
-    "S": (" SSSS", "S    ", " SSS ", "    S", "SSSS "),
-    ":": (" ", ":", " ", ":", " "),
+_SOLID_WORDMARK_BITS = {
+    "A": ("010", "101", "111", "101", "101"),
+    "D": ("110", "101", "101", "101", "110"),
+    "E": ("111", "100", "110", "100", "111"),
+    "I": ("111", "010", "010", "010", "111"),
+    "L": ("100", "100", "100", "100", "111"),
+    "N": ("101", "111", "111", "111", "101"),
+    "P": ("110", "101", "110", "100", "100"),
+    "S": ("011", "100", "010", "001", "110"),
+    ":": ("0", "1", "0", "1", "0"),
 }
 
 
 def startup_brand_height(width: int, height: int) -> int:
     point = layout_spec(width, height).breakpoint
     if point is Breakpoint.WIDE:
-        return 10
+        return 7
     if point is Breakpoint.NORMAL:
-        return 9
+        return 7
     if point is Breakpoint.COMPACT:
         return 4
     return 1
@@ -588,30 +792,37 @@ def startup_brand_height(width: int, height: int) -> int:
 
 def context_header_height(width: int, height: int) -> int:
     point = layout_spec(width, height).breakpoint
-    if point is Breakpoint.WIDE:
-        return 8
-    if point is Breakpoint.NORMAL:
-        return 4
+    if point in {Breakpoint.WIDE, Breakpoint.NORMAL}:
+        return 6
     return 1
 
 
-def _large_spectral_brand(theme: Theme, title: str) -> list[Line]:
-    rows: list[list[Span]] = [[] for _ in range(5)]
+def _solid_spectral_brand(theme: Theme, title: str, phase: int = 0) -> list[Line]:
+    """Render a five-pixel solid wordmark in three terminal-cell rows."""
+    rows: list[list[Span]] = [[] for _ in range(3)]
     color_index = 0
     for character in title:
-        glyph = _BRAND_GLYPHS.get(character, (character,) * 5)
+        glyph = _SOLID_WORDMARK_BITS.get(character, ("1",) * 5)
         if character == ":":
             semantic_style = style(theme, Semantic.MUTED)
         else:
-            rgb = theme.title_spectrum[color_index % len(theme.title_spectrum)]
+            rgb = theme.title_spectrum[(color_index + phase) % len(theme.title_spectrum)]
             semantic_style = (
                 Style()
                 .fg(Color.rgb(*rgb))
                 .bg(Color.rgb(*theme.color("background")))
             )
             color_index += 1
-        for row, value in enumerate(glyph):
-            rows[row].append(Span(value + " ", semantic_style))
+        for terminal_row, top_row in enumerate((0, 2, 4)):
+            bottom_row = top_row + 1
+            cells: list[str] = []
+            for column in range(len(glyph[top_row])):
+                top = glyph[top_row][column] == "1"
+                bottom = bottom_row < len(glyph) and glyph[bottom_row][column] == "1"
+                cells.append(
+                    "█" if top and bottom else "▀" if top else "▄" if bottom else " "
+                )
+            rows[terminal_row].append(Span("".join(cells) + " ", semantic_style))
     return [Line(spans).centered() for spans in rows]
 
 
@@ -627,10 +838,13 @@ def _render_startup(frame: Any, state: TuiState, theme: Theme) -> None:
     )
     point = layout_spec(area.width, area.height).breakpoint
     if point in {Breakpoint.WIDE, Breakpoint.NORMAL}:
-        brand_lines = _large_spectral_brand(theme, SPLINED_TITLE)
+        brand_lines = _solid_spectral_brand(
+            theme,
+            SPLINED_TITLE,
+            animation_step(time.monotonic() - state.started_at),
+        )
         brand_lines.extend(
             [
-                spectral_title(theme, centered=True),
                 Line(
                     [
                         Span(
@@ -655,36 +869,56 @@ def _render_startup(frame: Any, state: TuiState, theme: Theme) -> None:
         ).block(card(theme, "STARTING", Semantic.SPECIAL))
     frame.render_widget(brand_widget, brand_area)
 
-    inventory_lines = [
-        (f"Library root       {state.inventory_root or state.album_path}", Semantic.TEXT),
-        (f"Picker index       {state.inventory_index or 'opening'}", Semantic.DEBUG),
-        (f"Status             {state.inventory_status}", Semantic.ACTIVE),
-        (f"Root Artists       {state.root_artists:,} discovered", Semantic.SPECIAL),
-        (f"Cached Artists     {state.cached_artists:,}", Semantic.HISTORY),
-        (f"Indexed Artists    {state.indexed_artists:,}", Semantic.ACCEPTED),
-        (f"Albums known       {state.albums_known:,}", Semantic.FALLBACK),
-    ]
-    if state.inventory_artist:
-        inventory_lines.append(
-            (f"Current Artist     {state.inventory_artist}", Semantic.ACTIVE)
-        )
-    if state.inventory_recovered:
-        inventory_lines.append(
-            ("Picker cache       recovered and rebuilt", Semantic.WARNING)
-        )
-    for item in state.activity[-3:]:
-        inventory_lines.append((f"Activity           {item.message}", Semantic.MUTED))
-    frame.render_widget(
-        Paragraph(
-            Text(
-                [
-                    Line([Span(_truncate(value, max(1, area.width - 4)), style(theme, semantic))])
-                    for value, semantic in inventory_lines
-                ]
-            )
-        ).block(card(theme, "LIBRARY INVENTORY / PICKER INDEX", Semantic.ACTIVE)),
-        inventory_area,
+    panel_width = min(max(48, int(inventory_area.width) - 8), 86)
+    panel_height = min(10, int(inventory_area.height))
+    panel = Rect(
+        int(inventory_area.x) + max(0, (int(inventory_area.width) - panel_width) // 2),
+        int(inventory_area.y) + max(0, (int(inventory_area.height) - panel_height) // 2),
+        panel_width,
+        panel_height,
     )
+    if state.cache_total:
+        headline = state.inventory_status or "BUILDING LIBRARY CACHE"
+        detail = f"{state.cache_processed:,} / {state.cache_total:,} Artists"
+        percent = state.cache_percent or 0.0
+        status_rows = _split_vertical(
+            panel,
+            [Constraint.length(3), Constraint.length(1), Constraint.length(2), Constraint.fill(1)],
+        )
+        frame.render_widget(
+            Paragraph.from_string(f"{headline}\n{detail}").centered().block(
+                card(theme, "LIBRARY CACHE", Semantic.ACTIVE)
+            ),
+            status_rows[0],
+        )
+        frame.render_widget(
+            Gauge()
+            .ratio(max(0.0, min(1.0, percent / 100.0)))
+            .label(f"{percent:.1f}%")
+            .gauge_style(style(theme, Semantic.ACCEPTED, bold=True))
+            .style(panel_style(theme))
+            .use_unicode(True),
+            status_rows[2],
+        )
+        current = (
+            f"{state.cache_albums:,} Albums discovered"
+            + (f" · {state.inventory_artist}" if state.inventory_artist else "")
+        )
+        frame.render_widget(
+            Paragraph.from_string(_truncate(current, max(1, panel_width))).centered().style(
+                style(theme, Semantic.MUTED)
+            ),
+            status_rows[3],
+        )
+    else:
+        frame.render_widget(
+            Paragraph.from_string(
+                f"{state.inventory_status}\n\nDiscovering Artist folders…"
+            )
+            .centered()
+            .block(card(theme, "LIBRARY CACHE", Semantic.ACTIVE)),
+            panel,
+        )
 
 
 def _header_context(state: TuiState, ai_context: bool) -> str:
@@ -696,7 +930,7 @@ def _header_context(state: TuiState, ai_context: bool) -> str:
         "processing": "CURRENT ALBUM / ACTIVITY",
         "candidates": "CANDIDATE DECISION",
         "picker": "CANDIDATE DECISION",
-        "summary": "LAST RUN SUMMARY",
+        "batch-report": "ALBUM RUN REPORT",
     }.get(state.workflow, state.phase.upper())
 
 
@@ -724,7 +958,11 @@ def _render_header(
     if point in {Breakpoint.WIDE, Breakpoint.NORMAL}:
         context = _header_context(state, ai_context)
         if point is Breakpoint.WIDE:
-            lines = _large_spectral_brand(theme, title)
+            lines = _solid_spectral_brand(
+                theme,
+                title,
+                animation_step(time.monotonic() - state.started_at),
+            )
             lines.append(
                 Line(
                     [
@@ -734,10 +972,12 @@ def _render_header(
                 ).centered()
             )
         else:
-            lines = [spectral_title(theme, centered=True, title=title)]
-            lines.append(
-                Line([Span(f"{context}  ·  {status}", style(theme, Semantic.ACTIVE))]).centered()
+            lines = _solid_spectral_brand(
+                theme,
+                title,
+                animation_step(time.monotonic() - state.started_at),
             )
+            lines.append(Line([Span(f"{context}  ·  {status}", style(theme, Semantic.ACTIVE))]).centered())
         frame.render_widget(
             Paragraph(Text(lines)).block(
                 card(theme, context, Semantic.SPECIAL if ai_context else Semantic.ACTIVE)
@@ -826,7 +1066,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
             else status in model.artist_status_filters
         )
 
-    album_counts = model.active_status_counts()
+    album_counts = model.album_status_counts()
     artist_counts = model.indexed_artist_status_counts()
 
     def status_suffix(index: int) -> str:
@@ -838,10 +1078,10 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
 
     def selection_suffix(index: int) -> str:
         if index == 0:
-            return "  [FULL INDEX]"
+            return f"  [{sum(item.auto_eligible for item in model.albums):,}]"
         if index == 1:
             return f"  [{selected_count:,}]" if selected_count else ""
-        return f"  [{len(model.visible_albums(active_artist_only=True)):,}]"
+        return f"  [{sum(item.auto_eligible for item in model.visible_albums()):,}]"
 
     frame.render_widget(
         Paragraph(_control_lines(tuple(x[0] for x in STATUS_CONTROLS), state.status_index, status_active, theme, status_suffix))
@@ -908,11 +1148,7 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
         marker = "›" if index == state.artist_index else " "
         checked = "☑" if artist.selected_count else "☐"
         semantic = _artist_status_semantic(artist.status)
-        status_label = (
-            STATUS_LABELS[artist.status]
-            if artist.status is not None
-            else "Inventory not loaded"
-        )
+        status_label = STATUS_LABELS[artist.status] if artist.status is not None else "No Albums"
         lines.append(Line([
             Span(f"{marker} {checked} ", style(theme, Semantic.ACTIVE if index == state.artist_index else semantic, bold=index == state.artist_index)),
             Span(_truncate(artist.name, max(4, body.width - 27)), style(theme, semantic)),
@@ -986,18 +1222,30 @@ def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme)
     formats = "  ".join(f"{key} {value}" for key, value in sorted(stats["formats"].items())) or "none"
     text = (
         f"Path  {_truncate(str(stats['path']), max(8, area.width - 9))}\n"
-        f"Artists  {stats['artists']} total · {stats['visible_artists']} visible\n"
-        f"Indexed  {stats['indexed_artists']} / {stats['artists']}\n"
-        f"Validated  {stats['loaded_artists']} this session\n"
-        f"Albums   {stats['albums']} known/indexed\n"
+        f"Artists  {stats['artists']} · {stats['visible_artists']} visible\n"
+        f"Albums   {stats['albums']} complete\n"
         f"Active   {stats['active_albums']} total · {stats['active_visible_albums']} visible\n"
-        f"Selected {stats['selected']} known Albums\n"
+        f"Selected {stats['selected']} Albums\n"
         f"Artwork  {formats}\n"
+        f"Cache    {stats['cache']}\n"
         "[P] Source Policy · [R] Refresh Library Index"
     )
     frame.render_widget(
         Paragraph.from_string(text).block(card(theme, "MEDIA LIBRARY STATISTICS", Semantic.ACTIVE)), area
     )
+    if state.cache_phase.startswith("validation") and state.cache_total and int(area.height) >= 4:
+        validation = (
+            f"Checking library cache · {state.cache_processed:,} / "
+            f"{state.cache_total:,} · {(state.cache_percent or 0.0):.1f}%"
+            if state.cache_phase == "validation"
+            else f"Library cache current · {state.cache_total:,} Artists · 100%"
+        )
+        frame.render_widget(
+            Paragraph.from_string(_truncate(validation, max(1, int(area.width) - 2)))
+            .centered()
+            .style(style(theme, Semantic.ACCEPTED if state.cache_phase.endswith("complete") else Semantic.ACTIVE)),
+            Rect(int(area.x) + 1, int(area.y + area.height) - 3, max(1, int(area.width) - 2), 1),
+        )
     if int(area.height) >= 2:
         _register_hit(
             state,
@@ -1432,12 +1680,25 @@ def _render_candidate_table_group(
         )
 
 
-def _candidate_preview(state: TuiState, candidate: CandidateView) -> ArtworkPreview | None:
-    key = candidate.path
-    if not key:
+def _candidate_preview(
+    state: TuiState,
+    candidate: CandidateView,
+    width: int = 28,
+    height: int = 12,
+) -> ArtworkPreview | None:
+    source = candidate.path
+    if not source:
         return None
+    if source not in state.preview_identity:
+        try:
+            stat = Path(source).stat()
+            state.preview_identity[source] = (int(stat.st_size), int(stat.st_mtime_ns))
+        except OSError:
+            state.preview_identity[source] = (-1, -1)
+    size, modified = state.preview_identity[source]
+    key = (source, max(1, width), max(1, height), size, modified)
     if key not in state.preview_cache:
-        state.preview_cache[key] = generate_preview(key)
+        state.preview_cache[key] = generate_preview(source, width=width, height=height)
     return state.preview_cache[key]
 
 
@@ -1448,7 +1709,9 @@ def _render_candidate_preview(
     theme: Theme,
     candidate: CandidateView,
 ) -> None:
-    preview = _candidate_preview(state, candidate)
+    preview_width = max(1, int(area.width) - 2)
+    preview_height = max(1, int(area.height) - 2)
+    preview = _candidate_preview(state, candidate, preview_width, preview_height)
     if preview is None:
         frame.render_widget(
             Paragraph.from_string("NO PREVIEW")
@@ -1579,23 +1842,28 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             area, [Constraint.length(16), Constraint.fill(1)]
         )
         _render_library_embedded(frame, library_area, state, theme)
-    preview_enabled = spec.breakpoint is Breakpoint.WIDE and int(area.width) >= 150
-    preview_width = 12 if preview_enabled else 0
-    table_width = int(area.width) - (preview_width + 1 if preview_enabled else 0)
+    preview_enabled = (
+        (spec.breakpoint is Breakpoint.WIDE and int(area.width) >= 150)
+        or (spec.breakpoint is Breakpoint.NORMAL and int(area.width) >= 105)
+    )
+    preview_area: Rect | None = None
+    if preview_enabled:
+        preview_width = 30 if spec.breakpoint is Breakpoint.WIDE else 20
+        preview_height = 14 if spec.breakpoint is Breakpoint.WIDE else 10
+        area, preview_column = _split_horizontal(
+            area,
+            [Constraint.fill(1), Constraint.length(preview_width)],
+        )
+        preview_area = _split_vertical(
+            preview_column,
+            [Constraint.length(min(preview_height, int(preview_column.height))), Constraint.fill(1)],
+        )[0]
+    table_width = int(area.width)
     grid = candidate_column_layout(
         table_width,
         int(area.height),
         ai_enabled=state.ai_enabled,
     )
-
-    def candidate_areas(panel: Rect) -> tuple[Rect, Rect | None]:
-        if not preview_enabled:
-            return panel, None
-        table_area, preview_area = _split_horizontal(
-            panel,
-            [Constraint.fill(1), Constraint.length(preview_width)],
-        )
-        return table_area, preview_area
 
     target = next((item for item in state.candidates if item.suggested or item.selected), None)
     if target is None and state.candidates:
@@ -1611,7 +1879,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             toward = local.distance - target.distance
             comparison = f"{target.source} {toward:+d}px toward Ideal · Shape {'equal' if local.square == target.square else 'changed'} · Crop risk {target.crop_risk}"
 
-    preferred_height = 7 if preview_enabled else 4
+    preferred_height = 4
     if spec.stack_cards:
         top = _split_vertical(area, [Constraint.length(3), Constraint.length(3), Constraint.length(3), Constraint.length(4), Constraint.length(preferred_height), Constraint.fill(1), Constraint.length(5)])
         summary_areas = [top[0], top[1], top[2]]
@@ -1633,18 +1901,17 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         frame.render_widget(Paragraph.from_string(current_text).block(card(theme, "CURRENT ALBUM", Semantic.ACTIVE)), current)
         preferred_semantic = Semantic.ACCEPTED if target and target.range_type == "Ideal" else Semantic.FALLBACK
 
-    preferred_table, preferred_preview = candidate_areas(preferred)
     if target is None:
         frame.render_widget(
             Paragraph.from_string("No suggested candidate").block(
                 card(theme, "PREFERRED SOURCE CANDIDATE", preferred_semantic)
             ),
-            preferred_table,
+            preferred,
         )
     else:
         _render_candidate_table_group(
             frame,
-            preferred_table,
+            preferred,
             state,
             theme,
             grid,
@@ -1653,10 +1920,6 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             semantic=preferred_semantic,
             preferred=True,
         )
-        if preferred_preview is not None:
-            _render_candidate_preview(
-                frame, preferred_preview, state, theme, target
-            )
 
     selected_albums = (
         [item for item in state.library.albums if item.selected]
@@ -1686,7 +1949,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         for group_index, group in enumerate(
             groups[state.group_scroll :], start=state.group_scroll
         ):
-            wanted = min(8, max(7 if preview_enabled else 4, len(group[1]) + 3))
+            wanted = min(8, max(4, len(group[1]) + 3))
             if visible_groups and remaining < 4:
                 break
             height = min(wanted, remaining) if not visible_groups else min(wanted, max(4, remaining))
@@ -1699,7 +1962,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             groups_area, [Constraint.length(value) for value in heights]
         )
         for panel, (group_index, name, candidates, semantic) in zip(panels, visible_groups):
-            table_panel, preview_panel = candidate_areas(panel)
+            table_panel = panel
             row_capacity = max(1, table_panel.height - 3)
             if group_index == state.group_scroll:
                 state.candidate_page_size = int(row_capacity)
@@ -1736,21 +1999,12 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 title=f"SOURCE CANDIDATES {name.upper()}{suffix}",
                 semantic=semantic,
             )
-            preview_candidate = next(
-                (
-                    item
-                    for item in shown
-                    if state.candidates[state.selected_index] is item
-                ),
-                shown[0] if shown else None,
-            )
-            if preview_panel is not None and preview_candidate is not None:
-                _render_candidate_preview(
-                    frame, preview_panel, state, theme, preview_candidate
-                )
     else:
         frame.render_widget(Paragraph.from_string("No candidates returned.").block(card(theme, "SOURCE CANDIDATES", Semantic.WARNING)), groups_area)
     _render_activity_region(frame, activity_area, state, theme)
+    if preview_area is not None and state.candidates:
+        selected = state.candidates[max(0, min(state.selected_index, len(state.candidates) - 1))]
+        _render_candidate_preview(frame, preview_area, state, theme, selected)
 
 
 POLICY_FIELDS = (
@@ -1909,24 +2163,102 @@ def _render_logs(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     )
 
 
-def _render_summary(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
-    rows = _split_vertical(area, [Constraint.fill(1), Constraint.length(9), Constraint.fill(1)])
-    values = state.summary
-    summary_lines = [
-        f"Albums     {values.get('albums', '—')}     Resolved   {values.get('resolved', '—')}",
-        f"Selected   {values.get('selected', '—')}     Postponed  {values.get('postponed', '—')}",
-        f"Unresolved {values.get('unresolved', '—')}     Failed     {values.get('failed', '—')}",
-        f"Installed  {values.get('installed', '—')}     Unchanged  {values.get('unchanged', '—')}",
-        "",
-        f"Batch exit code: {state.exit_code}   Enter / Esc returns to Select Media · q exits",
+def _render_batch_report(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    lines: list[Line] = [
+        Line(
+            [
+                Span(
+                    f"BATCH COMPLETE · {len(state.batch_reports):,} ALBUM(S)",
+                    style(
+                        theme,
+                        Semantic.ACCEPTED if state.exit_code == 0 else Semantic.REJECTED,
+                        bold=True,
+                    ),
+                )
+            ]
+        ).centered(),
+        Line([]),
     ]
-    semantic = Semantic.ACCEPTED if state.exit_code == 0 else Semantic.REJECTED
-    frame.render_widget(
-        Paragraph.from_string("\n".join(summary_lines))
-        .centered()
-        .block(card(theme, "LAST RUN SUMMARY", semantic)),
-        rows[1],
+    for position, report in enumerate(state.batch_reports, 1):
+        semantic = outcome_semantic(report.outcome)
+        lines.append(
+            Line(
+                [
+                    Span(f"[{position} / {len(state.batch_reports)}]  ", style(theme, Semantic.ACTIVE, bold=True)),
+                    Span(f"{report.artist} · {report.album}", style(theme, semantic, bold=True)),
+                ]
+            )
+        )
+        fields: list[tuple[str, str, Semantic]] = [
+            ("Album path", report.path, Semantic.MUTED),
+            ("Outcome", report.outcome, semantic),
+            ("Discovery", report.discovery, Semantic.ACTIVE),
+            ("Review", report.review_state, Semantic.TEXT),
+            ("Candidates", f"{report.candidate_total:,} total", Semantic.TEXT),
+            ("Policy hidden", f"{report.policy_hidden:,}", Semantic.WARNING if report.policy_hidden else Semantic.MUTED),
+            ("Duration", f"{report.duration_seconds:.2f}s", Semantic.MUTED),
+        ]
+        if report.selected_source:
+            details = " · ".join(
+                value
+                for value in (
+                    report.selected_source,
+                    report.selected_resolution,
+                    report.selected_format,
+                    report.selected_range,
+                    (
+                        f"distance {report.selected_distance}"
+                        if report.selected_distance is not None
+                        else ""
+                    ),
+                )
+                if value
+            )
+            fields.append(("Selected", details, Semantic.SPECIAL))
+        if report.destination:
+            fields.append(("Destination", report.destination, Semantic.ACCEPTED))
+        if report.file_action:
+            fields.append(("File action", report.file_action, semantic))
+        if report.detail:
+            fields.append(("Detail", report.detail, Semantic.WARNING))
+        for label, value, field_semantic in fields:
+            lines.append(
+                Line(
+                    [
+                        Span(f"  {label:<14}", style(theme, Semantic.MUTED)),
+                        Span(_truncate(value, max(1, int(area.width) - 20)), style(theme, field_semantic)),
+                    ]
+                )
+            )
+        if report.provider_notes:
+            lines.append(Line([Span("  Provider notes", style(theme, Semantic.MUTED))]))
+            for note in report.provider_notes:
+                lines.append(
+                    Line(
+                        [
+                            Span("    • ", style(theme, Semantic.WARNING)),
+                            Span(_truncate(note, max(1, int(area.width) - 10)), style(theme, Semantic.WARNING)),
+                        ]
+                    )
+                )
+        lines.append(Line([]))
+    lines.append(
+        Line(
+            [Span("Enter / Esc  Return to Select Media    q  Exit SPLINED", style(theme, Semantic.ACTIVE, bold=True))]
+        ).centered()
     )
+    capacity = max(1, int(area.height) - 2)
+    state.report_page_size = capacity
+    maximum = max(0, len(lines) - capacity)
+    state.report_scroll = max(0, min(state.report_scroll, maximum))
+    shown = lines[state.report_scroll : state.report_scroll + capacity]
+    frame.render_widget(
+        Paragraph(Text(shown)).block(
+            card(theme, "S:P:L:I:N:E:D ALBUM RUN REPORT", Semantic.HISTORY)
+        ),
+        area,
+    )
+    _register_hit(state, "report-scroll", area)
 
 
 def _footer_text(state: TuiState) -> str:
@@ -2058,9 +2390,9 @@ def _render_url_modal(frame: Any, area: Rect, state: TuiState, theme: Theme) -> 
     )
     text = Text(
         [
-            Line([Span("[OPEN URL]", style(theme, Semantic.DEBUG, bold=True).underlined())]).centered(),
+            Line([Span("[OPEN IN DEFAULT BROWSER]", style(theme, Semantic.DEBUG, bold=True).underlined())]).centered(),
             Line([Span(state.url_value, style(theme, Semantic.TEXT))]),
-            Line([Span("Terminal/client opens the link · Esc closes", style(theme, Semantic.MUTED))]).centered(),
+            Line([Span("Client-owned link · tap to use the default browser · Esc closes", style(theme, Semantic.MUTED))]).centered(),
         ]
     )
     frame.render_widget(Clear(), popup)
@@ -2068,11 +2400,12 @@ def _render_url_modal(frame: Any, area: Rect, state: TuiState, theme: Theme) -> 
         Paragraph(text).wrap(True, False).block(card(theme, "CANDIDATE URL", Semantic.DEBUG)),
         popup,
     )
-    label_x = int(popup.x) + max(1, (width - len("[OPEN URL]")) // 2)
+    label = "[OPEN IN DEFAULT BROWSER]"
+    label_x = int(popup.x) + max(1, (width - len(label)) // 2)
     _register_hit(
         state,
         "url-open",
-        Rect(label_x, int(popup.y) + 1, len("[OPEN URL]"), 1),
+        Rect(label_x, int(popup.y) + 1, len(label), 1),
         value=state.url_value,
     )
 
@@ -2120,8 +2453,8 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_history(frame, content, state, theme)
     elif state.tab == "logs":
         _render_logs(frame, content, state, theme)
-    elif state.workflow == "summary":
-        _render_summary(frame, content, state, theme)
+    elif state.workflow == "batch-report":
+        _render_batch_report(frame, content, state, theme)
     elif state.workflow == "library" and state.workspace == "policy":
         _render_policy(frame, content, state, theme)
     elif state.workflow == "library":
@@ -2444,13 +2777,7 @@ def _handle_library_key(
                 model.toggle_artist_status(status)
         elif state.library_focus == 1:
             if state.select_index == 0:
-                state.transient = "Indexing the complete library before Select [ALL]…"
-                _respond_library_action(
-                    state,
-                    adapter,
-                    "refresh-index",
-                    select_all=True,
-                )
+                model.select_all(filtered=False)
             elif state.select_index == 1:
                 model.select_none()
             else:
@@ -2550,7 +2877,7 @@ def _open_candidate_url(state: TuiState, candidate_index: int) -> None:
     if candidate.provenance == "[URL]" and candidate.url:
         state.url_value = candidate.url
         state.url_modal_open = True
-        state.transient = "Candidate link ready for the terminal client. Esc closes it."
+        state.transient = "Candidate URL ready · tap the link to open with your default browser."
     else:
         state.transient = "The highlighted candidate has no remote URL."
 
@@ -2580,7 +2907,7 @@ def write_terminal_links(state: TuiState, writer: Any) -> None:
         return
     writer.write("\x1b7")
     for region in targets:
-        label = "[OPEN URL]" if region.target == "url-open" else "[URL]"
+        label = "[OPEN IN DEFAULT BROWSER]" if region.target == "url-open" else "[URL]"
         writer.write(
             f"\x1b[{region.y + 1};{region.x + 1}H\x1b[4m"
             f"{osc8_link(label, region.value)}\x1b[0m"
@@ -2665,6 +2992,8 @@ def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
             state.candidate_row_scroll = 0
         else:
             state.candidate_row_scroll = max(0, min(proposed, maximum))
+    elif region.target == "report-scroll":
+        state.report_scroll = max(0, state.report_scroll + delta * 3)
 
 
 def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
@@ -2702,13 +3031,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.library_focus = 1
         state.select_index = region.index
         if region.index == 0:
-            state.transient = "Indexing the complete library before Select [ALL]…"
-            _respond_library_action(
-                state,
-                adapter,
-                "refresh-index",
-                select_all=True,
-            )
+            model.select_all(filtered=False)
         elif region.index == 1:
             model.select_none()
         else:
@@ -2836,10 +3159,19 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
 
     if request.kind == "batch-summary":
-        if action in {Action.ACTIVATE, Action.BACK}:
+        if action in {Action.UP, Action.DOWN, Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END}:
+            if action is Action.HOME:
+                state.report_scroll = 0
+            elif action is Action.END:
+                state.report_scroll = 1_000_000
+            else:
+                amount = 1 if action in {Action.UP, Action.DOWN} else max(1, state.report_page_size - 2)
+                direction = -1 if action in {Action.UP, Action.PAGE_UP} else 1
+                state.report_scroll = max(0, state.report_scroll + direction * amount)
+        elif action in {Action.ACTIVATE, Action.BACK}:
             adapter.respond("continue")
             state.input_request = None
-            state.transient = "Refreshing Select Media status from retained history…"
+            state.transient = "Returning to the retained Select Media session…"
         elif action is Action.QUIT:
             adapter.respond("exit")
             state.input_request = None
