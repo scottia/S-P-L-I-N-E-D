@@ -276,6 +276,59 @@ class OAuthValidationTests(unittest.TestCase):
         self.assertNotIn(api_key, stdout + stderr)
         self.assertNotIn(client_key, stdout + stderr)
 
+    def test_fanarttv_discovery_always_uses_v32_and_ignores_stale_marker(self) -> None:
+        release_group_mbid = "1b022e01-4da6-387b-8658-8678046e4cef"
+        self._write_credential(
+            "fanarttv",
+            {
+                "api_version": "v3",
+                "api_key": "fanart-api-secret",
+                "client_key": "fanart-client-secret",
+            },
+        )
+        response = FakeResponse(
+            200,
+            {
+                "albums": [
+                    {
+                        "release_group_id": release_group_mbid,
+                        "albumcover": [
+                            {
+                                "id": "cover-1",
+                                "url": "https://assets.fanart.tv/fixture.jpg",
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+        class RecordingHttp:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, str]]] = []
+
+            def get(self, url: str, *, headers: dict[str, str]):
+                self.calls.append((url, headers))
+                return response
+
+        http = RecordingHttp()
+        release = splined.Release(
+            "release-mbid",
+            "Nevermind",
+            "Nirvana",
+            release_group_mbid,
+            "Nevermind",
+        )
+        refs = splined.discover_fanart(http, self.config_file, self.cfg, release)  # type: ignore[arg-type]
+
+        self.assertEqual(
+            http.calls[0][0],
+            f"https://webservice.fanart.tv/v3.2/music/albums/{release_group_mbid}",
+        )
+        self.assertEqual(http.calls[0][1]["api-key"], "fanart-api-secret")
+        self.assertEqual(http.calls[0][1]["client-key"], "fanart-client-secret")
+        self.assertEqual([ref.url for ref in refs], ["https://assets.fanart.tv/fixture.jpg"])
+
     def test_musicbrainz_validates_userinfo_then_release_metadata(self) -> None:
         access_token = "musicbrainz-access-secret"
         self._write_credential(

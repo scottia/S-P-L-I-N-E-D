@@ -129,7 +129,8 @@ This phase is a filesystem/history inventory only. It may:
 - derive album status and Artist aggregate status;
 - build lightweight counts/statistics and the in-memory Artist/Album model.
 
-This phase must **not** perform:
+The blocking phase before the first usable Select Media screen must **not**
+perform:
 
 - Mutagen/audio-tag parsing or `read_track()` work;
 - MusicBrainz authority/release lookup;
@@ -140,7 +141,15 @@ This phase must **not** perform:
 - any other album-processing operation that belongs after Launch.
 
 Those expensive operations begin only after the user launches the selected
-album(s).
+album(s), with one narrow presentation-only exception: after the folder/history
+model is visible, SPLINED reads one representative track per album in four
+bounded background workers. Those Mutagen results enrich the displayed
+Artist/Album names and report MusicBrainz-tag coverage without changing paths,
+selection authority, status, or scan ordering. The representative result is
+cached in memory with its path, size, and modification time and is reused after
+Launch only if it still matches; authoritative processing still reads every
+other track. No MusicBrainz network lookup, provider work, artwork decoding, or
+candidate processing occurs during this background enrichment.
 
 ### Ignored/excluded directory authority
 

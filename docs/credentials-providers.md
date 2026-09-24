@@ -50,6 +50,10 @@ Fanart.tv uses the v3.2 album endpoint. The credential contract is:
 
 Python/Docker `splined --oauth-validation` is intentionally tolerant of legacy or manually created Fanart.tv files whose `api_version` marker is missing or stale. It prints `WARN`, then tests the saved API key and optional client key against the live v3.2 release-group album endpoint. A missing or stale marker alone is not treated as an authentication failure; the live request determines credential `PASS` or `FAIL`. New or rewritten credential files should still use `"api_version": "v3.2"`.
 
+Operational provider discovery also always uses the v3.2 release-group album
+endpoint and its `albums` response shape. A credential-file marker never
+downgrades the runtime request to v3.
+
 ## Last.fm
 
 Normal `album.getInfo` artwork reads require only `api_key`. They do not require a username or an authorized session.

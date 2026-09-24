@@ -245,6 +245,19 @@ class TuiState:
                     self.ai_runtime_available = bool(payload.get("ai_runtime_available", False))
                 if isinstance(output, dict):
                     self.upscale_below_ideal = bool(output.get("upscale_below_ideal", False))
+        elif event == "library_enrichment":
+            if self.library is not None and self.workflow == "library":
+                raw_items = payload.get("items")
+                items = raw_items if isinstance(raw_items, list) else [payload]
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    self.library.apply_tag_enrichment(
+                        str(item.get("path", "")),
+                        artist=str(item.get("artist", "")),
+                        album=str(item.get("album", "")),
+                        album_mbid=str(item.get("album_mbid", "")),
+                    )
         elif event == "scan_start":
             self.workflow = "overview"
             self.album_total = int(payload.get("total", 0))
@@ -798,7 +811,7 @@ def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme)
         f"Path  {_truncate(str(stats['path']), max(8, area.width - 9))}\n"
         f"Artists  {stats['artists']} total · {stats['visible_artists']} visible\n"
         f"Albums   {stats['albums']} total · {stats['visible_albums']} visible\n"
-        f"Selected {stats['selected']}\n"
+        f"Selected {stats['selected']} · Tagged {stats['tagged']} · MBID {stats['musicbrainz']}\n"
         f"Artwork  {formats}\n"
         "[P] Source Policy Settings"
     )

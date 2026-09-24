@@ -143,7 +143,7 @@ class LightweightInventoryTests(unittest.TestCase):
                 splined, "emit_ui", side_effect=lambda event, **payload: emitted.append((event, payload))
             ),
             mock.patch.object(splined, "read_input", return_value=response),
-            mock.patch.object(splined, "read_track", side_effect=AssertionError("tag read")),
+            mock.patch.object(splined, "enrich_representative_tracks", return_value=None),
             mock.patch.object(splined, "lookup_release", side_effect=AssertionError("MusicBrainz")),
             mock.patch.object(splined, "discover_all", side_effect=AssertionError("providers")),
             mock.patch.object(splined, "download_candidates", side_effect=AssertionError("downloads")),
@@ -201,6 +201,209 @@ class LightweightInventoryTests(unittest.TestCase):
             {item.status for item in model.albums},
             {AlbumStatus.PROCESSED, AlbumStatus.TIMEOUT, AlbumStatus.BYPASSED},
         )
+
+    def test_representative_tags_start_only_after_library_model_is_visible(self) -> None:
+        albums, _ = splined.inventory(self.root, [])
+        emitted: list[tuple[str, dict[str, object]]] = []
+        started = threading.Event()
+        stopped = threading.Event()
+
+        def background(
+            values: list[splined.AlbumDir],
+            cancel: threading.Event,
+            on_result,
+            *,
+            workers: int = splined.TAG_ENRICHMENT_WORKERS,
+        ) -> None:
+            self.assertTrue(any(event == "library" for event, _ in emitted))
+            self.assertEqual(values, albums)
+            started.set()
+            cancel.wait(2)
+            stopped.set()
+
+        response = json.dumps(
+            {"action": "launch", "scan_mode": "auto-selected", "selected": []}
+        )
+        with (
+            mock.patch.object(splined, "tui_active", return_value=True),
+            mock.patch.object(
+                splined,
+                "emit_ui",
+                side_effect=lambda event, **payload: emitted.append((event, payload)),
+            ),
+            mock.patch.object(splined, "read_input", return_value=response),
+            mock.patch.object(splined, "enrich_representative_tracks", side_effect=background),
+        ):
+            selected, cached, _, _, _ = splined.prepare_tui_library_selection(
+                self.root / "config.toml",
+                self.cfg,
+                ["itunes"],
+                self.root,
+                albums,
+                {"version": 1, "albums": {}},
+                24,
+            )
+
+        self.assertEqual(selected, [])
+        self.assertEqual(cached, {})
+        self.assertTrue(started.wait(1))
+        self.assertTrue(stopped.wait(1))
+
+    def test_representative_tag_event_updates_model_and_returns_run_cache(self) -> None:
+        albums, _ = splined.inventory(self.root, [])
+        target = next(album for album in albums if album.path == self.eden)
+        representative = target.audio_files[0]
+        stat = representative.stat()
+        mbid = "1b022e01-4da6-387b-8658-8678046e4cef"
+        track = splined.Track(
+            representative,
+            "Representative Track",
+            "Track Artist",
+            "Tagged Album",
+            "Tagged Album Artist",
+            mbid,
+            None,
+            None,
+        )
+        indexed = splined.IndexedTrack(track, stat.st_size, stat.st_mtime_ns)
+        emitted: list[tuple[str, dict[str, object]]] = []
+        enriched = threading.Event()
+
+        def background(values, cancel, on_result, *, workers=4) -> None:
+            on_result(target, indexed, None)
+
+        def emit(event: str, **payload: object) -> None:
+            emitted.append((event, payload))
+            if event == "library_enrichment":
+                enriched.set()
+
+        def respond(*_args, **_kwargs) -> str:
+            self.assertTrue(enriched.wait(1))
+            return json.dumps(
+                {
+                    "action": "launch",
+                    "scan_mode": "auto-selected",
+                    "selected": [str(target.path)],
+                }
+            )
+
+        with (
+            mock.patch.object(splined, "tui_active", return_value=True),
+            mock.patch.object(splined, "emit_ui", side_effect=emit),
+            mock.patch.object(splined, "read_input", side_effect=respond),
+            mock.patch.object(splined, "enrich_representative_tracks", side_effect=background),
+        ):
+            selected, cached, _, _, _ = splined.prepare_tui_library_selection(
+                self.root / "config.toml",
+                self.cfg,
+                ["itunes"],
+                self.root,
+                albums,
+                {"version": 1, "albums": {}},
+                24,
+            )
+
+        self.assertEqual(selected, [target])
+        self.assertIs(cached[str(target.path)].track, track)
+        payload = next(
+            payload for event, payload in emitted if event == "library_enrichment"
+        )
+        update = payload["items"][0]  # type: ignore[index]
+        self.assertEqual(update["artist"], "Tagged Album Artist")
+        self.assertEqual(update["album"], "Tagged Album")
+        self.assertEqual(update["album_mbid"], mbid)
+
+        model = LibraryModel.from_payload(
+            next(payload for event, payload in emitted if event == "library")
+        )
+        item = next(value for value in model.albums if value.path == str(target.path))
+        original_status = item.status
+        original_selected = item.selected
+        self.assertTrue(
+            model.apply_tag_enrichment(
+                str(target.path),
+                artist="Tagged Album Artist",
+                album="Tagged Album",
+                album_mbid=mbid,
+            )
+        )
+        self.assertEqual((item.artist, item.title), ("Tagged Album Artist", "Tagged Album"))
+        self.assertEqual((item.status, item.selected), (original_status, original_selected))
+        self.assertEqual(model.statistics()["musicbrainz"], 1)
+
+    def test_post_launch_reuses_only_an_unchanged_representative_track(self) -> None:
+        first_path = self.eden / "track01.flac"
+        second_path = self.eden / "track02.flac"
+        second_path.write_bytes(b"audio-two")
+        album = splined.AlbumDir(self.eden, [first_path, second_path])
+        stat = first_path.stat()
+        cached_track = splined.Track(
+            first_path,
+            "Cached",
+            "Artist",
+            "Album",
+            "Artist",
+            None,
+            None,
+            None,
+        )
+        indexed = splined.IndexedTrack(cached_track, stat.st_size, stat.st_mtime_ns)
+
+        def parsed(path: Path) -> splined.Track:
+            return splined.Track(path, path.stem, "Artist", "Album", "Artist", None, None, None)
+
+        with mock.patch.object(splined, "read_track", side_effect=parsed) as reader:
+            tracks = splined.read_album_tracks(album, {str(album.path): indexed})
+        self.assertIs(tracks[0], cached_track)
+        reader.assert_called_once_with(second_path)
+
+        first_path.write_bytes(b"audio-now-changed")
+        with mock.patch.object(splined, "read_track", side_effect=parsed) as reader:
+            tracks = splined.read_album_tracks(album, {str(album.path): indexed})
+        self.assertEqual([track.path for track in tracks], [first_path, second_path])
+        self.assertEqual(reader.call_count, 2)
+
+    def test_representative_tag_enrichment_is_bounded(self) -> None:
+        albums = [
+            splined.AlbumDir(
+                self.root / f"Tagged Artist {index:02d}" / "Album",
+                [self.root / f"Tagged Artist {index:02d}" / "Album" / "track.mp3"],
+            )
+            for index in range(12)
+        ]
+        lock = threading.Lock()
+        active = 0
+        maximum_active = 0
+        results: list[str] = []
+
+        def index(album: splined.AlbumDir) -> splined.IndexedTrack:
+            nonlocal active, maximum_active
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            try:
+                time.sleep(0.01)
+                path = album.audio_files[0]
+                return splined.IndexedTrack(
+                    splined.Track(path, "Track", "Artist", "Album", "Artist", None, None, None),
+                    1,
+                    1,
+                )
+            finally:
+                with lock:
+                    active -= 1
+
+        with mock.patch.object(splined, "index_representative_track", side_effect=index):
+            splined.enrich_representative_tracks(
+                albums,
+                threading.Event(),
+                lambda album, indexed, error: results.append(str(album.path)),
+                workers=4,
+            )
+
+        self.assertEqual(len(results), len(albums))
+        self.assertGreater(maximum_active, 1)
+        self.assertLessEqual(maximum_active, 4)
 
     def test_local_art_presence_never_requires_image_decode(self) -> None:
         with mock.patch.object(splined.Image, "open", side_effect=AssertionError("decoded")):

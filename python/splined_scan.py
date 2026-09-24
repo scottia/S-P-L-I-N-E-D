@@ -1102,7 +1102,7 @@ def run_scan_dir(
 
     albums: list[core.AlbumDir] = []
     postponed_albums: list[tuple[core.AlbumDir, float]] = []
-    track_cache: dict[str, list[core.Track]] = {}
+    track_cache: dict[str, core.IndexedTrack] = {}
     if core.tui_active():
         bypassed_paths = (
             set()
@@ -1211,9 +1211,7 @@ def run_scan_dir(
             "fallback_reason": None,
         }
         try:
-            tracks = track_cache.get(str(album.path)) or [
-                core.read_track(path) for path in album.audio_files
-            ]
+            tracks = core.read_album_tracks(album, track_cache)
             record["tracks"] = tracks
             record["file_count"] = len(tracks)
             record["compilation"] = (

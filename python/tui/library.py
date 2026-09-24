@@ -48,6 +48,8 @@ class AlbumItem:
     timeout_remaining: str = ""
     selected: bool = False
     bypass_override: bool = False
+    tagged: bool = False
+    album_mbid: str = ""
 
     @property
     def auto_eligible(self) -> bool:
@@ -92,6 +94,14 @@ class LibraryModel:
     )
     active_artist: str = ""
     inventory_loads: int = 1
+    _album_by_path: dict[str, AlbumItem] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        self._album_by_path = {item.path: item for item in self.albums}
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "LibraryModel":
@@ -112,6 +122,8 @@ class LibraryModel:
                 timeout_remaining=str(raw.get("timeout_remaining", "")),
                 selected=bool(raw.get("selected", status is AlbumStatus.UNPROCESSED)),
                 bypass_override=bool(raw.get("bypass_override", False)),
+                tagged=bool(raw.get("tagged", False)),
+                album_mbid=str(raw.get("album_mbid", "")),
             )
             # Protected states are never selected merely because malformed
             # presentation payload claimed they were.
@@ -174,6 +186,28 @@ class LibraryModel:
         visible = self.visible_artists()
         if visible and self.active_artist not in {row.name for row in visible}:
             self.active_artist = visible[0].name
+
+    def apply_tag_enrichment(
+        self,
+        path: str,
+        *,
+        artist: str = "",
+        album: str = "",
+        album_mbid: str = "",
+    ) -> bool:
+        item = self._album_by_path.get(path)
+        if item is None:
+            return False
+        previous_artist = item.artist
+        if artist.strip():
+            item.artist = artist.strip()
+        if album.strip():
+            item.title = album.strip()
+        item.album_mbid = album_mbid.strip()
+        item.tagged = True
+        if self.active_artist == previous_artist and item.artist != previous_artist:
+            self.active_artist = item.artist
+        return True
 
     def toggle_status(self, status: AlbumStatus) -> None:
         if status in self.status_filters:
@@ -263,5 +297,7 @@ class LibraryModel:
             "visible_artists": len(self.visible_artists()),
             "visible_albums": len(self.visible_albums()),
             "selected": sum(item.selected for item in self.albums),
+            "tagged": sum(item.tagged for item in self.albums),
+            "musicbrainz": sum(bool(item.album_mbid) for item in self.albums),
             "formats": formats,
         }

@@ -42,6 +42,8 @@ MB_AUTHORIZE_URL = "https://musicbrainz.org/oauth2/authorize"
 MB_OAUTH_ENDPOINT = "https://musicbrainz.org/oauth2/token"
 LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_AUTH_URL = "https://www.last.fm/api/auth/"
+FANARTTV_API_VERSION = "v3.2"
+FANARTTV_API_BASE = f"https://webservice.fanart.tv/{FANARTTV_API_VERSION}"
 REQUEST_TIMEOUT = 20
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 INVENTORY_WORKERS = 8
@@ -49,6 +51,7 @@ DOWNLOAD_CHUNK_BYTES = 64 * 1024
 MAX_IMAGE_PIXELS = 64 * 1024 * 1024
 PROVIDER_DISCOVERY_WORKERS = 4
 CANDIDATE_DOWNLOAD_WORKERS = 4
+TAG_ENRICHMENT_WORKERS = 4
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
 SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
@@ -83,6 +86,15 @@ class Track:
     album_mbid: str | None
     recording_mbid: str | None
     compilation: str | None
+
+
+@dataclass(frozen=True)
+class IndexedTrack:
+    """One representative tag read cached for this process only."""
+
+    track: Track
+    size: int
+    modified_ns: int
 
 
 @dataclass
@@ -994,6 +1006,83 @@ def read_track(path: Path) -> Track:
     return Track(path, title, artist, album, album_artist, album_mbid, recording_mbid, compilation)
 
 
+def index_representative_track(album: AlbumDir) -> IndexedTrack:
+    """Read one representative track for non-blocking Select Media enrichment."""
+    if not album.audio_files:
+        raise SplinedError(f"SPLINED album has no audio files: {album.path}")
+    track = read_track(album.audio_files[0])
+    try:
+        stat = track.path.stat()
+    except OSError as exc:
+        raise SplinedError(
+            f"Unable to stat SPLINED representative track {track.path}: {exc}"
+        ) from exc
+    return IndexedTrack(track, stat.st_size, stat.st_mtime_ns)
+
+
+def enrich_representative_tracks(
+    albums: list[AlbumDir],
+    cancel: threading.Event,
+    on_result: Callable[[AlbumDir, IndexedTrack | None, str | None], None],
+    *,
+    workers: int = TAG_ENRICHMENT_WORKERS,
+) -> None:
+    """Enrich Select Media in the background without delaying its first paint."""
+    worker_count = max(1, min(16, int(workers)))
+    queued: deque[AlbumDir] = deque(albums)
+    pending: dict[concurrent.futures.Future[IndexedTrack], AlbumDir] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="splined-tag-index",
+    ) as executor:
+        while (queued or pending) and not cancel.is_set():
+            while queued and len(pending) < worker_count and not cancel.is_set():
+                album = queued.popleft()
+                pending[executor.submit(index_representative_track, album)] = album
+            if not pending:
+                break
+            done, _ = concurrent.futures.wait(
+                pending,
+                timeout=0.1,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                album = pending.pop(future)
+                try:
+                    indexed = future.result()
+                except Exception as exc:
+                    on_result(album, None, str(exc))
+                else:
+                    on_result(album, indexed, None)
+        if cancel.is_set():
+            for future in pending:
+                future.cancel()
+
+
+def read_album_tracks(
+    album: AlbumDir,
+    indexed_tracks: dict[str, IndexedTrack] | None = None,
+) -> list[Track]:
+    """Read all authoritative tags, reusing a still-current representative."""
+    indexed = (indexed_tracks or {}).get(str(album.path))
+    tracks: list[Track] = []
+    for path in album.audio_files:
+        if indexed is not None and indexed.track.path == path:
+            try:
+                stat = path.stat()
+            except OSError:
+                stat = None
+            if (
+                stat is not None
+                and stat.st_size == indexed.size
+                and stat.st_mtime_ns == indexed.modified_ns
+            ):
+                tracks.append(indexed.track)
+                continue
+        tracks.append(read_track(path))
+    return tracks
+
+
 def valid_mbid(value: str | None) -> str | None:
     if not value: return None
     value = value.strip().lower()
@@ -1053,18 +1142,19 @@ def prepare_tui_library_selection(
     timeout_hours: float,
     *,
     bypassed_paths: set[str] | None = None,
-) -> tuple[list[AlbumDir], dict[str, list[Track]], set[str], set[str], list[str]]:
-    """Present the lightweight inventory and return transient execution choices.
+) -> tuple[list[AlbumDir], dict[str, IndexedTrack], set[str], set[str], list[str]]:
+    """Present the immediate inventory and return transient execution choices.
 
-    This boundary deliberately consumes only directory/file facts plus retained
-    history.  Tag parsing, MusicBrainz, provider work, image decoding, and
-    candidate ranking begin after the user submits Launch.
+    Directory/history facts produce the first usable screen. One representative
+    track per album is then read in bounded background workers to enrich display
+    names and seed an in-process cache. MusicBrainz, providers, image decoding,
+    candidate ranking, and filesystem writes still begin only after Launch.
     """
     if not tui_active():
         return albums, {}, set(), set(), sources
 
     bypassed = bypassed_paths or set()
-    track_cache: dict[str, list[Track]] = {}
+    track_cache: dict[str, IndexedTrack] = {}
     rows: list[dict[str, Any]] = []
     timeout_paths: set[str] = set()
     model_started = time.perf_counter()
@@ -1122,6 +1212,8 @@ def prepare_tui_library_selection(
                 "status": status,
                 "formats": formats_found,
                 "local_art": [str(path) for path in album.local_art_files],
+                "tagged": False,
+                "album_mbid": "",
                 "timeout_remaining": (
                     format_timeout_hours(max(0.0, timeout_hours - age_hours))
                     if postponed
@@ -1155,22 +1247,114 @@ def prepare_tui_library_selection(
         message=f"Artist/Album model ready in {model_elapsed:.3f}s",
     )
 
+    row_by_path = {str(row["path"]): row for row in rows}
+    tag_cancel = threading.Event()
+    tag_lock = threading.Lock()
+    tag_completed = 0
+    tag_failed = 0
+    tag_updates: list[dict[str, str]] = []
+    tag_last_publish = time.monotonic()
+    tag_thread: threading.Thread | None = None
+
+    def flush_tag_updates() -> None:
+        nonlocal tag_last_publish
+        if not tag_updates:
+            return
+        emit_ui("library_enrichment", items=list(tag_updates))
+        tag_updates.clear()
+        tag_last_publish = time.monotonic()
+
+    def publish_tag_result(
+        album: AlbumDir,
+        indexed: IndexedTrack | None,
+        error: str | None,
+    ) -> None:
+        nonlocal tag_completed, tag_failed
+        album_key = str(album.path)
+        if indexed is None:
+            tag_failed += 1
+            debug_log(
+                f"select_media.tag_index_failed album={album_key!r} error={error!r}"
+            )
+        else:
+            track = indexed.track
+            artist = (track.album_artist or track.artist or "").strip()
+            title = (track.album or "").strip()
+            mbid = valid_mbid(track.album_mbid) or ""
+            with tag_lock:
+                track_cache[album_key] = indexed
+                row = row_by_path.get(album_key)
+                if row is not None:
+                    if artist:
+                        row["artist"] = artist
+                    if title:
+                        row["album"] = title
+                    row["tagged"] = True
+                    row["album_mbid"] = mbid
+            tag_updates.append(
+                {
+                    "path": album_key,
+                    "artist": artist,
+                    "album": title,
+                    "album_mbid": mbid,
+                }
+            )
+        tag_completed += 1
+        if (
+            len(tag_updates) >= 50
+            or time.monotonic() - tag_last_publish >= 0.1
+            or tag_completed == len(albums)
+        ):
+            flush_tag_updates()
+        if tag_completed % 250 == 0 or tag_completed == len(albums):
+            emit_ui(
+                "activity",
+                category="inventory",
+                state="done" if tag_completed == len(albums) else "start",
+                source="mutagen",
+                message=(
+                    f"Tag index: {tag_completed:,} / {len(albums):,} albums"
+                    + (f" · {tag_failed:,} unreadable" if tag_failed else "")
+                ),
+            )
+
+    def run_tag_enrichment() -> None:
+        try:
+            enrich_representative_tracks(
+                albums,
+                tag_cancel,
+                publish_tag_result,
+            )
+        finally:
+            flush_tag_updates()
+
     original_configured = resolve_sources(cfg, None, None, [])
     while True:
+        with tag_lock:
+            visible_rows = [dict(row) for row in rows]
         emit_ui(
             "library",
             root=str(root),
-            albums=rows,
+            albums=visible_rows,
             config=cfg,
             aisplined=aisplined_settings(cfg),
             ai_runtime_available=False,
         )
+        if tag_thread is None:
+            tag_thread = threading.Thread(
+                target=run_tag_enrichment,
+                name="splined-tag-index-coordinator",
+                daemon=True,
+            )
+            tag_thread.start()
         raw = read_input("", kind="library-selection")
         try:
             response = json.loads(raw)
         except (TypeError, ValueError) as exc:
+            tag_cancel.set()
             raise SplinedError("The TUI returned an invalid library selection.") from exc
         if not isinstance(response, dict):
+            tag_cancel.set()
             raise SplinedError("The TUI returned an invalid library selection.")
         action = str(response.get("action", ""))
         if action == "save-settings":
@@ -1178,10 +1362,12 @@ def prepare_tui_library_selection(
 
             policy = response.get("policy")
             if not isinstance(policy, dict):
+                tag_cancel.set()
                 raise SplinedError("The TUI source-policy draft is invalid.")
             try:
                 updated = persist_policy_draft(config_file, policy, validate_config_v5)
             except (OSError, ValueError, KeyError, TypeError) as exc:
+                tag_cancel.set()
                 raise SplinedError(f"Unable to save Config v5 source policy: {exc}") from exc
             cfg.clear()
             cfg.update(updated)
@@ -1200,6 +1386,7 @@ def prepare_tui_library_selection(
             )
             continue
         if action != "launch":
+            tag_cancel.set()
             raise SplinedError("The TUI library workspace did not select a scan mode.")
         selected_paths = {
             str(value) for value in response.get("selected", []) if str(value)
@@ -1215,9 +1402,13 @@ def prepare_tui_library_selection(
         elif scan_mode == "filtered-write":
             cfg["mode"] = "write"
         else:
+            tag_cancel.set()
             raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
         selected = [album for album in albums if str(album.path) in selected_paths]
-        return selected, track_cache, overrides, timeout_paths, sources
+        tag_cancel.set()
+        with tag_lock:
+            cached_tracks = dict(track_cache)
+        return selected, cached_tracks, overrides, timeout_paths, sources
 
 
 def compact(paths: list[Path]) -> str:
@@ -2254,16 +2445,28 @@ def discover_caa(http: Http, rel: Release) -> list[Ref]:
 def discover_fanart(http: Http, config_file: Path, cfg: dict[str, Any], rel: Release) -> list[Ref]:
     if not rel.release_group_id: return []
     path = credential_file(config_file, cfg, "fanarttv"); cred = load_json(path, "Fanart.tv"); key = str(cred.get("api_key") or "").strip()
-    api_version = str(cred.get("api_version") or "").strip()
-    if api_version != "v3.2": raise SplinedError(f"Fanart.tv credential file must declare api_version v3.2: {path}")
     if not key: raise SplinedError(f"Fanart.tv credential file contains no api_key: {path}")
     headers = {"api-key": key}; client = str(cred.get("client_key") or "").strip()
     if client: headers["client-key"] = client
-    r = http.get(f"https://webservice.fanart.tv/v3/music/albums/{rel.release_group_id}", headers=headers)
+    r = http.get(f"{FANARTTV_API_BASE}/music/albums/{rel.release_group_id}", headers=headers)
     if r.status_code == 404: return []
     if r.status_code in {401, 403}: raise SplinedError("Fanart.tv credentials were rejected.")
     if r.status_code != 200: raise SplinedError(f"Fanart.tv returned HTTP {r.status_code}")
-    return [Ref("fanarttv", str(x.get("id") or ""), str(x.get("url") or "")) for x in r.json().get("albumcover", []) if str(x.get("url") or "").strip()]
+    data = r.json()
+    albums = data.get("albums") if isinstance(data, dict) else None
+    if not isinstance(albums, list):
+        raise SplinedError("Fanart.tv v3.2 response did not contain an albums array")
+    covers: list[dict[str, Any]] = []
+    for album in albums:
+        if not isinstance(album, dict):
+            continue
+        release_group_id = str(album.get("release_group_id") or "")
+        if release_group_id.casefold() != rel.release_group_id.casefold():
+            continue
+        raw_covers = album.get("albumcover")
+        if isinstance(raw_covers, list):
+            covers.extend(item for item in raw_covers if isinstance(item, dict))
+    return [Ref("fanarttv", str(x.get("id") or ""), str(x.get("url") or "")) for x in covers if str(x.get("url") or "").strip()]
 
 
 def lastfm_refs(album: dict[str, Any]) -> list[Ref]:
@@ -3838,7 +4041,7 @@ def run_scan_dir(
 
     albums: list[AlbumDir] = []
     postponed_albums: list[tuple[AlbumDir, float]] = []
-    track_cache: dict[str, list[Track]] = {}
+    track_cache: dict[str, IndexedTrack] = {}
     if tui_active():
         albums, track_cache, _, timeout_paths, sources = prepare_tui_library_selection(
             config_file,
@@ -3935,9 +4138,7 @@ def run_scan_dir(
             "fallback_reason": None,
         }
         try:
-            tracks = track_cache.get(str(album.path)) or [
-                read_track(path) for path in album.audio_files
-            ]
+            tracks = read_album_tracks(album, track_cache)
             record["tracks"] = tracks
             record["file_count"] = len(tracks)
             record["compilation"] = "Compilation" if any((t.compilation or "").strip() == "1" for t in tracks) else "Standard"

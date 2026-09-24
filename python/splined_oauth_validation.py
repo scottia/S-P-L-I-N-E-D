@@ -262,7 +262,7 @@ def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
         print(f"{FAIL}: {label}: configured credential contains no api_key")
         _print_recovery(config_file, cfg, "fanarttv", label)
         return FAIL
-    if api_version.lower() != "v3.2":
+    if api_version.lower() != core.FANARTTV_API_VERSION:
         print(
             f"WARN: {label}: saved api_version marker is missing or not v3.2; "
             "testing the saved credentials against the live v3.2 endpoint"
@@ -280,7 +280,7 @@ def _validate_fanarttv(config_file: Path, cfg: dict[str, Any]) -> str:
         try:
             status, data = _request_json(
                 "GET",
-                f"https://webservice.fanart.tv/v3.2/music/albums/{release_group_mbid}",
+                f"{core.FANARTTV_API_BASE}/music/albums/{release_group_mbid}",
                 headers=headers,
             )
         except ProviderRequestError as exc:
