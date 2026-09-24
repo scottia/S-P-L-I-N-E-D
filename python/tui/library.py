@@ -260,11 +260,13 @@ class LibraryModel:
 
     def selection_payload(self, scan_mode: str) -> dict[str, Any]:
         if scan_mode in {"filtered-read", "filtered-write"}:
+            # Windows AUTO LAUNCH is path-exact: visibility narrows the checked
+            # set, but ordinary eligibility never checks a row implicitly.
             visible = {item.path for item in self.visible_albums()}
             selected = [
                 item.path
                 for item in self.albums
-                if item.path in visible and (item.auto_eligible or item.selected)
+                if item.path in visible and item.selected
             ]
         elif scan_mode == "auto-all":
             selected = [

@@ -331,6 +331,49 @@ class LightweightInventoryTests(unittest.TestCase):
         self.assertEqual((item.status, item.selected), (original_status, original_selected))
         self.assertEqual(model.statistics()["musicbrainz"], 1)
 
+    def test_launch_boundary_passes_only_exact_checked_album_paths(self) -> None:
+        albums, _ = splined.inventory(self.root, [])
+        chosen_paths = [str(self.eden), str(self.toys)]
+        emitted: list[tuple[str, dict[str, object]]] = []
+        response = json.dumps(
+            {
+                "action": "launch",
+                "scan_mode": "filtered-read",
+                "selected": chosen_paths + [str(self.root / "not-in-inventory")],
+            }
+        )
+
+        with (
+            mock.patch.object(splined, "tui_active", return_value=True),
+            mock.patch.object(
+                splined,
+                "emit_ui",
+                side_effect=lambda event, **payload: emitted.append((event, payload)),
+            ),
+            mock.patch.object(splined, "read_input", return_value=response),
+            mock.patch.object(splined, "enrich_representative_tracks", return_value=None),
+        ):
+            selected, _, _, _, _ = splined.prepare_tui_library_selection(
+                self.root / "config.toml",
+                self.cfg,
+                ["itunes"],
+                self.root,
+                albums,
+                {"version": 1, "albums": {}},
+                24,
+            )
+
+        self.assertEqual([str(album.path) for album in selected], chosen_paths)
+        scope = next(
+            payload
+            for event, payload in emitted
+            if event == "activity" and payload.get("category") == "selection"
+        )
+        self.assertEqual(
+            scope["message"],
+            "Launch scope confirmed · 2 checked album(s) · filtered-read",
+        )
+
     def test_post_launch_reuses_only_an_unchanged_representative_track(self) -> None:
         first_path = self.eden / "track01.flac"
         second_path = self.eden / "track02.flac"

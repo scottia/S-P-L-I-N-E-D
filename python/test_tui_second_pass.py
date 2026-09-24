@@ -77,6 +77,33 @@ class LibraryWorkspaceTests(unittest.TestCase):
         self.assertFalse(self.model.albums[1].selected)
         self.assertEqual(len(self.model.albums), 4)
 
+    def test_filtered_launch_intersects_visible_and_checked_multiple_artists(self) -> None:
+        model = LibraryModel(
+            "/music",
+            [
+                AlbumItem("/music/alpha/one", "Alpha", "Visible One", AlbumStatus.UNPROCESSED),
+                AlbumItem("/music/alpha/two", "Alpha", "Hidden Two", AlbumStatus.UNPROCESSED),
+                AlbumItem("/music/bravo/one", "Bravo", "Visible One", AlbumStatus.UNPROCESSED),
+                AlbumItem("/music/charlie/one", "Charlie", "Visible One", AlbumStatus.UNPROCESSED),
+            ],
+        )
+        model.toggle_artist("Alpha")
+        model.toggle_artist("Charlie")
+        model.set_filters(album="visible")
+
+        expected = ["/music/alpha/one", "/music/charlie/one"]
+        self.assertEqual(model.selection_payload("filtered-read")["selected"], expected)
+        self.assertEqual(model.selection_payload("filtered-write")["selected"], expected)
+        self.assertNotIn("/music/bravo/one", expected)
+        self.assertEqual(model.inventory_loads, 1)
+
+        # AUTO SELECTED retains checked rows outside the current visibility
+        # filter; filtering itself never mutates the underlying selection.
+        self.assertEqual(
+            model.selection_payload("auto-selected")["selected"],
+            ["/music/alpha/one", "/music/alpha/two", "/music/charlie/one"],
+        )
+
 
 class SourcePolicyDraftTests(unittest.TestCase):
     def test_atomic_save_preserves_unknown_config_and_explicitly_applies(self) -> None:

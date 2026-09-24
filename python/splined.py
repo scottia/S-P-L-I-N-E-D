@@ -1405,6 +1405,16 @@ def prepare_tui_library_selection(
             tag_cancel.set()
             raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
         selected = [album for album in albums if str(album.path) in selected_paths]
+        emit_ui(
+            "activity",
+            category="selection",
+            state="done",
+            source="select-media",
+            message=(
+                f"Launch scope confirmed · {len(selected):,} checked album(s) "
+                f"· {scan_mode}"
+            ),
+        )
         tag_cancel.set()
         with tag_lock:
             cached_tracks = dict(track_cache)

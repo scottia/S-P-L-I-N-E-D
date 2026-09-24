@@ -294,6 +294,40 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             response = json.loads(adapter.responses.get_nowait())
             self.assertEqual(response["scan_mode"], mode)
 
+    def test_filtered_scan_mouse_launch_keeps_multiple_artist_checkbox_scope(self) -> None:
+        state = _library_state(artists=3, albums_each=2)
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+
+        for index in (0, 1):
+            handle_mouse(
+                state,
+                adapter,
+                _center(_region(state, "artist-checkbox", index)),
+            )
+            render(_Frame(150, 44), state, select_theme("OLED"))
+
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "scan-control", 0)),
+        )
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["scan_mode"], "filtered-read")
+        selected = set(response["selected"])
+        self.assertEqual(len(selected), 4)
+        self.assertTrue(all("Artist 02" not in path for path in selected))
+        self.assertEqual(
+            selected,
+            {
+                "/music/10,000 Maniacs/Love Among the Ruins",
+                "/music/10,000 Maniacs/Album 01",
+                "/music/Artist 01/Album 00",
+                "/music/Artist 01/Album 01",
+            },
+        )
+
 
 class PolicyAndCandidateMouseTests(unittest.TestCase):
     def test_source_policy_controls_have_direct_hit_actions(self) -> None:

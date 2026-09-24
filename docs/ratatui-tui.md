@@ -179,6 +179,12 @@ inventing a percentage.
 Selecting an artist cascades only to eligible child albums. History, bypass,
 timeout, and manual-reprocessing rules remain authoritative.
 
+The scan launch payload is always path-exact. Filtered READ/WRITE launches use
+the intersection of currently visible and already checked Albums; filtering
+never auto-adds an unchecked Album. AUTO SELECTED uses all checked Albums even
+when a filter hides them, while the explicit AUTO ALL action selects the full
+normally eligible library first.
+
 ## Mouse, touch, hit-testing, and scrolling
 
 Mouse/touch interaction is a required design target for selection, checkboxes,

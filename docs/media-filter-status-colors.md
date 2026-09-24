@@ -254,6 +254,11 @@ The Scan Mode group contains mutually exclusive:
 
 These are operational shortcuts for the current filtered selection, not replacements for persistent album bypass.
 
+Launching a filtered scan intersects the visible filter result with albums that
+are already checked. It must not expand the run to other visible eligible
+albums. **AUTO LAUNCH** likewise processes only the checked Album set; selecting
+an Artist or using **Select [FILTERED]** is what changes that set.
+
 # Auto Mode
 
 **AUTO LAUNCH** starts the existing launch workflow for the eligible selection.
