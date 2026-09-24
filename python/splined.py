@@ -5,7 +5,6 @@ import argparse
 import base64
 import concurrent.futures
 import getpass
-import fnmatch
 import hashlib
 import importlib.util
 import io
@@ -88,6 +87,9 @@ class Track:
 class AlbumDir:
     path: Path
     audio_files: list[Path]
+    # Populated by the lightweight filesystem inventory.  These paths are
+    # detected by filename/extension only; no image is opened before Launch.
+    local_art_files: list[Path] = field(default_factory=list)
 
 
 @dataclass
@@ -735,11 +737,32 @@ def formats(cfg: dict[str, Any]) -> list[str]:
 
 
 def should_ignore(name: str, patterns: list[str]) -> bool:
-    name = name.lower()
-    return any(fnmatch.fnmatchcase(name, p.strip().lower()) for p in patterns if p.strip())
+    # Match the Windows Config v5 contract: only '*' and '?' are wildcard
+    # operators.  Literal square brackets in common ignored names such as
+    # '[Artist Singles]' must not be interpreted as fnmatch character classes.
+    for pattern in patterns:
+        value = pattern.strip()
+        if not value:
+            continue
+        expression = "^" + re.escape(value).replace(r"\*", ".*").replace(r"\?", ".") + "$"
+        if re.fullmatch(expression, name, flags=re.IGNORECASE):
+            return True
+    return False
 
 
-def inventory(root: Path, ignored_subs: list[str]) -> tuple[list[AlbumDir], list[Path]]:
+def _is_inventory_local_art(path: Path, configured_file_name: str) -> bool:
+    if path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        return False
+    stem = path.stem.casefold()
+    configured = (configured_file_name.strip() or "cover").casefold()
+    return stem.startswith("cover") or stem.startswith(configured)
+
+
+def inventory(
+    root: Path,
+    ignored_subs: list[str],
+    configured_file_name: str = "cover",
+) -> tuple[list[AlbumDir], list[Path]]:
     if not root.exists():
         raise SplinedError(f"SPLINED scan directory does not exist: {root}")
     if not root.is_dir():
@@ -756,6 +779,7 @@ def inventory(root: Path, ignored_subs: list[str]) -> tuple[list[AlbumDir], list
         except OSError as exc:
             raise SplinedError(f"Unable to read SPLINED scan directory {directory}: {exc}") from exc
         audio: list[Path] = []
+        local_art: list[Path] = []
         children: list[Path] = []
         for p in entries:
             if p.is_symlink():
@@ -764,8 +788,10 @@ def inventory(root: Path, ignored_subs: list[str]) -> tuple[list[AlbumDir], list
                 children.append(p)
             elif p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS:
                 audio.append(p)
+            elif p.is_file() and _is_inventory_local_art(p, configured_file_name):
+                local_art.append(p)
         if audio:
-            albums.append(AlbumDir(directory, sorted(audio)))
+            albums.append(AlbumDir(directory, sorted(audio), sorted(local_art)))
         for child in children:
             visit(child, False)
 
@@ -886,7 +912,12 @@ def prepare_tui_library_selection(
     *,
     bypassed_paths: set[str] | None = None,
 ) -> tuple[list[AlbumDir], dict[str, list[Track]], set[str], set[str], list[str]]:
-    """Present one loaded inventory and return transient execution choices."""
+    """Present the lightweight inventory and return transient execution choices.
+
+    This boundary deliberately consumes only directory/file facts plus retained
+    history.  Tag parsing, MusicBrainz, provider work, image decoding, and
+    candidate ranking begin after the user submits Launch.
+    """
     if not tui_active():
         return albums, {}, set(), set(), sources
 
@@ -894,46 +925,42 @@ def prepare_tui_library_selection(
     track_cache: dict[str, list[Track]] = {}
     rows: list[dict[str, Any]] = []
     timeout_paths: set[str] = set()
+    model_started = time.perf_counter()
     for album in albums:
         album_key = str(album.path)
-        artist = album.path.parent.name or "Unknown Artist"
-        title = album.path.name or "Unknown Album"
         try:
-            tracks = [read_track(path) for path in album.audio_files]
-            track_cache[album_key] = tracks
-            artist = tagged_artist(tracks) or artist
-            title = tagged_album(tracks) or title
-        except Exception as exc:
-            emit_ui(
-                "activity",
-                category="inventory",
-                state="error",
-                source="tags",
-                message=f"Tag preview failed for {album.path.name}: {exc}",
-            )
+            relative_parts = album.path.relative_to(root).parts
+        except ValueError:
+            relative_parts = ()
+        artist = (
+            relative_parts[0]
+            if len(relative_parts) > 1
+            else (album.path.parent.name or "Unknown Artist")
+        )
+        title = album.path.name or "Unknown Album"
 
         postponed, age_hours = scan_completion_status(
             completion_history, album, cfg, sources, timeout_hours
         )
         history_entry = completion_history.get("albums", {}).get(album_key)
-        if album_key in bypassed:
+        history_outcome = (
+            str(history_entry.get("outcome", ""))
+            if isinstance(history_entry, dict)
+            else ""
+        )
+        if album_key in bypassed or "bypass" in history_outcome.casefold():
             status = "bypassed"
         elif postponed:
             status = "timeout"
             timeout_paths.add(album_key)
-        elif isinstance(history_entry, dict):
+        elif isinstance(history_entry, dict) or album.local_art_files:
             status = "processed"
         else:
             status = "unprocessed"
-        formats_found: list[str] = []
-        try:
-            for child in album.path.iterdir():
-                if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
-                    value = "JPEG" if child.suffix.lower() in {".jpg", ".jpeg"} else child.suffix[1:].upper()
-                    if value not in formats_found:
-                        formats_found.append(value)
-        except OSError:
-            pass
+        formats_found = [
+            "JPEG" if child.suffix.lower() in {".jpg", ".jpeg"} else child.suffix[1:].upper()
+            for child in album.local_art_files
+        ]
         rows.append(
             {
                 "path": album_key,
@@ -941,6 +968,7 @@ def prepare_tui_library_selection(
                 "album": title,
                 "status": status,
                 "formats": formats_found,
+                "local_art": [str(path) for path in album.local_art_files],
                 "timeout_remaining": (
                     format_timeout_hours(max(0.0, timeout_hours - age_hours))
                     if postponed
@@ -949,6 +977,19 @@ def prepare_tui_library_selection(
                 "selected": status == "unprocessed",
             }
         )
+
+    model_elapsed = time.perf_counter() - model_started
+    debug_log(
+        "select_media.model_ready "
+        f"albums={len(rows)} elapsed_seconds={model_elapsed:.6f}"
+    )
+    emit_ui(
+        "activity",
+        category="inventory",
+        state="done",
+        source="select-media",
+        message=f"Artist/Album model ready in {model_elapsed:.3f}s",
+    )
 
     original_configured = resolve_sources(cfg, None, None, [])
     while True:
@@ -3581,7 +3622,30 @@ def run_scan_dir(
     _, history_dir = ensure_runtime_directories(config_file, cfg, cache)
     prepare_run_cache(cache)
     sample_dir = prepare_samples(cache)
-    discovered_albums, ignored_dirs = inventory(root, ignored)
+    inventory_started = time.perf_counter()
+    emit_ui(
+        "activity",
+        category="inventory",
+        state="start",
+        source="filesystem",
+        message="Lightweight library inventory started",
+    )
+    discovered_albums, ignored_dirs = inventory(
+        root,
+        ignored,
+        str(output.get("file_name", "cover")),
+    )
+    inventory_elapsed = time.perf_counter() - inventory_started
+    emit_ui(
+        "activity",
+        category="inventory",
+        state="done",
+        source="filesystem",
+        message=(
+            f"Lightweight inventory complete: {len(discovered_albums)} album(s) "
+            f"in {inventory_elapsed:.3f}s"
+        ),
+    )
 
     timeout_hours = scan_timeout_hours(cfg)
     completion_path = scan_completion_history_path(history_dir)
@@ -4396,7 +4460,11 @@ def run_scan_preview(
         str(library.get("music_library", "")),
     )
     ignored = [str(x) for x in library.get("ignored_subs", [])]
-    albums, ignored_dirs = inventory(root, ignored)
+    albums, ignored_dirs = inventory(
+        root,
+        ignored,
+        str(section(cfg, "output").get("file_name", "cover")),
+    )
 
     cache = runtime_cache_dir(config_file, cfg)
     history_dir = runtime_history_dir(config_file, cfg)

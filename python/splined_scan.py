@@ -1037,7 +1037,30 @@ def run_scan_dir(
     core.output_settings(cfg)
     _, history_dir = core.ensure_runtime_directories(config_file, cfg, cache)
     core.prepare_run_cache(cache)
-    discovered_albums, ignored_dirs = core.inventory(root, ignored)
+    inventory_started = core.time.perf_counter()
+    core.emit_ui(
+        "activity",
+        category="inventory",
+        state="start",
+        source="filesystem",
+        message="Lightweight library inventory started",
+    )
+    discovered_albums, ignored_dirs = core.inventory(
+        root,
+        ignored,
+        str(output.get("file_name", "cover")),
+    )
+    inventory_elapsed = core.time.perf_counter() - inventory_started
+    core.emit_ui(
+        "activity",
+        category="inventory",
+        state="done",
+        source="filesystem",
+        message=(
+            f"Lightweight inventory complete: {len(discovered_albums)} album(s) "
+            f"in {inventory_elapsed:.3f}s"
+        ),
+    )
 
     if not discovered_albums:
         print(core.red("ERROR: No supported audio files were found in this directory or any sub-directory:"), file=sys.stderr)
