@@ -7,8 +7,10 @@ discovery, MusicBrainz authority, candidate scoring, Range Types, local-art
 policy, output transforms, history, writes, counters, and exit codes remain
 owned by the Python engine.
 
-The runtime pins `pyratatui==0.3.0` (Ratatui 0.30.2) and uses its published
-wheel. End users do not need a Rust toolchain to run the Python application.
+The runtime currently pins `pyratatui==0.3.0` (Ratatui 0.30.2) and uses its
+published wheel. End users do not need a Rust toolchain to run the Python
+application. Mouse/touch parity requires a minimal binding extension described
+below; it does not require a SPLINED Rust rewrite or a Ratatui-core fork.
 
 ## Activation and display modes
 
@@ -91,6 +93,62 @@ regions across the top, followed by the three library regions:
 - live Artist and Album filter boxes;
 - source/range configuration access where appropriate.
 
+### Windows-equivalent lightweight inventory
+
+Before the user launches any album, the Python Ratatui Select Media path must
+be behaviorally equivalent to Windows `LibraryInventory.Load`.
+
+The required pre-selection sequence is:
+
+```text
+LIGHTWEIGHT LIBRARY INVENTORY
+
+    enumerate directories/files once
+            ↓
+    identify album folders
+            ↓
+    detect local cover files
+            ↓
+    apply retained history
+            ↓
+    build Artist/Album tree
+            ↓
+    TUI becomes immediately usable
+```
+
+This phase is a filesystem/history inventory only. It may:
+
+- enumerate directories and filenames;
+- identify supported audio files by extension;
+- identify album directories by the presence of supported audio files;
+- detect local artwork by filename/extension without opening or decoding it;
+- apply configured ignored/excluded directory rules;
+- load retained completion/bypass/timeout history;
+- derive album status and Artist aggregate status;
+- build lightweight counts/statistics and the in-memory Artist/Album model.
+
+This phase must **not** perform:
+
+- Mutagen/audio-tag parsing or `read_track()` work;
+- MusicBrainz authority/release lookup;
+- provider discovery;
+- remote artwork requests or candidate acquisition;
+- image decoding, geometry analysis, ranking, or transformation;
+- AISPLINE review/backend work;
+- any other album-processing operation that belongs after Launch.
+
+Those expensive operations begin only after the user launches the selected
+album(s).
+
+### Ignored/excluded directory authority
+
+`[library].ignored_subs` is authoritative during the lightweight inventory.
+Ignored names/patterns must match practical Windows behavior: do not descend
+into excluded directories, do not show them as Artist or Album rows, and do not
+include them in statistics, status reconciliation, or selection payloads.
+Wildcard entries remain supported where current SPLINED/Windows rules support
+them. Symlink/reparse-style recursive loops are not followed.
+
 Artist and Album text filters operate on the already-loaded in-memory library
 model. Typing into a filter must begin filtering immediately and must not rescan
 the filesystem on each keystroke.
@@ -98,23 +156,59 @@ the filesystem on each keystroke.
 Selecting an artist cascades only to eligible child albums. History, bypass,
 timeout, and manual-reprocessing rules remain authoritative.
 
-Mouse interaction is a required design target for selection, checkboxes,
-scrollbars, candidate rows, and filter focus. If the current `pyratatui` release
-does not expose the required mouse event surface, extend the Python binding
-layer rather than rewriting SPLINED or Ratatui core. Keyboard control remains
-fully supported.
+## Mouse, touch, hit-testing, and scrolling
 
-### Mouse binding limitation in pyratatui 0.3.0
+Mouse/touch interaction is a required design target for selection, checkboxes,
+scrollbars, candidate rows, URL/provenance actions, dialogs, source-policy
+controls, and filter focus.
+
+The user's WebSSH iOS terminal has already demonstrated working touch behavior
+with the prior SPLINED `--tui`: touching a different result moved the active
+selection and touch/gesture scrolling worked. Therefore touch support is not a
+speculative terminal capability for this target environment. Loss of that
+behavior in the current `pyratatui==0.3.0` path is an application/binding
+regression to restore.
+
+### Current pyratatui 0.3.0 limitation and required extension
 
 The published `pyratatui` 0.3.0 wheel exposes `Terminal.poll_event()` as a
-keyboard-only `PyKeyEvent` API. Its terminal lifecycle also does not enable
-crossterm mouse capture, and the Python module exports no `MouseEvent`. For
-that reason this release does **not** claim mouse support or reinterpret raw
-escape sequences as clicks. All controls are keyboard-complete. Adding real
-mouse support requires a small upstream/binding release that exposes
-crossterm `EnableMouseCapture`, `DisableMouseCapture`, and mouse events while
-retaining prebuilt wheels; no SPLINED Rust rewrite or Ratatui-core fork is
-needed.
+keyboard-only `PyKeyEvent` API. Its terminal lifecycle does not enable
+crossterm mouse capture, and the Python module exports no `MouseEvent`.
+
+The required fix is a minimal binding-layer extension exposing normal crossterm
+mouse capability, including:
+
+- `EnableMouseCapture` on terminal entry;
+- `DisableMouseCapture` on terminal exit and every cleanup path;
+- mouse button down/up where available;
+- row/column coordinates and modifiers;
+- scroll up/down events.
+
+Do not reinterpret raw escape sequences in SPLINED. Do not rewrite SPLINED in
+Rust. If Ratatui/crossterm already supports the feature, extend `pyratatui`
+first.
+
+Rendering should register structured hit regions rather than infer clicks from
+painted text. Required hit targets include:
+
+- Artist and Album rows and checkboxes;
+- Artist and Album filter boxes;
+- status, select-mode, and scan-mode controls;
+- Source Policy Settings, source rows, and source-policy fields;
+- candidate rows;
+- `AI ENHANCED` controls when present;
+- `[URL]`;
+- confirmation-dialog buttons;
+- scrollable list regions.
+
+Direct taps on buttons/checkboxes perform the corresponding action without an
+extra Enter press. Tapping a filter gives it visible focus and subsequent text
+input appears immediately. Mouse wheel or terminal-provided touch scrolling
+scrolls the region under interaction without changing a checkbox merely because
+it scrolled.
+
+Keyboard control remains fully supported as a fallback and for normal console
+use.
 
 ## Processing workspace
 
@@ -157,8 +251,10 @@ The actionable final column is `URL`, with user-facing provenance markers:
 
 The full remote URL remains in candidate state but the normal cell displays
 only an underlined `[URL]` marker. Press `U` on the highlighted candidate to
-use the system URL handler. If no handler exists (common in containers), use
-`--no-tui` to view/copy the full URL from the advanced diagnostic stream.
+use the system URL handler. A direct tap/click on `[URL]` should invoke the same
+action when mouse events are available. If no handler exists (common in
+containers), use `--no-tui` to view/copy the full URL from the advanced
+diagnostic stream.
 
 A history-backed Enhanced entry is shown only when its corresponding file still
 exists and validates. History alone must not resurrect a missing result.
@@ -362,13 +458,19 @@ rewrites configuration.
 
 ## Keyboard basics
 
+Keyboard is a complete fallback, not the only intended interaction path.
+
 | Key | Action |
 | --- | --- |
-| `↑` / `↓` | Navigate candidates or releases |
-| `←` / `→` | Change context where offered |
-| `Tab` / `Shift+Tab` | Switch active workflow, history, and logs |
-| `Enter` | Activate the highlighted exact selection |
-| `Esc` | Close help or go back where the engine permits |
+| `↑` / `↓` | Move within the focused list/control |
+| `←` / `→` | Change context/value; collapse/expand where offered |
+| `Space` | Toggle the focused checkbox/selection |
+| `Enter` | Open/activate the highlighted item |
+| `Tab` / `Shift+Tab` | Move between panes/regions |
+| `/` | Focus the current Artist/Album filter where applicable |
+| `Esc` | Leave filter focus, close help, or go back where permitted |
+| `PgUp` / `PgDn` | Page-scroll the focused list |
+| `Home` / `End` | Jump to first/last item in the focused list |
 | `?` | Contextual help |
 | `s` | Use the engine's suggested candidate |
 | `k` | Keep existing local artwork |
@@ -394,7 +496,8 @@ small, show a resize message rather than overlapping panels.
 
 Terminal setup is context-managed. Normal completion, handled engine errors,
 `KeyboardInterrupt`, SIGTERM, and unexpected exceptions must restore raw mode,
-alternate-screen state, cursor visibility, and normal shell input.
+alternate-screen state, cursor visibility, mouse capture, and normal shell
+input.
 
 ## A:I:S:P:L:I:N:E:D Config v5 boundary
 
