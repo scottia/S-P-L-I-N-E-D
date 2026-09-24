@@ -92,13 +92,13 @@ class LightweightInventoryTests(unittest.TestCase):
 
     def test_ignored_exact_and_wildcard_directories_are_never_traversed(self) -> None:
         visited: list[Path] = []
-        original = Path.iterdir
+        original = splined.os.scandir
 
-        def recording(path: Path):
-            visited.append(path)
+        def recording(path: Path | str):
+            visited.append(Path(path))
             return original(path)
 
-        with mock.patch.object(Path, "iterdir", recording):
+        with mock.patch.object(splined.os, "scandir", recording):
             albums, _ = splined.inventory(
                 self.root,
                 list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
@@ -206,6 +206,82 @@ class LightweightInventoryTests(unittest.TestCase):
             albums, _ = splined.inventory(self.root, [])
         love = next(album for album in albums if album.path == self.love)
         self.assertEqual(love.local_art_files, [self.love / "cover.jpg"])
+
+    def test_recent_timeout_fingerprint_is_collected_during_scandir(self) -> None:
+        policy = splined.scan_policy_fingerprint(self.cfg, ["itunes"])
+        initial, _ = splined.inventory(self.root, [])
+        eden = next(album for album in initial if album.path == self.eden)
+        expected = splined.album_scan_fingerprint(eden)
+        history = {
+            "version": 1,
+            "albums": {
+                str(self.eden): {
+                    "completed_at_unix": time.time(),
+                    "album_fingerprint": expected,
+                    "policy_fingerprint": policy,
+                    "outcome": "selected",
+                }
+            },
+        }
+        fingerprint_paths = splined.timeout_fingerprint_paths(
+            history, self.cfg, ["itunes"], 24
+        )
+        self.assertEqual(fingerprint_paths, {str(self.eden)})
+        cached, _ = splined.inventory(
+            self.root,
+            [],
+            fingerprint_paths=fingerprint_paths,
+        )
+        cached_eden = next(album for album in cached if album.path == self.eden)
+        self.assertEqual(cached_eden.inventory_fingerprint, expected)
+        with mock.patch.object(
+            Path, "stat", side_effect=AssertionError("duplicate track stat")
+        ):
+            postponed, _ = splined.scan_completion_status(
+                history,
+                cached_eden,
+                self.cfg,
+                ["itunes"],
+                24,
+                policy_fingerprint=policy,
+            )
+        self.assertTrue(postponed)
+
+    def test_expired_or_policy_mismatched_history_needs_no_track_metadata(self) -> None:
+        history = {
+            "version": 1,
+            "albums": {
+                str(self.love): {
+                    "completed_at_unix": time.time() - 25 * 3600,
+                    "policy_fingerprint": splined.scan_policy_fingerprint(
+                        self.cfg, ["itunes"]
+                    ),
+                },
+                str(self.eden): {
+                    "completed_at_unix": time.time(),
+                    "policy_fingerprint": "different-policy",
+                },
+            },
+        }
+        self.assertEqual(
+            splined.timeout_fingerprint_paths(
+                history, self.cfg, ["itunes"], 24
+            ),
+            set(),
+        )
+
+    def test_inventory_reports_bounded_live_progress(self) -> None:
+        progress: list[tuple[int, int]] = []
+        albums, _ = splined.inventory(
+            self.root,
+            list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
+            progress=lambda directories, count: progress.append(
+                (directories, count)
+            ),
+        )
+        self.assertTrue(progress)
+        self.assertEqual(progress[-1][1], len(albums))
+        self.assertLessEqual(len(progress), 1 + progress[-1][0] // 250)
 
 
 if __name__ == "__main__":

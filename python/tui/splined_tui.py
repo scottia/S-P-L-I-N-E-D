@@ -888,7 +888,11 @@ def _render_overview(frame: Any, area: Rect, state: TuiState, theme: Theme) -> N
             Paragraph.from_string("Building album inventory…").centered().style(style(theme, Semantic.MUTED)),
             rows[2],
         )
-    current = state.album or state.album_path
+    current = (
+        state.activity[-1].message
+        if state.activity and state.phase in {"inventory", "authority"}
+        else (state.album or state.album_path)
+    )
     frame.render_widget(
         Paragraph.from_string(_truncate(current, max(1, area.width - 6)))
         .centered()

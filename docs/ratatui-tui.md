@@ -155,6 +155,15 @@ Artist and Album text filters operate on the already-loaded in-memory library
 model. Typing into a filter must begin filtering immediately and must not rescan
 the filesystem on each keystroke.
 
+The Python inventory uses a single `os.scandir` traversal. For retained
+completion records that are still inside the active timeout and match the
+current policy, required audio size/mtime metadata is collected during that
+same traversal; it is not re-read in a second full-library pass. Expired or
+policy-incompatible history does not trigger track metadata reads. The loading
+view reports real directory/album inventory counts and bounded history/status
+reconciliation counts so large network libraries show useful activity without
+inventing a percentage.
+
 Selecting an artist cascades only to eligible child albums. History, bypass,
 timeout, and manual-reprocessing rules remain authoritative.
 

@@ -22,7 +22,7 @@ import tomllib
 from urllib.parse import urlencode
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from mutagen import File as MutagenFile
@@ -90,6 +90,11 @@ class AlbumDir:
     # Populated by the lightweight filesystem inventory.  These paths are
     # detected by filename/extension only; no image is opened before Launch.
     local_art_files: list[Path] = field(default_factory=list)
+    # When recent retained history requires timeout validation, inventory can
+    # derive the audio fingerprint from the same os.scandir metadata pass.
+    # Completion writes deliberately recompute it so execution authority never
+    # relies on stale preselection metadata.
+    inventory_fingerprint: str | None = None
 
 
 @dataclass
@@ -605,20 +610,40 @@ def format_timeout_hours(value: float) -> str:
         return "off"
     return str(int(value)) if float(value).is_integer() else f"{value:g}"
 
-def album_scan_fingerprint(album: AlbumDir) -> str:
+def _fingerprint_from_metadata(
+    values: list[tuple[Path, int | None, int | None]],
+) -> str:
     digest = hashlib.sha256()
-    for path in sorted(album.audio_files, key=lambda item: str(item).lower()):
-        try:
-            stat = path.stat()
+    for path, size, modified_ns in sorted(
+        values, key=lambda item: str(item[0]).lower()
+    ):
+        if size is not None and modified_ns is not None:
             payload = (
-                f"{path.name}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
+                f"{path.name}\0{size}\0{modified_ns}\0"
             ).encode("utf-8", "surrogateescape")
-        except OSError:
+        else:
             payload = f"{path.name}\0unstatable\0".encode(
                 "utf-8", "surrogateescape"
             )
         digest.update(payload)
     return digest.hexdigest()
+
+
+def album_scan_fingerprint(
+    album: AlbumDir,
+    *,
+    use_inventory_cache: bool = False,
+) -> str:
+    if use_inventory_cache and album.inventory_fingerprint is not None:
+        return album.inventory_fingerprint
+    values: list[tuple[Path, int | None, int | None]] = []
+    for path in album.audio_files:
+        try:
+            stat = path.stat()
+            values.append((path, stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            values.append((path, None, None))
+    return _fingerprint_from_metadata(values)
 
 
 def scan_policy_fingerprint(
@@ -652,6 +677,8 @@ def scan_completion_status(
     sources: list[str],
     timeout_hours: float,
     now: float | None = None,
+    *,
+    policy_fingerprint: str | None = None,
 ) -> tuple[bool, float]:
     if not bool(section(cfg, "history").get("enabled", True)):
         return False, 0.0
@@ -672,13 +699,55 @@ def scan_completion_status(
     if age_seconds >= timeout_hours * 3600:
         return False, age_seconds / 3600
 
-    if entry.get("album_fingerprint") != album_scan_fingerprint(album):
+    expected_policy = policy_fingerprint or scan_policy_fingerprint(cfg, sources)
+    if entry.get("policy_fingerprint") != expected_policy:
         return False, age_seconds / 3600
 
-    if entry.get("policy_fingerprint") != scan_policy_fingerprint(cfg, sources):
+    if entry.get("album_fingerprint") != album_scan_fingerprint(
+        album, use_inventory_cache=True
+    ):
         return False, age_seconds / 3600
 
     return True, age_seconds / 3600
+
+
+def timeout_fingerprint_paths(
+    history: dict[str, Any],
+    cfg: dict[str, Any],
+    sources: list[str],
+    timeout_hours: float,
+    now: float | None = None,
+) -> set[str]:
+    """Return only history paths whose audio metadata must be validated.
+
+    Policy and age checks are independent of the filesystem. Applying them
+    before inventory avoids stat calls for expired or policy-incompatible
+    history while preserving the existing timeout decision.
+    """
+    if not bool(section(cfg, "history").get("enabled", True)):
+        return set()
+    if timeout_hours <= 0:
+        return set()
+    entries = history.get("albums", {})
+    if not isinstance(entries, dict):
+        return set()
+    current = time.time() if now is None else now
+    expected_policy = scan_policy_fingerprint(cfg, sources)
+    paths: set[str] = set()
+    for path, entry in entries.items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            completed_at = float(entry.get("completed_at_unix"))
+        except (TypeError, ValueError):
+            continue
+        age_seconds = max(0.0, current - completed_at)
+        if age_seconds >= timeout_hours * 3600:
+            continue
+        if entry.get("policy_fingerprint") != expected_policy:
+            continue
+        paths.add(str(path))
+    return paths
 
 
 def record_scan_completion(
@@ -762,6 +831,9 @@ def inventory(
     root: Path,
     ignored_subs: list[str],
     configured_file_name: str = "cover",
+    *,
+    fingerprint_paths: set[str] | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[AlbumDir], list[Path]]:
     if not root.exists():
         raise SplinedError(f"SPLINED scan directory does not exist: {root}")
@@ -769,33 +841,73 @@ def inventory(
         raise SplinedError(f"SPLINED scan path is not a directory: {root}")
     albums: list[AlbumDir] = []
     ignored: list[Path] = []
+    fingerprint_required = fingerprint_paths or set()
+    directories_seen = 0
 
     def visit(directory: Path, is_root: bool) -> None:
+        nonlocal directories_seen
         if not is_root and should_ignore(directory.name, ignored_subs):
             ignored.append(directory)
             return
+        directories_seen += 1
+        if progress is not None and directories_seen % 250 == 0:
+            progress(directories_seen, len(albums))
         try:
-            entries = sorted(directory.iterdir(), key=lambda p: p.name.lower())
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.lower())
         except OSError as exc:
             raise SplinedError(f"Unable to read SPLINED scan directory {directory}: {exc}") from exc
         audio: list[Path] = []
+        audio_metadata: list[tuple[Path, int | None, int | None]] = []
         local_art: list[Path] = []
         children: list[Path] = []
-        for p in entries:
-            if p.is_symlink():
+        collect_fingerprint = str(directory) in fingerprint_required
+        for entry in entries:
+            if entry.is_symlink():
                 continue
-            if p.is_dir():
-                children.append(p)
-            elif p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS:
-                audio.append(p)
-            elif p.is_file() and _is_inventory_local_art(p, configured_file_name):
-                local_art.append(p)
+            path = Path(entry.path)
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    children.append(path)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+            except OSError:
+                # Match the prior Path.is_dir()/is_file() behavior: an entry
+                # that cannot be classified is skipped without aborting the
+                # rest of the readable directory.
+                continue
+            if path.suffix.lower() in AUDIO_EXTENSIONS:
+                audio.append(path)
+                if collect_fingerprint:
+                    try:
+                        stat = entry.stat(follow_symlinks=False)
+                        audio_metadata.append(
+                            (path, stat.st_size, stat.st_mtime_ns)
+                        )
+                    except OSError:
+                        audio_metadata.append((path, None, None))
+            elif _is_inventory_local_art(path, configured_file_name):
+                local_art.append(path)
         if audio:
-            albums.append(AlbumDir(directory, sorted(audio), sorted(local_art)))
+            albums.append(
+                AlbumDir(
+                    directory,
+                    sorted(audio),
+                    sorted(local_art),
+                    (
+                        _fingerprint_from_metadata(audio_metadata)
+                        if collect_fingerprint
+                        else None
+                    ),
+                )
+            )
         for child in children:
             visit(child, False)
 
     visit(root, True)
+    if progress is not None:
+        progress(directories_seen, len(albums))
     albums.sort(key=lambda a: str(a.path).lower())
     ignored.sort(key=lambda p: str(p).lower())
     return albums, ignored
@@ -926,7 +1038,12 @@ def prepare_tui_library_selection(
     rows: list[dict[str, Any]] = []
     timeout_paths: set[str] = set()
     model_started = time.perf_counter()
-    for album in albums:
+    model_now = time.time()
+    policy_fingerprint = scan_policy_fingerprint(cfg, sources)
+    history_albums = completion_history.get("albums", {})
+    if not isinstance(history_albums, dict):
+        history_albums = {}
+    for album_index, album in enumerate(albums, 1):
         album_key = str(album.path)
         try:
             relative_parts = album.path.relative_to(root).parts
@@ -940,9 +1057,15 @@ def prepare_tui_library_selection(
         title = album.path.name or "Unknown Album"
 
         postponed, age_hours = scan_completion_status(
-            completion_history, album, cfg, sources, timeout_hours
+            completion_history,
+            album,
+            cfg,
+            sources,
+            timeout_hours,
+            now=model_now,
+            policy_fingerprint=policy_fingerprint,
         )
-        history_entry = completion_history.get("albums", {}).get(album_key)
+        history_entry = history_albums.get(album_key)
         history_outcome = (
             str(history_entry.get("outcome", ""))
             if isinstance(history_entry, dict)
@@ -977,6 +1100,17 @@ def prepare_tui_library_selection(
                 "selected": status == "unprocessed",
             }
         )
+        if album_index % 250 == 0:
+            emit_ui(
+                "activity",
+                category="inventory",
+                state="start",
+                source="history",
+                message=(
+                    f"History/status reconciliation: {album_index:,} / "
+                    f"{len(albums):,} albums"
+                ),
+            )
 
     model_elapsed = time.perf_counter() - model_started
     debug_log(
@@ -3622,6 +3756,29 @@ def run_scan_dir(
     _, history_dir = ensure_runtime_directories(config_file, cfg, cache)
     prepare_run_cache(cache)
     sample_dir = prepare_samples(cache)
+    timeout_hours = scan_timeout_hours(cfg)
+    completion_path = scan_completion_history_path(history_dir)
+    completion_history = load_scan_completion_history(completion_path, cfg)
+    completion_path.parent.mkdir(parents=True, exist_ok=True)
+    fingerprint_paths = timeout_fingerprint_paths(
+        completion_history,
+        cfg,
+        sources,
+        timeout_hours,
+    )
+
+    def inventory_progress(directories: int, album_count: int) -> None:
+        emit_ui(
+            "activity",
+            category="inventory",
+            state="start",
+            source="filesystem",
+            message=(
+                f"Inventory: {directories:,} directories · "
+                f"{album_count:,} albums found"
+            ),
+        )
+
     inventory_started = time.perf_counter()
     emit_ui(
         "activity",
@@ -3634,6 +3791,8 @@ def run_scan_dir(
         root,
         ignored,
         str(output.get("file_name", "cover")),
+        fingerprint_paths=fingerprint_paths,
+        progress=inventory_progress,
     )
     inventory_elapsed = time.perf_counter() - inventory_started
     emit_ui(
@@ -3646,11 +3805,6 @@ def run_scan_dir(
             f"in {inventory_elapsed:.3f}s"
         ),
     )
-
-    timeout_hours = scan_timeout_hours(cfg)
-    completion_path = scan_completion_history_path(history_dir)
-    completion_history = load_scan_completion_history(completion_path, cfg)
-    completion_path.parent.mkdir(parents=True, exist_ok=True)
 
     albums: list[AlbumDir] = []
     postponed_albums: list[tuple[AlbumDir, float]] = []
@@ -3672,6 +3826,8 @@ def run_scan_dir(
         ]
         mode = str(cfg.get("mode", "read")).lower()
     else:
+        completion_now = time.time()
+        policy_fingerprint = scan_policy_fingerprint(cfg, sources)
         for album in discovered_albums:
             postponed, age_hours = scan_completion_status(
                 completion_history,
@@ -3679,6 +3835,8 @@ def run_scan_dir(
                 cfg,
                 sources,
                 timeout_hours,
+                now=completion_now,
+                policy_fingerprint=policy_fingerprint,
             )
             if postponed:
                 postponed_albums.append((album, age_hours))
@@ -4460,19 +4618,28 @@ def run_scan_preview(
         str(library.get("music_library", "")),
     )
     ignored = [str(x) for x in library.get("ignored_subs", [])]
-    albums, ignored_dirs = inventory(
-        root,
-        ignored,
-        str(section(cfg, "output").get("file_name", "cover")),
-    )
-
-    cache = runtime_cache_dir(config_file, cfg)
     history_dir = runtime_history_dir(config_file, cfg)
     timeout_hours = scan_timeout_hours(cfg)
     completion_history = load_scan_completion_history(
         scan_completion_history_path(history_dir),
         cfg,
     )
+    completion_now = time.time()
+    policy_fingerprint = scan_policy_fingerprint(cfg, sources)
+    albums, ignored_dirs = inventory(
+        root,
+        ignored,
+        str(section(cfg, "output").get("file_name", "cover")),
+        fingerprint_paths=timeout_fingerprint_paths(
+            completion_history,
+            cfg,
+            sources,
+            timeout_hours,
+            now=completion_now,
+        ),
+    )
+
+    cache = runtime_cache_dir(config_file, cfg)
 
     eligible = 0
     postponed = 0
@@ -4483,6 +4650,8 @@ def run_scan_preview(
             cfg,
             sources,
             timeout_hours,
+            now=completion_now,
+            policy_fingerprint=policy_fingerprint,
         )
         if is_postponed:
             postponed += 1

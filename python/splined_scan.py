@@ -1037,6 +1037,29 @@ def run_scan_dir(
     core.output_settings(cfg)
     _, history_dir = core.ensure_runtime_directories(config_file, cfg, cache)
     core.prepare_run_cache(cache)
+    timeout_hours = core.scan_timeout_hours(cfg)
+    completion_path = core.scan_completion_history_path(history_dir)
+    completion_history = core.load_scan_completion_history(completion_path, cfg)
+    completion_path.parent.mkdir(parents=True, exist_ok=True)
+    fingerprint_paths = core.timeout_fingerprint_paths(
+        completion_history,
+        cfg,
+        sources,
+        timeout_hours,
+    )
+
+    def inventory_progress(directories: int, album_count: int) -> None:
+        core.emit_ui(
+            "activity",
+            category="inventory",
+            state="start",
+            source="filesystem",
+            message=(
+                f"Inventory: {directories:,} directories · "
+                f"{album_count:,} albums found"
+            ),
+        )
+
     inventory_started = core.time.perf_counter()
     core.emit_ui(
         "activity",
@@ -1049,6 +1072,8 @@ def run_scan_dir(
         root,
         ignored,
         str(output.get("file_name", "cover")),
+        fingerprint_paths=fingerprint_paths,
+        progress=inventory_progress,
     )
     inventory_elapsed = core.time.perf_counter() - inventory_started
     core.emit_ui(
@@ -1070,10 +1095,6 @@ def run_scan_dir(
         return 2
 
     sample_dir = core.prepare_samples(cache)
-    timeout_hours = core.scan_timeout_hours(cfg)
-    completion_path = core.scan_completion_history_path(history_dir)
-    completion_history = core.load_scan_completion_history(completion_path, cfg)
-    completion_path.parent.mkdir(parents=True, exist_ok=True)
 
     bypass_path = bypass_history_path(history_dir)
     bypass_history = load_bypass_history(bypass_path)
@@ -1115,6 +1136,8 @@ def run_scan_dir(
         ]
         mode = str(cfg.get("mode", "read")).lower()
     else:
+        completion_now = core.time.time()
+        policy_fingerprint = core.scan_policy_fingerprint(cfg, sources)
         for album in discovered_albums:
             if is_album_bypassed(bypass_history, album) and not _BYPASS_OVERRIDE:
                 print(core.red(f"BYPASSED ALBUM: {album.path} · saved bypass is active; use -bp to override for this run."))
@@ -1126,6 +1149,8 @@ def run_scan_dir(
                 cfg,
                 sources,
                 timeout_hours,
+                now=completion_now,
+                policy_fingerprint=policy_fingerprint,
             )
             if postponed:
                 postponed_albums.append((album, age_hours))
