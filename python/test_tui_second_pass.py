@@ -287,9 +287,9 @@ class PresentationAndPerformanceTests(unittest.TestCase):
         self.assertIsNotNone(best)
         self.assertEqual(best.ref.id, "a-id")
 
-    def test_mouse_limitation_is_explicit_not_fake_support(self) -> None:
-        self.assertFalse(MOUSE_EVENTS_AVAILABLE)
-        self.assertIn("keyboard events only", MOUSE_LIMITATION)
+    def test_mouse_binding_extension_is_real_and_explicit(self) -> None:
+        self.assertTrue(MOUSE_EVENTS_AVAILABLE)
+        self.assertIn("splined-pyratatui-input", MOUSE_LIMITATION)
 
     def test_scan_entrypoint_processes_nonempty_inventory(self) -> None:
         cfg = example_config()

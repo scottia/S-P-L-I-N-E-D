@@ -1,3 +1,20 @@
+FROM rust:1.88-slim-bookworm AS pyratatui-input-builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/maturin
+
+RUN /opt/maturin/bin/pip install --disable-pip-version-check --no-cache-dir maturin==1.9.6
+
+COPY pyratatui_input /build/pyratatui_input
+RUN /opt/maturin/bin/maturin build \
+        --manifest-path /build/pyratatui_input/Cargo.toml \
+        --release \
+        --locked \
+        --out /wheels
+
+
 FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
 
 RUN apt-get update \
@@ -15,6 +32,9 @@ WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --disable-pip-version-check --no-cache-dir -r /app/requirements.txt
+COPY --from=pyratatui-input-builder /wheels /wheels
+RUN pip install --disable-pip-version-check --no-cache-dir /wheels/*.whl \
+    && rm -rf /wheels
 
 COPY splined.py /app/splined.py
 COPY splined_scan.py /app/splined_scan.py

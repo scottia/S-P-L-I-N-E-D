@@ -5208,6 +5208,15 @@ def run_operational_interface(
             raise SplinedError(message)
         print(f"SPLINED TUI unavailable: {message} Falling back to the plain CLI.", file=sys.stderr)
         return int(worker())
+    if importlib.util.find_spec("splined_pyratatui_input") is None:
+        message = (
+            "splined-pyratatui-input is not installed; install the project ABI3 "
+            "wheel to use the mouse/touch-capable TUI."
+        )
+        if activation.explicit:
+            raise SplinedError(message)
+        print(f"SPLINED TUI unavailable: {message} Falling back to the plain CLI.", file=sys.stderr)
+        return int(worker())
 
     from tui.splined_tui import TuiInitializationError, run_tui
 

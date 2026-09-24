@@ -1,0 +1,22 @@
+[package]
+name = "splined-pyratatui-input"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Minimal crossterm input extension for SPLINED's pyratatui UI"
+license = "MIT"
+publish = false
+
+[lib]
+name = "splined_pyratatui_input"
+crate-type = ["cdylib"]
+
+[dependencies]
+crossterm = "0.29"
+pyo3 = { version = "0.28", features = ["abi3-py310", "generate-import-lib"] }
+
+[profile.release]
+strip = true
+lto = true
+opt-level = 3
+codegen-units = 1

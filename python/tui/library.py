@@ -67,11 +67,13 @@ def artist_status(albums: Iterable[AlbumItem]) -> ArtistStatus:
     items = list(albums)
     if any(item.status is AlbumStatus.BYPASSED for item in items):
         return ArtistStatus.CONTAINS_BYPASS
-    processed = sum(item.status is AlbumStatus.PROCESSED for item in items)
-    # Timeout is an album protection state and contributes to a mixed artist.
-    if items and processed == len(items):
+    protected = {AlbumStatus.PROCESSED, AlbumStatus.TIMEOUT}
+    # Match Windows LibraryInventory.Load: timeout-active albums are retained,
+    # protected history entries, so an artist with no remaining unprocessed
+    # album is complete. A timeout mixed with unprocessed work is partial.
+    if items and all(item.status in protected for item in items):
         return ArtistStatus.COMPLETE
-    if processed or any(item.status is AlbumStatus.TIMEOUT for item in items):
+    if any(item.status in protected for item in items):
         return ArtistStatus.PARTIAL
     return ArtistStatus.UNPROCESSED
 

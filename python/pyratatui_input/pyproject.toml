@@ -1,0 +1,25 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "splined-pyratatui-input"
+version = "0.1.0"
+description = "Minimal crossterm mouse/input extension for pyratatui 0.3.0"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+]
+
+[tool.maturin]
+bindings = "pyo3"
+strip = true
+python-source = "python"
+module-name = "splined_pyratatui_input._native"
+features = ["pyo3/extension-module"]

@@ -37,6 +37,13 @@ from pyratatui import (
     Text,
 )
 
+try:
+    from splined_pyratatui_input import EventReader as InputEventReader
+    from splined_pyratatui_input import emergency_restore as emergency_terminal_restore
+except ImportError:  # plain CLI and automatic fallback remain independently usable
+    InputEventReader = None  # type: ignore[assignment,misc]
+    emergency_terminal_restore = None  # type: ignore[assignment]
+
 from .animation import STARTUP_SECONDS, fit_phrase, startup_frame
 from .aispline import (
     AISPLINE_TITLE,
@@ -143,6 +150,25 @@ class ActivityEntry:
     message: str
 
 
+@dataclass(frozen=True)
+class HitRegion:
+    """One interactive rectangle registered from the current render geometry."""
+
+    target: str
+    x: int
+    y: int
+    width: int
+    height: int
+    index: int = -1
+    value: str = ""
+
+    def contains(self, column: int, row: int) -> bool:
+        return (
+            self.x <= column < self.x + self.width
+            and self.y <= row < self.y + self.height
+        )
+
+
 @dataclass
 class TuiState:
     started_at: float = field(default_factory=time.monotonic)
@@ -180,7 +206,16 @@ class TuiState:
     artist_index: int = 0
     album_index_cursor: int = 0
     group_scroll: int = 0
+    candidate_row_scroll: int = 0
+    artist_scroll: int = 0
+    album_scroll: int = 0
+    policy_source_scroll: int = 0
+    artist_page_size: int = 1
+    album_page_size: int = 1
+    candidate_page_size: int = 1
+    policy_source_page_size: int = 1
     filter_edit: str = ""
+    hit_regions: list[HitRegion] = field(default_factory=list)
     ai_enabled: bool = False
     ai_runtime_available: bool = False
     ai_selection: EnhancementSelection | None = None
@@ -449,6 +484,43 @@ def _truncate(value: str, width: int) -> str:
     return value if len(value) <= width else value[: max(0, width - 1)] + "…"
 
 
+def _register_hit(
+    state: TuiState,
+    target: str,
+    area: Rect,
+    *,
+    index: int = -1,
+    value: str = "",
+) -> None:
+    width = max(0, int(area.width))
+    height = max(0, int(area.height))
+    if width and height:
+        state.hit_regions.append(
+            HitRegion(
+                target,
+                int(area.x),
+                int(area.y),
+                width,
+                height,
+                index,
+                value,
+            )
+        )
+
+
+def _row_rect(area: Rect, row: int, *, left: int = 1, right: int = 1) -> Rect:
+    return Rect(
+        int(area.x) + left,
+        int(area.y) + 1 + row,
+        max(0, int(area.width) - left - right),
+        1,
+    )
+
+
+def _checkbox_rect(area: Rect, row: int) -> Rect:
+    return Rect(int(area.x) + 2, int(area.y) + 1 + row, 3, 1)
+
+
 def _render_startup(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
     frame.render_widget(_background(theme), area)
@@ -544,7 +616,9 @@ def _control_lines(
 def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     model = state.library
     assert model is not None
-    if layout_spec(area.width, area.height).stack_cards:
+    # This function receives only the short control-row rectangle, so its
+    # height is not the terminal height and must not drive the breakpoint.
+    if int(area.width) < 96:
         panels = _split_vertical(
             area, [Constraint.length(8), Constraint.length(5), Constraint.length(6)]
         )
@@ -599,13 +673,35 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         .block(card(theme, "SCAN MODE", Semantic.ACCEPTED)),
         panels[2],
     )
+    for index in range(min(len(STATUS_CONTROLS), max(0, int(panels[0].height) - 2))):
+        _register_hit(state, "status-control", _row_rect(panels[0], index), index=index)
+    for index in range(min(len(SELECT_CONTROLS), max(0, int(panels[1].height) - 2))):
+        _register_hit(state, "select-control", _row_rect(panels[1], index), index=index)
+    for index in range(min(len(SCAN_CONTROLS), max(0, int(panels[2].height) - 2))):
+        _register_hit(state, "scan-control", _row_rect(panels[2], index), index=index)
 
 
-def _visible_window(items: list[Any], selected: int, height: int) -> tuple[list[Any], int]:
+def _visible_window(
+    items: list[Any], selected: int, height: int, scroll: int | None = None
+) -> tuple[list[Any], int]:
     size = max(1, height)
     selected = max(0, min(selected, max(0, len(items) - 1)))
-    start = max(0, min(selected - size // 2, max(0, len(items) - size)))
+    if scroll is None:
+        start = selected - size // 2
+    else:
+        start = scroll
+    start = max(0, min(start, max(0, len(items) - size)))
     return items[start : start + size], start
+
+
+def _keep_visible(selected: int, scroll: int, capacity: int, count: int) -> int:
+    capacity = max(1, capacity)
+    maximum = max(0, count - capacity)
+    if selected < scroll:
+        scroll = selected
+    elif selected >= scroll + capacity:
+        scroll = selected - capacity + 1
+    return max(0, min(scroll, maximum))
 
 
 def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -613,7 +709,14 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
     assert model is not None
     rows = model.visible_artists()
     body, filter_area = _split_vertical(area, [Constraint.fill(1), Constraint.length(3)])
-    visible, start = _visible_window(rows, state.artist_index, max(1, body.height - 2))
+    capacity = max(1, int(body.height) - 2)
+    state.artist_page_size = capacity
+    state.artist_scroll = max(
+        0, min(state.artist_scroll, max(0, len(rows) - capacity))
+    )
+    visible, start = _visible_window(
+        rows, state.artist_index, capacity, state.artist_scroll
+    )
     lines: list[Line] = []
     for offset, artist in enumerate(visible):
         index = start + offset
@@ -628,14 +731,20 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
     if not lines:
         lines.append(Line([Span("No artists match the active filters.", style(theme, Semantic.MUTED))]))
     frame.render_widget(
-        Paragraph(Text(lines)).block(card(theme, f"ARTIST PICKER · {len(rows)} VISIBLE", Semantic.FALLBACK)),
+        Paragraph(Text(lines)).block(card(theme, f"ARTIST PICKER · {len(rows)} VISIBLE", Semantic.SPECIAL if state.library_focus == 3 else Semantic.FALLBACK)),
         body,
     )
+    _register_hit(state, "artist-scroll", body)
+    for offset, artist in enumerate(visible):
+        index = start + offset
+        _register_hit(state, "artist-row", _row_rect(body, offset), index=index, value=artist.name)
+        _register_hit(state, "artist-checkbox", _checkbox_rect(body, offset), index=index, value=artist.name)
     filter_text = f"{model.artist_filter}{'▌' if state.library_focus == 4 else ''}"
     frame.render_widget(
         Paragraph.from_string(filter_text).block(card(theme, "ARTIST FILTER · TYPE TO FILTER", Semantic.SPECIAL if state.library_focus == 4 else Semantic.ACTIVE)),
         filter_area,
     )
+    _register_hit(state, "artist-filter", filter_area)
 
 
 def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -643,7 +752,14 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
     assert model is not None
     rows = model.visible_albums(active_artist_only=True)
     body, filter_area = _split_vertical(area, [Constraint.fill(1), Constraint.length(3)])
-    visible, start = _visible_window(rows, state.album_index_cursor, max(1, body.height - 2))
+    capacity = max(1, int(body.height) - 2)
+    state.album_page_size = capacity
+    state.album_scroll = max(
+        0, min(state.album_scroll, max(0, len(rows) - capacity))
+    )
+    visible, start = _visible_window(
+        rows, state.album_index_cursor, capacity, state.album_scroll
+    )
     lines: list[Line] = []
     for offset, album in enumerate(visible):
         index = start + offset
@@ -658,14 +774,20 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
     if not lines:
         lines.append(Line([Span("No albums match the active filters.", style(theme, Semantic.MUTED))]))
     frame.render_widget(
-        Paragraph(Text(lines)).block(card(theme, f"ALBUM PICKER · {len(rows)} VISIBLE", Semantic.ACTIVE)),
+        Paragraph(Text(lines)).block(card(theme, f"ALBUM PICKER · {len(rows)} VISIBLE", Semantic.SPECIAL if state.library_focus == 5 else Semantic.ACTIVE)),
         body,
     )
+    _register_hit(state, "album-scroll", body)
+    for offset, album in enumerate(visible):
+        index = start + offset
+        _register_hit(state, "album-row", _row_rect(body, offset), index=index, value=album.path)
+        _register_hit(state, "album-checkbox", _checkbox_rect(body, offset), index=index, value=album.path)
     filter_text = f"{model.album_filter}{'▌' if state.library_focus == 6 else ''}"
     frame.render_widget(
         Paragraph.from_string(filter_text).block(card(theme, "ALBUM FILTER · TYPE TO FILTER", Semantic.SPECIAL if state.library_focus == 6 else Semantic.ACTIVE)),
         filter_area,
     )
+    _register_hit(state, "album-filter", filter_area)
 
 
 def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -683,6 +805,17 @@ def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme)
     frame.render_widget(
         Paragraph.from_string(text).block(card(theme, "MEDIA LIBRARY STATISTICS", Semantic.ACTIVE)), area
     )
+    if int(area.height) >= 2:
+        _register_hit(
+            state,
+            "source-policy-open",
+            Rect(
+                int(area.x) + 1,
+                max(int(area.y), int(area.y + area.height) - 2),
+                max(1, int(area.width) - 2),
+                1,
+            ),
+        )
 
 
 def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -691,14 +824,20 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
         return
     spec = layout_spec(area.width, area.height)
     if spec.stack_cards:
-        sections = _split_vertical(
-            area,
-            [Constraint.length(19), Constraint.percentage(35), Constraint.percentage(35), Constraint.fill(1)],
+        controls, lower = _split_vertical(
+            area, [Constraint.length(19), Constraint.fill(1)]
         )
-        _render_library_controls(frame, sections[0], state, theme)
-        _render_artist_picker(frame, sections[1], state, theme)
-        _render_album_picker(frame, sections[2], state, theme)
-        _render_library_stats(frame, sections[3], state, theme)
+        stats_height = max(1, min(7, int(lower.height) // 4))
+        pickers, stats = _split_vertical(
+            lower, [Constraint.fill(1), Constraint.length(stats_height)]
+        )
+        artist, album = _split_vertical(
+            pickers, [Constraint.percentage(50), Constraint.fill(1)]
+        )
+        _render_library_controls(frame, controls, state, theme)
+        _render_artist_picker(frame, artist, state, theme)
+        _render_album_picker(frame, album, state, theme)
+        _render_library_stats(frame, stats, state, theme)
     else:
         top, bottom = _split_vertical(area, [Constraint.length(8), Constraint.fill(1)])
         _render_library_controls(frame, top, state, theme)
@@ -910,12 +1049,10 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
     frame.render_stateful_table(table, area, table_state)
 
 
-def _candidate_line(candidate: CandidateView, state: TuiState, theme: Theme) -> Line:
-    selected = state.candidates and state.candidates[state.selected_index] is candidate
+def _candidate_facts(candidate: CandidateView, selected: bool) -> str:
     marker = "›" if selected else " "
     star = "★" if candidate.suggested else str(candidate.number)
-    semantic = range_semantic(candidate.range_type)
-    facts = (
+    return (
         f"{marker}{star:>2} {candidate.width}×{candidate.height} "
         f"{candidate.format.upper():<5} {candidate.range_type:<13} "
         f"Δ{candidate.distance:<5} "
@@ -923,6 +1060,12 @@ def _candidate_line(candidate: CandidateView, state: TuiState, theme: Theme) -> 
         f"Accept {'yes' if candidate.acceptable else 'no'} · "
         f"Approved {'yes' if candidate.approved else 'no'} · "
     )
+
+
+def _candidate_line(candidate: CandidateView, state: TuiState, theme: Theme) -> Line:
+    selected = state.candidates and state.candidates[state.selected_index] is candidate
+    semantic = range_semantic(candidate.range_type)
+    facts = _candidate_facts(candidate, bool(selected))
     spans = [Span(facts, style(theme, Semantic.ACTIVE if selected else semantic, bold=selected))]
     provenance = candidate.provenance or "[URL]"
     provenance_style = style(
@@ -946,6 +1089,54 @@ def _candidate_line(candidate: CandidateView, state: TuiState, theme: Theme) -> 
             Span(f"AI ENHANCED {enhancement}", style(theme, ai_semantic)),
         ])
     return Line(spans)
+
+
+def _register_candidate_hits(
+    state: TuiState,
+    area: Rect,
+    row: int,
+    candidate: CandidateView,
+    *,
+    preferred: bool = False,
+) -> None:
+    candidate_index = state.candidates.index(candidate)
+    row_area = _row_rect(area, row)
+    _register_hit(
+        state,
+        "preferred-candidate" if preferred else "candidate-row",
+        row_area,
+        index=candidate_index,
+        value=candidate.ai_key,
+    )
+    selected = state.candidates and state.candidates[state.selected_index] is candidate
+    facts_width = len(_candidate_facts(candidate, bool(selected)))
+    provenance = candidate.provenance or "[URL]"
+    url_x = min(
+        int(row_area.x) + max(0, int(row_area.width) - len(provenance)),
+        int(area.x) + 1 + facts_width,
+    )
+    if state.ai_enabled:
+        ai_width = max(14, min(24, int(row_area.width) // 4))
+        _register_hit(
+            state,
+            "candidate-ai",
+            Rect(
+                int(row_area.x) + max(0, int(row_area.width) - ai_width),
+                int(row_area.y),
+                min(ai_width, int(row_area.width)),
+                1,
+            ),
+            index=candidate_index,
+            value=candidate.ai_key,
+        )
+    if provenance == "[URL]" and candidate.url:
+        _register_hit(
+            state,
+            "candidate-url",
+            Rect(url_x, int(row_area.y), len(provenance), 1),
+            index=candidate_index,
+            value=candidate.url,
+        )
 
 
 def _candidate_header(state: TuiState, theme: Theme) -> Line:
@@ -1090,6 +1281,8 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         )
         preferred_semantic = Semantic.ACCEPTED if target and target.range_type == "Ideal" else Semantic.FALLBACK
         frame.render_widget(Paragraph(Text(preferred_lines)).block(card(theme, "PREFERRED SOURCE CANDIDATE", preferred_semantic)), preferred)
+        if target is not None:
+            _register_candidate_hits(state, preferred, 1, target, preferred=True)
     else:
         top, current, preferred, groups_area, activity_area = _split_vertical(
             area,
@@ -1110,6 +1303,8 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         )
         preferred_semantic = Semantic.ACCEPTED if target and target.range_type == "Ideal" else Semantic.FALLBACK
         frame.render_widget(Paragraph(Text(preferred_lines)).block(card(theme, "PREFERRED SOURCE CANDIDATE", preferred_semantic)), preferred)
+        if target is not None:
+            _register_candidate_hits(state, preferred, 1, target, preferred=True)
 
     selected_albums = (
         [item for item in state.library.albums if item.selected]
@@ -1133,15 +1328,17 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     groups = _candidate_groups(state)
     if groups:
         state.group_scroll = max(0, min(state.group_scroll, len(groups) - 1))
-        visible_groups: list[tuple[str, list[CandidateView], Semantic]] = []
+        visible_groups: list[tuple[int, str, list[CandidateView], Semantic]] = []
         heights: list[int] = []
         remaining = max(4, groups_area.height)
-        for group in groups[state.group_scroll :]:
+        for group_index, group in enumerate(
+            groups[state.group_scroll :], start=state.group_scroll
+        ):
             wanted = min(8, len(group[1]) + 3)
             if visible_groups and remaining < 4:
                 break
             height = min(wanted, remaining) if not visible_groups else min(wanted, max(4, remaining))
-            visible_groups.append(group)
+            visible_groups.append((group_index, *group))
             heights.append(max(4, height))
             remaining -= max(4, height)
             if remaining < 4:
@@ -1149,20 +1346,20 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         panels = _split_vertical(
             groups_area, [Constraint.length(value) for value in heights]
         )
-        for panel, (name, candidates, semantic) in zip(panels, visible_groups):
-            selected_at = next(
-                (
-                    index
-                    for index, item in enumerate(candidates)
-                    if state.candidates.index(item) == state.selected_index
-                ),
-                0,
-            )
+        for panel, (group_index, name, candidates, semantic) in zip(panels, visible_groups):
             row_capacity = max(1, panel.height - 3)
-            row_start = max(
-                0,
-                min(selected_at - row_capacity // 2, max(0, len(candidates) - row_capacity)),
-            )
+            if group_index == state.group_scroll:
+                state.candidate_page_size = int(row_capacity)
+                state.candidate_row_scroll = max(
+                    0,
+                    min(
+                        state.candidate_row_scroll,
+                        max(0, len(candidates) - row_capacity),
+                    ),
+                )
+                row_start = state.candidate_row_scroll
+            else:
+                row_start = 0
             shown = candidates[row_start : row_start + row_capacity]
             suffix = f" · {len(candidates)} CANDIDATE(S)"
             if len(candidates) > len(shown):
@@ -1175,6 +1372,15 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 ),
                 panel,
             )
+            _register_hit(
+                state,
+                "candidate-scroll",
+                panel,
+                index=group_index,
+                value=name,
+            )
+            for row_offset, item in enumerate(shown, start=1):
+                _register_candidate_hits(state, panel, row_offset, item)
     else:
         frame.render_widget(Paragraph.from_string("No candidates returned.").block(card(theme, "SOURCE CANDIDATES", Semantic.WARNING)), groups_area)
     _render_activity_region(frame, activity_area, state, theme)
@@ -1206,8 +1412,21 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         panels = _split_vertical(area, [Constraint.length(10), Constraint.length(14), Constraint.fill(1)])
     else:
         panels = _split_horizontal(area, [Constraint.percentage(27), Constraint.percentage(42), Constraint.fill(1)])
+    source_capacity = max(1, int(panels[0].height) - 5)
+    state.policy_source_page_size = source_capacity
+    state.policy_source_scroll = max(
+        0,
+        min(
+            state.policy_source_scroll,
+            max(0, len(draft.source_order) - source_capacity),
+        ),
+    )
+    visible_sources = draft.source_order[
+        state.policy_source_scroll : state.policy_source_scroll + source_capacity
+    ]
     source_lines: list[Line] = []
-    for index, value in enumerate(draft.source_order):
+    for offset, value in enumerate(visible_sources):
+        index = state.policy_source_scroll + offset
         marker = "›" if index == source_index else " "
         enabled = draft.policies[value]["enabled"]
         source_lines.append(Line([Span(f"{marker} {'☑' if enabled else '☐'} {value}", style(theme, Semantic.ACTIVE if index == source_index else Semantic.ACCEPTED if enabled else Semantic.DISABLED, bold=index == source_index))]))
@@ -1216,6 +1435,28 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         Line([Span("← Move Earlier   → Move Later", style(theme, Semantic.DEBUG))]),
     ])
     frame.render_widget(Paragraph(Text(source_lines)).block(card(theme, "ARTWORK SOURCE PRIORITY", Semantic.DEBUG)), panels[0])
+    _register_hit(state, "policy-source-scroll", panels[0])
+    for offset, value in enumerate(visible_sources):
+        index = state.policy_source_scroll + offset
+        _register_hit(state, "policy-source", _row_rect(panels[0], offset), index=index, value=value)
+        _register_hit(state, "policy-source-enabled", _checkbox_rect(panels[0], offset), index=index, value=value)
+    priority_row = len(visible_sources) + 1
+    priority_area = _row_rect(panels[0], priority_row)
+    half = max(1, int(priority_area.width) // 2)
+    _register_hit(
+        state,
+        "policy-move-earlier",
+        Rect(int(priority_area.x), int(priority_area.y), half, 1),
+        index=source_index,
+        value=source,
+    )
+    _register_hit(
+        state,
+        "policy-move-later",
+        Rect(int(priority_area.x) + half, int(priority_area.y), max(1, int(priority_area.width) - half), 1),
+        index=source_index,
+        value=source,
+    )
 
     labels = {
         "enabled": "Source Enabled",
@@ -1238,6 +1479,9 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         semantic = Semantic.DISABLED if disabled else Semantic.ACTIVE if index == state.album_index_cursor else Semantic.TEXT
         setting_lines.append(Line([Span(f"{'›' if index == state.album_index_cursor else ' '} {labels[key]:<25} {value}", style(theme, semantic, bold=index == state.album_index_cursor))]))
     frame.render_widget(Paragraph(Text(setting_lines)).block(card(theme, f"SOURCE · {source.upper()}", Semantic.FALLBACK)), panels[1])
+    _register_hit(state, "policy-field-scroll", panels[1])
+    for index, key in enumerate(POLICY_FIELDS[: max(0, int(panels[1].height) - 2)]):
+        _register_hit(state, "policy-field", _row_rect(panels[1], index), index=index, value=key)
 
     global_lines: list[Line] = [Line([Span("GLOBAL ARTWORK RANGE", style(theme, Semantic.ACCEPTED, bold=True))])]
     for index, key in enumerate(GLOBAL_POLICY_FIELDS):
@@ -1253,6 +1497,8 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         Line([Span("Delete clears optional · Ctrl+S Save/Apply · Esc back", style(theme, Semantic.DEBUG))]),
     ])
     frame.render_widget(Paragraph(Text(global_lines)).wrap(True, True).block(card(theme, "RANGE EFFECT / POLICY PREVIEW", Semantic.SPECIAL if draft.dirty else Semantic.ACCEPTED)), panels[2])
+    for index, key in enumerate(GLOBAL_POLICY_FIELDS):
+        _register_hit(state, "policy-global-field", _row_rect(panels[2], index + 1), index=index, value=key)
 
 
 def _render_history(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -1323,8 +1569,8 @@ def _footer_text(state: TuiState) -> str:
         kind = state.input_request.kind
         if kind == "library-selection":
             if state.workspace == "policy":
-                return "↑/↓ settings · ←/→ priority/value · Enter toggle · Ctrl+S Save/Apply · Esc library · ? help"
-            return "Tab/Shift+Tab regions · type in focused filter · Enter/Space select · P policy · Ctrl+C stop · ? help"
+                return "↑/↓ settings · PgUp/PgDn scroll · Mouse/touch enabled · Ctrl+S Save/Apply · Esc library · ? help"
+            return "↑/↓ move · / filter · PgUp/PgDn scroll · Mouse/touch select · P policy · Ctrl+C stop · ? help"
         if kind in {"artist", "album", "text"}:
             return f"{state.input_request.prompt}{state.input_buffer}   Enter confirm · Esc keep current"
         if kind == "local-comparison":
@@ -1352,10 +1598,13 @@ def _render_help(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
         "↑ / ↓          navigate\n"
         "← / →          change context\n"
         "Tab / Shift+Tab move workflow region\n"
-        "Type           live Artist/Album filter when focused\n"
+        "/              focus current Artist/Album filter\n"
+        "Type           live filtering when a filter is focused\n"
         "Enter / Space  select checkbox / activate\n"
         "Esc            close / back\n"
-        "Mouse          unavailable in pyratatui 0.3.0 binding; keyboard remains complete\n"
+        "PgUp / PgDn    page-scroll focused list\n"
+        "Home / End     first / last row\n"
+        "Mouse / touch  rows, checkboxes, filters, links, dialogs, scrolling\n"
         "P / Ctrl+S     source policy / explicit Save & Apply\n"
         "S              use suggested candidate\n"
         "K              keep local artwork\n"
@@ -1409,10 +1658,28 @@ def _render_dialog(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         .block(card(theme, title, semantic)),
         popup,
     )
+    button_y = int(popup.y) + max(1, int(popup.height) - 3)
+    half = max(1, int(popup.width) // 2)
+    _register_hit(
+        state,
+        "dialog-yes",
+        Rect(int(popup.x) + 1, button_y, max(1, half - 1), 1),
+    )
+    _register_hit(
+        state,
+        "dialog-no",
+        Rect(
+            int(popup.x) + half,
+            button_y,
+            max(1, int(popup.width) - half - 1),
+            1,
+        ),
+    )
 
 
 def render(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
+    state.hit_regions.clear()
     spec = layout_spec(area.width, area.height)
     frame.render_widget(_background(theme), area)
     if spec.breakpoint is Breakpoint.MINIMUM:
@@ -1509,6 +1776,12 @@ def _handle_library_key(
         elif action is Action.UP:
             if state.library_focus == 0:
                 state.artist_index = (source_index - 1) % len(draft.source_order)
+                state.policy_source_scroll = _keep_visible(
+                    state.artist_index,
+                    state.policy_source_scroll,
+                    state.policy_source_page_size,
+                    len(draft.source_order),
+                )
             elif state.library_focus == 1:
                 state.album_index_cursor = (field_index - 1) % len(POLICY_FIELDS)
             else:
@@ -1516,10 +1789,47 @@ def _handle_library_key(
         elif action is Action.DOWN:
             if state.library_focus == 0:
                 state.artist_index = (source_index + 1) % len(draft.source_order)
+                state.policy_source_scroll = _keep_visible(
+                    state.artist_index,
+                    state.policy_source_scroll,
+                    state.policy_source_page_size,
+                    len(draft.source_order),
+                )
             elif state.library_focus == 1:
                 state.album_index_cursor = (field_index + 1) % len(POLICY_FIELDS)
             else:
                 state.status_index = (state.status_index + 1) % len(GLOBAL_POLICY_FIELDS)
+        elif action in {Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END}:
+            if state.library_focus == 0:
+                if action is Action.HOME:
+                    state.artist_index = 0
+                elif action is Action.END:
+                    state.artist_index = len(draft.source_order) - 1
+                else:
+                    step = -5 if action is Action.PAGE_UP else 5
+                    state.artist_index = max(0, min(source_index + step, len(draft.source_order) - 1))
+                state.policy_source_scroll = _keep_visible(
+                    state.artist_index,
+                    state.policy_source_scroll,
+                    state.policy_source_page_size,
+                    len(draft.source_order),
+                )
+            elif state.library_focus == 1:
+                if action is Action.HOME:
+                    state.album_index_cursor = 0
+                elif action is Action.END:
+                    state.album_index_cursor = len(POLICY_FIELDS) - 1
+                else:
+                    step = -5 if action is Action.PAGE_UP else 5
+                    state.album_index_cursor = max(0, min(field_index + step, len(POLICY_FIELDS) - 1))
+            else:
+                if action is Action.HOME:
+                    state.status_index = 0
+                elif action is Action.END:
+                    state.status_index = len(GLOBAL_POLICY_FIELDS) - 1
+                else:
+                    step = -3 if action is Action.PAGE_UP else 3
+                    state.status_index = max(0, min(state.status_index + step, len(GLOBAL_POLICY_FIELDS) - 1))
         elif action in {Action.LEFT, Action.RIGHT}:
             delta = -1 if action is Action.LEFT else 1
             if state.library_focus == 0:
@@ -1550,12 +1860,17 @@ def _handle_library_key(
         return True
 
     if action in {Action.NEXT_REGION, Action.PREVIOUS_REGION}:
+        focus_order = (0, 1, 2, 3, 5)
         step = -1 if action is Action.PREVIOUS_REGION else 1
-        state.library_focus = (state.library_focus + step) % 7
+        current = state.library_focus if state.library_focus in focus_order else (3 if state.library_focus == 4 else 5)
+        state.library_focus = focus_order[(focus_order.index(current) + step) % len(focus_order)]
         return True
     if action is Action.SETTINGS:
         state.workspace = "policy"
         state.library_focus = 0
+        return True
+    if action is Action.FILTER:
+        state.library_focus = 6 if state.library_focus in {5, 6} else 4
         return True
     if state.library_focus in {4, 6}:
         if action is Action.DELETE:
@@ -1563,7 +1878,7 @@ def _handle_library_key(
                 model.set_filters(artist=model.artist_filter[:-1])
             else:
                 model.set_filters(album=model.album_filter[:-1])
-        elif action is Action.BACK:
+        elif action in {Action.BACK, Action.ACTIVATE}:
             state.library_focus = 3 if state.library_focus == 4 else 5
         elif len(code) == 1 and code.isprintable() and not bool(getattr(event, "ctrl", False)):
             if state.library_focus == 4:
@@ -1572,6 +1887,8 @@ def _handle_library_key(
                 model.set_filters(album=model.album_filter + code)
             state.artist_index = 0
             state.album_index_cursor = 0
+            state.artist_scroll = 0
+            state.album_scroll = 0
         return True
     if action in {Action.LEFT, Action.RIGHT}:
         delta = -1 if action is Action.LEFT else 1
@@ -1590,16 +1907,66 @@ def _handle_library_key(
                 state.artist_index = (state.artist_index + delta) % len(artists)
                 model.active_artist = artists[state.artist_index].name
                 state.album_index_cursor = 0
+                state.album_scroll = 0
+                state.artist_scroll = _keep_visible(
+                    state.artist_index,
+                    state.artist_scroll,
+                    state.artist_page_size,
+                    len(artists),
+                )
         elif state.library_focus == 5:
             albums = model.visible_albums(active_artist_only=True)
             if albums:
                 state.album_index_cursor = (state.album_index_cursor + delta) % len(albums)
+                state.album_scroll = _keep_visible(
+                    state.album_index_cursor,
+                    state.album_scroll,
+                    state.album_page_size,
+                    len(albums),
+                )
         elif state.library_focus == 0:
             state.status_index = (state.status_index + delta) % len(STATUS_CONTROLS)
         elif state.library_focus == 1:
             state.select_index = (state.select_index + delta) % len(SELECT_CONTROLS)
         elif state.library_focus == 2:
             state.scan_index = (state.scan_index + delta) % len(SCAN_CONTROLS)
+        return True
+    if action in {Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END}:
+        if state.library_focus == 3:
+            rows = model.visible_artists()
+            if rows:
+                if action is Action.HOME:
+                    state.artist_index = 0
+                elif action is Action.END:
+                    state.artist_index = len(rows) - 1
+                else:
+                    step = -10 if action is Action.PAGE_UP else 10
+                    state.artist_index = max(0, min(state.artist_index + step, len(rows) - 1))
+                model.active_artist = rows[state.artist_index].name
+                state.album_index_cursor = 0
+                state.album_scroll = 0
+                state.artist_scroll = _keep_visible(
+                    state.artist_index,
+                    state.artist_scroll,
+                    state.artist_page_size,
+                    len(rows),
+                )
+        elif state.library_focus == 5:
+            rows = model.visible_albums(active_artist_only=True)
+            if rows:
+                if action is Action.HOME:
+                    state.album_index_cursor = 0
+                elif action is Action.END:
+                    state.album_index_cursor = len(rows) - 1
+                else:
+                    step = -10 if action is Action.PAGE_UP else 10
+                    state.album_index_cursor = max(0, min(state.album_index_cursor + step, len(rows) - 1))
+                state.album_scroll = _keep_visible(
+                    state.album_index_cursor,
+                    state.album_scroll,
+                    state.album_page_size,
+                    len(rows),
+                )
         return True
     if action in {Action.ACTIVATE, Action.TOGGLE}:
         if state.library_focus == 0:
@@ -1639,6 +2006,263 @@ def _handle_library_key(
     return True
 
 
+def hit_test(state: TuiState, column: int, row: int) -> HitRegion | None:
+    """Return the top-most current render region at one terminal cell."""
+    for region in reversed(state.hit_regions):
+        if region.contains(column, row):
+            return region
+    return None
+
+
+def _scroll_hit_test(state: TuiState, column: int, row: int) -> HitRegion | None:
+    for region in reversed(state.hit_regions):
+        if region.target.endswith("-scroll") and region.contains(column, row):
+            return region
+    return None
+
+
+def _apply_dialog_decision(
+    state: TuiState, adapter: TuiAdapter, decision: bool
+) -> None:
+    if decision:
+        if state.dialog_kind == "library-bypass" and state.library is not None:
+            albums = state.library.visible_albums(active_artist_only=True)
+            if albums:
+                state.library.toggle_album(
+                    albums[state.album_index_cursor], bypass_override=True
+                )
+            state.dialog_open = False
+            state.dialog_kind = ""
+        elif state.dialog_kind == "upscale" and state.ai_selection is not None:
+            state.ai_selection.confirm_upscale(True)
+            state.dialog_open = False
+            state.dialog_kind = ""
+        elif state.dialog_kind == "floor" and state.ai_selection is not None:
+            key = state.ai_selection.pending_key
+            if key is not None:
+                result = state.ai_selection.request(
+                    key,
+                    upscale_below_ideal=state.upscale_below_ideal,
+                    below_floor_confirmed=True,
+                )
+                if result == "upscale-confirmation-required":
+                    state.dialog_kind = "upscale"
+                else:
+                    state.dialog_open = False
+                    state.dialog_kind = ""
+                    state.transient = result.replace("-", " ")
+        else:
+            _submit(state, adapter, "b")
+    else:
+        if state.dialog_kind == "upscale" and state.ai_selection is not None:
+            state.ai_selection.confirm_upscale(False)
+        state.dialog_open = False
+        state.dialog_kind = ""
+
+
+def _open_candidate_url(state: TuiState, candidate_index: int) -> None:
+    if not 0 <= candidate_index < len(state.candidates):
+        return
+    state.selected_index = candidate_index
+    candidate = state.candidates[candidate_index]
+    if candidate.provenance == "[URL]" and candidate.url:
+        opened = bool(webbrowser.open(candidate.url, new=2, autoraise=False))
+        state.transient = (
+            "Opened highlighted [URL]."
+            if opened
+            else "No system URL handler is available; use --no-tui to copy the full URL."
+        )
+    else:
+        state.transient = "The highlighted candidate has no remote URL."
+
+
+def _toggle_candidate_ai(state: TuiState, candidate_index: int) -> None:
+    if (
+        not state.ai_enabled
+        or state.ai_selection is None
+        or not 0 <= candidate_index < len(state.candidates)
+    ):
+        return
+    state.selected_index = candidate_index
+    candidate = state.candidates[candidate_index]
+    key = candidate.ai_key or str(candidate.number)
+    if state.ai_selection.selected_key == key:
+        state.ai_selection.clear()
+        return
+    result = state.ai_selection.request(
+        key, upscale_below_ideal=state.upscale_below_ideal
+    )
+    if result == "upscale-confirmation-required":
+        state.dialog_kind = "upscale"
+        state.dialog_open = True
+    elif result == "below-floor-confirmation-required":
+        state.dialog_kind = "floor"
+        state.dialog_open = True
+    else:
+        state.transient = result.replace("-", " ")
+
+
+def _focus_candidate(state: TuiState, index: int) -> None:
+    if not state.candidates:
+        return
+    state.selected_index = max(0, min(index, len(state.candidates) - 1))
+    state.input_buffer = str(state.selected_index + 1)
+    selected = state.candidates[state.selected_index]
+    for group_index, (_name, items, _semantic) in enumerate(_candidate_groups(state)):
+        if selected in items:
+            state.group_scroll = group_index
+            state.candidate_row_scroll = _keep_visible(
+                items.index(selected),
+                state.candidate_row_scroll,
+                state.candidate_page_size,
+                len(items),
+            )
+            break
+
+
+def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
+    model = state.library
+    if region.target == "artist-scroll" and model is not None:
+        count = len(model.visible_artists())
+        state.artist_scroll = max(0, min(state.artist_scroll + delta * 3, max(0, count - 1)))
+    elif region.target == "album-scroll" and model is not None:
+        count = len(model.visible_albums(active_artist_only=True))
+        state.album_scroll = max(0, min(state.album_scroll + delta * 3, max(0, count - 1)))
+    elif region.target == "policy-source-scroll" and state.policy is not None:
+        count = len(state.policy.source_order)
+        state.policy_source_scroll = max(
+            0, min(state.policy_source_scroll + delta * 3, max(0, count - 1))
+        )
+    elif region.target == "candidate-scroll":
+        groups = _candidate_groups(state)
+        if not groups:
+            return
+        group_index = max(0, min(region.index, len(groups) - 1))
+        if group_index != state.group_scroll:
+            state.group_scroll = group_index
+            state.candidate_row_scroll = 0
+        capacity = max(1, region.height - 3)
+        maximum = max(0, len(groups[state.group_scroll][1]) - capacity)
+        proposed = state.candidate_row_scroll + delta * 3
+        if proposed < 0 and state.group_scroll > 0:
+            state.group_scroll -= 1
+            state.candidate_row_scroll = 0
+        elif proposed > maximum and state.group_scroll < len(groups) - 1:
+            state.group_scroll += 1
+            state.candidate_row_scroll = 0
+        else:
+            state.candidate_row_scroll = max(0, min(proposed, maximum))
+
+
+def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
+    """Map a crossterm mouse event through current render-time geometry."""
+    code = str(getattr(event, "code", "")).lower()
+    column = int(getattr(event, "column", -1))
+    row = int(getattr(event, "row", -1))
+    if code in {"scroll_up", "scroll_down"}:
+        region = _scroll_hit_test(state, column, row)
+        if region is not None:
+            _scroll_region(state, region, -1 if code == "scroll_up" else 1)
+        return
+    if code != "down" or str(getattr(event, "button", "")).lower() != "left":
+        return
+    region = hit_test(state, column, row)
+    if region is None:
+        return
+    if state.dialog_open:
+        if region.target == "dialog-yes":
+            _apply_dialog_decision(state, adapter, True)
+        elif region.target == "dialog-no":
+            _apply_dialog_decision(state, adapter, False)
+        return
+
+    model = state.library
+    if region.target == "status-control" and model is not None:
+        state.library_focus = 0
+        state.status_index = region.index
+        status = STATUS_CONTROLS[region.index][1]
+        if isinstance(status, AlbumStatus):
+            model.toggle_status(status)
+        else:
+            model.toggle_artist_status(status)
+    elif region.target == "select-control" and model is not None:
+        state.library_focus = 1
+        state.select_index = region.index
+        if region.index == 0:
+            model.select_all()
+        elif region.index == 1:
+            model.select_none()
+        else:
+            model.select_all(filtered=True)
+    elif region.target == "scan-control" and model is not None:
+        state.library_focus = 2
+        state.scan_index = region.index
+        _submit_library(state, adapter)
+    elif region.target == "artist-row" and model is not None:
+        state.library_focus = 3
+        state.artist_index = region.index
+        model.active_artist = region.value
+        state.album_index_cursor = 0
+        state.album_scroll = 0
+    elif region.target == "artist-checkbox" and model is not None:
+        state.library_focus = 3
+        state.artist_index = region.index
+        model.active_artist = region.value
+        model.toggle_artist(region.value)
+    elif region.target == "album-row" and model is not None:
+        state.library_focus = 5
+        state.album_index_cursor = region.index
+    elif region.target == "album-checkbox" and model is not None:
+        state.library_focus = 5
+        state.album_index_cursor = region.index
+        albums = model.visible_albums(active_artist_only=True)
+        if 0 <= region.index < len(albums):
+            result = model.toggle_album(albums[region.index])
+            if result == "bypass-confirmation-required":
+                state.dialog_kind = "library-bypass"
+                state.dialog_open = True
+            elif result == "timeout-active":
+                state.transient = "Timeout-active albums remain protected during automatic selection."
+    elif region.target == "artist-filter":
+        state.library_focus = 4
+    elif region.target == "album-filter":
+        state.library_focus = 6
+    elif region.target == "source-policy-open":
+        state.workspace = "policy"
+        state.library_focus = 0
+    elif region.target in {"policy-source", "policy-source-enabled"} and state.policy is not None:
+        state.library_focus = 0
+        state.artist_index = region.index
+        if region.target == "policy-source-enabled":
+            state.policy.toggle(region.value, "enabled")
+    elif region.target in {"policy-move-earlier", "policy-move-later"} and state.policy is not None:
+        delta = -1 if region.target.endswith("earlier") else 1
+        state.policy.move(region.value, delta)
+        state.artist_index = state.policy.source_order.index(region.value)
+    elif region.target == "policy-field" and state.policy is not None:
+        state.library_focus = 1
+        state.album_index_cursor = region.index
+        source = state.policy.source_order[state.artist_index]
+        if region.value in {"enabled", "source_override", "allow_below_minimum_fallback"}:
+            state.policy.toggle(source, region.value)
+        elif region.value == "primary_image_only":
+            if source in PRIMARY_METADATA_SOURCES:
+                state.policy.toggle(source, region.value)
+            else:
+                state.transient = "This provider does not expose differentiated primary-image metadata."
+        elif region.value == "minimum_range_type":
+            state.policy.cycle_range(source, 1)
+    elif region.target == "policy-global-field":
+        state.library_focus = 2
+        state.status_index = region.index
+    elif region.target in {"candidate-row", "preferred-candidate"}:
+        state.selected_index = region.index
+    elif region.target == "candidate-url":
+        _open_candidate_url(state, region.index)
+    elif region.target == "candidate-ai":
+        _toggle_candidate_ai(state, region.index)
+
+
 def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     code = str(event.code)
     if bool(getattr(event, "ctrl", False)) and code.lower() == "c":
@@ -1648,40 +2272,8 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if state.dialog_open:
         decision = confirm_key(code)
-        if decision is True:
-            if state.dialog_kind == "library-bypass" and state.library is not None:
-                albums = state.library.visible_albums(active_artist_only=True)
-                if albums:
-                    state.library.toggle_album(
-                        albums[state.album_index_cursor], bypass_override=True
-                    )
-                state.dialog_open = False
-                state.dialog_kind = ""
-            elif state.dialog_kind == "upscale" and state.ai_selection is not None:
-                state.ai_selection.confirm_upscale(True)
-                state.dialog_open = False
-                state.dialog_kind = ""
-            elif state.dialog_kind == "floor" and state.ai_selection is not None:
-                key = state.ai_selection.pending_key
-                if key is not None:
-                    result = state.ai_selection.request(
-                        key,
-                        upscale_below_ideal=state.upscale_below_ideal,
-                        below_floor_confirmed=True,
-                    )
-                    if result == "upscale-confirmation-required":
-                        state.dialog_kind = "upscale"
-                    else:
-                        state.dialog_open = False
-                        state.dialog_kind = ""
-                        state.transient = result.replace("-", " ")
-            else:
-                _submit(state, adapter, "b")
-        elif decision is False:
-            if state.dialog_kind == "upscale" and state.ai_selection is not None:
-                state.ai_selection.confirm_upscale(False)
-            state.dialog_open = False
-            state.dialog_kind = ""
+        if decision is not None:
+            _apply_dialog_decision(state, adapter, decision)
         return
 
     action = map_key(
@@ -1730,24 +2322,33 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         else len(state.candidates)
     )
     if action is Action.UP and selection_count:
-        state.selected_index = (state.selected_index - 1) % selection_count
-        state.input_buffer = str(state.selected_index + 1)
-        selected = state.candidates[state.selected_index] if state.candidates else None
-        if selected is not None:
-            for index, (_name, items, _semantic) in enumerate(_candidate_groups(state)):
-                if selected in items:
-                    state.group_scroll = index
-                    break
+        index = (state.selected_index - 1) % selection_count
+        if state.candidates:
+            _focus_candidate(state, index)
+        else:
+            state.selected_index = index
+            state.input_buffer = str(index + 1)
         return
     if action is Action.DOWN and selection_count:
-        state.selected_index = (state.selected_index + 1) % selection_count
-        state.input_buffer = str(state.selected_index + 1)
-        selected = state.candidates[state.selected_index] if state.candidates else None
-        if selected is not None:
-            for index, (_name, items, _semantic) in enumerate(_candidate_groups(state)):
-                if selected in items:
-                    state.group_scroll = index
-                    break
+        index = (state.selected_index + 1) % selection_count
+        if state.candidates:
+            _focus_candidate(state, index)
+        else:
+            state.selected_index = index
+            state.input_buffer = str(index + 1)
+        return
+    if action in {Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END} and selection_count:
+        if action is Action.HOME:
+            index = 0
+        elif action is Action.END:
+            index = selection_count - 1
+        else:
+            index = state.selected_index + (-10 if action is Action.PAGE_UP else 10)
+        if state.candidates:
+            _focus_candidate(state, index)
+        else:
+            state.selected_index = max(0, min(index, selection_count - 1))
+            state.input_buffer = str(state.selected_index + 1)
         return
     if action is Action.DIGIT and selection_count:
         proposed = (state.input_buffer + code)[-2:]
@@ -1764,30 +2365,10 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.dialog_open = True
         return
     if action is Action.URL and state.candidates:
-        candidate = state.candidates[state.selected_index]
-        if candidate.provenance == "[URL]" and candidate.url:
-            opened = bool(webbrowser.open(candidate.url, new=2, autoraise=False))
-            state.transient = "Opened highlighted [URL]." if opened else "No system URL handler is available; use --no-tui to copy the full URL."
-        else:
-            state.transient = "The highlighted candidate has no remote URL."
+        _open_candidate_url(state, state.selected_index)
         return
     if action is Action.TOGGLE and state.ai_enabled and state.ai_selection and state.candidates:
-        candidate = state.candidates[state.selected_index]
-        key = candidate.ai_key or str(candidate.number)
-        if state.ai_selection.selected_key == key:
-            state.ai_selection.clear()
-            return
-        result = state.ai_selection.request(
-            key, upscale_below_ideal=state.upscale_below_ideal
-        )
-        if result == "upscale-confirmation-required":
-            state.dialog_kind = "upscale"
-            state.dialog_open = True
-        elif result == "below-floor-confirmation-required":
-            state.dialog_kind = "floor"
-            state.dialog_open = True
-        else:
-            state.transient = result.replace("-", " ")
+        _toggle_candidate_ai(state, state.selected_index)
         return
     if action is Action.QUIT:
         state.transient = "q is disabled during a decision; choose an engine action or Ctrl+C."
@@ -1815,6 +2396,11 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
     its restore path before an engine exception is re-raised.
     """
     theme = select_theme(theme_name)
+    if InputEventReader is None:
+        raise TuiInitializationError(
+            "SPLINED's pyratatui mouse/input extension is not installed; "
+            "install the splined-pyratatui-input wheel."
+        )
     state = TuiState()
     adapter = TuiAdapter()
     thread = threading.Thread(
@@ -1837,9 +2423,11 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
 
     try:
         terminal: Terminal | None = None
+        input_reader: Any = None
         try:
             terminal = Terminal()
-            with terminal:
+            input_reader = InputEventReader()
+            with terminal, input_reader:
                 thread.start()
                 dirty = True
                 startup_active = True
@@ -1852,15 +2440,28 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                     if dirty or startup_active:
                         terminal.draw(lambda frame: render(frame, state, theme))
                         dirty = False
-                    key = terminal.poll_event(timeout_ms=80)
-                    if key is not None:
-                        handle_key(state, adapter, key)
+                    event = input_reader.poll_event(timeout_ms=80)
+                    if event is not None:
+                        if str(getattr(event, "kind", "key")) == "mouse":
+                            handle_mouse(state, adapter, event)
+                        elif str(getattr(event, "kind", "key")) == "key":
+                            handle_key(state, adapter, event)
                         dirty = True
         except BaseException as exc:
             if thread.ident is None:
+                if input_reader is not None:
+                    try:
+                        input_reader.disable_mouse_capture()
+                    except Exception:
+                        pass
                 if terminal is not None:
                     try:
                         terminal.restore()
+                    except Exception:
+                        pass
+                if emergency_terminal_restore is not None:
+                    try:
+                        emergency_terminal_restore()
                     except Exception:
                         pass
                 raise TuiInitializationError(

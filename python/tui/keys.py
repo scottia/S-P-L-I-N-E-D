@@ -28,6 +28,11 @@ class Action(str, Enum):
     SETTINGS = "settings"
     SAVE = "save"
     URL = "url"
+    FILTER = "filter"
+    PAGE_UP = "page-up"
+    PAGE_DOWN = "page-down"
+    HOME = "home"
+    END = "end"
 
 
 def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
@@ -44,6 +49,14 @@ def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
         return Action.LEFT
     if value == "right":
         return Action.RIGHT
+    if value == "pageup":
+        return Action.PAGE_UP
+    if value == "pagedown":
+        return Action.PAGE_DOWN
+    if value == "home":
+        return Action.HOME
+    if value == "end":
+        return Action.END
     if value in {"backtab", "shift+tab"} or (value == "tab" and shift):
         return Action.PREVIOUS_REGION
     if value == "tab":
@@ -72,6 +85,8 @@ def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
         return Action.SETTINGS
     if value == "u":
         return Action.URL
+    if value == "/":
+        return Action.FILTER
     if value in {"backspace", "delete"}:
         return Action.DELETE
     if len(value) == 1 and value.isdigit():
