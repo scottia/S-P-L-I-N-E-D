@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
+from collections import deque
 import getpass
 import hashlib
 import importlib.util
@@ -43,6 +44,7 @@ LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_AUTH_URL = "https://www.last.fm/api/auth/"
 REQUEST_TIMEOUT = 20
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+INVENTORY_WORKERS = 8
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
 MAX_IMAGE_PIXELS = 64 * 1024 * 1024
 PROVIDER_DISCOVERY_WORKERS = 4
@@ -834,6 +836,7 @@ def inventory(
     *,
     fingerprint_paths: set[str] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    workers: int = INVENTORY_WORKERS,
 ) -> tuple[list[AlbumDir], list[Path]]:
     if not root.exists():
         raise SplinedError(f"SPLINED scan directory does not exist: {root}")
@@ -843,15 +846,11 @@ def inventory(
     ignored: list[Path] = []
     fingerprint_required = fingerprint_paths or set()
     directories_seen = 0
+    worker_count = max(1, min(32, int(workers)))
 
-    def visit(directory: Path, is_root: bool) -> None:
-        nonlocal directories_seen
-        if not is_root and should_ignore(directory.name, ignored_subs):
-            ignored.append(directory)
-            return
-        directories_seen += 1
-        if progress is not None and directories_seen % 250 == 0:
-            progress(directories_seen, len(albums))
+    def inspect_directory(
+        directory: Path,
+    ) -> tuple[AlbumDir | None, list[Path]]:
         try:
             with os.scandir(directory) as iterator:
                 entries = sorted(iterator, key=lambda entry: entry.name.lower())
@@ -889,23 +888,54 @@ def inventory(
                         audio_metadata.append((path, None, None))
             elif _is_inventory_local_art(path, configured_file_name):
                 local_art.append(path)
+        album: AlbumDir | None = None
         if audio:
-            albums.append(
-                AlbumDir(
-                    directory,
-                    sorted(audio),
-                    sorted(local_art),
-                    (
-                        _fingerprint_from_metadata(audio_metadata)
-                        if collect_fingerprint
-                        else None
-                    ),
-                )
+            album = AlbumDir(
+                directory,
+                sorted(audio),
+                sorted(local_art),
+                (
+                    _fingerprint_from_metadata(audio_metadata)
+                    if collect_fingerprint
+                    else None
+                ),
             )
-        for child in children:
-            visit(child, False)
+        return album, children
 
-    visit(root, True)
+    # Directory opens dominate large NAS/CIFS/NFS libraries. Keep only a small,
+    # bounded number in flight while retaining the same final path ordering and
+    # per-directory evaluation rules as the former recursive traversal.
+    queued: deque[Path] = deque([root])
+    pending: dict[
+        concurrent.futures.Future[tuple[AlbumDir | None, list[Path]]],
+        Path,
+    ] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=worker_count,
+        thread_name_prefix="splined-inventory",
+    ) as executor:
+        while queued or pending:
+            while queued and len(pending) < worker_count * 2:
+                directory = queued.popleft()
+                pending[executor.submit(inspect_directory, directory)] = directory
+            done, _ = concurrent.futures.wait(
+                pending,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                pending.pop(future)
+                album, children = future.result()
+                directories_seen += 1
+                if album is not None:
+                    albums.append(album)
+                for child in children:
+                    if should_ignore(child.name, ignored_subs):
+                        ignored.append(child)
+                    else:
+                        queued.append(child)
+                if progress is not None and directories_seen % 250 == 0:
+                    progress(directories_seen, len(albums))
+
     if progress is not None:
         progress(directories_seen, len(albums))
     albums.sort(key=lambda a: str(a.path).lower())

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -272,16 +273,64 @@ class LightweightInventoryTests(unittest.TestCase):
 
     def test_inventory_reports_bounded_live_progress(self) -> None:
         progress: list[tuple[int, int]] = []
+        callback_threads: list[int] = []
+
+        def record_progress(directories: int, count: int) -> None:
+            progress.append((directories, count))
+            callback_threads.append(threading.get_ident())
+
         albums, _ = splined.inventory(
             self.root,
             list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
-            progress=lambda directories, count: progress.append(
-                (directories, count)
-            ),
+            progress=record_progress,
         )
         self.assertTrue(progress)
         self.assertEqual(progress[-1][1], len(albums))
         self.assertLessEqual(len(progress), 1 + progress[-1][0] // 250)
+        self.assertEqual(set(callback_threads), {threading.get_ident()})
+
+    def test_inventory_bounds_parallel_directory_enumeration_and_order(self) -> None:
+        for index in range(16):
+            album = self.root / f"Parallel Artist {index:02d}" / "Album"
+            album.mkdir(parents=True)
+            (album / "track01.flac").write_bytes(b"audio")
+
+        expected, expected_ignored = splined.inventory(
+            self.root,
+            list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
+            workers=1,
+        )
+        original = splined.os.scandir
+        lock = threading.Lock()
+        active = 0
+        maximum_active = 0
+
+        def delayed_scandir(path: Path | str):
+            nonlocal active, maximum_active
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            try:
+                time.sleep(0.01)
+                return original(path)
+            finally:
+                with lock:
+                    active -= 1
+
+        with mock.patch.object(splined.os, "scandir", delayed_scandir):
+            actual, actual_ignored = splined.inventory(
+                self.root,
+                list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
+                workers=4,
+            )
+
+        self.assertGreater(maximum_active, 1)
+        self.assertLessEqual(maximum_active, 4)
+        self.assertEqual(
+            [(album.path, album.audio_files) for album in actual],
+            [(album.path, album.audio_files) for album in expected],
+        )
+        self.assertEqual(actual_ignored, expected_ignored)
 
 
 if __name__ == "__main__":
