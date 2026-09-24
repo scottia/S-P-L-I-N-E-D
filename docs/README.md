@@ -45,6 +45,14 @@ Select Media opens a disposable SQLite picker index from the configured cache, e
 
 Artist/Album filtering operates entirely against the currently indexed in-memory model rather than rescanning the filesystem on each keystroke. The picker database is acceleration state, not history or processing authority, and may be deleted safely.
 
+The startup brand is readiness-driven rather than timed: the large animated
+S:P:L:I:N:E:D identity remains above live picker-index facts until the root
+Artist model is actually interactive. POSIX directories whose basename begins
+with `.` are excluded automatically in addition to `[library].ignored_subs`.
+After each interactive batch, `LAST RUN SUMMARY` returns to the same Select
+Media session so another exact Album selection can be processed without a
+full-library rescan.
+
 The TUI includes source-grouped candidate presentation on one shared Ratatui column grid, WIDE-mode terminal-cell artwork previews, live authority/provider/download activity, and URL/provenance markers instead of provider IDs. `[URL]` uses terminal-client OSC 8 hyperlink handling; SPLINED does not launch a browser inside its Docker/SSH host. Direct mouse/touch interaction remains provided through the isolated `splined-pyratatui-input` crossterm extension. Render-time hit regions drive taps and the list under the pointer receives wheel/touch scrolling.
 
 The user's WebSSH iOS terminal is a verified touch target: the prior SPLINED `--tui` supported touch-driven result selection and scrolling. Restoring this behavior in the current Ratatui path is therefore an implementation/binding parity requirement, not a speculative terminal feature.

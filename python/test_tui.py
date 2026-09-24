@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 from pyratatui import Rect
 
-from tui.animation import EXPANSION, STYLIZED_EXPANSION, cell_width, startup_frame
+from tui.animation import (
+    BRAND_ANIMATION_PERIOD,
+    EXPANSION,
+    STYLIZED_EXPANSION,
+    cell_width,
+    startup_frame,
+)
 from tui.dialogs import confirm_key
 from tui.dispatch import decide_activation
 from tui.keys import Action, map_key, picker_response
@@ -75,8 +81,11 @@ class LayoutAndBrandTests(unittest.TestCase):
     def test_unicode_brand_forms_have_equal_cell_width(self):
         self.assertEqual(cell_width(EXPANSION), cell_width(STYLIZED_EXPANSION))
         self.assertEqual(startup_frame(0).phrase, EXPANSION)
-        self.assertEqual(startup_frame(99).phrase, STYLIZED_EXPANSION)
-        self.assertTrue(startup_frame(99).complete)
+        self.assertEqual(
+            startup_frame(BRAND_ANIMATION_PERIOD / 2).phrase,
+            STYLIZED_EXPANSION,
+        )
+        self.assertFalse(startup_frame(99).complete)
 
 
 class DispatchTests(unittest.TestCase):

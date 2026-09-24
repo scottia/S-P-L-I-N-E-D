@@ -62,6 +62,26 @@ selection authority, and engine decisions are identical.
 
 OLED and CHALK apply to the whole TUI, not only candidate/result tables.
 
+## Readiness-driven branding
+
+TUI startup has no wall-clock splash timeout. WIDE and NORMAL layouts keep a
+large spectral S:P:L:I:N:E:D logo and the folding standard/stylized expansion
+phrase above the live inventory card for as long as root Artist/index
+initialization is still running. The animation advances at a restrained rate;
+the transition occurs only when the initial root Artist model and picker state
+are usable. It does not wait for every Artist or Album to be indexed.
+
+The inventory card reports real state such as the library root, picker-index
+path, discovered root Artists, cached/indexed Artists, known Albums, current
+Artist, and cache recovery. COMPACT and MINIMUM layouts reduce this to safe
+one-line branding rather than allowing the logo to overlap controls.
+
+Processing, candidate, activity, and Last Run Summary views retain a distinct
+context header: an eight-row large-cell brand on WIDE, a four-row framed brand
+on NORMAL, and one line on COMPACT/MINIMUM. S:P:L:I:N:E:D is the normal identity.
+A:I:S:P:L:I:N:E:D replaces it only while a real AI activity event or an active
+AI enhancement selection exists, then the header returns to S:P:L:I:N:E:D.
+
 ## Shared status-color authority
 
 The Python TUI must use the same execution/status semantics as the Windows
@@ -192,6 +212,11 @@ include them in statistics, status reconciliation, or selection payloads.
 Wildcard entries remain supported where current SPLINED/Windows rules support
 them. Symlink/reparse-style recursive loops are not followed.
 
+On POSIX/Linux traversal, every directory basename beginning with `.` is also
+excluded automatically at the root and at every nested level. Hidden paths are
+not persisted in the picker SQLite database and do not require a Config v5
+entry.
+
 Artist and Album text filters operate on the already-loaded in-memory model.
 Typing into a filter begins filtering immediately and never triggers a
 filesystem rescan. Returning to an Artist already inventoried in the current
@@ -201,6 +226,28 @@ session is immediate.
 intentional full-library paths. They index every Artist with genuine Artist and
 Album counts before applying the normal authoritative eligibility rules.
 Simply opening SPLINED never performs that work.
+
+### Count scopes
+
+Picker numbers deliberately name their scope:
+
+- the Artist header is the number of root Artist rows visible after the active
+  Artist filters;
+- `Artists` is root total and filtered-visible;
+- `Indexed` is cached/indexed Artists over the root total;
+- `Validated` is Artists filesystem-validated in this session;
+- `Albums` is the currently known/indexed topology, not an implied complete
+  library total;
+- `Active` is total and visible Albums for the current Artist;
+- `Selected` is checked Albums in the known model.
+
+Unprocessed, Processed, Bypass, and Timeout suffixes cover only the active
+Artist and therefore sum to that Artist's indexed Album count. Artist Complete
+and Artist Contains Bypass cover indexed Artists only; unindexed Artists remain
+`inventory not loaded`. `Select [ALL]` explicitly completes full indexing
+before selecting the normally eligible library. `Select [FILTERED]` reports
+and changes the current Album Picker scope, while `Select [NONE]` reports the
+known checked count it will clear.
 
 Selecting an artist cascades only to eligible child albums. History, bypass,
 timeout, and manual-reprocessing rules remain authoritative.
@@ -287,7 +334,7 @@ Important sections include:
 - optional Enhanced group;
 - live activity/status;
 - history/log views;
-- final summary.
+- Last Run Summary.
 
 Source candidates are grouped by source rather than combined into one
 large undifferentiated table. Candidate groups form a vertical scroll region;
@@ -523,6 +570,20 @@ configured source/reference order before the unchanged ranking code runs.
 Reliable provider geometry/front metadata is filtered before download;
 unknown geometry is downloaded and evaluated normally rather than guessed.
 Proven duplicate source URLs are fetched once.
+
+## Interactive batch lifecycle
+
+An interactive TUI scan is a reusable session, not a one-batch process. A
+successful or failed batch presents `LAST RUN SUMMARY`; Enter or Esc returns
+to Select Media, where the retained root topology, loaded Artist subtrees,
+filters, focus, activity/history, and picker database can be reused. Attempted
+Album checkmarks are cleared, affected Album/Artist status is reconciled from
+the existing history authority, and no full-library traversal is performed.
+
+Another batch can then be selected and launched. Session exit occurs only on
+explicit `q`, Ctrl+C/SIGTERM, or a fatal unrecoverable error. The process exit
+code retains any failed batch seen during that session. The plain `--no-tui`
+path remains the original single-run advanced diagnostic flow.
 
 The Source Policy Settings workflow edits an in-memory draft. `Ctrl+S`
 explicitly saves/applies it to Config v5 using an atomic TOML update that

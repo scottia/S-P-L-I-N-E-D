@@ -81,6 +81,8 @@ class LazyPickerInventoryTests(unittest.TestCase):
         *,
         history: dict[str, object] | None = None,
         bypassed: set[str] | None = None,
+        picker_session: splined.PickerSessionState | None = None,
+        initial_event: str = "library",
     ):
         emitted: list[tuple[str, dict[str, object]]] = []
         encoded = iter(json.dumps(item) for item in responses)
@@ -103,6 +105,8 @@ class LazyPickerInventoryTests(unittest.TestCase):
                 cache=self.cache,
                 library_root=self.root,
                 bypassed_paths=bypassed,
+                picker_session=picker_session,
+                initial_event=initial_event,
             )
         return result, emitted
 
@@ -206,6 +210,54 @@ class LazyPickerInventoryTests(unittest.TestCase):
             {row["album"] for row in payload["albums"]},
             {"Love Among the Ruins", "Our Time in Eden"},
         )
+
+    def test_session_reuses_validated_artist_and_clears_completed_selection(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        session = splined.PickerSessionState()
+        self._run(
+            [
+                {
+                    "action": "load-artist",
+                    "artist_path": artist_path,
+                    "selected": [],
+                    "select_new": False,
+                },
+                {
+                    "action": "launch",
+                    "scan_mode": "auto-selected",
+                    "selected": [str(self.love)],
+                    "select_new": False,
+                },
+            ],
+            picker_session=session,
+        )
+        history = {
+            "version": 1,
+            "albums": {str(self.love): {"outcome": "normal-selected"}},
+        }
+        with mock.patch.object(
+            splined,
+            "inventory",
+            side_effect=AssertionError("Artist rescanned between batches"),
+        ):
+            (_result, emitted) = self._run(
+                [
+                    {
+                        "action": "launch",
+                        "scan_mode": "auto-selected",
+                        "selected": [str(self.eden)],
+                        "select_new": False,
+                    }
+                ],
+                history=history,
+                picker_session=session,
+                initial_event="library_update",
+            )
+        update = next(payload for event, payload in emitted if event == "library_update")
+        rows = {str(row["path"]): row for row in update["albums"]}
+        self.assertEqual(rows[str(self.love)]["status"], "processed")
+        self.assertFalse(rows[str(self.love)]["selected"])
+        self.assertIn(artist_path, session.loaded_artists)
 
     def test_auto_all_explicitly_indexes_every_artist(self) -> None:
         calls: list[Path] = []

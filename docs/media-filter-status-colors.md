@@ -72,6 +72,12 @@ Ignored exact names/patterns:
 
 Wildcard behavior should remain compatible with current SPLINED/Windows matching. Symlink/reparse-style recursive loops are not followed.
 
+POSIX/Linux directory basenames beginning with `.` are always excluded at the
+root and during nested traversal. They never become Artist/Album rows, affect
+counts or status, enter selection payloads, or persist in the picker index.
+This automatic filesystem rule is additional to `[library].ignored_subs` and
+does not rewrite Config v5.
+
 ---
 
 # Artist and Album text filters
@@ -218,9 +224,11 @@ Status filters should work together with Artist/Album text filters without trigg
 
 The Select Mode group contains mutually exclusive selection actions:
 
-- **Select [ALL]** selects normally eligible albums across the loaded model;
+- **Select [ALL]** explicitly completes the full picker inventory, then selects
+  normally eligible albums across that complete topology;
 - **Select [NONE]** clears transient selection;
-- **Select [FILTERED]** selects albums in the current visible filter result.
+- **Select [FILTERED]** selects albums in the current active Artist Album
+  Picker/filter result.
 
 Selection actions respect history, bypass, and timeout authority and never erase persistent records.
 
@@ -282,6 +290,24 @@ Library refresh/reload should recalculate colors from authoritative state.
 It should not preserve stale colors, derive colors solely from previous paint state, or rebuild unrelated theme state just because the library model changed.
 
 The tree is a presentation of current authority.
+
+## Count scopes
+
+Album status suffixes use the same active-Artist topology shown by the Album
+Picker. Unprocessed, Processed, Bypass, and Timeout therefore sum to that
+Artist's indexed Album count and never include another cached Artist.
+
+Artist Complete and Artist Contains Bypass count indexed Artists only. An
+unindexed Artist is `inventory not loaded`, not fabricated White/Unprocessed.
+Library statistics distinguish root Artist total/visible, indexed/root,
+validated-this-session, known/indexed Albums, active Artist total/visible, and
+selected known Albums. A partial SQLite cache is never labeled as the complete
+Album-library total.
+
+In an interactive Ratatui session, completion produces `LAST RUN SUMMARY`.
+Enter or Esc returns to the retained Select Media model for another batch;
+history remains authoritative and is reconciled into the affected rows without
+a full-library rescan.
 
 ---
 
