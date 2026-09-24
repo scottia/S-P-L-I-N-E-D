@@ -162,11 +162,22 @@ class ArtworkPreviewTests(unittest.TestCase):
         with mock.patch("tui.splined_tui.generate_preview", return_value=sentinel) as generated:
             self.assertIs(_candidate_preview(state, item), sentinel)
             self.assertIs(_candidate_preview(state, item), sentinel)
-        generated.assert_called_once_with(item.path)
+        generated.assert_called_once_with(item.path, width=28, height=12)
         with tempfile.TemporaryDirectory() as directory:
             corrupt = Path(directory) / "broken.jpg"
             corrupt.write_bytes(b"not artwork")
             self.assertIsNone(generate_preview(corrupt))
+
+    def test_preview_preserves_aspect_ratio_with_centered_letterboxing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wide.png"
+            Image.new("RGB", (600, 96), (200, 10, 20)).save(path)
+            preview = generate_preview(path, width=20, height=10)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual((preview.width, preview.height), (20, 10))
+        self.assertEqual(preview.rows[0][0], ((0, 0, 0), (0, 0, 0)))
+        self.assertNotEqual(preview.rows[5][10], ((0, 0, 0), (0, 0, 0)))
 
     def test_wide_renders_previews_and_compact_omits_them(self) -> None:
         state = TuiState(started_at=time.monotonic() - 10, workflow="candidates")
@@ -174,7 +185,9 @@ class ArtworkPreviewTests(unittest.TestCase):
         with mock.patch("tui.splined_tui._render_candidate_preview") as rendered:
             frame = Frame(160, 44)
             _render_candidates(frame, frame.area, state, select_theme("OLED"))
-            self.assertGreaterEqual(rendered.call_count, 1)
+            self.assertEqual(rendered.call_count, 1)
+            self.assertGreaterEqual(int(rendered.call_args.args[1].width), 24)
+            self.assertGreaterEqual(int(rendered.call_args.args[1].height), 10)
         state.hit_regions.clear()
         with mock.patch("tui.splined_tui._render_candidate_preview") as rendered:
             frame = Frame(78, 40)

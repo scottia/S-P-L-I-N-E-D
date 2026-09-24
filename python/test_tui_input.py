@@ -508,8 +508,9 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         stream = io.StringIO()
         write_terminal_links(state, stream)
         encoded = stream.getvalue()
-        self.assertIn("[OPEN URL]", encoded)
-        self.assertIn(osc8_link("[OPEN URL]", url.value), encoded)
+        self.assertIn("[OPEN IN DEFAULT BROWSER]", encoded)
+        self.assertIn(osc8_link("[OPEN IN DEFAULT BROWSER]", url.value), encoded)
+        self.assertIn(url.value, encoded)
 
         class Capture:
             def __init__(self):

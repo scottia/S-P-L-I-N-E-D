@@ -29,8 +29,8 @@ class ArtworkPreview:
 def generate_preview(
     path: str | Path,
     *,
-    width: int = 8,
-    height: int = 4,
+    width: int = 28,
+    height: int = 12,
 ) -> ArtworkPreview | None:
     """Decode one existing candidate file once and downsample it safely.
 
@@ -42,14 +42,28 @@ def generate_preview(
         return None
     try:
         with Image.open(candidate) as image:
-            pixels = image.convert("RGB").resize(
-                (max(1, width), max(1, height) * 2),
+            target_width = max(1, width)
+            target_height = max(1, height) * 2
+            source = image.convert("RGB")
+            source.thumbnail(
+                (target_width, target_height),
                 Image.Resampling.LANCZOS,
             )
+            # Terminal cells are twice as tall in the sampled bitmap because
+            # each upper-half block carries a foreground and background pixel.
+            # Contain + centered letterboxing preserves non-square artwork.
+            pixels = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+            pixels.paste(
+                source,
+                (
+                    (target_width - source.width) // 2,
+                    (target_height - source.height) // 2,
+                ),
+            )
             rows: list[tuple[tuple[Rgb, Rgb], ...]] = []
-            for row in range(height):
+            for row in range(max(1, height)):
                 pairs: list[tuple[Rgb, Rgb]] = []
-                for column in range(width):
+                for column in range(target_width):
                     top = tuple(int(value) for value in pixels.getpixel((column, row * 2)))
                     bottom = tuple(
                         int(value) for value in pixels.getpixel((column, row * 2 + 1))
