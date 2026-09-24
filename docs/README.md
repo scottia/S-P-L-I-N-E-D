@@ -41,9 +41,15 @@ TUI
 
 The TUI uses exactly two first-class themes, `OLED` and `CHALK`, and shares the same authoritative source, history, bypass, timeout, and status-color semantics as the Windows implementation.
 
-The TUI design includes live Artist/Album filtering over the in-memory library model, source-grouped candidate presentation, live authority/provider/download activity, mouse-capable interaction where the binding supports it, and actionable URL/provenance presentation instead of provider IDs in primary tables.
+The Select Media startup path is required to mirror Windows `LibraryInventory.Load`: one lightweight filesystem/history inventory identifies album folders, detects local cover files by filename/extension, honors `[library].ignored_subs`, applies retained history, builds the Artist/Album model, and then makes the TUI usable. Tag parsing, MusicBrainz authority, provider discovery, candidate downloads, image analysis, ranking, and AISPLINE work begin only after the user launches selected albums.
 
-See [Python Ratatui TUI](ratatui-tui.md).
+Artist/Album filtering then operates entirely against that loaded in-memory model rather than rescanning the filesystem on each keystroke.
+
+The TUI design includes source-grouped candidate presentation, live authority/provider/download activity, actionable URL/provenance presentation instead of provider IDs in primary tables, and direct mouse/touch interaction once the binding exposes normal crossterm mouse events.
+
+The user's WebSSH iOS terminal is a verified touch target: the prior SPLINED `--tui` supported touch-driven result selection and scrolling. Restoring this behavior in the current Ratatui path is therefore an implementation/binding parity requirement, not a speculative terminal feature.
+
+See [Python Ratatui TUI](ratatui-tui.md) and [Select Media and status colors](media-filter-status-colors.md).
 
 ## AISPLINE Config v5 boundary
 
@@ -81,7 +87,7 @@ Both examples use the central credential-directory architecture. Provider secret
 | Green | Artist complete |
 | Blue | Artist contains at least one bypassed album |
 
-The tree/TUI derives these states from the same album folder, history, bypass, and timeout authority used by execution. It does not maintain a separate persistent UI status database.
+The tree/TUI derives these states from the same album folder, local-art, history, bypass, and timeout authority used by execution. It does not maintain a separate persistent UI status database.
 
 ## Python command equivalence
 
