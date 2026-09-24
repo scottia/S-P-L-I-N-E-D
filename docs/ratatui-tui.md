@@ -7,6 +7,9 @@ discovery, MusicBrainz authority, candidate scoring, Range Types, local-art
 policy, output transforms, history, writes, counters, and exit codes remain
 owned by the Python engine.
 
+The runtime pins `pyratatui==0.3.0` (Ratatui 0.30.2) and uses its published
+wheel. End users do not need a Rust toolchain to run the Python application.
+
 ## Activation and display modes
 
 An operational scan uses the TUI by default when both standard input and
@@ -75,8 +78,9 @@ meaning or precedence.
 
 ## Library selection workspace
 
-The TUI design includes an interactive library-selection workspace modeled on
-the Windows Select Media behavior. It may present:
+The TUI includes an interactive library-selection workspace modeled on the
+Windows Select Media behavior. Wide terminals present the three control
+regions across the top, followed by the three library regions:
 
 - Album Status Mode;
 - Album Select Mode;
@@ -100,6 +104,18 @@ does not expose the required mouse event surface, extend the Python binding
 layer rather than rewriting SPLINED or Ratatui core. Keyboard control remains
 fully supported.
 
+### Mouse binding limitation in pyratatui 0.3.0
+
+The published `pyratatui` 0.3.0 wheel exposes `Terminal.poll_event()` as a
+keyboard-only `PyKeyEvent` API. Its terminal lifecycle also does not enable
+crossterm mouse capture, and the Python module exports no `MouseEvent`. For
+that reason this release does **not** claim mouse support or reinterpret raw
+escape sequences as clicks. All controls are keyboard-complete. Adding real
+mouse support requires a small upstream/binding release that exposes
+crossterm `EnableMouseCapture`, `DisableMouseCapture`, and mouse events while
+retaining prebuilt wheels; no SPLINED Rust rewrite or Ratatui-core fork is
+needed.
+
 ## Processing workspace
 
 The processing workspace uses workflow-specific geometry rather than one
@@ -122,7 +138,9 @@ Important sections include:
 - final summary.
 
 Source candidates should be grouped by source rather than combined into one
-large undifferentiated table.
+large undifferentiated table. Candidate groups form a vertical scroll region;
+navigation reveals every row and the frame reports visible row/group ranges.
+The TUI does not squeeze a complete search into one physical screen.
 
 ## Candidate-table presentation
 
@@ -136,6 +154,11 @@ The actionable final column is `URL`, with user-facing provenance markers:
 [URL]       normal remote/source artwork
 [Enhanced]  validated prior AISPLINE result known through history/provenance
 ```
+
+The full remote URL remains in candidate state but the normal cell displays
+only an underlined `[URL]` marker. Press `U` on the highlighted candidate to
+use the system URL handler. If no handler exists (common in containers), use
+`--no-tui` to view/copy the full URL from the advanced diagnostic stream.
 
 A history-backed Enhanced entry is shown only when its corresponding file still
 exists and validates. History alone must not resurrect a missing result.
@@ -161,6 +184,11 @@ checkboxes, no AI activity widget, and no AI-specific title treatment.
 
 When AISPLINE is enabled, relevant candidates may be reviewed before the source
 summary is presented.
+
+This implementation provides the SPLINED-side state/widgets only. Because no
+authoritative AISPLINE endpoint protocol or adapter exists yet, enabling the
+section reports runtime capability as unavailable and never invents a review,
+enhancement, success, or activity event.
 
 The source-summary semantics are:
 
@@ -320,6 +348,18 @@ low-value candidates do not consume unnecessary downloads, AI review, or TUI
 space. Source filtering must not change ranking semantics for candidates that
 remain eligible.
 
+The Python path performs independent provider discovery with at most four
+workers and image downloads with at most four workers. Results are merged in
+configured source/reference order before the unchanged ranking code runs.
+Reliable provider geometry/front metadata is filtered before download;
+unknown geometry is downloaded and evaluated normally rather than guessed.
+Proven duplicate source URLs are fetched once.
+
+The Source Policy Settings workflow edits an in-memory draft. `Ctrl+S`
+explicitly saves/applies it to Config v5 using an atomic TOML update that
+preserves comments, unknown keys, and unrelated sections. Navigation never
+rewrites configuration.
+
 ## Keyboard basics
 
 | Key | Action |
@@ -336,6 +376,9 @@ remain eligible.
 | `m` | MusicBrainz retry/search/pick |
 | `b` | Open the bypass confirmation dialog |
 | digits | Highlight an exact candidate; `Enter` activates it |
+| `u` | Open the highlighted hidden `[URL]` through the system URL handler |
+| `p` | Open Source Policy Settings from Select Media |
+| `Ctrl+S` | Explicitly save/apply the source-policy draft |
 | `q` | Close a completed view; disabled during unsafe active work |
 | `Ctrl+C` | Stop the TUI and restore the terminal |
 

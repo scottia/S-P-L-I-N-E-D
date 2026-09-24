@@ -262,6 +262,12 @@ Legacy `[splineai]` remains a compatibility concern for existing Python Config
 v5 installations; `[aisplined]` is the canonical public name. Conflicting
 canonical/legacy values must not be merged silently.
 
+The Python Ratatui Source Policy Settings view persists only the existing
+`[sources]`, `[source_policies]`, `[range]`, and relevant `[output]` fields after
+an explicit Save/Apply action. The writer is atomic and preserves unknown keys,
+comments, table order, and all unrelated Config v5 content. It never changes
+`config_version = 5`.
+
 See [Python Ratatui TUI](ratatui-tui.md) and the AISPLINE development policy on
 the AI development branch.
 

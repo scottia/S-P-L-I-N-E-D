@@ -117,7 +117,13 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertIn("logging", migrated)
         self.assertIn("history", migrated)
         self.assertEqual(
-            migrated["aisplined"], {"enabled": False, "endpoint": ""}
+            migrated["aisplined"],
+            {
+                "enabled": False,
+                "endpoint": "",
+                "minimum_short_side": 600,
+                "allow_below_minimum_override": False,
+            },
         )
 
     def test_aisplined_is_canonical_and_disabled(self) -> None:
@@ -126,7 +132,12 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertNotIn("splineai", config)
         self.assertEqual(
             splined.aisplined_settings(config),
-            {"enabled": False, "endpoint": ""},
+            {
+                "enabled": False,
+                "endpoint": "",
+                "minimum_short_side": 600,
+                "allow_below_minimum_override": False,
+            },
         )
 
     def test_legacy_splineai_alias_remains_compatible(self) -> None:
@@ -135,7 +146,12 @@ class ConfigV5ParityTests(unittest.TestCase):
         splined.validate_config_v5(config)
         self.assertEqual(
             splined.aisplined_settings(config),
-            {"enabled": False, "endpoint": ""},
+            {
+                "enabled": False,
+                "endpoint": "",
+                "minimum_short_side": 600,
+                "allow_below_minimum_override": False,
+            },
         )
 
     def test_matching_canonical_and_legacy_tables_are_not_merged(self) -> None:
@@ -154,6 +170,16 @@ class ConfigV5ParityTests(unittest.TestCase):
         config = load_example("docker/config.example.toml")
         config["aisplined"]["endpoint"] = 7
         with self.assertRaisesRegex(splined.SplinedError, "endpoint must be a string"):
+            splined.validate_config_v5(config)
+
+    def test_aisplined_floor_and_override_are_validated(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["aisplined"]["minimum_short_side"] = 0
+        with self.assertRaisesRegex(splined.SplinedError, "greater than zero"):
+            splined.validate_config_v5(config)
+        config["aisplined"]["minimum_short_side"] = 600
+        config["aisplined"]["allow_below_minimum_override"] = "yes"
+        with self.assertRaisesRegex(splined.SplinedError, "true or false"):
             splined.validate_config_v5(config)
 
     def test_musicbrainz_options_and_unknown_fields_survive_atomic_update(self) -> None:
