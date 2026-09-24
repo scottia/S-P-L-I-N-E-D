@@ -8,6 +8,11 @@ events. This small ABI3 PyO3 module adds the missing crossterm input surface:
 - mouse down/up/drag/move and scroll directions;
 - row, column, button, and modifier fields.
 
+The Python package exports the unified native record as `InputEvent` and the
+mouse-facing compatibility name `MouseEvent`. Mouse records have
+`kind == "mouse"` and use `code` values such as `down`, `up`, `drag`,
+`scroll_up`, and `scroll_down`.
+
 It contains no renderer and no SPLINED policy. Production Docker builds compile
 an ordinary wheel in a build stage and copy only the wheel into the Python
 runtime image, so the final image contains no Rust toolchain.
