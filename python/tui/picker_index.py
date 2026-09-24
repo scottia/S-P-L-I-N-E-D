@@ -29,7 +29,9 @@ def ignored_signature(patterns: Iterable[str]) -> str:
 
 
 def should_ignore(name: str, patterns: Iterable[str]) -> bool:
-    """Match only ``*`` and ``?`` as wildcards; square brackets stay literal."""
+    """Apply built-in POSIX-hidden exclusion plus configured wildcard rules."""
+    if name.startswith("."):
+        return True
     for pattern in patterns:
         value = str(pattern).strip()
         if not value:

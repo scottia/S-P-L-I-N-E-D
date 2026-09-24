@@ -1015,11 +1015,14 @@ def enhanced_history_candidates(
     return candidates
 
 
-def run_scan_dir(
+def _run_scan_dir_batch(
     config_file: Path,
     cfg: dict[str, Any],
     sources: list[str],
     scan_words: list[str] | None = None,
+    *,
+    picker_session: core.PickerSessionState | None = None,
+    initial_library_event: str = "library",
 ) -> int:
     scan = core.section(cfg, "scan")
     library = core.section(cfg, "library")
@@ -1110,6 +1113,8 @@ def run_scan_dir(
                 cache=cache,
                 library_root=library_root,
                 bypassed_paths=bypassed_paths,
+                picker_session=picker_session,
+                initial_event=initial_library_event,
             )
         )
         # The TUI can override bypass only through its explicit confirmation;
@@ -2038,8 +2043,44 @@ def run_scan_dir(
         api_queried=queried_list,
         api_skipped=skipped_list,
         mode=mode,
+        exit_code=0 if summary.failed == 0 else 1,
     )
     return 0 if summary.failed == 0 else 1
+
+
+def run_scan_dir(
+    config_file: Path,
+    cfg: dict[str, Any],
+    sources: list[str],
+    scan_words: list[str] | None = None,
+) -> int:
+    """Run one plain-CLI batch or a reusable interactive TUI session."""
+    if not core.tui_active():
+        return _run_scan_dir_batch(config_file, cfg, sources, scan_words)
+
+    picker_session = core.PickerSessionState()
+    library_event = "library"
+    session_exit_code = 0
+    while True:
+        try:
+            batch_exit_code = _run_scan_dir_batch(
+                config_file,
+                cfg,
+                sources,
+                scan_words,
+                picker_session=picker_session,
+                initial_library_event=library_event,
+            )
+        except core.TuiSessionExit:
+            return session_exit_code
+        session_exit_code = max(session_exit_code, batch_exit_code)
+        answer = core.read_input(
+            "",
+            kind="batch-summary",
+        ).strip().lower()
+        if answer == "exit":
+            return session_exit_code
+        library_event = "library_update"
 
 
 def validate_aisplined_placeholder(cfg: dict[str, Any]) -> None:

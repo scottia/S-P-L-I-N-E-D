@@ -82,6 +82,10 @@ class SplinedError(RuntimeError):
     pass
 
 
+class TuiSessionExit(RuntimeError):
+    """Internal control signal for an explicit Select Media session exit."""
+
+
 @dataclass
 class Track:
     path: Path
@@ -106,6 +110,18 @@ class AlbumDir:
     # Completion writes deliberately recompute it so execution authority never
     # relies on stale preselection metadata.
     inventory_fingerprint: str | None = None
+
+
+@dataclass
+class PickerSessionState:
+    """Transient picker state retained across batches in one TUI process."""
+
+    loaded_artists: set[str] = field(default_factory=set)
+    actual_albums: dict[str, AlbumDir] = field(default_factory=dict)
+    album_paths_by_artist: dict[str, set[str]] = field(default_factory=dict)
+    selected_paths: set[str] = field(default_factory=set)
+    initialized_paths: set[str] = field(default_factory=set)
+    select_new: bool = True
 
 
 @dataclass
@@ -1058,6 +1074,8 @@ def prepare_tui_library_selection(
     cache: Path,
     library_root: Path | None = None,
     bypassed_paths: set[str] | None = None,
+    picker_session: PickerSessionState | None = None,
+    initial_event: str = "library",
 ) -> tuple[list[AlbumDir], set[str], set[str], list[str], list[AlbumDir]]:
     """Run root-only/lazy Select Media and return exact authoritative Albums."""
     if not tui_active():
@@ -1077,13 +1095,14 @@ def prepare_tui_library_selection(
         history_albums = {}
     policy_fingerprint = scan_policy_fingerprint(cfg, sources)
     model_now = time.time()
-    actual_albums: dict[str, AlbumDir] = {}
-    actual_album_paths_by_artist: dict[str, set[str]] = {}
-    loaded_artists: set[str] = set()
-    selected_paths: set[str] = set()
-    initialized_paths: set[str] = set()
+    session = picker_session or PickerSessionState()
+    actual_albums = session.actual_albums
+    actual_album_paths_by_artist = session.album_paths_by_artist
+    loaded_artists = session.loaded_artists
+    selected_paths = session.selected_paths
+    initialized_paths = session.initialized_paths
     overrides: set[str] = set()
-    select_new = True
+    select_new = session.select_new
     timeout_paths: set[str] = set()
     original_configured = resolve_sources(cfg, None, None, [])
 
@@ -1101,6 +1120,12 @@ def prepare_tui_library_selection(
         state="start",
         source="picker-index",
         message="Opening disposable Select Media picker index",
+    )
+    emit_ui(
+        "inventory_state",
+        library_root=str(index_root),
+        picker_index=str(picker_path),
+        status="Opening disposable picker index",
     )
     index = PickerIndex.open(picker_path, index_root, ignored)
     try:
@@ -1126,6 +1151,11 @@ def prepare_tui_library_selection(
             ]
         scoped_artist_paths = {artist.path for artist in scoped_artists}
         artist_by_path = {artist.path: artist for artist in scoped_artists}
+        loaded_artists.intersection_update(scoped_artist_paths)
+        for artist_path in list(actual_album_paths_by_artist):
+            if artist_path not in scoped_artist_paths:
+                for stale in actual_album_paths_by_artist.pop(artist_path):
+                    actual_albums.pop(stale, None)
 
         def scoped_records() -> list[PickerAlbum]:
             records = [
@@ -1136,6 +1166,8 @@ def prepare_tui_library_selection(
                     item for item in records if path_is_within(Path(item.path), root)
                 ]
             return records
+
+        known_album_count = len(scoped_records())
 
         def cached_album(record: PickerAlbum) -> AlbumDir:
             return AlbumDir(
@@ -1149,7 +1181,7 @@ def prepare_tui_library_selection(
             *,
             persist_transaction: bool = True,
         ) -> None:
-            nonlocal all_artists, scoped_artists, artist_by_path
+            nonlocal all_artists, scoped_artists, artist_by_path, known_album_count
             if artist_path in loaded_artists:
                 return
             artist = artist_by_path.get(artist_path)
@@ -1163,6 +1195,18 @@ def prepare_tui_library_selection(
                 source="picker-index",
                 message=f"Indexing Artist folder · {artist.name}",
             )
+            emit_ui(
+                "inventory_state",
+                library_root=str(index_root),
+                picker_index=str(picker_path),
+                status="Indexing Artist folder",
+                root_artists=len(scoped_artists),
+                cached_artists=sum(item.indexed for item in scoped_artists),
+                indexed_artists=len(loaded_artists),
+                albums_known=known_album_count,
+                current_artist=artist.name,
+                recovered=index.recovered,
+            )
             albums, _ignored = inventory(
                 Path(artist.path),
                 ignored,
@@ -1171,6 +1215,7 @@ def prepare_tui_library_selection(
             )
             if root != index_root:
                 albums = [album for album in albums if path_is_within(album.path, root)]
+            previous_album_count = len(index.albums(artist.path))
             index.replace_artist_albums(
                 artist,
                 [
@@ -1184,6 +1229,7 @@ def prepare_tui_library_selection(
                 ],
                 commit=persist_transaction,
             )
+            known_album_count += len(albums) - previous_album_count
             for stale in actual_album_paths_by_artist.get(artist.path, set()):
                 actual_albums.pop(stale, None)
             discovered = {str(album.path): album for album in albums}
@@ -1319,9 +1365,22 @@ def prepare_tui_library_selection(
             )
 
         elapsed = time.perf_counter() - started
+        cached_records = scoped_records()
+        emit_ui(
+            "inventory_state",
+            library_root=str(index_root),
+            picker_index=str(picker_path),
+            status="Root Artist inventory complete",
+            root_artists=len(scoped_artists),
+            cached_artists=sum(item.indexed for item in scoped_artists),
+            indexed_artists=len(loaded_artists),
+            albums_known=len(cached_records),
+            current_artist="",
+            recovered=index.recovered,
+        )
         debug_log(
             "select_media.root_ready "
-            f"artists={len(scoped_artists)} cached_albums={len(scoped_records())} "
+            f"artists={len(scoped_artists)} cached_albums={len(cached_records)} "
             f"elapsed_seconds={elapsed:.6f}"
         )
         emit_ui(
@@ -1334,7 +1393,7 @@ def prepare_tui_library_selection(
                 f"{elapsed:.3f}s"
             ),
         )
-        event = "library"
+        event = initial_event
         while True:
             emit_library(event)
             event = "library_update"
@@ -1347,9 +1406,10 @@ def prepare_tui_library_selection(
                 raise SplinedError("The TUI returned an invalid library selection.")
 
             if "selected" in response:
-                selected_paths = {
+                selected_paths.clear()
+                selected_paths.update(
                     str(value) for value in response.get("selected", []) if str(value)
-                }
+                )
             if "bypass_overrides" in response:
                 overrides = {
                     str(value)
@@ -1358,8 +1418,11 @@ def prepare_tui_library_selection(
                 }
             if "select_new" in response:
                 select_new = bool(response.get("select_new"))
+                session.select_new = select_new
 
             action = str(response.get("action", ""))
+            if action == "exit":
+                raise TuiSessionExit()
             if action == "load-artist":
                 artist_path = str(response.get("artist_path", ""))
                 refresh_artist(artist_path)
@@ -1373,6 +1436,7 @@ def prepare_tui_library_selection(
                 actual_albums.clear()
                 actual_album_paths_by_artist.clear()
                 loaded_artists.clear()
+                known_album_count = 0
                 with index.connection:
                     index.clear_inventory(commit=False)
                     for number, artist in enumerate(scoped_artists, 1):
@@ -1387,6 +1451,14 @@ def prepare_tui_library_selection(
                                 f"Albums discovered: {len(actual_albums):,}"
                             ),
                         )
+                if bool(response.get("select_all", False)):
+                    select_new = True
+                    session.select_new = True
+                    selected_paths.update(
+                        str(row["path"])
+                        for row in model_payload()[1]
+                        if row["status"] == "unprocessed"
+                    )
                 emit_ui(
                     "activity",
                     category="inventory",
@@ -1479,7 +1551,7 @@ def prepare_tui_library_selection(
 
             rows = model_payload()[1]
             row_by_path = {str(row["path"]): row for row in rows}
-            selected_paths = {
+            valid_selected_paths = {
                 path
                 for path in selected_paths
                 if path in actual_albums
@@ -1492,7 +1564,7 @@ def prepare_tui_library_selection(
             }
             selected = [
                 actual_albums[path]
-                for path in sorted(selected_paths, key=str.casefold)
+                for path in sorted(valid_selected_paths, key=str.casefold)
             ]
             known = [
                 actual_albums[path]
@@ -1508,6 +1580,7 @@ def prepare_tui_library_selection(
                     f"· {scan_mode}"
                 ),
             )
+            selected_paths.difference_update(valid_selected_paths)
             return selected, overrides, timeout_paths, sources, known
     finally:
         index.close()
@@ -4078,11 +4151,14 @@ def run_config_edit(path: Path) -> int:
 
 
 
-def run_scan_dir(
+def _run_scan_dir_batch(
     config_file: Path,
     cfg: dict[str, Any],
     sources: list[str],
     scan_words: list[str] | None = None,
+    *,
+    picker_session: PickerSessionState | None = None,
+    initial_library_event: str = "library",
 ) -> int:
     scan = section(cfg, "scan")
     library = section(cfg, "library")
@@ -4139,6 +4215,8 @@ def run_scan_dir(
             timeout_hours,
             cache=cache,
             library_root=library_root,
+            picker_session=picker_session,
+            initial_event=initial_library_event,
         )
         postponed_albums = [
             (album, 0.0)
@@ -4898,8 +4976,41 @@ def run_scan_dir(
         api_queried=queried_list,
         api_skipped=skipped_list,
         mode=mode,
+        exit_code=0 if summary.failed == 0 else 1,
     )
     return 0 if summary.failed == 0 else 1
+
+
+def run_scan_dir(
+    config_file: Path,
+    cfg: dict[str, Any],
+    sources: list[str],
+    scan_words: list[str] | None = None,
+) -> int:
+    """Run one plain-CLI batch or a reusable interactive TUI session."""
+    if not tui_active():
+        return _run_scan_dir_batch(config_file, cfg, sources, scan_words)
+
+    picker_session = PickerSessionState()
+    library_event = "library"
+    session_exit_code = 0
+    while True:
+        try:
+            batch_exit_code = _run_scan_dir_batch(
+                config_file,
+                cfg,
+                sources,
+                scan_words,
+                picker_session=picker_session,
+                initial_library_event=library_event,
+            )
+        except TuiSessionExit:
+            return session_exit_code
+        session_exit_code = max(session_exit_code, batch_exit_code)
+        answer = read_input("", kind="batch-summary").strip().lower()
+        if answer == "exit":
+            return session_exit_code
+        library_event = "library_update"
 
 
 def run_release_discovery(config_file: Path, cfg: dict[str, Any], sources: list[str], release_mbid: str) -> int:

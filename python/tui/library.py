@@ -234,6 +234,29 @@ class LibraryModel:
             and (not active_artist_only or not self.active_artist or item.artist == self.active_artist)
         ]
 
+    def active_albums(self) -> list[AlbumItem]:
+        """Return the known Album topology for the active Artist only."""
+        if not self.active_artist:
+            return []
+        return [item for item in self.albums if item.artist == self.active_artist]
+
+    def active_status_counts(self) -> dict[AlbumStatus, int]:
+        items = self.active_albums()
+        return {
+            status: sum(item.status is status for item in items)
+            for status in AlbumStatus
+        }
+
+    def indexed_artist_status_counts(self) -> dict[ArtistStatus, int]:
+        groups = self._artist_groups()
+        counts = {status: 0 for status in ArtistStatus}
+        for item in self.artists:
+            children = groups.get(item.name, [])
+            if not item.indexed or not children:
+                continue
+            counts[artist_status(children)] += 1
+        return counts
+
     def _artist_groups(self) -> dict[str, list[AlbumItem]]:
         groups: dict[str, list[AlbumItem]] = {}
         for item in self.albums:
@@ -293,7 +316,11 @@ class LibraryModel:
     def select_all(self, *, filtered: bool = False) -> None:
         if not filtered:
             self.select_new = True
-        scope = self.visible_albums() if filtered else self.albums
+        scope = (
+            self.visible_albums(active_artist_only=True)
+            if filtered
+            else self.albums
+        )
         paths = {item.path for item in scope}
         for item in self.albums:
             if item.path in paths and item.auto_eligible:
@@ -370,6 +397,8 @@ class LibraryModel:
         for item in self.albums:
             for value in item.formats:
                 formats[value] = formats.get(value, 0) + 1
+        active = self.active_albums()
+        active_visible = self.visible_albums(active_artist_only=True)
         return {
             "path": self.root,
             "artists": len(self.artists),
@@ -377,7 +406,8 @@ class LibraryModel:
             "loaded_artists": sum(item.loaded for item in self.artists),
             "albums": len(self.albums),
             "visible_artists": len(self.visible_artists()),
-            "visible_albums": len(self.visible_albums()),
+            "active_albums": len(active),
+            "active_visible_albums": len(active_visible),
             "selected": sum(item.selected for item in self.albums),
             "formats": formats,
         }

@@ -43,7 +43,7 @@ except ImportError:  # plain CLI and automatic fallback remain independently usa
     InputEventReader = None  # type: ignore[assignment,misc]
     emergency_terminal_restore = None  # type: ignore[assignment]
 
-from .animation import STARTUP_SECONDS, fit_phrase, startup_frame
+from .animation import animation_step, fit_phrase, startup_frame
 from .aispline import (
     AISPLINE_TITLE,
     SPLINED_TITLE,
@@ -185,6 +185,15 @@ class TuiState:
     album_total: int = 0
     album_path: str = "Preparing scan inventory"
     phase: str = "inventory"
+    inventory_root: str = ""
+    inventory_index: str = ""
+    inventory_status: str = "Starting Select Media inventory"
+    root_artists: int = 0
+    cached_artists: int = 0
+    indexed_artists: int = 0
+    albums_known: int = 0
+    inventory_artist: str = ""
+    inventory_recovered: bool = False
     artist: str = ""
     album: str = ""
     authority: str = ""
@@ -237,11 +246,24 @@ class TuiState:
     dialog_open: bool = False
     finished: bool = False
     exit_requested: bool = False
+    exit_after_worker: bool = False
     exit_code: int = 0
     exception: BaseException | None = None
 
     def apply(self, event: str, payload: dict[str, Any]) -> None:
-        if event in {"library", "library_update"}:
+        if event == "inventory_state":
+            self.inventory_root = str(payload.get("library_root", self.inventory_root))
+            self.inventory_index = str(payload.get("picker_index", self.inventory_index))
+            self.inventory_status = str(payload.get("status", self.inventory_status))
+            self.root_artists = int(payload.get("root_artists", self.root_artists) or 0)
+            self.cached_artists = int(payload.get("cached_artists", self.cached_artists) or 0)
+            self.indexed_artists = int(payload.get("indexed_artists", self.indexed_artists) or 0)
+            self.albums_known = int(payload.get("albums_known", self.albums_known) or 0)
+            self.inventory_artist = str(payload.get("current_artist", self.inventory_artist))
+            self.inventory_recovered = bool(
+                payload.get("recovered", self.inventory_recovered)
+            )
+        elif event in {"library", "library_update"}:
             self.workflow = "library"
             self.workspace = "library"
             if event == "library" or self.library is None:
@@ -331,13 +353,16 @@ class TuiState:
             ]
         elif event == "input":
             context = dict(payload.get("context") or {})
-            if str(context.get("kind", "picker")) == "library-selection":
+            input_kind = str(context.get("kind", "picker"))
+            if input_kind == "library-selection":
                 self.workflow = "library"
+            elif input_kind == "batch-summary":
+                self.workflow = "summary"
             else:
                 self.workflow = "picker"
             self.input_request = InputRequest(
                 str(payload.get("prompt", "")),
-                str(context.get("kind", "picker")),
+                input_kind,
                 context,
             )
             if self.input_request.kind == "musicbrainz":
@@ -361,6 +386,7 @@ class TuiState:
             self.history = self.history[-200:]
         elif event == "summary":
             self.summary = dict(payload)
+            self.exit_code = int(payload.get("exit_code", 0) or 0)
             self.workflow = "summary"
         elif event == "log":
             level = str(payload.get("level", "INFO")).upper()
@@ -389,6 +415,8 @@ class TuiState:
             self.exit_code = int(payload.get("exit_code", 0))
             self.exception = payload.get("exception")
             self.input_request = None
+            if self.exit_after_worker:
+                self.exit_requested = True
             if not self.summary:
                 self.summary = {"exit_code": self.exit_code}
                 self.workflow = "summary"
@@ -534,39 +562,187 @@ def _checkbox_rect(area: Rect, row: int) -> Rect:
     return Rect(int(area.x) + 2, int(area.y) + 1 + row, 3, 1)
 
 
+_BRAND_GLYPHS = {
+    "A": (" AAA ", "A   A", "AAAAA", "A   A", "A   A"),
+    "D": ("DDDD ", "D   D", "D   D", "D   D", "DDDD "),
+    "E": ("EEEEE", "E    ", "EEEE ", "E    ", "EEEEE"),
+    "I": ("IIIII", "  I  ", "  I  ", "  I  ", "IIIII"),
+    "L": ("L    ", "L    ", "L    ", "L    ", "LLLLL"),
+    "N": ("N   N", "NN  N", "N N N", "N  NN", "N   N"),
+    "P": ("PPPP ", "P   P", "PPPP ", "P    ", "P    "),
+    "S": (" SSSS", "S    ", " SSS ", "    S", "SSSS "),
+    ":": (" ", ":", " ", ":", " "),
+}
+
+
+def startup_brand_height(width: int, height: int) -> int:
+    point = layout_spec(width, height).breakpoint
+    if point is Breakpoint.WIDE:
+        return 10
+    if point is Breakpoint.NORMAL:
+        return 9
+    if point is Breakpoint.COMPACT:
+        return 4
+    return 1
+
+
+def context_header_height(width: int, height: int) -> int:
+    point = layout_spec(width, height).breakpoint
+    if point is Breakpoint.WIDE:
+        return 8
+    if point is Breakpoint.NORMAL:
+        return 4
+    return 1
+
+
+def _large_spectral_brand(theme: Theme, title: str) -> list[Line]:
+    rows: list[list[Span]] = [[] for _ in range(5)]
+    color_index = 0
+    for character in title:
+        glyph = _BRAND_GLYPHS.get(character, (character,) * 5)
+        if character == ":":
+            semantic_style = style(theme, Semantic.MUTED)
+        else:
+            rgb = theme.title_spectrum[color_index % len(theme.title_spectrum)]
+            semantic_style = (
+                Style()
+                .fg(Color.rgb(*rgb))
+                .bg(Color.rgb(*theme.color("background")))
+            )
+            color_index += 1
+        for row, value in enumerate(glyph):
+            rows[row].append(Span(value + " ", semantic_style))
+    return [Line(spans).centered() for spans in rows]
+
+
 def _render_startup(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
     frame.render_widget(_background(theme), area)
     brand = startup_frame(time.monotonic() - state.started_at)
-    rows = _split_vertical(
-        area,
-        [Constraint.fill(1), Constraint.length(1), Constraint.length(1), Constraint.fill(1)],
-    )
-    frame.render_widget(title_paragraph(theme, centered=True), rows[1])
     phrase = fit_phrase(brand.phrase, max(0, area.width - 4))
-    line = Line(
-        [Span((" " * brand.offset) + phrase, style(theme, Semantic.MUTED))]
-    ).centered()
-    frame.render_widget(Paragraph(Text([line])).alignment("center"), rows[2])
-
-
-def _render_header(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    brand_height = min(int(area.height), startup_brand_height(area.width, area.height))
+    brand_area, inventory_area = _split_vertical(
+        area,
+        [Constraint.length(brand_height), Constraint.fill(1)],
+    )
     point = layout_spec(area.width, area.height).breakpoint
+    if point in {Breakpoint.WIDE, Breakpoint.NORMAL}:
+        brand_lines = _large_spectral_brand(theme, SPLINED_TITLE)
+        brand_lines.extend(
+            [
+                spectral_title(theme, centered=True),
+                Line(
+                    [
+                        Span(
+                            (" " * brand.offset) + phrase,
+                            style(theme, Semantic.SPECIAL),
+                        )
+                    ]
+                ).centered(),
+            ]
+        )
+        brand_widget = Paragraph(Text(brand_lines)).block(
+            card(theme, "S:P:L:I:N:E:D", Semantic.SPECIAL)
+        )
+    else:
+        brand_widget = Paragraph(
+            Text(
+                [
+                    spectral_title(theme, centered=True),
+                    Line([Span(phrase, style(theme, Semantic.SPECIAL))]).centered(),
+                ]
+            )
+        ).block(card(theme, "STARTING", Semantic.SPECIAL))
+    frame.render_widget(brand_widget, brand_area)
+
+    inventory_lines = [
+        (f"Library root       {state.inventory_root or state.album_path}", Semantic.TEXT),
+        (f"Picker index       {state.inventory_index or 'opening'}", Semantic.DEBUG),
+        (f"Status             {state.inventory_status}", Semantic.ACTIVE),
+        (f"Root Artists       {state.root_artists:,} discovered", Semantic.SPECIAL),
+        (f"Cached Artists     {state.cached_artists:,}", Semantic.HISTORY),
+        (f"Indexed Artists    {state.indexed_artists:,}", Semantic.ACCEPTED),
+        (f"Albums known       {state.albums_known:,}", Semantic.FALLBACK),
+    ]
+    if state.inventory_artist:
+        inventory_lines.append(
+            (f"Current Artist     {state.inventory_artist}", Semantic.ACTIVE)
+        )
+    if state.inventory_recovered:
+        inventory_lines.append(
+            ("Picker cache       recovered and rebuilt", Semantic.WARNING)
+        )
+    for item in state.activity[-3:]:
+        inventory_lines.append((f"Activity           {item.message}", Semantic.MUTED))
+    frame.render_widget(
+        Paragraph(
+            Text(
+                [
+                    Line([Span(_truncate(value, max(1, area.width - 4)), style(theme, semantic))])
+                    for value, semantic in inventory_lines
+                ]
+            )
+        ).block(card(theme, "LIBRARY INVENTORY / PICKER INDEX", Semantic.ACTIVE)),
+        inventory_area,
+    )
+
+
+def _header_context(state: TuiState, ai_context: bool) -> str:
+    if ai_context:
+        return "AI ACTIVITY"
+    return {
+        "library": "SELECT MEDIA",
+        "overview": "SCAN ACTIVITY",
+        "processing": "CURRENT ALBUM / ACTIVITY",
+        "candidates": "CANDIDATE DECISION",
+        "picker": "CANDIDATE DECISION",
+        "summary": "LAST RUN SUMMARY",
+    }.get(state.workflow, state.phase.upper())
+
+
+def ai_context_active(state: TuiState) -> bool:
+    return bool(
+        state.ai_activity.active
+        or (state.ai_selection and state.ai_selection.selected_key)
+    )
+
+
+def _render_header(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+    point: Breakpoint,
+) -> None:
+    ai_context = ai_context_active(state)
     title = (
         AISPLINE_TITLE
-        if state.ai_activity.active
-        or bool(state.ai_selection and state.ai_selection.selected_key)
+        if ai_context
         else SPLINED_TITLE
     )
-    if point is Breakpoint.WIDE:
-        left, right = _split_horizontal(
-            area, [Constraint.length(len(title) + 1), Constraint.fill(1)]
-        )
-        frame.render_widget(title_paragraph(theme, title=title), left)
-        status = f"{state.album_index} / {state.album_total}" if state.album_total else "READY"
+    status = f"{state.album_index} / {state.album_total}" if state.album_total else "READY"
+    if point in {Breakpoint.WIDE, Breakpoint.NORMAL}:
+        context = _header_context(state, ai_context)
+        if point is Breakpoint.WIDE:
+            lines = _large_spectral_brand(theme, title)
+            lines.append(
+                Line(
+                    [
+                        Span(context, style(theme, Semantic.SPECIAL if ai_context else Semantic.ACTIVE, bold=True)),
+                        Span(f"  ·  {status}", style(theme, Semantic.MUTED)),
+                    ]
+                ).centered()
+            )
+        else:
+            lines = [spectral_title(theme, centered=True, title=title)]
+            lines.append(
+                Line([Span(f"{context}  ·  {status}", style(theme, Semantic.ACTIVE))]).centered()
+            )
         frame.render_widget(
-            Paragraph.from_string(status).right_aligned().style(style(theme, Semantic.ACTIVE)),
-            right,
+            Paragraph(Text(lines)).block(
+                card(theme, context, Semantic.SPECIAL if ai_context else Semantic.ACTIVE)
+            ),
+            area,
         )
     else:
         frame.render_widget(title_paragraph(theme, title=title), area)
@@ -650,28 +826,22 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
             else status in model.artist_status_filters
         )
 
-    album_counts = {
-        status: sum(item.status is status for item in model.albums)
-        for status in AlbumStatus
-    }
-    grouped: dict[str, list[Any]] = {}
-    for item in model.albums:
-        grouped.setdefault(item.artist, []).append(item)
-    artist_counts = {
-        status: sum(artist_status(items) is status for items in grouped.values())
-        for status in ArtistStatus
-    }
+    album_counts = model.active_status_counts()
+    artist_counts = model.indexed_artist_status_counts()
 
     def status_suffix(index: int) -> str:
         status = STATUS_CONTROLS[index][1]
         count = album_counts[status] if isinstance(status, AlbumStatus) else artist_counts[status]
         return f"  [{count:,}]"
 
-    selection_counts = (
-        len(model.albums),
-        0,
-        len(model.visible_albums()),
-    )
+    selected_count = sum(item.selected for item in model.albums)
+
+    def selection_suffix(index: int) -> str:
+        if index == 0:
+            return "  [FULL INDEX]"
+        if index == 1:
+            return f"  [{selected_count:,}]" if selected_count else ""
+        return f"  [{len(model.visible_albums(active_artist_only=True)):,}]"
 
     frame.render_widget(
         Paragraph(_control_lines(tuple(x[0] for x in STATUS_CONTROLS), state.status_index, status_active, theme, status_suffix))
@@ -679,7 +849,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels[0],
     )
     frame.render_widget(
-        Paragraph(_control_lines(SELECT_CONTROLS, state.select_index, lambda _i: False, theme, lambda index: f"  [{selection_counts[index]:,}]"))
+        Paragraph(_control_lines(SELECT_CONTROLS, state.select_index, lambda _i: False, theme, selection_suffix))
         .block(card(theme, "ALBUM SELECT MODE", Semantic.SPECIAL)),
         panels[1],
     )
@@ -817,9 +987,11 @@ def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme)
     text = (
         f"Path  {_truncate(str(stats['path']), max(8, area.width - 9))}\n"
         f"Artists  {stats['artists']} total · {stats['visible_artists']} visible\n"
-        f"Indexed  {stats['indexed_artists']} · validated now {stats['loaded_artists']}\n"
-        f"Albums   {stats['albums']} indexed · {stats['visible_albums']} visible\n"
-        f"Selected {stats['selected']}\n"
+        f"Indexed  {stats['indexed_artists']} / {stats['artists']}\n"
+        f"Validated  {stats['loaded_artists']} this session\n"
+        f"Albums   {stats['albums']} known/indexed\n"
+        f"Active   {stats['active_albums']} total · {stats['active_visible_albums']} visible\n"
+        f"Selected {stats['selected']} known Albums\n"
         f"Artwork  {formats}\n"
         "[P] Source Policy · [R] Refresh Library Index"
     )
@@ -1746,13 +1918,13 @@ def _render_summary(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
         f"Unresolved {values.get('unresolved', '—')}     Failed     {values.get('failed', '—')}",
         f"Installed  {values.get('installed', '—')}     Unchanged  {values.get('unchanged', '—')}",
         "",
-        f"Exit code: {state.exit_code}   Press Enter or q to close",
+        f"Batch exit code: {state.exit_code}   Enter / Esc returns to Select Media · q exits",
     ]
     semantic = Semantic.ACCEPTED if state.exit_code == 0 else Semantic.REJECTED
     frame.render_widget(
         Paragraph.from_string("\n".join(summary_lines))
         .centered()
-        .block(card(theme, "FINAL SCAN SUMMARY", semantic)),
+        .block(card(theme, "LAST RUN SUMMARY", semantic)),
         rows[1],
     )
 
@@ -1762,6 +1934,8 @@ def _footer_text(state: TuiState) -> str:
         return state.transient
     if state.input_request:
         kind = state.input_request.kind
+        if kind == "batch-summary":
+            return "Enter / Esc return to Select Media · q exit SPLINED · Tab history/logs · Ctrl+C stop"
         if kind == "library-selection":
             if state.workspace == "policy":
                 return "↑/↓ settings · PgUp/PgDn scroll · Mouse/touch enabled · Ctrl+S Save/Apply · Esc library · ? help"
@@ -1918,16 +2092,29 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
             area,
         )
         return
-    if time.monotonic() - state.started_at < STARTUP_SECONDS:
+    if state.workflow == "startup":
         _render_startup(frame, state, theme)
         return
-    if state.workflow == "startup":
-        state.workflow = "overview"
 
-    rows = _split_vertical(
-        area, [Constraint.length(1), Constraint.fill(1), Constraint.length(1)]
+    library_header = state.workflow == "library"
+    header_height = (
+        1 if library_header else context_header_height(area.width, area.height)
     )
-    _render_header(frame, rows[0], state, theme)
+    rows = _split_vertical(
+        area,
+        [
+            Constraint.length(header_height),
+            Constraint.fill(1),
+            Constraint.length(1),
+        ],
+    )
+    _render_header(
+        frame,
+        rows[0],
+        state,
+        theme,
+        Breakpoint.COMPACT if library_header else spec.breakpoint,
+    )
     content = rows[1]
     if state.tab == "history":
         _render_history(frame, content, state, theme)
@@ -1973,8 +2160,6 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
         return
     modes = ("filtered-read", "filtered-write", "auto-all", "auto-selected")
     mode = modes[state.scan_index]
-    if mode == "auto-all":
-        state.library.select_all()
     payload = state.library.selection_payload(mode)
     _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
 
@@ -2032,6 +2217,11 @@ def _handle_library_key(
     if model is None or request is None or request.kind != "library-selection":
         return False
     code = str(event.code)
+    if action is Action.QUIT:
+        _respond_library_action(state, adapter, "exit")
+        state.exit_after_worker = True
+        state.transient = "Closing SPLINED after the engine session stops safely…"
+        return True
     if state.workspace == "policy":
         draft = state.policy
         if draft is None:
@@ -2254,7 +2444,13 @@ def _handle_library_key(
                 model.toggle_artist_status(status)
         elif state.library_focus == 1:
             if state.select_index == 0:
-                model.select_all()
+                state.transient = "Indexing the complete library before Select [ALL]…"
+                _respond_library_action(
+                    state,
+                    adapter,
+                    "refresh-index",
+                    select_all=True,
+                )
             elif state.select_index == 1:
                 model.select_none()
             else:
@@ -2506,7 +2702,13 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.library_focus = 1
         state.select_index = region.index
         if region.index == 0:
-            model.select_all()
+            state.transient = "Indexing the complete library before Select [ALL]…"
+            _respond_library_action(
+                state,
+                adapter,
+                "refresh-index",
+                select_all=True,
+            )
         elif region.index == 1:
             model.select_none()
         else:
@@ -2631,6 +2833,18 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if request is None:
         if action is Action.QUIT:
             state.transient = "Scan is active; use Ctrl+C to stop safely."
+        return
+
+    if request.kind == "batch-summary":
+        if action in {Action.ACTIVATE, Action.BACK}:
+            adapter.respond("continue")
+            state.input_request = None
+            state.transient = "Refreshing Select Media status from retained history…"
+        elif action is Action.QUIT:
+            adapter.respond("exit")
+            state.input_request = None
+            state.exit_after_worker = True
+            state.transient = "Closing SPLINED after the engine session stops safely…"
         return
 
     if request.kind in {"artist", "album", "text"}:
@@ -2773,18 +2987,22 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
             with terminal, input_reader:
                 thread.start()
                 dirty = True
-                startup_active = True
+                last_animation_step = -1
                 mouse_suspended = False
                 while not state.exit_requested and not terminated:
                     dirty = _drain(adapter, state) or dirty
                     mouse_suspended = sync_url_mouse_capture(
                         state, input_reader, mouse_suspended
                     )
-                    now_startup = time.monotonic() - state.started_at < STARTUP_SECONDS
-                    if startup_active and not now_startup:
+                    current_animation_step = (
+                        animation_step(time.monotonic() - state.started_at)
+                        if state.workflow == "startup"
+                        else -1
+                    )
+                    if current_animation_step != last_animation_step:
                         dirty = True
-                    startup_active = now_startup
-                    if dirty or startup_active:
+                    last_animation_step = current_animation_step
+                    if dirty:
                         terminal.draw(lambda frame: render(frame, state, theme))
                         writer = getattr(sys, "__stdout__", None)
                         if writer is not None:

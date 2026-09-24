@@ -1,4 +1,4 @@
-"""Brief launch-only SPLINED brand animation."""
+"""Readiness-driven SPLINED brand animation."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ from dataclasses import dataclass
 TITLE = "S:P:L:I:N:E:D"
 EXPANSION = "SEARCHABLE:PIXEL:LINKS:IDENTIFIED:NORMALIZED:ENRICHED:DEFINED"
 STYLIZED_EXPANSION = "SƎARCHABLƎ:PІXƎL:LІNKS:ІDƎNTІFІƎD:NORMALІZƎD:ƎNRІCHƎD:DƎFІNƎD"
-STARTUP_SECONDS = 1.25
+BRAND_ANIMATION_FPS = 6
+BRAND_ANIMATION_PERIOD = 4.0
 
 
 def cell_width(text: str) -> int:
@@ -44,11 +45,21 @@ class BrandFrame:
 
 
 def startup_frame(elapsed: float) -> BrandFrame:
-    progress = min(1.0, max(0.0, elapsed / STARTUP_SECONDS))
-    # A one-cell oscillation suggests a fold without moving readable text for
-    # more than the short launch signature.
-    offset = 1 if 0.32 <= progress < 0.68 else 0
-    return BrandFrame(TITLE, _folded(progress), offset, progress >= 1.0)
+    """Return a restrained looping frame until application readiness.
+
+    The animation has a period, but deliberately has no completion time.  Its
+    lifecycle is owned by the TUI's readiness state rather than wall-clock
+    time.
+    """
+    phase = (max(0.0, elapsed) % BRAND_ANIMATION_PERIOD) / BRAND_ANIMATION_PERIOD
+    progress = phase * 2.0 if phase <= 0.5 else (1.0 - phase) * 2.0
+    offset = 1 if 0.22 <= phase < 0.32 or 0.72 <= phase < 0.82 else 0
+    return BrandFrame(TITLE, _folded(progress), offset, False)
+
+
+def animation_step(elapsed: float) -> int:
+    """Return the low-rate redraw step for a still-loading startup screen."""
+    return max(0, int(elapsed * BRAND_ANIMATION_FPS))
 
 
 def fit_phrase(text: str, width: int) -> str:
