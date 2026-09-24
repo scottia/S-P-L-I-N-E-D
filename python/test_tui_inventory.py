@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 import splined
-from tui.library import AlbumStatus, LibraryModel
+from tui.library import LibraryModel
+from tui.picker_index import PICKER_DB_NAME, PickerAlbum, PickerIndex
 
 
 def _config(root: Path) -> dict[str, object]:
@@ -35,10 +36,7 @@ def _config(root: Path) -> dict[str, object]:
         },
         "range": {"min": 1200, "ideal": 1800, "max": 2400, "ladder": 3600},
         "samples": {"sample_write": False},
-        "sources": {
-            "cover_sources": ["itunes"],
-            "exclude_cover_sources": [],
-        },
+        "sources": {"cover_sources": ["itunes"], "exclude_cover_sources": []},
         "source_policies": {},
         "aisplined": {
             "enabled": False,
@@ -52,14 +50,16 @@ def _config(root: Path) -> dict[str, object]:
 def _album(root: Path, artist: str, title: str, suffix: str = ".flac") -> Path:
     directory = root / artist / title
     directory.mkdir(parents=True)
-    (directory / f"track01{suffix}").write_bytes(b"not parsed during inventory")
+    (directory / f"track01{suffix}").write_bytes(b"not parsed by Select Media")
     return directory
 
 
-class LightweightInventoryTests(unittest.TestCase):
+class LazyPickerInventoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name) / "music"
+        self.base = Path(self.temp.name)
+        self.root = self.base / "music"
+        self.cache = self.base / "cache"
         self.root.mkdir()
         self.love = _album(self.root, "10,000 Maniacs", "Love Among the Ruins")
         self.eden = _album(self.root, "10,000 Maniacs", "Our Time in Eden")
@@ -75,103 +75,204 @@ class LightweightInventoryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_recursive_inventory_matches_windows_folder_model_and_cover_detection(self) -> None:
-        albums, ignored = splined.inventory(
-            self.root,
-            list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
-            "cover",
-        )
-        self.assertEqual(
-            [album.path for album in albums],
-            [self.love, self.eden, self.toys],
-        )
-        self.assertEqual(albums[0].local_art_files, [self.love / "cover.jpg"])
-        self.assertEqual(
-            {path.name for path in ignored},
-            {"[Artist Singles]", "[videos]", "@eaDir", ".stfolder-cache"},
-        )
-
-    def test_ignored_exact_and_wildcard_directories_are_never_traversed(self) -> None:
-        visited: list[Path] = []
-        original = splined.os.scandir
-
-        def recording(path: Path | str):
-            visited.append(Path(path))
-            return original(path)
-
-        with mock.patch.object(splined.os, "scandir", recording):
-            albums, _ = splined.inventory(
-                self.root,
-                list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
-            )
-        ignored_roots = {
-            self.root / "[Artist Singles]",
-            self.root / "[videos]",
-            self.root / "@eaDir",
-            self.root / ".stfolder-cache",
-        }
-        self.assertTrue(ignored_roots.isdisjoint(visited))
-        self.assertTrue(
-            all(not any(root in album.path.parents for root in ignored_roots) for album in albums)
-        )
-
-    def test_symlink_directory_is_not_followed(self) -> None:
-        outside = Path(self.temp.name) / "outside"
-        _album(outside, "Linked Artist", "Linked Album")
-        link = self.root / "linked"
-        try:
-            os.symlink(outside, link, target_is_directory=True)
-        except (OSError, NotImplementedError):
-            self.skipTest("directory symlinks are unavailable in this runner")
-        albums, _ = splined.inventory(self.root, [])
-        self.assertNotIn("Linked Album", {album.path.name for album in albums})
-
-    def _selection_payload(
+    def _run(
         self,
-        albums: list[splined.AlbumDir],
-        history: dict[str, object],
+        responses: list[dict[str, object]],
         *,
+        history: dict[str, object] | None = None,
         bypassed: set[str] | None = None,
-    ) -> dict[str, object]:
+    ):
         emitted: list[tuple[str, dict[str, object]]] = []
-        response = json.dumps(
-            {"action": "launch", "scan_mode": "auto-selected", "selected": []}
-        )
+        encoded = iter(json.dumps(item) for item in responses)
         with (
             mock.patch.object(splined, "tui_active", return_value=True),
             mock.patch.object(
-                splined, "emit_ui", side_effect=lambda event, **payload: emitted.append((event, payload))
+                splined,
+                "emit_ui",
+                side_effect=lambda event, **payload: emitted.append((event, payload)),
             ),
-            mock.patch.object(splined, "read_input", return_value=response),
-            mock.patch.object(splined, "enrich_representative_tracks", return_value=None),
-            mock.patch.object(splined, "lookup_release", side_effect=AssertionError("MusicBrainz")),
-            mock.patch.object(splined, "discover_all", side_effect=AssertionError("providers")),
-            mock.patch.object(splined, "download_candidates", side_effect=AssertionError("downloads")),
-            mock.patch.object(splined, "select_best", side_effect=AssertionError("ranking")),
-            mock.patch.object(splined.Image, "open", side_effect=AssertionError("image decode")),
+            mock.patch.object(splined, "read_input", side_effect=lambda *_a, **_k: next(encoded)),
         ):
-            selected, track_cache, _, _, _ = splined.prepare_tui_library_selection(
+            result = splined.prepare_tui_library_selection(
                 self.root / "config.toml",
                 self.cfg,
                 ["itunes"],
                 self.root,
-                albums,
-                history,
+                history or {"version": 1, "albums": {}},
                 24,
+                cache=self.cache,
+                library_root=self.root,
                 bypassed_paths=bypassed,
             )
-        self.assertEqual(selected, [])
-        self.assertEqual(track_cache, {})
-        return next(payload for event, payload in emitted if event == "library")
+        return result, emitted
 
-    def test_prelaunch_uses_only_filesystem_and_history_authority(self) -> None:
-        albums, _ = splined.inventory(self.root, list(self.cfg["library"]["ignored_subs"]))  # type: ignore[index]
-        love = next(album for album in albums if album.path == self.love)
+    def test_initial_startup_reads_root_only_and_exposes_uncached_artists(self) -> None:
+        visited: list[Path] = []
+        original_scandir = os.scandir
+
+        def recording(path: Path | str):
+            visited.append(Path(path))
+            return original_scandir(path)
+
+        with (
+            mock.patch("tui.picker_index.os.scandir", side_effect=recording),
+            mock.patch.object(splined, "inventory", side_effect=AssertionError("descended")),
+        ):
+            (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
+                [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
+            )
+        self.assertEqual(visited, [self.root])
+        self.assertEqual(selected, [])
+        self.assertEqual(known, [])
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertEqual(
+            [row["name"] for row in payload["artists"]],
+            ["10,000 Maniacs", "Aerosmith"],
+        )
+        self.assertEqual(payload["albums"], [])
+        self.assertTrue(all(not row["indexed"] for row in payload["artists"]))
+
+    def test_ignored_roots_are_absent_from_index_and_never_traversed(self) -> None:
+        ignored = {"[Artist Singles]", "[videos]", "@eaDir", ".stfolder-cache"}
+        (_result, emitted) = self._run(
+            [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
+        )
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertTrue(ignored.isdisjoint({row["name"] for row in payload["artists"]}))
+        with PickerIndex.open(
+            self.cache / PICKER_DB_NAME,
+            self.root,
+            self.cfg["library"]["ignored_subs"],  # type: ignore[index]
+        ) as index:
+            self.assertTrue(ignored.isdisjoint({row.name for row in index.artists()}))
+
+    def test_open_uncached_artist_scans_only_once_and_returns_exact_selection(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        calls: list[Path] = []
+        original_inventory = splined.inventory
+
+        def inventory(path: Path, *args, **kwargs):
+            calls.append(path)
+            return original_inventory(path, *args, **kwargs)
+
+        responses = [
+            {"action": "load-artist", "artist_path": artist_path, "selected": [], "select_new": False},
+            {"action": "load-artist", "artist_path": artist_path, "selected": [str(self.eden)], "select_new": False},
+            {"action": "launch", "scan_mode": "filtered-read", "selected": [str(self.eden)], "select_new": False},
+        ]
+        with mock.patch.object(splined, "inventory", side_effect=inventory):
+            (selected, _overrides, _timeouts, _sources, known), _emitted = self._run(responses)
+        self.assertEqual(calls, [Path(artist_path)])
+        self.assertEqual([album.path for album in selected], [self.eden])
+        self.assertEqual({album.path for album in known}, {self.love, self.eden})
+
+    def test_multiple_artists_process_only_checked_album_paths(self) -> None:
+        maniacs = str(self.root / "10,000 Maniacs")
+        aerosmith = str(self.root / "Aerosmith")
+        responses = [
+            {"action": "load-artist", "artist_path": maniacs, "selected": [], "select_new": False},
+            {"action": "load-artist", "artist_path": aerosmith, "selected": [], "select_new": False},
+            {
+                "action": "launch",
+                "scan_mode": "auto-selected",
+                "selected": [str(self.eden), str(self.toys)],
+                "select_new": False,
+            },
+        ]
+        (selected, _overrides, _timeouts, _sources, _known), emitted = self._run(responses)
+        self.assertEqual([album.path for album in selected], [self.eden, self.toys])
+        self.assertNotIn(self.love, [album.path for album in selected])
+        scope = next(
+            payload
+            for event, payload in emitted
+            if event == "activity" and payload.get("category") == "selection"
+        )
+        self.assertIn("2 checked album(s)", str(scope["message"]))
+
+    def test_warm_restart_uses_persisted_topology_without_artist_scan(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        self._run(
+            [
+                {"action": "load-artist", "artist_path": artist_path, "selected": [], "select_new": False},
+                {"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False},
+            ]
+        )
+        with mock.patch.object(splined, "inventory", side_effect=AssertionError("rescanned")):
+            (_result, emitted) = self._run(
+                [{"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False}]
+            )
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertEqual(
+            {row["album"] for row in payload["albums"]},
+            {"Love Among the Ruins", "Our Time in Eden"},
+        )
+
+    def test_auto_all_explicitly_indexes_every_artist(self) -> None:
+        calls: list[Path] = []
+        original_inventory = splined.inventory
+
+        def inventory(path: Path, *args, **kwargs):
+            calls.append(path)
+            return original_inventory(path, *args, **kwargs)
+
+        with mock.patch.object(splined, "inventory", side_effect=inventory):
+            (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
+                [{"action": "launch", "scan_mode": "auto-all", "selected": []}]
+            )
+        self.assertEqual(set(calls), {self.root / "10,000 Maniacs", self.root / "Aerosmith"})
+        self.assertEqual({album.path for album in known}, {self.love, self.eden, self.toys})
+        self.assertEqual({album.path for album in selected}, {self.eden, self.toys})
+        progress = [
+            payload["message"]
+            for event, payload in emitted
+            if event == "activity" and payload.get("source") == "auto-all"
+        ]
+        self.assertTrue(any("Artists indexed:" in str(value) for value in progress))
+
+    def test_prelaunch_boundary_never_reads_tags_network_candidates_or_images(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        forbidden = AssertionError("processing crossed the Launch boundary")
+        with (
+            mock.patch.object(splined, "MutagenFile", side_effect=forbidden),
+            mock.patch.object(splined, "read_track", side_effect=forbidden),
+            mock.patch.object(splined, "lookup_release", side_effect=forbidden),
+            mock.patch.object(splined, "discover_all", side_effect=forbidden),
+            mock.patch.object(splined, "download_candidates", side_effect=forbidden),
+            mock.patch.object(splined, "select_best", side_effect=forbidden),
+            mock.patch.object(splined.Image, "open", side_effect=forbidden),
+        ):
+            self._run(
+                [
+                    {"action": "load-artist", "artist_path": artist_path, "selected": [], "select_new": False},
+                    {"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False},
+                ]
+            )
+
+    def test_folder_identity_and_order_are_stable_without_tag_enrichment(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        (_result, emitted) = self._run(
+            [
+                {"action": "load-artist", "artist_path": artist_path, "selected": [], "select_new": False},
+                {"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False},
+            ]
+        )
+        updates = [payload for event, payload in emitted if event in {"library", "library_update"}]
+        final = LibraryModel.from_payload(updates[-1])
+        self.assertEqual([row.name for row in final.visible_artists()], ["10,000 Maniacs", "Aerosmith"])
+        final.active_artist = "10,000 Maniacs"
+        self.assertEqual(
+            [row.title for row in final.visible_albums(active_artist_only=True)],
+            ["Love Among the Ruins", "Our Time in Eden"],
+        )
+        self.assertFalse(any(event == "library_enrichment" for event, _payload in emitted))
+
+    def test_history_bypass_timeout_reconciles_after_artist_validation(self) -> None:
+        albums, _ignored = splined.inventory(self.root, [])
         eden = next(album for album in albums if album.path == self.eden)
         history = {
             "version": 1,
             "albums": {
-                str(eden.path): {
+                str(self.eden): {
                     "completed_at_unix": time.time(),
                     "album_fingerprint": splined.album_scan_fingerprint(eden),
                     "policy_fingerprint": splined.scan_policy_fingerprint(self.cfg, ["itunes"]),
@@ -179,404 +280,239 @@ class LightweightInventoryTests(unittest.TestCase):
                 }
             },
         }
-        payload = self._selection_payload(
-            albums,
-            history,
-            bypassed={str(self.toys)},
+        artist_path = str(self.root / "10,000 Maniacs")
+        (_result, emitted) = self._run(
+            [
+                {"action": "load-artist", "artist_path": artist_path, "selected": [], "select_new": False},
+                {"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False},
+            ],
+            history=history,
+            bypassed={str(self.love)},
         )
-        rows = {row["path"]: row for row in payload["albums"]}  # type: ignore[index]
-        self.assertEqual(rows[str(love.path)]["status"], "processed")
-        self.assertEqual(rows[str(eden.path)]["status"], "timeout")
-        self.assertEqual(rows[str(self.toys)]["status"], "bypassed")
-        self.assertEqual(rows[str(love.path)]["artist"], "10,000 Maniacs")
-        self.assertEqual(rows[str(love.path)]["album"], "Love Among the Ruins")
-        self.assertEqual(rows[str(love.path)]["formats"], ["JPEG"])
-        self.assertNotIn("Ignored Album", {row["album"] for row in payload["albums"]})  # type: ignore[index]
+        update = [payload for event, payload in emitted if event == "library_update"][-1]
+        rows = {row["path"]: row for row in update["albums"]}
+        self.assertEqual(rows[str(self.love)]["status"], "bypassed")
+        self.assertEqual(rows[str(self.eden)]["status"], "timeout")
 
-        model = LibraryModel.from_payload(payload)
-        self.assertEqual(model.statistics()["artists"], 2)
-        self.assertEqual(model.statistics()["albums"], 3)
-        self.assertEqual(model.selection_payload("auto-selected")["selected"], [])
-        self.assertEqual(
-            {item.status for item in model.albums},
-            {AlbumStatus.PROCESSED, AlbumStatus.TIMEOUT, AlbumStatus.BYPASSED},
-        )
-
-    def test_representative_tags_start_only_after_library_model_is_visible(self) -> None:
-        albums, _ = splined.inventory(self.root, [])
-        emitted: list[tuple[str, dict[str, object]]] = []
-        started = threading.Event()
-        stopped = threading.Event()
-
-        def background(
-            values: list[splined.AlbumDir],
-            cancel: threading.Event,
-            on_result,
-            *,
-            workers: int = splined.TAG_ENRICHMENT_WORKERS,
-        ) -> None:
-            self.assertTrue(any(event == "library" for event, _ in emitted))
-            self.assertEqual(values, albums)
-            started.set()
-            cancel.wait(2)
-            stopped.set()
-
-        response = json.dumps(
-            {"action": "launch", "scan_mode": "auto-selected", "selected": []}
-        )
-        with (
-            mock.patch.object(splined, "tui_active", return_value=True),
-            mock.patch.object(
-                splined,
-                "emit_ui",
-                side_effect=lambda event, **payload: emitted.append((event, payload)),
-            ),
-            mock.patch.object(splined, "read_input", return_value=response),
-            mock.patch.object(splined, "enrich_representative_tracks", side_effect=background),
-        ):
-            selected, cached, _, _, _ = splined.prepare_tui_library_selection(
-                self.root / "config.toml",
-                self.cfg,
-                ["itunes"],
-                self.root,
-                albums,
-                {"version": 1, "albums": {}},
-                24,
-            )
-
-        self.assertEqual(selected, [])
-        self.assertEqual(cached, {})
-        self.assertTrue(started.wait(1))
-        self.assertTrue(stopped.wait(1))
-
-    def test_representative_tag_event_updates_model_and_returns_run_cache(self) -> None:
-        albums, _ = splined.inventory(self.root, [])
-        target = next(album for album in albums if album.path == self.eden)
-        representative = target.audio_files[0]
-        stat = representative.stat()
-        mbid = "1b022e01-4da6-387b-8658-8678046e4cef"
-        track = splined.Track(
-            representative,
-            "Representative Track",
-            "Track Artist",
-            "Tagged Album",
-            "Tagged Album Artist",
-            mbid,
-            None,
-            None,
-        )
-        indexed = splined.IndexedTrack(track, stat.st_size, stat.st_mtime_ns)
-        emitted: list[tuple[str, dict[str, object]]] = []
-        enriched = threading.Event()
-
-        def background(values, cancel, on_result, *, workers=4) -> None:
-            on_result(target, indexed, None)
-
-        def emit(event: str, **payload: object) -> None:
-            emitted.append((event, payload))
-            if event == "library_enrichment":
-                enriched.set()
-
-        def respond(*_args, **_kwargs) -> str:
-            self.assertTrue(enriched.wait(1))
-            return json.dumps(
-                {
-                    "action": "launch",
-                    "scan_mode": "auto-selected",
-                    "selected": [str(target.path)],
-                }
-            )
-
-        with (
-            mock.patch.object(splined, "tui_active", return_value=True),
-            mock.patch.object(splined, "emit_ui", side_effect=emit),
-            mock.patch.object(splined, "read_input", side_effect=respond),
-            mock.patch.object(splined, "enrich_representative_tracks", side_effect=background),
-        ):
-            selected, cached, _, _, _ = splined.prepare_tui_library_selection(
-                self.root / "config.toml",
-                self.cfg,
-                ["itunes"],
-                self.root,
-                albums,
-                {"version": 1, "albums": {}},
-                24,
-            )
-
-        self.assertEqual(selected, [target])
-        self.assertIs(cached[str(target.path)].track, track)
-        payload = next(
-            payload for event, payload in emitted if event == "library_enrichment"
-        )
-        update = payload["items"][0]  # type: ignore[index]
-        self.assertEqual(update["artist"], "Tagged Album Artist")
-        self.assertEqual(update["album"], "Tagged Album")
-        self.assertEqual(update["album_mbid"], mbid)
-
-        model = LibraryModel.from_payload(
-            next(payload for event, payload in emitted if event == "library")
-        )
-        item = next(value for value in model.albums if value.path == str(target.path))
-        original_status = item.status
-        original_selected = item.selected
-        self.assertTrue(
-            model.apply_tag_enrichment(
-                str(target.path),
-                artist="Tagged Album Artist",
-                album="Tagged Album",
-                album_mbid=mbid,
-            )
-        )
-        self.assertEqual((item.artist, item.title), ("Tagged Album Artist", "Tagged Album"))
-        self.assertEqual((item.status, item.selected), (original_status, original_selected))
-        self.assertEqual(model.statistics()["musicbrainz"], 1)
-
-    def test_launch_boundary_passes_only_exact_checked_album_paths(self) -> None:
-        albums, _ = splined.inventory(self.root, [])
-        chosen_paths = [str(self.eden), str(self.toys)]
-        emitted: list[tuple[str, dict[str, object]]] = []
-        response = json.dumps(
-            {
-                "action": "launch",
-                "scan_mode": "filtered-read",
-                "selected": chosen_paths + [str(self.root / "not-in-inventory")],
-            }
-        )
-
-        with (
-            mock.patch.object(splined, "tui_active", return_value=True),
-            mock.patch.object(
-                splined,
-                "emit_ui",
-                side_effect=lambda event, **payload: emitted.append((event, payload)),
-            ),
-            mock.patch.object(splined, "read_input", return_value=response),
-            mock.patch.object(splined, "enrich_representative_tracks", return_value=None),
-        ):
-            selected, _, _, _, _ = splined.prepare_tui_library_selection(
-                self.root / "config.toml",
-                self.cfg,
-                ["itunes"],
-                self.root,
-                albums,
-                {"version": 1, "albums": {}},
-                24,
-            )
-
-        self.assertEqual([str(album.path) for album in selected], chosen_paths)
-        scope = next(
-            payload
-            for event, payload in emitted
-            if event == "activity" and payload.get("category") == "selection"
-        )
-        self.assertEqual(
-            scope["message"],
-            "Launch scope confirmed · 2 checked album(s) · filtered-read",
-        )
-
-    def test_post_launch_reuses_only_an_unchanged_representative_track(self) -> None:
-        first_path = self.eden / "track01.flac"
-        second_path = self.eden / "track02.flac"
-        second_path.write_bytes(b"audio-two")
-        album = splined.AlbumDir(self.eden, [first_path, second_path])
-        stat = first_path.stat()
-        cached_track = splined.Track(
-            first_path,
-            "Cached",
-            "Artist",
-            "Album",
-            "Artist",
-            None,
-            None,
-            None,
-        )
-        indexed = splined.IndexedTrack(cached_track, stat.st_size, stat.st_mtime_ns)
-
-        def parsed(path: Path) -> splined.Track:
-            return splined.Track(path, path.stem, "Artist", "Album", "Artist", None, None, None)
-
-        with mock.patch.object(splined, "read_track", side_effect=parsed) as reader:
-            tracks = splined.read_album_tracks(album, {str(album.path): indexed})
-        self.assertIs(tracks[0], cached_track)
-        reader.assert_called_once_with(second_path)
-
-        first_path.write_bytes(b"audio-now-changed")
-        with mock.patch.object(splined, "read_track", side_effect=parsed) as reader:
-            tracks = splined.read_album_tracks(album, {str(album.path): indexed})
-        self.assertEqual([track.path for track in tracks], [first_path, second_path])
-        self.assertEqual(reader.call_count, 2)
-
-    def test_representative_tag_enrichment_is_bounded(self) -> None:
-        albums = [
-            splined.AlbumDir(
-                self.root / f"Tagged Artist {index:02d}" / "Album",
-                [self.root / f"Tagged Artist {index:02d}" / "Album" / "track.mp3"],
-            )
-            for index in range(12)
-        ]
-        lock = threading.Lock()
-        active = 0
-        maximum_active = 0
-        results: list[str] = []
-
-        def index(album: splined.AlbumDir) -> splined.IndexedTrack:
-            nonlocal active, maximum_active
-            with lock:
-                active += 1
-                maximum_active = max(maximum_active, active)
-            try:
-                time.sleep(0.01)
-                path = album.audio_files[0]
-                return splined.IndexedTrack(
-                    splined.Track(path, "Track", "Artist", "Album", "Artist", None, None, None),
-                    1,
-                    1,
-                )
-            finally:
-                with lock:
-                    active -= 1
-
-        with mock.patch.object(splined, "index_representative_track", side_effect=index):
-            splined.enrich_representative_tracks(
-                albums,
-                threading.Event(),
-                lambda album, indexed, error: results.append(str(album.path)),
-                workers=4,
-            )
-
-        self.assertEqual(len(results), len(albums))
-        self.assertGreater(maximum_active, 1)
-        self.assertLessEqual(maximum_active, 4)
-
-    def test_local_art_presence_never_requires_image_decode(self) -> None:
+    def test_local_art_detection_does_not_decode_image(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
         with mock.patch.object(splined.Image, "open", side_effect=AssertionError("decoded")):
-            albums, _ = splined.inventory(self.root, [])
-        love = next(album for album in albums if album.path == self.love)
-        self.assertEqual(love.local_art_files, [self.love / "cover.jpg"])
-
-    def test_recent_timeout_fingerprint_is_collected_during_scandir(self) -> None:
-        policy = splined.scan_policy_fingerprint(self.cfg, ["itunes"])
-        initial, _ = splined.inventory(self.root, [])
-        eden = next(album for album in initial if album.path == self.eden)
-        expected = splined.album_scan_fingerprint(eden)
-        history = {
-            "version": 1,
-            "albums": {
-                str(self.eden): {
-                    "completed_at_unix": time.time(),
-                    "album_fingerprint": expected,
-                    "policy_fingerprint": policy,
-                    "outcome": "selected",
-                }
-            },
-        }
-        fingerprint_paths = splined.timeout_fingerprint_paths(
-            history, self.cfg, ["itunes"], 24
-        )
-        self.assertEqual(fingerprint_paths, {str(self.eden)})
-        cached, _ = splined.inventory(
-            self.root,
-            [],
-            fingerprint_paths=fingerprint_paths,
-        )
-        cached_eden = next(album for album in cached if album.path == self.eden)
-        self.assertEqual(cached_eden.inventory_fingerprint, expected)
-        with mock.patch.object(
-            Path, "stat", side_effect=AssertionError("duplicate track stat")
-        ):
-            postponed, _ = splined.scan_completion_status(
-                history,
-                cached_eden,
-                self.cfg,
-                ["itunes"],
-                24,
-                policy_fingerprint=policy,
+            (_result, emitted) = self._run(
+                [
+                    {"action": "load-artist", "artist_path": artist_path, "selected": [], "select_new": False},
+                    {"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False},
+                ]
             )
-        self.assertTrue(postponed)
+        update = [payload for event, payload in emitted if event == "library_update"][-1]
+        love = next(row for row in update["albums"] if row["path"] == str(self.love))
+        self.assertEqual(love["formats"], ["JPEG"])
 
-    def test_expired_or_policy_mismatched_history_needs_no_track_metadata(self) -> None:
-        history = {
-            "version": 1,
-            "albums": {
-                str(self.love): {
-                    "completed_at_unix": time.time() - 25 * 3600,
-                    "policy_fingerprint": splined.scan_policy_fingerprint(
-                        self.cfg, ["itunes"]
-                    ),
-                },
-                str(self.eden): {
-                    "completed_at_unix": time.time(),
-                    "policy_fingerprint": "different-policy",
-                },
-            },
-        }
-        self.assertEqual(
-            splined.timeout_fingerprint_paths(
-                history, self.cfg, ["itunes"], 24
-            ),
-            set(),
+    def test_deleting_and_corrupting_picker_cache_are_safe(self) -> None:
+        self._run([{"action": "launch", "scan_mode": "auto-selected", "selected": []}])
+        database = self.cache / PICKER_DB_NAME
+        database.unlink()
+        self._run([{"action": "launch", "scan_mode": "auto-selected", "selected": []}])
+        database.write_bytes(b"not sqlite")
+        (_result, emitted) = self._run(
+            [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
         )
+        self.assertTrue(database.exists())
+        self.assertTrue(any(self.cache.glob(f"{PICKER_DB_NAME}.corrupt-*")))
+        self.assertTrue(any(event == "log" and payload.get("level") == "WARN" for event, payload in emitted))
 
-    def test_inventory_reports_bounded_live_progress(self) -> None:
-        progress: list[tuple[int, int]] = []
-        callback_threads: list[int] = []
+    def test_ignored_signature_or_library_root_change_invalidates_rows(self) -> None:
+        path = self.cache / PICKER_DB_NAME
+        with PickerIndex.open(path, self.root, []) as index:
+            artists = index.reconcile_root()
+            index.replace_artist_albums(
+                artists[0],
+                [PickerAlbum(str(self.love), artists[0].path, self.love.name, ())],
+            )
+            self.assertTrue(index.albums())
+        with PickerIndex.open(path, self.root, ["new-ignore"]) as index:
+            self.assertEqual(index.albums(), [])
+        other = self.base / "other"
+        other.mkdir()
+        with PickerIndex.open(path, other, ["new-ignore"]) as index:
+            self.assertEqual(index.artists(), [])
 
-        def record_progress(directories: int, count: int) -> None:
-            progress.append((directories, count))
-            callback_threads.append(threading.get_ident())
-
-        albums, _ = splined.inventory(
-            self.root,
-            list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
-            progress=record_progress,
+    def test_symlink_artist_is_not_indexed(self) -> None:
+        outside = self.base / "outside"
+        _album(outside, "Linked Artist", "Linked Album")
+        link = self.root / "linked"
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("directory symlinks are unavailable in this runner")
+        (_result, emitted) = self._run(
+            [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
         )
-        self.assertTrue(progress)
-        self.assertEqual(progress[-1][1], len(albums))
-        self.assertLessEqual(len(progress), 1 + progress[-1][0] // 250)
-        self.assertEqual(set(callback_threads), {threading.get_ident()})
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertNotIn("linked", {row["name"] for row in payload["artists"]})
 
-    def test_inventory_bounds_parallel_directory_enumeration_and_order(self) -> None:
+    def test_root_only_large_artist_fixture_never_touches_album_topology(self) -> None:
+        root = self.root
+
+        class Entry:
+            def __init__(self, index: int) -> None:
+                self.name = f"Artist {index:04d}"
+                self.path = str(root / self.name)
+
+            def is_symlink(self) -> bool:
+                return False
+
+            def is_dir(self, *, follow_symlinks: bool = False) -> bool:
+                return True
+
+        class Entries:
+            def __init__(self, values):
+                self.values = values
+
+            def __enter__(self):
+                return iter(self.values)
+
+            def __exit__(self, *_args):
+                return False
+
+        values = [Entry(index) for index in range(2000)]
+        started = time.perf_counter()
+        with (
+            mock.patch("tui.picker_index.os.scandir", return_value=Entries(values)) as scandir,
+            mock.patch.object(splined, "inventory", side_effect=AssertionError("album topology")),
+        ):
+            (_result, emitted) = self._run(
+                [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
+            )
+        elapsed = time.perf_counter() - started
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertEqual(len(payload["artists"]), 2000)
+        self.assertEqual(payload["albums"], [])
+        scandir.assert_called_once_with(self.root)
+        self.assertLess(elapsed, 5.0)
+
+    def test_warm_2000_artist_15000_album_fixture_is_sqlite_only(self) -> None:
+        root = self.root
+
+        class Entry:
+            def __init__(self, index: int) -> None:
+                self.name = f"Artist {index:04d}"
+                self.path = str(root / self.name)
+
+            def is_symlink(self) -> bool:
+                return False
+
+            def is_dir(self, *, follow_symlinks: bool = False) -> bool:
+                return True
+
+        class Entries:
+            def __init__(self, values):
+                self.values = values
+
+            def __enter__(self):
+                return iter(self.values)
+
+            def __exit__(self, *_args):
+                return False
+
+        values = [Entry(index) for index in range(2000)]
+        database = self.cache / PICKER_DB_NAME
+        ignored = self.cfg["library"]["ignored_subs"]  # type: ignore[index]
+        with mock.patch(
+            "tui.picker_index.os.scandir",
+            return_value=Entries(values),
+        ):
+            with PickerIndex.open(database, self.root, ignored) as index:
+                artists = index.reconcile_root()
+                album_rows = []
+                for artist_number, artist in enumerate(artists):
+                    count = 8 if artist_number < 1000 else 7
+                    album_rows.extend(
+                        (
+                            str(Path(artist.path) / f"Album {album_number:02d}"),
+                            artist.path,
+                            f"Album {album_number:02d}",
+                            "[]",
+                        )
+                        for album_number in range(count)
+                    )
+                with index.connection:
+                    index.connection.executemany(
+                        "INSERT INTO albums(album_path, artist_path, album_name, local_art_json) VALUES(?, ?, ?, ?)",
+                        album_rows,
+                    )
+                    index.connection.execute(
+                        "UPDATE artists SET indexed=1, last_indexed=?",
+                        (time.time(),),
+                    )
+        self.assertEqual(len(album_rows), 15000)
+        started = time.perf_counter()
+        with (
+            mock.patch("tui.picker_index.os.scandir", return_value=Entries(values)),
+            mock.patch.object(splined, "inventory", side_effect=AssertionError("warm recursive scan")),
+        ):
+            (_result, emitted) = self._run(
+                [
+                    {
+                        "action": "launch",
+                        "scan_mode": "auto-selected",
+                        "selected": [],
+                        "select_new": False,
+                    }
+                ]
+            )
+        elapsed = time.perf_counter() - started
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertEqual(len(payload["artists"]), 2000)
+        self.assertEqual(len(payload["albums"]), 15000)
+        self.assertLess(elapsed, 5.0)
+
+    def test_inventory_parallelism_and_deterministic_order_are_preserved(self) -> None:
         for index in range(16):
-            album = self.root / f"Parallel Artist {index:02d}" / "Album"
-            album.mkdir(parents=True)
-            (album / "track01.flac").write_bytes(b"audio")
-
+            _album(self.root, f"Parallel Artist {index:02d}", "Album")
         expected, expected_ignored = splined.inventory(
             self.root,
-            list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
+            self.cfg["library"]["ignored_subs"],  # type: ignore[index]
             workers=1,
         )
         original = splined.os.scandir
         lock = threading.Lock()
         active = 0
-        maximum_active = 0
+        maximum = 0
 
-        def delayed_scandir(path: Path | str):
-            nonlocal active, maximum_active
+        def delayed(path: Path | str):
+            nonlocal active, maximum
             with lock:
                 active += 1
-                maximum_active = max(maximum_active, active)
+                maximum = max(maximum, active)
             try:
-                time.sleep(0.01)
+                time.sleep(0.005)
                 return original(path)
             finally:
                 with lock:
                     active -= 1
 
-        with mock.patch.object(splined.os, "scandir", delayed_scandir):
+        with mock.patch.object(splined.os, "scandir", side_effect=delayed):
             actual, actual_ignored = splined.inventory(
                 self.root,
-                list(self.cfg["library"]["ignored_subs"]),  # type: ignore[index]
+                self.cfg["library"]["ignored_subs"],  # type: ignore[index]
                 workers=4,
             )
-
-        self.assertGreater(maximum_active, 1)
-        self.assertLessEqual(maximum_active, 4)
-        self.assertEqual(
-            [(album.path, album.audio_files) for album in actual],
-            [(album.path, album.audio_files) for album in expected],
-        )
+        self.assertGreater(maximum, 1)
+        self.assertLessEqual(maximum, 4)
+        self.assertEqual([album.path for album in actual], [album.path for album in expected])
         self.assertEqual(actual_ignored, expected_ignored)
+
+    def test_post_launch_reads_every_authoritative_track_without_picker_cache(self) -> None:
+        second = self.eden / "track02.flac"
+        second.write_bytes(b"audio")
+        album = splined.AlbumDir(self.eden, [self.eden / "track01.flac", second])
+        tracks = [
+            splined.Track(path, path.stem, "Artist", "Album", "Artist", None, None, None)
+            for path in album.audio_files
+        ]
+        with mock.patch.object(splined, "read_track", side_effect=tracks) as reader:
+            self.assertEqual(splined.read_album_tracks(album), tracks)
+        self.assertEqual(reader.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import time
 import unittest
 from dataclasses import dataclass
@@ -20,8 +21,12 @@ from tui.splined_tui import (
     handle_key,
     handle_mouse,
     hit_test,
+    close_candidate_url,
+    osc8_link,
     render,
     run_tui,
+    sync_url_mouse_capture,
+    write_terminal_links,
 )
 from tui.theme import select_theme
 
@@ -258,6 +263,68 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             [item.selected for item in album_model.albums], album_selection
         )
 
+    def test_uncached_artist_tap_and_keyboard_open_request_one_lazy_inventory(self) -> None:
+        payload = _payload(0, 0)
+        payload["artists"] = [
+            {
+                "path": "/music/10,000 Maniacs",
+                "name": "10,000 Maniacs",
+                "indexed": False,
+                "loaded": False,
+                "album_count": 0,
+            }
+        ]
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.apply("library", payload)
+        state.apply("input", {"prompt": "", "context": {"kind": "library-selection"}})
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(state, adapter, _center(_region(state, "artist-row", 0)))
+        request = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(request["action"], "load-artist")
+        self.assertEqual(request["artist_path"], "/music/10,000 Maniacs")
+        self.assertFalse(request["select_after_load"])
+
+        state.apply("input", {"prompt": "", "context": {"kind": "library-selection"}})
+        adapter.waiting.set()
+        state.library_focus = 3
+        handle_key(state, adapter, _Event("Enter"))
+        self.assertEqual(json.loads(adapter.responses.get_nowait())["action"], "load-artist")
+
+    def test_unindexed_artist_checkbox_requests_load_and_select(self) -> None:
+        payload = _payload(0, 0)
+        payload["artists"] = [
+            {
+                "path": "/music/Aerosmith",
+                "name": "Aerosmith",
+                "indexed": False,
+                "loaded": False,
+                "album_count": 0,
+            }
+        ]
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.apply("library", payload)
+        state.apply("input", {"prompt": "", "context": {"kind": "library-selection"}})
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(state, adapter, _center(_region(state, "artist-checkbox", 0)))
+        request = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(request["action"], "load-artist")
+        self.assertTrue(request["select_after_load"])
+
+    def test_refresh_is_explicit_and_filter_text_r_never_triggers_it(self) -> None:
+        model = self.state.library
+        assert model is not None
+        self.state.library_focus = 4
+        handle_key(self.state, self.adapter, _Event("r"))
+        self.assertEqual(model.artist_filter, "r")
+        self.assertTrue(self.adapter.responses.empty())
+        self.state.library_focus = 3
+        handle_key(self.state, self.adapter, _Event("r"))
+        self.assertEqual(json.loads(self.adapter.responses.get_nowait())["action"], "refresh-index")
+
     def test_status_select_and_scan_controls_are_direct_actions(self) -> None:
         model = self.state.library
         assert model is not None
@@ -432,10 +499,39 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         self.assertEqual(state.selected_index, candidate.index)
 
         url = _region(state, "candidate-url")
-        with mock.patch("tui.splined_tui.webbrowser.open", return_value=True) as opened:
+        with mock.patch("webbrowser.open", side_effect=AssertionError("server browser")):
             handle_mouse(state, adapter, _center(url))
-        opened.assert_called_once_with(url.value, new=2, autoraise=False)
+        self.assertTrue(state.url_modal_open)
+        self.assertEqual(state.url_value, url.value)
 
+        render(_Frame(160, 44), state, select_theme("OLED"))
+        stream = io.StringIO()
+        write_terminal_links(state, stream)
+        encoded = stream.getvalue()
+        self.assertIn("[OPEN URL]", encoded)
+        self.assertIn(osc8_link("[OPEN URL]", url.value), encoded)
+
+        class Capture:
+            def __init__(self):
+                self.disabled = 0
+                self.enabled = 0
+
+            def disable_mouse_capture(self):
+                self.disabled += 1
+
+            def enable_mouse_capture(self):
+                self.enabled += 1
+
+        capture = Capture()
+        suspended = sync_url_mouse_capture(state, capture, False)
+        self.assertTrue(suspended)
+        self.assertEqual(capture.disabled, 1)
+        close_candidate_url(state)
+        suspended = sync_url_mouse_capture(state, capture, suspended)
+        self.assertFalse(suspended)
+        self.assertEqual(capture.enabled, 1)
+
+        render(_Frame(160, 44), state, select_theme("OLED"))
         ai = _region(state, "candidate-ai", 0)
         handle_mouse(state, adapter, _center(ai))
         self.assertEqual(state.ai_selection.selected_key, "local")

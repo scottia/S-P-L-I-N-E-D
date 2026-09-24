@@ -278,4 +278,3 @@ class PickerIndex:
         with self.connection:
             self.connection.execute("DELETE FROM albums")
             self.connection.execute("UPDATE artists SET indexed=0, last_indexed=NULL")
-
