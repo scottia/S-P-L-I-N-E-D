@@ -51,10 +51,12 @@ def card(theme: Theme, title: str, semantic: Semantic | str = Semantic.ACTIVE) -
     )
 
 
-def spectral_title(theme: Theme, *, centered: bool = False) -> Line:
+def spectral_title(
+    theme: Theme, *, centered: bool = False, title: str = TITLE
+) -> Line:
     spans: list[Span] = []
     color_index = 0
-    for character in TITLE:
+    for character in title:
         if character == ":":
             spans.append(Span(character, style(theme, Semantic.MUTED)))
         else:
@@ -87,8 +89,10 @@ def centered_message(theme: Theme, message: str, semantic: Semantic | str) -> Pa
     ).alignment("center")
 
 
-def title_paragraph(theme: Theme, *, centered: bool = False) -> Paragraph:
-    line = spectral_title(theme, centered=centered)
+def title_paragraph(
+    theme: Theme, *, centered: bool = False, title: str = TITLE
+) -> Paragraph:
+    line = spectral_title(theme, centered=centered, title=title)
     return Paragraph(Text([line])).alignment(
         "center" if centered else "left"
     )

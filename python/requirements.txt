@@ -2,3 +2,4 @@ requests==2.34.2
 Pillow==12.3.0
 mutagen==1.48.1
 pyratatui==0.3.0
+tomlkit==0.15.1

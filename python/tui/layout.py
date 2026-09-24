@@ -34,11 +34,11 @@ def breakpoint(width: int, height: int) -> Breakpoint:
 def layout_spec(width: int, height: int) -> LayoutSpec:
     point = breakpoint(width, height)
     if point is Breakpoint.WIDE:
-        columns = ("#", "source", "resolution", "format", "range", "distance", "square", "acceptable", "approved", "id")
+        columns = ("#", "source", "resolution", "format", "range", "distance", "square", "acceptable", "approved", "url")
     elif point is Breakpoint.NORMAL:
-        columns = ("#", "source", "resolution", "format", "range", "distance", "square", "acceptable")
+        columns = ("#", "source", "resolution", "format", "range", "distance", "acceptable", "url")
     else:
-        columns = ("#", "source", "resolution", "range", "acceptable")
+        columns = ("#", "resolution", "range", "acceptable", "url")
     return LayoutSpec(
         breakpoint=point,
         stack_cards=point in {Breakpoint.COMPACT, Breakpoint.MINIMUM},

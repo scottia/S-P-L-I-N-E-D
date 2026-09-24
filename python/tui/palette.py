@@ -15,7 +15,7 @@ RGB = tuple[int, int, int]
 OLED: Final[Mapping[str, RGB]] = MappingProxyType(
     {
         "background": (0, 0, 0),
-        "panel": (7, 9, 15),
+        "panel": (0, 0, 0),
         "text": (225, 230, 235),
         "muted": (145, 150, 165),
         "accepted": (60, 255, 135),

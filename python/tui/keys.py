@@ -24,12 +24,18 @@ class Action(str, Enum):
     KEEP = "keep"
     DIGIT = "digit"
     DELETE = "delete"
+    TOGGLE = "toggle"
+    SETTINGS = "settings"
+    SAVE = "save"
+    URL = "url"
 
 
 def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
     value = code.lower()
     if ctrl and value == "c":
         return Action.QUIT
+    if ctrl and value == "s":
+        return Action.SAVE
     if value == "up":
         return Action.UP
     if value == "down":
@@ -60,6 +66,12 @@ def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
         return Action.BYPASS
     if value == "k":
         return Action.KEEP
+    if value in {"space", " "}:
+        return Action.TOGGLE
+    if value == "p":
+        return Action.SETTINGS
+    if value == "u":
+        return Action.URL
     if value in {"backspace", "delete"}:
         return Action.DELETE
     if len(value) == 1 and value.isdigit():

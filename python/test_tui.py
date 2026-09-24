@@ -35,6 +35,7 @@ class _Key:
 class ThemeTests(unittest.TestCase):
     def test_oled_semantic_mapping_reuses_engine_identity(self):
         self.assertEqual(OLED["background"], (0, 0, 0))
+        self.assertEqual(OLED["panel"], (0, 0, 0))
         self.assertEqual(OLED["accepted"], (60, 255, 135))
         self.assertEqual(OLED["active"], (55, 225, 255))
         self.assertEqual(OLED["fallback"], (255, 145, 35))
@@ -68,7 +69,8 @@ class LayoutAndBrandTests(unittest.TestCase):
         self.assertEqual(breakpoint(140, 40), Breakpoint.WIDE)
         self.assertTrue(layout_spec(70, 25).stack_cards)
         self.assertNotIn("id", layout_spec(90, 30).candidate_columns)
-        self.assertIn("id", layout_spec(140, 40).candidate_columns)
+        self.assertNotIn("id", layout_spec(140, 40).candidate_columns)
+        self.assertEqual(layout_spec(140, 40).candidate_columns[-1], "url")
 
     def test_unicode_brand_forms_have_equal_cell_width(self):
         self.assertEqual(cell_width(EXPANSION), cell_width(STYLIZED_EXPANSION))
