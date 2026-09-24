@@ -1,6 +1,6 @@
 # Select Media and Status Colors
 
-This page documents the Windows GUI **Select Media** control, live Artist/Album filtering, status filters, and tree colors.
+This page documents the Windows GUI **Select Media** control, live Artist/Album filtering, status filters, tree colors, and the required Python Ratatui parity model.
 
 > **Windows target:** v3.0.0 Stable with Config v5.
 
@@ -22,6 +22,47 @@ Filtering must not silently change:
 - candidate/source policy.
 
 A row filtered out of view remains part of the underlying library model unless another explicit operation changes it.
+
+---
+
+# Windows lightweight inventory authority
+
+Windows builds the Select Media model with one lightweight filesystem/history inventory before the user launches processing.
+
+Required behavior:
+
+```text
+enumerate directories/files once
+        ↓
+identify album folders by supported audio-file presence
+        ↓
+detect local cover files by name/extension
+        ↓
+apply retained history / bypass / timeout state
+        ↓
+build Artist/Album tree and statistics
+        ↓
+Select Media becomes usable
+```
+
+This inventory is intentionally different from album processing. It does not read audio tags, perform MusicBrainz authority lookup, discover providers, download artwork, decode artwork to determine geometry, rank candidates, or call AISPLINE. Those operations begin only after the user launches the selected albums.
+
+The Python Ratatui Select Media load path must be behaviorally equivalent to this Windows inventory model rather than performing expensive album-processing work before selection.
+
+## Ignored/excluded folders
+
+`[library].ignored_subs` is authoritative during recursive library inventory.
+
+Ignored exact names/patterns:
+
+- are not traversed;
+- do not appear as Artist rows;
+- do not appear as Album rows;
+- do not contribute to library statistics;
+- do not participate in status/history reconciliation;
+- do not appear in selection payloads.
+
+Wildcard behavior should remain compatible with current SPLINED/Windows matching. Symlink/reparse-style recursive loops are not followed.
 
 ---
 
@@ -71,7 +112,7 @@ Current status concepts:
 | Filter | Color | Meaning |
 | --- | --- | --- |
 | Unprocessed | White | Album/artist has no retained processed/bypass/timeout authority for normal eligibility |
-| Processed | Orange | Album has retained processed history |
+| Processed | Orange | Album has retained processed history or Windows-equivalent detected local artwork state |
 | Bypassed | Red | Album has persistent bypass state |
 | Partial / Timeout | Purple | Artist is partially processed, or Album is timeout-active depending on row type |
 | Artist Complete | Green | All eligible child albums are processed and none bypassed |
@@ -86,7 +127,7 @@ The same color may have different meaning depending on row type. Purple is the p
 | Color | Album meaning |
 | --- | --- |
 | White | Unprocessed / normally eligible |
-| Orange | Processed / history retained |
+| Orange | Processed / history retained or local artwork reconciled by Windows-equivalent inventory |
 | Red | Bypassed |
 | Purple | Timeout-active |
 
@@ -246,7 +287,7 @@ Artist and Album text filtering should be responsive on large libraries.
 Expected implementation behavior:
 
 ```text
-load library once
+perform one lightweight Windows-equivalent library inventory
 -> build in-memory model
 -> apply text/status filters in memory
 ```
@@ -260,16 +301,21 @@ each keystroke
 -> reload entire application shell
 ```
 
+Also avoid performing normal album processing before Select Media becomes usable.
+
 Filtering should not cause unrelated title/theme/log/candidate panels to reconstruct.
 
 ---
 
 # Python Ratatui parity
 
-The Python Ratatui library-selection workspace should follow the same status/filter/selection authority described above rather than invent a separate TUI model.
+The Python Ratatui library-selection workspace should follow the same inventory, status, filter, and selection authority described above rather than invent a separate TUI model.
 
 Required parity direction:
 
+- Windows-equivalent lightweight pre-selection filesystem/history inventory;
+- authoritative `[library].ignored_subs` exclusion during traversal;
+- no tag/MusicBrainz/provider/candidate/AI work before Launch;
 - live Artist and Album filter boxes;
 - filtering begins as text is entered;
 - filtering operates against the loaded in-memory model;
@@ -277,11 +323,40 @@ Required parity direction:
 - artist selection cascades only to eligible child albums;
 - filtered READ/WRITE and selection shortcuts use existing SPLINED execution policy;
 - status filtering never rewrites history/bypass/timeout state;
-- mouse interaction may complement keyboard interaction for checkboxes, rows, filter focus, and scrolling.
+- direct mouse/touch interaction for rows, checkboxes, filter focus, source policy, candidate actions, and URL where supported;
+- true scrolling for Artist, Album, policy, and candidate regions;
+- keyboard remains a complete fallback.
+
+The user's WebSSH iOS terminal is a verified target for touch interaction: the prior SPLINED `--tui` accepted touches that moved result selection and supported touch/gesture scrolling. The current loss of that behavior is therefore a regression in the new binding/application path, not an unverified terminal capability.
+
+The current published `pyratatui==0.3.0` wheel does not expose crossterm mouse capture or `MouseEvent`. Restore parity by minimally extending the binding layer to expose normal mouse events and capture lifecycle; do not simulate clicks from raw escape sequences and do not rewrite SPLINED in Rust.
 
 OLED and CHALK may render these states with different visual intensity, but state meaning and precedence remain unchanged.
 
 The TUI should also expose the practical source-policy configuration needed to reduce unwanted candidate clutter before expensive download/AI review, using Config v5 source-policy authority rather than presentation-only filtering.
+
+---
+
+# Mouse/touch interaction contract
+
+When mouse events are available, direct hit-testing should support:
+
+- Artist rows and checkboxes;
+- Album rows and checkboxes;
+- Artist/Album filter fields;
+- Album Status controls;
+- Select ALL/NONE/FILTERED;
+- READ/WRITE/Auto scan controls;
+- Source Policy Settings and source-policy fields;
+- candidate rows;
+- `AI ENHANCED` controls when present;
+- `[URL]`;
+- confirmation dialogs;
+- scrollable list regions.
+
+Hit regions should be derived from render-time rectangles/rows rather than inferred later from text content. A direct tap on an explicit checkbox/button should perform that action without requiring a second Enter press.
+
+Mouse wheel or terminal-provided touch scrolling should move the list under interaction and must not toggle selection merely because the list scrolled.
 
 ---
 
@@ -310,7 +385,7 @@ Status should be communicated through more than color where practical: text/tool
 
 ## Artist filter returns nothing
 
-Check spelling/substring, other active status filters, Album filtering, and whether the library model has finished loading.
+Check spelling/substring, other active status filters, Album filtering, and whether the lightweight library inventory has finished loading.
 
 ## Album is Orange but filter says Unprocessed only
 
