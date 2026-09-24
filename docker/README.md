@@ -115,6 +115,12 @@ scans open the Python [Ratatui TUI](../docs/ratatui-tui.md). Use `--no-tui` for
 the plain terminal stream. Automation and `docker compose exec -T` remain plain
 automatically.
 
+The image build uses published `pyratatui==0.3.0` for rendering and builds the
+small `splined-pyratatui-input==0.1.0` ABI3 wheel in a separate Rust builder
+stage. The final runtime image contains the wheel, not the Rust toolchain. This
+input extension enables crossterm mouse/touch capture, direct hit-tested
+controls, and wheel/touch list scrolling.
+
 Select the alternate CHALK theme with:
 
 ```bash

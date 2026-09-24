@@ -329,7 +329,12 @@ Required parity direction:
 
 The user's WebSSH iOS terminal is a verified target for touch interaction: the prior SPLINED `--tui` accepted touches that moved result selection and supported touch/gesture scrolling. The current loss of that behavior is therefore a regression in the new binding/application path, not an unverified terminal capability.
 
-The current published `pyratatui==0.3.0` wheel does not expose crossterm mouse capture or `MouseEvent`. Restore parity by minimally extending the binding layer to expose normal mouse events and capture lifecycle; do not simulate clicks from raw escape sequences and do not rewrite SPLINED in Rust.
+The published `pyratatui==0.3.0` wheel does not expose crossterm mouse capture
+or `MouseEvent`. Python SPLINED supplies that missing input surface through the
+small `splined-pyratatui-input==0.1.0` PyO3 extension while keeping the
+published pyratatui renderer unchanged. It uses render-time hit rectangles and
+normal crossterm mouse capture/events; it does not parse raw escape sequences
+or rewrite SPLINED in Rust.
 
 OLED and CHALK may render these states with different visual intensity, but state meaning and precedence remain unchanged.
 

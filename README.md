@@ -85,7 +85,9 @@ S:P:L:I:N:E:D keeps its supported implementations separate:
 - [`python/`](python/) is the supported Python/Docker Config v5 implementation
   and shares the repository release version. Its interactive operational scan
   UI is rendered by Ratatui through `pyratatui`; non-TTY execution remains the
-  plain CLI.
+  plain CLI. A small packaged crossterm/PyO3 input extension supplies
+  mouse/touch events and capture lifecycle missing from the published
+  `pyratatui==0.3.0` wheel; production images do not contain a Rust toolchain.
 
 The Windows application version, repository release version, and configuration
 schema versions are independent.

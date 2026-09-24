@@ -7,10 +7,12 @@ discovery, MusicBrainz authority, candidate scoring, Range Types, local-art
 policy, output transforms, history, writes, counters, and exit codes remain
 owned by the Python engine.
 
-The runtime currently pins `pyratatui==0.3.0` (Ratatui 0.30.2) and uses its
-published wheel. End users do not need a Rust toolchain to run the Python
-application. Mouse/touch parity requires a minimal binding extension described
-below; it does not require a SPLINED Rust rewrite or a Ratatui-core fork.
+The runtime pins `pyratatui==0.3.0` (Ratatui 0.30.2) for rendering and adds the
+isolated `splined-pyratatui-input==0.1.0` ABI3 extension for crossterm input.
+The production Docker build compiles that extension as a normal wheel in a
+Rust builder stage and copies only the wheel into the final Python image. End
+users of that image do not need a Rust toolchain. This does not introduce a
+SPLINED Rust application or a Ratatui-core fork.
 
 ## Activation and display modes
 
@@ -169,24 +171,25 @@ speculative terminal capability for this target environment. Loss of that
 behavior in the current `pyratatui==0.3.0` path is an application/binding
 regression to restore.
 
-### Current pyratatui 0.3.0 limitation and required extension
+### pyratatui 0.3.0 limitation and the SPLINED input extension
 
 The published `pyratatui` 0.3.0 wheel exposes `Terminal.poll_event()` as a
 keyboard-only `PyKeyEvent` API. Its terminal lifecycle does not enable
 crossterm mouse capture, and the Python module exports no `MouseEvent`.
 
-The required fix is a minimal binding-layer extension exposing normal crossterm
-mouse capability, including:
+SPLINED implements the missing surface in `python/pyratatui_input`, a minimal
+PyO3/crossterm extension used alongside the unmodified published pyratatui
+renderer. It exposes:
 
-- `EnableMouseCapture` on terminal entry;
-- `DisableMouseCapture` on terminal exit and every cleanup path;
-- mouse button down/up where available;
-- row/column coordinates and modifiers;
-- scroll up/down events.
+- `EventReader.enable_mouse_capture()` / `disable_mouse_capture()`;
+- `MouseEvent` values for button down, button up, drag, move, and wheel motion;
+- zero-based row/column coordinates and Ctrl/Alt/Shift modifiers;
+- keyboard and resize events through the same event reader;
+- an emergency restoration function for partial initialization failures.
 
-Do not reinterpret raw escape sequences in SPLINED. Do not rewrite SPLINED in
-Rust. If Ratatui/crossterm already supports the feature, extend `pyratatui`
-first.
+The application does not reinterpret raw escape sequences. On normal exit,
+Ctrl+C, SIGTERM, engine/TUI exception, and partial initialization failure it
+disables mouse capture and restores the pyratatui terminal lifecycle.
 
 Rendering should register structured hit regions rather than infer clicks from
 painted text. Required hit targets include:
@@ -201,11 +204,13 @@ painted text. Required hit targets include:
 - confirmation-dialog buttons;
 - scrollable list regions.
 
-Direct taps on buttons/checkboxes perform the corresponding action without an
-extra Enter press. Tapping a filter gives it visible focus and subsequent text
-input appears immediately. Mouse wheel or terminal-provided touch scrolling
-scrolls the region under interaction without changing a checkbox merely because
-it scrolled.
+Every redraw rebuilds the hit map from the actual responsive `Rect` geometry;
+no click is inferred by searching rendered strings. Direct taps on
+buttons/checkboxes perform the corresponding action without an extra Enter
+press. Tapping a filter gives it visible focus and subsequent text input
+appears immediately. Mouse wheel or terminal-provided touch scrolling scrolls
+the region under interaction without changing a checkbox merely because it
+scrolled.
 
 Keyboard control remains fully supported as a fallback and for normal console
 use.

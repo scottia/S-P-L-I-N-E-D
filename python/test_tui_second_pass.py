@@ -60,6 +60,7 @@ class LibraryWorkspaceTests(unittest.TestCase):
         self.assertEqual(artist_status([self.model.albums[0]]), ArtistStatus.UNPROCESSED)
         self.assertEqual(artist_status(self.model.albums[:2]), ArtistStatus.PARTIAL)
         self.assertEqual(artist_status([self.model.albums[1]]), ArtistStatus.COMPLETE)
+        self.assertEqual(artist_status([self.model.albums[3]]), ArtistStatus.COMPLETE)
         self.assertEqual(artist_status(self.model.albums[1:3]), ArtistStatus.CONTAINS_BYPASS)
 
     def test_artist_cascade_selects_only_unprocessed_children(self) -> None:

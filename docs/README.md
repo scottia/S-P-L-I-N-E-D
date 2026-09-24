@@ -45,7 +45,7 @@ The Select Media startup path is required to mirror Windows `LibraryInventory.Lo
 
 Artist/Album filtering then operates entirely against that loaded in-memory model rather than rescanning the filesystem on each keystroke.
 
-The TUI design includes source-grouped candidate presentation, live authority/provider/download activity, actionable URL/provenance presentation instead of provider IDs in primary tables, and direct mouse/touch interaction once the binding exposes normal crossterm mouse events.
+The TUI includes source-grouped candidate presentation, live authority/provider/download activity, actionable URL/provenance presentation instead of provider IDs in primary tables, and direct mouse/touch interaction through the isolated `splined-pyratatui-input` crossterm extension. Render-time hit regions drive taps and the list under the pointer receives wheel/touch scrolling.
 
 The user's WebSSH iOS terminal is a verified touch target: the prior SPLINED `--tui` supported touch-driven result selection and scrolling. Restoring this behavior in the current Ratatui path is therefore an implementation/binding parity requirement, not a speculative terminal feature.
 
