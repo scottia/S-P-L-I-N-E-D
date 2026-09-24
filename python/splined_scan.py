@@ -20,6 +20,7 @@ from mutagen.mp4 import MP4
 from PIL import Image
 
 import splined as core
+from tui.aispline import validated_enhanced_results
 
 
 APP_NAME = core.APP_NAME
@@ -141,11 +142,19 @@ def fallback_suggested(
 
 
 def candidate_link(candidate: core.Candidate) -> str:
-    if candidate.source in {"local", "webpstill"}:
+    if candidate.source in {"local", "webpstill", "embedded"}:
         return core.bracketed_text("LOCAL", core.green)
-    if candidate.source == "embedded":
-        return core.bracketed_text("EMBEDDED", core.cyan)
+    if candidate.source == "enhanced":
+        return core.bracketed_text("Enhanced", core.magenta)
     return core.format_source_url(candidate.ref.url)
+
+
+def candidate_provenance(candidate: core.Candidate) -> str:
+    if candidate.source in {"local", "webpstill", "embedded"}:
+        return "[LOCAL]"
+    if candidate.source == "enhanced":
+        return "[Enhanced]"
+    return "[URL]"
 
 
 def render_candidate_table(
@@ -157,8 +166,47 @@ def render_candidate_table(
     manual_fallback: bool = False,
 ) -> None:
     candidate_items: list[dict[str, Any]] = []
+    local_candidate = next(
+        (
+            item
+            for item in candidates
+            if item.source in {"local", "webpstill", "embedded"}
+        ),
+        None,
+    )
+    local_projected = (
+        project_candidate(local_candidate, cfg, format_order)
+        if local_candidate is not None
+        else None
+    )
     for index, candidate in enumerate(candidates, 1):
         projected = project_candidate(candidate, cfg, format_order)
+        comparison = ""
+        crop_risk = "equal"
+        if local_candidate is not None and candidate is not local_candidate and local_projected is not None:
+            delta = int(local_projected["distance"]) - int(projected["distance"])
+            if delta > 0:
+                resolution = f"{provider_label(candidate.source)} +{delta}px toward Ideal"
+            elif delta < 0:
+                resolution = f"Local +{-delta}px toward Ideal"
+            else:
+                resolution = "Equal distance to Ideal"
+            shape = (
+                "equal"
+                if bool(local_projected["square"]) == bool(projected["square"])
+                else "changed"
+            )
+            local_crop = candidate_crop_text(local_candidate, local_projected)
+            remote_crop = candidate_crop_text(candidate, projected)
+            crop_risk = (
+                "equal"
+                if local_crop == remote_crop
+                else f"Local {local_crop} / {provider_label(candidate.source)} {remote_crop}"
+            )
+            comparison = (
+                f"{resolution} · Shape: {shape} · Crop risk: {crop_risk} · "
+                "Source: remote replacement"
+            )
         candidate_items.append(
             {
                 "number": index,
@@ -172,6 +220,10 @@ def render_candidate_table(
                 "acceptable": projected["acceptable"],
                 "approved": candidate.ref.approved,
                 "id": str(candidate.ref.id),
+                "url": candidate.ref.url,
+                "provenance": candidate_provenance(candidate),
+                "comparison": comparison,
+                "crop_risk": crop_risk,
                 "selected": candidate is selected,
                 "suggested": candidate is suggested,
             }
@@ -180,6 +232,9 @@ def render_candidate_table(
         "candidates",
         items=candidate_items,
         manual_fallback=manual_fallback,
+        aisplined=core.aisplined_settings(cfg),
+        ai_runtime_available=False,
+        ideal=int(core.section(cfg, "range").get("ideal", 1800)),
     )
 
     columns = [
@@ -932,6 +987,33 @@ def local_comparison_prompt(local_candidate: core.Candidate, remote: list[core.C
         print(f"  Choose {choices}.")
 
 
+def enhanced_history_candidates(
+    history_entry: dict[str, Any] | None,
+    album: core.AlbumDir,
+) -> list[core.Candidate]:
+    candidates: list[core.Candidate] = []
+    for item in validated_enhanced_results(history_entry, album.path):
+        path = item["path"]
+        candidates.append(
+            core.Candidate(
+                core.Ref(
+                    "enhanced",
+                    path.name,
+                    "",
+                    front=True,
+                    approved=True,
+                    types=["Front", "Enhanced"],
+                ),
+                path,
+                int(item["width"]),
+                int(item["height"]),
+                str(item["format"]),
+                -3,
+            )
+        )
+    return candidates
+
+
 def run_scan_dir(
     config_file: Path,
     cfg: dict[str, Any],
@@ -976,26 +1058,60 @@ def run_scan_dir(
 
     albums: list[core.AlbumDir] = []
     postponed_albums: list[tuple[core.AlbumDir, float]] = []
-    for album in discovered_albums:
-        if is_album_bypassed(bypass_history, album) and not _BYPASS_OVERRIDE:
-            print(core.red(f"BYPASSED ALBUM: {album.path} · saved bypass is active; use -bp to override for this run."))
-            continue
-
-        postponed, age_hours = core.scan_completion_status(
-            completion_history,
-            album,
-            cfg,
-            sources,
-            timeout_hours,
+    track_cache: dict[str, list[core.Track]] = {}
+    if core.tui_active():
+        bypassed_paths = (
+            set()
+            if _BYPASS_OVERRIDE
+            else {str(value) for value in bypass_history.get("albums", {})}
         )
-        if postponed:
-            postponed_albums.append((album, age_hours))
-            core.debug_log(
-                f"scan.postponed album={str(album.path)!r} "
-                f"age_hours={age_hours:.3f} timeout_hours={timeout_hours:g}"
+        albums, track_cache, bypass_overrides, timeout_paths, sources = (
+            core.prepare_tui_library_selection(
+                config_file,
+                cfg,
+                sources,
+                root,
+                discovered_albums,
+                completion_history,
+                timeout_hours,
+                bypassed_paths=bypassed_paths,
             )
-        else:
-            albums.append(album)
+        )
+        # The TUI can override bypass only through its explicit confirmation;
+        # timeout-active rows remain unselected by the shared model.
+        albums = [
+            album
+            for album in albums
+            if str(album.path) not in bypassed_paths
+            or str(album.path) in bypass_overrides
+        ]
+        postponed_albums = [
+            (album, 0.0)
+            for album in discovered_albums
+            if str(album.path) in timeout_paths
+        ]
+        mode = str(cfg.get("mode", "read")).lower()
+    else:
+        for album in discovered_albums:
+            if is_album_bypassed(bypass_history, album) and not _BYPASS_OVERRIDE:
+                print(core.red(f"BYPASSED ALBUM: {album.path} · saved bypass is active; use -bp to override for this run."))
+                continue
+
+            postponed, age_hours = core.scan_completion_status(
+                completion_history,
+                album,
+                cfg,
+                sources,
+                timeout_hours,
+            )
+            if postponed:
+                postponed_albums.append((album, age_hours))
+                core.debug_log(
+                    f"scan.postponed album={str(album.path)!r} "
+                    f"age_hours={age_hours:.3f} timeout_hours={timeout_hours:g}"
+                )
+            else:
+                albums.append(album)
 
     http = core.Http()
     _, mbmode = core.mb_headers(config_file, cfg)
@@ -1047,7 +1163,9 @@ def run_scan_dir(
             "fallback_reason": None,
         }
         try:
-            tracks = [core.read_track(path) for path in album.audio_files]
+            tracks = track_cache.get(str(album.path)) or [
+                core.read_track(path) for path in album.audio_files
+            ]
             record["tracks"] = tracks
             record["file_count"] = len(tracks)
             record["compilation"] = (
@@ -1177,6 +1295,10 @@ def run_scan_dir(
             album=tag_album,
             authority="Fallback" if fallback_reason else "ExactAlbumId",
             fallback_reason=str(fallback_reason or ""),
+            track_count=file_count,
+            compilation=compilation,
+            mbid=str(mbid or ""),
+            tag_state="UNMATCHED" if fallback_reason else "MATCHED",
             phase="processing",
         )
 
@@ -1278,6 +1400,11 @@ def run_scan_dir(
             continue
 
         local_fallback: list[core.Candidate] = list(preflight["fallback"])
+        history_entry = completion_history.get("albums", {}).get(str(album.path))
+        enhanced_candidates = enhanced_history_candidates(
+            history_entry if isinstance(history_entry, dict) else None,
+            album,
+        )
         if local_fallback:
             candidate = local_fallback[0]
             projected = project_candidate(candidate, cfg, format_order)
@@ -1367,7 +1494,7 @@ def run_scan_dir(
 
                 remote, download_diag = core.download_candidates(http, refs, sources, cache, cfg)
                 diagnostics += download_diag
-                candidates = local_fallback + remote
+                candidates = local_fallback + enhanced_candidates + remote
 
                 if local_fallback:
                     local_candidate = local_fallback[0]
@@ -1606,7 +1733,7 @@ def run_scan_dir(
             source_history,
             queried_sources=api_queried,
         )
-        candidates = local_fallback + remote
+        candidates = local_fallback + enhanced_candidates + remote
 
         if local_fallback:
             local_candidate = local_fallback[0]
@@ -1889,6 +2016,8 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     print("A:I:S:P:L:I:N:E:D companion boundary (placeholder only):")
     core.help_row("      enabled", core.green(f"[{str(bool(ai.get('enabled', False))).lower()}]"))
     core.help_row("      endpoint", core.green(f"[{str(ai.get('endpoint', ''))}]"))
+    core.help_row("      minimum_short_side", core.green(f"[{int(ai.get('minimum_short_side', 600))}]"))
+    core.help_row("      below-floor override", core.green(f"[{str(bool(ai.get('allow_below_minimum_override', False))).lower()}]"))
     core.help_row("", "No AI image processing is enabled in this release")
     core.help_row("      -bp", "Override saved [b] album bypass history for this run")
     core.help_row("      [k]", "Keep the existing local cover during Local & Suggested artwork comparison")
@@ -1901,8 +2030,10 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
 def print_config(path: Path, cfg: dict[str, Any]) -> None:
     core.print_config(path, cfg)
     ai = core.aisplined_settings(cfg)
-    print(f"AISPLINED enabled: {bool(ai.get('enabled', False))}")
-    print(f"AISPLINED endpoint: {str(ai.get('endpoint', ''))}")
+    print(f"AISPLINE enabled: {bool(ai.get('enabled', False))}")
+    print(f"AISPLINE endpoint: {str(ai.get('endpoint', ''))}")
+    print(f"AISPLINE minimum short side: {int(ai.get('minimum_short_side', 600))}")
+    print(f"AISPLINE below-minimum override: {bool(ai.get('allow_below_minimum_override', False))}")
 
 
 def main() -> int:

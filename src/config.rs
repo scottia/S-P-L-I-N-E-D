@@ -233,11 +233,24 @@ pub struct FanartTvConfig {
     pub credential_file: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiSplinedConfig {
     pub enabled: bool,
     pub endpoint: String,
+    pub minimum_short_side: u32,
+    pub allow_below_minimum_override: bool,
+}
+
+impl Default for AiSplinedConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            minimum_short_side: 600,
+            allow_below_minimum_override: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -499,6 +512,9 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     )?;
     config.library.ignored_subs = normalize_ignored_subs(&config.library.ignored_subs);
     config.aisplined.endpoint = config.aisplined.endpoint.trim().to_string();
+    if config.aisplined.minimum_short_side == 0 {
+        return Err("SPLINED aisplined.minimum_short_side must be greater than zero.".to_string());
+    }
 
     config.sources.cover_sources = normalize_source_list(
         &config.sources.cover_sources,
@@ -748,6 +764,8 @@ mod tests {
         assert_eq!(config.credentials.credential_dir, "credentials");
         assert!(!config.aisplined.enabled);
         assert!(config.aisplined.endpoint.is_empty());
+        assert_eq!(config.aisplined.minimum_short_side, 600);
+        assert!(!config.aisplined.allow_below_minimum_override);
         assert_eq!(
             config.output.file_formats,
             vec!["jpeg".to_string(), "png".to_string(), "webp".to_string()]
@@ -777,6 +795,8 @@ mod tests {
         assert_eq!(parsed.credentials.credential_dir, "credentials");
         assert!(!parsed.aisplined.enabled);
         assert!(parsed.aisplined.endpoint.is_empty());
+        assert_eq!(parsed.aisplined.minimum_short_side, 600);
+        assert!(!parsed.aisplined.allow_below_minimum_override);
         assert!(parsed.scan.scan_library_dir.is_empty());
         assert!(parsed.library.music_library.is_empty());
         assert!(parsed.library.ignored_subs.is_empty());

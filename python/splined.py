@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import getpass
 import fnmatch
 import hashlib
@@ -16,6 +17,7 @@ import shutil
 import signal
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 from urllib.parse import urlencode
@@ -30,6 +32,7 @@ from mutagen.id3 import ID3
 from mutagen.mp4 import MP4
 from PIL import Image
 
+from tui.status import active as tui_active
 from tui.status import emit as emit_ui
 from tui.status import read_input
 
@@ -43,6 +46,8 @@ REQUEST_TIMEOUT = 20
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
 MAX_IMAGE_PIXELS = 64 * 1024 * 1024
+PROVIDER_DISCOVERY_WORKERS = 4
+CANDIDATE_DOWNLOAD_WORKERS = 4
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
 SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
@@ -104,6 +109,8 @@ class Ref:
     front: bool = True
     approved: bool = True
     types: list[str] = field(default_factory=lambda: ["Front"])
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass
@@ -689,12 +696,20 @@ def record_scan_completion(
     if str(cfg.get("mode", "read")).strip().lower() == "read":
         return
     albums = history.setdefault("albums", {})
+    prior = albums.get(str(album.path), {})
+    retained_enhanced = (
+        prior.get("enhanced_results", []) if isinstance(prior, dict) else []
+    )
     albums[str(album.path)] = {
         "completed_at_unix": time.time(),
         "album_fingerprint": album_scan_fingerprint(album),
         "policy_fingerprint": scan_policy_fingerprint(cfg, sources),
         "outcome": str(outcome),
     }
+    # A normal SPLINED completion refreshes scan state, but must not erase
+    # independently validated AISPLINE provenance recorded by a future adapter.
+    if retained_enhanced:
+        albums[str(album.path)]["enhanced_results"] = retained_enhanced
     history["version"] = SCAN_COMPLETION_HISTORY_VERSION
     save_scan_completion_history(path, history)
     debug_log(
@@ -860,6 +875,146 @@ def tagged_artist(tracks: list[Track]) -> str | None:
     return None
 
 
+def prepare_tui_library_selection(
+    config_file: Path,
+    cfg: dict[str, Any],
+    sources: list[str],
+    root: Path,
+    albums: list[AlbumDir],
+    completion_history: dict[str, Any],
+    timeout_hours: float,
+    *,
+    bypassed_paths: set[str] | None = None,
+) -> tuple[list[AlbumDir], dict[str, list[Track]], set[str], set[str], list[str]]:
+    """Present one loaded inventory and return transient execution choices."""
+    if not tui_active():
+        return albums, {}, set(), set(), sources
+
+    bypassed = bypassed_paths or set()
+    track_cache: dict[str, list[Track]] = {}
+    rows: list[dict[str, Any]] = []
+    timeout_paths: set[str] = set()
+    for album in albums:
+        album_key = str(album.path)
+        artist = album.path.parent.name or "Unknown Artist"
+        title = album.path.name or "Unknown Album"
+        try:
+            tracks = [read_track(path) for path in album.audio_files]
+            track_cache[album_key] = tracks
+            artist = tagged_artist(tracks) or artist
+            title = tagged_album(tracks) or title
+        except Exception as exc:
+            emit_ui(
+                "activity",
+                category="inventory",
+                state="error",
+                source="tags",
+                message=f"Tag preview failed for {album.path.name}: {exc}",
+            )
+
+        postponed, age_hours = scan_completion_status(
+            completion_history, album, cfg, sources, timeout_hours
+        )
+        history_entry = completion_history.get("albums", {}).get(album_key)
+        if album_key in bypassed:
+            status = "bypassed"
+        elif postponed:
+            status = "timeout"
+            timeout_paths.add(album_key)
+        elif isinstance(history_entry, dict):
+            status = "processed"
+        else:
+            status = "unprocessed"
+        formats_found: list[str] = []
+        try:
+            for child in album.path.iterdir():
+                if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                    value = "JPEG" if child.suffix.lower() in {".jpg", ".jpeg"} else child.suffix[1:].upper()
+                    if value not in formats_found:
+                        formats_found.append(value)
+        except OSError:
+            pass
+        rows.append(
+            {
+                "path": album_key,
+                "artist": artist,
+                "album": title,
+                "status": status,
+                "formats": formats_found,
+                "timeout_remaining": (
+                    format_timeout_hours(max(0.0, timeout_hours - age_hours))
+                    if postponed
+                    else ""
+                ),
+                "selected": status == "unprocessed",
+            }
+        )
+
+    original_configured = resolve_sources(cfg, None, None, [])
+    while True:
+        emit_ui(
+            "library",
+            root=str(root),
+            albums=rows,
+            config=cfg,
+            aisplined=aisplined_settings(cfg),
+            ai_runtime_available=False,
+        )
+        raw = read_input("", kind="library-selection")
+        try:
+            response = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise SplinedError("The TUI returned an invalid library selection.") from exc
+        if not isinstance(response, dict):
+            raise SplinedError("The TUI returned an invalid library selection.")
+        action = str(response.get("action", ""))
+        if action == "save-settings":
+            from tui.source_settings import persist_policy_draft
+
+            policy = response.get("policy")
+            if not isinstance(policy, dict):
+                raise SplinedError("The TUI source-policy draft is invalid.")
+            try:
+                updated = persist_policy_draft(config_file, policy, validate_config_v5)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise SplinedError(f"Unable to save Config v5 source policy: {exc}") from exc
+            cfg.clear()
+            cfg.update(updated)
+            newly_configured = resolve_sources(cfg, None, None, [])
+            if sources == original_configured:
+                sources = newly_configured
+            else:
+                sources = [source for source in newly_configured if source in sources]
+            original_configured = newly_configured
+            emit_ui(
+                "activity",
+                category="policy",
+                state="done",
+                source="config-v5",
+                message="Source policy saved atomically and applied",
+            )
+            continue
+        if action != "launch":
+            raise SplinedError("The TUI library workspace did not select a scan mode.")
+        selected_paths = {
+            str(value) for value in response.get("selected", []) if str(value)
+        }
+        overrides = {
+            str(value)
+            for value in response.get("bypass_overrides", [])
+            if str(value)
+        }
+        scan_mode = str(response.get("scan_mode", "auto-selected"))
+        if scan_mode in {"filtered-read", "auto-all", "auto-selected"}:
+            cfg["mode"] = "read"
+        elif scan_mode == "filtered-write":
+            cfg["mode"] = "write"
+        else:
+            raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
+        selected = [album for album in albums if str(album.path) in selected_paths]
+        return selected, track_cache, overrides, timeout_paths, sources
+
+
 def compact(paths: list[Path]) -> str:
     names = [p.name for p in paths[:5]]
     if len(paths) > 5: names.append(f"+{len(paths)-5} more")
@@ -926,11 +1081,21 @@ class Http:
     def __init__(self):
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": USER_AGENT})
+        self._owner_thread = threading.get_ident()
+        self._thread_local = threading.local()
         self.last_mb_request: float | None = None
 
     def get(self, url: str, **kwargs: Any) -> requests.Response:
         kwargs.setdefault("timeout", REQUEST_TIMEOUT)
-        return self.s.get(url, **kwargs)
+        if threading.get_ident() == self._owner_thread:
+            session = self.s
+        else:
+            session = getattr(self._thread_local, "session", None)
+            if session is None:
+                session = requests.Session()
+                session.headers.update({"User-Agent": USER_AGENT})
+                self._thread_local.session = session
+        return session.get(url, **kwargs)
 
 
 def credential_file(config_file: Path, cfg: dict[str, Any], provider: str) -> Path:
@@ -1458,6 +1623,14 @@ def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str
     min_delay = max(0.0, float(mbcfg.get("mb_min_delay", 1.05)))
     url = f"{MB_BASE}/release/{mbid}"
 
+    emit_ui(
+        "activity",
+        category="authority",
+        state="start",
+        source="musicbrainz",
+        message=f"MusicBrainz authority lookup started · {mbid}",
+    )
+
     for attempt in range(retry_max + 1):
         if http.last_mb_request is not None:
             wait = min_delay - (time.monotonic() - http.last_mb_request)
@@ -1474,6 +1647,13 @@ def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str
             )
         except requests.RequestException as exc:
             if attempt < retry_max:
+                emit_ui(
+                    "activity",
+                    category="authority",
+                    state="retry",
+                    source="musicbrainz",
+                    message=f"MusicBrainz retry {attempt + 2}/{retry_max + 1}",
+                )
                 continue
             raise SplinedError(
                 f"Unable to query MusicBrainz release {mbid} after {attempt + 1} attempt(s): {exc}"
@@ -1535,7 +1715,7 @@ def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str
             if resource and resource not in external_urls:
                 external_urls.append(resource)
 
-        return Release(
+        release = Release(
             mbid=mbid,
             title=str(d.get("title") or "").strip(),
             artist_credit="".join(parts).strip(),
@@ -1544,6 +1724,14 @@ def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str
             track_count=track_count if found_count else None,
             external_urls=external_urls,
         )
+        emit_ui(
+            "activity",
+            category="authority",
+            state="done",
+            source="musicbrainz",
+            message=f"Authority resolved · {release.artist_credit} · {release.title}",
+        )
+        return release
 
     raise SplinedError(f"MusicBrainz release lookup failed: {mbid}")
 
@@ -1960,7 +2148,13 @@ def discover_discogs(
             image for image in images
             if isinstance(image, dict) and str(image.get("type") or "").lower() == "primary"
         ]
-        image_pool = primary or [image for image in images if isinstance(image, dict)]
+        all_images = [image for image in images if isinstance(image, dict)]
+        discogs_policy = source_policy(cfg, "discogs")
+        primary_only = (
+            not discogs_policy["source_override"]
+            or discogs_policy["primary_image_only"]
+        )
+        image_pool = (primary or all_images) if primary_only else all_images
 
         emitted = False
         for image_index, image in enumerate(image_pool[:2], 1):
@@ -1973,9 +2167,23 @@ def discover_discogs(
                     "discogs",
                     f"{release_id}:{image_id}",
                     uri,
-                    front=True,
+                    front=(
+                        str(image.get("type") or "").lower() == "primary"
+                        if primary
+                        else True
+                    ),
                     approved=True,
                     types=["Front"],
+                    width=(
+                        int(image.get("width"))
+                        if str(image.get("width") or "").isdigit()
+                        else None
+                    ),
+                    height=(
+                        int(image.get("height"))
+                        if str(image.get("height") or "").isdigit()
+                        else None
+                    ),
                 )
             )
             emitted = True
@@ -2007,32 +2215,72 @@ def discover_fallback(
         release_group_title=None,
         track_count=None,
     )
-    refs: list[Ref] = []
-    diag: list[tuple[str, str]] = []
+    eligible = [
+        source
+        for source in sources
+        if source != "fanarttv"
+        and (source != "coverartarchive" or bool(release_mbid))
+    ]
 
-    for source in sources:
+    def work(source: str) -> tuple[list[Ref], str | None]:
+        started = time.perf_counter()
+        emit_ui(
+            "activity",
+            category="provider",
+            state="start",
+            source=source,
+            message=f"{provider_label(source)} fallback discovery started",
+        )
         try:
             if source == "deezer":
-                if queried_sources is not None: queried_sources.add(source)
-                refs += discover_deezer(http, synthetic)
+                found = discover_deezer(http, synthetic)
             elif source == "itunes":
-                if queried_sources is not None: queried_sources.add(source)
-                refs += discover_itunes(http, config_file, cfg, synthetic)
+                found = discover_itunes(http, config_file, cfg, synthetic)
             elif source == "lastfm":
-                if queried_sources is not None: queried_sources.add(source)
-                refs += discover_lastfm(http, config_file, cfg, synthetic)
+                found = discover_lastfm(http, config_file, cfg, synthetic)
             elif source == "discogs":
-                if queried_sources is not None: queried_sources.add(source)
-                refs += discover_discogs(http, config_file, cfg, artist, album)
-            elif source == "coverartarchive" and release_mbid:
-                if queried_sources is not None: queried_sources.add(source)
-                refs += discover_caa(http, synthetic)
-            elif source == "fanarttv":
-                # Fanart.tv requires a release-group MBID. That is unavailable
-                # until MusicBrainz authority is recovered.
-                continue
+                found = discover_discogs(http, config_file, cfg, artist, album)
+            elif source == "coverartarchive":
+                found = discover_caa(http, synthetic)
+            else:
+                found = []
+            elapsed = time.perf_counter() - started
+            emit_ui(
+                "activity",
+                category="provider",
+                state="done",
+                source=source,
+                count=len(found),
+                elapsed=elapsed,
+                message=f"{provider_label(source)} returned {len(found)} reference(s) in {elapsed:.2f}s",
+            )
+            return found, None
         except Exception as exc:
-            diag.append((source, str(exc)))
+            elapsed = time.perf_counter() - started
+            emit_ui(
+                "activity",
+                category="provider",
+                state="error",
+                source=source,
+                elapsed=elapsed,
+                message=f"{provider_label(source)} failed: {exc}",
+            )
+            return [], str(exc)
+
+    refs: list[Ref] = []
+    diag: list[tuple[str, str]] = []
+    if queried_sources is not None:
+        queried_sources.update(eligible)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, min(PROVIDER_DISCOVERY_WORKERS, len(eligible))),
+        thread_name_prefix="splined-provider",
+    ) as executor:
+        scheduled = [(source, executor.submit(work, source)) for source in eligible]
+        for source, future in scheduled:
+            found, error = future.result()
+            refs.extend(found)
+            if error is not None:
+                diag.append((source, error))
     return refs, diag
 
 
@@ -2045,46 +2293,82 @@ def discover_all(
     sources: list[str],
     queried_sources: set[str] | None = None,
 ) -> tuple[list[Ref], list[tuple[str, str]]]:
-    refs: list[Ref] = []
-    diag: list[tuple[str, str]] = []
-
-    for source in sources:
-        if queried_sources is not None:
-            queried_sources.add(source)
-
+    def work(source: str) -> tuple[list[Ref], str | None]:
+        started = time.perf_counter()
         debug_log(
             f"provider.start source={source} mbid={rel.mbid} "
             f"artist={rel.artist_credit!r} album={rel.title!r}"
         )
-
+        emit_ui(
+            "activity",
+            category="provider",
+            state="start",
+            source=source,
+            message=f"{provider_label(source)} discovery started",
+        )
         try:
-            before = len(refs)
-
             if source == "deezer":
-                refs += discover_deezer(http, rel)
+                found = discover_deezer(http, rel)
             elif source == "itunes":
-                refs += discover_itunes(http, config_file, cfg, rel)
+                found = discover_itunes(http, config_file, cfg, rel)
             elif source == "fanarttv":
-                refs += discover_fanart(http, config_file, cfg, rel)
+                found = discover_fanart(http, config_file, cfg, rel)
             elif source == "lastfm":
-                refs += discover_lastfm(http, config_file, cfg, rel)
+                found = discover_lastfm(http, config_file, cfg, rel)
             elif source == "coverartarchive":
-                refs += discover_caa(http, rel)
+                found = discover_caa(http, rel)
             elif source == "discogs":
-                refs += discover_discogs(
+                found = discover_discogs(
                     http, config_file, cfg, rel.artist_credit, rel.title
                 )
-
-            produced = len(refs) - before
-            debug_log(f"provider.done source={source} refs={produced}")
-
+            else:
+                found = []
+            elapsed = time.perf_counter() - started
+            debug_log(
+                f"provider.done source={source} refs={len(found)} elapsed={elapsed:.3f}s"
+            )
+            emit_ui(
+                "activity",
+                category="provider",
+                state="done",
+                source=source,
+                count=len(found),
+                elapsed=elapsed,
+                message=f"{provider_label(source)} returned {len(found)} reference(s) in {elapsed:.2f}s",
+            )
+            return found, None
         except Exception as exc:
-            diag.append((source, str(exc)))
+            elapsed = time.perf_counter() - started
             debug_log(
                 f"provider.error source={source} "
                 f"error={type(exc).__name__}: {exc}"
             )
+            emit_ui(
+                "activity",
+                category="provider",
+                state="error",
+                source=source,
+                elapsed=elapsed,
+                message=f"{provider_label(source)} failed: {exc}",
+            )
+            return [], str(exc)
 
+    refs: list[Ref] = []
+    diag: list[tuple[str, str]] = []
+    if queried_sources is not None:
+        queried_sources.update(sources)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, min(PROVIDER_DISCOVERY_WORKERS, len(sources))),
+        thread_name_prefix="splined-provider",
+    ) as executor:
+        scheduled = [(source, executor.submit(work, source)) for source in sources]
+        # Merge in configured source order so candidate ordering and every
+        # downstream tie-break remain identical to the sequential baseline.
+        for source, future in scheduled:
+            found, error = future.result()
+            refs.extend(found)
+            if error is not None:
+                diag.append((source, error))
     return refs, diag
 
 
@@ -2356,6 +2640,74 @@ def validate_image_dimensions(width: int, height: int) -> None:
         )
 
 
+def reference_policy_decision(
+    cfg: dict[str, Any] | None,
+    ref: Ref,
+) -> tuple[str, str]:
+    """Apply only policy supported by reliable discovery metadata."""
+    if cfg is None:
+        return ("accept", "No source policy supplied") if ref.front else (
+            "reject",
+            "Reference is not a front image",
+        )
+    if not reference_allowed(cfg, ref.source, ref.front):
+        return "reject", "Reference is not primary/front under active source policy"
+    if ref.width is None or ref.height is None:
+        return "unknown", "Downloaded dimensions are required"
+    # Source-policy dimension constraints are defined on the obtained source,
+    # exactly as in project_candidate after download. Reliable provider
+    # metadata can therefore reject here without changing later semantics.
+    return source_policy_decision(cfg, ref.source, ref.width, ref.height)
+
+
+def filter_download_references(
+    refs: list[Ref],
+    cfg: dict[str, Any] | None,
+) -> tuple[list[Ref], list[tuple[str, str]]]:
+    """Filter only references that can be rejected before downloading."""
+    filtered: list[Ref] = []
+    diagnostics: list[tuple[str, str]] = []
+    for ref in refs:
+        if not ref.url:
+            reason = "reference has no URL"
+            diagnostics.append((ref.source, reason))
+            emit_ui(
+                "activity",
+                category="download",
+                state="skipped",
+                source=ref.source,
+                message=f"{provider_label(ref.source)} reference skipped: {reason}",
+            )
+            continue
+        if is_discogs_placeholder(ref):
+            reason = "provider placeholder"
+            diagnostics.append((ref.source, reason))
+            emit_ui(
+                "activity",
+                category="download",
+                state="skipped",
+                source=ref.source,
+                message=f"{provider_label(ref.source)} placeholder skipped",
+            )
+            continue
+        decision, reason = reference_policy_decision(cfg, ref)
+        if decision == "reject":
+            diagnostics.append((ref.source, f"policy-filtered: {reason}"))
+            debug_log(
+                f"download.policy_filtered source={ref.source} id={ref.id} reason={reason}"
+            )
+            emit_ui(
+                "activity",
+                category="policy",
+                state="filtered",
+                source=ref.source,
+                message=f"{provider_label(ref.source)} candidate policy-filtered: {reason}",
+            )
+            continue
+        filtered.append(ref)
+    return filtered, diagnostics
+
+
 
 def download_candidates(
     http: Http,
@@ -2367,21 +2719,37 @@ def download_candidates(
 ) -> tuple[list[Candidate], list[tuple[str, str]]]:
     if clean_first:
         clean_cache(cache)
-    out: list[Candidate] = []
-    diag: list[tuple[str, str]] = []
-    for ref in refs:
-        allowed = ref.front if cfg is None else reference_allowed(cfg, ref.source, ref.front)
-        if not allowed or not ref.url:
-            debug_log(f"download.skip source={ref.source} id={ref.id} reason=no-front-or-url")
-            continue
-        if is_discogs_placeholder(ref):
-            debug_log(
-                f"download.skip source={ref.source} id={ref.id} "
-                f"reason=provider-placeholder"
+    eligible_refs, diag = filter_download_references(refs, cfg)
+    scheduled_refs: list[Ref] = []
+    seen_urls: set[tuple[str, str]] = set()
+    for ref in eligible_refs:
+        identity = (ref.source, ref.url.strip())
+        if identity in seen_urls:
+            emit_ui(
+                "activity",
+                category="download",
+                state="skipped",
+                source=ref.source,
+                message=(
+                    f"{provider_label(ref.source)} duplicate fetch reused; "
+                    "candidate metadata retained"
+                ),
             )
             continue
+        seen_urls.add(identity)
+        scheduled_refs.append(ref)
+
+    def work(ref: Ref) -> tuple[Candidate | None, str | None]:
+        started = time.perf_counter()
         try:
             debug_log(f"download.start source={ref.source} id={ref.id}")
+            emit_ui(
+                "activity",
+                category="download",
+                state="start",
+                source=ref.source,
+                message=f"Downloading {provider_label(ref.source)} candidate",
+            )
             with http.get(ref.url, allow_redirects=True, stream=True) as response:
                 if response.status_code != 200:
                     raise SplinedError(
@@ -2396,17 +2764,74 @@ def download_candidates(
             digest = hashlib.sha256((ref.source + "\0" + ref.url).encode()).hexdigest()[:24]
             path = cache / f"splined-candidate-{digest}.{cache_extension_from_format(fmt)}"
             path.write_bytes(artwork)
-            out.append(Candidate(ref, path, width, height, fmt, sources.index(ref.source)))
+            candidate = Candidate(
+                ref, path, width, height, fmt, sources.index(ref.source)
+            )
+            elapsed = time.perf_counter() - started
             debug_log(
                 f"download.done source={ref.source} id={ref.id} "
-                f"size={width}x{height} format={fmt}"
+                f"size={width}x{height} format={fmt} elapsed={elapsed:.3f}s"
             )
+            emit_ui(
+                "activity",
+                category="download",
+                state="done",
+                source=ref.source,
+                elapsed=elapsed,
+                message=f"{provider_label(ref.source)} {width}×{height} downloaded in {elapsed:.2f}s",
+            )
+            return candidate, None
         except Exception as exc:
-            diag.append((ref.source, f"{exc} ({ref.url})"))
+            elapsed = time.perf_counter() - started
             debug_log(
                 f"download.error source={ref.source} id={ref.id} "
                 f"error={type(exc).__name__}: {exc}"
             )
+            emit_ui(
+                "activity",
+                category="download",
+                state="error",
+                source=ref.source,
+                elapsed=elapsed,
+                message=f"{provider_label(ref.source)} download failed: {exc}",
+            )
+            return None, f"{exc} ({ref.url})"
+
+    downloaded: dict[tuple[str, str], tuple[Candidate | None, str | None]] = {}
+    started_all = time.perf_counter()
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max(1, min(CANDIDATE_DOWNLOAD_WORKERS, len(scheduled_refs))),
+        thread_name_prefix="splined-download",
+    ) as executor:
+        scheduled = [(ref, executor.submit(work, ref)) for ref in scheduled_refs]
+        for ref, future in scheduled:
+            downloaded[(ref.source, ref.url.strip())] = future.result()
+
+    # Recreate a candidate for every original reference in original order.
+    # Proven duplicate URLs share bytes and image probing, but their provider
+    # IDs, approval flags and all existing ranking inputs remain authoritative.
+    out: list[Candidate] = []
+    for ref in eligible_refs:
+        candidate, error = downloaded[(ref.source, ref.url.strip())]
+        if candidate is not None:
+            out.append(
+                Candidate(
+                    ref,
+                    candidate.path,
+                    candidate.width,
+                    candidate.height,
+                    candidate.format,
+                    sources.index(ref.source),
+                )
+            )
+        if error is not None:
+            diag.append((ref.source, error))
+    debug_log(
+        f"download.batch refs={len(eligible_refs)} unique_fetches={len(scheduled_refs)} "
+        f"candidates={len(out)} "
+        f"workers={min(CANDIDATE_DOWNLOAD_WORKERS, len(scheduled_refs)) if scheduled_refs else 0} "
+        f"elapsed={time.perf_counter() - started_all:.3f}s"
+    )
     return out, diag
 
 
@@ -2910,6 +3335,8 @@ def render_candidate_table(
                 "acceptable": projected["acceptable"],
                 "approved": candidate.ref.approved,
                 "id": str(candidate.ref.id),
+                "url": candidate.ref.url,
+                "provenance": "[URL]",
                 "selected": candidate is selected,
                 "suggested": candidate is suggested,
             }
@@ -2918,6 +3345,9 @@ def render_candidate_table(
         "candidates",
         items=candidate_items,
         manual_fallback=manual_fallback,
+        aisplined=aisplined_settings(cfg),
+        ai_runtime_available=False,
+        ideal=int(section(cfg, "range").get("ideal", 1800)),
     )
 
     columns = [
@@ -3160,22 +3590,40 @@ def run_scan_dir(
 
     albums: list[AlbumDir] = []
     postponed_albums: list[tuple[AlbumDir, float]] = []
-    for album in discovered_albums:
-        postponed, age_hours = scan_completion_status(
-            completion_history,
-            album,
+    track_cache: dict[str, list[Track]] = {}
+    if tui_active():
+        albums, track_cache, _, timeout_paths, sources = prepare_tui_library_selection(
+            config_file,
             cfg,
             sources,
+            root,
+            discovered_albums,
+            completion_history,
             timeout_hours,
         )
-        if postponed:
-            postponed_albums.append((album, age_hours))
-            debug_log(
-                f"scan.postponed album={str(album.path)!r} "
-                f"age_hours={age_hours:.3f} timeout_hours={timeout_hours:g}"
+        postponed_albums = [
+            (album, 0.0)
+            for album in discovered_albums
+            if str(album.path) in timeout_paths
+        ]
+        mode = str(cfg.get("mode", "read")).lower()
+    else:
+        for album in discovered_albums:
+            postponed, age_hours = scan_completion_status(
+                completion_history,
+                album,
+                cfg,
+                sources,
+                timeout_hours,
             )
-        else:
-            albums.append(album)
+            if postponed:
+                postponed_albums.append((album, age_hours))
+                debug_log(
+                    f"scan.postponed album={str(album.path)!r} "
+                    f"age_hours={age_hours:.3f} timeout_hours={timeout_hours:g}"
+                )
+            else:
+                albums.append(album)
 
     http = Http()
     _, mbmode = mb_headers(config_file, cfg)
@@ -3235,7 +3683,9 @@ def run_scan_dir(
             "fallback_reason": None,
         }
         try:
-            tracks = [read_track(path) for path in album.audio_files]
+            tracks = track_cache.get(str(album.path)) or [
+                read_track(path) for path in album.audio_files
+            ]
             record["tracks"] = tracks
             record["file_count"] = len(tracks)
             record["compilation"] = "Compilation" if any((t.compilation or "").strip() == "1" for t in tracks) else "Standard"
@@ -3366,6 +3816,10 @@ def run_scan_dir(
             album=tag_album,
             authority="Fallback" if fallback_reason else "ExactAlbumId",
             fallback_reason=str(fallback_reason or ""),
+            track_count=file_count,
+            compilation=compilation,
+            mbid=str(mbid or ""),
+            tag_state="UNMATCHED" if fallback_reason else "MATCHED",
             phase="processing",
         )
 
@@ -4021,7 +4475,12 @@ def migrate_v4_config(cfg: dict[str, Any]) -> dict[str, Any]:
     migrated.setdefault("logging", {"retention_days": 14})
     migrated.setdefault("history", {"enabled": True, "retention_days": 0})
     if "aisplined" not in migrated and "splineai" not in migrated:
-        migrated["aisplined"] = {"enabled": False, "endpoint": ""}
+        migrated["aisplined"] = {
+            "enabled": False,
+            "endpoint": "",
+            "minimum_short_side": 600,
+            "allow_below_minimum_override": False,
+        }
     migrated.setdefault("credentials", {}).setdefault(
         "credential_dir",
         str(DEFAULT_CREDENTIAL_DIR),
@@ -4048,7 +4507,24 @@ def _validate_aisplined_table(value: Any, label: str) -> dict[str, Any]:
     endpoint = value.get("endpoint", "")
     if not isinstance(endpoint, str):
         raise SplinedError(f"{label}.endpoint must be a string.")
-    return {"enabled": enabled, "endpoint": endpoint}
+    minimum_short_side = _optional_positive_int(
+        value.get("minimum_short_side", 600),
+        f"{label}.minimum_short_side",
+    )
+    # The default above is non-null; keep the assertion explicit so a future
+    # refactor cannot silently turn this required policy floor into None.
+    if minimum_short_side is None:
+        raise SplinedError(f"{label}.minimum_short_side must be greater than zero.")
+    allow_override = _bool_value(
+        value.get("allow_below_minimum_override", False),
+        f"{label}.allow_below_minimum_override",
+    )
+    return {
+        "enabled": enabled,
+        "endpoint": endpoint,
+        "minimum_short_side": minimum_short_side,
+        "allow_below_minimum_override": allow_override,
+    }
 
 
 def aisplined_settings(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -4072,13 +4548,18 @@ def aisplined_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     if canonical is not None and legacy is not None and canonical != legacy:
         raise SplinedError(
             "[aisplined] and legacy [splineai] disagree; remove the legacy "
-            "table or make enabled and endpoint identical."
+            "table or make all integration policy fields identical."
         )
     if canonical is not None:
         return canonical
     if legacy is not None:
         return legacy
-    return {"enabled": False, "endpoint": ""}
+    return {
+        "enabled": False,
+        "endpoint": "",
+        "minimum_short_side": 600,
+        "allow_below_minimum_override": False,
+    }
 
 
 def validate_config_v5(cfg: dict[str, Any]) -> None:
@@ -4563,9 +5044,11 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     print()
     print("Ratatui TUI:")
     help_row("      --tui", "Require Ratatui for an interactive --scan-dir run")
-    help_row("      --no-tui", "Keep the plain CLI even when stdin/stdout are terminals")
-    help_row("      --tui-theme OLED|CHALK", "Select one of the two locked TUI themes [OLED]")
-    help_row("      automatic", "Interactive operational scans use TUI; redirected/non-TTY runs stay plain")
+    help_row("      --no-tui", "Use the advanced verbose/diagnostic plain CLI")
+    help_row("      --tui-theme OLED", "Use the high-chroma true-black theme [default]")
+    help_row("      --tui-theme CHALK", "Use the muted mineral/charcoal theme")
+    help_row("      interactive TTY", "Operational scans enter the TUI automatically")
+    help_row("      redirected/non-TTY", "Operational scans remain in the plain CLI automatically")
 
 
 

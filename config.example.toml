@@ -106,3 +106,5 @@ retention_days = 0 # 0 keeps history forever
 [aisplined]
 enabled = false
 endpoint = ""
+minimum_short_side = 600
+allow_below_minimum_override = false

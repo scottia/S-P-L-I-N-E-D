@@ -191,10 +191,12 @@ namespace Splined.WindowsGui
         public int RangeMax = 2400;
         public int RangeLadder = 3600;
 
-        // Config v5 reserves SPLINEAI internally. It is deliberately not shown
+        // Config v5 reserves AISPLINE internally. It is deliberately not shown
         // by the Windows GUI, but these values are retained during every save.
         public bool AiSplinedEnabled;
         public string AiSplinedEndpoint = "";
+        public int AiSplinedMinimumShortSide = 600;
+        public bool AiSplinedAllowBelowMinimumOverride;
 
         public ConfigState Clone()
         {
@@ -343,14 +345,22 @@ namespace Splined.WindowsGui
             bool hasLegacySplineAi = HasSection(text, "splineai");
             bool canonicalEnabled = ReadBool(text, "aisplined", "enabled", false);
             string canonicalEndpoint = ReadString(text, "aisplined", "endpoint", "");
+            int canonicalMinimumShortSide = ReadInt(text, "aisplined", "minimum_short_side", 600);
+            bool canonicalAllowBelowMinimumOverride = ReadBool(text, "aisplined", "allow_below_minimum_override", false);
             bool legacyEnabled = ReadBool(text, "splineai", "enabled", false);
             string legacyEndpoint = ReadString(text, "splineai", "endpoint", "");
+            int legacyMinimumShortSide = ReadInt(text, "splineai", "minimum_short_side", 600);
+            bool legacyAllowBelowMinimumOverride = ReadBool(text, "splineai", "allow_below_minimum_override", false);
             if (hasAiSplined && hasLegacySplineAi
                 && (canonicalEnabled != legacyEnabled
-                    || !String.Equals(canonicalEndpoint, legacyEndpoint, StringComparison.Ordinal)))
+                    || !String.Equals(canonicalEndpoint, legacyEndpoint, StringComparison.Ordinal)
+                    || canonicalMinimumShortSide != legacyMinimumShortSide
+                    || canonicalAllowBelowMinimumOverride != legacyAllowBelowMinimumOverride))
                 throw new InvalidDataException("[aisplined] and legacy [splineai] disagree.");
             state.AiSplinedEnabled = hasAiSplined ? canonicalEnabled : legacyEnabled;
             state.AiSplinedEndpoint = hasAiSplined ? canonicalEndpoint : legacyEndpoint;
+            state.AiSplinedMinimumShortSide = hasAiSplined ? canonicalMinimumShortSide : legacyMinimumShortSide;
+            state.AiSplinedAllowBelowMinimumOverride = hasAiSplined ? canonicalAllowBelowMinimumOverride : legacyAllowBelowMinimumOverride;
             return state;
         }
 
@@ -396,6 +406,8 @@ namespace Splined.WindowsGui
                 throw new InvalidOperationException("Output file name must be a filename stem without an extension or directory.");
             if (state.ScanModeTimeout < 0)
                 throw new InvalidOperationException("Scan timeout cannot be negative.");
+            if (state.AiSplinedMinimumShortSide <= 0)
+                throw new InvalidOperationException("AISPLINE minimum short side must be greater than zero.");
             foreach (KeyValuePair<string, SourcePolicyState> pair in state.SourcePolicies)
             {
                 SourcePolicyState policy = pair.Value;
@@ -636,6 +648,8 @@ namespace Splined.WindowsGui
             text.AppendLine("[aisplined]");
             text.AppendLine("enabled = " + Bool(state.AiSplinedEnabled));
             text.AppendLine("endpoint = " + Quote(state.AiSplinedEndpoint));
+            text.AppendLine("minimum_short_side = " + state.AiSplinedMinimumShortSide);
+            text.AppendLine("allow_below_minimum_override = " + Bool(state.AiSplinedAllowBelowMinimumOverride));
             return text.ToString();
         }
 
