@@ -41,11 +41,11 @@ TUI
 
 The TUI uses exactly two first-class themes, `OLED` and `CHALK`, and shares the same authoritative source, history, bypass, timeout, and status-color semantics as the Windows implementation.
 
-The Select Media startup path is required to mirror Windows `LibraryInventory.Load`: one lightweight filesystem/history inventory identifies album folders, detects local cover files by filename/extension, honors `[library].ignored_subs`, applies retained history, builds the Artist/Album model, and then makes the TUI usable. Tag parsing, MusicBrainz authority, provider discovery, candidate downloads, image analysis, ranking, and AISPLINE work begin only after the user launches selected albums.
+Select Media opens a disposable SQLite picker index from the configured cache, enumerates only immediate root Artist folders, and becomes usable without a recursive full-library traversal. Opening an Artist lazily inventories only that subtree and persists its folder-derived Album topology. Picker identities stay stable for the session; there is no pre-Launch Mutagen/tag-enrichment pass. `Auto Scan [ALL]` and the explicit Refresh Library Index action are the intentional full-inventory paths. Tag parsing, MusicBrainz authority, providers, candidate downloads, image analysis, ranking, and AISPLINE work begin only after Launch.
 
-Artist/Album filtering then operates entirely against that loaded in-memory model rather than rescanning the filesystem on each keystroke.
+Artist/Album filtering operates entirely against the currently indexed in-memory model rather than rescanning the filesystem on each keystroke. The picker database is acceleration state, not history or processing authority, and may be deleted safely.
 
-The TUI includes source-grouped candidate presentation, live authority/provider/download activity, actionable URL/provenance presentation instead of provider IDs in primary tables, and direct mouse/touch interaction through the isolated `splined-pyratatui-input` crossterm extension. Render-time hit regions drive taps and the list under the pointer receives wheel/touch scrolling.
+The TUI includes source-grouped candidate presentation on one shared Ratatui column grid, WIDE-mode terminal-cell artwork previews, live authority/provider/download activity, and URL/provenance markers instead of provider IDs. `[URL]` uses terminal-client OSC 8 hyperlink handling; SPLINED does not launch a browser inside its Docker/SSH host. Direct mouse/touch interaction remains provided through the isolated `splined-pyratatui-input` crossterm extension. Render-time hit regions drive taps and the list under the pointer receives wheel/touch scrolling.
 
 The user's WebSSH iOS terminal is a verified touch target: the prior SPLINED `--tui` supported touch-driven result selection and scrolling. Restoring this behavior in the current Ratatui path is therefore an implementation/binding parity requirement, not a speculative terminal feature.
 

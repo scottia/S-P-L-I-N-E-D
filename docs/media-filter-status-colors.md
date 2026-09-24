@@ -25,29 +25,37 @@ A row filtered out of view remains part of the underlying library model unless a
 
 ---
 
-# Windows lightweight inventory authority
+# Windows-equivalent folder inventory authority
 
-Windows builds the Select Media model with one lightweight filesystem/history inventory before the user launches processing.
+The Python Ratatui path preserves the Windows folder/status model through a
+hierarchical picker index suitable for large NAS libraries. Normal startup
+enumerates only immediate root Artist folders and joins any cached Album rows
+from `<cache>/splined-picker.sqlite3`. Opening an Artist inventories that
+Artist subtree once per session and caches its Album folders.
 
 Required behavior:
 
 ```text
-enumerate directories/files once
-        ↓
-identify album folders by supported audio-file presence
-        ↓
-detect local cover files by name/extension
-        ↓
-apply retained history / bypass / timeout state
-        ↓
-build Artist/Album tree and statistics
+enumerate immediate root Artist directories
         ↓
 Select Media becomes usable
+        ↓
+open one Artist
+        ↓
+identify Album folders by supported audio-file presence
+        ↓
+detect local cover filenames/extensions
+        ↓
+apply retained history / bypass / timeout state
 ```
 
 This inventory is intentionally different from album processing. It does not read audio tags, perform MusicBrainz authority lookup, discover providers, download artwork, decode artwork to determine geometry, rank candidates, or call AISPLINE. Those operations begin only after the user launches the selected albums.
 
-The Python Ratatui Select Media load path must be behaviorally equivalent to this Windows inventory model rather than performing expensive album-processing work before selection.
+The picker SQLite database is disposable acceleration state, not status
+authority. Folder names remain the stable Select Media identity. No pre-Launch
+Mutagen enrichment rewrites Artist or Album rows. `Auto Scan [ALL]` and the
+explicit Refresh Library Index action are the only routine paths that request a
+complete recursive inventory.
 
 ## Ignored/excluded folders
 

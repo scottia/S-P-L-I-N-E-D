@@ -95,27 +95,64 @@ regions across the top, followed by the three library regions:
 - live Artist and Album filter boxes;
 - source/range configuration access where appropriate.
 
-### Windows-equivalent lightweight inventory
+### Persistent, lazy Select Media inventory
 
-Before the user launches any album, the Python Ratatui Select Media path must
-be behaviorally equivalent to Windows `LibraryInventory.Load`.
-
-The required pre-selection sequence is:
+Normal Python Ratatui startup uses a disposable SPLINED-owned SQLite picker
+index in the configured cache directory:
 
 ```text
-LIGHTWEIGHT LIBRARY INVENTORY
+<cache>/splined-picker.sqlite3
+```
 
-    enumerate directories/files once
+It is an acceleration index only. Completion, bypass, timeout, configuration,
+tag, and processing authority remain in their existing stores and engine
+paths. Deleting this database is safe.
+
+The normal startup sequence is:
+
+```text
+open picker index
+        ↓
+enumerate immediate Artist folders at the library root
+        ↓
+reconcile root Artist topology and cached Album rows
+        ↓
+SELECT MEDIA IS USABLE
+        ↓
+user opens an Artist
+        ↓
+inventory only that Artist subtree when not loaded this session
+        ↓
+cache its Album folders and local-art filenames
+```
+
+Ordinary startup does not recursively walk every Artist. A cold cache exposes
+folder-derived Artist rows immediately; unindexed Artists use a muted
+`inventory not loaded` presentation rather than fabricating White history
+state. A warm cache loads known Album topology from SQLite without a routine
+full-library validation pass.
+
+Artist and Album identity in Select Media is stable and folder-derived:
+
+```text
+Artist display identity = Artist folder name
+Album display identity  = Album folder name
+```
+
+Tags read after Launch never rename, regroup, or reorder picker rows.
+
+When an Artist is explicitly opened, its allowed pre-Launch work is:
+
+```text
+    enumerate that Artist's directories/files
             ↓
     identify album folders
             ↓
-    detect local cover files
+    detect local cover filenames/extensions
             ↓
     apply retained history
             ↓
-    build Artist/Album tree
-            ↓
-    TUI becomes immediately usable
+    update the in-memory model and picker index
 ```
 
 This phase is a filesystem/history inventory only. It may:
@@ -141,15 +178,10 @@ perform:
 - any other album-processing operation that belongs after Launch.
 
 Those expensive operations begin only after the user launches the selected
-album(s), with one narrow presentation-only exception: after the folder/history
-model is visible, SPLINED reads one representative track per album in four
-bounded background workers. Those Mutagen results enrich the displayed
-Artist/Album names and report MusicBrainz-tag coverage without changing paths,
-selection authority, status, or scan ordering. The representative result is
-cached in memory with its path, size, and modification time and is reused after
-Launch only if it still matches; authoritative processing still reads every
-other track. No MusicBrainz network lookup, provider work, artwork decoding, or
-candidate processing occurs during this background enrichment.
+album(s). There is no representative-track Mutagen enrichment pass before
+Launch and no background operation that changes picker identity while the user
+is selecting media. Post-Launch processing reads the authoritative tags it
+requires through the unchanged engine path.
 
 ### Ignored/excluded directory authority
 
@@ -160,21 +192,15 @@ include them in statistics, status reconciliation, or selection payloads.
 Wildcard entries remain supported where current SPLINED/Windows rules support
 them. Symlink/reparse-style recursive loops are not followed.
 
-Artist and Album text filters operate on the already-loaded in-memory library
-model. Typing into a filter must begin filtering immediately and must not rescan
-the filesystem on each keystroke.
+Artist and Album text filters operate on the already-loaded in-memory model.
+Typing into a filter begins filtering immediately and never triggers a
+filesystem rescan. Returning to an Artist already inventoried in the current
+session is immediate.
 
-The Python inventory uses `os.scandir` with at most eight directory reads in
-flight so high-latency NAS/CIFS/NFS mounts do not serialize thousands of
-independent directory opens. Results are sorted after enumeration, preserving
-the authoritative deterministic album order. For retained
-completion records that are still inside the active timeout and match the
-current policy, required audio size/mtime metadata is collected during the
-same inventory; it is not re-read in a second full-library pass. Expired or
-policy-incompatible history does not trigger track metadata reads. The loading
-view reports real directory/album inventory counts and bounded history/status
-reconciliation counts so large network libraries show useful activity without
-inventing a percentage.
+`Auto Scan [ALL]` and the explicit `R` / Refresh Library Index action are the
+intentional full-library paths. They index every Artist with genuine Artist and
+Album counts before applying the normal authoritative eligibility rules.
+Simply opening SPLINED never performs that work.
 
 Selecting an artist cascades only to eligible child albums. History, bypass,
 timeout, and manual-reprocessing rules remain authoritative.
@@ -263,10 +289,24 @@ Important sections include:
 - history/log views;
 - final summary.
 
-Source candidates should be grouped by source rather than combined into one
+Source candidates are grouped by source rather than combined into one
 large undifferentiated table. Candidate groups form a vertical scroll region;
 navigation reveals every row and the frame reports visible row/group ranges.
 The TUI does not squeeze a complete search into one physical screen.
+
+Every candidate group in a frame uses one shared Ratatui `Table` column grid.
+Preferred, Local, Enhanced, and provider rows therefore start SOURCE,
+RESOLUTION, FORMAT, RANGE TYPE, DISTANCE, SQUARE, ACCEPTABLE, APPROVED, and URL
+at the same terminal-cell positions. When AISPLINE is enabled, `AI ENHANCED`
+and `AI SPLINED` are part of that same grid; when disabled, both columns are
+absent rather than blank. Compact layouts deliberately remove lower-priority
+columns instead of depending on accidental truncation.
+
+On WIDE terminals, a small true-color half-block artwork preview appears at the
+far right of a candidate group. It is generated only from an artwork file that
+normal candidate processing already acquired, cached once per Candidate for
+the session, and cannot affect evaluation or ranking. Preview failure is a
+presentation-only `NO PREVIEW` state. Compact layouts reclaim that space.
 
 ## Candidate-table presentation
 
@@ -282,11 +322,12 @@ The actionable final column is `URL`, with user-facing provenance markers:
 ```
 
 The full remote URL remains in candidate state but the normal cell displays
-only an underlined `[URL]` marker. Press `U` on the highlighted candidate to
-use the system URL handler. A direct tap/click on `[URL]` should invoke the same
-action when mouse events are available. If no handler exists (common in
-containers), use `--no-tui` to view/copy the full URL from the advanced
-diagnostic stream.
+only an underlined `[URL]` marker. The marker uses OSC 8 terminal hyperlink
+metadata; the terminal client owns opening the URL. SPLINED does not invoke a
+browser inside its Docker/SSH host. Pressing `U` or tapping a captured `[URL]`
+opens a URL interaction surface containing `[OPEN URL]` and the raw URL. Mouse
+capture is temporarily released so clients such as WebSSH can activate the
+link, then restored when the modal closes. `Esc` closes the URL surface.
 
 A history-backed Enhanced entry is shown only when its corresponding file still
 exists and validates. History alone must not resurrect a missing result.
@@ -510,8 +551,9 @@ Keyboard is a complete fallback, not the only intended interaction path.
 | `m` | MusicBrainz retry/search/pick |
 | `b` | Open the bypass confirmation dialog |
 | digits | Highlight an exact candidate; `Enter` activates it |
-| `u` | Open the highlighted hidden `[URL]` through the system URL handler |
+| `u` | Open the terminal-client hyperlink surface for highlighted `[URL]` |
 | `p` | Open Source Policy Settings from Select Media |
+| `r` | Explicitly rebuild the complete disposable picker index |
 | `Ctrl+S` | Explicitly save/apply the source-policy draft |
 | `q` | Close a completed view; disabled during unsafe active work |
 | `Ctrl+C` | Stop the TUI and restore the terminal |
