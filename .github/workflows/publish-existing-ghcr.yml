@@ -196,6 +196,7 @@ jobs:
             python/splined_scan.py \
             python/splined_oauth_validation.py
           python3 -m compileall -q python/tui
+          python3 -m compileall -q python/pyratatui_input/python
 
           echo "PASS: Python compilation"
 

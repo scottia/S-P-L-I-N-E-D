@@ -381,11 +381,15 @@ jobs:
           cargo fmt --all -- --check
           cargo test --locked
           cargo clippy --locked -- -D warnings
+          cargo fmt --manifest-path python/pyratatui_input/Cargo.toml -- --check
+          cargo test --locked --manifest-path python/pyratatui_input/Cargo.toml
+          cargo clippy --locked --manifest-path python/pyratatui_input/Cargo.toml --all-targets -- -D warnings
           python3 -m py_compile \
             python/splined.py \
             python/splined_scan.py \
             python/splined_oauth_validation.py
           python3 -m compileall -q python/tui
+          python3 -m compileall -q python/pyratatui_input/python
 
           docker build --pull \
             --tag splined-release-candidate:${RELEASE_VERSION} \
@@ -993,6 +997,7 @@ jobs:
             python/splined_scan.py \
             python/splined_oauth_validation.py
           python3 -m compileall -q python/tui
+          python3 -m compileall -q python/pyratatui_input/python
 
           echo "PASS: Python compilation"
 
