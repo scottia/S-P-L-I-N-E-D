@@ -365,12 +365,14 @@ History/bypass updates should not:
 - treat cache deletion as history deletion;
 - replace user-authoritative bypass decisions during ordinary scan completion.
 
-In the interactive Ratatui mode, these stores are reconciled again after each
-batch before returning from `LAST RUN SUMMARY` to Select Media. The disposable
-picker SQLite topology is retained, but it never becomes processed/bypass/
-timeout authority. Multiple batches may run in one TUI process; attempted
-selection is cleared while history/status and the session's cumulative failure
-exit state are retained.
+In interactive Ratatui mode, these stores are reconciled for the affected
+Albums before the Windows-style final per-Album report appears. Enter or Esc
+returns from that report to the same resident Select Media session without
+reopening SQLite or rescanning the library. The complete disposable picker
+snapshot remains topology only; it never becomes processed/bypass/timeout
+authority. Multiple batches may run in one TUI process; attempted selection is
+consumed while history/status, other selections, and the session's cumulative
+failure exit state are retained.
 
 ---
 

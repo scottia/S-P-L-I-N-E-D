@@ -28,25 +28,23 @@ A row filtered out of view remains part of the underlying library model unless a
 # Windows-equivalent folder inventory authority
 
 The Python Ratatui path preserves the Windows folder/status model through a
-hierarchical picker index suitable for large NAS libraries. Normal startup
-enumerates only immediate root Artist folders and joins any cached Album rows
-from `<cache>/splined-picker.sqlite3`. Opening an Artist inventories that
-Artist subtree once per session and caches its Album folders.
+complete persistent picker snapshot suitable for large NAS libraries. The
+first cold run inventories lightweight folder topology into
+`<cache>/splined-picker.sqlite3`. A valid warm run reads that complete snapshot
+and renders Select Media before any music-library filesystem access.
 
 Required behavior:
 
 ```text
-enumerate immediate root Artist directories
+load COMPLETE SQLite generation
+        ↓
+apply retained history / bypass / timeout state
         ↓
 Select Media becomes usable
         ↓
-open one Artist
+validate a new staging generation in the background
         ↓
-identify Album folders by supported audio-file presence
-        ↓
-detect local cover filenames/extensions
-        ↓
-apply retained history / bypass / timeout state
+atomically promote coherent changes
 ```
 
 This inventory is intentionally different from album processing. It does not read audio tags, perform MusicBrainz authority lookup, discover providers, download artwork, decode artwork to determine geometry, rank candidates, or call AISPLINE. Those operations begin only after the user launches the selected albums.
@@ -54,8 +52,8 @@ This inventory is intentionally different from album processing. It does not rea
 The picker SQLite database is disposable acceleration state, not status
 authority. Folder names remain the stable Select Media identity. No pre-Launch
 Mutagen enrichment rewrites Artist or Album rows. `Auto Scan [ALL]` and the
-explicit Refresh Library Index action are the only routine paths that request a
-complete recursive inventory.
+explicit Refresh Library Index action force a complete validation/rebuild.
+Incomplete generations are never exposed as a complete library.
 
 ## Ignored/excluded folders
 
@@ -224,11 +222,11 @@ Status filters should work together with Artist/Album text filters without trigg
 
 The Select Mode group contains mutually exclusive selection actions:
 
-- **Select [ALL]** explicitly completes the full picker inventory, then selects
-  normally eligible albums across that complete topology;
+- **Select [ALL]** selects normally eligible Albums across the complete active
+  snapshot (after validation when required);
 - **Select [NONE]** clears transient selection;
-- **Select [FILTERED]** selects albums in the current active Artist Album
-  Picker/filter result.
+- **Select [FILTERED]** selects Albums in the complete current in-memory filter
+  result.
 
 Selection actions respect history, bypass, and timeout authority and never erase persistent records.
 
@@ -293,21 +291,18 @@ The tree is a presentation of current authority.
 
 ## Count scopes
 
-Album status suffixes use the same active-Artist topology shown by the Album
-Picker. Unprocessed, Processed, Bypass, and Timeout therefore sum to that
-Artist's indexed Album count and never include another cached Artist.
+Album status suffixes derive from every Album in the complete active snapshot:
+Unprocessed, Processed, Bypass, and Timeout are complete-library counts after
+authoritative history reconciliation. Artist Complete and Artist Contains
+Bypass derive from the complete Artist population. Statistics show complete
+Artist/Album totals, exact selection, active-Artist detail, cached local-art
+format counts, and optional validation progress. There is no normal
+`inventory not loaded` state after a complete snapshot exists.
 
-Artist Complete and Artist Contains Bypass count indexed Artists only. An
-unindexed Artist is `inventory not loaded`, not fabricated White/Unprocessed.
-Library statistics distinguish root Artist total/visible, indexed/root,
-validated-this-session, known/indexed Albums, active Artist total/visible, and
-selected known Albums. A partial SQLite cache is never labeled as the complete
-Album-library total.
-
-In an interactive Ratatui session, completion produces `LAST RUN SUMMARY`.
-Enter or Esc returns to the retained Select Media model for another batch;
-history remains authoritative and is reconciled into the affected rows without
-a full-library rescan.
+At batch completion, transient Activity becomes a scrolling per-Album final
+run report and pauses indefinitely. Enter or Esc returns to the same in-memory
+Select Media model; affected history/status is reconciled without a SQLite
+reload, root reconciliation, or full-library rescan.
 
 ---
 

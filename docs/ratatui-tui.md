@@ -65,20 +65,22 @@ OLED and CHALK apply to the whole TUI, not only candidate/result tables.
 ## Readiness-driven branding
 
 TUI startup has no wall-clock splash timeout. WIDE and NORMAL layouts keep a
-large spectral S:P:L:I:N:E:D logo and the folding standard/stylized expansion
-phrase above the live inventory card for as long as root Artist/index
-initialization is still running. The animation advances at a restrained rate;
-the transition occurs only when the initial root Artist model and picker state
-are usable. It does not wait for every Artist or Album to be indexed.
+medium solid/block, approximately three-row spectral S:P:L:I:N:E:D wordmark
+and the folding standard/stylized expansion phrase above cache construction
+for as long as the first complete snapshot is not ready. The old five-row
+ASCII-letter construction is not used. COMPACT and MINIMUM safely reduce the
+brand to one line.
 
-The inventory card reports real state such as the library root, picker-index
-path, discovered root Artists, cached/indexed Artists, known Albums, current
-Artist, and cache recovery. COMPACT and MINIMUM layouts reduce this to safe
-one-line branding rather than allowing the logo to overlap controls.
+Cold construction is centered beneath the wordmark. Once the root Artist
+denominator is known it shows `processed Artists / total Artists`, the exact
+percentage, a Ratatui gauge, Albums discovered, and the current Artist. Warm
+runs do not show this blocking screen: the cached picker renders first and a
+compact centered `Checking library cache · X / Y · Z%` line reports subsequent
+background validation.
 
-Processing, candidate, activity, and Last Run Summary views retain a distinct
-context header: an eight-row large-cell brand on WIDE, a four-row framed brand
-on NORMAL, and one line on COMPACT/MINIMUM. S:P:L:I:N:E:D is the normal identity.
+Processing, candidate, activity, and final Album-report views retain one
+consistent context header: a medium three-row solid wordmark on WIDE/NORMAL
+and one line on COMPACT/MINIMUM. S:P:L:I:N:E:D is the normal identity.
 A:I:S:P:L:I:N:E:D replaces it only while a real AI activity event or an active
 AI enhancement selection exists, then the header returns to S:P:L:I:N:E:D.
 
@@ -115,7 +117,7 @@ regions across the top, followed by the three library regions:
 - live Artist and Album filter boxes;
 - source/range configuration access where appropriate.
 
-### Persistent, lazy Select Media inventory
+### Complete persistent Select Media snapshot
 
 Normal Python Ratatui startup uses a disposable SPLINED-owned SQLite picker
 index in the configured cache directory:
@@ -128,29 +130,45 @@ It is an acceleration index only. Completion, bypass, timeout, configuration,
 tag, and processing authority remain in their existing stores and engine
 paths. Deleting this database is safe.
 
-The normal startup sequence is:
+The first cold-start sequence is:
 
 ```text
-open picker index
+open/create picker index
         ↓
-enumerate immediate Artist folders at the library root
+discover non-excluded root Artist folders
         ↓
-reconcile root Artist topology and cached Album rows
+inventory every lightweight Artist/Album folder topology
+        ↓
+atomically promote a COMPLETE generation
+        ↓
+apply current history/bypass/timeout
         ↓
 SELECT MEDIA IS USABLE
-        ↓
-user opens an Artist
-        ↓
-inventory only that Artist subtree when not loaded this session
-        ↓
-cache its Album folders and local-art filenames
 ```
 
-Ordinary startup does not recursively walk every Artist. A cold cache exposes
-folder-derived Artist rows immediately; unindexed Artists use a muted
-`inventory not loaded` presentation rather than fabricating White history
-state. A warm cache loads known Album topology from SQLite without a routine
-full-library validation pass.
+The first build performs directory/filename inventory only. Its generation is
+marked complete only after the entire topology commits. A failed or interrupted
+staging build leaves the previous complete generation active.
+
+A valid warm-cache critical path performs no music-library filesystem work:
+
+```text
+open SQLite
+        ↓
+load complete Artist/Album topology
+        ↓
+apply local authoritative history state
+        ↓
+render Select Media
+        ↓
+validate filesystem changes in the background
+```
+
+Validation constructs a staging generation while the visible snapshot stays
+stable, then applies additions/removals/local-art changes once at a safe UI
+boundary. Focus, filters, scroll positions, and checked paths are preserved
+where possible. There is no normal `Inventory not loaded` Artist state after a
+complete snapshot exists.
 
 Artist and Album identity in Select Media is stable and folder-derived:
 
@@ -161,21 +179,7 @@ Album display identity  = Album folder name
 
 Tags read after Launch never rename, regroup, or reorder picker rows.
 
-When an Artist is explicitly opened, its allowed pre-Launch work is:
-
-```text
-    enumerate that Artist's directories/files
-            ↓
-    identify album folders
-            ↓
-    detect local cover filenames/extensions
-            ↓
-    apply retained history
-            ↓
-    update the in-memory model and picker index
-```
-
-This phase is a filesystem/history inventory only. It may:
+Cold construction and post-render validation may:
 
 - enumerate directories and filenames;
 - identify supported audio files by extension;
@@ -217,15 +221,12 @@ excluded automatically at the root and at every nested level. Hidden paths are
 not persisted in the picker SQLite database and do not require a Config v5
 entry.
 
-Artist and Album text filters operate on the already-loaded in-memory model.
+Artist and Album text filters operate on the complete in-memory model.
 Typing into a filter begins filtering immediately and never triggers a
-filesystem rescan. Returning to an Artist already inventoried in the current
-session is immediate.
-
-`Auto Scan [ALL]` and the explicit `R` / Refresh Library Index action are the
-intentional full-library paths. They index every Artist with genuine Artist and
-Album counts before applying the normal authoritative eligibility rules.
-Simply opening SPLINED never performs that work.
+filesystem rescan. Opening any Artist is immediate from memory. `R` forces a
+complete staged validation/rebuild with exact percentage progress. `Auto Scan
+[ALL]` uses a validated complete generation, waiting for or forcing validation
+when required, before applying normal eligibility rules.
 
 ### Count scopes
 
@@ -234,20 +235,17 @@ Picker numbers deliberately name their scope:
 - the Artist header is the number of root Artist rows visible after the active
   Artist filters;
 - `Artists` is root total and filtered-visible;
-- `Indexed` is cached/indexed Artists over the root total;
-- `Validated` is Artists filesystem-validated in this session;
-- `Albums` is the currently known/indexed topology, not an implied complete
-  library total;
+- `Artists` and `Albums` are complete active-snapshot totals;
 - `Active` is total and visible Albums for the current Artist;
-- `Selected` is checked Albums in the known model.
+- `Selected` is the exact checked Album total;
+- `Cache` is `COMPLETE`; an optional Check line shows background validation
+  count and percentage.
 
-Unprocessed, Processed, Bypass, and Timeout suffixes cover only the active
-Artist and therefore sum to that Artist's indexed Album count. Artist Complete
-and Artist Contains Bypass cover indexed Artists only; unindexed Artists remain
-`inventory not loaded`. `Select [ALL]` explicitly completes full indexing
-before selecting the normally eligible library. `Select [FILTERED]` reports
-and changes the current Album Picker scope, while `Select [NONE]` reports the
-known checked count it will clear.
+Unprocessed, Processed, Bypass, and Timeout suffixes derive from the complete
+active snapshot after authoritative history reconciliation. Artist Complete
+and Artist Contains Bypass cover the complete Artist population. `Select [ALL]`
+uses the complete eligible library, `Select [FILTERED]` uses the complete
+current in-memory filtered scope, and `Select [NONE]` clears checked paths.
 
 Selecting an artist cascades only to eligible child albums. History, bypass,
 timeout, and manual-reprocessing rules remain authoritative.
@@ -334,7 +332,7 @@ Important sections include:
 - optional Enhanced group;
 - live activity/status;
 - history/log views;
-- Last Run Summary.
+- final per-Album run report in the Activity/Results workspace.
 
 Source candidates are grouped by source rather than combined into one
 large undifferentiated table. Candidate groups form a vertical scroll region;
@@ -349,11 +347,14 @@ and `AI SPLINED` are part of that same grid; when disabled, both columns are
 absent rather than blank. Compact layouts deliberately remove lower-priority
 columns instead of depending on accidental truncation.
 
-On WIDE terminals, a small true-color half-block artwork preview appears at the
-far right of a candidate group. It is generated only from an artwork file that
-normal candidate processing already acquired, cached once per Candidate for
-the session, and cannot affect evaluation or ranking. Preview failure is a
-presentation-only `NO PREVIEW` state. Compact layouts reclaim that space.
+On WIDE terminals, one large selected-candidate true-color half-block artwork
+preview appears at the far right (about 30×12 terminal cells near a 200×59
+screen); NORMAL uses about 20×10 and COMPACT/MINIMUM omit it. The preview follows
+the highlighted Candidate, preserves source aspect ratio with centered
+letterboxing, uses high-quality downsampling, and is generated only from an
+artwork file normal candidate processing already acquired. Its cache key
+includes source path, target geometry, file size, and modification time.
+Preview failure is presentation-only and cannot affect policy or ranking.
 
 ## Candidate-table presentation
 
@@ -372,7 +373,9 @@ The full remote URL remains in candidate state but the normal cell displays
 only an underlined `[URL]` marker. The marker uses OSC 8 terminal hyperlink
 metadata; the terminal client owns opening the URL. SPLINED does not invoke a
 browser inside its Docker/SSH host. Pressing `U` or tapping a captured `[URL]`
-opens a URL interaction surface containing `[OPEN URL]` and the raw URL. Mouse
+opens a URL interaction surface containing `[OPEN IN DEFAULT BROWSER]` as an
+OSC-8 link plus the exact raw URL as copy/auto-link fallback. No client/device
+detection or platform-specific browser command is used. Mouse
 capture is temporarily released so clients such as WebSSH can activate the
 link, then restored when the modal closes. `Esc` closes the URL surface.
 
@@ -573,12 +576,19 @@ Proven duplicate source URLs are fetched once.
 
 ## Interactive batch lifecycle
 
-An interactive TUI scan is a reusable session, not a one-batch process. A
-successful or failed batch presents `LAST RUN SUMMARY`; Enter or Esc returns
-to Select Media, where the retained root topology, loaded Artist subtrees,
-filters, focus, activity/history, and picker database can be reused. Attempted
-Album checkmarks are cleared, affected Album/Artist status is reconciled from
-the existing history authority, and no full-library traversal is performed.
+An interactive TUI scan is a reusable session, not a one-batch process. After
+the final Album, transient processing chatter is cleared and the same
+Activity/Results workspace becomes a Windows-style per-Album final report in
+processing order. Each block includes available authoritative outcome,
+discovery/review state, candidate and policy-hidden totals, provider notes,
+duration, destination, selected artwork details, and file action. The complete
+report scrolls and remains indefinitely for review.
+
+Enter or Esc returns to the same resident Select Media model. SQLite is not
+reopened, the library root is not reconciled, and the filesystem is not
+rescanned. Filters, focus, scroll positions, topology, and unattempted checked
+paths are retained where practical; attempted paths are consumed and affected
+Album/Artist state is reconciled from existing authority.
 
 Another batch can then be selected and launched. Session exit occurs only on
 explicit `q`, Ctrl+C/SIGTERM, or a fatal unrecoverable error. The process exit

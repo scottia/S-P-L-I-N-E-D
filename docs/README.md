@@ -41,17 +41,28 @@ TUI
 
 The TUI uses exactly two first-class themes, `OLED` and `CHALK`, and shares the same authoritative source, history, bypass, timeout, and status-color semantics as the Windows implementation.
 
-Select Media opens a disposable SQLite picker index from the configured cache, enumerates only immediate root Artist folders, and becomes usable without a recursive full-library traversal. Opening an Artist lazily inventories only that subtree and persists its folder-derived Album topology. Picker identities stay stable for the session; there is no pre-Launch Mutagen/tag-enrichment pass. `Auto Scan [ALL]` and the explicit Refresh Library Index action are the intentional full-inventory paths. Tag parsing, MusicBrainz authority, providers, candidate downloads, image analysis, ranking, and AISPLINE work begin only after Launch.
+Select Media uses a complete, disposable SQLite folder-topology snapshot in the
+configured cache. A first cold run builds every non-excluded Artist/Album row;
+a warm run renders that complete snapshot before any music-library filesystem
+access, then validates changes in the background through a crash-safe staging
+generation. Picker identities remain folder-derived and stable; there is no
+pre-Launch Mutagen/tag-enrichment pass. Tag parsing, MusicBrainz authority,
+providers, candidate downloads, image analysis, ranking, and AISPLINE work
+begin only after Launch.
 
 Artist/Album filtering operates entirely against the currently indexed in-memory model rather than rescanning the filesystem on each keystroke. The picker database is acceleration state, not history or processing authority, and may be deleted safely.
 
-The startup brand is readiness-driven rather than timed: the large animated
-S:P:L:I:N:E:D identity remains above live picker-index facts until the root
-Artist model is actually interactive. POSIX directories whose basename begins
-with `.` are excluded automatically in addition to `[library].ignored_subs`.
-After each interactive batch, `LAST RUN SUMMARY` returns to the same Select
-Media session so another exact Album selection can be processed without a
-full-library rescan.
+The startup brand is readiness-driven rather than timed: a medium, solid,
+three-row spectral S:P:L:I:N:E:D wordmark remains above a centered cache-build
+percentage and gauge until the complete first snapshot is ready. Warm runs
+show Select Media immediately and report background validation compactly.
+POSIX directories whose basename begins with `.` are excluded automatically
+in addition to `[library].ignored_subs`.
+
+After each interactive batch, the processing Activity/Results workspace is
+replaced by a Windows-style per-Album final run report in processing order.
+The report remains until Enter or Esc returns to the same in-memory Select
+Media session; no root scan, SQLite reload, or picker rebuild occurs.
 
 The TUI includes source-grouped candidate presentation on one shared Ratatui column grid, WIDE-mode terminal-cell artwork previews, live authority/provider/download activity, and URL/provenance markers instead of provider IDs. `[URL]` uses terminal-client OSC 8 hyperlink handling; SPLINED does not launch a browser inside its Docker/SSH host. Direct mouse/touch interaction remains provided through the isolated `splined-pyratatui-input` crossterm extension. Render-time hit regions drive taps and the list under the pointer receives wheel/touch scrolling.
 
