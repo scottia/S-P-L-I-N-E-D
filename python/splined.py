@@ -1078,6 +1078,7 @@ def prepare_tui_library_selection(
     policy_fingerprint = scan_policy_fingerprint(cfg, sources)
     model_now = time.time()
     actual_albums: dict[str, AlbumDir] = {}
+    actual_album_paths_by_artist: dict[str, set[str]] = {}
     loaded_artists: set[str] = set()
     selected_paths: set[str] = set()
     initialized_paths: set[str] = set()
@@ -1143,7 +1144,11 @@ def prepare_tui_library_selection(
                 [Path(value) for value in record.local_art],
             )
 
-        def refresh_artist(artist_path: str) -> None:
+        def refresh_artist(
+            artist_path: str,
+            *,
+            persist_transaction: bool = True,
+        ) -> None:
             nonlocal all_artists, scoped_artists, artist_by_path
             if artist_path in loaded_artists:
                 return
@@ -1177,20 +1182,33 @@ def prepare_tui_library_selection(
                     )
                     for album in albums
                 ],
+                commit=persist_transaction,
             )
-            for stale in [
-                key
-                for key, album in actual_albums.items()
-                if path_is_within(album.path, Path(artist.path))
-            ]:
+            for stale in actual_album_paths_by_artist.get(artist.path, set()):
                 actual_albums.pop(stale, None)
-            actual_albums.update({str(album.path): album for album in albums})
+            discovered = {str(album.path): album for album in albums}
+            actual_albums.update(discovered)
+            actual_album_paths_by_artist[artist.path] = set(discovered)
             loaded_artists.add(artist.path)
-            all_artists = index.artists()
-            scoped_artists = [
-                item for item in all_artists if item.path in scoped_artist_paths
+            # Keep the session model current without re-reading/rebuilding the
+            # complete Artist table after every member of an explicit ALL
+            # operation.  That loop made full indexing quadratic on large
+            # libraries even though only one Artist state changed each time.
+            updated_artist = PickerArtist(
+                artist.path,
+                artist.name,
+                True,
+                time.time(),
+            )
+            all_artists = [
+                updated_artist if item.path == artist.path else item
+                for item in all_artists
             ]
-            artist_by_path = {item.path: item for item in scoped_artists}
+            scoped_artists = [
+                updated_artist if item.path == artist.path else item
+                for item in scoped_artists
+            ]
+            artist_by_path[artist.path] = updated_artist
             emit_ui(
                 "activity",
                 category="inventory",
@@ -1352,21 +1370,23 @@ def prepare_tui_library_selection(
                 continue
             if action == "refresh-index":
                 full_started = time.perf_counter()
-                index.clear_inventory()
                 actual_albums.clear()
+                actual_album_paths_by_artist.clear()
                 loaded_artists.clear()
-                for number, artist in enumerate(scoped_artists, 1):
-                    refresh_artist(artist.path)
-                    emit_ui(
-                        "activity",
-                        category="inventory",
-                        state="start",
-                        source="picker-index",
-                        message=(
-                            f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
-                            f"Albums discovered: {len(actual_albums):,}"
-                        ),
-                    )
+                with index.connection:
+                    index.clear_inventory(commit=False)
+                    for number, artist in enumerate(scoped_artists, 1):
+                        refresh_artist(artist.path, persist_transaction=False)
+                        emit_ui(
+                            "activity",
+                            category="inventory",
+                            state="start",
+                            source="picker-index",
+                            message=(
+                                f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
+                                f"Albums discovered: {len(actual_albums):,}"
+                            ),
+                        )
                 emit_ui(
                     "activity",
                     category="inventory",
@@ -1420,18 +1440,19 @@ def prepare_tui_library_selection(
             record_by_path = {record.path: record for record in records}
             if scan_mode == "auto-all":
                 full_started = time.perf_counter()
-                for number, artist in enumerate(scoped_artists, 1):
-                    refresh_artist(artist.path)
-                    emit_ui(
-                        "activity",
-                        category="inventory",
-                        state="start",
-                        source="auto-all",
-                        message=(
-                            f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
-                            f"Albums discovered: {len(actual_albums):,}"
-                        ),
-                    )
+                with index.connection:
+                    for number, artist in enumerate(scoped_artists, 1):
+                        refresh_artist(artist.path, persist_transaction=False)
+                        emit_ui(
+                            "activity",
+                            category="inventory",
+                            state="start",
+                            source="auto-all",
+                            message=(
+                                f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
+                                f"Albums discovered: {len(actual_albums):,}"
+                            ),
+                        )
                 emit_ui(
                     "activity",
                     category="inventory",

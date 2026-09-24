@@ -466,6 +466,76 @@ class LazyPickerInventoryTests(unittest.TestCase):
         self.assertEqual(len(payload["albums"]), 15000)
         self.assertLess(elapsed, 5.0)
 
+    def test_auto_all_explicitly_indexes_2000_artists_and_15000_albums(self) -> None:
+        root = self.root
+
+        class Entry:
+            def __init__(self, index: int) -> None:
+                self.name = f"Artist {index:04d}"
+                self.path = str(root / self.name)
+
+            def is_symlink(self) -> bool:
+                return False
+
+            def is_dir(self, *, follow_symlinks: bool = False) -> bool:
+                return True
+
+        class Entries:
+            def __init__(self, values):
+                self.values = values
+
+            def __enter__(self):
+                return iter(self.values)
+
+            def __exit__(self, *_args):
+                return False
+
+        values = [Entry(index) for index in range(2000)]
+        inventory_calls: list[Path] = []
+
+        def synthetic_inventory(path: Path, *_args, **_kwargs):
+            inventory_calls.append(path)
+            artist_number = int(path.name.rsplit(" ", 1)[-1])
+            count = 8 if artist_number < 1000 else 7
+            return (
+                [
+                    splined.AlbumDir(
+                        path / f"Album {album_number:02d}",
+                        [path / f"Album {album_number:02d}" / "track.flac"],
+                    )
+                    for album_number in range(count)
+                ],
+                0,
+            )
+
+        started = time.perf_counter()
+        with (
+            mock.patch(
+                "tui.picker_index.os.scandir",
+                return_value=Entries(values),
+            ),
+            mock.patch.object(splined, "inventory", side_effect=synthetic_inventory),
+        ):
+            (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
+                [{"action": "launch", "scan_mode": "auto-all", "selected": []}]
+            )
+        elapsed = time.perf_counter() - started
+        self.assertEqual(len(inventory_calls), 2000)
+        self.assertEqual(len({str(path) for path in inventory_calls}), 2000)
+        self.assertEqual(len(known), 15000)
+        self.assertEqual(len(selected), 15000)
+        completed = [
+            str(payload["message"])
+            for event, payload in emitted
+            if event == "activity"
+            and payload.get("source") == "auto-all"
+            and payload.get("state") == "done"
+        ]
+        self.assertEqual(len(completed), 1)
+        self.assertIn("2,000 Artist(s)", completed[0])
+        self.assertIn("15,000 Album(s)", completed[0])
+        self.assertLess(elapsed, 30.0)
+
     def test_inventory_parallelism_and_deterministic_order_are_preserved(self) -> None:
         for index in range(16):
             _album(self.root, f"Parallel Artist {index:02d}", "Album")

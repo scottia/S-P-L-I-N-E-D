@@ -244,10 +244,13 @@ class PickerIndex:
         self,
         artist: PickerArtist,
         albums: Iterable[PickerAlbum],
+        *,
+        commit: bool = True,
     ) -> None:
         rows = list(albums)
         now = time.time()
-        with self.connection:
+
+        def write() -> None:
             self.connection.execute(
                 "DELETE FROM albums WHERE artist_path = ?", (artist.path,)
             )
@@ -274,7 +277,19 @@ class PickerIndex:
                 (str(now),),
             )
 
-    def clear_inventory(self) -> None:
-        with self.connection:
+        if commit:
+            with self.connection:
+                write()
+        else:
+            write()
+
+    def clear_inventory(self, *, commit: bool = True) -> None:
+        def write() -> None:
             self.connection.execute("DELETE FROM albums")
             self.connection.execute("UPDATE artists SET indexed=0, last_indexed=NULL")
+
+        if commit:
+            with self.connection:
+                write()
+        else:
+            write()
