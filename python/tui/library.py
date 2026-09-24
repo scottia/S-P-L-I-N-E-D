@@ -159,16 +159,16 @@ class LibraryModel:
                 continue
             name = str(raw.get("name", "Unknown Artist")) or "Unknown Artist"
             children = grouped.get(name, [])
-            indexed = bool(raw.get("indexed", False))
+            indexed = bool(raw.get("indexed", True))
             artists.append(
                 ArtistItem(
                     str(raw.get("path", "")),
                     name,
-                    artist_status(children) if indexed and children else None,
+                    artist_status(children) if children else None,
                     int(raw.get("album_count", len(children))),
                     sum(child.selected for child in children),
                     indexed,
-                    bool(raw.get("loaded", False)),
+                    bool(raw.get("loaded", True)),
                 )
             )
         if not artists:
@@ -196,13 +196,26 @@ class LibraryModel:
             model.active_artist = artists[0].name
         return model
 
-    def merge_payload(self, payload: dict[str, Any]) -> None:
+    def merge_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        preserve_selection: bool = False,
+    ) -> None:
         replacement = self.from_payload(payload)
         replacement.artist_filter = self.artist_filter
         replacement.album_filter = self.album_filter
         replacement.status_filters = set(self.status_filters)
         replacement.artist_status_filters = set(self.artist_status_filters)
         replacement.select_new = self.select_new
+        if preserve_selection:
+            existing = {
+                item.path: (item.selected, item.bypass_override)
+                for item in self.albums
+            }
+            for item in replacement.albums:
+                if item.path in existing:
+                    item.selected, item.bypass_override = existing[item.path]
         names = {item.name for item in replacement.artists}
         replacement.active_artist = (
             self.active_artist if self.active_artist in names else replacement.active_artist
@@ -247,12 +260,19 @@ class LibraryModel:
             for status in AlbumStatus
         }
 
+    def album_status_counts(self) -> dict[AlbumStatus, int]:
+        """Return authoritative counts across the complete picker snapshot."""
+        return {
+            status: sum(item.status is status for item in self.albums)
+            for status in AlbumStatus
+        }
+
     def indexed_artist_status_counts(self) -> dict[ArtistStatus, int]:
         groups = self._artist_groups()
         counts = {status: 0 for status in ArtistStatus}
         for item in self.artists:
             children = groups.get(item.name, [])
-            if not item.indexed or not children:
+            if not children:
                 continue
             counts[artist_status(children)] += 1
         return counts
@@ -270,7 +290,7 @@ class LibraryModel:
             if self.artist_filter.casefold() not in base.name.casefold():
                 continue
             children = groups.get(base.name, [])
-            aggregate = artist_status(children) if base.indexed and children else None
+            aggregate = artist_status(children) if children else None
             if aggregate is not None and aggregate not in self.artist_status_filters:
                 continue
             rows.append(
@@ -278,10 +298,10 @@ class LibraryModel:
                     path=base.path,
                     name=base.name,
                     status=aggregate,
-                    album_count=len(children) if base.indexed else 0,
+                    album_count=len(children),
                     selected_count=sum(child.selected for child in children),
-                    indexed=base.indexed,
-                    loaded=base.loaded,
+                    indexed=True,
+                    loaded=True,
                 )
             )
         return rows
@@ -317,7 +337,7 @@ class LibraryModel:
         if not filtered:
             self.select_new = True
         scope = (
-            self.visible_albums(active_artist_only=True)
+            self.visible_albums()
             if filtered
             else self.albums
         )
@@ -402,12 +422,11 @@ class LibraryModel:
         return {
             "path": self.root,
             "artists": len(self.artists),
-            "indexed_artists": sum(item.indexed for item in self.artists),
-            "loaded_artists": sum(item.loaded for item in self.artists),
             "albums": len(self.albums),
             "visible_artists": len(self.visible_artists()),
             "active_albums": len(active),
             "active_visible_albums": len(active_visible),
             "selected": sum(item.selected for item in self.albums),
             "formats": formats,
+            "cache": "COMPLETE",
         }

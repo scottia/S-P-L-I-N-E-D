@@ -114,14 +114,28 @@ class AlbumDir:
 
 @dataclass
 class PickerSessionState:
-    """Transient picker state retained across batches in one TUI process."""
+    """Complete picker topology retained across batches in one TUI process."""
 
-    loaded_artists: set[str] = field(default_factory=set)
-    actual_albums: dict[str, AlbumDir] = field(default_factory=dict)
-    album_paths_by_artist: dict[str, set[str]] = field(default_factory=dict)
+    ready: bool = False
+    library_root: str = ""
+    picker_path: str = ""
+    artists: list[PickerArtist] = field(default_factory=list)
+    album_records: list[PickerAlbum] = field(default_factory=list)
     selected_paths: set[str] = field(default_factory=set)
     initialized_paths: set[str] = field(default_factory=set)
     select_new: bool = True
+    select_media_active: bool = False
+    validation_started: bool = False
+    validation_complete: bool = False
+    validation_succeeded: bool = False
+    validation_thread: threading.Thread | None = None
+    select_media_epoch: int = 0
+    pending_artists: list[PickerArtist] | None = None
+    pending_albums: list[PickerAlbum] | None = None
+    validation_cancel: threading.Event = field(
+        default_factory=threading.Event, repr=False
+    )
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
 @dataclass
@@ -1077,9 +1091,15 @@ def prepare_tui_library_selection(
     picker_session: PickerSessionState | None = None,
     initial_event: str = "library",
 ) -> tuple[list[AlbumDir], set[str], set[str], list[str], list[AlbumDir]]:
-    """Run root-only/lazy Select Media and return exact authoritative Albums."""
+    """Load a complete picker snapshot and return exact launched Albums.
+
+    A valid warm snapshot is loaded before any access to the media library.
+    Filesystem validation uses a separate SQLite generation after the picker is
+    interactive.  The long-lived ``PickerSessionState`` bypasses both SQLite
+    and filesystem initialization when returning from a completed batch.
+    """
     if not tui_active():
-        raise SplinedError("Lazy Select Media requires an active TUI adapter.")
+        raise SplinedError("Select Media requires an active TUI adapter.")
 
     library = section(cfg, "library")
     output = section(cfg, "output")
@@ -1095,10 +1115,8 @@ def prepare_tui_library_selection(
         history_albums = {}
     policy_fingerprint = scan_policy_fingerprint(cfg, sources)
     model_now = time.time()
+    long_lived_session = picker_session is not None
     session = picker_session or PickerSessionState()
-    actual_albums = session.actual_albums
-    actual_album_paths_by_artist = session.album_paths_by_artist
-    loaded_artists = session.loaded_artists
     selected_paths = session.selected_paths
     initialized_paths = session.initialized_paths
     overrides: set[str] = set()
@@ -1113,176 +1131,201 @@ def prepare_tui_library_selection(
         except ValueError:
             return False
 
-    started = time.perf_counter()
-    emit_ui(
-        "activity",
-        category="inventory",
-        state="start",
-        source="picker-index",
-        message="Opening disposable Select Media picker index",
-    )
-    emit_ui(
-        "inventory_state",
-        library_root=str(index_root),
-        picker_index=str(picker_path),
-        status="Opening disposable picker index",
-    )
-    index = PickerIndex.open(picker_path, index_root, ignored)
-    try:
-        if index.recovered:
-            emit_ui(
-                "log",
-                level="WARN",
-                message="Corrupt Select Media picker index was quarantined and rebuilt.",
-            )
+    def cached_album(record: PickerAlbum) -> AlbumDir:
+        return AlbumDir(
+            Path(record.path),
+            [],
+            [Path(value) for value in record.local_art],
+            record.inventory_fingerprint,
+        )
+
+    def build_snapshot(
+        index: PickerIndex,
+        *,
+        phase: str,
+    ) -> tuple[list[PickerArtist], list[PickerAlbum]]:
+        phase_label = "BUILDING LIBRARY CACHE" if phase == "build" else "CHECKING LIBRARY CACHE"
+        emit_ui(
+            "cache_progress",
+            phase=phase,
+            status="Discovering Artist folders…",
+            processed=0,
+            total=0,
+            percent=None,
+            albums=0,
+            current_artist="",
+        )
         try:
-            all_artists = index.reconcile_root()
+            artists = index.discover_artists()
         except OSError as exc:
             raise SplinedError(str(exc)) from exc
-
-        if root == index_root:
-            scoped_artists = all_artists
-        else:
-            scoped_artists = [
-                artist
-                for artist in all_artists
-                if path_is_within(root, Path(artist.path))
-                or path_is_within(Path(artist.path), root)
-            ]
-        scoped_artist_paths = {artist.path for artist in scoped_artists}
-        artist_by_path = {artist.path: artist for artist in scoped_artists}
-        loaded_artists.intersection_update(scoped_artist_paths)
-        for artist_path in list(actual_album_paths_by_artist):
-            if artist_path not in scoped_artist_paths:
-                for stale in actual_album_paths_by_artist.pop(artist_path):
-                    actual_albums.pop(stale, None)
-
-        def scoped_records() -> list[PickerAlbum]:
-            records = [
-                item for item in index.albums() if item.artist_path in scoped_artist_paths
-            ]
-            if root != index_root:
-                records = [
-                    item for item in records if path_is_within(Path(item.path), root)
-                ]
-            return records
-
-        known_album_count = len(scoped_records())
-
-        def cached_album(record: PickerAlbum) -> AlbumDir:
-            return AlbumDir(
-                Path(record.path),
-                [],
-                [Path(value) for value in record.local_art],
-            )
-
-        def refresh_artist(
-            artist_path: str,
-            *,
-            persist_transaction: bool = True,
-        ) -> None:
-            nonlocal all_artists, scoped_artists, artist_by_path, known_album_count
-            if artist_path in loaded_artists:
-                return
-            artist = artist_by_path.get(artist_path)
-            if artist is None:
-                raise SplinedError("The selected Artist is no longer in the library root.")
-            artist_started = time.perf_counter()
+        total = len(artists)
+        records: list[PickerAlbum] = []
+        if total == 0:
             emit_ui(
-                "activity",
-                category="inventory",
-                state="start",
-                source="picker-index",
-                message=f"Indexing Artist folder · {artist.name}",
+                "cache_progress",
+                phase=phase,
+                status=phase_label,
+                processed=0,
+                total=0,
+                percent=100.0,
+                albums=0,
+                current_artist="",
             )
-            emit_ui(
-                "inventory_state",
-                library_root=str(index_root),
-                picker_index=str(picker_path),
-                status="Indexing Artist folder",
-                root_artists=len(scoped_artists),
-                cached_artists=sum(item.indexed for item in scoped_artists),
-                indexed_artists=len(loaded_artists),
-                albums_known=known_album_count,
-                current_artist=artist.name,
-                recovered=index.recovered,
-            )
+        for number, artist in enumerate(artists, 1):
+            if phase == "validation" and session.validation_cancel.is_set():
+                raise InterruptedError("picker validation cancelled")
             albums, _ignored = inventory(
                 Path(artist.path),
                 ignored,
                 str(output.get("file_name", "cover")),
                 fingerprint_paths=fingerprint_paths,
             )
-            if root != index_root:
-                albums = [album for album in albums if path_is_within(album.path, root)]
-            previous_album_count = len(index.albums(artist.path))
-            index.replace_artist_albums(
-                artist,
-                [
-                    PickerAlbum(
-                        str(album.path),
-                        artist.path,
-                        album.path.name,
-                        tuple(str(path) for path in album.local_art_files),
-                    )
-                    for album in albums
-                ],
-                commit=persist_transaction,
+            records.extend(
+                PickerAlbum(
+                    str(album.path),
+                    artist.path,
+                    album.path.name,
+                    tuple(str(path) for path in album.local_art_files),
+                    album.inventory_fingerprint,
+                )
+                for album in albums
             )
-            known_album_count += len(albums) - previous_album_count
-            for stale in actual_album_paths_by_artist.get(artist.path, set()):
-                actual_albums.pop(stale, None)
-            discovered = {str(album.path): album for album in albums}
-            actual_albums.update(discovered)
-            actual_album_paths_by_artist[artist.path] = set(discovered)
-            loaded_artists.add(artist.path)
-            # Keep the session model current without re-reading/rebuilding the
-            # complete Artist table after every member of an explicit ALL
-            # operation.  That loop made full indexing quadratic on large
-            # libraries even though only one Artist state changed each time.
-            updated_artist = PickerArtist(
-                artist.path,
-                artist.name,
-                True,
-                time.time(),
-            )
-            all_artists = [
-                updated_artist if item.path == artist.path else item
-                for item in all_artists
-            ]
-            scoped_artists = [
-                updated_artist if item.path == artist.path else item
-                for item in scoped_artists
-            ]
-            artist_by_path[artist.path] = updated_artist
+            percent = 100.0 if total == 0 else number * 100.0 / total
             emit_ui(
-                "activity",
-                category="inventory",
-                state="done",
-                source="picker-index",
-                message=(
-                    f"Artist indexed · {artist.name} · {len(albums):,} Album(s) · "
-                    f"{time.perf_counter() - artist_started:.3f}s"
-                ),
+                "cache_progress",
+                phase=phase,
+                status=phase_label,
+                processed=number,
+                total=total,
+                percent=percent,
+                albums=len(records),
+                current_artist=artist.name,
+            )
+            marker = (
+                "picker.cache.build" if phase == "build" else "picker.validation.progress"
             )
             debug_log(
-                "select_media.artist_ready "
-                f"artist={artist.name!r} albums={len(albums)} "
-                f"elapsed_seconds={time.perf_counter() - artist_started:.6f}"
+                f"{marker} "
+                f"progress={number}/{total} percent={percent:.1f} "
+                f"albums={len(records)} phase={phase}"
             )
+        return artists, records
 
-        def status_row(record: PickerAlbum) -> dict[str, Any]:
-            nonlocal timeout_paths
-            album = actual_albums.get(record.path) or cached_album(record)
-            history_entry = history_albums.get(record.path)
-            history_outcome = (
-                str(history_entry.get("outcome", ""))
-                if isinstance(history_entry, dict)
-                else ""
+    def activate_snapshot(
+        artists: list[PickerArtist], records: list[PickerAlbum]
+    ) -> None:
+        with session.lock:
+            session.artists = list(artists)
+            session.album_records = list(records)
+            session.ready = True
+            session.library_root = str(index_root)
+            session.picker_path = str(picker_path)
+
+    started = time.perf_counter()
+    same_session = (
+        session.ready
+        and session.library_root == str(index_root)
+        and session.picker_path == str(picker_path)
+    )
+    warm_cache = False
+    recovered = False
+    if same_session:
+        debug_log("picker.batch.return")
+        with session.lock:
+            if session.pending_artists is not None and session.pending_albums is not None:
+                session.artists = session.pending_artists
+                session.album_records = session.pending_albums
+                session.pending_artists = None
+                session.pending_albums = None
+    else:
+        emit_ui(
+            "activity",
+            category="inventory",
+            state="start",
+            source="picker-index",
+            message="Opening disposable Select Media picker snapshot",
+        )
+        emit_ui(
+            "inventory_state",
+            library_root=str(index_root),
+            picker_index=str(picker_path),
+            status="Opening picker cache",
+        )
+        debug_log(f"picker.cache.open path={str(picker_path)!r}")
+        with PickerIndex.open(picker_path, index_root, ignored) as index:
+            recovered = index.recovered
+            if recovered:
+                emit_ui(
+                    "log",
+                    level="WARN",
+                    message="Corrupt Select Media picker cache was quarantined and rebuilt.",
+                )
+            info = index.snapshot_info()
+            if info is None:
+                debug_log("picker.cache.miss")
+                emit_ui(
+                    "cache_build_start",
+                    library_root=str(index_root),
+                    picker_index=str(picker_path),
+                )
+                artists, records = build_snapshot(index, phase="build")
+                info = index.promote_snapshot(artists, records)
+                debug_log(
+                    "picker.cache.complete "
+                    f"generation={info.generation} artists={info.artist_count} "
+                    f"albums={info.album_count}"
+                )
+                debug_log("picker.snapshot.promoted")
+            else:
+                warm_cache = True
+                debug_log(
+                    "picker.cache.hit "
+                    f"generation={info.generation} artists={info.artist_count} "
+                    f"albums={info.album_count}"
+                )
+                artists = index.artists()
+                records = index.albums()
+            debug_log(
+                f"picker.cache.rows artists={len(artists)} albums={len(records)}"
             )
-            postponed = False
-            age_hours = 0.0
-            if record.path in actual_albums:
+        activate_snapshot(artists, records)
+
+    def current_scope() -> tuple[list[PickerArtist], list[PickerAlbum]]:
+        with session.lock:
+            all_artists = list(session.artists)
+            all_records = list(session.album_records)
+        if root == index_root:
+            return all_artists, all_records
+        scoped_artists = [
+            artist
+            for artist in all_artists
+            if path_is_within(root, Path(artist.path))
+            or path_is_within(Path(artist.path), root)
+        ]
+        paths = {artist.path for artist in scoped_artists}
+        records = [
+            record
+            for record in all_records
+            if record.artist_path in paths and path_is_within(Path(record.path), root)
+        ]
+        return scoped_artists, records
+
+    def model_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        nonlocal timeout_paths
+        scoped_artists, records = current_scope()
+        artist_by_path = {artist.path: artist for artist in scoped_artists}
+        timeout_paths = set()
+        rows: list[dict[str, Any]] = []
+        with session.lock:
+            for record in records:
+                album = cached_album(record)
+                history_entry = history_albums.get(record.path)
+                history_outcome = (
+                    str(history_entry.get("outcome", ""))
+                    if isinstance(history_entry, dict)
+                    else ""
+                )
                 postponed, age_hours = scan_completion_status(
                     completion_history,
                     album,
@@ -1292,111 +1335,193 @@ def prepare_tui_library_selection(
                     now=model_now,
                     policy_fingerprint=policy_fingerprint,
                 )
-            if record.path in bypassed or "bypass" in history_outcome.casefold():
-                status = "bypassed"
-            elif postponed:
-                status = "timeout"
-                timeout_paths.add(record.path)
-            elif isinstance(history_entry, dict) or album.local_art_files:
-                status = "processed"
-            else:
-                status = "unprocessed"
-            if record.path not in initialized_paths:
-                initialized_paths.add(record.path)
-                if select_new and status == "unprocessed":
-                    selected_paths.add(record.path)
-            return {
-                "path": record.path,
-                "artist": artist_by_path.get(
-                    record.artist_path,
-                    PickerArtist(record.artist_path, Path(record.artist_path).name, True),
-                ).name,
-                "artist_path": record.artist_path,
-                "album": record.name,
-                "status": status,
-                "formats": [
-                    "JPEG" if Path(path).suffix.lower() in {".jpg", ".jpeg"}
-                    else Path(path).suffix[1:].upper()
-                    for path in record.local_art
-                ],
-                "local_art": list(record.local_art),
-                "timeout_remaining": (
-                    format_timeout_hours(max(0.0, timeout_hours - age_hours))
-                    if postponed
-                    else ""
-                ),
-                "selected": record.path in selected_paths,
-                "bypass_override": record.path in overrides,
+                if record.path in bypassed or "bypass" in history_outcome.casefold():
+                    status = "bypassed"
+                elif postponed:
+                    status = "timeout"
+                    timeout_paths.add(record.path)
+                elif isinstance(history_entry, dict) or album.local_art_files:
+                    status = "processed"
+                else:
+                    status = "unprocessed"
+                if record.path not in initialized_paths:
+                    initialized_paths.add(record.path)
+                    if select_new and status == "unprocessed":
+                        selected_paths.add(record.path)
+                rows.append(
+                    {
+                        "path": record.path,
+                        "artist": artist_by_path.get(
+                            record.artist_path,
+                            PickerArtist(record.artist_path, Path(record.artist_path).name),
+                        ).name,
+                        "artist_path": record.artist_path,
+                        "album": record.name,
+                        "status": status,
+                        "formats": [
+                            "JPEG" if Path(path).suffix.lower() in {".jpg", ".jpeg"}
+                            else Path(path).suffix[1:].upper()
+                            for path in record.local_art
+                        ],
+                        "local_art": list(record.local_art),
+                        "timeout_remaining": (
+                            format_timeout_hours(max(0.0, timeout_hours - age_hours))
+                            if postponed
+                            else ""
+                        ),
+                        "selected": record.path in selected_paths,
+                        "bypass_override": record.path in overrides,
+                    }
+                )
+        counts: dict[str, int] = {}
+        for record in records:
+            counts[record.artist_path] = counts.get(record.artist_path, 0) + 1
+        artist_rows = [
+            {
+                "path": artist.path,
+                "name": artist.name,
+                "indexed": True,
+                "loaded": True,
+                "album_count": counts.get(artist.path, 0),
             }
+            for artist in scoped_artists
+        ]
+        return artist_rows, rows
 
-        def model_payload() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-            nonlocal timeout_paths
-            timeout_paths = set()
-            records = scoped_records()
-            rows = [status_row(record) for record in records]
-            counts: dict[str, int] = {}
-            for record in records:
-                counts[record.artist_path] = counts.get(record.artist_path, 0) + 1
-            artist_rows = [
-                {
-                    "path": artist.path,
-                    "name": artist.name,
-                    "indexed": artist.indexed,
-                    "loaded": artist.path in loaded_artists,
-                    "album_count": counts.get(artist.path, 0),
-                }
-                for artist in scoped_artists
-            ]
-            return artist_rows, rows
+    def emit_library(event: str, *, preserve_selection: bool = False) -> None:
+        artist_rows, rows = model_payload()
+        emit_ui(
+            event,
+            root=str(root),
+            artists=artist_rows,
+            albums=rows,
+            picker_index=str(picker_path),
+            snapshot_complete=True,
+            preserve_selection=preserve_selection,
+            select_new=select_new,
+            config=cfg,
+            aisplined=aisplined_settings(cfg),
+            ai_runtime_available=False,
+        )
 
-        def emit_library(event: str) -> None:
-            artist_rows, rows = model_payload()
+    def promote_pending_if_safe() -> bool:
+        with session.lock:
+            if session.pending_artists is None or session.pending_albums is None:
+                return False
+            session.artists = session.pending_artists
+            session.album_records = session.pending_albums
+            session.pending_artists = None
+            session.pending_albums = None
+        return True
+
+    def validate_in_background() -> None:
+        validation_started = time.perf_counter()
+        debug_log("picker.validation.start")
+        try:
+            with PickerIndex.open(picker_path, index_root, ignored) as validation_index:
+                with session.lock:
+                    old_artists = {item.path: item for item in session.artists}
+                    old_albums = {item.path: item for item in session.album_records}
+                artists, records = build_snapshot(validation_index, phase="validation")
+                new_artists = {item.path: item for item in artists}
+                new_albums = {item.path: item for item in records}
+                added = len(set(new_albums) - set(old_albums)) + len(set(new_artists) - set(old_artists))
+                removed = len(set(old_albums) - set(new_albums)) + len(set(old_artists) - set(new_artists))
+                changed = sum(
+                    old_albums[path] != new_albums[path]
+                    for path in set(old_albums) & set(new_albums)
+                )
+                validation_index.promote_snapshot(artists, records)
+                debug_log("picker.snapshot.promoted")
+            with session.lock:
+                session.pending_artists = artists
+                session.pending_albums = records
+                session.validation_complete = True
+                session.validation_succeeded = True
+                active = (
+                    session.select_media_active
+                    and session.select_media_epoch == validation_epoch
+                )
+            if active and promote_pending_if_safe():
+                emit_library("library_update", preserve_selection=True)
+            elapsed = time.perf_counter() - validation_started
             emit_ui(
-                event,
-                root=str(root),
-                artists=artist_rows,
-                albums=rows,
-                picker_index=str(picker_path),
-                indexed_artists=sum(bool(item["indexed"]) for item in artist_rows),
-                select_new=select_new,
-                config=cfg,
-                aisplined=aisplined_settings(cfg),
-                ai_runtime_available=False,
+                "cache_progress",
+                phase="validation-complete",
+                status="LIBRARY CACHE CURRENT",
+                processed=len(artists),
+                total=len(artists),
+                percent=100.0,
+                albums=len(records),
+                current_artist="",
+                added=added,
+                removed=removed,
+                changed=changed,
+            )
+            debug_log(
+                "picker.validation.complete "
+                f"elapsed_seconds={elapsed:.6f} added={added} removed={removed} changed={changed}"
+            )
+        except InterruptedError:
+            debug_log("picker.validation.cancelled")
+            with session.lock:
+                session.validation_complete = True
+                session.validation_succeeded = False
+        except Exception as exc:
+            with session.lock:
+                session.validation_complete = True
+                session.validation_succeeded = False
+            emit_ui(
+                "log",
+                level="WARN",
+                message=f"Library cache validation failed; retaining last complete snapshot: {exc}",
             )
 
-        elapsed = time.perf_counter() - started
-        cached_records = scoped_records()
-        emit_ui(
-            "inventory_state",
-            library_root=str(index_root),
-            picker_index=str(picker_path),
-            status="Root Artist inventory complete",
-            root_artists=len(scoped_artists),
-            cached_artists=sum(item.indexed for item in scoped_artists),
-            indexed_artists=len(loaded_artists),
-            albums_known=len(cached_records),
-            current_artist="",
-            recovered=index.recovered,
+    scoped_artists, scoped_records = current_scope()
+    elapsed = time.perf_counter() - started
+    emit_ui(
+        "inventory_state",
+        library_root=str(index_root),
+        picker_index=str(picker_path),
+        status="Complete picker snapshot ready",
+        root_artists=len(scoped_artists),
+        cached_artists=len(scoped_artists),
+        indexed_artists=len(scoped_artists),
+        albums_known=len(scoped_records),
+        current_artist="",
+        recovered=recovered,
+    )
+    debug_log(f"picker.first_render elapsed_seconds={elapsed:.6f}")
+    emit_ui(
+        "activity",
+        category="inventory",
+        state="done",
+        source="picker-index",
+        message=(
+            f"Complete picker ready · {len(scoped_artists):,} Artist(s) · "
+            f"{len(scoped_records):,} Album(s) · {elapsed:.3f}s"
+        ),
+    )
+    with session.lock:
+        session.select_media_epoch += 1
+        validation_epoch = session.select_media_epoch
+        session.select_media_active = True
+    emit_library(initial_event)
+
+    if warm_cache and long_lived_session and not session.validation_started:
+        session.validation_cancel.clear()
+        session.validation_started = True
+        session.validation_complete = False
+        session.validation_succeeded = False
+        session.validation_thread = threading.Thread(
+            target=validate_in_background,
+            name="splined-picker-validation",
+            daemon=True,
         )
-        debug_log(
-            "select_media.root_ready "
-            f"artists={len(scoped_artists)} cached_albums={len(cached_records)} "
-            f"elapsed_seconds={elapsed:.6f}"
-        )
-        emit_ui(
-            "activity",
-            category="inventory",
-            state="done",
-            source="picker-index",
-            message=(
-                f"Artist picker ready · {len(scoped_artists):,} Artist(s) · "
-                f"{elapsed:.3f}s"
-            ),
-        )
-        event = initial_event
-        while True:
-            emit_library(event)
-            event = "library_update"
+        session.validation_thread.start()
+
+    event = "library_update"
+    while True:
             raw = read_input("", kind="library-selection")
             try:
                 response = json.loads(raw)
@@ -1422,35 +1547,30 @@ def prepare_tui_library_selection(
 
             action = str(response.get("action", ""))
             if action == "exit":
+                session.select_media_active = False
+                session.validation_cancel.set()
                 raise TuiSessionExit()
             if action == "load-artist":
-                artist_path = str(response.get("artist_path", ""))
-                refresh_artist(artist_path)
                 if bool(response.get("select_after_load", False)):
+                    artist_path = str(response.get("artist_path", ""))
                     for row in model_payload()[1]:
                         if row["artist_path"] == artist_path and row["status"] == "unprocessed":
                             selected_paths.add(str(row["path"]))
+                emit_library(event)
                 continue
             if action == "refresh-index":
                 full_started = time.perf_counter()
-                actual_albums.clear()
-                actual_album_paths_by_artist.clear()
-                loaded_artists.clear()
-                known_album_count = 0
-                with index.connection:
-                    index.clear_inventory(commit=False)
-                    for number, artist in enumerate(scoped_artists, 1):
-                        refresh_artist(artist.path, persist_transaction=False)
-                        emit_ui(
-                            "activity",
-                            category="inventory",
-                            state="start",
-                            source="picker-index",
-                            message=(
-                                f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
-                                f"Albums discovered: {len(actual_albums):,}"
-                            ),
-                        )
+                if session.validation_thread is not None and session.validation_thread.is_alive():
+                    session.validation_cancel.set()
+                    session.validation_thread.join()
+                session.validation_cancel.clear()
+                emit_ui("cache_build_start", forced=True)
+                with PickerIndex.open(picker_path, index_root, ignored) as refresh_index:
+                    artists, records = build_snapshot(refresh_index, phase="build")
+                    refresh_index.promote_snapshot(artists, records)
+                activate_snapshot(artists, records)
+                session.validation_complete = True
+                session.validation_succeeded = True
                 if bool(response.get("select_all", False)):
                     select_new = True
                     session.select_new = True
@@ -1465,11 +1585,12 @@ def prepare_tui_library_selection(
                     state="done",
                     source="picker-index",
                     message=(
-                        f"Library index refreshed · {len(scoped_artists):,} Artist(s) · "
-                        f"{len(actual_albums):,} Album(s) · "
+                        f"Library cache refreshed · {len(artists):,} Artist(s) · "
+                        f"{len(records):,} Album(s) · "
                         f"{time.perf_counter() - full_started:.3f}s"
                     ),
                 )
+                emit_library(event)
                 continue
             if action == "save-settings":
                 from tui.source_settings import persist_policy_draft
@@ -1496,6 +1617,7 @@ def prepare_tui_library_selection(
                     source="config-v5",
                     message="Source policy saved atomically and applied",
                 )
+                emit_library(event)
                 continue
             if action != "launch":
                 raise SplinedError("The TUI library workspace did not select a scan mode.")
@@ -1508,53 +1630,32 @@ def prepare_tui_library_selection(
             else:
                 raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
 
-            records = scoped_records()
+            if scan_mode == "auto-all" and session.validation_thread is not None:
+                if session.validation_thread.is_alive():
+                    session.validation_thread.join()
+                promote_pending_if_safe()
+                if not session.validation_succeeded:
+                    emit_ui("cache_build_start", forced=True, reason="auto-all")
+                    with PickerIndex.open(picker_path, index_root, ignored) as refresh_index:
+                        artists, records = build_snapshot(refresh_index, phase="build")
+                        refresh_index.promote_snapshot(artists, records)
+                    activate_snapshot(artists, records)
+                    session.validation_complete = True
+                    session.validation_succeeded = True
+            _scoped_artists, records = current_scope()
             record_by_path = {record.path: record for record in records}
             if scan_mode == "auto-all":
-                full_started = time.perf_counter()
-                with index.connection:
-                    for number, artist in enumerate(scoped_artists, 1):
-                        refresh_artist(artist.path, persist_transaction=False)
-                        emit_ui(
-                            "activity",
-                            category="inventory",
-                            state="start",
-                            source="auto-all",
-                            message=(
-                                f"Artists indexed: {number:,} / {len(scoped_artists):,} · "
-                                f"Albums discovered: {len(actual_albums):,}"
-                            ),
-                        )
-                emit_ui(
-                    "activity",
-                    category="inventory",
-                    state="done",
-                    source="auto-all",
-                    message=(
-                        f"Full library index ready · {len(scoped_artists):,} Artist(s) · "
-                        f"{len(actual_albums):,} Album(s) · "
-                        f"{time.perf_counter() - full_started:.3f}s"
-                    ),
-                )
                 rows = model_payload()[1]
                 selected_paths |= {
                     str(row["path"]) for row in rows if row["status"] == "unprocessed"
                 }
-            else:
-                required_artists = {
-                    record_by_path[path].artist_path
-                    for path in selected_paths
-                    if path in record_by_path
-                }
-                for artist_path in sorted(required_artists, key=str.casefold):
-                    refresh_artist(artist_path)
 
             rows = model_payload()[1]
             row_by_path = {str(row["path"]): row for row in rows}
             valid_selected_paths = {
                 path
                 for path in selected_paths
-                if path in actual_albums
+                if path in record_by_path
                 and path in row_by_path
                 and row_by_path[path]["status"] != "timeout"
                 and (
@@ -1562,14 +1663,15 @@ def prepare_tui_library_selection(
                     or path in overrides
                 )
             }
+            # Keep the launch payload album-oriented and lightweight. The
+            # operational loop validates each exact Album folder immediately
+            # before reading its authoritative tags, rather than loading every
+            # selected track filename into the picker/session at once.
             selected = [
-                actual_albums[path]
+                cached_album(record_by_path[path])
                 for path in sorted(valid_selected_paths, key=str.casefold)
             ]
-            known = [
-                actual_albums[path]
-                for path in sorted(actual_albums, key=str.casefold)
-            ]
+            known = [cached_album(record) for record in records]
             emit_ui(
                 "activity",
                 category="selection",
@@ -1581,9 +1683,8 @@ def prepare_tui_library_selection(
                 ),
             )
             selected_paths.difference_update(valid_selected_paths)
+            session.select_media_active = False
             return selected, overrides, timeout_paths, sources, known
-    finally:
-        index.close()
 
 
 def compact(paths: list[Path]) -> str:
@@ -5005,10 +5106,12 @@ def run_scan_dir(
                 initial_library_event=library_event,
             )
         except TuiSessionExit:
+            picker_session.validation_cancel.set()
             return session_exit_code
         session_exit_code = max(session_exit_code, batch_exit_code)
         answer = read_input("", kind="batch-summary").strip().lower()
         if answer == "exit":
+            picker_session.validation_cancel.set()
             return session_exit_code
         library_event = "library_update"
 
