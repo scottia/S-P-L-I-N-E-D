@@ -1727,7 +1727,7 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
     # Append across runs with a visible session delimiter.
     with _DEBUG_PATH.open("a", encoding="utf-8") as handle:
         handle.write(
-            f"\n=== SPLINED {VERSION} DEBUG SESSION "
+            f"\n=== SPLINED {display_version()} DEBUG SESSION "
             f"{time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
         )
     return _DEBUG_PATH
@@ -5220,6 +5220,12 @@ def run_scan_preview(
 APP_NAME = "SPLINED"
 VERSION = "1.0.9"
 CONFIG_VERSION = 5
+
+
+def display_version() -> str:
+    """Return the user-visible version without changing release SemVer authority."""
+    channel = os.environ.get("SPLINED_BUILD_CHANNEL", "release").strip().casefold()
+    return f"{VERSION}-dev" if channel == "dev" else VERSION
 DEFAULT_CONFIG = Path("/config/config.toml")
 HELP_COLUMN_WIDTH = 38
 
@@ -5928,7 +5934,7 @@ def idle() -> int:
     def stop(signum: int, frame: object) -> None:
         nonlocal stopping; stopping=True
     signal.signal(signal.SIGTERM,stop); signal.signal(signal.SIGINT,stop)
-    print(f"{APP_NAME} {VERSION} container ready.\nConfig: {config_path()}\nUse: sudo docker exec -it splined splined -h")
+    print(f"{APP_NAME} {display_version()} container ready.\nConfig: {config_path()}\nUse: sudo docker exec -it splined splined -h")
     while not stopping: time.sleep(1)
     print("SPLINED stopping."); return 0
 
@@ -6018,7 +6024,7 @@ def run_oauth_validation_command(config_file: Path, cfg: dict[str, Any]) -> int:
 
 def main() -> int:
     args=parser().parse_args()
-    if args.version: print(f"{APP_NAME} {VERSION}"); return 0
+    if args.version: print(f"{APP_NAME} {display_version()}"); return 0
     if args.idle: return idle()
     try:
         path,cfg=load_config()
