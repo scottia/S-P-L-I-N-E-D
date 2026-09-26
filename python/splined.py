@@ -1670,7 +1670,10 @@ def prepare_tui_library_selection(
                 for path, value in session.selected_statistics.items()
                 if path in selected_paths
             }
-            emit_library(event, preserve_selection=True)
+            # selected_paths above came from the exact TUI checkbox payload.
+            # Send that authoritative state back instead of overlaying an older
+            # in-memory checkbox snapshot during merge.
+            emit_library(event)
             continue
 
         if action == "edit-config":
@@ -1699,7 +1702,7 @@ def prepare_tui_library_selection(
                     f"Artist folder list refreshed · {len(refreshed):,} Artist(s)"
                 ),
             )
-            emit_library(event, preserve_selection=True)
+            emit_library(event)
             continue
 
         if action == "save-settings":
