@@ -147,7 +147,7 @@ REQUIRED_DOC_ANCHORS: dict[str, tuple[str, ...]] = {
     "docs/media-filter-status-colors.md": (
         "Select [ALL]",
         "Select [FILTERED]",
-        "AUTO LAUNCH likewise processes only the checked Album set",
+        "likewise processes only the checked Album set",
         "Orange albums may be deliberately reselected",
     ),
     "docs/ratatui-tui.md": (
