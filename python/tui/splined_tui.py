@@ -404,6 +404,43 @@ class TuiState:
                     self.ai_runtime_available = bool(payload.get("ai_runtime_available", False))
                 if isinstance(output, dict):
                     self.upscale_below_ideal = bool(output.get("upscale_below_ideal", False))
+        elif event == "library_selected_stats":
+            if self.library is None:
+                return
+            raw_paths = payload.get("selected_paths", [])
+            payload_paths = (
+                [str(value) for value in raw_paths if str(value)]
+                if isinstance(raw_paths, list)
+                else []
+            )
+            try:
+                limit = max(1, int(payload.get("limit", 10) or 10))
+            except (TypeError, ValueError):
+                limit = 10
+            current_paths = sorted(
+                (
+                    item.path
+                    for item in self.library.albums
+                    if item.selected
+                ),
+                key=str.casefold,
+            )[:limit]
+            if payload_paths != current_paths:
+                _runtime_trace(
+                    "library_stats_stale "
+                    f"payload_paths={payload_paths!r} current_paths={current_paths!r}"
+                )
+                return
+            raw_selected_stats = payload.get("selected_album_stats", [])
+            self.selected_album_stats = (
+                [item for item in raw_selected_stats if isinstance(item, dict)]
+                if isinstance(raw_selected_stats, list)
+                else []
+            )
+            _runtime_trace(
+                f"library_stats_async_apply selected_stats={len(self.selected_album_stats)} "
+                f"{_library_snapshot(self)}"
+            )
         elif event == "scan_start":
             self.workflow = "overview"
             self.album_total = int(payload.get("total", 0))
@@ -1154,6 +1191,37 @@ def _control_lines(
     return Text(lines)
 
 
+def _selection_control_lines(
+    selected: int,
+    selected_count: int,
+    theme: Theme,
+) -> Text:
+    lines = [
+        Line(
+            [
+                Span(
+                    f"• Selected [{selected_count:,}]",
+                    style(theme, Semantic.SPECIAL, bold=selected_count > 0),
+                )
+            ]
+        )
+    ]
+    for index, label in enumerate(SELECT_CONTROLS):
+        marker = "›" if index == selected else " "
+        semantic = Semantic.ACTIVE if index == selected else Semantic.MUTED
+        lines.append(
+            Line(
+                [
+                    Span(
+                        f"{marker} ☐ {label}",
+                        style(theme, semantic, bold=index == selected),
+                    )
+                ]
+            )
+        )
+    return Text(lines)
+
+
 def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     model = state.library
     assert model is not None
@@ -1161,7 +1229,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
     # height is not the terminal height and must not drive the breakpoint.
     if int(area.width) < 96:
         panels = _split_vertical(
-            area, [Constraint.length(8), Constraint.length(5), Constraint.length(6)]
+            area, [Constraint.length(8), Constraint.length(6), Constraint.length(6)]
         )
     else:
         panels = _split_horizontal(
@@ -1169,6 +1237,11 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         )
 
     def status_active(index: int) -> bool:
+        if index == 3:
+            return (
+                AlbumStatus.TIMEOUT in model.status_filters
+                and ArtistStatus.PARTIAL in model.artist_status_filters
+            )
         status = STATUS_CONTROLS[index][1]
         return (
             status in model.status_filters
@@ -1180,20 +1253,21 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
     artist_counts = model.indexed_artist_status_counts()
 
     def status_suffix(index: int) -> str:
-        status = STATUS_CONTROLS[index][1]
-        count = album_counts[status] if isinstance(status, AlbumStatus) else artist_counts[status]
+        if index == 3:
+            count = (
+                album_counts[AlbumStatus.TIMEOUT]
+                + artist_counts[ArtistStatus.PARTIAL]
+            )
+        else:
+            status = STATUS_CONTROLS[index][1]
+            count = (
+                album_counts[status]
+                if isinstance(status, AlbumStatus)
+                else artist_counts[status]
+            )
         return f"  [{count:,}]"
 
     selected_count = sum(item.selected for item in model.albums)
-
-    def selection_suffix(index: int) -> str:
-        if index == 0:
-            unloaded = any(not artist.loaded for artist in model.artists)
-            return "  [ALL]" if unloaded else f"  [{sum(item.auto_eligible for item in model.albums):,}]"
-        if index == 1:
-            return f"  [{selected_count:,}]" if selected_count else ""
-        unloaded_visible = any(not artist.loaded for artist in model.visible_artists())
-        return "  [FILTER]" if unloaded_visible else f"  [{sum(item.auto_eligible for item in model.visible_albums()):,}]"
 
     frame.render_widget(
         Paragraph(_control_lines(tuple(x[0] for x in STATUS_CONTROLS), state.status_index, status_active, theme, status_suffix))
@@ -1201,7 +1275,13 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels[0],
     )
     frame.render_widget(
-        Paragraph(_control_lines(SELECT_CONTROLS, state.select_index, lambda _i: False, theme, selection_suffix))
+        Paragraph(
+            _selection_control_lines(
+                state.select_index,
+                selected_count,
+                theme,
+            )
+        )
         .block(card(theme, "ALBUM SELECT MODE", Semantic.SPECIAL)),
         panels[1],
     )
@@ -1212,8 +1292,13 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
     )
     for index in range(min(len(STATUS_CONTROLS), max(0, int(panels[0].height) - 2))):
         _register_hit(state, "status-control", _row_rect(panels[0], index), index=index)
-    for index in range(min(len(SELECT_CONTROLS), max(0, int(panels[1].height) - 2))):
-        _register_hit(state, "select-control", _row_rect(panels[1], index), index=index)
+    for index in range(min(len(SELECT_CONTROLS), max(0, int(panels[1].height) - 3))):
+        _register_hit(
+            state,
+            "select-control",
+            _row_rect(panels[1], index + 1),
+            index=index,
+        )
     for index in range(min(len(SCAN_CONTROLS), max(0, int(panels[2].height) - 2))):
         _register_hit(state, "scan-control", _row_rect(panels[2], index), index=index)
 
@@ -1260,15 +1345,19 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
         marker = "›" if index == state.artist_index else " "
         checked = "☑" if artist.selected_count else "☐"
         semantic = _artist_status_semantic(artist.status)
-        status_label = (
-            STATUS_LABELS[artist.status]
-            if artist.status is not None
-            else ("No Albums" if artist.loaded else "Not loaded")
-        )
+        if artist.status is not None:
+            status_suffix = f"  {STATUS_LABELS[artist.status]}"
+            if artist.loaded:
+                status_suffix += f" {artist.selected_count}/{artist.album_count}"
+        elif artist.loaded:
+            status_suffix = "  No Albums"
+        else:
+            status_suffix = ""
+        name_width = max(4, int(body.width) - 5 - len(status_suffix))
         lines.append(Line([
             Span(f"{marker} {checked} ", style(theme, Semantic.ACTIVE if index == state.artist_index else semantic, bold=index == state.artist_index)),
-            Span(_truncate(artist.name, max(4, body.width - 27)), style(theme, semantic)),
-            Span(f"  {status_label} {artist.selected_count}/{artist.album_count}", style(theme, semantic)),
+            Span(_truncate(artist.name, name_width), style(theme, semantic)),
+            Span(status_suffix, style(theme, semantic)),
         ]))
     if not lines:
         lines.append(Line([Span("No artists match the active filters.", style(theme, Semantic.MUTED))]))
@@ -1506,7 +1595,7 @@ def _scan_directory_stat_lines(
         Line([Span(separator, style(theme, Semantic.MUTED))]),
         field(
             "Selected",
-            f"({len(state.selected_album_stats):,})",
+            f"({stats['selected']:,})",
             Semantic.SPECIAL,
         ),
         field("Processed", f"({stats['processed']:,})", Semantic.FALLBACK),
@@ -1648,7 +1737,7 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
     spec = layout_spec(area.width, area.height)
     if spec.stack_cards:
         controls, lower = _split_vertical(
-            area, [Constraint.length(19), Constraint.fill(1)]
+            area, [Constraint.length(20), Constraint.fill(1)]
         )
         picker_height = max(6, int(lower.height) // 2)
         pickers, side = _split_vertical(
@@ -3351,11 +3440,15 @@ def _handle_library_key(
         return True
     if action in {Action.ACTIVATE, Action.TOGGLE}:
         if state.library_focus == 0:
-            status = STATUS_CONTROLS[state.status_index][1]
-            if isinstance(status, AlbumStatus):
-                model.toggle_status(status)
+            if state.status_index == 3:
+                model.toggle_status(AlbumStatus.TIMEOUT)
+                model.toggle_artist_status(ArtistStatus.PARTIAL)
             else:
-                model.toggle_artist_status(status)
+                status = STATUS_CONTROLS[state.status_index][1]
+                if isinstance(status, AlbumStatus):
+                    model.toggle_status(status)
+                else:
+                    model.toggle_artist_status(status)
         elif state.library_focus == 1:
             if state.select_index == 0:
                 _request_bulk_selection(state, adapter, filtered=False)
@@ -3668,11 +3761,15 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if region.target == "status-control" and model is not None:
         state.library_focus = 0
         state.status_index = region.index
-        status = STATUS_CONTROLS[region.index][1]
-        if isinstance(status, AlbumStatus):
-            model.toggle_status(status)
+        if region.index == 3:
+            model.toggle_status(AlbumStatus.TIMEOUT)
+            model.toggle_artist_status(ArtistStatus.PARTIAL)
         else:
-            model.toggle_artist_status(status)
+            status = STATUS_CONTROLS[region.index][1]
+            if isinstance(status, AlbumStatus):
+                model.toggle_status(status)
+            else:
+                model.toggle_artist_status(status)
     elif region.target == "select-control" and model is not None:
         if not _library_input_ready(state, adapter):
             return
