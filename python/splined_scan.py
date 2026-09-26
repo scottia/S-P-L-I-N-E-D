@@ -2246,7 +2246,7 @@ def main() -> int:
         interface_only = False
         break
     if args.version:
-        print(f"{APP_NAME} {VERSION}")
+        print(f"{APP_NAME} {core.display_version()}")
         return 0
     if args.idle:
         return core.idle()
