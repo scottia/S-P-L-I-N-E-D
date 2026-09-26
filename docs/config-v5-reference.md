@@ -39,7 +39,7 @@ main config.
 | --- | --- | --- |
 | `config_version` | `5` | Operational schema version |
 | `mode` | `"read"` | `read` evaluates; `write` may install artwork |
-| `verbosity` | `"info"` | Runtime logging verbosity |
+| `verbosity` | `"info"` | Runtime-log threshold and filename level: `debug`, `info`, `warning`, or `error` |
 
 ## `[library]`
 
@@ -184,9 +184,37 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `logging.retention_days` | `14` | Diagnostic-log retention |
+| `logging.retention_days` | `14` | Retention for ordinary diagnostic files directly under the configured log directory |
 | `history.enabled` | `true` | Enables persistent status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
+
+Every initialized SPLINED invocation creates exactly one current-run diagnostic
+file under:
+
+```text
+<scan.log_dir>/run/
+```
+
+For the Docker default this is `/_logs/run/`. At the start of the next
+invocation, SPLINED clears the contents of this dedicated `run` directory
+before creating the new file, so it intentionally contains only the latest
+runtime log.
+
+The filename includes the configured top-level `verbosity`, a timestamp,
+a uniqueness component, and the process id, for example:
+
+```text
+splined-debug-20260926-155501-123456789-p1234.log
+splined-info-20260926-155501-123456789-p1234.log
+splined-warning-20260926-155501-123456789-p1234.log
+splined-error-20260926-155501-123456789-p1234.log
+```
+
+The configured level is a threshold: `debug` is most detailed, followed by
+`info`, `warning`, and `error`. Runtime logs include run metadata and,
+when the TUI is active, the engine's captured stdout/stderr at the configured
+threshold. The legacy fixed `splined_debug.log` file is no longer the active
+per-run destination.
 
 History supplies processed, timeout, chosen-source, and bypass state. Shortening
 or disabling it can remove the authority needed for status colors. `_cache/`
