@@ -1128,6 +1128,9 @@ def selected_album_statistics(
     mp3_files = [item for item in audio_files if item.suffix.lower() == ".mp3"]
     result["tracks"] = len(audio_files)
 
+    tagged_album_found = False
+    tagged_artist_found = False
+    tagged_year_found = False
     for track_path in mp3_files:
         try:
             parsed = MutagenFile(track_path, easy=True)
@@ -1150,19 +1153,24 @@ def selected_album_statistics(
                     return value
             return ""
 
-        if result["album"] == path.name:
+        if not tagged_album_found:
             tagged_album = first_tag("album")
             if tagged_album:
                 result["album"] = tagged_album
-        if result["artist"] == path.parent.name:
+                tagged_album_found = True
+        if not tagged_artist_found:
             tagged_artist = first_tag("albumartist", "artist")
             if tagged_artist:
                 result["artist"] = tagged_artist
-        if not result["year"]:
+                tagged_artist_found = True
+        if not tagged_year_found:
             raw_year = first_tag("date", "originaldate", "year")
             match = re.search(r"\b(\d{4})\b", raw_year)
             if match:
                 result["year"] = match.group(1)
+                tagged_year_found = True
+        if tagged_album_found and tagged_artist_found and tagged_year_found:
+            break
 
     sidecars = [item for item in root_files if item not in audio_files]
     cover_prefix = cover_name.strip().casefold() or "cover"
