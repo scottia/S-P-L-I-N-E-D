@@ -270,26 +270,28 @@ def check_docs(audit: Audit) -> None:
 
     audit.check("DOC-001", "required /docs contract anchors are present", anchors)
 
-    history_body = (ROOT / "docs/history-retention-bypass-timeout.md").read_text(
-        encoding="utf-8"
-    )
-    media_body = (ROOT / "docs/media-filter-status-colors.md").read_text(
-        encoding="utf-8"
-    )
-    if (
-        "retained a successful prior processing state" in history_body
-        and "detected local artwork state" in media_body
-    ):
-        audit.warn(
-            "DOC-002",
-            "Processed/Orange authority needs explicit reconciliation",
-            "The history document defines Orange around retained successful processing "
-            "history while the media-status document also permits Windows-equivalent "
-            "detected local artwork state. Resolve this against intended Windows/Python "
-            "authority before changing implementation behavior.",
+    def processed_authority() -> None:
+        history_body = (ROOT / "docs/history-retention-bypass-timeout.md").read_text(
+            encoding="utf-8"
         )
-    else:
-        audit.add("DOC-002", "PASS", "Processed/Orange authority is textually consistent")
+        media_body = (ROOT / "docs/media-filter-status-colors.md").read_text(
+            encoding="utf-8"
+        )
+        windows_body = (ROOT / "windows/gui/LibraryModel.cs").read_text(
+            encoding="utf-8"
+        )
+        assert "recognized local cover artwork already exists" in history_body
+        assert "detected local artwork state" in media_body
+        assert (
+            "album.State = album.HasLocalArtwork ? AlbumState.Processed : AlbumState.New;"
+            in windows_body
+        )
+
+    audit.check(
+        "DOC-002",
+        "Processed/Orange authority explicitly covers history and local artwork parity",
+        processed_authority,
+    )
 
 
 def check_config(audit: Audit) -> None:
