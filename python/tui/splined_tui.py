@@ -1078,10 +1078,12 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
 
     def selection_suffix(index: int) -> str:
         if index == 0:
-            return f"  [{sum(item.auto_eligible for item in model.albums):,}]"
+            unloaded = any(not artist.loaded for artist in model.artists)
+            return "  [ALL]" if unloaded else f"  [{sum(item.auto_eligible for item in model.albums):,}]"
         if index == 1:
             return f"  [{selected_count:,}]" if selected_count else ""
-        return f"  [{sum(item.auto_eligible for item in model.visible_albums()):,}]"
+        unloaded_visible = any(not artist.loaded for artist in model.visible_artists())
+        return "  [FILTER]" if unloaded_visible else f"  [{sum(item.auto_eligible for item in model.visible_albums()):,}]"
 
     frame.render_widget(
         Paragraph(_control_lines(tuple(x[0] for x in STATUS_CONTROLS), state.status_index, status_active, theme, status_suffix))
@@ -1148,7 +1150,7 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
         marker = "›" if index == state.artist_index else " "
         checked = "☑" if artist.selected_count else "☐"
         semantic = _artist_status_semantic(artist.status)
-        status_label = STATUS_LABELS[artist.status] if artist.status is not None else "No Albums"
+        status_label = STATUS_LABELS[artist.status] if artist.status is not None else "Not loaded"
         lines.append(Line([
             Span(f"{marker} {checked} ", style(theme, Semantic.ACTIVE if index == state.artist_index else semantic, bold=index == state.artist_index)),
             Span(_truncate(artist.name, max(4, body.width - 27)), style(theme, semantic)),
@@ -1219,33 +1221,26 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
 def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     assert state.library is not None
     stats = state.library.statistics()
-    formats = "  ".join(f"{key} {value}" for key, value in sorted(stats["formats"].items())) or "none"
+    formats = "  ".join(
+        f"{key} {value}" for key, value in sorted(stats["formats"].items())
+    ) or "none"
     text = (
-        f"Path  {_truncate(str(stats['path']), max(8, area.width - 9))}\n"
-        f"Artists  {stats['artists']} · {stats['visible_artists']} visible\n"
-        f"Albums   {stats['albums']} complete\n"
+        f"Path     {_truncate(str(stats['path']), max(8, area.width - 10))}\n"
+        f"Artists  {stats['artists']} root · {stats['loaded_artists']} loaded · "
+        f"{stats['visible_artists']} visible\n"
+        f"Albums   {stats['albums']} loaded\n"
         f"Active   {stats['active_albums']} total · {stats['active_visible_albums']} visible\n"
         f"Selected {stats['selected']} Albums\n"
         f"Artwork  {formats}\n"
-        f"Cache    {stats['cache']}\n"
-        "[P] Source Policy · [R] Refresh Library Index"
+        f"Inventory {stats['inventory']}\n"
+        "[P] Source Policy · [R] Refresh Folder List"
     )
     frame.render_widget(
-        Paragraph.from_string(text).block(card(theme, "MEDIA LIBRARY STATISTICS", Semantic.ACTIVE)), area
+        Paragraph.from_string(text).block(
+            card(theme, "MEDIA LIBRARY STATISTICS", Semantic.ACTIVE)
+        ),
+        area,
     )
-    if state.cache_phase.startswith("validation") and state.cache_total and int(area.height) >= 4:
-        validation = (
-            f"Checking library cache · {state.cache_processed:,} / "
-            f"{state.cache_total:,} · {(state.cache_percent or 0.0):.1f}%"
-            if state.cache_phase == "validation"
-            else f"Library cache current · {state.cache_total:,} Artists · 100%"
-        )
-        frame.render_widget(
-            Paragraph.from_string(_truncate(validation, max(1, int(area.width) - 2)))
-            .centered()
-            .style(style(theme, Semantic.ACCEPTED if state.cache_phase.endswith("complete") else Semantic.ACTIVE)),
-            Rect(int(area.x) + 1, int(area.y + area.height) - 3, max(1, int(area.width) - 2), 1),
-        )
     if int(area.height) >= 2:
         _register_hit(
             state,
@@ -2512,6 +2507,32 @@ def _respond_library_action(
     state.workflow = "library"
 
 
+def _request_bulk_selection(
+    state: TuiState,
+    adapter: TuiAdapter,
+    *,
+    filtered: bool,
+) -> None:
+    model = state.library
+    if model is None:
+        return
+    if not filtered:
+        state.transient = "Reading Album folders for Select [ALL]…"
+        _respond_library_action(state, adapter, "select-all")
+        return
+
+    visible_artists = model.visible_artists()
+    state.transient = "Reading matching Artist folders for Select [FILTERED]…"
+    _respond_library_action(
+        state,
+        adapter,
+        "select-filtered",
+        artist_paths=[artist.path for artist in visible_artists],
+        album_filter=model.album_filter,
+        status_filters=sorted(status.value for status in model.status_filters),
+    )
+
+
 def _open_artist(
     state: TuiState,
     adapter: TuiAdapter,
@@ -2684,7 +2705,7 @@ def _handle_library_key(
         state.library_focus = 0
         return True
     if action is Action.REFRESH:
-        state.transient = "Refreshing the complete disposable picker index…"
+        state.transient = "Refreshing Artist folder list…"
         _respond_library_action(state, adapter, "refresh-index")
         return True
     if action is Action.FILTER:
@@ -2777,11 +2798,11 @@ def _handle_library_key(
                 model.toggle_artist_status(status)
         elif state.library_focus == 1:
             if state.select_index == 0:
-                model.select_all(filtered=False)
+                _request_bulk_selection(state, adapter, filtered=False)
             elif state.select_index == 1:
                 model.select_none()
             else:
-                model.select_all(filtered=True)
+                _request_bulk_selection(state, adapter, filtered=True)
         elif state.library_focus == 2:
             _submit_library(state, adapter)
         elif state.library_focus == 3:
@@ -3031,11 +3052,11 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.library_focus = 1
         state.select_index = region.index
         if region.index == 0:
-            model.select_all(filtered=False)
+            _request_bulk_selection(state, adapter, filtered=False)
         elif region.index == 1:
             model.select_none()
         else:
-            model.select_all(filtered=True)
+            _request_bulk_selection(state, adapter, filtered=True)
     elif region.target == "scan-control" and model is not None:
         state.library_focus = 2
         state.scan_index = region.index
