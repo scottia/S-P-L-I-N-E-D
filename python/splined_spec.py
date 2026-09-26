@@ -152,9 +152,9 @@ REQUIRED_DOC_ANCHORS: dict[str, tuple[str, ...]] = {
         "Orange albums may be deliberately reselected",
     ),
     "docs/ratatui-tui.md": (
-        "complete persistent Select Media snapshot",
-        "validate filesystem changes in the background",
-        "AUTO SELECTED uses all checked Albums",
+        "Direct lazy Select Media inventory",
+        "No SQLite picker snapshot",
+        "Auto Scan [ALL]",
     ),
     "docs/source-policies-range-types.md": (
         "Global Resolution Range",
@@ -494,28 +494,34 @@ def check_help(audit: Audit) -> None:
 def check_targeted_regressions(audit: Audit) -> None:
     tests: tuple[tuple[str, str, str], ...] = (
         (
-            "CACHE-001",
-            "warm first render is SQLite-only before filesystem validation",
-            "test_tui_inventory.CompletePickerSnapshotTests."
-            "test_warm_first_render_is_sqlite_only_when_media_access_fails",
+            "PICKER-001",
+            "startup reads only root Artist folders and never opens picker SQLite",
+            "test_tui_inventory.DirectLazyInventoryTests."
+            "test_initial_startup_reads_root_only_without_picker_cache",
         ),
         (
-            "CACHE-002",
-            "failed promotion retains the last complete snapshot",
-            "test_tui_inventory.CompletePickerSnapshotTests."
-            "test_failed_generation_promotion_retains_last_complete_snapshot",
+            "PICKER-002",
+            "opening one Artist scans only that Artist once",
+            "test_tui_inventory.DirectLazyInventoryTests."
+            "test_open_artist_scans_only_that_artist_once",
         ),
         (
-            "CACHE-003",
-            "background validation promotes one coherent snapshot",
-            "test_tui_inventory.CompletePickerSnapshotTests."
-            "test_background_validation_promotes_one_coherent_snapshot",
+            "PICKER-003",
+            "same-session return reuses resident folders without root/Artist rescan",
+            "test_tui_inventory.DirectLazyInventoryTests."
+            "test_same_session_return_uses_resident_folder_model",
         ),
         (
-            "CACHE-004",
-            "same-session return avoids SQLite/filesystem reinitialization",
-            "test_tui_inventory.CompletePickerSnapshotTests."
-            "test_same_session_return_uses_memory_without_sqlite_or_filesystem",
+            "PICKER-004",
+            "Select ALL is the explicit full Artist traversal",
+            "test_tui_inventory.DirectLazyInventoryTests."
+            "test_select_all_explicitly_reads_every_artist",
+        ),
+        (
+            "PICKER-005",
+            "Refresh rereads only the root Artist folder list",
+            "test_tui_inventory.DirectLazyInventoryTests."
+            "test_refresh_only_reloads_root_artist_folders",
         ),
         (
             "SESSION-001",
