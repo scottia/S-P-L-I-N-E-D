@@ -1202,11 +1202,15 @@ def selected_album_statistics(
     result["webp_found"] = bool(webps)
 
     if webps:
-        webp = max(webps, key=lambda item: item.stat().st_size if item.exists() else 0)
-        try:
-            result["webp_size_mb"] = round(webp.stat().st_size / 1_000_000, 2)
-        except OSError:
-            result["webp_size_mb"] = 0.0
+        def webp_size(item: Path) -> int:
+            try:
+                return int(item.stat().st_size)
+            except OSError:
+                return 0
+
+        webp = max(webps, key=webp_size)
+        size_bytes = webp_size(webp)
+        result["webp_size_mb"] = round(size_bytes / 1_000_000, 2)
         try:
             with Image.open(webp) as image:
                 result["webp_resolution"] = f"{int(image.width)}x{int(image.height)}"
