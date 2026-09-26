@@ -1447,13 +1447,17 @@ def _render_library_tools(
     body = f"{source_text}{separator}{edit_text}{separator}{refresh_text}"
     frame.render_widget(
         Paragraph(
-            Line(
+            Text(
                 [
-                    Span(source_text, style(theme, Semantic.SPECIAL, bold=True)),
-                    Span(separator, style(theme, Semantic.MUTED)),
-                    Span(edit_text, style(theme, Semantic.ACTIVE, bold=True)),
-                    Span(separator, style(theme, Semantic.MUTED)),
-                    Span(refresh_text, style(theme, Semantic.ACCEPTED, bold=True)),
+                    Line(
+                        [
+                            Span(source_text, style(theme, Semantic.SPECIAL, bold=True)),
+                            Span(separator, style(theme, Semantic.MUTED)),
+                            Span(edit_text, style(theme, Semantic.ACTIVE, bold=True)),
+                            Span(separator, style(theme, Semantic.MUTED)),
+                            Span(refresh_text, style(theme, Semantic.ACCEPTED, bold=True)),
+                        ]
+                    )
                 ]
             )
         )
