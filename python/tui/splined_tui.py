@@ -1286,7 +1286,7 @@ def _selected_album_stat_lines(
         if lines:
             lines.append(Line([Span(separator, style(theme, Semantic.MUTED))]))
         heading = (
-            f"Selected album {index} / {len(state.selected_album_stats)}"
+            f"Selected album {index} / {len(state.selected_album_stats)}  ↕"
             if len(state.selected_album_stats) > 1
             else "Selected album"
         )
@@ -1360,17 +1360,11 @@ def _render_selected_album_stats(
     shown = lines[
         state.selected_stats_scroll : state.selected_stats_scroll + capacity
     ]
-    overflow = len(lines) > capacity
-    title = "MEDIA LIBRARY / SELECTED ALBUM STATISTICS"
-    if state.selected_album_stats:
-        title += f" · {len(state.selected_album_stats)} SELECTED"
-    if overflow:
-        title += " · ↕ SCROLL"
     frame.render_widget(
         Paragraph(Text(shown)).block(
             card(
                 theme,
-                title,
+                "MEDIA LIBRARY / SELECTED ALBUM STATISTICS",
                 Semantic.SPECIAL,
             )
         ),
