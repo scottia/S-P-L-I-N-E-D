@@ -334,6 +334,15 @@ class TuiState:
         elif event in {"library", "library_update"}:
             self.workflow = "library"
             self.workspace = "library"
+            if self.transient.startswith(
+                (
+                    "Indexing Artist folder",
+                    "Reading Album folders",
+                    "Reading matching Artist folders",
+                    "Refreshing Artist folder list",
+                )
+            ):
+                self.transient = ""
             if event == "library" or self.library is None:
                 self.library = LibraryModel.from_payload(payload)
             else:
@@ -1351,11 +1360,17 @@ def _render_selected_album_stats(
     shown = lines[
         state.selected_stats_scroll : state.selected_stats_scroll + capacity
     ]
+    overflow = len(lines) > capacity
+    title = "MEDIA LIBRARY / SELECTED ALBUM STATISTICS"
+    if state.selected_album_stats:
+        title += f" · {len(state.selected_album_stats)} SELECTED"
+    if overflow:
+        title += " · ↕ SCROLL"
     frame.render_widget(
         Paragraph(Text(shown)).block(
             card(
                 theme,
-                "MEDIA LIBRARY / SELECTED ALBUM STATISTICS",
+                title,
                 Semantic.SPECIAL,
             )
         ),
@@ -1413,7 +1428,11 @@ def _scan_directory_stat_lines(
             f"{stats['active_visible_albums']:,} visible",
         ),
         Line([Span(separator, style(theme, Semantic.MUTED))]),
-        field("Selected", f"({stats['selected']:,})", Semantic.SPECIAL),
+        field(
+            "Selected",
+            f"({len(state.selected_album_stats):,})",
+            Semantic.SPECIAL,
+        ),
         field("Processed", f"({stats['processed']:,})", Semantic.FALLBACK),
         field("Bypassed", f"({stats['bypassed']:,})", Semantic.REJECTED),
     ]
@@ -1514,24 +1533,26 @@ def _render_library_side_panels(
     state: TuiState,
     theme: Theme,
 ) -> None:
-    selected_lines = _selected_album_stat_lines(state, theme, int(area.width))
     tools_height = 3
     scan_lines = _scan_directory_stat_lines(state, theme, int(area.width))
-    scan_height = min(len(scan_lines) + 2, max(3, int(area.height) - tools_height - 3))
-    selected_available = max(3, int(area.height) - scan_height - tools_height)
-    selected_height = min(max(3, len(selected_lines) + 2), selected_available)
-    consumed = selected_height + scan_height + tools_height
-    constraints = [
-        Constraint.length(selected_height),
-        Constraint.length(scan_height),
-        Constraint.length(tools_height),
-    ]
-    if consumed < int(area.height):
-        constraints.append(Constraint.fill(1))
-    panels = _split_vertical(area, constraints)
+    # These two lower panels are fixed/affixed.  The selected-Album panel owns
+    # every remaining row and becomes scrollable as selections accumulate.
+    scan_height = min(
+        len(scan_lines) + 2,
+        max(3, int(area.height) - tools_height - 3),
+    )
+    panels = _split_vertical(
+        area,
+        [
+            Constraint.fill(1),
+            Constraint.length(scan_height),
+            Constraint.length(tools_height),
+        ],
+    )
     _render_selected_album_stats(frame, panels[0], state, theme)
     _render_library_scan_stats(frame, panels[1], state, theme)
     _render_library_tools(frame, panels[2], state, theme)
+
 
 
 def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -2950,7 +2971,7 @@ def _open_artist(
             model.toggle_artist(artist_name)
             _sync_library_selection(state, adapter)
         return
-    state.transient = f"Indexing Artist folder · {artist_name}"
+    state.transient = ""
     _respond_library_action(
         state,
         adapter,
