@@ -1150,7 +1150,11 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
         marker = "›" if index == state.artist_index else " "
         checked = "☑" if artist.selected_count else "☐"
         semantic = _artist_status_semantic(artist.status)
-        status_label = STATUS_LABELS[artist.status] if artist.status is not None else "Not loaded"
+        status_label = (
+            STATUS_LABELS[artist.status]
+            if artist.status is not None
+            else ("No Albums" if artist.loaded else "Not loaded")
+        )
         lines.append(Line([
             Span(f"{marker} {checked} ", style(theme, Semantic.ACTIVE if index == state.artist_index else semantic, bold=index == state.artist_index)),
             Span(_truncate(artist.name, max(4, body.width - 27)), style(theme, semantic)),
