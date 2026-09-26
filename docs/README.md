@@ -41,16 +41,24 @@ TUI
 
 The TUI uses exactly two first-class themes, `OLED` and `CHALK`, and shares the same authoritative source, history, bypass, timeout, and status-color semantics as the Windows implementation.
 
-Select Media uses a complete, disposable SQLite folder-topology snapshot in the
-configured cache. A first cold run builds every non-excluded Artist/Album row;
-a warm run renders that complete snapshot before any music-library filesystem
-access, then validates changes in the background through a crash-safe staging
-generation. Picker identities remain folder-derived and stable; there is no
-pre-Launch Mutagen/tag-enrichment pass. Tag parsing, MusicBrainz authority,
-providers, candidate downloads, image analysis, ranking, and AISPLINE work
-begin only after Launch.
+Select Media uses direct/lazy folder inventory. Normal startup reads only the
+immediate non-excluded Artist folders from the configured music-library root.
+Opening/selecting an Artist inventories only that Artist's Album folders and
+retains the loaded result in memory for the Select Media session. Explicit
+whole-library actions such as Select [ALL] or Auto Scan [ALL] may traverse all
+Artists because those operations require complete Album knowledge.
 
-Artist/Album filtering operates entirely against the currently indexed in-memory model rather than rescanning the filesystem on each keystroke. The picker database is acceleration state, not history or processing authority, and may be deleted safely.
+There is no normal-startup SQLite picker snapshot, full-library cache build, or
+background complete-library validation. Picker identities remain folder-derived
+and stable. Tag parsing, MusicBrainz authority, providers, candidate downloads,
+image ranking/transformation, and AISPLINE processing do not run merely to
+populate Select Media; the small Selected Album Statistics surface may read
+Mutagen tags asynchronously for at most 10 checked Albums.
+
+Artist filtering operates against the immediate root Artist list. Album/status
+filtering operates against resident loaded Album rows, with retained
+history/bypass authority contributing known status counts without forcing a
+recursive filesystem scan.
 
 The startup brand is readiness-driven rather than timed: a medium, solid,
 three-row spectral S:P:L:I:N:E:D wordmark remains above a centered cache-build
