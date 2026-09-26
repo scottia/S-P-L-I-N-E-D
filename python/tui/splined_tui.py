@@ -341,6 +341,7 @@ class TuiState:
                     "Reading Album folders",
                     "Reading matching Artist folders",
                     "Refreshing Artist folder list",
+                    "Input busy",
                 )
             ):
                 self.transient = ""
@@ -2971,12 +2972,17 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_candidate_preview_modal(frame, area, state, theme)
 
 
-def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> None:
-    adapter.respond(response)
+def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> bool:
+    if not adapter.respond(response):
+        state.transient = (
+            "Input busy · current engine action is still running; retry when complete."
+        )
+        return False
     state.input_request = None
     state.input_buffer = ""
     state.dialog_open = False
     state.workflow = "processing"
+    return True
 
 
 def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
@@ -3014,6 +3020,25 @@ def _respond_library_action(
     state.workflow = "library"
 
 
+def _library_input_ready(state: TuiState, adapter: TuiAdapter) -> bool:
+    request = state.input_request
+    ready = (
+        adapter.waiting.is_set()
+        and request is not None
+        and request.kind == "library-selection"
+    )
+    if ready:
+        return True
+    state.transient = (
+        "Input busy · current library action is still running; retry when complete."
+    )
+    _runtime_trace(
+        f"library_action.busy workflow={state.workflow!r} "
+        f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
+    )
+    return False
+
+
 def _sync_library_selection(state: TuiState, adapter: TuiAdapter) -> None:
     if state.library is None:
         return
@@ -3028,6 +3053,8 @@ def _request_bulk_selection(
 ) -> None:
     model = state.library
     if model is None:
+        return
+    if not _library_input_ready(state, adapter):
         return
     _runtime_trace(
         f"bulk_select requested filtered={filtered} waiting={adapter.waiting.is_set()} "
@@ -3064,17 +3091,24 @@ def _open_artist(
         f"artist.open requested={artist_name!r} select_after_load={select_after_load} "
         f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
     )
-    model.active_artist = artist_name
-    state.album_index_cursor = 0
-    state.album_scroll = 0
     artist = model.artist(artist_name)
     if artist is None:
         return
     if artist.loaded:
+        model.active_artist = artist_name
+        state.album_index_cursor = 0
+        state.album_scroll = 0
         if select_after_load:
+            if not _library_input_ready(state, adapter):
+                return
             model.toggle_artist(artist_name)
             _sync_library_selection(state, adapter)
         return
+    if not _library_input_ready(state, adapter):
+        return
+    model.active_artist = artist_name
+    state.album_index_cursor = 0
+    state.album_scroll = 0
     state.transient = ""
     _respond_library_action(
         state,
@@ -3640,6 +3674,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         else:
             model.toggle_artist_status(status)
     elif region.target == "select-control" and model is not None:
+        if not _library_input_ready(state, adapter):
+            return
         state.library_focus = 1
         state.select_index = region.index
         _runtime_trace(
@@ -3653,6 +3689,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         else:
             _request_bulk_selection(state, adapter, filtered=True)
     elif region.target == "scan-control" and model is not None:
+        if not _library_input_ready(state, adapter):
+            return
         state.library_focus = 2
         state.scan_index = region.index
         _runtime_trace(
@@ -3664,6 +3702,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.artist_index = region.index
         _open_artist(state, adapter, region.value)
     elif region.target == "artist-checkbox" and model is not None:
+        if not _library_input_ready(state, adapter):
+            return
         state.library_focus = 3
         state.artist_index = region.index
         artist = model.artist(region.value)
@@ -3689,6 +3729,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.library_focus = 5
         state.album_index_cursor = region.index
     elif region.target == "album-checkbox" and model is not None:
+        if not _library_input_ready(state, adapter):
+            return
         state.library_focus = 5
         state.album_index_cursor = region.index
         albums = model.visible_albums(active_artist_only=True)
