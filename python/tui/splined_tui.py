@@ -1235,40 +1235,274 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
     _register_hit(state, "album-filter", filter_area)
 
 
-def _render_library_stats(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
-    assert state.library is not None
-    stats = state.library.statistics()
-    formats = "  ".join(
-        f"{key} {value}" for key, value in sorted(stats["formats"].items())
-    ) or "none"
-    text = (
-        f"Path     {_truncate(str(stats['path']), max(8, area.width - 10))}\n"
-        f"Artists  {stats['artists']} root · {stats['loaded_artists']} loaded · "
-        f"{stats['visible_artists']} visible\n"
-        f"Albums   {stats['albums']} loaded\n"
-        f"Active   {stats['active_albums']} total · {stats['active_visible_albums']} visible\n"
-        f"Selected {stats['selected']} Albums\n"
-        f"Artwork  {formats}\n"
-        f"Inventory {stats['inventory']}\n"
-        "[P] Source Policy · [R] Refresh Folder List"
-    )
+def _selected_album_stat_lines(
+    state: TuiState,
+    theme: Theme,
+    width: int,
+) -> list[Line]:
+    if not state.selected_album_stats:
+        return [
+            Line(
+                [
+                    Span(
+                        "No Albums selected.",
+                        style(theme, Semantic.MUTED),
+                    )
+                ]
+            )
+        ]
+
+    lines: list[Line] = []
+    usable = max(12, width - 4)
+    separator = "─" * usable
+
+    def field(label: str, value: Any, semantic: Semantic = Semantic.TEXT) -> Line:
+        return Line(
+            [
+                Span(f"{label:<16}", style(theme, Semantic.MUTED)),
+                Span(
+                    _truncate(str(value) if str(value) else "—", max(1, usable - 16)),
+                    style(theme, semantic),
+                ),
+            ]
+        )
+
+    for index, item in enumerate(state.selected_album_stats, 1):
+        if lines:
+            lines.append(Line([Span(separator, style(theme, Semantic.MUTED))]))
+        heading = (
+            f"Selected album {index} / {len(state.selected_album_stats)}"
+            if len(state.selected_album_stats) > 1
+            else "Selected album"
+        )
+        lines.append(Line([Span(heading, style(theme, Semantic.SPECIAL, bold=True))]))
+        lines.append(Line([Span(separator, style(theme, Semantic.MUTED))]))
+        lines.extend(
+            [
+                field("Path", item.get("path", ""), Semantic.DEBUG),
+                field("Album", item.get("album", ""), Semantic.ACTIVE),
+                field("Artist", item.get("artist", ""), Semantic.ACTIVE),
+                field("Year", item.get("year", "")),
+                field("Tracks", f"({int(item.get('tracks', 0) or 0)})"),
+            ]
+        )
+        lines.append(Line([Span(separator, style(theme, Semantic.MUTED))]))
+        artwork = item.get("artwork", {})
+        if not isinstance(artwork, dict):
+            artwork = {}
+        artwork_text = "  ".join(
+            f"{name} ({int(artwork.get(name, 0) or 0)})"
+            for name in ("JPEG", "PNG", "WEBP", "OTHER")
+        )
+        lines.append(field("Artwork", artwork_text, Semantic.ACCEPTED))
+        lines.append(Line([Span(separator, style(theme, Semantic.MUTED))]))
+        lines.extend(
+            [
+                field("Root files", f"({int(item.get('root_files', 0) or 0)})"),
+                field("Cover* files", f"({int(item.get('cover_files', 0) or 0)})"),
+                field(
+                    "Cover* names",
+                    ", ".join(str(v) for v in item.get("cover_names", [])) or "—",
+                    Semantic.FALLBACK,
+                ),
+                field(
+                    "Other filenames",
+                    ", ".join(str(v) for v in item.get("other_filenames", [])) or "—",
+                ),
+            ]
+        )
+        lines.append(Line([Span(separator, style(theme, Semantic.MUTED))]))
+        size = float(item.get("webp_size_mb", 0.0) or 0.0)
+        size_text = f"{size:g}" if size else "0"
+        lines.extend(
+            [
+                field("WebP found", str(bool(item.get("webp_found", False))), Semantic.SPECIAL),
+                field("WebP size(mb)", size_text),
+                field("WebP resolution", item.get("webp_resolution", "")),
+                field(
+                    "WebP conversion",
+                    str(bool(item.get("webp_conversion", False))),
+                    Semantic.ACCEPTED
+                    if bool(item.get("webp_conversion", False))
+                    else Semantic.MUTED,
+                ),
+            ]
+        )
+    return lines
+
+
+def _render_selected_album_stats(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    lines = _selected_album_stat_lines(state, theme, int(area.width))
+    capacity = max(1, int(area.height) - 2)
+    state.selected_stats_page_size = capacity
+    maximum = max(0, len(lines) - capacity)
+    state.selected_stats_scroll = max(0, min(state.selected_stats_scroll, maximum))
+    shown = lines[
+        state.selected_stats_scroll : state.selected_stats_scroll + capacity
+    ]
     frame.render_widget(
-        Paragraph.from_string(text).block(
-            card(theme, "MEDIA LIBRARY STATISTICS", Semantic.ACTIVE)
+        Paragraph(Text(shown)).block(
+            card(
+                theme,
+                "MEDIA LIBRARY / SELECTED ALBUM STATISTICS",
+                Semantic.SPECIAL,
+            )
         ),
         area,
     )
-    if int(area.height) >= 2:
-        _register_hit(
-            state,
-            "source-policy-open",
-            Rect(
-                int(area.x) + 1,
-                max(int(area.y), int(area.y + area.height) - 2),
-                max(1, int(area.width) - 2),
-                1,
-            ),
+    _register_hit(state, "selected-stats-scroll", area)
+
+
+def _scan_directory_stat_lines(
+    state: TuiState,
+    theme: Theme,
+    width: int,
+) -> list[Line]:
+    assert state.library is not None
+    stats = state.library.statistics()
+    usable = max(12, width - 4)
+    separator = "─" * usable
+
+    def field(label: str, value: str, semantic: Semantic = Semantic.TEXT) -> Line:
+        return Line(
+            [
+                Span(f"{label:<12}", style(theme, Semantic.MUTED)),
+                Span(
+                    _truncate(value, max(1, usable - 12)),
+                    style(theme, semantic),
+                ),
+            ]
         )
+
+    formats = stats["formats"]
+    artwork = "  ".join(
+        f"{name} ({int(formats.get(name, 0) or 0)})"
+        for name in ("JPEG", "PNG", "WEBP")
+    )
+    return [
+        field("Path", str(stats["path"]), Semantic.DEBUG),
+        field(
+            "Artists",
+            f"{stats['artists']:,} - {stats['visible_artists']:,} visible",
+            Semantic.ACTIVE,
+        ),
+        field("Albums", f"{stats['albums']:,} loaded", Semantic.ACTIVE),
+        field("Inventory", str(stats["inventory"]), Semantic.ACCEPTED),
+        Line([Span(separator, style(theme, Semantic.MUTED))]),
+        field("Artwork", artwork, Semantic.ACCEPTED),
+        Line([Span(separator, style(theme, Semantic.MUTED))]),
+        field(
+            "Active",
+            f"{stats['active_albums']:,} total • "
+            f"{stats['active_visible_albums']:,} visible",
+        ),
+        Line([Span(separator, style(theme, Semantic.MUTED))]),
+        field("Selected", f"({stats['selected']:,})", Semantic.SPECIAL),
+        field("Processed", f"({stats['processed']:,})", Semantic.FALLBACK),
+        field("Bypassed", f"({stats['bypassed']:,})", Semantic.REJECTED),
+    ]
+
+
+def _render_library_scan_stats(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    lines = _scan_directory_stat_lines(state, theme, int(area.width))
+    capacity = max(1, int(area.height) - 2)
+    frame.render_widget(
+        Paragraph(Text(lines[:capacity])).block(
+            card(
+                theme,
+                "MEDIA LIBRARY / SCAN DIR STATISTICS",
+                Semantic.ACTIVE,
+            )
+        ),
+        area,
+    )
+
+
+def _render_library_tools(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    source_text = "[P] Source Policy"
+    edit_text = "[E] Edit Settings"
+    refresh_text = "[R] Refresh Library Index"
+    separator = "  •  "
+    body = f"{source_text}{separator}{edit_text}{separator}{refresh_text}"
+    frame.render_widget(
+        Paragraph(
+            Line(
+                [
+                    Span(source_text, style(theme, Semantic.SPECIAL, bold=True)),
+                    Span(separator, style(theme, Semantic.MUTED)),
+                    Span(edit_text, style(theme, Semantic.ACTIVE, bold=True)),
+                    Span(separator, style(theme, Semantic.MUTED)),
+                    Span(refresh_text, style(theme, Semantic.ACCEPTED, bold=True)),
+                ]
+            )
+        )
+        .centered()
+        .block(card(theme, "POLICY, LIBRARY and SETTINGS", Semantic.DEBUG)),
+        area,
+    )
+    if int(area.height) < 2:
+        return
+    inner_width = max(1, int(area.width) - 2)
+    start_x = int(area.x) + 1 + max(0, (inner_width - len(body)) // 2)
+    y = int(area.y) + 1
+    _register_hit(
+        state,
+        "source-policy-open",
+        Rect(start_x, y, len(source_text), 1),
+    )
+    edit_x = start_x + len(source_text) + len(separator)
+    _register_hit(
+        state,
+        "settings-edit",
+        Rect(edit_x, y, len(edit_text), 1),
+    )
+    refresh_x = edit_x + len(edit_text) + len(separator)
+    _register_hit(
+        state,
+        "library-refresh",
+        Rect(refresh_x, y, len(refresh_text), 1),
+    )
+
+
+def _render_library_side_panels(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    selected_lines = _selected_album_stat_lines(state, theme, int(area.width))
+    tools_height = 3
+    scan_lines = _scan_directory_stat_lines(state, theme, int(area.width))
+    scan_height = min(len(scan_lines) + 2, max(3, int(area.height) - tools_height - 3))
+    selected_available = max(3, int(area.height) - scan_height - tools_height)
+    selected_height = min(max(3, len(selected_lines) + 2), selected_available)
+    consumed = selected_height + scan_height + tools_height
+    constraints = [
+        Constraint.length(selected_height),
+        Constraint.length(scan_height),
+        Constraint.length(tools_height),
+    ]
+    if consumed < int(area.height):
+        constraints.append(Constraint.fill(1))
+    panels = _split_vertical(area, constraints)
+    _render_selected_album_stats(frame, panels[0], state, theme)
+    _render_library_scan_stats(frame, panels[1], state, theme)
+    _render_library_tools(frame, panels[2], state, theme)
 
 
 def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -1280,9 +1514,10 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
         controls, lower = _split_vertical(
             area, [Constraint.length(19), Constraint.fill(1)]
         )
-        stats_height = max(1, min(7, int(lower.height) // 4))
-        pickers, stats = _split_vertical(
-            lower, [Constraint.fill(1), Constraint.length(stats_height)]
+        picker_height = max(6, int(lower.height) // 2)
+        pickers, side = _split_vertical(
+            lower,
+            [Constraint.length(picker_height), Constraint.fill(1)],
         )
         artist, album = _split_vertical(
             pickers, [Constraint.percentage(50), Constraint.fill(1)]
@@ -1290,7 +1525,7 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
         _render_library_controls(frame, controls, state, theme)
         _render_artist_picker(frame, artist, state, theme)
         _render_album_picker(frame, album, state, theme)
-        _render_library_stats(frame, stats, state, theme)
+        _render_library_side_panels(frame, side, state, theme)
     else:
         top, bottom = _split_vertical(area, [Constraint.length(8), Constraint.fill(1)])
         _render_library_controls(frame, top, state, theme)
@@ -1300,7 +1535,7 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
         )
         _render_artist_picker(frame, columns[0], state, theme)
         _render_album_picker(frame, columns[1], state, theme)
-        _render_library_stats(frame, columns[2], state, theme)
+        _render_library_side_panels(frame, columns[2], state, theme)
 
 
 def _render_library_embedded(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -1313,7 +1548,9 @@ def _render_library_embedded(frame: Any, area: Rect, state: TuiState, theme: The
     )
     _render_artist_picker(frame, columns[0], state, theme)
     _render_album_picker(frame, columns[1], state, theme)
-    _render_library_stats(frame, columns[2], state, theme)
+    # Embedded processing views are intentionally shallow; show the scan-dir
+    # summary only rather than crushing three stacked Select Media panels.
+    _render_library_scan_stats(frame, columns[2], state, theme)
 
 
 def _render_overview(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
