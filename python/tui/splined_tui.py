@@ -3342,22 +3342,26 @@ def osc8_link(label: str, url: str) -> str:
 
 
 def write_terminal_links(state: TuiState, writer: Any) -> None:
-    """Attach OSC-8 metadata to the link cells drawn by Ratatui."""
+    """Attach OSC-8 only to the URL modal's browser-owned link.
+
+    Candidate-table [URL] cells remain ordinary Ratatui text so terminal
+    clients cannot add their own underline/link decoration there. Clicking the
+    cell still opens the modal through SPLINED's mouse/touch hit region.
+    """
+    if not state.url_modal_open:
+        return
     targets = [
         region
         for region in state.hit_regions
-        if region.target == ("url-open" if state.url_modal_open else "candidate-url")
-        and region.value
+        if region.target == "url-open" and region.value
     ]
     if not targets:
         return
     writer.write("\x1b7")
     for region in targets:
-        label = "[OPEN IN DEFAULT BROWSER]" if region.target == "url-open" else "[URL]"
-        prefix = "\x1b[4m" if region.target == "url-open" else ""
         writer.write(
-            f"\x1b[{region.y + 1};{region.x + 1}H{prefix}"
-            f"{osc8_link(label, region.value)}\x1b[0m"
+            f"\x1b[{region.y + 1};{region.x + 1}H\x1b[4m"
+            f"{osc8_link('[OPEN IN DEFAULT BROWSER]', region.value)}\x1b[0m"
         )
     writer.write("\x1b8")
     writer.flush()
