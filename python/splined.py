@@ -1807,17 +1807,71 @@ def compact(paths: list[Path]) -> str:
     return ", ".join(names)
 
 
-_DEBUG_PATH: Path | None = None
+_RUNTIME_LOG_PATH: Path | None = None
+_RUNTIME_VERBOSITY = "info"
 _DEBUG_ENABLED = False
 
+LOG_LEVELS = {
+    "debug": 10,
+    "info": 20,
+    "warning": 30,
+    "error": 40,
+}
 
-def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
-    global _DEBUG_PATH, _DEBUG_ENABLED
+
+def logging_verbosity(cfg: dict[str, Any]) -> str:
+    verbosity = str(cfg.get("verbosity", "info")).strip().lower()
+    if verbosity not in LOG_LEVELS:
+        raise SplinedError(
+            "SPLINED verbosity must be one of: debug, info, warning, error."
+        )
+    return verbosity
+
+
+def runtime_log_path() -> Path | None:
+    """Return the current run log path for diagnostics/presentation."""
+    return _RUNTIME_LOG_PATH
+
+
+def runtime_log(level: str, message: str) -> None:
+    """Write one filtered line to this run's ephemeral runtime log."""
+    if _RUNTIME_LOG_PATH is None:
+        return
+
+    normalized = str(level).strip().lower()
+    if normalized == "warn":
+        normalized = "warning"
+    if normalized not in LOG_LEVELS:
+        normalized = "info"
+    if LOG_LEVELS[normalized] < LOG_LEVELS[_RUNTIME_VERBOSITY]:
+        return
+
+    safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
+    try:
+        with _RUNTIME_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"{normalized.upper():<7} {safe}\n"
+            )
+    except OSError:
+        # Runtime diagnostics must never make an operational scan fail.
+        pass
+
+
+def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
+    """Initialize the one-file-per-run diagnostic log.
+
+    The historical function name is retained for compatibility with existing
+    callers/tests. Runtime logs now live under <log_dir>/run and the prior run
+    is removed at the beginning of the next invocation.
+    """
+    global _RUNTIME_LOG_PATH, _RUNTIME_VERBOSITY, _DEBUG_ENABLED
 
     log_dir = runtime_log_dir(config_file, cfg)
     if log_dir.exists() and (log_dir.is_symlink() or not log_dir.is_dir()):
         raise SplinedError(f"Unsafe SPLINED log directory: {log_dir}")
     log_dir.mkdir(parents=True, exist_ok=True)
+
     retention_days = _non_negative_int(
         section(cfg, "logging").get("retention_days", 14),
         "[logging].retention_days",
@@ -1826,40 +1880,65 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
         cutoff = time.time() - retention_days * 86_400
         for entry in log_dir.iterdir():
             try:
-                if entry.is_file() and not entry.is_symlink() and entry.stat().st_mtime < cutoff:
+                if (
+                    entry.is_file()
+                    and not entry.is_symlink()
+                    and entry.stat().st_mtime < cutoff
+                ):
                     entry.unlink()
             except OSError:
                 # Diagnostic retention is best-effort and must not stop scans.
                 pass
 
-    verbosity = str(cfg.get("verbosity", "info")).strip().lower()
-    _DEBUG_ENABLED = verbosity == "debug"
-    if not _DEBUG_ENABLED:
-        _DEBUG_PATH = None
-        return None
+    run_dir = log_dir / "run"
+    if run_dir.exists() and (run_dir.is_symlink() or not run_dir.is_dir()):
+        raise SplinedError(f"Unsafe SPLINED runtime log directory: {run_dir}")
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    _DEBUG_PATH = log_dir / "splined_debug.log"
+    # /run intentionally contains this invocation only. Never follow symlinks.
+    for entry in run_dir.iterdir():
+        try:
+            if entry.is_symlink() or entry.is_file():
+                entry.unlink()
+            elif entry.is_dir():
+                shutil.rmtree(entry)
+        except OSError:
+            # A stale diagnostic must not prevent SPLINED from starting.
+            pass
 
-    # Append across runs with a visible session delimiter.
-    with _DEBUG_PATH.open("a", encoding="utf-8") as handle:
+    _RUNTIME_VERBOSITY = logging_verbosity(cfg)
+    _DEBUG_ENABLED = _RUNTIME_VERBOSITY == "debug"
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    unique = f"{time.time_ns() % 1_000_000_000:09d}"
+    _RUNTIME_LOG_PATH = (
+        run_dir
+        / f"splined-{_RUNTIME_VERBOSITY}-{stamp}-{unique}-p{os.getpid()}.log"
+    )
+    with _RUNTIME_LOG_PATH.open("x", encoding="utf-8") as handle:
         handle.write(
-            f"\n=== SPLINED {display_version()} DEBUG SESSION "
-            f"{time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+            f"=== SPLINED {display_version()} RUNTIME LOG ===\n"
+            f"started={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"verbosity={_RUNTIME_VERBOSITY}\n"
+            f"config={config_file}\n"
+            f"pid={os.getpid()}\n"
+            "========================================\n"
         )
-    return _DEBUG_PATH
+
+    runtime_log(
+        "info",
+        f"run.start verbosity={_RUNTIME_VERBOSITY} "
+        f"log={str(_RUNTIME_LOG_PATH)!r}",
+    )
+    return _RUNTIME_LOG_PATH
 
 
 def debug_log(message: str) -> None:
-    if not _DEBUG_ENABLED or _DEBUG_PATH is None:
+    if not _DEBUG_ENABLED:
         return
     safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
     emit_ui("log", level="DEBUG", message=safe)
-    try:
-        with _DEBUG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(f"{time.strftime('%H:%M:%S')} {safe}\n")
-    except OSError:
-        # Debug output is diagnostic only and must never break a scan.
-        pass
+    runtime_log("debug", safe)
 
 
 
@@ -5475,6 +5554,7 @@ def aisplined_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_config_v5(cfg: dict[str, Any]) -> None:
+    logging_verbosity(cfg)
     mode = str(cfg.get("mode", "read")).strip().lower()
     if mode not in {"read", "write"}:
         raise SplinedError("SPLINED mode must be 'read' or 'write'.")
@@ -6050,7 +6130,8 @@ def print_config(path: Path, cfg: dict[str, Any]) -> None:
         f"Square mode: {out.get('square_mode', 'crop' if out.get('square', False) else 'off')}\n"
         f"Square round to: {out.get('square_round_to', 0)}\n"
         f"Evaluate final image: {out.get('evaluate_final_image', out.get('square', False))}\n"
-        f"Debug log: {logs / 'splined_debug.log'}"
+        f"Runtime log directory: {logs / 'run'}\n"
+        f"Runtime log: {runtime_log_path() or 'not initialized'}"
     )
 
 
