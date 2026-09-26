@@ -222,6 +222,61 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.assertEqual(state.workflow, "library")
         self.assertTrue(adapter.responses.empty())
 
+    def test_history_aware_status_counts_override_loaded_only_counts(self) -> None:
+        payload = _payload(1, 1)
+        payload["status_counts"] = {
+            "unprocessed": 7,
+            "processed": 41,
+            "bypassed": 3,
+            "timeout": 2,
+        }
+        payload["artist_status_counts"] = {
+            "unprocessed": 5,
+            "partial": 4,
+            "complete": 9,
+            "contains-bypass": 2,
+        }
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.apply("library", payload)
+        model = state.library
+        assert model is not None
+        self.assertEqual(model.album_status_counts()[AlbumStatus.PROCESSED], 41)
+        self.assertEqual(model.album_status_counts()[AlbumStatus.BYPASSED], 3)
+        self.assertEqual(
+            model.indexed_artist_status_counts()[ArtistStatus.COMPLETE], 9
+        )
+        self.assertEqual(
+            model.indexed_artist_status_counts()[ArtistStatus.CONTAINS_BYPASS],
+            2,
+        )
+
+    def test_async_selected_stats_apply_only_to_current_first_ten(self) -> None:
+        state = _library_state(artists=1, albums_each=2)
+        model = state.library
+        assert model is not None
+        selected = model.albums[0]
+        selected.selected = True
+        stat = {"path": selected.path, "album": selected.title}
+        state.apply(
+            "library_selected_stats",
+            {
+                "selected_paths": [selected.path],
+                "selected_album_stats": [stat],
+                "limit": 10,
+            },
+        )
+        self.assertEqual(state.selected_album_stats, [stat])
+
+        state.apply(
+            "library_selected_stats",
+            {
+                "selected_paths": ["/music/stale/album"],
+                "selected_album_stats": [{"path": "/music/stale/album"}],
+                "limit": 10,
+            },
+        )
+        self.assertEqual(state.selected_album_stats, [stat])
+
     def test_filter_click_and_real_key_path_update_visible_rows_immediately(self) -> None:
         artist_filter = _region(self.state, "artist-filter")
         handle_mouse(self.state, self.adapter, _center(artist_filter))
@@ -374,6 +429,11 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             region = _region(self.state, "status-control", index)
             handle_mouse(self.state, self.adapter, _center(region))
             self.assertEqual(self.state.status_index, index)
+            if index == 3:
+                self.assertNotIn(AlbumStatus.TIMEOUT, model.status_filters)
+                self.assertNotIn(
+                    ArtistStatus.PARTIAL, model.artist_status_filters
+                )
 
         # Bulk Select controls act immediately but delegate filesystem work to
         # the engine. Select NONE remains an in-memory operation.
