@@ -18,7 +18,6 @@ from tui.library import (
     ArtistStatus,
     LibraryModel,
 )
-from tui.picker_index import PICKER_DB_NAME, PickerAlbum, PickerIndex
 from tui.splined_tui import (
     TuiAdapter,
     TuiState,
@@ -93,30 +92,17 @@ class ReadinessBrandTests(unittest.TestCase):
             "inventory_state",
             {
                 "library_root": "/music",
-                "picker_index": "/_cache/splined-picker.sqlite3",
-                "status": "Opening disposable picker index",
+                "picker_index": "",
+                "status": "Artist folders ready",
                 "root_artists": 1033,
-                "cached_artists": 275,
-                "indexed_artists": 4,
-                "albums_known": 275,
+                "cached_artists": 0,
+                "indexed_artists": 0,
+                "albums_known": 0,
             },
         )
         self.assertEqual(state.workflow, "startup")
-        state.apply(
-            "cache_progress",
-            {
-                "phase": "build",
-                "status": "BUILDING LIBRARY CACHE",
-                "processed": 412,
-                "total": 1032,
-                "percent": 39.922,
-                "albums": 5873,
-                "current_artist": "[Soundtracks]",
-            },
-        )
         frame = _Frame(140, 40)
         render(frame, state, select_theme("OLED"))
-        self.assertGreaterEqual(len(frame.areas), 3)
         brand_areas = [
             area
             for area in frame.areas
@@ -124,14 +110,9 @@ class ReadinessBrandTests(unittest.TestCase):
             and int(area.height) == startup_brand_height(140, 40)
         ]
         self.assertEqual(len(brand_areas), 1)
-        gauges = [
-            (widget, area)
-            for widget, area in zip(frame.widgets, frame.areas)
-            if type(widget).__name__ == "Gauge"
-        ]
-        self.assertEqual(len(gauges), 1)
-        self.assertGreater(int(gauges[0][1].x), 0)
-        self.assertGreaterEqual(int(gauges[0][1].y), startup_brand_height(140, 40))
+        self.assertFalse(
+            any(type(widget).__name__ == "Gauge" for widget in frame.widgets)
+        )
 
         state.apply("library", _library_payload())
         self.assertEqual(state.workflow, "library")
@@ -165,7 +146,7 @@ class ReadinessBrandTests(unittest.TestCase):
 
 
 class CountScopeTests(unittest.TestCase):
-    def test_complete_snapshot_counts_cover_the_whole_library(self) -> None:
+    def test_loaded_scope_counts_are_explicit_in_lazy_inventory(self) -> None:
         albums = [
             *[
                 AlbumItem(f"/A/U{index}", "Artist A", f"A U{index}", AlbumStatus.UNPROCESSED)
@@ -199,7 +180,8 @@ class CountScopeTests(unittest.TestCase):
         stats = model.statistics()
         self.assertEqual(stats["artists"], 3)
         self.assertEqual(stats["albums"], 21)
-        self.assertEqual(stats["cache"], "COMPLETE")
+        self.assertEqual(stats["inventory"], "DIRECT / LAZY")
+        self.assertEqual(stats["loaded_artists"], 3)
         self.assertEqual(stats["active_albums"], 12)
         self.assertEqual(stats["active_visible_albums"], 12)
         self.assertEqual(
@@ -215,10 +197,9 @@ class CountScopeTests(unittest.TestCase):
 
 
 class HiddenDirectoryTests(unittest.TestCase):
-    def test_dot_directories_never_enter_picker_or_nested_inventory(self) -> None:
+    def test_dot_directories_never_enter_direct_root_or_nested_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "music"
-            cache = Path(directory) / "cache"
             for artist in (
                 ".animatedartworkdownloader",
                 ".nomifo",
@@ -234,21 +215,15 @@ class HiddenDirectoryTests(unittest.TestCase):
             nested.mkdir(parents=True)
             (nested / "track.flac").write_bytes(b"audio")
 
-            with PickerIndex.open(cache / PICKER_DB_NAME, root, ["[videos]"]) as index:
-                artists = index.discover_artists()
-                self.assertEqual([item.name for item in artists], ["10,000 Maniacs", "Aerosmith"])
-                album_rows = []
-                for artist in artists:
-                    discovered, _ignored = splined.inventory(Path(artist.path), ["[videos]"])
-                    album_rows.extend(
-                        PickerAlbum(str(item.path), artist.path, item.path.name)
-                        for item in discovered
-                    )
-                index.promote_snapshot(artists, album_rows)
-                stored = {
-                    str(row[0]) for row in index.connection.execute("SELECT artist_path FROM artists")
-                }
-                self.assertFalse(any(Path(path).name.startswith(".") for path in stored))
+            with os.scandir(root) as iterator:
+                names = sorted(
+                    entry.name
+                    for entry in iterator
+                    if not entry.is_symlink()
+                    and entry.is_dir(follow_symlinks=False)
+                    and not splined.picker_should_ignore(entry.name, ["[videos]"])
+                )
+            self.assertEqual(names, ["10,000 Maniacs", "Aerosmith"])
 
             albums, ignored = splined.inventory(root, ["[videos]"])
             self.assertEqual(
