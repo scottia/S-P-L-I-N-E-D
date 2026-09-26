@@ -2199,6 +2199,51 @@ def validate_aisplined_placeholder(cfg: dict[str, Any]) -> None:
     core.aisplined_settings(cfg)
 
 
+def run_operational_with_config_reload(
+    args: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    sources: list[str],
+    scan_words: list[str] | None,
+) -> int:
+    """Run the current scan command, reopening it after an in-TUI Config edit."""
+    path = config_file
+    current_cfg = cfg
+    current_sources = list(sources)
+    while True:
+        try:
+            return core.run_operational_interface(
+                args,
+                lambda: run_scan_dir(
+                    path,
+                    current_cfg,
+                    current_sources,
+                    scan_words,
+                ),
+            )
+        except core.TuiConfigEditRequested:
+            code, changed = core.run_config_edit_session(path)
+            if code != 0:
+                return code
+            if changed:
+                path, current_cfg = core.load_config()
+                validate_aisplined_placeholder(current_cfg)
+                if args.preserve_file is not None:
+                    core.section(current_cfg, "output")["preserve_file"] = (
+                        args.preserve_file == "true"
+                    )
+                current_sources = core.resolve_sources(
+                    current_cfg,
+                    core.parse_sources(args.cover_sources),
+                    core.parse_sources(args.only_cover_sources),
+                    core.parse_sources(args.exclude_cover_sources) or [],
+                )
+                if not current_sources:
+                    raise core.SplinedError(
+                        "No SPLINED cover sources remain after exclusions."
+                    )
+
+
 def print_help(path: Path, cfg: dict[str, Any]) -> None:
     core.print_help(path, cfg)
     ai = core.aisplined_settings(cfg)
@@ -2304,15 +2349,21 @@ def main() -> int:
         # the current working directory recursively, making it suitable for
         # shell/batch automation without another required subcommand.
         if len(sys.argv) == 1 or interface_only:
-            return core.run_operational_interface(
+            return run_operational_with_config_reload(
                 args,
-                lambda: run_scan_dir(path, cfg, sources, [str(Path.cwd())]),
+                path,
+                cfg,
+                sources,
+                [str(Path.cwd())],
             )
 
         if args.scan_dir is not None:
-            return core.run_operational_interface(
+            return run_operational_with_config_reload(
                 args,
-                lambda: run_scan_dir(path, cfg, sources, args.scan_dir),
+                path,
+                cfg,
+                sources,
+                args.scan_dir,
             )
         if args.release_mbid:
             return core.run_release_discovery(path, cfg, sources, args.release_mbid)
