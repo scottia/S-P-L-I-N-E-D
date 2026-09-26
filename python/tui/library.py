@@ -98,6 +98,8 @@ class LibraryModel:
     inventory_loads: int = 1
     select_new: bool = False
     picker_index: str = ""
+    known_status_counts: dict[AlbumStatus, int] = field(default_factory=dict)
+    known_artist_status_counts: dict[ArtistStatus, int] = field(default_factory=dict)
     _album_by_path: dict[str, AlbumItem] = field(
         default_factory=dict,
         init=False,
@@ -164,15 +166,25 @@ class LibraryModel:
             name = str(raw.get("name", "Unknown Artist")) or "Unknown Artist"
             children = grouped.get(name, [])
             indexed = bool(raw.get("indexed", True))
+            loaded = bool(raw.get("loaded", True))
+            raw_status = raw.get("status")
+            try:
+                base_status = (
+                    ArtistStatus(str(raw_status))
+                    if raw_status not in {None, ""}
+                    else None
+                )
+            except ValueError:
+                base_status = None
             artists.append(
                 ArtistItem(
                     str(raw.get("path", "")),
                     name,
-                    artist_status(children) if children else None,
+                    artist_status(children) if loaded and children else base_status,
                     int(raw.get("album_count", len(children))),
                     sum(child.selected for child in children),
                     indexed,
-                    bool(raw.get("loaded", True)),
+                    loaded,
                 )
             )
         if not artists:
@@ -188,12 +200,36 @@ class LibraryModel:
                 )
                 for name, children in sorted(grouped.items(), key=lambda pair: pair[0].casefold())
             ]
+        raw_status_counts = payload.get("status_counts", {})
+        known_status_counts: dict[AlbumStatus, int] = {}
+        if isinstance(raw_status_counts, dict):
+            for status in AlbumStatus:
+                try:
+                    known_status_counts[status] = max(
+                        0, int(raw_status_counts.get(status.value, 0) or 0)
+                    )
+                except (TypeError, ValueError):
+                    known_status_counts[status] = 0
+
+        raw_artist_status_counts = payload.get("artist_status_counts", {})
+        known_artist_status_counts: dict[ArtistStatus, int] = {}
+        if isinstance(raw_artist_status_counts, dict):
+            for status in ArtistStatus:
+                try:
+                    known_artist_status_counts[status] = max(
+                        0, int(raw_artist_status_counts.get(status.value, 0) or 0)
+                    )
+                except (TypeError, ValueError):
+                    known_artist_status_counts[status] = 0
+
         model = cls(
             str(payload.get("root", "")),
             items,
             artists,
             select_new=bool(payload.get("select_new", False)),
             picker_index=str(payload.get("picker_index", "")),
+            known_status_counts=known_status_counts,
+            known_artist_status_counts=known_artist_status_counts,
         )
         artists = model.visible_artists()
         if artists:
@@ -234,6 +270,8 @@ class LibraryModel:
         self.active_artist = replacement.active_artist
         self.select_new = replacement.select_new
         self.picker_index = replacement.picker_index
+        self.known_status_counts = replacement.known_status_counts
+        self.known_artist_status_counts = replacement.known_artist_status_counts
         self._album_by_path = replacement._album_by_path
 
     def _text_matches(self, item: AlbumItem) -> bool:
@@ -265,13 +303,23 @@ class LibraryModel:
         }
 
     def album_status_counts(self) -> dict[AlbumStatus, int]:
-        """Return authoritative counts across the complete picker snapshot."""
+        """Return known authoritative counts from history plus loaded rows."""
+        if self.known_status_counts:
+            return {
+                status: max(0, int(self.known_status_counts.get(status, 0)))
+                for status in AlbumStatus
+            }
         return {
             status: sum(item.status is status for item in self.albums)
             for status in AlbumStatus
         }
 
     def indexed_artist_status_counts(self) -> dict[ArtistStatus, int]:
+        if self.known_artist_status_counts:
+            return {
+                status: max(0, int(self.known_artist_status_counts.get(status, 0)))
+                for status in ArtistStatus
+            }
         groups = self._artist_groups()
         counts = {status: 0 for status in ArtistStatus}
         for item in self.artists:
@@ -294,7 +342,7 @@ class LibraryModel:
             if self.artist_filter.casefold() not in base.name.casefold():
                 continue
             children = groups.get(base.name, [])
-            aggregate = artist_status(children) if base.loaded and children else None
+            aggregate = artist_status(children) if base.loaded and children else base.status
             if aggregate is not None and aggregate not in self.artist_status_filters:
                 continue
             rows.append(
@@ -434,12 +482,8 @@ class LibraryModel:
             "active_albums": len(active),
             "active_visible_albums": len(active_visible),
             "selected": sum(item.selected for item in self.albums),
-            "processed": sum(
-                item.status is AlbumStatus.PROCESSED for item in self.albums
-            ),
-            "bypassed": sum(
-                item.status is AlbumStatus.BYPASSED for item in self.albums
-            ),
+            "processed": self.album_status_counts()[AlbumStatus.PROCESSED],
+            "bypassed": self.album_status_counts()[AlbumStatus.BYPASSED],
             "formats": formats,
             "inventory": "DIRECT / LAZY",
         }
