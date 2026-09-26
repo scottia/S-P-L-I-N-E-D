@@ -123,7 +123,7 @@ class PickerSessionState:
     album_records: list[PickerAlbum] = field(default_factory=list)
     selected_paths: set[str] = field(default_factory=set)
     initialized_paths: set[str] = field(default_factory=set)
-    select_new: bool = True
+    select_new: bool = False
     select_media_active: bool = False
     validation_started: bool = False
     validation_complete: bool = False
@@ -1346,8 +1346,6 @@ def prepare_tui_library_selection(
                     status = "unprocessed"
                 if record.path not in initialized_paths:
                     initialized_paths.add(record.path)
-                    if select_new and status == "unprocessed":
-                        selected_paths.add(record.path)
                 rows.append(
                     {
                         "path": record.path,
