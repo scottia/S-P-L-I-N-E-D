@@ -1922,6 +1922,7 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
             f"verbosity={_RUNTIME_VERBOSITY}\n"
             f"config={config_file}\n"
             f"pid={os.getpid()}\n"
+            f"argv={json.dumps(sys.argv, ensure_ascii=False)}\n"
             "========================================\n"
         )
 
@@ -5877,6 +5878,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      Credential Directory", green(f"[{cdir}]"))
     help_row("      Cache Directory", green(f"[{cache}]"))
     help_row("      Log Directory", green(f"[{logs}]"))
+    help_row("      Runtime Run Logs", green(f"[{logs / 'run'}]"))
     help_row("      History Directory", green(f"[{history_dir}]"))
     print()
 
@@ -5947,7 +5949,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     print()
 
     print("System Modes:")
-    help_row("      read", "read file(s) [always Debug verbosity]")
+    help_row("      read", "read/evaluate file(s) without writing artwork")
     help_row(
         "      write",
         f"write file(s) as 'cover.<file_formats>' using selected source [{','.join(fmts)}]",
@@ -6264,8 +6266,10 @@ def main() -> int:
         if args.release_mbid: return run_release_discovery(path,cfg,sources,args.release_mbid)
         print_help(path,cfg); return 0
     except SplinedError as exc:
+        runtime_log("error", f"run.error type={type(exc).__name__} message={exc}")
         print(str(exc),file=sys.stderr); return 2
     except KeyboardInterrupt:
+        runtime_log("warning", "run.interrupted keyboard_interrupt")
         print("\nSPLINED interrupted.",file=sys.stderr); return 130
 
 if __name__=="__main__": raise SystemExit(main())
