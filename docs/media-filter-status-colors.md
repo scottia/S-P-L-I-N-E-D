@@ -299,18 +299,21 @@ The tree is a presentation of current authority.
 
 ## Count scopes
 
-Album status suffixes derive from every Album in the complete active snapshot:
-Unprocessed, Processed, Bypass, and Timeout are complete-library counts after
-authoritative history reconciliation. Artist Complete and Artist Contains
-Bypass derive from the complete Artist population. Statistics show complete
-Artist/Album totals, exact selection, active-Artist detail, cached local-art
-format counts, and optional validation progress. There is no normal
-`inventory not loaded` state after a complete snapshot exists.
+Album status suffixes derive from the Album rows that have been loaded into the
+resident Select Media session. Unprocessed, Processed, Bypass, and Timeout are
+therefore exact for loaded Artists rather than fabricated complete-library
+counts. Artist Complete and Artist Contains Bypass are derived only after that
+Artist has been loaded. The root Artist count itself is complete because it is
+read directly from the immediate library root.
+
+Statistics distinguish root Artists, loaded Artists, loaded Albums, exact
+selection, active-Artist detail, and loaded local-art format counts. Unloaded
+Artists are shown explicitly as not loaded.
 
 At batch completion, transient Activity becomes a scrolling per-Album final
 run report and pauses indefinitely. Enter or Esc returns to the same in-memory
-Select Media model; affected history/status is reconciled without a SQLite
-reload, root reconciliation, or full-library rescan.
+Select Media model; already loaded Artist folders are retained without a root
+rescan or recursive library traversal.
 
 ---
 
