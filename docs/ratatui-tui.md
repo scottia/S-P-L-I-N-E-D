@@ -189,11 +189,21 @@ Picker numbers name their lazy scope:
 - `Selected` is the exact checked Album total;
 - inventory presentation reports `DIRECT / LAZY`, not a cache-complete state.
 
-Unprocessed, Processed, Bypass, and Timeout state is authoritative for loaded
-Albums. Unloaded Artist rows intentionally have no derived aggregate status yet.
-Selecting an Artist loads that Artist and then cascades only to eligible child
-Albums. History, bypass, timeout, and manual-reprocessing rules remain
-authoritative.
+Album-status counts combine retained history authority with exact loaded Album
+rows. Loaded rows replace history-only assumptions for their Artist, so local
+artwork, current bypass, and validated timeout state remain exact without a
+whole-library crawl. Unprocessed is therefore known only for loaded Albums;
+retained Processed/Bypass history can contribute counts before an Artist is
+opened.
+
+Unloaded Artist rows remain muted unless a retained bypass is already sufficient
+to establish Contains Bypass. They do not repeat a "Not loaded" suffix. Selecting
+an Artist loads that Artist and then cascades only to eligible child Albums.
+History, bypass, timeout, and manual-reprocessing rules remain authoritative.
+
+Detailed Selected Album Statistics are bounded to the first 10 checked Albums
+and are populated asynchronously. Selection itself remains path-exact and must
+not wait for Mutagen/artwork-stat reads.
 
 The scan launch payload is always path-exact. Filtered READ/WRITE and AUTO
 SELECTED operate only on checked Albums. **Auto Scan [ALL]** is the explicit
