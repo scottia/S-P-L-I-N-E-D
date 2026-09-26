@@ -36,10 +36,8 @@ from tui.status import active as tui_active
 from tui.status import emit as emit_ui
 from tui.status import read_input
 from tui.picker_index import (
-    PICKER_DB_NAME,
     PickerAlbum,
     PickerArtist,
-    PickerIndex,
     should_ignore as picker_should_ignore,
 )
 
@@ -3006,19 +3004,13 @@ def image_format(image: Image.Image) -> str:
 
 
 def prepare_run_cache(cache: Path) -> None:
-    """Reset transient scan data while retaining the disposable picker index."""
+    """Reset transient scan/candidate data before a new operational run."""
     if cache.exists():
         if cache.is_symlink() or not cache.is_dir():
             raise SplinedError(f"Refusing to clean unsafe SPLINED cache directory: {cache}")
         if cache.parent == cache or not cache.name:
             raise SplinedError(f"Refusing to clean unsafe SPLINED cache path: {cache}")
         for path in cache.iterdir():
-            if path.name in {
-                PICKER_DB_NAME,
-                f"{PICKER_DB_NAME}-wal",
-                f"{PICKER_DB_NAME}-shm",
-            } or path.name.startswith(f"{PICKER_DB_NAME}.corrupt-"):
-                continue
             if path.is_symlink():
                 path.unlink()
             elif path.is_dir():
