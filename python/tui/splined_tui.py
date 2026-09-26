@@ -632,6 +632,12 @@ class TuiState:
             self.exit_code = int(payload.get("exit_code", 0))
             self.exception = payload.get("exception")
             self.input_request = None
+            if (
+                self.exception is not None
+                and type(self.exception).__name__ == "TuiConfigEditRequested"
+            ):
+                # Config editing must occur after Ratatui restores the terminal.
+                self.exit_requested = True
             if self.exit_after_worker:
                 self.exit_requested = True
             if not self.summary:
