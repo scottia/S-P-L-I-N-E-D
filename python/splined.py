@@ -1126,12 +1126,23 @@ def selected_album_statistics(
         item for item in root_files if item.suffix.lower() in AUDIO_EXTENSIONS
     ]
     mp3_files = [item for item in audio_files if item.suffix.lower() == ".mp3"]
+    # Album/Artist/Year authority for this panel comes from Mutagen. Prefer
+    # MP3 tags as requested; if an Album has no MP3 tracks, fall back to the
+    # other supported audio files through the same Mutagen interface.
+    tag_files = mp3_files if mp3_files else audio_files
     result["tracks"] = len(audio_files)
+
+    debug_log(
+        "selected_stats.begin "
+        f"path={str(path)!r} audio_files={len(audio_files)} "
+        f"mp3_files={len(mp3_files)} tag_reader=mutagen "
+        f"tag_files={len(tag_files)}"
+    )
 
     tagged_album_found = False
     tagged_artist_found = False
     tagged_year_found = False
-    for track_path in mp3_files:
+    for track_path in tag_files:
         try:
             parsed = MutagenFile(track_path, easy=True)
         except Exception:
@@ -1171,6 +1182,13 @@ def selected_album_statistics(
                 tagged_year_found = True
         if tagged_album_found and tagged_artist_found and tagged_year_found:
             break
+
+    debug_log(
+        "selected_stats.tags "
+        f"path={str(path)!r} reader=mutagen "
+        f"album={str(result['album'])!r} artist={str(result['artist'])!r} "
+        f"year={str(result['year'])!r}"
+    )
 
     sidecars = [item for item in root_files if item not in audio_files]
     cover_prefix = cover_name.strip().casefold() or "cover"
@@ -1221,6 +1239,13 @@ def selected_album_statistics(
             result["webp_resolution"] = ""
             result["webp_conversion"] = False
 
+    debug_log(
+        "selected_stats.done "
+        f"path={str(path)!r} root_files={result['root_files']} "
+        f"cover_files={result['cover_files']} artwork={result['artwork']} "
+        f"webp_found={result['webp_found']} "
+        f"webp_resolution={str(result['webp_resolution'])!r}"
+    )
     return result
 
 
@@ -1342,6 +1367,9 @@ def prepare_tui_library_selection(
     def load_artist(artist_path: str) -> None:
         with session.lock:
             if artist_path in session.loaded_artists:
+                debug_log(
+                    f"picker.artist_load.skip_already_loaded path={artist_path!r}"
+                )
                 return
             artist = next(
                 (item for item in session.artists if item.path == artist_path),
@@ -1353,6 +1381,9 @@ def prepare_tui_library_selection(
             )
 
         started = time.perf_counter()
+        debug_log(
+            f"picker.artist_load.start path={artist_path!r} artist={artist.name!r}"
+        )
         emit_ui(
             "activity",
             category="inventory",
@@ -1391,6 +1422,12 @@ def prepare_tui_library_selection(
             session.loaded_artists.add(artist.path)
             initialized_paths.update(record.path for record in records)
 
+        elapsed_artist = time.perf_counter() - started
+        debug_log(
+            "picker.artist_load.done "
+            f"path={artist_path!r} artist={artist.name!r} "
+            f"albums={len(records)} elapsed_seconds={elapsed_artist:.6f}"
+        )
         emit_ui(
             "activity",
             category="inventory",
@@ -1398,7 +1435,7 @@ def prepare_tui_library_selection(
             source="folder-inventory",
             message=(
                 f"Artist folder ready · {artist.name} · {len(records):,} Album(s) · "
-                f"{time.perf_counter() - started:.3f}s"
+                f"{elapsed_artist:.3f}s"
             ),
         )
 
@@ -1513,6 +1550,19 @@ def prepare_tui_library_selection(
                     cover_name=cover_name,
                 )
             selected_stats.append(session.selected_statistics[selected_path])
+        if len(selected_stats) != len(selected_paths):
+            debug_log(
+                "picker.selection_stats_mismatch "
+                f"selected={len(selected_paths)} stats={len(selected_stats)} "
+                f"paths={sorted(selected_paths, key=str.casefold)!r}"
+            )
+        debug_log(
+            "picker.library_emit "
+            f"event={event} artists={len(artist_rows)} albums={len(rows)} "
+            f"selected={len(selected_paths)} selected_stats={len(selected_stats)} "
+            f"loaded_artists={len(session.loaded_artists)} "
+            f"preserve_selection={preserve_selection}"
+        )
         emit_ui(
             event,
             root=str(root),
@@ -1609,6 +1659,13 @@ def prepare_tui_library_selection(
             }
 
         action = str(response.get("action", ""))
+        debug_log(
+            "picker.input "
+            f"action={action!r} selected={len(selected_paths)} "
+            f"overrides={len(overrides)} "
+            f"scan_mode={str(response.get('scan_mode', ''))!r} "
+            f"artist_path={str(response.get('artist_path', ''))!r}"
+        )
         if action == "exit":
             session.select_media_active = False
             raise TuiSessionExit()
@@ -1627,6 +1684,7 @@ def prepare_tui_library_selection(
             continue
 
         if action == "select-all":
+            debug_log("picker.select_all.start")
             scoped, _records = current_scope()
             load_artists(
                 [artist.path for artist in scoped],
@@ -1635,6 +1693,9 @@ def prepare_tui_library_selection(
             for row in model_payload()[1]:
                 if row["status"] == "unprocessed":
                     selected_paths.add(str(row["path"]))
+            debug_log(
+                f"picker.select_all.done selected={len(selected_paths)}"
+            )
             emit_library(event)
             continue
 
@@ -1644,6 +1705,10 @@ def prepare_tui_library_selection(
                 for value in response.get("artist_paths", [])
                 if str(value)
             ]
+            debug_log(
+                "picker.select_filtered.start "
+                f"artists={len(requested)} requested={requested!r}"
+            )
             load_artists(requested, source="select-filtered")
             album_filter = str(response.get("album_filter", "")).casefold()
             allowed_statuses = {
@@ -1665,6 +1730,12 @@ def prepare_tui_library_selection(
             continue
 
         if action == "selection-change":
+            selection_started = time.perf_counter()
+            debug_log(
+                "picker.selection_change.start "
+                f"selected={len(selected_paths)} "
+                f"paths={sorted(selected_paths, key=str.casefold)!r}"
+            )
             session.selected_statistics = {
                 path: value
                 for path, value in session.selected_statistics.items()
@@ -1674,6 +1745,12 @@ def prepare_tui_library_selection(
             # Send that authoritative state back instead of overlaying an older
             # in-memory checkbox snapshot during merge.
             emit_library(event)
+            debug_log(
+                "picker.selection_change.done "
+                f"selected={len(selected_paths)} "
+                f"stats={len(session.selected_statistics)} "
+                f"elapsed_seconds={time.perf_counter() - selection_started:.6f}"
+            )
             continue
 
         if action == "edit-config":
@@ -1681,6 +1758,8 @@ def prepare_tui_library_selection(
             raise TuiConfigEditRequested(str(config_file))
 
         if action == "refresh-index":
+            refresh_started = time.perf_counter()
+            debug_log("picker.refresh_root.start")
             refreshed = discover_root_artists()
             refreshed_paths = {artist.path for artist in refreshed}
             with session.lock:
@@ -1701,6 +1780,11 @@ def prepare_tui_library_selection(
                 message=(
                     f"Artist folder list refreshed · {len(refreshed):,} Artist(s)"
                 ),
+            )
+            debug_log(
+                "picker.refresh_root.done "
+                f"artists={len(refreshed)} selected={len(selected_paths)} "
+                f"elapsed_seconds={time.perf_counter() - refresh_started:.6f}"
             )
             emit_library(event)
             continue
@@ -1784,6 +1868,12 @@ def prepare_tui_library_selection(
             for path in sorted(valid_selected_paths, key=str.casefold)
         ]
         known = [cached_album(record) for record in records]
+        debug_log(
+            "picker.launch "
+            f"scan_mode={scan_mode!r} valid_selected={len(valid_selected_paths)} "
+            f"known={len(records)} overrides={len(overrides)} "
+            f"paths={sorted(valid_selected_paths, key=str.casefold)!r}"
+        )
         emit_ui(
             "activity",
             category="selection",
