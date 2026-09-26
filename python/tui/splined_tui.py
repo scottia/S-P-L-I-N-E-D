@@ -1848,7 +1848,12 @@ def _render_candidate_thumbnail(
     candidate: CandidateView,
     grid: CandidateColumnLayout,
 ) -> None:
-    if "url" not in grid.columns or not candidate.path or grid.width("url") < 8:
+    if (
+        "url" not in grid.columns
+        or candidate.provenance != "[URL]"
+        or not candidate.path
+        or grid.width("url") < 8
+    ):
         return
     width = min(3, max(1, grid.width("url") - 6))
     preview = _candidate_preview(state, candidate, width=width, height=1)
@@ -1923,7 +1928,11 @@ def _register_candidate_hits(
                 index=candidate_index,
                 value=candidate.url,
             )
-        if candidate.path and grid.width("url") >= 8:
+        if (
+            candidate.provenance == "[URL]"
+            and candidate.path
+            and grid.width("url") >= 8
+        ):
             _register_hit(
                 state,
                 "candidate-thumb",
