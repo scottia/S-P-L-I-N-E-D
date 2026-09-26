@@ -198,7 +198,7 @@ CONFIG_EXPECTED_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 HELP_EXPECTED_TOKENS: dict[str, str] = {
-    "config_version": "Config version",
+    "config_version": "config_version",
     "mode": "Mode",
     "verbosity": "Verbosity",
     "library.music_library": "Library:",
