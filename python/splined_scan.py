@@ -1355,8 +1355,9 @@ def _run_scan_dir_batch(
     print(f"  {core.cyan('Cache:'):14} {core.white(str(cache))}")
     print(f"  {core.cyan('Sample Dir:'):14} {core.white(str(sample_dir))}")
     print(f"  {core.cyan('History:'):14} {core.white(str(history_dir))}")
-    if core._DEBUG_ENABLED and core._DEBUG_PATH is not None:
-        print(f"  {core.cyan('Debug Log:'):14} {core.white(str(core._DEBUG_PATH))}")
+    runtime_log = core.runtime_log_path()
+    if runtime_log is not None:
+        print(f"  {core.cyan('Runtime Log:'):14} {core.white(str(runtime_log))}")
     print()
     print(
         core.ljust_color(core.cyan("Run:"), 14)
