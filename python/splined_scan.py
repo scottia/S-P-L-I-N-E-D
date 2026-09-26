@@ -2376,9 +2376,14 @@ def main() -> int:
         return 0
 
     except core.SplinedError as exc:
+        core.runtime_log(
+            "error",
+            f"run.error type={type(exc).__name__} message={exc}",
+        )
         print(str(exc), file=sys.stderr)
         return 2
     except KeyboardInterrupt:
+        core.runtime_log("warning", "run.interrupted keyboard_interrupt")
         print("\nSPLINED interrupted.", file=sys.stderr)
         return 130
 
