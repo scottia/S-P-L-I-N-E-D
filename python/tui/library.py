@@ -96,7 +96,7 @@ class LibraryModel:
     )
     active_artist: str = ""
     inventory_loads: int = 1
-    select_new: bool = True
+    select_new: bool = False
     picker_index: str = ""
     _album_by_path: dict[str, AlbumItem] = field(
         default_factory=dict,
@@ -142,7 +142,7 @@ class LibraryModel:
                 status=status,
                 formats=tuple(str(value).upper() for value in raw.get("formats", [])),
                 timeout_remaining=str(raw.get("timeout_remaining", "")),
-                selected=bool(raw.get("selected", status is AlbumStatus.UNPROCESSED)),
+                selected=bool(raw.get("selected", False)),
                 bypass_override=bool(raw.get("bypass_override", False)),
             )
             # Protected states are never selected merely because malformed
@@ -188,7 +188,7 @@ class LibraryModel:
             str(payload.get("root", "")),
             items,
             artists,
-            select_new=bool(payload.get("select_new", True)),
+            select_new=bool(payload.get("select_new", False)),
             picker_index=str(payload.get("picker_index", "")),
         )
         artists = model.visible_artists()
