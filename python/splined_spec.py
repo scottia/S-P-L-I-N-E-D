@@ -540,16 +540,29 @@ def check_targeted_regressions(audit: Audit) -> None:
 
 
 def check_version(audit: Audit) -> None:
-    version = str(splined.VERSION)
-    if version == "1.0.9":
-        audit.warn(
-            "VERSION-001",
-            "dev identifier is indistinguishable from released 1.0.9",
-            "Establish a dev-version convention before final acceptance so -V proves "
-            "which image is running.",
+    release_version = str(splined.VERSION)
+    display_version = str(splined.display_version())
+    channel = os.environ.get("SPLINED_BUILD_CHANNEL", "release").strip().casefold()
+
+    def version_contract() -> None:
+        parts = release_version.split(".")
+        assert len(parts) == 3 and all(part.isdigit() for part in parts), (
+            f"release VERSION is not numeric SemVer: {release_version}"
         )
-    else:
-        audit.add("VERSION-001", "PASS", f"dev identifier is distinct: {version}")
+        if channel == "dev":
+            assert display_version == f"{release_version}-dev", (
+                f"dev display version is {display_version!r}"
+            )
+        else:
+            assert display_version == release_version, (
+                f"release display version is {display_version!r}"
+            )
+
+    audit.check(
+        "VERSION-001",
+        f"runtime identity matches build channel ({channel}: {display_version})",
+        version_contract,
+    )
 
 
 def run_full_suites(audit: Audit) -> None:
