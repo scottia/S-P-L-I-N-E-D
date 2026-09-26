@@ -180,6 +180,48 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         handle_mouse(self.state, self.adapter, _center(album_check))
         self.assertNotEqual(albums[1].selected, before)
 
+    def test_processed_album_selection_survives_authoritative_payload(self) -> None:
+        payload = _payload(1, 1)
+        albums = payload["albums"]
+        assert isinstance(albums, list)
+        albums[0]["status"] = "processed"
+        albums[0]["selected"] = True
+
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.apply("library", payload)
+        model = state.library
+        assert model is not None
+        self.assertTrue(model.albums[0].selected)
+
+        state.apply("library_update", payload)
+        self.assertTrue(model.albums[0].selected)
+
+    def test_busy_library_mouse_actions_do_not_mutate_or_launch(self) -> None:
+        state = _library_state()
+        adapter = TuiAdapter()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        model = state.library
+        assert model is not None
+
+        album = model.visible_albums(active_artist_only=True)[0]
+        before = album.selected
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "album-checkbox", 0)),
+        )
+        self.assertEqual(album.selected, before)
+        self.assertTrue(adapter.responses.empty())
+        self.assertTrue(state.transient.startswith("Input busy"))
+
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "scan-control", 3)),
+        )
+        self.assertEqual(state.workflow, "library")
+        self.assertTrue(adapter.responses.empty())
+
     def test_filter_click_and_real_key_path_update_visible_rows_immediately(self) -> None:
         artist_filter = _region(self.state, "artist-filter")
         handle_mouse(self.state, self.adapter, _center(artist_filter))
