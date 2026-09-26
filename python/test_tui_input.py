@@ -333,18 +333,41 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             handle_mouse(self.state, self.adapter, _center(region))
             self.assertEqual(self.state.status_index, index)
 
-        # Every Select control acts immediately; none requires Enter.
-        model.status_filters = set(AlbumStatus)
-        model.artist_status_filters = set(ArtistStatus)
-        for index in (0, 1, 2):
-            render(_Frame(150, 44), self.state, select_theme("OLED"))
+        # Bulk Select controls act immediately but delegate filesystem work to
+        # the engine. Select NONE remains an in-memory operation.
+        for index, expected_action in ((0, "select-all"), (2, "select-filtered")):
+            state = _library_state()
+            adapter = TuiAdapter()
+            adapter.waiting.set()
+            render(_Frame(150, 44), state, select_theme("OLED"))
             handle_mouse(
-                self.state,
-                self.adapter,
-                _center(_region(self.state, "select-control", index)),
+                state,
+                adapter,
+                _center(_region(state, "select-control", index)),
             )
-            self.assertEqual(self.state.select_index, index)
-        self.assertTrue(any(item.selected for item in model.albums))
+            self.assertEqual(state.select_index, index)
+            response = json.loads(adapter.responses.get_nowait())
+            self.assertEqual(response["action"], expected_action)
+            if expected_action == "select-filtered":
+                self.assertIn("artist_paths", response)
+                self.assertIn("album_filter", response)
+                self.assertIn("status_filters", response)
+
+        state = _library_state()
+        none_model = state.library
+        assert none_model is not None
+        for item in none_model.albums:
+            item.selected = True
+        adapter = TuiAdapter()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "select-control", 1)),
+        )
+        self.assertEqual(state.select_index, 1)
+        self.assertFalse(any(item.selected for item in none_model.albums))
+        self.assertTrue(adapter.responses.empty())
 
         for index, mode in enumerate(
             ("filtered-read", "filtered-write", "auto-all", "auto-selected")
