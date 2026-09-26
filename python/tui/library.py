@@ -424,6 +424,8 @@ class LibraryModel:
             "artists": len(self.artists),
             "loaded_artists": sum(item.loaded for item in self.artists),
             "albums": len(self.albums),
+            "complete_inventory": bool(self.artists)
+            and all(item.loaded for item in self.artists),
             "visible_artists": len(self.visible_artists()),
             "active_albums": len(active),
             "active_visible_albums": len(active_visible),
