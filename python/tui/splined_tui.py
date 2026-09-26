@@ -707,15 +707,15 @@ class EventWriter(io.TextIOBase):
         clean = OSC_RE.sub("", ANSI_RE.sub("", line)).strip()
         if clean:
             level = self.level
-            core = sys.modules.get("splined")
-            logger = getattr(core, "runtime_log", None) if core is not None else None
-            if callable(logger):
-                logger(level, clean)
             upper = clean.upper()
             if "ERROR" in upper or "FAILED" in upper:
                 level = "ERROR"
             elif "WARN" in upper or "FALLBACK" in upper:
                 level = "WARN"
+            core = sys.modules.get("splined")
+            logger = getattr(core, "runtime_log", None) if core is not None else None
+            if callable(logger):
+                logger(level, clean)
             self.adapter.emit("log", {"level": level, "message": clean})
 
 
