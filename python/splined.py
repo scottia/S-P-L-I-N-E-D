@@ -5683,54 +5683,54 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     config_row("config_version", cfg.get("config_version", CONFIG_VERSION))
     config_row("mode", cfg.get("mode", "read"))
     config_row("verbosity", cfg.get("verbosity", "info"))
-    config_row("[library].music_library", library.get("music_library", ""))
-    config_row("[library].ignored_subs", ignored)
-    config_row("[scan].scan_library_dir", scan.get("scan_library_dir", ""))
-    config_row("[scan].scan_mode", bool(scan.get("scan_mode", True)))
-    config_row("[scan].library_scan", bool(scan.get("library_scan", False)))
-    config_row("[scan].scan_mode_timeout", format_timeout_hours(scan_timeout_hours(cfg)))
-    config_row("[scan].cache_dir", cache)
-    config_row("[scan].log_dir", logs)
-    config_row("[scan].history_dir", history_dir)
-    config_row("[samples].sample_write", bool(section(cfg, "samples").get("sample_write", True)))
-    config_row("[credentials].credential_dir", cdir)
-    config_row("[output].preserve_file", bool(output.get("preserve_file", True)))
-    config_row("[output].file_formats", fmts)
-    config_row("[output].file_name", output.get("file_name", "cover"))
-    config_row("[output].square", bool(output.get("square", True)))
+    config_row("library.music_library", library.get("music_library", ""))
+    config_row("library.ignored_subs", ignored)
+    config_row("scan.scan_library_dir", scan.get("scan_library_dir", ""))
+    config_row("scan.scan_mode", bool(scan.get("scan_mode", True)))
+    config_row("scan.library_scan", bool(scan.get("library_scan", False)))
+    config_row("scan.scan_mode_timeout", format_timeout_hours(scan_timeout_hours(cfg)))
+    config_row("scan.cache_dir", cache)
+    config_row("scan.log_dir", logs)
+    config_row("scan.history_dir", history_dir)
+    config_row("samples.sample_write", bool(section(cfg, "samples").get("sample_write", True)))
+    config_row("credentials.credential_dir", cdir)
+    config_row("output.preserve_file", bool(output.get("preserve_file", True)))
+    config_row("output.file_formats", fmts)
+    config_row("output.file_name", output.get("file_name", "cover"))
+    config_row("output.square", bool(output.get("square", True)))
     config_row(
-        "[output].square_mode",
+        "output.square_mode",
         output.get("square_mode", "crop" if output.get("square", False) else "off"),
     )
-    config_row("[output].square_round_to", output.get("square_round_to", 0))
-    config_row("[output].upscale_below_ideal", bool(output.get("upscale_below_ideal", False)))
+    config_row("output.square_round_to", output.get("square_round_to", 0))
+    config_row("output.upscale_below_ideal", bool(output.get("upscale_below_ideal", False)))
     config_row(
-        "[output].evaluate_final_image",
+        "output.evaluate_final_image",
         bool(output.get("evaluate_final_image", output.get("square", False))),
     )
     ranges = section(cfg, "range")
-    config_row("[range].min", ranges.get("min", 1200))
-    config_row("[range].ideal", ranges.get("ideal", 1800))
-    config_row("[range].max", ranges.get("max", 2400))
-    config_row("[range].ladder", ranges.get("ladder", 3600))
-    config_row("[sources].cover_sources", cover)
-    config_row("[sources].exclude_cover_sources", excluded)
+    config_row("range.min", ranges.get("min", 1200))
+    config_row("range.ideal", ranges.get("ideal", 1800))
+    config_row("range.max", ranges.get("max", 2400))
+    config_row("range.ladder", ranges.get("ladder", 3600))
+    config_row("sources.cover_sources", cover)
+    config_row("sources.exclude_cover_sources", excluded)
     policies = section(cfg, "source_policies")
     for source in SUPPORTED_SOURCE_POLICIES:
         raw_policy = policies.get(source)
         if not isinstance(raw_policy, dict):
             continue
         for key, value in raw_policy.items():
-            config_row(f"[source_policies.{source}].{key}", value)
-    config_row("[logging].retention_days", section(cfg, "logging").get("retention_days", 14))
-    config_row("[history].enabled", bool(section(cfg, "history").get("enabled", True)))
-    config_row("[history].retention_days", section(cfg, "history").get("retention_days", 0))
+            config_row(f"source_policies.{source}.{key}", value)
+    config_row("logging.retention_days", section(cfg, "logging").get("retention_days", 14))
+    config_row("history.enabled", bool(section(cfg, "history").get("enabled", True)))
+    config_row("history.retention_days", section(cfg, "history").get("retention_days", 0))
     ai = aisplined_settings(cfg)
-    config_row("[aisplined].enabled", ai["enabled"])
-    config_row("[aisplined].endpoint", ai["endpoint"])
-    config_row("[aisplined].minimum_short_side", ai["minimum_short_side"])
+    config_row("aisplined.enabled", ai["enabled"])
+    config_row("aisplined.endpoint", ai["endpoint"])
+    config_row("aisplined.minimum_short_side", ai["minimum_short_side"])
     config_row(
-        "[aisplined].allow_below_minimum_override",
+        "aisplined.allow_below_minimum_override",
         ai["allow_below_minimum_override"],
     )
     print()
