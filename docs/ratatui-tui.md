@@ -66,17 +66,10 @@ OLED and CHALK apply to the whole TUI, not only candidate/result tables.
 
 TUI startup has no wall-clock splash timeout. WIDE and NORMAL layouts keep a
 medium solid/block, approximately three-row spectral S:P:L:I:N:E:D wordmark
-and the folding standard/stylized expansion phrase above cache construction
-for as long as the first complete snapshot is not ready. The old five-row
-ASCII-letter construction is not used. COMPACT and MINIMUM safely reduce the
-brand to one line.
-
-Cold construction is centered beneath the wordmark. Once the root Artist
-denominator is known it shows `processed Artists / total Artists`, the exact
-percentage, a Ratatui gauge, Albums discovered, and the current Artist. Warm
-runs do not show this blocking screen: the cached picker renders first and a
-compact centered `Checking library cache · X / Y · Z%` line reports subsequent
-background validation.
+and the folding standard/stylized expansion phrase only while the immediate
+root Artist-folder list is being read. Normal startup does **not** build or
+validate a complete Album cache and does not show a cache progress gauge.
+COMPACT and MINIMUM safely reduce the brand to one line.
 
 Processing, candidate, activity, and final Album-report views retain one
 consistent context header: a medium three-row solid wordmark on WIDE/NORMAL
@@ -117,144 +110,95 @@ regions across the top, followed by the three library regions:
 - live Artist and Album filter boxes;
 - source/range configuration access where appropriate.
 
-### Complete persistent Select Media snapshot
+### Direct lazy Select Media inventory
 
-Normal Python Ratatui startup uses a disposable SPLINED-owned SQLite picker
-index in the configured cache directory:
-
-```text
-<cache>/splined-picker.sqlite3
-```
-
-It is an acceleration index only. Completion, bypass, timeout, configuration,
-tag, and processing authority remain in their existing stores and engine
-paths. Deleting this database is safe.
-
-The first cold-start sequence is:
+Normal Python Ratatui startup reads only the immediate, non-excluded Artist
+folders under the configured music-library root:
 
 ```text
-open/create picker index
+os.scandir(<music_library>)
         ↓
-discover non-excluded root Artist folders
+apply hidden/ignored directory rules
         ↓
-inventory every lightweight Artist/Album folder topology
-        ↓
-atomically promote a COMPLETE generation
-        ↓
-apply current history/bypass/timeout
-        ↓
-SELECT MEDIA IS USABLE
+render Artist Picker immediately
 ```
 
-The first build performs directory/filename inventory only. Its generation is
-marked complete only after the entire topology commits. A failed or interrupted
-staging build leaves the previous complete generation active.
+No SQLite picker snapshot, complete Album inventory, or background
+whole-library validation is required to render Select Media. The configured
+cache directory remains available to SPLINED for candidate/sample data, but it
+is not an authority or prerequisite for the Artist folder list.
 
-A valid warm-cache critical path performs no music-library filesystem work:
+Album topology is loaded lazily:
 
 ```text
-open SQLite
+open/select Artist
         ↓
-load complete Artist/Album topology
+read that Artist folder only
         ↓
-apply local authoritative history state
+show that Artist's Albums
         ↓
-render Select Media
-        ↓
-validate filesystem changes in the background
+retain the result in the resident TUI session
 ```
 
-Validation constructs a staging generation while the visible snapshot stays
-stable, then applies additions/removals/local-art changes once at a safe UI
-boundary. Focus, filters, scroll positions, and checked paths are preserved
-where possible. There is no normal `Inventory not loaded` Artist state after a
-complete snapshot exists.
+A whole-library Album traversal occurs only after an explicit operation that
+requires whole-library knowledge, such as **Select [ALL]** or **Auto Scan
+[ALL]**. **Select [FILTERED]** reads only the root Artist rows included by the
+current Artist filter before applying the Album/status filter. **R** refreshes
+the immediate Artist folder list only; it does not recursively rebuild Album
+topology.
 
-Artist and Album identity in Select Media is stable and folder-derived:
+After a processing batch, Enter/Esc returns to the same resident Artist/Album
+model. Already loaded Artist folders are not reread, and the library root is
+not rescanned simply to return to Select Media.
+
+Artist and Album identity remains folder-derived:
 
 ```text
 Artist display identity = Artist folder name
 Album display identity  = Album folder name
 ```
 
-Tags read after Launch never rename, regroup, or reorder picker rows.
-
-Cold construction and post-render validation may:
-
-- enumerate directories and filenames;
-- identify supported audio files by extension;
-- identify album directories by the presence of supported audio files;
-- detect local artwork by filename/extension without opening or decoding it;
-- apply configured ignored/excluded directory rules;
-- load retained completion/bypass/timeout history;
-- derive album status and Artist aggregate status;
-- build lightweight counts/statistics and the in-memory Artist/Album model.
-
-The blocking phase before the first usable Select Media screen must **not**
-perform:
-
-- Mutagen/audio-tag parsing or `read_track()` work;
-- MusicBrainz authority/release lookup;
-- provider discovery;
-- remote artwork requests or candidate acquisition;
-- image decoding, geometry analysis, ranking, or transformation;
-- AISPLINE review/backend work;
-- any other album-processing operation that belongs after Launch.
-
-Those expensive operations begin only after the user launches the selected
-album(s). There is no representative-track Mutagen enrichment pass before
-Launch and no background operation that changes picker identity while the user
-is selecting media. Post-Launch processing reads the authoritative tags it
-requires through the unchanged engine path.
+Before Launch, folder inventory may enumerate directories and filenames,
+identify supported audio extensions, detect local artwork by filename, apply
+ignored-directory rules, and reconcile retained history/bypass/timeout state
+for Albums that have actually been loaded. It must not perform Mutagen tag
+parsing, MusicBrainz lookup, provider discovery, artwork download, image
+decoding/ranking/transformation, or AISPLINE work.
 
 ### Ignored/excluded directory authority
 
-`[library].ignored_subs` is authoritative during the lightweight inventory.
-Ignored names/patterns must match practical Windows behavior: do not descend
-into excluded directories, do not show them as Artist or Album rows, and do not
-include them in statistics, status reconciliation, or selection payloads.
-Wildcard entries remain supported where current SPLINED/Windows rules support
-them. Symlink/reparse-style recursive loops are not followed.
+`[library].ignored_subs` is authoritative during root and per-Artist folder
+inventory. Ignored names/patterns are not traversed or shown and do not enter
+selection payloads. Symlink/reparse-style recursive loops are not followed.
+POSIX/Linux directory basenames beginning with `.` are excluded automatically
+at the root and during nested traversal.
 
-On POSIX/Linux traversal, every directory basename beginning with `.` is also
-excluded automatically at the root and at every nested level. Hidden paths are
-not persisted in the picker SQLite database and do not require a Config v5
-entry.
-
-Artist and Album text filters operate on the complete in-memory model.
-Typing into a filter begins filtering immediately and never triggers a
-filesystem rescan. Opening any Artist is immediate from memory. `R` forces a
-complete staged validation/rebuild with exact percentage progress. `Auto Scan
-[ALL]` uses a validated complete generation, waiting for or forcing validation
-when required, before applying normal eligibility rules.
+Artist text filtering operates immediately on the root folder list. Album and
+status filtering operate on Albums that have been loaded into the resident
+session. Explicit bulk actions may lazily load additional matching Artists when
+required; typing into a filter never performs filesystem traversal by itself.
 
 ### Count scopes
 
-Picker numbers deliberately name their scope:
+Picker numbers name their lazy scope:
 
-- the Artist header is the number of root Artist rows visible after the active
-  Artist filters;
-- `Artists` is root total and filtered-visible;
-- `Artists` and `Albums` are complete active-snapshot totals;
-- `Active` is total and visible Albums for the current Artist;
+- `Artists` is the immediate root Artist total and filtered-visible count;
+- `loaded Artists` is the number whose Album folders have been read this session;
+- `Albums` is the number of loaded Album rows, not a fabricated library-wide total;
+- `Active` is total/visible loaded Albums for the current Artist;
 - `Selected` is the exact checked Album total;
-- `Cache` is `COMPLETE`; an optional Check line shows background validation
-  count and percentage.
+- inventory presentation reports `DIRECT / LAZY`, not a cache-complete state.
 
-Unprocessed, Processed, Bypass, and Timeout suffixes derive from the complete
-active snapshot after authoritative history reconciliation. Artist Complete
-and Artist Contains Bypass cover the complete Artist population. `Select [ALL]`
-uses the complete eligible library, `Select [FILTERED]` uses the complete
-current in-memory filtered scope, and `Select [NONE]` clears checked paths.
+Unprocessed, Processed, Bypass, and Timeout state is authoritative for loaded
+Albums. Unloaded Artist rows intentionally have no derived aggregate status yet.
+Selecting an Artist loads that Artist and then cascades only to eligible child
+Albums. History, bypass, timeout, and manual-reprocessing rules remain
+authoritative.
 
-Selecting an artist cascades only to eligible child albums. History, bypass,
-timeout, and manual-reprocessing rules remain authoritative.
-
-The scan launch payload is always path-exact. Filtered READ/WRITE launches use
-the intersection of currently visible and already checked Albums; filtering
-never auto-adds an unchecked Album. AUTO SELECTED uses all checked Albums even
-when a filter hides them, while the explicit AUTO ALL action selects the full
-normally eligible library first.
+The scan launch payload is always path-exact. Filtered READ/WRITE and AUTO
+SELECTED operate only on checked Albums. **Auto Scan [ALL]** is the explicit
+operation that loads all root Artists before selecting the full normally
+eligible library.
 
 ## Mouse, touch, hit-testing, and scrolling
 
