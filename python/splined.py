@@ -15,6 +15,7 @@ import secrets
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -84,6 +85,10 @@ class TuiSessionExit(RuntimeError):
     """Internal control signal for an explicit Select Media session exit."""
 
 
+class TuiConfigEditRequested(RuntimeError):
+    """Leave Ratatui cleanly so micro can edit Config v5 on the real terminal."""
+
+
 @dataclass
 class Track:
     path: Path
@@ -121,6 +126,7 @@ class PickerSessionState:
     album_records: list[PickerAlbum] = field(default_factory=list)
     loaded_artists: set[str] = field(default_factory=set)
     selected_paths: set[str] = field(default_factory=set)
+    selected_statistics: dict[str, dict[str, Any]] = field(default_factory=dict)
     initialized_paths: set[str] = field(default_factory=set)
     select_new: bool = False
     select_media_active: bool = False
@@ -1076,6 +1082,136 @@ def tagged_artist(tracks: list[Track]) -> str | None:
     return None
 
 
+
+def selected_album_statistics(
+    album_path: Path,
+    *,
+    cover_name: str = "cover",
+) -> dict[str, Any]:
+    """Read on-demand statistics for one explicitly selected Album.
+
+    This is deliberately outside normal lazy Artist discovery. Tag/image work
+    begins only after the user checks an Album for processing.
+    """
+    path = Path(album_path)
+    result: dict[str, Any] = {
+        "path": str(path),
+        "album": path.name,
+        "artist": path.parent.name,
+        "year": "",
+        "tracks": 0,
+        "artwork": {"JPEG": 0, "PNG": 0, "WEBP": 0, "OTHER": 0},
+        "root_files": 0,
+        "cover_files": 0,
+        "cover_names": [],
+        "other_filenames": [],
+        "webp_found": False,
+        "webp_size_mb": 0.0,
+        "webp_resolution": "",
+        "webp_conversion": False,
+    }
+    try:
+        root_files = sorted(
+            (
+                entry
+                for entry in path.iterdir()
+                if entry.is_file() and not entry.is_symlink()
+            ),
+            key=lambda item: item.name.casefold(),
+        )
+    except OSError:
+        return result
+
+    audio_files = [
+        item for item in root_files if item.suffix.lower() in AUDIO_EXTENSIONS
+    ]
+    mp3_files = [item for item in audio_files if item.suffix.lower() == ".mp3"]
+    result["tracks"] = len(audio_files)
+
+    for track_path in mp3_files:
+        try:
+            parsed = MutagenFile(track_path, easy=True)
+        except Exception:
+            parsed = None
+        tags = getattr(parsed, "tags", None) if parsed is not None else None
+        if not tags:
+            continue
+
+        def first_tag(*keys: str) -> str:
+            for key in keys:
+                raw = tags.get(key)
+                if isinstance(raw, (list, tuple)) and raw:
+                    value = str(raw[0]).strip()
+                elif raw is not None:
+                    value = str(raw).strip()
+                else:
+                    value = ""
+                if value:
+                    return value
+            return ""
+
+        if result["album"] == path.name:
+            tagged_album = first_tag("album")
+            if tagged_album:
+                result["album"] = tagged_album
+        if result["artist"] == path.parent.name:
+            tagged_artist = first_tag("albumartist", "artist")
+            if tagged_artist:
+                result["artist"] = tagged_artist
+        if not result["year"]:
+            raw_year = first_tag("date", "originaldate", "year")
+            match = re.search(r"\b(\d{4})\b", raw_year)
+            if match:
+                result["year"] = match.group(1)
+
+    sidecars = [item for item in root_files if item not in audio_files]
+    cover_prefix = cover_name.strip().casefold() or "cover"
+    cover_files: list[Path] = []
+    other_files: list[Path] = []
+    webps: list[Path] = []
+    artwork = {"JPEG": 0, "PNG": 0, "WEBP": 0, "OTHER": 0}
+    for item in sidecars:
+        suffix = item.suffix.lower()
+        if suffix in {".jpg", ".jpeg"}:
+            artwork["JPEG"] += 1
+        elif suffix == ".png":
+            artwork["PNG"] += 1
+        elif suffix == ".webp":
+            artwork["WEBP"] += 1
+            webps.append(item)
+        else:
+            artwork["OTHER"] += 1
+        if item.stem.casefold().startswith(cover_prefix):
+            cover_files.append(item)
+        else:
+            other_files.append(item)
+
+    result["artwork"] = artwork
+    result["root_files"] = len(sidecars)
+    result["cover_files"] = len(cover_files)
+    result["cover_names"] = [item.name for item in cover_files]
+    result["other_filenames"] = [item.name for item in other_files]
+    result["webp_found"] = bool(webps)
+
+    if webps:
+        webp = max(webps, key=lambda item: item.stat().st_size if item.exists() else 0)
+        try:
+            result["webp_size_mb"] = round(webp.stat().st_size / 1_000_000, 2)
+        except OSError:
+            result["webp_size_mb"] = 0.0
+        try:
+            with Image.open(webp) as image:
+                result["webp_resolution"] = f"{int(image.width)}x{int(image.height)}"
+                # The operational local-art path converts a decodable WEBP to
+                # SPLINED's canonical still when it is selected.
+                result["webp_conversion"] = True
+        except Exception:
+            result["webp_resolution"] = ""
+            result["webp_conversion"] = False
+
+    return result
+
+
 def prepare_tui_library_selection(
     config_file: Path,
     cfg: dict[str, Any],
@@ -1356,6 +1492,15 @@ def prepare_tui_library_selection(
 
     def emit_library(event: str, *, preserve_selection: bool = False) -> None:
         artist_rows, rows = model_payload()
+        cover_name = str(output.get("file_name", "cover"))
+        selected_stats: list[dict[str, Any]] = []
+        for selected_path in sorted(selected_paths, key=str.casefold):
+            if selected_path not in session.selected_statistics:
+                session.selected_statistics[selected_path] = selected_album_statistics(
+                    Path(selected_path),
+                    cover_name=cover_name,
+                )
+            selected_stats.append(session.selected_statistics[selected_path])
         emit_ui(
             event,
             root=str(root),
@@ -1365,6 +1510,7 @@ def prepare_tui_library_selection(
             inventory_mode="lazy-direct",
             preserve_selection=preserve_selection,
             select_new=False,
+            selected_album_stats=selected_stats,
             config=cfg,
             aisplined=aisplined_settings(cfg),
             ai_runtime_available=False,
@@ -1506,6 +1652,19 @@ def prepare_tui_library_selection(
             emit_library(event)
             continue
 
+        if action == "selection-change":
+            session.selected_statistics = {
+                path: value
+                for path, value in session.selected_statistics.items()
+                if path in selected_paths
+            }
+            emit_library(event, preserve_selection=True)
+            continue
+
+        if action == "edit-config":
+            session.select_media_active = False
+            raise TuiConfigEditRequested(str(config_file))
+
         if action == "refresh-index":
             refreshed = discover_root_artists()
             refreshed_paths = {artist.path for artist in refreshed}
@@ -1621,6 +1780,8 @@ def prepare_tui_library_selection(
             ),
         )
         selected_paths.difference_update(valid_selected_paths)
+        for selected_path in valid_selected_paths:
+            session.selected_statistics.pop(selected_path, None)
         session.select_media_active = False
         return selected, overrides, timeout_paths, sources, known
 
@@ -4140,7 +4301,8 @@ def resolve_scan_root(
     return resolve_path(config_file, raw_root), library_root
 
 
-def run_config_edit(path: Path) -> int:
+def run_config_edit_session(path: Path) -> tuple[int, bool]:
+    """Run micro on the real terminal and report whether Config v5 changed."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise SplinedError("SPLINED --config-edit requires an interactive terminal.")
 
@@ -4150,20 +4312,19 @@ def run_config_edit(path: Path) -> int:
             "SPLINED --config-edit requires micro inside the container. "
             "Install micro in the SPLINED image and rebuild."
         )
-
     if not path.exists():
         raise SplinedError(f"Configuration file not found: {path}")
-
     if not os.access(path, os.W_OK):
         raise SplinedError(
             f"SPLINED configuration is not writable: {path}. "
             "Mount /config read-write (:rw) to use --config-edit."
         )
 
-    # Do not depend on the container account having a writable, passwd-backed
-    # HOME. This also supports operators who select a host-matching UID/GID.
-    # Give the editor disposable state under /tmp; the actual SPLINED config
-    # remains the mounted /config/config.toml file.
+    try:
+        before = path.read_bytes()
+    except OSError as exc:
+        raise SplinedError(f"Unable to read SPLINED configuration: {exc}") from exc
+
     editor_home = Path(tempfile.mkdtemp(prefix="splined-editor-"))
     xdg_config = editor_home / ".config"
     xdg_data = editor_home / ".local" / "share"
@@ -4177,10 +4338,25 @@ def run_config_edit(path: Path) -> int:
     env["XDG_DATA_HOME"] = str(xdg_data)
     env["XDG_CACHE_HOME"] = str(xdg_cache)
 
-    # The executable is resolved with shutil.which and invoked directly with
-    # an argv list; no shell or user-controlled command string is involved.
-    os.execve(editor, [editor, str(path)], env)  # nosec B606
-    return 0
+    try:
+        completed = subprocess.run(  # nosec B603
+            [editor, str(path)],
+            env=env,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(editor_home, ignore_errors=True)
+
+    try:
+        after = path.read_bytes()
+    except OSError as exc:
+        raise SplinedError(f"Unable to read edited SPLINED configuration: {exc}") from exc
+    return int(completed.returncode), before != after
+
+
+def run_config_edit(path: Path) -> int:
+    code, _changed = run_config_edit_session(path)
+    return code
 
 
 
