@@ -218,6 +218,14 @@ Status filters should work together with Artist/Album text filters without trigg
 
 ---
 
+# Initial selection
+
+Opening or reloading Select Media does not auto-check newly discovered Albums. A previously saved explicit selection may be restored; otherwise no Album is checked until the user selects an Album, selects an Artist, uses **Select [ALL]**, or uses **Select [FILTERED]**.
+
+Background cache validation may preserve already checked paths, but discovery of a new Album must not select that Album merely because it is new or White/Unprocessed.
+
+---
+
 # Select Mode
 
 The Select Mode group contains mutually exclusive selection actions:
