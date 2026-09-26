@@ -392,6 +392,7 @@ jobs:
           python3 -m compileall -q python/pyratatui_input/python
 
           docker build --pull \
+            --build-arg SPLINED_BUILD_CHANNEL=release \
             --tag splined-release-candidate:${RELEASE_VERSION} \
             ./python
 
@@ -1010,6 +1011,7 @@ jobs:
           VERSION_TAG="v${RELEASE_VERSION}"
 
           docker build --pull \
+            --build-arg SPLINED_BUILD_CHANNEL=release \
             --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
             --label "org.opencontainers.image.version=$RELEASE_VERSION" \
             --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
