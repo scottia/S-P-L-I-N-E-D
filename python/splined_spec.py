@@ -562,7 +562,15 @@ def run_full_suites(audit: Audit) -> None:
     audit.command(
         "PY-COMPILE",
         "Python compileall",
-        [sys.executable, "-m", "compileall", "-q", "python"],
+        [
+            sys.executable,
+            "-X",
+            "pycache_prefix=/tmp/splined-spec-pycache",
+            "-m",
+            "compileall",
+            "-q",
+            "python",
+        ],
         timeout=120,
     )
     audit.command(
