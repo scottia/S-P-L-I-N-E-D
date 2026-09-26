@@ -290,7 +290,7 @@ class LibraryModel:
             if self.artist_filter.casefold() not in base.name.casefold():
                 continue
             children = groups.get(base.name, [])
-            aggregate = artist_status(children) if children else None
+            aggregate = artist_status(children) if base.loaded and children else None
             if aggregate is not None and aggregate not in self.artist_status_filters:
                 continue
             rows.append(
@@ -298,10 +298,10 @@ class LibraryModel:
                     path=base.path,
                     name=base.name,
                     status=aggregate,
-                    album_count=len(children),
+                    album_count=len(children) if base.loaded else 0,
                     selected_count=sum(child.selected for child in children),
-                    indexed=True,
-                    loaded=True,
+                    indexed=base.indexed,
+                    loaded=base.loaded,
                 )
             )
         return rows
@@ -422,11 +422,12 @@ class LibraryModel:
         return {
             "path": self.root,
             "artists": len(self.artists),
+            "loaded_artists": sum(item.loaded for item in self.artists),
             "albums": len(self.albums),
             "visible_artists": len(self.visible_artists()),
             "active_albums": len(active),
             "active_visible_albums": len(active_visible),
             "selected": sum(item.selected for item in self.albums),
             "formats": formats,
-            "cache": "COMPLETE",
+            "inventory": "DIRECT / LAZY",
         }
