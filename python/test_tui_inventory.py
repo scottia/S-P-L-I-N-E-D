@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import tempfile
-import threading
 import time
 import unittest
 from pathlib import Path
@@ -12,13 +10,7 @@ from unittest import mock
 
 import splined
 from tui.library import LibraryModel
-from tui.picker_index import (
-    PICKER_DB_NAME,
-    PICKER_SCHEMA_VERSION,
-    PickerAlbum,
-    PickerArtist,
-    PickerIndex,
-)
+from tui.picker_index import PickerIndex
 
 
 def _config(root: Path) -> dict[str, object]:
@@ -29,8 +21,18 @@ def _config(root: Path) -> dict[str, object]:
             "music_library": str(root),
             "ignored_subs": ["[Artist Singles]", "[videos]", "@eaDir", ".stfolder-*"],
         },
-        "scan": {"scan_mode_timeout": 24},
+        "scan": {
+            "scan_mode_timeout": 24,
+            "scan_mode": True,
+            "library_scan": False,
+            "cache_dir": "_cache",
+            "log_dir": "_logs",
+            "history_dir": "_logs/_history",
+            "scan_library_dir": str(root),
+        },
         "history": {"enabled": True, "retention_days": 0},
+        "logging": {"retention_days": 14},
+        "credentials": {"credential_dir": "credentials"},
         "output": {
             "file_name": "cover",
             "file_formats": ["jpeg", "png", "webp"],
@@ -61,7 +63,7 @@ def _album(root: Path, artist: str, title: str, suffix: str = ".flac") -> Path:
     return directory
 
 
-class CompletePickerSnapshotTests(unittest.TestCase):
+class DirectLazyInventoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.base = Path(self.temp.name)
@@ -71,13 +73,12 @@ class CompletePickerSnapshotTests(unittest.TestCase):
         self.love = _album(self.root, "10,000 Maniacs", "Love Among the Ruins")
         self.eden = _album(self.root, "10,000 Maniacs", "Our Time in Eden")
         self.toys = _album(self.root, "Aerosmith", "Toys in the Attic", ".mp3")
-        (self.love / "cover.jpg").write_bytes(b"filename-only local art")
+        (self.love / "cover.jpg").write_bytes(b"not an image")
         (self.love / "booklet.png").write_bytes(b"not a configured cover")
         _album(self.root, "[Artist Singles]", "Ignored Album", ".mp3")
         _album(self.root, "[videos]", "Ignored Video Album")
         _album(self.root, "@eaDir", "junk", ".mp3")
         _album(self.root, ".stfolder-cache", "hidden", ".mp3")
-        _album(self.root, ".animatedartworkdownloader", "hidden", ".mp3")
         self.cfg = _config(self.root)
 
     def tearDown(self) -> None:
@@ -91,11 +92,9 @@ class CompletePickerSnapshotTests(unittest.TestCase):
         bypassed: set[str] | None = None,
         picker_session: splined.PickerSessionState | None = None,
         initial_event: str = "library",
-        read_input=None,
     ):
         emitted: list[tuple[str, dict[str, object]]] = []
         encoded = iter(json.dumps(item) for item in responses)
-        reader = read_input or (lambda *_a, **_k: next(encoded))
         with (
             mock.patch.object(splined, "tui_active", return_value=True),
             mock.patch.object(
@@ -103,7 +102,11 @@ class CompletePickerSnapshotTests(unittest.TestCase):
                 "emit_ui",
                 side_effect=lambda event, **payload: emitted.append((event, payload)),
             ),
-            mock.patch.object(splined, "read_input", side_effect=reader),
+            mock.patch.object(
+                splined,
+                "read_input",
+                side_effect=lambda *_a, **_k: next(encoded),
+            ),
         ):
             result = splined.prepare_tui_library_selection(
                 self.root / "config.toml",
@@ -120,93 +123,197 @@ class CompletePickerSnapshotTests(unittest.TestCase):
             )
         return result, emitted
 
-    def _cold_build(self) -> list[tuple[str, dict[str, object]]]:
-        (_result, emitted) = self._run(
-            [{"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False}]
-        )
-        return emitted
+    def test_initial_startup_reads_root_only_without_picker_cache(self) -> None:
+        visited: list[Path] = []
+        original_scandir = os.scandir
 
-    def test_cold_build_persists_complete_topology_and_exact_progress(self) -> None:
-        emitted = self._cold_build()
-        payload = next(payload for event, payload in emitted if event == "library")
-        self.assertEqual([row["name"] for row in payload["artists"]], ["10,000 Maniacs", "Aerosmith"])
-        self.assertEqual(len(payload["albums"]), 3)
-        self.assertTrue(payload["snapshot_complete"])
-        progress = [payload for event, payload in emitted if event == "cache_progress"]
-        self.assertEqual(progress[-1]["processed"], 2)
-        self.assertEqual(progress[-1]["total"], 2)
-        self.assertEqual(progress[-1]["percent"], 100.0)
-        self.assertEqual(progress[-1]["albums"], 3)
-        with PickerIndex.open(
-            self.cache / PICKER_DB_NAME,
-            self.root,
-            self.cfg["library"]["ignored_subs"],  # type: ignore[index]
-        ) as index:
-            info = index.snapshot_info()
-            self.assertIsNotNone(info)
-            assert info is not None
-            self.assertEqual((info.artist_count, info.album_count), (2, 3))
-            meta = index._meta()
-            self.assertEqual(meta["schema_version"], str(PICKER_SCHEMA_VERSION))
-            self.assertEqual(meta["snapshot_complete"], "1")
+        def recording(path: Path | str):
+            visited.append(Path(path))
+            return original_scandir(path)
 
-    def test_warm_first_render_is_sqlite_only_when_media_access_fails(self) -> None:
-        self._cold_build()
         with (
-            mock.patch("tui.picker_index.os.scandir", side_effect=AssertionError("/music root accessed")),
-            mock.patch.object(splined, "inventory", side_effect=AssertionError("/music tree accessed")),
+            mock.patch.object(splined.os, "scandir", side_effect=recording),
+            mock.patch.object(
+                splined,
+                "inventory",
+                side_effect=AssertionError("descended into Album topology"),
+            ),
+            mock.patch.object(
+                PickerIndex,
+                "open",
+                side_effect=AssertionError("SQLite picker cache opened"),
+            ),
         ):
-            (_result, emitted) = self._run(
-                [{"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False}]
+            (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
+                [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
             )
-        payload = next(payload for event, payload in emitted if event == "library")
-        self.assertEqual(len(payload["artists"]), 2)
-        self.assertEqual(len(payload["albums"]), 3)
-        self.assertTrue(all(row["indexed"] and row["loaded"] for row in payload["artists"]))
-        self.assertNotIn("Inventory not loaded", json.dumps(payload))
 
-    def test_same_session_return_uses_memory_without_sqlite_or_filesystem(self) -> None:
+        self.assertEqual(visited, [self.root])
+        self.assertEqual(selected, [])
+        self.assertEqual(known, [])
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertEqual(
+            [row["name"] for row in payload["artists"]],
+            ["10,000 Maniacs", "Aerosmith"],
+        )
+        self.assertEqual(payload["albums"], [])
+        self.assertTrue(all(not row["loaded"] for row in payload["artists"]))
+        self.assertFalse(
+            any(event in {"cache_build_start", "cache_progress"} for event, _ in emitted)
+        )
+
+    def test_open_artist_scans_only_that_artist_once(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        calls: list[Path] = []
+        original_inventory = splined.inventory
+
+        def inventory(path: Path, *args, **kwargs):
+            calls.append(path)
+            return original_inventory(path, *args, **kwargs)
+
+        responses = [
+            {
+                "action": "load-artist",
+                "artist_path": artist_path,
+                "selected": [],
+            },
+            {
+                "action": "load-artist",
+                "artist_path": artist_path,
+                "selected": [str(self.eden)],
+            },
+            {
+                "action": "launch",
+                "scan_mode": "filtered-read",
+                "selected": [str(self.eden)],
+            },
+        ]
+        with mock.patch.object(splined, "inventory", side_effect=inventory):
+            (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
+                responses
+            )
+
+        self.assertEqual(calls, [Path(artist_path)])
+        self.assertEqual([album.path for album in selected], [self.eden])
+        self.assertEqual({album.path for album in known}, {self.love, self.eden})
+        update = [payload for event, payload in emitted if event == "library_update"][-1]
+        artist = next(row for row in update["artists"] if row["name"] == "10,000 Maniacs")
+        self.assertTrue(artist["loaded"])
+
+    def test_same_session_return_uses_resident_folder_model(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
         session = splined.PickerSessionState()
         self._run(
-            [{"action": "launch", "scan_mode": "auto-selected", "selected": [str(self.love)], "select_new": False}],
+            [
+                {"action": "load-artist", "artist_path": artist_path, "selected": []},
+                {"action": "launch", "scan_mode": "auto-selected", "selected": []},
+            ],
             picker_session=session,
         )
-        history = {"version": 1, "albums": {str(self.love): {"outcome": "normal-selected"}}}
+
         with (
-            mock.patch.object(PickerIndex, "open", side_effect=AssertionError("SQLite reopened")),
-            mock.patch.object(splined, "inventory", side_effect=AssertionError("filesystem rescanned")),
-            mock.patch("tui.picker_index.os.scandir", side_effect=AssertionError("root reconciled")),
+            mock.patch.object(
+                splined.os,
+                "scandir",
+                side_effect=AssertionError("library root reread"),
+            ),
+            mock.patch.object(
+                splined,
+                "inventory",
+                side_effect=AssertionError("Artist rescanned"),
+            ),
+            mock.patch.object(
+                PickerIndex,
+                "open",
+                side_effect=AssertionError("SQLite reopened"),
+            ),
         ):
             (_result, emitted) = self._run(
-                [{"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False}],
-                history=history,
+                [{"action": "launch", "scan_mode": "auto-selected", "selected": []}],
                 picker_session=session,
                 initial_event="library_update",
             )
-        update = next(payload for event, payload in emitted if event == "library_update")
-        row = next(row for row in update["albums"] if row["path"] == str(self.love))
-        self.assertEqual(row["status"], "processed")
-        self.assertFalse(row["selected"])
 
-    def test_complete_snapshot_returns_exact_checked_paths_across_artists(self) -> None:
-        (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
-            [{
-                "action": "launch",
-                "scan_mode": "auto-selected",
-                "selected": [str(self.eden), str(self.toys)],
-                "select_new": False,
-            }]
+        payload = next(
+            payload for event, payload in emitted if event == "library_update"
         )
-        self.assertEqual([album.path for album in selected], [self.eden, self.toys])
-        self.assertNotIn(self.love, [album.path for album in selected])
+        self.assertEqual(
+            {row["album"] for row in payload["albums"]},
+            {"Love Among the Ruins", "Our Time in Eden"},
+        )
+
+    def test_select_all_explicitly_reads_every_artist(self) -> None:
+        calls: list[Path] = []
+        original_inventory = splined.inventory
+
+        def inventory(path: Path, *args, **kwargs):
+            calls.append(path)
+            return original_inventory(path, *args, **kwargs)
+
+        with mock.patch.object(splined, "inventory", side_effect=inventory):
+            (selected, _overrides, _timeouts, _sources, known), _emitted = self._run(
+                [
+                    {"action": "select-all", "selected": []},
+                    {
+                        "action": "launch",
+                        "scan_mode": "auto-selected",
+                        "selected": [str(self.eden), str(self.toys)],
+                    },
+                ]
+            )
+
+        self.assertEqual(
+            set(calls),
+            {self.root / "10,000 Maniacs", self.root / "Aerosmith"},
+        )
         self.assertEqual({album.path for album in known}, {self.love, self.eden, self.toys})
-        scope = next(
-            payload for event, payload in emitted
-            if event == "activity" and payload.get("category") == "selection"
-        )
-        self.assertIn("2 checked album(s)", str(scope["message"]))
+        self.assertEqual({album.path for album in selected}, {self.eden, self.toys})
 
-    def test_prelaunch_boundary_forbids_tags_network_candidates_images_and_ai(self) -> None:
+    def test_auto_all_is_an_explicit_whole_library_traversal(self) -> None:
+        calls: list[Path] = []
+        original_inventory = splined.inventory
+
+        def inventory(path: Path, *args, **kwargs):
+            calls.append(path)
+            return original_inventory(path, *args, **kwargs)
+
+        with mock.patch.object(splined, "inventory", side_effect=inventory):
+            (selected, _overrides, _timeouts, _sources, known), _emitted = self._run(
+                [{"action": "launch", "scan_mode": "auto-all", "selected": []}]
+            )
+
+        self.assertEqual(
+            set(calls),
+            {self.root / "10,000 Maniacs", self.root / "Aerosmith"},
+        )
+        self.assertEqual({album.path for album in known}, {self.love, self.eden, self.toys})
+        self.assertEqual({album.path for album in selected}, {self.eden, self.toys})
+
+    def test_refresh_only_reloads_root_artist_folders(self) -> None:
+        with mock.patch.object(
+            splined,
+            "inventory",
+            side_effect=AssertionError("refresh descended into Artist folders"),
+        ):
+            (_result, emitted) = self._run(
+                [
+                    {"action": "refresh-index", "selected": []},
+                    {"action": "launch", "scan_mode": "auto-selected", "selected": []},
+                ]
+            )
+        self.assertTrue(
+            any(
+                event == "activity"
+                and payload.get("message", "").startswith("Artist folder list refreshed")
+                for event, payload in emitted
+            )
+        )
+        self.assertFalse(
+            any(event in {"cache_build_start", "cache_progress"} for event, _ in emitted)
+        )
+
+    def test_prelaunch_boundary_never_reads_tags_network_images_or_ai(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
         forbidden = AssertionError("processing crossed the Launch boundary")
         with (
             mock.patch.object(splined, "MutagenFile", side_effect=forbidden),
@@ -217,9 +324,14 @@ class CompletePickerSnapshotTests(unittest.TestCase):
             mock.patch.object(splined, "select_best", side_effect=forbidden),
             mock.patch.object(splined.Image, "open", side_effect=forbidden),
         ):
-            self._cold_build()
+            self._run(
+                [
+                    {"action": "load-artist", "artist_path": artist_path, "selected": []},
+                    {"action": "launch", "scan_mode": "auto-selected", "selected": []},
+                ]
+            )
 
-    def test_folder_identity_status_local_art_and_complete_counts(self) -> None:
+    def test_history_bypass_timeout_reconciles_when_artist_is_loaded(self) -> None:
         albums, _ignored = splined.inventory(self.root, [])
         eden = next(album for album in albums if album.path == self.eden)
         history = {
@@ -228,28 +340,46 @@ class CompletePickerSnapshotTests(unittest.TestCase):
                 str(self.eden): {
                     "completed_at_unix": time.time(),
                     "album_fingerprint": splined.album_scan_fingerprint(eden),
-                    "policy_fingerprint": splined.scan_policy_fingerprint(self.cfg, ["itunes"]),
+                    "policy_fingerprint": splined.scan_policy_fingerprint(
+                        self.cfg, ["itunes"]
+                    ),
                     "outcome": "selected",
                 }
             },
         }
-        with mock.patch.object(splined.Image, "open", side_effect=AssertionError("decoded")):
-            (_result, emitted) = self._run(
-                [{"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False}],
-                history=history,
-                bypassed={str(self.toys)},
-            )
-        payload = next(payload for event, payload in emitted if event == "library")
-        model = LibraryModel.from_payload(payload)
-        self.assertEqual([item.name for item in model.visible_artists()], ["10,000 Maniacs", "Aerosmith"])
-        self.assertEqual(len(model.albums), 3)
-        rows = {row["path"]: row for row in payload["albums"]}
-        self.assertEqual(rows[str(self.love)]["formats"], ["JPEG"])
+        artist_path = str(self.root / "10,000 Maniacs")
+        (_result, emitted) = self._run(
+            [
+                {"action": "load-artist", "artist_path": artist_path, "selected": []},
+                {"action": "launch", "scan_mode": "auto-selected", "selected": []},
+            ],
+            history=history,
+            bypassed={str(self.love)},
+        )
+        update = [payload for event, payload in emitted if event == "library_update"][-1]
+        rows = {row["path"]: row for row in update["albums"]}
+        self.assertEqual(rows[str(self.love)]["status"], "bypassed")
         self.assertEqual(rows[str(self.eden)]["status"], "timeout")
-        self.assertEqual(rows[str(self.toys)]["status"], "bypassed")
-        self.assertFalse(any(event == "library_enrichment" for event, _payload in emitted))
 
-    def test_hidden_ignored_and_symlink_roots_never_enter_snapshot(self) -> None:
+    def test_local_art_detection_does_not_decode_image(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        with mock.patch.object(
+            splined.Image,
+            "open",
+            side_effect=AssertionError("decoded image before Launch"),
+        ):
+            (_result, emitted) = self._run(
+                [
+                    {"action": "load-artist", "artist_path": artist_path, "selected": []},
+                    {"action": "launch", "scan_mode": "auto-selected", "selected": []},
+                ]
+            )
+        update = [payload for event, payload in emitted if event == "library_update"][-1]
+        love = next(row for row in update["albums"] if row["path"] == str(self.love))
+        self.assertEqual(love["formats"], ["JPEG"])
+        self.assertEqual(love["status"], "processed")
+
+    def test_hidden_ignored_and_symlink_roots_never_enter_picker(self) -> None:
         outside = self.base / "outside"
         _album(outside, "Linked Artist", "Linked Album")
         link = self.root / "linked"
@@ -257,96 +387,17 @@ class CompletePickerSnapshotTests(unittest.TestCase):
             os.symlink(outside, link, target_is_directory=True)
         except (OSError, NotImplementedError):
             link = None
-        emitted = self._cold_build()
+
+        (_result, emitted) = self._run(
+            [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
+        )
         payload = next(payload for event, payload in emitted if event == "library")
         names = {row["name"] for row in payload["artists"]}
         self.assertEqual(names, {"10,000 Maniacs", "Aerosmith"})
         if link is not None:
             self.assertNotIn("linked", names)
-        with PickerIndex.open(
-            self.cache / PICKER_DB_NAME,
-            self.root,
-            self.cfg["library"]["ignored_subs"],  # type: ignore[index]
-        ) as index:
-            all_paths = [path for (path,) in index.connection.execute("SELECT artist_path FROM artists")]
-            self.assertFalse(any(Path(path).name.startswith(".") for path in all_paths))
-            self.assertFalse(any(Path(path).name in {"[Artist Singles]", "[videos]", "@eaDir"} for path in all_paths))
 
-    def test_deleted_corrupt_wrong_root_and_changed_ignore_cache_rebuild_safely(self) -> None:
-        self._cold_build()
-        database = self.cache / PICKER_DB_NAME
-        database.unlink()
-        self._cold_build()
-        database.write_bytes(b"not sqlite")
-        emitted = self._cold_build()
-        self.assertTrue(database.exists())
-        self.assertTrue(any(self.cache.glob(f"{PICKER_DB_NAME}.corrupt-*")))
-        self.assertTrue(any(event == "log" and payload.get("level") == "WARN" for event, payload in emitted))
-        with PickerIndex.open(database, self.root, ["different-ignore"]) as index:
-            self.assertIsNone(index.snapshot_info())
-        other = self.base / "other"
-        other.mkdir()
-        with PickerIndex.open(database, other, ["different-ignore"]) as index:
-            self.assertIsNone(index.snapshot_info())
-
-    def test_failed_generation_promotion_retains_last_complete_snapshot(self) -> None:
-        path = self.cache / PICKER_DB_NAME
-        artist = PickerArtist(str(self.root / "Artist"), "Artist")
-        album = PickerAlbum(str(self.root / "Artist" / "Album"), artist.path, "Album")
-        with PickerIndex.open(path, self.root, []) as index:
-            original = index.promote_snapshot([artist], [album])
-            invalid = PickerAlbum(str(self.root / "Missing" / "Album"), str(self.root / "Missing"), "Album")
-            with self.assertRaises(sqlite3.IntegrityError):
-                index.promote_snapshot([artist], [invalid])
-            self.assertEqual(index.snapshot_info(), original)
-            self.assertEqual(index.albums(), [album])
-
-    def test_background_validation_promotes_one_coherent_snapshot(self) -> None:
-        self._cold_build()
-        removed_album = self.root / "Aerosmith" / "Toys in the Attic"
-        for path in removed_album.iterdir():
-            path.unlink()
-        removed_album.rmdir()
-        new_album = _album(self.root, "New Artist", "New Album")
-        session = splined.PickerSessionState()
-        emitted: list[tuple[str, dict[str, object]]] = []
-
-        def reader(*_args, **_kwargs):
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if any(event == "library_update" for event, _payload in emitted):
-                    return json.dumps({"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False})
-                time.sleep(0.01)
-            raise AssertionError("background validation did not publish")
-
-        with (
-            mock.patch.object(splined, "tui_active", return_value=True),
-            mock.patch.object(
-                splined,
-                "emit_ui",
-                side_effect=lambda event, **payload: emitted.append((event, payload)),
-            ),
-            mock.patch.object(splined, "read_input", side_effect=reader),
-        ):
-            splined.prepare_tui_library_selection(
-                self.root / "config.toml",
-                self.cfg,
-                ["itunes"],
-                self.root,
-                {"version": 1, "albums": {}},
-                24,
-                cache=self.cache,
-                library_root=self.root,
-                picker_session=session,
-            )
-        updates = [payload for event, payload in emitted if event == "library_update"]
-        self.assertEqual(len(updates), 1)
-        paths = {row["path"] for row in updates[0]["albums"]}
-        self.assertIn(str(new_album), paths)
-        self.assertNotIn(str(removed_album), paths)
-        self.assertTrue(any(event == "cache_progress" and payload.get("percent") == 100.0 for event, payload in emitted))
-
-    def test_large_complete_fixture_and_sqlite_only_warm_restart(self) -> None:
+    def test_large_root_folder_list_never_touches_album_topology(self) -> None:
         root = self.root
 
         class Entry:
@@ -360,104 +411,51 @@ class CompletePickerSnapshotTests(unittest.TestCase):
             def is_dir(self, *, follow_symlinks: bool = False) -> bool:
                 return True
 
-        values = [Entry(index) for index in range(2000)]
-
         class Entries:
+            def __init__(self, values):
+                self.values = values
+
             def __enter__(self):
-                return iter(values)
+                return iter(self.values)
 
             def __exit__(self, *_args):
                 return False
 
-        audio_file_count = 0
-
-        def synthetic_inventory(path: Path, *_args, **_kwargs):
-            nonlocal audio_file_count
-            artist_number = int(path.name.rsplit(" ", 1)[-1])
-            count = 8 if artist_number < 1000 else 7
-            rows = []
-            for album_number in range(count):
-                track_count = 5 if album_number < 5 else 4
-                audio_file_count += track_count
-                album_path = path / f"Album {album_number:02d}"
-                rows.append(
-                    splined.AlbumDir(
-                        album_path,
-                        [album_path / f"track{track:02d}.flac" for track in range(track_count)],
-                        inventory_fingerprint=f"fp-{artist_number}-{album_number}",
-                    )
-                )
-            return rows, []
-
-        cold_started = time.perf_counter()
+        values = [Entry(index) for index in range(2000)]
+        started = time.perf_counter()
         with (
-            mock.patch("tui.picker_index.os.scandir", return_value=Entries()),
-            mock.patch.object(splined, "inventory", side_effect=synthetic_inventory),
+            mock.patch.object(splined.os, "scandir", return_value=Entries(values)) as scandir,
+            mock.patch.object(
+                splined,
+                "inventory",
+                side_effect=AssertionError("Album topology read"),
+            ),
         ):
-            (_result, cold_events) = self._run(
-                [{"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False}]
+            (_result, emitted) = self._run(
+                [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
             )
-        cold_elapsed = time.perf_counter() - cold_started
-        cold_payload = next(payload for event, payload in cold_events if event == "library")
-        self.assertEqual((len(cold_payload["artists"]), len(cold_payload["albums"])), (2000, 15000))
-        self.assertEqual(audio_file_count, 70000)
-        progress = [payload for event, payload in cold_events if event == "cache_progress"]
-        self.assertEqual((progress[-1]["processed"], progress[-1]["total"], progress[-1]["percent"]), (2000, 2000, 100.0))
-
-        warm_started = time.perf_counter()
-        with (
-            mock.patch("tui.picker_index.os.scandir", side_effect=AssertionError("warm root access")),
-            mock.patch.object(splined, "inventory", side_effect=AssertionError("warm tree access")),
-        ):
-            (_result, warm_events) = self._run(
-                [{"action": "launch", "scan_mode": "auto-selected", "selected": [], "select_new": False}]
-            )
-        warm_elapsed = time.perf_counter() - warm_started
-        warm_payload = next(payload for event, payload in warm_events if event == "library")
-        self.assertEqual((len(warm_payload["artists"]), len(warm_payload["albums"])), (2000, 15000))
-        self.assertLess(cold_elapsed, 30.0)
-        self.assertLess(warm_elapsed, 5.0)
-        print(
-            "LARGE_FIXTURE_TIMING "
-            f"artists=2000 albums=15000 audio_filenames={audio_file_count} "
-            f"cold_seconds={cold_elapsed:.6f} warm_seconds={warm_elapsed:.6f}"
-        )
-
-    def test_inventory_parallelism_and_deterministic_order_are_preserved(self) -> None:
-        for index in range(16):
-            _album(self.root, f"Parallel Artist {index:02d}", "Album")
-        ignored = self.cfg["library"]["ignored_subs"]  # type: ignore[index]
-        expected, expected_ignored = splined.inventory(self.root, ignored, workers=1)
-        original = splined.os.scandir
-        lock = threading.Lock()
-        active = 0
-        maximum = 0
-
-        def delayed(path: Path | str):
-            nonlocal active, maximum
-            with lock:
-                active += 1
-                maximum = max(maximum, active)
-            try:
-                time.sleep(0.005)
-                return original(path)
-            finally:
-                with lock:
-                    active -= 1
-
-        with mock.patch.object(splined.os, "scandir", side_effect=delayed):
-            actual, actual_ignored = splined.inventory(self.root, ignored, workers=4)
-        self.assertGreater(maximum, 1)
-        self.assertLessEqual(maximum, 4)
-        self.assertEqual([album.path for album in actual], [album.path for album in expected])
-        self.assertEqual(actual_ignored, expected_ignored)
+        elapsed = time.perf_counter() - started
+        payload = next(payload for event, payload in emitted if event == "library")
+        self.assertEqual(len(payload["artists"]), 2000)
+        self.assertEqual(payload["albums"], [])
+        scandir.assert_called_once_with(self.root)
+        self.assertLess(elapsed, 5.0)
 
     def test_post_launch_reads_every_authoritative_track(self) -> None:
         second = self.eden / "track02.flac"
         second.write_bytes(b"audio")
         album = splined.AlbumDir(self.eden, [self.eden / "track01.flac", second])
         tracks = [
-            splined.Track(path, path.stem, "Artist", "Album", "Artist", None, None, None)
+            splined.Track(
+                path,
+                path.stem,
+                "Artist",
+                "Album",
+                "Artist",
+                None,
+                None,
+                None,
+            )
             for path in album.audio_files
         ]
         with mock.patch.object(splined, "read_track", side_effect=tracks) as reader:
