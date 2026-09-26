@@ -26,6 +26,7 @@ class Action(str, Enum):
     DELETE = "delete"
     TOGGLE = "toggle"
     SETTINGS = "settings"
+    EDIT_SETTINGS = "edit-settings"
     SAVE = "save"
     URL = "url"
     FILTER = "filter"
@@ -84,6 +85,8 @@ def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
         return Action.TOGGLE
     if value == "p":
         return Action.SETTINGS
+    if value == "e":
+        return Action.EDIT_SETTINGS
     if value == "u":
         return Action.URL
     if value == "/":
