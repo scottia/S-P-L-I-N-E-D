@@ -276,6 +276,7 @@ class TuiState:
     selected_stats_scroll: int = 0
     selected_stats_page_size: int = 1
     selected_album_stats: list[dict[str, Any]] = field(default_factory=list)
+    debug_library_geometry: str = ""
     filter_edit: str = ""
     hit_regions: list[HitRegion] = field(default_factory=list)
     ai_enabled: bool = False
@@ -1623,6 +1624,16 @@ def _render_library_side_panels(
             Constraint.length(tools_height),
         ],
     )
+    geometry = (
+        f"area={int(area.width)}x{int(area.height)} "
+        f"selected={int(panels[0].width)}x{int(panels[0].height)} "
+        f"scan={int(panels[1].width)}x{int(panels[1].height)} "
+        f"tools={int(panels[2].width)}x{int(panels[2].height)} "
+        f"selected_stats={len(state.selected_album_stats)}"
+    )
+    if geometry != state.debug_library_geometry:
+        state.debug_library_geometry = geometry
+        _runtime_trace(f"library_panels {geometry}")
     _render_selected_album_stats(frame, panels[0], state, theme)
     _render_library_scan_stats(frame, panels[1], state, theme)
     _render_library_tools(frame, panels[2], state, theme)
@@ -3328,7 +3339,14 @@ def _handle_library_key(
                 if action is Action.ACTIVATE:
                     _open_artist(state, adapter, artist.name)
                 elif artist.indexed:
+                    before_selected = sum(item.selected for item in model.albums)
                     model.toggle_artist(artist.name)
+                    _runtime_trace(
+                        "key.artist_toggle "
+                        f"artist={artist.name!r} before_selected={before_selected} "
+                        f"after_selected={sum(item.selected for item in model.albums)} "
+                        f"{_library_snapshot(state)}"
+                    )
                     _sync_library_selection(state, adapter)
                 else:
                     _open_artist(
@@ -3340,7 +3358,14 @@ def _handle_library_key(
         elif state.library_focus == 5:
             albums = model.visible_albums(active_artist_only=True)
             if albums:
-                result = model.toggle_album(albums[state.album_index_cursor])
+                album = albums[state.album_index_cursor]
+                before = album.selected
+                result = model.toggle_album(album)
+                _runtime_trace(
+                    "key.album_toggle "
+                    f"path={album.path!r} before={before} after={album.selected} "
+                    f"result={result!r} {_library_snapshot(state)}"
+                )
                 if result == "bypass-confirmation-required":
                     state.dialog_kind = "library-bypass"
                     state.dialog_open = True
@@ -3575,6 +3600,11 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     row = int(getattr(event, "row", -1))
     if code in {"scroll_up", "scroll_down"}:
         region = _scroll_hit_test(state, column, row)
+        _runtime_trace(
+            f"mouse.scroll code={code!r} x={column} y={row} "
+            f"target={region.target!r if region is not None else 'none'} "
+            f"workflow={state.workflow!r}"
+        )
         if region is not None:
             _scroll_region(state, region, -1 if code == "scroll_up" else 1)
         return
@@ -3582,7 +3612,17 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     region = hit_test(state, column, row)
     if region is None:
+        _runtime_trace(
+            f"mouse.click x={column} y={row} target='none' "
+            f"workflow={state.workflow!r} waiting={adapter.waiting.is_set()}"
+        )
         return
+    _runtime_trace(
+        f"mouse.click x={column} y={row} target={region.target!r} "
+        f"index={region.index} value={region.value!r} "
+        f"workflow={state.workflow!r} workspace={state.workspace!r} "
+        f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
+    )
     if state.dialog_open:
         if region.target == "dialog-yes":
             _apply_dialog_decision(state, adapter, True)
@@ -3602,6 +3642,9 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "select-control" and model is not None:
         state.library_focus = 1
         state.select_index = region.index
+        _runtime_trace(
+            f"mouse.select_control index={region.index} {_library_snapshot(state)}"
+        )
         if region.index == 0:
             _request_bulk_selection(state, adapter, filtered=False)
         elif region.index == 1:
@@ -3612,6 +3655,9 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "scan-control" and model is not None:
         state.library_focus = 2
         state.scan_index = region.index
+        _runtime_trace(
+            f"mouse.scan_control index={region.index} {_library_snapshot(state)}"
+        )
         _submit_library(state, adapter)
     elif region.target == "artist-row" and model is not None:
         state.library_focus = 3
@@ -3623,7 +3669,14 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         artist = model.artist(region.value)
         if artist is not None and artist.indexed:
             model.active_artist = region.value
+            before_selected = sum(item.selected for item in model.albums)
             model.toggle_artist(region.value)
+            _runtime_trace(
+                "mouse.artist_checkbox "
+                f"artist={region.value!r} before_selected={before_selected} "
+                f"after_selected={sum(item.selected for item in model.albums)} "
+                f"{_library_snapshot(state)}"
+            )
             _sync_library_selection(state, adapter)
         else:
             _open_artist(
@@ -3640,7 +3693,14 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.album_index_cursor = region.index
         albums = model.visible_albums(active_artist_only=True)
         if 0 <= region.index < len(albums):
-            result = model.toggle_album(albums[region.index])
+            album = albums[region.index]
+            before = album.selected
+            result = model.toggle_album(album)
+            _runtime_trace(
+                "mouse.album_checkbox "
+                f"path={album.path!r} before={before} after={album.selected} "
+                f"result={result!r} {_library_snapshot(state)}"
+            )
             if result == "bypass-confirmation-required":
                 state.dialog_kind = "library-bypass"
                 state.dialog_open = True
@@ -3723,6 +3783,11 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         code,
         ctrl=bool(getattr(event, "ctrl", False)),
         shift=bool(getattr(event, "shift", False)),
+    )
+    _runtime_trace(
+        f"key code={code!r} action={action.value!r} "
+        f"workflow={state.workflow!r} workspace={state.workspace!r} "
+        f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
     )
     if state.help_open:
         if action in {Action.HELP, Action.BACK}:
