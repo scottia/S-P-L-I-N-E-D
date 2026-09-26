@@ -145,9 +145,13 @@ class LibraryModel:
                 selected=bool(raw.get("selected", False)),
                 bypass_override=bool(raw.get("bypass_override", False)),
             )
-            # Protected states are never selected merely because malformed
-            # presentation payload claimed they were.
-            if not item.auto_eligible and not item.bypass_override:
+            # The engine payload is authoritative for explicit/manual
+            # selection. Processed Albums may be intentionally selected for
+            # reprocessing; only states that still require protection are
+            # sanitized on presentation rehydrate.
+            if item.status is AlbumStatus.BYPASSED and not item.bypass_override:
+                item.selected = False
+            elif item.status is AlbumStatus.TIMEOUT:
                 item.selected = False
             items.append(item)
         grouped: dict[str, list[AlbumItem]] = {}
