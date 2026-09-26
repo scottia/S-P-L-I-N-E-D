@@ -273,6 +273,9 @@ class TuiState:
     album_page_size: int = 1
     candidate_page_size: int = 1
     policy_source_page_size: int = 1
+    selected_stats_scroll: int = 0
+    selected_stats_page_size: int = 1
+    selected_album_stats: list[dict[str, Any]] = field(default_factory=list)
     filter_edit: str = ""
     hit_regions: list[HitRegion] = field(default_factory=list)
     ai_enabled: bool = False
@@ -285,6 +288,8 @@ class TuiState:
     preview_identity: dict[str, tuple[int, int]] = field(default_factory=dict)
     url_modal_open: bool = False
     url_value: str = ""
+    preview_modal_open: bool = False
+    preview_modal_index: int = 0
     transient: str = ""
     help_open: bool = False
     dialog_open: bool = False
@@ -360,6 +365,14 @@ class TuiState:
                     ),
                     min(self.album_index_cursor, max(0, len(visible_albums) - 1)),
                 )
+            raw_selected_stats = payload.get("selected_album_stats", [])
+            self.selected_album_stats = (
+                [item for item in raw_selected_stats if isinstance(item, dict)]
+                if isinstance(raw_selected_stats, list)
+                else []
+            )
+            if not self.selected_album_stats:
+                self.selected_stats_scroll = 0
             config = payload.get("config", {})
             if isinstance(config, dict):
                 self.policy = PolicyDraft.from_config(config)
