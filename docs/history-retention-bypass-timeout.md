@@ -80,6 +80,8 @@ Processed does not necessarily mean:
 
 It means SPLINED has retained a successful prior processing state and normal automatic selection respects that state.
 
+Windows-equivalent folder inventory may also present an Album as Orange when recognized local cover artwork already exists even without retained completion history. That local-artwork state does not fabricate a completion timestamp or history record; the Album remains available for deliberate manual reprocessing.
+
 ---
 
 # Retention
