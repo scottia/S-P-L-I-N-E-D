@@ -1445,53 +1445,67 @@ def _render_library_tools(
     state: TuiState,
     theme: Theme,
 ) -> None:
-    source_text = "[P] Source Policy"
-    edit_text = "[E] Edit Settings"
-    refresh_text = "[R] Refresh Library Index"
+    full = (
+        ("[P] Source Policy", "source-policy-open"),
+        ("[E] Edit Settings", "settings-edit"),
+        ("[R] Refresh Library Index", "library-refresh"),
+    )
+    medium = (
+        ("[P] Policy", "source-policy-open"),
+        ("[E] Settings", "settings-edit"),
+        ("[R] Refresh", "library-refresh"),
+    )
+    compact = (
+        ("[P] Policy", "source-policy-open"),
+        ("[E] Edit", "settings-edit"),
+        ("[R] Refresh", "library-refresh"),
+    )
+    inner_width = max(1, int(area.width) - 2)
     separator = "  •  "
-    body = f"{source_text}{separator}{edit_text}{separator}{refresh_text}"
-    frame.render_widget(
-        Paragraph(
-            Text(
-                [
-                    Line(
-                        [
-                            Span(source_text, style(theme, Semantic.SPECIAL, bold=True)),
-                            Span(separator, style(theme, Semantic.MUTED)),
-                            Span(edit_text, style(theme, Semantic.ACTIVE, bold=True)),
-                            Span(separator, style(theme, Semantic.MUTED)),
-                            Span(refresh_text, style(theme, Semantic.ACCEPTED, bold=True)),
-                        ]
-                    )
-                ]
-            )
+
+    def total_width(items: tuple[tuple[str, str], ...]) -> int:
+        return sum(len(label) for label, _target in items) + len(separator) * (
+            len(items) - 1
         )
+
+    controls = (
+        full
+        if total_width(full) <= inner_width
+        else medium
+        if total_width(medium) <= inner_width
+        else compact
+    )
+    spans: list[Span] = []
+    semantics = (Semantic.SPECIAL, Semantic.ACTIVE, Semantic.ACCEPTED)
+    for index, (label, _target) in enumerate(controls):
+        if index:
+            spans.append(Span(separator, style(theme, Semantic.MUTED)))
+        spans.append(Span(label, style(theme, semantics[index], bold=True)))
+
+    body_width = total_width(controls)
+    frame.render_widget(
+        Paragraph(Text([Line(spans)]))
         .centered()
         .block(card(theme, "POLICY, LIBRARY and SETTINGS", Semantic.DEBUG)),
         area,
     )
     if int(area.height) < 2:
         return
-    inner_width = max(1, int(area.width) - 2)
-    start_x = int(area.x) + 1 + max(0, (inner_width - len(body)) // 2)
+
+    start_x = int(area.x) + 1 + max(0, (inner_width - body_width) // 2)
     y = int(area.y) + 1
-    _register_hit(
-        state,
-        "source-policy-open",
-        Rect(start_x, y, len(source_text), 1),
-    )
-    edit_x = start_x + len(source_text) + len(separator)
-    _register_hit(
-        state,
-        "settings-edit",
-        Rect(edit_x, y, len(edit_text), 1),
-    )
-    refresh_x = edit_x + len(edit_text) + len(separator)
-    _register_hit(
-        state,
-        "library-refresh",
-        Rect(refresh_x, y, len(refresh_text), 1),
-    )
+    cursor = start_x
+    for index, (label, target) in enumerate(controls):
+        if index:
+            cursor += len(separator)
+        _register_hit(
+            state,
+            target,
+            Rect(cursor, y, min(len(label), max(1, int(area.x + area.width) - cursor - 1)), 1),
+        )
+        cursor += len(label)
+
+
 
 
 def _render_library_side_panels(
