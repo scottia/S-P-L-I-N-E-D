@@ -1397,8 +1397,13 @@ def _scan_directory_stat_lines(
             f"{stats['artists']:,} - {stats['visible_artists']:,} visible",
             Semantic.ACTIVE,
         ),
-        field("Albums", f"{stats['albums']:,} loaded", Semantic.ACTIVE),
-        field("Inventory", str(stats["inventory"]), Semantic.ACCEPTED),
+        field(
+            "Albums",
+            f"{stats['albums']:,} "
+            f"{'complete' if stats['complete_inventory'] else 'loaded'}",
+            Semantic.ACTIVE,
+        ),
+        field("Cache", "N/A · DIRECT / LAZY", Semantic.ACCEPTED),
         Line([Span(separator, style(theme, Semantic.MUTED))]),
         field("Artwork", artwork, Semantic.ACCEPTED),
         Line([Span(separator, style(theme, Semantic.MUTED))]),
