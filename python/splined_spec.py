@@ -50,7 +50,7 @@ class Result:
 
 
 class Audit:
-    def __init__(self, *, verbose: bool = false) -> None:
+    def __init__(self, *, verbose: bool = False) -> None:
         self.verbose = verbose
         self.results: list[Result] = []
 
