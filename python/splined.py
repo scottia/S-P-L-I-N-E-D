@@ -57,6 +57,7 @@ DOWNLOAD_CHUNK_BYTES = 64 * 1024
 MAX_IMAGE_PIXELS = 64 * 1024 * 1024
 PROVIDER_DISCOVERY_WORKERS = 4
 CANDIDATE_DOWNLOAD_WORKERS = 4
+SELECTED_STATS_LIMIT = 10
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
 SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
@@ -127,6 +128,7 @@ class PickerSessionState:
     loaded_artists: set[str] = field(default_factory=set)
     selected_paths: set[str] = field(default_factory=set)
     selected_statistics: dict[str, dict[str, Any]] = field(default_factory=dict)
+    selected_statistics_pending: set[str] = field(default_factory=set)
     initialized_paths: set[str] = field(default_factory=set)
     select_new: bool = False
     select_media_active: bool = False
@@ -1547,27 +1549,211 @@ def prepare_tui_library_selection(
         ]
         return artist_rows, rows
 
+    def known_status_summary(
+        artist_rows: list[dict[str, Any]],
+        rows: list[dict[str, Any]],
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        """Combine retained history with exact status for loaded Artists.
+
+        History supplies known Processed/Bypassed state without recursively
+        crawling the library. Once an Artist is loaded, its live Album rows
+        replace history-only assumptions for that Artist.
+        """
+        album_counts = {
+            "unprocessed": 0,
+            "processed": 0,
+            "bypassed": 0,
+            "timeout": 0,
+        }
+        artist_counts = {
+            "unprocessed": 0,
+            "partial": 0,
+            "complete": 0,
+            "contains-bypass": 0,
+        }
+        scoped_artist_paths = {
+            str(item.get("path", ""))
+            for item in artist_rows
+            if str(item.get("path", ""))
+        }
+        loaded_artist_paths = {
+            str(item.get("path", ""))
+            for item in artist_rows
+            if bool(item.get("loaded", False))
+        }
+
+        def history_artist_path(album_path: str) -> str | None:
+            try:
+                path = Path(album_path)
+                if not path_is_within(path, root):
+                    return None
+                relative = path.relative_to(index_root)
+            except (OSError, ValueError):
+                return None
+            if not relative.parts:
+                return None
+            artist_path = str(index_root / relative.parts[0])
+            return artist_path if artist_path in scoped_artist_paths else None
+
+        known_history: dict[str, tuple[str, str]] = {}
+        for album_path, entry in history_albums.items():
+            path = str(album_path)
+            artist_path = history_artist_path(path)
+            if artist_path is None or artist_path in loaded_artist_paths:
+                continue
+            outcome = (
+                str(entry.get("outcome", ""))
+                if isinstance(entry, dict)
+                else ""
+            )
+            status = (
+                "bypassed"
+                if path in bypassed or "bypass" in outcome.casefold()
+                else "processed"
+            )
+            known_history[path] = (artist_path, status)
+
+        for raw_path in bypassed:
+            path = str(raw_path)
+            artist_path = history_artist_path(path)
+            if artist_path is None or artist_path in loaded_artist_paths:
+                continue
+            known_history[path] = (artist_path, "bypassed")
+
+        for _path, (_artist_path, status) in known_history.items():
+            album_counts[status] += 1
+
+        rows_by_artist: dict[str, list[str]] = {}
+        for row in rows:
+            status = str(row.get("status", "unprocessed"))
+            if status not in album_counts:
+                status = "unprocessed"
+            album_counts[status] += 1
+            artist_path = str(row.get("artist_path", ""))
+            rows_by_artist.setdefault(artist_path, []).append(status)
+
+        history_bypass_artists = {
+            artist_path
+            for artist_path, status in known_history.values()
+            if status == "bypassed"
+        }
+        for artist in artist_rows:
+            artist_path = str(artist.get("path", ""))
+            statuses = rows_by_artist.get(artist_path, [])
+            aggregate: str | None = None
+            if bool(artist.get("loaded", False)):
+                if statuses and "bypassed" in statuses:
+                    aggregate = "contains-bypass"
+                elif statuses and all(
+                    status in {"processed", "timeout"} for status in statuses
+                ):
+                    aggregate = "complete"
+                elif statuses and any(
+                    status in {"processed", "timeout"} for status in statuses
+                ):
+                    aggregate = "partial"
+                elif statuses:
+                    aggregate = "unprocessed"
+            elif artist_path in history_bypass_artists:
+                # One retained bypass is sufficient to know this aggregate
+                # even before the rest of the Artist folder is inventoried.
+                aggregate = "contains-bypass"
+
+            artist["status"] = aggregate
+            if aggregate is not None:
+                artist_counts[aggregate] += 1
+
+        return album_counts, artist_counts
+
+    def selected_stats_targets() -> list[str]:
+        return sorted(selected_paths, key=str.casefold)[:SELECTED_STATS_LIMIT]
+
+    def cached_selected_stats(paths: list[str]) -> list[dict[str, Any]]:
+        with session.lock:
+            return [
+                session.selected_statistics[path]
+                for path in paths
+                if path in session.selected_statistics
+            ]
+
+    def schedule_selected_stats(paths: list[str], cover_name: str) -> None:
+        if not paths:
+            return
+        snapshot = list(paths)
+        with session.lock:
+            missing = [
+                path
+                for path in snapshot
+                if path not in session.selected_statistics
+                and path not in session.selected_statistics_pending
+            ]
+            session.selected_statistics_pending.update(missing)
+        if not missing:
+            return
+
+        def worker() -> None:
+            try:
+                for selected_path in missing:
+                    with session.lock:
+                        current = sorted(
+                            selected_paths, key=str.casefold
+                        )[:SELECTED_STATS_LIMIT]
+                        active = session.select_media_active
+                    if not active or current != snapshot:
+                        return
+                    try:
+                        stats = selected_album_statistics(
+                            Path(selected_path),
+                            cover_name=cover_name,
+                        )
+                    except Exception as exc:
+                        debug_log(
+                            "selected_stats.worker_error "
+                            f"path={selected_path!r} "
+                            f"error={type(exc).__name__}: {exc}"
+                        )
+                        continue
+                    with session.lock:
+                        current = sorted(
+                            selected_paths, key=str.casefold
+                        )[:SELECTED_STATS_LIMIT]
+                        if not session.select_media_active or current != snapshot:
+                            return
+                        session.selected_statistics[selected_path] = stats
+                        ready = [
+                            session.selected_statistics[path]
+                            for path in snapshot
+                            if path in session.selected_statistics
+                        ]
+                    emit_ui(
+                        "library_selected_stats",
+                        selected_paths=snapshot,
+                        selected_album_stats=ready,
+                        limit=SELECTED_STATS_LIMIT,
+                    )
+            finally:
+                with session.lock:
+                    session.selected_statistics_pending.difference_update(missing)
+
+        threading.Thread(
+            target=worker,
+            name="splined-selected-stats",
+            daemon=True,
+        ).start()
+
     def emit_library(event: str, *, preserve_selection: bool = False) -> None:
         artist_rows, rows = model_payload()
+        status_counts, artist_status_counts = known_status_summary(
+            artist_rows, rows
+        )
         cover_name = str(output.get("file_name", "cover"))
-        selected_stats: list[dict[str, Any]] = []
-        for selected_path in sorted(selected_paths, key=str.casefold):
-            if selected_path not in session.selected_statistics:
-                session.selected_statistics[selected_path] = selected_album_statistics(
-                    Path(selected_path),
-                    cover_name=cover_name,
-                )
-            selected_stats.append(session.selected_statistics[selected_path])
-        if len(selected_stats) != len(selected_paths):
-            debug_log(
-                "picker.selection_stats_mismatch "
-                f"selected={len(selected_paths)} stats={len(selected_stats)} "
-                f"paths={sorted(selected_paths, key=str.casefold)!r}"
-            )
+        stat_paths = selected_stats_targets()
+        selected_stats = cached_selected_stats(stat_paths)
         debug_log(
             "picker.library_emit "
             f"event={event} artists={len(artist_rows)} albums={len(rows)} "
             f"selected={len(selected_paths)} selected_stats={len(selected_stats)} "
+            f"selected_stats_limit={SELECTED_STATS_LIMIT} "
             f"loaded_artists={len(session.loaded_artists)} "
             f"preserve_selection={preserve_selection}"
         )
@@ -1581,10 +1767,14 @@ def prepare_tui_library_selection(
             preserve_selection=preserve_selection,
             select_new=False,
             selected_album_stats=selected_stats,
+            selected_stats_limit=SELECTED_STATS_LIMIT,
+            status_counts=status_counts,
+            artist_status_counts=artist_status_counts,
             config=cfg,
             aisplined=aisplined_settings(cfg),
             ai_runtime_available=False,
         )
+        schedule_selected_stats(stat_paths, cover_name)
 
     started = time.perf_counter()
     same_session = (
