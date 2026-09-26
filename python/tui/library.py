@@ -428,6 +428,12 @@ class LibraryModel:
             "active_albums": len(active),
             "active_visible_albums": len(active_visible),
             "selected": sum(item.selected for item in self.albums),
+            "processed": sum(
+                item.status is AlbumStatus.PROCESSED for item in self.albums
+            ),
+            "bypassed": sum(
+                item.status is AlbumStatus.BYPASSED for item in self.albums
+            ),
             "formats": formats,
             "inventory": "DIRECT / LAZY",
         }
