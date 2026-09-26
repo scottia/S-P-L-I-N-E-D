@@ -147,7 +147,7 @@ REQUIRED_DOC_ANCHORS: dict[str, tuple[str, ...]] = {
     "docs/media-filter-status-colors.md": (
         "Select [ALL]",
         "Select [FILTERED]",
-        "filtering never auto-adds an unchecked Album",
+        "AUTO LAUNCH likewise processes only the checked Album set",
         "Orange albums may be deliberately reselected",
     ),
     "docs/ratatui-tui.md": (
@@ -429,17 +429,19 @@ def check_status_and_selection(audit: Audit) -> None:
         select_all,
     )
 
-    if LibraryModel.__dataclass_fields__["select_new"].default is True:
-        audit.warn(
-            "SELECT-005",
-            "initial/new-Album auto-selection policy is not explicit enough in /docs",
-            "LibraryModel.select_new currently defaults true. The docs define explicit "
-            "selection actions and path-exact launch behavior, but do not unambiguously "
-            "state whether a newly opened complete picker begins with White Albums "
-            "prechecked. Resolve against intended Windows behavior before changing it.",
-        )
-    else:
-        audit.add("SELECT-005", "PASS", "initial/new-Album selection is non-automatic")
+    def initial_selection() -> None:
+        assert (
+            splined.PickerSessionState().select_new is False
+        ), "PickerSessionState.select_new defaults true; new Albums are implicitly selected"
+        assert (
+            LibraryModel.__dataclass_fields__["select_new"].default is False
+        ), "LibraryModel.select_new defaults true; picker model implicitly selects new Albums"
+
+    audit.check(
+        "SELECT-005",
+        "initial/new Albums remain unchecked unless explicitly selected",
+        initial_selection,
+    )
 
 
 def check_help(audit: Audit) -> None:
