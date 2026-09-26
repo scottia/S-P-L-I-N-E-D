@@ -374,6 +374,12 @@ class TuiState:
                     ),
                     min(self.album_index_cursor, max(0, len(visible_albums) - 1)),
                 )
+            _runtime_trace(
+                f"library_apply event={event!r} payload_artists="
+                f"{len(payload.get('artists', [])) if isinstance(payload.get('artists'), list) else 'invalid'} "
+                f"payload_albums={len(payload.get('albums', [])) if isinstance(payload.get('albums'), list) else 'invalid'} "
+                f"{_library_snapshot(self)}"
+            )
             raw_selected_stats = payload.get("selected_album_stats", [])
             self.selected_album_stats = (
                 [item for item in raw_selected_stats if isinstance(item, dict)]
@@ -382,6 +388,10 @@ class TuiState:
             )
             if not self.selected_album_stats:
                 self.selected_stats_scroll = 0
+            _runtime_trace(
+                f"library_stats_apply selected_stats={len(self.selected_album_stats)} "
+                f"{_library_snapshot(self)}"
+            )
             config = payload.get("config", {})
             if isinstance(config, dict):
                 self.policy = PolicyDraft.from_config(config)
@@ -637,6 +647,10 @@ class TuiState:
             # authority allowed to publish this event.
             self.ai_activity.apply(payload)
         elif event == "worker_done":
+            _runtime_trace(
+                f"worker_done exit_code={payload.get('exit_code', 0)!r} "
+                f"exception={type(payload.get('exception')).__name__ if payload.get('exception') is not None else 'none'}"
+            )
             self.finished = True
             self.exit_code = int(payload.get("exit_code", 0))
             self.exception = payload.get("exception")
@@ -654,6 +668,47 @@ class TuiState:
                 self.workflow = "batch-report"
 
 
+def _runtime_trace(message: str) -> None:
+    """Write TUI interaction diagnostics only when runtime verbosity permits."""
+    core = sys.modules.get("splined")
+    logger = getattr(core, "runtime_log", None) if core is not None else None
+    if callable(logger):
+        logger("debug", f"tui.{message}")
+
+
+def _response_summary(response: str) -> str:
+    try:
+        payload = json.loads(response)
+    except (TypeError, ValueError):
+        value = str(response)
+        return f"raw={value[:120]!r}"
+    if not isinstance(payload, dict):
+        return f"json_type={type(payload).__name__}"
+    selected = payload.get("selected", [])
+    artist_paths = payload.get("artist_paths", [])
+    return (
+        f"action={str(payload.get('action', ''))!r} "
+        f"scan_mode={str(payload.get('scan_mode', ''))!r} "
+        f"selected={len(selected) if isinstance(selected, list) else 'invalid'} "
+        f"artists={len(artist_paths) if isinstance(artist_paths, list) else 'invalid'} "
+        f"artist_path={str(payload.get('artist_path', ''))!r}"
+    )
+
+
+def _library_snapshot(state: TuiState) -> str:
+    model = state.library
+    if model is None:
+        return "library=none"
+    selected = [item.path for item in model.albums if item.selected]
+    return (
+        f"active_artist={model.active_artist!r} "
+        f"artists={len(model.artists)} albums={len(model.albums)} "
+        f"selected={len(selected)} selected_paths={selected!r} "
+        f"selected_stats={len(state.selected_album_stats)} "
+        f"focus={state.library_focus}"
+    )
+
+
 class TuiAdapter:
     def __init__(self) -> None:
         self.events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
@@ -664,16 +719,37 @@ class TuiAdapter:
         self.events.put((event, payload))
 
     def read(self, prompt: str, context: dict[str, Any]) -> str:
+        kind = str(context.get("kind", ""))
+        _runtime_trace(
+            f"adapter.read.wait kind={kind!r} "
+            f"queued_responses={self.responses.qsize()}"
+        )
         self.waiting.set()
         self.emit("input", {"prompt": prompt, "context": context})
         try:
-            return self.responses.get()
+            response = self.responses.get()
+            _runtime_trace(
+                f"adapter.read.received kind={kind!r} "
+                f"{_response_summary(response)}"
+            )
+            return response
         finally:
             self.waiting.clear()
+            _runtime_trace(f"adapter.read.clear kind={kind!r}")
 
-    def respond(self, response: str) -> None:
-        if self.waiting.is_set():
+    def respond(self, response: str) -> bool:
+        waiting = self.waiting.is_set()
+        _runtime_trace(
+            f"adapter.respond waiting={waiting} queue_before={self.responses.qsize()} "
+            f"{_response_summary(response)}"
+        )
+        if waiting:
             self.responses.put(response)
+            return True
+        _runtime_trace(
+            f"adapter.respond.DROPPED {_response_summary(response)}"
+        )
+        return False
 
     def cancel_wait(self) -> None:
         self.respond("b")
@@ -2898,6 +2974,9 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
     modes = ("filtered-read", "filtered-write", "auto-all", "auto-selected")
     mode = modes[state.scan_index]
     payload = state.library.selection_payload(mode)
+    _runtime_trace(
+        f"library_launch.send mode={mode!r} {_library_snapshot(state)}"
+    )
     _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
 
 
@@ -2911,8 +2990,16 @@ def _respond_library_action(
     if state.library is None:
         return
     payload = {"action": action, **state.library.selection_state(), **values}
-    adapter.respond(json.dumps(payload, separators=(",", ":")))
-    state.input_request = None
+    encoded = json.dumps(payload, separators=(",", ":"))
+    _runtime_trace(
+        f"library_action.send action={action!r} waiting={adapter.waiting.is_set()} "
+        f"{_library_snapshot(state)}"
+    )
+    accepted = adapter.respond(encoded)
+    if accepted:
+        state.input_request = None
+    else:
+        state.transient = "Input busy · action not sent; retry."
     state.workflow = "library"
 
 
@@ -2931,6 +3018,10 @@ def _request_bulk_selection(
     model = state.library
     if model is None:
         return
+    _runtime_trace(
+        f"bulk_select requested filtered={filtered} waiting={adapter.waiting.is_set()} "
+        f"{_library_snapshot(state)}"
+    )
     if not filtered:
         state.transient = "Reading Album folders for Select [ALL]…"
         _respond_library_action(state, adapter, "select-all")
@@ -2958,6 +3049,10 @@ def _open_artist(
     model = state.library
     if model is None:
         return
+    _runtime_trace(
+        f"artist.open requested={artist_name!r} select_after_load={select_after_load} "
+        f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
+    )
     model.active_artist = artist_name
     state.album_index_cursor = 0
     state.album_scroll = 0
