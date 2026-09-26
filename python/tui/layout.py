@@ -93,7 +93,7 @@ def candidate_column_layout(
         "square": 7,
         "acceptable": 9,
         "approved": 8,
-        "url": 5,
+        "url": 10,
     }
     preferred = {
         "#": 4,
@@ -107,7 +107,7 @@ def candidate_column_layout(
         "square": 9,
         "acceptable": 12,
         "approved": 10,
-        "url": 7,
+        "url": 12,
     }
     spacing = 1
     inner = max(1, int(width) - 2)
@@ -124,7 +124,7 @@ def candidate_column_layout(
         "square": 5,
         "acceptable": 5,
         "approved": 5,
-        "url": 5,
+        "url": 9,
     }
     excess = max(
         0,
