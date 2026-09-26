@@ -2577,7 +2577,7 @@ def _footer_text(state: TuiState) -> str:
         if kind == "library-selection":
             if state.workspace == "policy":
                 return "↑/↓ settings · PgUp/PgDn scroll · Mouse/touch enabled · Ctrl+S Save/Apply · Esc library · ? help"
-            return "↑/↓ move · Enter open Artist · Space select · / filter · P policy · R rebuild index · Ctrl+C stop"
+            return "↑/↓ move · Enter open Artist · Space select · / filter · P policy · E settings · R refresh folders · Ctrl+C stop"
         if kind in {"artist", "album", "text"}:
             return f"{state.input_request.prompt}{state.input_buffer}   Enter confirm · Esc keep current"
         if kind == "local-comparison":
@@ -2613,7 +2613,8 @@ def _render_help(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
         "Home / End     first / last row\n"
         "Mouse / touch  rows, checkboxes, filters, links, dialogs, scrolling\n"
         "P / Ctrl+S     source policy / explicit Save & Apply\n"
-        "R              explicitly rebuild the full picker index\n"
+        "E              edit Config v5 in micro; reload current scan on save\n"
+        "R              refresh immediate Artist folder list\n"
         "S              use suggested candidate\n"
         "K              keep local artwork\n"
         "F              edit fallback artist/album\n"
@@ -2858,6 +2859,12 @@ def _respond_library_action(
     state.workflow = "library"
 
 
+def _sync_library_selection(state: TuiState, adapter: TuiAdapter) -> None:
+    if state.library is None:
+        return
+    _respond_library_action(state, adapter, "selection-change")
+
+
 def _request_bulk_selection(
     state: TuiState,
     adapter: TuiAdapter,
@@ -2903,6 +2910,7 @@ def _open_artist(
     if artist.loaded:
         if select_after_load:
             model.toggle_artist(artist_name)
+            _sync_library_selection(state, adapter)
         return
     state.transient = f"Indexing Artist folder · {artist_name}"
     _respond_library_action(
@@ -3055,6 +3063,10 @@ def _handle_library_key(
         state.workspace = "policy"
         state.library_focus = 0
         return True
+    if action is Action.EDIT_SETTINGS:
+        state.transient = "Opening Config v5 in micro…"
+        _respond_library_action(state, adapter, "edit-config")
+        return True
     if action is Action.REFRESH:
         state.transient = "Refreshing Artist folder list…"
         _respond_library_action(state, adapter, "refresh-index")
@@ -3152,6 +3164,7 @@ def _handle_library_key(
                 _request_bulk_selection(state, adapter, filtered=False)
             elif state.select_index == 1:
                 model.select_none()
+                _sync_library_selection(state, adapter)
             else:
                 _request_bulk_selection(state, adapter, filtered=True)
         elif state.library_focus == 2:
@@ -3164,6 +3177,7 @@ def _handle_library_key(
                     _open_artist(state, adapter, artist.name)
                 elif artist.indexed:
                     model.toggle_artist(artist.name)
+                    _sync_library_selection(state, adapter)
                 else:
                     _open_artist(
                         state,
@@ -3180,6 +3194,8 @@ def _handle_library_key(
                     state.dialog_open = True
                 elif result == "timeout-active":
                     state.transient = "Timeout-active albums remain protected during automatic selection."
+                else:
+                    _sync_library_selection(state, adapter)
         return True
     if action is Action.BACK:
         state.transient = "Library selection remains open; choose a Scan Mode or press Ctrl+C."
@@ -3212,6 +3228,7 @@ def _apply_dialog_decision(
                 state.library.toggle_album(
                     albums[state.album_index_cursor], bypass_override=True
                 )
+                _sync_library_selection(state, adapter)
             state.dialog_open = False
             state.dialog_kind = ""
         elif state.dialog_kind == "upscale" and state.ai_selection is not None:
@@ -3384,6 +3401,16 @@ def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
             state.candidate_row_scroll = 0
         else:
             state.candidate_row_scroll = max(0, min(proposed, maximum))
+    elif region.target == "selected-stats-scroll":
+        maximum = max(
+            0,
+            len(_selected_album_stat_lines(state, select_theme("OLED"), region.width))
+            - state.selected_stats_page_size,
+        )
+        state.selected_stats_scroll = max(
+            0,
+            min(state.selected_stats_scroll + delta * 3, maximum),
+        )
     elif region.target == "report-scroll":
         state.report_scroll = max(0, state.report_scroll + delta * 3)
 
@@ -3426,6 +3453,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             _request_bulk_selection(state, adapter, filtered=False)
         elif region.index == 1:
             model.select_none()
+            _sync_library_selection(state, adapter)
         else:
             _request_bulk_selection(state, adapter, filtered=True)
     elif region.target == "scan-control" and model is not None:
@@ -3443,6 +3471,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         if artist is not None and artist.indexed:
             model.active_artist = region.value
             model.toggle_artist(region.value)
+            _sync_library_selection(state, adapter)
         else:
             _open_artist(
                 state,
@@ -3464,6 +3493,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
                 state.dialog_open = True
             elif result == "timeout-active":
                 state.transient = "Timeout-active albums remain protected during automatic selection."
+            else:
+                _sync_library_selection(state, adapter)
     elif region.target == "artist-filter":
         state.library_focus = 4
     elif region.target == "album-filter":
@@ -3471,6 +3502,12 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "source-policy-open":
         state.workspace = "policy"
         state.library_focus = 0
+    elif region.target == "settings-edit":
+        state.transient = "Opening Config v5 in micro…"
+        _respond_library_action(state, adapter, "edit-config")
+    elif region.target == "library-refresh":
+        state.transient = "Refreshing Artist folder list…"
+        _respond_library_action(state, adapter, "refresh-index")
     elif region.target in {"policy-source", "policy-source-enabled"} and state.policy is not None:
         state.library_focus = 0
         state.artist_index = region.index
