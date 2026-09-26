@@ -117,7 +117,7 @@ class AlbumDir:
 
 @dataclass
 class PickerSessionState:
-    """Complete picker topology retained across batches in one TUI process."""
+    """Resident lazy Artist/Album picker state retained across TUI batches."""
 
     ready: bool = False
     library_root: str = ""
