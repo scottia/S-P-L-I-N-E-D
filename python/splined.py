@@ -1679,11 +1679,11 @@ def prepare_tui_library_selection(
     def schedule_selected_stats(paths: list[str], cover_name: str) -> None:
         if not paths:
             return
-        snapshot = list(paths)
+        requested = list(paths)
         with session.lock:
             missing = [
                 path
-                for path in snapshot
+                for path in requested
                 if path not in session.selected_statistics
                 and path not in session.selected_statistics_pending
             ]
@@ -1695,12 +1695,14 @@ def prepare_tui_library_selection(
             try:
                 for selected_path in missing:
                     with session.lock:
-                        current = sorted(
+                        current_targets = sorted(
                             selected_paths, key=str.casefold
                         )[:SELECTED_STATS_LIMIT]
                         active = session.select_media_active
-                    if not active or current != snapshot:
+                    if not active:
                         return
+                    if selected_path not in current_targets:
+                        continue
                     try:
                         stats = selected_album_statistics(
                             Path(selected_path),
@@ -1714,20 +1716,21 @@ def prepare_tui_library_selection(
                         )
                         continue
                     with session.lock:
-                        current = sorted(
+                        if not session.select_media_active:
+                            return
+                        current_targets = sorted(
                             selected_paths, key=str.casefold
                         )[:SELECTED_STATS_LIMIT]
-                        if not session.select_media_active or current != snapshot:
-                            return
-                        session.selected_statistics[selected_path] = stats
+                        if selected_path in current_targets:
+                            session.selected_statistics[selected_path] = stats
                         ready = [
                             session.selected_statistics[path]
-                            for path in snapshot
+                            for path in current_targets
                             if path in session.selected_statistics
                         ]
                     emit_ui(
                         "library_selected_stats",
-                        selected_paths=snapshot,
+                        selected_paths=current_targets,
                         selected_album_stats=ready,
                         limit=SELECTED_STATS_LIMIT,
                     )
