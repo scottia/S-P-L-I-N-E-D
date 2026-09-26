@@ -1145,10 +1145,18 @@ def selected_album_statistics(
     for track_path in tag_files:
         try:
             parsed = MutagenFile(track_path, easy=True)
-        except Exception:
+        except Exception as exc:
+            debug_log(
+                "selected_stats.mutagen_error "
+                f"file={str(track_path)!r} "
+                f"error={type(exc).__name__}: {exc}"
+            )
             parsed = None
         tags = getattr(parsed, "tags", None) if parsed is not None else None
         if not tags:
+            debug_log(
+                f"selected_stats.mutagen_no_tags file={str(track_path)!r}"
+            )
             continue
 
         def first_tag(*keys: str) -> str:
