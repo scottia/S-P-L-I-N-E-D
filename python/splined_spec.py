@@ -32,6 +32,7 @@ if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
 import splined  # noqa: E402
+import splined_scan  # noqa: E402
 from tui.library import (  # noqa: E402
     AlbumItem,
     AlbumStatus,
@@ -557,6 +558,19 @@ def check_version(audit: Audit) -> None:
             assert display_version == release_version, (
                 f"release display version is {display_version!r}"
             )
+
+        previous_argv = sys.argv[:]
+        stream = io.StringIO()
+        try:
+            sys.argv = ["splined", "-V"]
+            with contextlib.redirect_stdout(stream):
+                rc = splined_scan.main()
+        finally:
+            sys.argv = previous_argv
+        assert rc == 0, f"splined -V returned {rc}"
+        assert stream.getvalue().strip() == f"SPLINED {display_version}", (
+            f"public splined -V reported {stream.getvalue().strip()!r}"
+        )
 
     audit.check(
         "VERSION-001",
