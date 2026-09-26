@@ -3600,10 +3600,10 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     row = int(getattr(event, "row", -1))
     if code in {"scroll_up", "scroll_down"}:
         region = _scroll_hit_test(state, column, row)
+        target = repr(region.target) if region is not None else "'none'"
         _runtime_trace(
             f"mouse.scroll code={code!r} x={column} y={row} "
-            f"target={region.target!r if region is not None else 'none'} "
-            f"workflow={state.workflow!r}"
+            f"target={target} workflow={state.workflow!r}"
         )
         if region is not None:
             _scroll_region(state, region, -1 if code == "scroll_up" else 1)
