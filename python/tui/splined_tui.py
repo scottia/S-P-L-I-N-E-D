@@ -1586,8 +1586,38 @@ def _candidate_cell_style(
         )
     elif selected:
         semantic = Semantic.ACTIVE
-    result = style(theme, semantic, bold=selected or column == "url")
-    return result.underlined() if column == "url" and candidate.provenance == "[URL]" else result
+    return style(theme, semantic, bold=selected or column == "url")
+
+
+def _render_candidate_thumbnail(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    candidate: CandidateView,
+    grid: CandidateColumnLayout,
+) -> None:
+    if "url" not in grid.columns or not candidate.path or grid.width("url") < 8:
+        return
+    width = min(3, max(1, grid.width("url") - 6))
+    preview = _candidate_preview(state, candidate, width=width, height=1)
+    if preview is None or not preview.rows:
+        return
+    spans = [
+        Span(
+            "▀",
+            Style().fg(Color.rgb(*top)).bg(Color.rgb(*bottom)),
+        )
+        for top, bottom in preview.rows[0][:width]
+    ]
+    frame.render_widget(
+        Paragraph(Text([Line(spans)])),
+        Rect(
+            int(area.x) + 1 + grid.start("url") + 6,
+            int(area.y),
+            width,
+            1,
+        ),
+    )
 
 
 def _register_candidate_hits(
@@ -1626,19 +1656,34 @@ def _register_candidate_hits(
             index=candidate_index,
             value=candidate.ai_key,
         )
-    if "url" in grid.columns and candidate.provenance == "[URL]" and candidate.url:
-        _register_hit(
-            state,
-            "candidate-url",
-            Rect(
-                int(area.x) + 1 + grid.start("url"),
-                int(row_area.y),
-                grid.width("url"),
-                1,
-            ),
-            index=candidate_index,
-            value=candidate.url,
-        )
+    if "url" in grid.columns:
+        url_x = int(area.x) + 1 + grid.start("url")
+        if candidate.provenance == "[URL]" and candidate.url:
+            _register_hit(
+                state,
+                "candidate-url",
+                Rect(
+                    url_x,
+                    int(row_area.y),
+                    min(5, grid.width("url")),
+                    1,
+                ),
+                index=candidate_index,
+                value=candidate.url,
+            )
+        if candidate.path and grid.width("url") >= 8:
+            _register_hit(
+                state,
+                "candidate-thumb",
+                Rect(
+                    url_x + 6,
+                    int(row_area.y),
+                    min(3, max(1, grid.width("url") - 6)),
+                    1,
+                ),
+                index=candidate_index,
+                value=candidate.path,
+            )
 
 
 def _render_candidate_table_group(
@@ -1689,6 +1734,18 @@ def _render_candidate_table_group(
             candidate,
             grid,
             preferred=preferred,
+        )
+        _render_candidate_thumbnail(
+            frame,
+            Rect(
+                int(area.x),
+                int(area.y) + 2 + row,
+                int(area.width),
+                1,
+            ),
+            state,
+            candidate,
+            grid,
         )
 
 
@@ -2422,6 +2479,44 @@ def _render_url_modal(frame: Any, area: Rect, state: TuiState, theme: Theme) -> 
     )
 
 
+def _render_candidate_preview_modal(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    if not state.candidates:
+        return
+    index = max(0, min(state.preview_modal_index, len(state.candidates) - 1))
+    candidate = state.candidates[index]
+    width = min(max(42, int(area.width) - 20), 72)
+    height = min(max(16, int(area.height) - 8), 28)
+    popup = Rect(
+        int(area.x) + max(0, (int(area.width) - width) // 2),
+        int(area.y) + max(0, (int(area.height) - height) // 2),
+        width,
+        height,
+    )
+    image_area, path_area = _split_vertical(
+        popup,
+        [Constraint.fill(1), Constraint.length(3)],
+    )
+    frame.render_widget(Clear(), popup)
+    _render_candidate_preview(frame, image_area, state, theme, candidate)
+    frame.render_widget(
+        Paragraph.from_string(
+            _truncate(
+                f"CACHED FILE · {candidate.path}",
+                max(1, int(path_area.width) - 4),
+            )
+        )
+        .centered()
+        .block(card(theme, "CACHED THUMBNAIL · Enter/Esc CLOSE", Semantic.DEBUG)),
+        path_area,
+    )
+    _register_hit(state, "preview-modal-close", popup)
+
+
 def render(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
     state.hit_regions.clear()
@@ -2490,6 +2585,8 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_dialog(frame, area, state, theme)
     if state.url_modal_open:
         _render_url_modal(frame, area, state, theme)
+    if state.preview_modal_open:
+        _render_candidate_preview_modal(frame, area, state, theme)
 
 
 def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> None:
@@ -2907,6 +3004,25 @@ def _apply_dialog_decision(
         state.dialog_kind = ""
 
 
+def _open_candidate_preview(state: TuiState, candidate_index: int) -> None:
+    if not 0 <= candidate_index < len(state.candidates):
+        return
+    state.selected_index = candidate_index
+    state.preview_modal_index = candidate_index
+    state.preview_modal_open = True
+    candidate = state.candidates[candidate_index]
+    state.transient = (
+        f"Cached candidate preview · {candidate.path}"
+        if candidate.path
+        else "Cached candidate preview unavailable."
+    )
+
+
+def close_candidate_preview(state: TuiState) -> None:
+    state.preview_modal_open = False
+    state.transient = "Returned from cached candidate preview."
+
+
 def _open_candidate_url(state: TuiState, candidate_index: int) -> None:
     if not 0 <= candidate_index < len(state.candidates):
         return
@@ -2946,8 +3062,9 @@ def write_terminal_links(state: TuiState, writer: Any) -> None:
     writer.write("\x1b7")
     for region in targets:
         label = "[OPEN IN DEFAULT BROWSER]" if region.target == "url-open" else "[URL]"
+        prefix = "\x1b[4m" if region.target == "url-open" else ""
         writer.write(
-            f"\x1b[{region.y + 1};{region.x + 1}H\x1b[4m"
+            f"\x1b[{region.y + 1};{region.x + 1}H{prefix}"
             f"{osc8_link(label, region.value)}\x1b[0m"
         )
     writer.write("\x1b8")
@@ -3146,6 +3263,10 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.selected_index = region.index
     elif region.target == "candidate-url":
         _open_candidate_url(state, region.index)
+    elif region.target == "candidate-thumb":
+        _open_candidate_preview(state, region.index)
+    elif region.target == "preview-modal-close":
+        close_candidate_preview(state)
     elif region.target == "candidate-ai":
         _toggle_candidate_ai(state, region.index)
 
@@ -3156,6 +3277,10 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.exit_code = 130
         state.exit_requested = True
         adapter.cancel_wait()
+        return
+    if state.preview_modal_open:
+        if str(event.code).lower() in {"esc", "escape", "enter", "return", "space", " "}:
+            close_candidate_preview(state)
         return
     if state.url_modal_open:
         if str(event.code).lower() in {"esc", "escape", "enter", "return", "u"}:
