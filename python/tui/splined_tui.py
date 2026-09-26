@@ -3412,14 +3412,11 @@ def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
         else:
             state.candidate_row_scroll = max(0, min(proposed, maximum))
     elif region.target == "selected-stats-scroll":
-        maximum = max(
-            0,
-            len(_selected_album_stat_lines(state, select_theme("OLED"), region.width))
-            - state.selected_stats_page_size,
-        )
+        # Exact maximum is clamped by the renderer on the next frame. Keep
+        # wheel/touch scrolling independent of the active OLED/CHALK theme.
         state.selected_stats_scroll = max(
             0,
-            min(state.selected_stats_scroll + delta * 3, maximum),
+            state.selected_stats_scroll + delta * 3,
         )
     elif region.target == "report-scroll":
         state.report_scroll = max(0, state.report_scroll + delta * 3)
