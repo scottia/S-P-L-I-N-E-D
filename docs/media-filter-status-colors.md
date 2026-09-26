@@ -27,33 +27,33 @@ A row filtered out of view remains part of the underlying library model unless a
 
 # Windows-equivalent folder inventory authority
 
-The Python Ratatui path preserves the Windows folder/status model through a
-complete persistent picker snapshot suitable for large NAS libraries. The
-first cold run inventories lightweight folder topology into
-`<cache>/splined-picker.sqlite3`. A valid warm run reads that complete snapshot
-and renders Select Media before any music-library filesystem access.
+The Python Ratatui path uses direct, lazy folder inventory rather than a
+complete persistent picker cache. Startup reads only immediate Artist folders
+from the configured music-library root and presents them directly.
 
-Required behavior:
+Required normal-start behavior:
 
 ```text
-load COMPLETE SQLite generation
+read root Artist folders
         ↓
-apply retained history / bypass / timeout state
+apply ignored/hidden rules
         ↓
 Select Media becomes usable
         ↓
-validate a new staging generation in the background
-        ↓
-atomically promote coherent changes
+read Album folders only when an Artist or explicit bulk action requires them
 ```
 
-This inventory is intentionally different from album processing. It does not read audio tags, perform MusicBrainz authority lookup, discover providers, download artwork, decode artwork to determine geometry, rank candidates, or call AISPLINE. Those operations begin only after the user launches the selected albums.
+No SQLite snapshot or background full-library validation is required for the
+folder list. Folder names remain the stable Select Media identity, while
+history/bypass/timeout remain the execution-state authority.
 
-The picker SQLite database is disposable acceleration state, not status
-authority. Folder names remain the stable Select Media identity. No pre-Launch
-Mutagen enrichment rewrites Artist or Album rows. `Auto Scan [ALL]` and the
-explicit Refresh Library Index action force a complete validation/rebuild.
-Incomplete generations are never exposed as a complete library.
+Opening/selecting an Artist inventories only that Artist. **Select [ALL]** and
+**Auto Scan [ALL]** may explicitly traverse every root Artist because those
+actions require complete Album knowledge. **R / Refresh Folder List** rereads
+only the immediate Artist root and preserves still-valid loaded Artist data.
+
+No pre-Launch folder operation reads tags, performs MusicBrainz/provider work,
+decodes artwork, ranks candidates, or calls AISPLINE.
 
 ## Ignored/excluded folders
 
