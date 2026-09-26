@@ -438,6 +438,19 @@ def check_status_and_selection(audit: Audit) -> None:
         assert (
             LibraryModel.__dataclass_fields__["select_new"].default is False
         ), "LibraryModel.select_new defaults true; picker model implicitly selects new Albums"
+        payload = {
+            "root": "/music",
+            "albums": [
+                {
+                    "path": "/music/Artist/Album",
+                    "artist": "Artist",
+                    "album": "Album",
+                    "status": "unprocessed",
+                }
+            ],
+        }
+        model = LibraryModel.from_payload(payload)
+        assert not model.albums[0].selected, "missing selected field defaulted to checked"
 
     audit.check(
         "SELECT-005",
