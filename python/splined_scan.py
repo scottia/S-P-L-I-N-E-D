@@ -141,12 +141,17 @@ def fallback_suggested(
     return min(candidates, key=key)
 
 
+def candidate_browser_url(candidate: core.Candidate) -> str:
+    """Return the successful remote resource without changing fetch identity."""
+    return str(candidate.ref.browser_url or candidate.ref.url).strip()
+
+
 def candidate_link(candidate: core.Candidate) -> str:
     if candidate.source in {"local", "webpstill", "embedded"}:
         return core.bracketed_text("LOCAL", core.green)
     if candidate.source == "enhanced":
         return core.bracketed_text("Enhanced", core.magenta)
-    return core.format_source_url(candidate.ref.url)
+    return core.format_source_url(candidate_browser_url(candidate))
 
 
 def candidate_provenance(candidate: core.Candidate) -> str:
@@ -220,7 +225,7 @@ def render_candidate_table(
                 "acceptable": projected["acceptable"],
                 "approved": candidate.ref.approved,
                 "id": str(candidate.ref.id),
-                "url": candidate.ref.url,
+                "url": candidate_browser_url(candidate),
                 "path": str(candidate.path),
                 "provenance": candidate_provenance(candidate),
                 "comparison": comparison,

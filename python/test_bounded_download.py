@@ -15,12 +15,14 @@ class FakeResponse:
         *,
         content_length: int | None = None,
         status_code: int = 200,
+        url: str = "",
     ) -> None:
         self.chunks = chunks
         self.headers = {}
         if content_length is not None:
             self.headers["Content-Length"] = str(content_length)
         self.status_code = status_code
+        self.url = url
         self.iterated = False
         self.closed = False
 
@@ -91,6 +93,34 @@ class BoundedArtworkDownloadTests(unittest.TestCase):
         )
         self.assertTrue(response.iterated)
         self.assertTrue(response.closed)
+        self.assertEqual(reference.browser_url, reference.url)
+
+    def test_redirected_response_url_is_retained_without_replacing_fetch_identity(self) -> None:
+        payload = b"synthetic-valid-image"
+        original = "https://example.invalid/discovery-thumbnail.png"
+        resolved = "https://cdn.example.invalid/artwork-3000.png"
+        response = FakeResponse(
+            [payload],
+            content_length=len(payload),
+            url=resolved,
+        )
+        http = FakeHttp(response)
+        reference = splined.Ref("itunes", "album-redirect", original)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(splined.Image, "open", return_value=FakeImage()):
+                candidates, diagnostics = splined.download_candidates(
+                    http,
+                    [reference],
+                    ["itunes"],
+                    Path(directory),
+                )
+
+        self.assertEqual(diagnostics, [])
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(reference.url, original)
+        self.assertEqual(reference.browser_url, resolved)
+        self.assertEqual(candidates[0].ref.browser_url, resolved)
 
     def test_exactly_25_mib_is_allowed(self) -> None:
         payload = b"x" * splined.MAX_DOWNLOAD_BYTES

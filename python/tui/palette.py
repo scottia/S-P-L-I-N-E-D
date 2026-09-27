@@ -16,6 +16,7 @@ OLED: Final[Mapping[str, RGB]] = MappingProxyType(
     {
         "background": (0, 0, 0),
         "panel": (0, 0, 0),
+        "unprocessed": (255, 255, 255),
         "text": (225, 230, 235),
         "muted": (145, 150, 165),
         "accepted": (60, 255, 135),
@@ -36,6 +37,7 @@ CHALK: Final[Mapping[str, RGB]] = MappingProxyType(
     {
         "background": (24, 25, 27),
         "panel": (34, 35, 38),
+        "unprocessed": (255, 255, 255),
         "text": (232, 228, 216),
         "muted": (165, 157, 145),
         "accepted": (144, 177, 137),

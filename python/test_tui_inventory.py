@@ -158,9 +158,29 @@ class DirectLazyInventoryTests(unittest.TestCase):
         )
         self.assertEqual(payload["albums"], [])
         self.assertTrue(all(not row["loaded"] for row in payload["artists"]))
+        self.assertTrue(
+            all(row["status"] == "unprocessed" for row in payload["artists"])
+        )
         self.assertFalse(
             any(event in {"cache_build_start", "cache_progress"} for event, _ in emitted)
         )
+
+    def test_initial_artist_status_uses_retained_history_before_probe(self) -> None:
+        history = {
+            "version": 1,
+            "albums": {
+                str(self.eden): {"outcome": "selected"},
+            },
+        }
+        (_result, emitted) = self._run(
+            [{"action": "launch", "scan_mode": "auto-selected", "selected": []}],
+            history=history,
+            bypassed={str(self.toys)},
+        )
+        payload = next(payload for event, payload in emitted if event == "library")
+        statuses = {row["name"]: row["status"] for row in payload["artists"]}
+        self.assertEqual(statuses["10,000 Maniacs"], "complete")
+        self.assertEqual(statuses["Aerosmith"], "contains-bypass")
 
     def test_open_artist_scans_only_that_artist_once(self) -> None:
         artist_path = str(self.root / "10,000 Maniacs")

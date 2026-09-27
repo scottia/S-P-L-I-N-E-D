@@ -287,8 +287,6 @@ class TuiState:
     dialog_kind: str = ""
     preview_cache: dict[tuple[str, int, int, int, int], ArtworkPreview | None] = field(default_factory=dict)
     preview_identity: dict[str, tuple[int, int]] = field(default_factory=dict)
-    url_modal_open: bool = False
-    url_value: str = ""
     preview_modal_open: bool = False
     preview_modal_index: int = 0
     transient: str = ""
@@ -1169,7 +1167,7 @@ SCAN_CONTROLS = (
 
 def _album_status_semantic(status: AlbumStatus) -> Semantic:
     return {
-        AlbumStatus.UNPROCESSED: Semantic.TEXT,
+        AlbumStatus.UNPROCESSED: Semantic.UNPROCESSED,
         AlbumStatus.PROCESSED: Semantic.FALLBACK,
         AlbumStatus.BYPASSED: Semantic.REJECTED,
         AlbumStatus.TIMEOUT: Semantic.HISTORY,
@@ -1180,7 +1178,7 @@ def _artist_status_semantic(status: ArtistStatus | None) -> Semantic:
     if status is None:
         return Semantic.MUTED
     return {
-        ArtistStatus.UNPROCESSED: Semantic.TEXT,
+        ArtistStatus.UNPROCESSED: Semantic.UNPROCESSED,
         ArtistStatus.PARTIAL: Semantic.HISTORY,
         ArtistStatus.COMPLETE: Semantic.ACCEPTED,
         ArtistStatus.CONTAINS_BYPASS: Semantic.DEBUG,
@@ -1208,7 +1206,7 @@ def _control_lines(
 
 def _status_control_semantic(index: int) -> Semantic:
     return (
-        Semantic.TEXT,
+        Semantic.UNPROCESSED,
         Semantic.FALLBACK,
         Semantic.REJECTED,
         Semantic.HISTORY,
@@ -2180,10 +2178,12 @@ def _render_candidate_thumbnail(
         return
     spans = [
         Span(
-            "▀",
-            Style().fg(Color.rgb(*top)).bg(Color.rgb(*bottom)),
+            cell.glyph,
+            Style()
+            .fg(Color.rgb(*cell.foreground))
+            .bg(Color.rgb(*cell.background)),
         )
-        for top, bottom in preview.rows[0][:width]
+        for cell in preview.rows[0][:width]
     ]
     frame.render_widget(
         Paragraph(Text([Line(spans)])),
@@ -2374,10 +2374,12 @@ def _render_candidate_preview(
         Line(
             [
                 Span(
-                    "▀",
-                    Style().fg(Color.rgb(*top)).bg(Color.rgb(*bottom)),
+                    cell.glyph,
+                    Style()
+                    .fg(Color.rgb(*cell.foreground))
+                    .bg(Color.rgb(*cell.background)),
                 )
-                for top, bottom in row
+                for cell in row
             ]
         )
         for row in preview.rows[: max(0, int(area.height) - 2)]
@@ -2964,7 +2966,7 @@ def _render_help(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
         "M              MusicBrainz retry/search/pick\n"
         "B              confirm bypass\n"
         "0-9            exact candidate selection\n"
-        "U              open highlighted terminal-client [URL]\n"
+        "U              identify highlighted [URL] (browser navigation is terminal-owned)\n"
         "AI ENHANCED    one candidate per album when real runtime is available\n"
         "?              close this help\n"
         "Ctrl+C         stop and restore terminal"
@@ -3026,37 +3028,6 @@ def _render_dialog(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
             max(1, int(popup.width) - half - 1),
             1,
         ),
-    )
-
-
-def _render_url_modal(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
-    width = min(max(48, int(area.width) - 12), 100)
-    height = min(max(8, int(area.height) - 8), 14)
-    popup = Rect(
-        int(area.x) + max(0, (int(area.width) - width) // 2),
-        int(area.y) + max(0, (int(area.height) - height) // 2),
-        width,
-        height,
-    )
-    text = Text(
-        [
-            Line([Span("[OPEN IN DEFAULT BROWSER]", style(theme, Semantic.DEBUG, bold=True).underlined())]).centered(),
-            Line([Span(state.url_value, style(theme, Semantic.TEXT))]),
-            Line([Span("Client-owned link · tap to use the default browser · Esc closes", style(theme, Semantic.MUTED))]).centered(),
-        ]
-    )
-    frame.render_widget(Clear(), popup)
-    frame.render_widget(
-        Paragraph(text).wrap(True, False).block(card(theme, "CANDIDATE URL", Semantic.DEBUG)),
-        popup,
-    )
-    label = "[OPEN IN DEFAULT BROWSER]"
-    label_x = int(popup.x) + max(1, (width - len(label)) // 2)
-    _register_hit(
-        state,
-        "url-open",
-        Rect(label_x, int(popup.y) + 1, len(label), 1),
-        value=state.url_value,
     )
 
 
@@ -3164,8 +3135,6 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_help(frame, area, state, theme)
     if state.dialog_open:
         _render_dialog(frame, area, state, theme)
-    if state.url_modal_open:
-        _render_url_modal(frame, area, state, theme)
     if state.preview_modal_open:
         _render_candidate_preview_modal(frame, area, state, theme)
 
@@ -3693,23 +3662,13 @@ def close_candidate_preview(state: TuiState) -> None:
     state.transient = "Returned from cached candidate preview."
 
 
-def _open_candidate_url(state: TuiState, candidate_index: int) -> None:
+def _focus_candidate_url(state: TuiState, candidate_index: int) -> None:
     if not 0 <= candidate_index < len(state.candidates):
         return
     state.selected_index = candidate_index
     candidate = state.candidates[candidate_index]
-    if candidate.provenance == "[URL]" and candidate.url:
-        state.url_value = candidate.url
-        state.url_modal_open = True
-        state.transient = "Candidate URL ready · tap the link to open with your default browser."
-    else:
+    if candidate.provenance != "[URL]" or not candidate.url:
         state.transient = "The highlighted candidate has no remote URL."
-
-
-def close_candidate_url(state: TuiState) -> None:
-    state.url_modal_open = False
-    state.url_value = ""
-    state.transient = "Returned from candidate URL."
 
 
 def osc8_link(label: str, url: str) -> str:
@@ -3720,26 +3679,19 @@ def osc8_link(label: str, url: str) -> str:
 
 
 def write_terminal_links(state: TuiState, writer: Any) -> None:
-    """Attach OSC-8 only to the URL modal's browser-owned link.
-
-    Candidate-table [URL] cells remain ordinary Ratatui text so terminal
-    clients cannot add their own underline/link decoration there. Clicking the
-    cell still opens the modal through SPLINED's mouse/touch hit region.
-    """
-    if not state.url_modal_open:
-        return
+    """Attach terminal-owned OSC-8 metadata only to visible ``[URL]`` cells."""
     targets = [
         region
         for region in state.hit_regions
-        if region.target == "url-open" and region.value
+        if region.target == "candidate-url" and region.value
     ]
     if not targets:
         return
     writer.write("\x1b7")
     for region in targets:
         writer.write(
-            f"\x1b[{region.y + 1};{region.x + 1}H\x1b[4m"
-            f"{osc8_link('[OPEN IN DEFAULT BROWSER]', region.value)}\x1b[0m"
+            f"\x1b[{region.y + 1};{region.x + 1}H"
+            f"{osc8_link('[URL]', region.value)}"
         )
     writer.write("\x1b8")
     writer.flush()
@@ -4011,7 +3963,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target in {"candidate-row", "preferred-candidate"}:
         state.selected_index = region.index
     elif region.target == "candidate-url":
-        _open_candidate_url(state, region.index)
+        _focus_candidate_url(state, region.index)
     elif region.target == "candidate-thumb":
         _open_candidate_preview(state, region.index)
     elif region.target == "preview-modal-close":
@@ -4030,10 +3982,6 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if state.preview_modal_open:
         if str(event.code).lower() in {"esc", "escape", "enter", "return", "space", " "}:
             close_candidate_preview(state)
-        return
-    if state.url_modal_open:
-        if str(event.code).lower() in {"esc", "escape", "enter", "return", "u"}:
-            close_candidate_url(state)
         return
     if state.dialog_open:
         decision = confirm_key(code)
@@ -4156,7 +4104,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.dialog_open = True
         return
     if action is Action.URL and state.candidates:
-        _open_candidate_url(state, state.selected_index)
+        _focus_candidate_url(state, state.selected_index)
         return
     if action is Action.TOGGLE and state.ai_enabled and state.ai_selection and state.candidates:
         _toggle_candidate_ai(state, state.selected_index)
@@ -4178,21 +4126,6 @@ def _drain(adapter: TuiAdapter, state: TuiState) -> bool:
             return changed
         state.apply(event, payload)
         changed = True
-
-
-def sync_url_mouse_capture(
-    state: TuiState,
-    input_reader: Any,
-    suspended: bool,
-) -> bool:
-    """Release capture for terminal-owned OSC-8 activation, then restore it."""
-    if state.url_modal_open and not suspended:
-        input_reader.disable_mouse_capture()
-        return True
-    if not state.url_modal_open and suspended:
-        input_reader.enable_mouse_capture()
-        return False
-    return suspended
 
 
 def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
@@ -4237,12 +4170,8 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                 thread.start()
                 dirty = True
                 last_animation_step = -1
-                mouse_suspended = False
                 while not state.exit_requested and not terminated:
                     dirty = _drain(adapter, state) or dirty
-                    mouse_suspended = sync_url_mouse_capture(
-                        state, input_reader, mouse_suspended
-                    )
                     current_animation_step = (
                         animation_step(time.monotonic() - state.started_at)
                         if state.workflow == "startup"

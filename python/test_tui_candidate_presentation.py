@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import time
 import unittest
@@ -9,6 +11,8 @@ from unittest import mock
 from PIL import Image
 from pyratatui import Rect
 
+import splined
+import splined_scan
 from tui.aispline import AiCandidate, EnhancementSelection
 from tui.layout import candidate_column_layout
 from tui.preview import generate_preview
@@ -145,7 +149,7 @@ class CandidateGridTests(unittest.TestCase):
 
 
 class ArtworkPreviewTests(unittest.TestCase):
-    def test_preview_uses_existing_artwork_and_half_block_rows(self) -> None:
+    def test_preview_uses_existing_artwork_and_quadrant_cells(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "cover.png"
             Image.new("RGB", (20, 20), (12, 34, 56)).save(path)
@@ -153,7 +157,22 @@ class ArtworkPreviewTests(unittest.TestCase):
         self.assertIsNotNone(preview)
         assert preview is not None
         self.assertEqual((preview.width, preview.height), (8, 4))
-        self.assertEqual(preview.rows[0][0], ((12, 34, 56), (12, 34, 56)))
+        self.assertEqual(preview.rows[0][0].foreground, (12, 34, 56))
+        self.assertEqual(preview.rows[0][0].background, (12, 34, 56))
+
+    def test_preview_retains_two_horizontal_samples_per_terminal_cell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "split.png"
+            image = Image.new("RGB", (2, 4), "white")
+            for y in range(4):
+                image.putpixel((0, y), (0, 0, 0))
+            image.save(path)
+            preview = generate_preview(path, width=1, height=1)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        cell = preview.rows[0][0]
+        self.assertEqual(cell.glyph, "▌")
+        self.assertEqual({cell.foreground, cell.background}, {(0, 0, 0), (255, 255, 255)})
 
     def test_preview_is_cached_and_corrupt_art_is_nonfatal(self) -> None:
         state = TuiState()
@@ -176,8 +195,9 @@ class ArtworkPreviewTests(unittest.TestCase):
         self.assertIsNotNone(preview)
         assert preview is not None
         self.assertEqual((preview.width, preview.height), (20, 10))
-        self.assertEqual(preview.rows[0][0], ((0, 0, 0), (0, 0, 0)))
-        self.assertNotEqual(preview.rows[5][10], ((0, 0, 0), (0, 0, 0)))
+        self.assertEqual(preview.rows[0][0].background, (0, 0, 0))
+        center = preview.rows[5][10]
+        self.assertIn((200, 10, 20), {center.foreground, center.background})
 
     def test_wide_renders_previews_and_compact_omits_them(self) -> None:
         state = TuiState(started_at=time.monotonic() - 10, workflow="candidates")
@@ -193,6 +213,51 @@ class ArtworkPreviewTests(unittest.TestCase):
             frame = Frame(78, 40)
             _render_candidates(frame, frame.area, state, select_theme("OLED"))
             rendered.assert_not_called()
+
+
+class BrowserUrlProjectionTests(unittest.TestCase):
+    def test_candidate_payload_prefers_resolved_url_and_falls_back_to_fetch_url(self) -> None:
+        resolved = splined.Ref(
+            "itunes",
+            "resolved",
+            "https://example.test/discovery-thumbnail.jpg",
+            browser_url="https://cdn.example.test/resolved-3000.jpg",
+        )
+        fallback = splined.Ref(
+            "itunes",
+            "fallback",
+            "https://example.test/original-3000.jpg",
+        )
+        candidates = [
+            splined.Candidate(resolved, Path("resolved.jpg"), 3000, 3000, "jpeg", 0),
+            splined.Candidate(fallback, Path("fallback.jpg"), 3000, 3000, "jpeg", 0),
+        ]
+        projected = {
+            "range_type": "AboveLadder",
+            "distance": 1200,
+            "square": True,
+            "acceptable": True,
+        }
+        with (
+            mock.patch.object(splined_scan, "project_candidate", return_value=projected),
+            mock.patch.object(splined_scan.core, "emit_ui") as emitted,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            splined_scan.render_candidate_table(candidates, {}, ["jpeg"])
+
+        items = emitted.call_args.kwargs["items"]
+        self.assertEqual(items[0]["url"], resolved.browser_url)
+        self.assertEqual(items[1]["url"], fallback.url)
+        self.assertEqual(resolved.url, "https://example.test/discovery-thumbnail.jpg")
+
+    def test_itunes_artwork_url_retains_high_resolution_suffix(self) -> None:
+        thumbnail = (
+            "https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/aa/bb/cc/"
+            "100x100bb.jpg"
+        )
+        high_resolution = splined.itunes_artwork_url(thumbnail, 3000)
+        self.assertIn("/3000x3000bb.jpg", high_resolution)
+        self.assertNotIn("/100x100bb.jpg", high_resolution)
 
 
 if __name__ == "__main__":

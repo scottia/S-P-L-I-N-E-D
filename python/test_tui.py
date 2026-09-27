@@ -42,6 +42,7 @@ class ThemeTests(unittest.TestCase):
     def test_oled_semantic_mapping_reuses_engine_identity(self):
         self.assertEqual(OLED["background"], (0, 0, 0))
         self.assertEqual(OLED["panel"], (0, 0, 0))
+        self.assertEqual(OLED["unprocessed"], (255, 255, 255))
         self.assertEqual(OLED["accepted"], (60, 255, 135))
         self.assertEqual(OLED["active"], (55, 225, 255))
         self.assertEqual(OLED["fallback"], (255, 145, 35))

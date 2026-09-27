@@ -6,6 +6,7 @@ from enum import Enum
 
 
 class Semantic(str, Enum):
+    UNPROCESSED = "unprocessed"
     ACCEPTED = "accepted"
     ACTIVE = "active"
     FALLBACK = "fallback"

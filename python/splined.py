@@ -4205,6 +4205,10 @@ def download_candidates(
     for ref in eligible_refs:
         candidate, error = downloaded[(ref.source, ref.url.strip())]
         if candidate is not None:
+            # Duplicate discovery references retain their own identity/ranking
+            # metadata but share the final URL proven by the successful fetch.
+            if not ref.browser_url:
+                ref.browser_url = candidate.ref.browser_url or ref.url
             out.append(
                 Candidate(
                     ref,

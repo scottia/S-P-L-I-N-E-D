@@ -26,11 +26,9 @@ from tui.splined_tui import (
     handle_key,
     handle_mouse,
     hit_test,
-    close_candidate_url,
     osc8_link,
     render,
     run_tui,
-    sync_url_mouse_capture,
     write_terminal_links,
 )
 from tui.theme import select_theme
@@ -214,7 +212,7 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
         self.assertEqual(
             [_status_control_semantic(index) for index in range(6)],
             [
-                Semantic.TEXT,
+                Semantic.UNPROCESSED,
                 Semantic.FALLBACK,
                 Semantic.REJECTED,
                 Semantic.HISTORY,
@@ -751,7 +749,7 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         state.ai_selection = selection
         return state
 
-    def test_candidate_url_and_ai_controls_use_same_state_actions(self) -> None:
+    def test_candidate_url_is_a_direct_terminal_link_and_ai_controls_stay_direct(self) -> None:
         state = self._candidate_state()
         adapter = TuiAdapter()
         render(_Frame(160, 44), state, select_theme("OLED"))
@@ -760,38 +758,17 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         self.assertEqual(state.selected_index, candidate.index)
 
         url = _region(state, "candidate-url")
-        with mock.patch("webbrowser.open", side_effect=AssertionError("server browser")):
-            handle_mouse(state, adapter, _center(url))
-        self.assertTrue(state.url_modal_open)
-        self.assertEqual(state.url_value, url.value)
-
-        render(_Frame(160, 44), state, select_theme("OLED"))
         stream = io.StringIO()
         write_terminal_links(state, stream)
         encoded = stream.getvalue()
-        self.assertIn("[OPEN IN DEFAULT BROWSER]", encoded)
-        self.assertIn(osc8_link("[OPEN IN DEFAULT BROWSER]", url.value), encoded)
-        self.assertIn(url.value, encoded)
+        self.assertIn(osc8_link("[URL]", url.value), encoded)
+        self.assertNotIn("OPEN IN DEFAULT BROWSER", encoded)
+        self.assertNotIn("\x1b[4m", encoded)
 
-        class Capture:
-            def __init__(self):
-                self.disabled = 0
-                self.enabled = 0
-
-            def disable_mouse_capture(self):
-                self.disabled += 1
-
-            def enable_mouse_capture(self):
-                self.enabled += 1
-
-        capture = Capture()
-        suspended = sync_url_mouse_capture(state, capture, False)
-        self.assertTrue(suspended)
-        self.assertEqual(capture.disabled, 1)
-        close_candidate_url(state)
-        suspended = sync_url_mouse_capture(state, capture, suspended)
-        self.assertFalse(suspended)
-        self.assertEqual(capture.enabled, 1)
+        with mock.patch("webbrowser.open", side_effect=AssertionError("server browser")):
+            handle_mouse(state, adapter, _center(url))
+        self.assertEqual(state.selected_index, url.index)
+        self.assertFalse(state.dialog_open)
 
         render(_Frame(160, 44), state, select_theme("OLED"))
         ai = _region(state, "candidate-ai", 0)
