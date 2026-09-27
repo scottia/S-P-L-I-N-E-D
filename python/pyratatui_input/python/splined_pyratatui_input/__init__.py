@@ -4,8 +4,9 @@ from ._native import (
     EventReader,
     InputEvent,
     __version__,
+    ImageOverlay,
     emergency_restore,
-    render_image_cells,
+    prepare_image_overlay,
 )
 
 # MouseEvent is the public compatibility name requested by the TUI contract.
@@ -17,7 +18,8 @@ __all__ = [
     "EventReader",
     "InputEvent",
     "MouseEvent",
+    "ImageOverlay",
     "emergency_restore",
-    "render_image_cells",
+    "prepare_image_overlay",
     "__version__",
 ]
