@@ -2307,23 +2307,6 @@ def _register_candidate_hits(
                 index=candidate_index,
                 value=candidate.url,
             )
-        if (
-            candidate.provenance == "[URL]"
-            and candidate.path
-            and grid.width("url") >= 8
-        ):
-            _register_hit(
-                state,
-                "candidate-thumb",
-                Rect(
-                    url_x + 6,
-                    int(row_area.y),
-                    min(3, max(1, grid.width("url") - 6)),
-                    1,
-                ),
-                index=candidate_index,
-                value=candidate.path,
-            )
 
 
 def _render_candidate_table_group(
@@ -2375,18 +2358,8 @@ def _render_candidate_table_group(
             grid,
             preferred=preferred,
         )
-        _render_candidate_thumbnail(
-            frame,
-            Rect(
-                int(area.x),
-                int(area.y) + 2 + row,
-                int(area.width),
-                1,
-            ),
-            state,
-            candidate,
-            grid,
-        )
+        # Remote artwork preview is driven by hovering the [URL] cell.  Do not
+        # render or persist a separate cached-thumbnail affordance here.
 
 
 def _candidate_preview(
@@ -2418,6 +2391,154 @@ def _candidate_preview(
     return state.preview_cache[key]
 
 
+def _ratatui_remote_preview(
+    data: bytes,
+    *,
+    width: int,
+    height: int,
+) -> ArtworkPreview:
+    if native_render_image_cells is None:
+        raise RuntimeError("ratatui-image renderer is unavailable")
+    rendered_width, rendered_height, cells = native_render_image_cells(
+        data,
+        max(1, int(width)),
+        max(1, int(height)),
+        1000,
+    )
+    rows: list[tuple[PreviewCell, ...]] = []
+    offset = 0
+    for _row in range(int(rendered_height)):
+        values: list[PreviewCell] = []
+        for _column in range(int(rendered_width)):
+            symbol, foreground, background = cells[offset]
+            offset += 1
+            values.append(
+                PreviewCell(
+                    str(symbol),
+                    tuple(int(value) for value in foreground),
+                    tuple(int(value) for value in background),
+                )
+            )
+        rows.append(tuple(values))
+    return ArtworkPreview(tuple(rows))
+
+
+def _start_remote_hover_preview(
+    state: TuiState,
+    adapter: TuiAdapter,
+    candidate_index: int,
+) -> None:
+    if not 0 <= candidate_index < len(state.candidates):
+        return
+    candidate = state.candidates[candidate_index]
+    if candidate.provenance != "[URL]" or not candidate.url:
+        return
+
+    state.remote_hover_token += 1
+    token = state.remote_hover_token
+    state.remote_hover_index = candidate_index
+    state.remote_hover_url = candidate.url
+    state.remote_hover_preview = None
+    state.remote_hover_loading = True
+    state.remote_hover_error = ""
+    width = max(1, state.remote_preview_width)
+    height = max(1, state.remote_preview_height)
+    url = candidate.url
+
+    def worker() -> None:
+        error = ""
+        preview: ArtworkPreview | None = None
+        try:
+            with requests.get(
+                url,
+                stream=True,
+                allow_redirects=True,
+                timeout=(3.05, 12.0),
+                headers={"User-Agent": "SPLINED/1.0.9 remote-preview"},
+            ) as response:
+                response.raise_for_status()
+                content_type = str(response.headers.get("Content-Type", "")).lower()
+                if content_type and "image/" not in content_type:
+                    raise RuntimeError(
+                        f"URL returned {content_type or 'non-image content'}"
+                    )
+                length = response.headers.get("Content-Length")
+                if length is not None and int(length) > 25 * 1024 * 1024:
+                    raise RuntimeError("remote preview exceeds 25 MiB limit")
+                body = bytearray()
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    body.extend(chunk)
+                    if len(body) > 25 * 1024 * 1024:
+                        raise RuntimeError("remote preview exceeds 25 MiB limit")
+            preview = _ratatui_remote_preview(
+                bytes(body),
+                width=width,
+                height=height,
+            )
+        except Exception as exc:
+            error = str(exc)
+
+        adapter.emit(
+            "remote_hover_preview",
+            {
+                "token": token,
+                "index": candidate_index,
+                "url": url,
+                "preview": preview,
+                "error": error,
+            },
+        )
+
+    threading.Thread(
+        target=worker,
+        name="splined-url-hover-preview",
+        daemon=True,
+    ).start()
+
+
+def _clear_remote_hover_preview(state: TuiState) -> None:
+    if state.remote_hover_index < 0 and not state.remote_hover_loading:
+        return
+    state.remote_hover_token += 1
+    state.remote_hover_index = -1
+    state.remote_hover_url = ""
+    state.remote_hover_preview = None
+    state.remote_hover_loading = False
+    state.remote_hover_error = ""
+
+
+def _render_prepared_preview(
+    frame: Any,
+    area: Rect,
+    preview: ArtworkPreview,
+    theme: Theme,
+    *,
+    title: str,
+) -> None:
+    lines = [
+        Line(
+            [
+                Span(
+                    cell.glyph,
+                    Style()
+                    .fg(Color.rgb(*cell.foreground))
+                    .bg(Color.rgb(*cell.background)),
+                )
+                for cell in row[: max(0, int(area.width) - 2)]
+            ]
+        )
+        for row in preview.rows[: max(0, int(area.height) - 2)]
+    ]
+    frame.render_widget(
+        Paragraph(Text(lines))
+        .centered()
+        .block(card(theme, title, Semantic.ACTIVE)),
+        area,
+    )
+
+
 def _render_candidate_preview(
     frame: Any,
     area: Rect,
@@ -2443,23 +2564,12 @@ def _render_candidate_preview(
             area,
         )
         return
-    lines = [
-        Line(
-            [
-                Span(
-                    cell.glyph,
-                    Style()
-                    .fg(Color.rgb(*cell.foreground))
-                    .bg(Color.rgb(*cell.background)),
-                )
-                for cell in row
-            ]
-        )
-        for row in preview.rows[: max(0, int(area.height) - 2)]
-    ]
-    frame.render_widget(
-        Paragraph(Text(lines)).centered().block(card(theme, "ARTWORK", Semantic.ACTIVE)),
+    _render_prepared_preview(
+        frame,
         area,
+        preview,
+        theme,
+        title="ARTWORK",
     )
 
 
@@ -2727,8 +2837,39 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         frame.render_widget(Paragraph.from_string("No candidates returned.").block(card(theme, "SOURCE CANDIDATES", Semantic.WARNING)), groups_area)
     _render_activity_region(frame, activity_area, state, theme)
     if preview_area is not None and state.candidates:
-        selected = state.candidates[max(0, min(state.selected_index, len(state.candidates) - 1))]
-        _render_candidate_preview(frame, preview_area, state, theme, selected)
+        state.remote_preview_width = max(1, int(preview_area.width) - 2)
+        state.remote_preview_height = max(1, int(preview_area.height) - 2)
+        if state.remote_hover_index >= 0:
+            if state.remote_hover_preview is not None:
+                _render_prepared_preview(
+                    frame,
+                    preview_area,
+                    state.remote_hover_preview,
+                    theme,
+                    title="LIVE URL PREVIEW · RATATUI-IMAGE",
+                )
+            elif state.remote_hover_loading:
+                frame.render_widget(
+                    Paragraph.from_string("Loading image directly from source URL…")
+                    .centered()
+                    .block(card(theme, "LIVE URL PREVIEW", Semantic.ACTIVE)),
+                    preview_area,
+                )
+            else:
+                message = state.remote_hover_error or "Remote preview unavailable."
+                frame.render_widget(
+                    Paragraph.from_string(
+                        _truncate(message, max(1, int(preview_area.width) - 4))
+                    )
+                    .centered()
+                    .block(card(theme, "LIVE URL PREVIEW", Semantic.WARNING)),
+                    preview_area,
+                )
+        else:
+            selected = state.candidates[
+                max(0, min(state.selected_index, len(state.candidates) - 1))
+            ]
+            _render_candidate_preview(frame, preview_area, state, theme, selected)
 
 
 POLICY_FIELDS = (
@@ -3939,6 +4080,21 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     code = str(getattr(event, "code", "")).lower()
     column = int(getattr(event, "column", -1))
     row = int(getattr(event, "row", -1))
+    if code == "moved":
+        region = hit_test(state, column, row)
+        if (
+            region is not None
+            and region.target == "candidate-url"
+            and region.value
+        ):
+            if (
+                state.remote_hover_index != region.index
+                or state.remote_hover_url != region.value
+            ):
+                _start_remote_hover_preview(state, adapter, region.index)
+        else:
+            _clear_remote_hover_preview(state)
+        return
     if code in {"scroll_up", "scroll_down"}:
         region = _scroll_hit_test(state, column, row)
         target = repr(region.target) if region is not None else "'none'"
@@ -4117,8 +4273,6 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.selected_index = region.index
     elif region.target == "candidate-url":
         _focus_candidate_url(state, region.index)
-    elif region.target == "candidate-thumb":
-        _open_candidate_preview(state, region.index)
     elif region.target == "preview-modal-close":
         close_candidate_preview(state)
     elif region.target == "candidate-ai":
