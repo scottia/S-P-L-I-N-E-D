@@ -3277,19 +3277,46 @@ def _request_bulk_selection(
         f"{_library_snapshot(state)}"
     )
     if not filtered:
-        state.transient = "Reading Album folders for Select [ALL]…"
-        _respond_library_action(state, adapter, "select-all")
+        active = model.artist(model.active_artist) if model.active_artist else None
+        if active is None:
+            visible = model.visible_artists()
+            active = visible[0] if visible else None
+        if active is None:
+            state.transient = "Select [ALL] requires an Artist."
+            return
+        state.transient = (
+            f"Selecting all Unprocessed Albums for {active.name}…"
+        )
+        _respond_library_action(
+            state,
+            adapter,
+            "select-all",
+            artist_path=active.path,
+        )
         return
 
-    visible_artists = model.visible_artists()
-    state.transient = "Reading matching Artist folders for Select [FILTERED]…"
+    artist_filter = model.artist_filter.strip()
+    album_filter = model.album_filter.strip()
+    if not artist_filter and not album_filter:
+        state.transient = (
+            "Select [FILTERED] requires Artist or Album filter text."
+        )
+        return
+
+    artist_paths = [
+        artist.path
+        for artist in model.artists
+        if not artist_filter
+        or artist_filter.casefold() in artist.name.casefold()
+    ]
+    state.transient = "Selecting Unprocessed Albums matching text filter…"
     _respond_library_action(
         state,
         adapter,
         "select-filtered",
-        artist_paths=[artist.path for artist in visible_artists],
-        album_filter=model.album_filter,
-        status_filters=sorted(status.value for status in model.status_filters),
+        artist_paths=artist_paths,
+        artist_filter=artist_filter,
+        album_filter=album_filter,
     )
 
 
