@@ -12,12 +12,16 @@ from pyratatui import Rect
 from tui.aispline import AiCandidate, EnhancementSelection
 from tui.keys import Action, map_key
 from tui.library import AlbumStatus, ArtistStatus
+from tui.semantic import Semantic
 from tui.splined_tui import (
+    AlbumRunReport,
     CandidateView,
     HitRegion,
     InputRequest,
+    STATUS_CONTROLS,
     TuiAdapter,
     TuiState,
+    _status_control_semantic,
     handle_key,
     handle_mouse,
     hit_test,
@@ -147,6 +151,76 @@ class RenderHitMapTests(unittest.TestCase):
         hit = hit_test(state, checkbox.x, checkbox.y)
         self.assertIsNotNone(hit)
         self.assertEqual(hit.target, "artist-checkbox")
+
+
+class ReportAndStatusAuthorityTests(unittest.TestCase):
+    def test_final_album_result_is_not_overwritten_by_late_error_log(self) -> None:
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.active_report = AlbumRunReport(
+            1,
+            1,
+            "'Til Tuesday",
+            "Voices Carry",
+            "/music/'Til Tuesday/Voices Carry",
+            time.monotonic() - 1,
+        )
+        state.apply(
+            "album_material_result",
+            {
+                "outcome": "Unchanged",
+                "file_action": "Unchanged",
+                "destination": "/music/'Til Tuesday/Voices Carry/cover.jpg",
+                "source": "Local",
+                "width": 1800,
+                "height": 1800,
+                "format": "jpeg",
+                "range_type": "Ideal",
+                "distance": 0,
+            },
+        )
+        state.apply(
+            "log",
+            {"level": "ERROR", "message": "late non-album diagnostic"},
+        )
+        self.assertEqual(state.active_report.outcome, "Unchanged")
+        self.assertEqual(state.active_report.file_action, "Unchanged")
+
+    def test_error_log_still_fails_an_unfinished_album(self) -> None:
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.active_report = AlbumRunReport(
+            1,
+            1,
+            "Artist",
+            "Album",
+            "/music/Artist/Album",
+            time.monotonic() - 1,
+        )
+        state.apply("log", {"level": "ERROR", "message": "processing failed"})
+        self.assertEqual(state.active_report.outcome, "Failed")
+
+    def test_folder_status_order_and_semantics_match_windows(self) -> None:
+        self.assertEqual(
+            [label for label, _status in STATUS_CONTROLS],
+            [
+                "Unprocessed",
+                "Processed",
+                "Bypassed",
+                "Partial / Timeout",
+                "Artist Complete",
+                "Artist Contains Bypass",
+            ],
+        )
+        self.assertEqual(
+            [_status_control_semantic(index) for index in range(6)],
+            [
+                Semantic.TEXT,
+                Semantic.FALLBACK,
+                Semantic.REJECTED,
+                Semantic.HISTORY,
+                Semantic.ACCEPTED,
+                Semantic.DEBUG,
+            ],
+        )
 
 
 class LibraryMouseAndFilterTests(unittest.TestCase):
