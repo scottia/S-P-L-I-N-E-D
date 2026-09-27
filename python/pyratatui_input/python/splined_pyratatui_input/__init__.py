@@ -5,6 +5,7 @@ from ._native import (
     InputEvent,
     __version__,
     ImageOverlay,
+    clear_image_area,
     emergency_restore,
     prepare_image_overlay,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "InputEvent",
     "MouseEvent",
     "ImageOverlay",
+    "clear_image_area",
     "emergency_restore",
     "prepare_image_overlay",
     "__version__",
