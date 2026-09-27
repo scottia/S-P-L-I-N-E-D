@@ -128,11 +128,13 @@ picker-cache validation is required to render Select Media. The configured
 cache directory remains available to SPLINED for candidate/sample data, but it
 is not an authority or prerequisite for the Artist folder list.
 
-Before first Select Media paint, a lightweight folder-status readiness pass
-traverses folder/file names plus retained history to resolve initial Artist
-colors, including local-artwork-only Processed Albums. The readiness pass does
-not add Albums to the resident picker model; opening an Artist remains the
-authoritative topology load.
+Select Media paints immediately, then a centered blocking **LOADING ARTIST
+STATUS** banner reports the lightweight folder-status readiness pass. The
+banner shows real Artist progress and prevents selection/scan interaction until
+status loading finishes; Ctrl+C remains available. The readiness pass inspects
+folder/file names plus retained history, including local-artwork-only Processed
+Albums, without adding Albums to the resident picker model. Opening an Artist
+remains the authoritative topology load.
 
 Album topology is loaded lazily:
 
@@ -147,11 +149,13 @@ retain the result in the resident TUI session
 ```
 
 A whole-library Album traversal occurs only after an explicit operation that
-requires whole-library knowledge, such as **Select [ALL]** or **Auto Scan
-[ALL]**. **Select [FILTERED]** reads only the root Artist rows included by the
-current Artist filter before applying the Album/status filter. **R** refreshes
-the immediate Artist folder list only; it does not recursively rebuild Album
-topology.
+requires whole-library knowledge, such as **Select [FILTERED]** with a broad
+text filter or **Auto Scan [ALL]**. **Select [ALL]** is scoped to the currently
+active Artist and selects only its White/Unprocessed Albums. **Select
+[FILTERED]** applies Artist and/or Album text filters library-wide and selects
+matching White/Unprocessed plus Orange/Processed Albums; Red/Bypassed and
+Purple/Timeout Albums remain protected. **R** refreshes the immediate Artist
+folder list only; it does not recursively rebuild Album topology.
 
 After a processing batch, Enter/Esc returns to the same resident Artist/Album
 model. Already loaded Artist folders are not reread, and the library root is
@@ -632,3 +636,14 @@ AISPLINE may also use its own JSON/runtime settings for detailed model/backend
 preferences where that proves cleaner. Such AISPLINE-specific settings may be
 made accessible through the TUI, but a final JSON schema is not locked by this
 document.
+
+
+### Live URL hover artwork preview
+
+Candidate `[URL]` cells retain their terminal-client browser hyperlink. While
+the pointer is over a `[URL]` cell, SPLINED fetches that exact remote URL in
+memory and renders the response in the right-side Artwork pane using
+`ratatui-image` with Chafa-backed terminal cells. The hover fetch is bounded,
+uses no `/_cache` or sample file, writes nothing to disk, and is discarded
+when the pointer leaves the URL cell. Source images are constrained to a
+1000×1000 maximum decode/render working size for the hover surface.
