@@ -2193,6 +2193,8 @@ def prepare_tui_library_selection(
                 emit_library(event)
                 continue
             load_artist(artist_path)
+            selected_paths.clear()
+            overrides.clear()
             added = 0
             for row in model_payload()[1]:
                 if (
@@ -2233,6 +2235,8 @@ def prepare_tui_library_selection(
                 emit_library(event)
                 continue
             load_artists(requested, source="select-filtered")
+            selected_paths.clear()
+            overrides.clear()
             requested_set = set(requested)
             added = 0
             for row in model_payload()[1]:
