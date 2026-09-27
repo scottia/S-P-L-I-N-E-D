@@ -1794,51 +1794,66 @@ def prepare_tui_library_selection(
 
         def worker() -> None:
             started_probe = time.perf_counter()
-            debug_log("picker.status_probe.start")
-            try:
+            with session.lock:
+                artist_paths = [item.path for item in session.artists]
+            debug_log(
+                f"picker.status_probe.start artists={len(artist_paths)} "
+                f"workers={min(INVENTORY_WORKERS, len(artist_paths)) if artist_paths else 0}"
+            )
+
+            def probe_one(artist_path: str) -> tuple[str, str, int]:
                 albums, _probe_ignored = inventory(
-                    index_root,
+                    Path(artist_path),
                     ignored,
                     str(output.get("file_name", "cover")),
                     fingerprint_paths=fingerprint_paths,
+                    workers=1,
                 )
-                grouped: dict[str, list[str]] = {}
-                for album in albums:
-                    try:
-                        relative = album.path.relative_to(index_root)
-                    except ValueError:
-                        continue
-                    if not relative.parts:
-                        continue
-                    artist_path = str(index_root / relative.parts[0])
-                    grouped.setdefault(artist_path, []).append(
-                        classify_album_state(album)
-                    )
+                statuses = [classify_album_state(album) for album in albums]
+                return artist_path, aggregate_artist_states(statuses), len(albums)
+
+            completed = 0
+            album_total = 0
+            try:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max(
+                        1,
+                        min(INVENTORY_WORKERS, len(artist_paths)),
+                    ),
+                    thread_name_prefix="splined-folder-status",
+                ) as executor:
+                    futures = [
+                        executor.submit(probe_one, artist_path)
+                        for artist_path in artist_paths
+                    ]
+                    for future in concurrent.futures.as_completed(futures):
+                        if not session.select_media_active:
+                            return
+                        artist_path, aggregate, album_count = future.result()
+                        album_total += album_count
+                        completed += 1
+                        with session.lock:
+                            session.probed_artist_statuses[artist_path] = aggregate
+
+                        # Publish progressive state without flooding the event
+                        # queue. The final result is always emitted.
+                        if completed % 16 == 0 or completed == len(artist_paths):
+                            debug_log(
+                                "picker.status_probe.progress "
+                                f"artists={completed}/{len(artist_paths)} "
+                                f"albums={album_total}"
+                            )
+                            if session.select_media_active:
+                                emit_library("library_update")
 
                 with session.lock:
-                    if not session.select_media_active:
-                        return
-                    current_artist_paths = {item.path for item in session.artists}
-                    session.probed_artist_statuses = {
-                        artist_path: aggregate_artist_states(statuses)
-                        for artist_path, statuses in grouped.items()
-                        if artist_path in current_artist_paths
-                    }
-                    # Empty Artist folders remain ordinary unprocessed folders.
-                    for artist_path in current_artist_paths:
-                        session.probed_artist_statuses.setdefault(
-                            artist_path, "unprocessed"
-                        )
                     session.status_probe_complete = True
 
                 debug_log(
                     "picker.status_probe.done "
-                    f"artists={len(session.probed_artist_statuses)} "
-                    f"albums={len(albums)} "
+                    f"artists={completed} albums={album_total} "
                     f"elapsed_seconds={time.perf_counter() - started_probe:.6f}"
                 )
-                if session.select_media_active:
-                    emit_library("library_update")
             except Exception as exc:
                 debug_log(
                     "picker.status_probe.error "
