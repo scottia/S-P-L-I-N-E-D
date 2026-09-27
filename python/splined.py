@@ -1858,6 +1858,7 @@ def prepare_tui_library_selection(
                 return artist_path, aggregate_artist_states(statuses), len(albums)
 
             completed = 0
+            futures_seen = 0
             album_total = 0
             executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=max(
@@ -1884,6 +1885,7 @@ def prepare_tui_library_selection(
                         )
                         return
                     artist_path, aggregate, album_count = future.result()
+                    futures_seen += 1
                     if aggregate:
                         album_total += album_count
                         completed += 1
@@ -1891,12 +1893,13 @@ def prepare_tui_library_selection(
                             session.probed_artist_statuses[artist_path] = aggregate
 
                     # Publish progressive state without flooding the event
-                    # queue. The final result is always emitted.
-                    if completed % 16 == 0 or completed == len(artist_paths):
+                    # queue. Always emit the final partial batch even when some
+                    # Artists became exactly loaded while probing.
+                    if futures_seen % 16 == 0 or futures_seen == len(futures):
                         debug_log(
                             "picker.status_probe.progress "
-                            f"artists={completed}/{len(artist_paths)} "
-                            f"albums={album_total}"
+                            f"artists={futures_seen}/{len(artist_paths)} "
+                            f"resolved={completed} albums={album_total}"
                         )
                         if publish_updates and session.select_media_active:
                             emit_library("library_update")
