@@ -49,10 +49,10 @@ whole-library actions such as Select [ALL] or Auto Scan [ALL] may traverse all
 Artists because those operations require complete Album knowledge.
 
 There is no normal-startup SQLite picker snapshot, blocking full-library cache
-build, or background picker-cache validation. After the immediate Artist list
-is visible, a non-blocking folder-status probe may inspect folder/file names and
-retained history to resolve initial Artist colors without loading Album topology
-into the picker. Picker identities remain folder-derived
+build, or background picker-cache validation. Before the initial Artist list is shown, a lightweight folder-status readiness
+pass inspects folder/file names and retained history so Select Media first paint
+already has stable White/Purple/Green/Blue Artist colors without loading Album
+topology into the picker. Picker identities remain folder-derived
 and stable. Tag parsing, MusicBrainz authority, providers, candidate downloads,
 image ranking/transformation, and AISPLINE processing do not run merely to
 populate Select Media; the small Selected Album Statistics surface may read
@@ -113,7 +113,7 @@ Both examples use the central credential-directory architecture. Provider secret
 | --- | --- |
 | White | Default / unprocessed |
 | Orange | Processed; manually reprocessable |
-| Red | Bypassed; explicit override required |
+| Red | Bypassed; confirm removal before processing |
 | Purple | Partial artist or timeout-active album, depending on row type |
 | Green | Artist complete |
 | Blue | Artist contains at least one bypassed album |
