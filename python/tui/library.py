@@ -433,17 +433,15 @@ class LibraryModel:
         self,
         item: AlbumItem,
         *,
-        bypass_override: bool = False,
         timeout_override: bool = False,
     ) -> str:
-        """Toggle one album and report whether an explicit override is needed."""
-        if item.status is AlbumStatus.BYPASSED and not (bypass_override or item.bypass_override):
-            return "bypass-confirmation-required"
+        """Toggle one Album without creating temporary persistent-state overrides."""
+        if item.status is AlbumStatus.BYPASSED:
+            return "bypass-removal-required"
         if item.status is AlbumStatus.TIMEOUT and not timeout_override:
             return "timeout-active"
         item.selected = not item.selected
-        if item.status is AlbumStatus.BYPASSED:
-            item.bypass_override = item.selected
+        item.bypass_override = False
         return "selected" if item.selected else "cleared"
 
     def selection_payload(self, scan_mode: str) -> dict[str, Any]:
