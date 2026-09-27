@@ -10,7 +10,7 @@ from unittest import mock
 from pyratatui import Rect
 
 from tui.aispline import AiCandidate, EnhancementSelection
-from tui.keys import Action, map_key
+from tui.keys import Action, map_key, picker_response
 from tui.library import AlbumStatus, ArtistStatus
 from tui.semantic import Semantic
 from tui.splined_tui import (
@@ -236,6 +236,82 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
             [_folder_status_count(i, album_counts, artist_counts) for i in range(6)],
             [16, 7, 2, 7, 6, 1],
         )
+
+
+class CancelAndBypassSafetyTests(unittest.TestCase):
+    def test_escape_is_never_serialized_as_bypass(self) -> None:
+        self.assertIsNone(picker_response(Action.BACK, 0))
+
+        state = TuiState(started_at=time.monotonic() - 10, workflow="picker")
+        state.candidates = [
+            CandidateView(
+                1, "iTunes", 1800, 1800, "jpeg", "Ideal", 0,
+                True, True, True, "remote",
+                suggested=True,
+                url="https://example.test/cover.jpg",
+                provenance="[URL]",
+            )
+        ]
+        state.input_request = InputRequest("Choice: ", "fallback-picker", {})
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("Esc"))
+        self.assertEqual(adapter.responses.get_nowait(), "__cancel__")
+
+    def test_ctrl_c_cancel_token_is_not_bypass(self) -> None:
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        adapter.cancel_wait()
+        self.assertEqual(adapter.responses.get_nowait(), "__cancel__")
+
+    def test_selecting_bypassed_album_requests_persistent_removal(self) -> None:
+        payload = _payload(1, 1)
+        albums = payload["albums"]
+        assert isinstance(albums, list)
+        albums[0]["status"] = "bypassed"
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.apply("library", payload)
+        state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "album-checkbox", 0)),
+        )
+        self.assertEqual(state.dialog_kind, "library-bypass-remove")
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "dialog-yes")),
+        )
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["action"], "set-bypass")
+        self.assertFalse(response["bypassed"])
+        self.assertTrue(response["select_after"])
+
+    def test_b_on_unprocessed_album_requests_persistent_bypass_add(self) -> None:
+        state = _library_state(artists=1, albums_each=1)
+        state.library_focus = 5
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("b"))
+        self.assertEqual(state.dialog_kind, "library-bypass-add")
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "dialog-yes")),
+        )
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["action"], "set-bypass")
+        self.assertTrue(response["bypassed"])
+        self.assertFalse(response["select_after"])
 
 
 class LibraryMouseAndFilterTests(unittest.TestCase):
