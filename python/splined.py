@@ -2141,17 +2141,28 @@ def prepare_tui_library_selection(
             continue
 
         if action == "select-all":
-            debug_log("picker.select_all.start")
-            scoped, _records = current_scope()
-            load_artists(
-                [artist.path for artist in scoped],
-                source="select-all",
-            )
-            for row in model_payload()[1]:
-                if row["status"] == "unprocessed":
-                    selected_paths.add(str(row["path"]))
+            artist_path = str(response.get("artist_path", ""))
             debug_log(
-                f"picker.select_all.done selected={len(selected_paths)}"
+                f"picker.select_all.start artist_path={artist_path!r}"
+            )
+            if not artist_path:
+                emit_library(event)
+                continue
+            load_artist(artist_path)
+            added = 0
+            for row in model_payload()[1]:
+                if (
+                    str(row["artist_path"]) == artist_path
+                    and row["status"] == "unprocessed"
+                ):
+                    path = str(row["path"])
+                    if path not in selected_paths:
+                        selected_paths.add(path)
+                        added += 1
+            debug_log(
+                "picker.select_all.done "
+                f"artist_path={artist_path!r} added={added} "
+                f"selected={len(selected_paths)}"
             )
             emit_library(event)
             continue
@@ -2162,27 +2173,48 @@ def prepare_tui_library_selection(
                 for value in response.get("artist_paths", [])
                 if str(value)
             ]
+            artist_filter = str(
+                response.get("artist_filter", "")
+            ).strip().casefold()
+            album_filter = str(
+                response.get("album_filter", "")
+            ).strip().casefold()
             debug_log(
                 "picker.select_filtered.start "
-                f"artists={len(requested)} requested={requested!r}"
+                f"artists={len(requested)} "
+                f"artist_filter={artist_filter!r} "
+                f"album_filter={album_filter!r}"
             )
+            if not artist_filter and not album_filter:
+                emit_library(event)
+                continue
             load_artists(requested, source="select-filtered")
-            album_filter = str(response.get("album_filter", "")).casefold()
-            allowed_statuses = {
-                str(value)
-                for value in response.get("status_filters", [])
-                if str(value)
-            }
             requested_set = set(requested)
+            added = 0
             for row in model_payload()[1]:
-                if requested_set and str(row["artist_path"]) not in requested_set:
+                if str(row["artist_path"]) not in requested_set:
                     continue
-                if album_filter and album_filter not in str(row["album"]).casefold():
+                if (
+                    artist_filter
+                    and artist_filter not in str(row["artist"]).casefold()
+                ):
                     continue
-                if allowed_statuses and str(row["status"]) not in allowed_statuses:
+                if (
+                    album_filter
+                    and album_filter not in str(row["album"]).casefold()
+                ):
                     continue
-                if row["status"] == "unprocessed":
-                    selected_paths.add(str(row["path"]))
+                if row["status"] != "unprocessed":
+                    continue
+                path = str(row["path"])
+                if path not in selected_paths:
+                    selected_paths.add(path)
+                    added += 1
+            debug_log(
+                "picker.select_filtered.done "
+                f"artists={len(requested)} added={added} "
+                f"selected={len(selected_paths)}"
+            )
             emit_library(event)
             continue
 
