@@ -237,7 +237,7 @@ impl ImageOverlay {
                 })
             });
             backend.draw(cells).map_err(input_error)?;
-            backend.flush().map_err(input_error)?;
+            Backend::flush(&mut backend).map_err(input_error)?;
         }
         execute!(stdout, RestorePosition).map_err(input_error)?;
         stdout.flush().map_err(input_error)?;
