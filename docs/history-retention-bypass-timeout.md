@@ -110,9 +110,9 @@ RED
 
 A Red album is not normally auto-selected.
 
-To process it, the user must deliberately override the bypass through the supported prompt/control.
-
-A temporary override must not silently delete the persistent bypass record.
+To process it in the TUI, the user must deliberately remove the saved bypass
+through the supported confirmation. The TUI does not create a temporary
+`-bp`-style override for Album selection.
 
 Conceptually:
 
@@ -213,9 +213,11 @@ Expected behavior:
 - White/unprocessed albums -> auto-selectable;
 - Orange/processed albums -> not auto-selected, but manually selectable for reprocessing;
 - Purple/timeout-active albums -> protected while timeout is active;
-- Red/bypassed albums -> require explicit bypass override.
+- Red/bypassed albums -> remain protected until the saved bypass is explicitly removed.
 
-Selecting a Blue artist should not silently override its Red child albums. The bypass prompt/override path remains explicit.
+Selecting a Blue artist should not silently include its Red child albums. Selecting
+a Red Album opens the same confirmation used by **B** to remove the persistent
+bypass before that Album can be processed.
 
 ---
 
