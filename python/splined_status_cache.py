@@ -36,6 +36,7 @@ _DIRTY = 0
 _LAST_SAVE = 0.0
 _CURRENT_BASELINE = 0
 _CURRENT_TOTAL = 0
+_CURRENT_FIRST_RUN = False
 _INSTALLED = False
 
 
@@ -437,7 +438,7 @@ def install_core_patch(core: ModuleType) -> None:
         return albums, ignored
 
     def cached_emit_ui(event: str, **payload: Any) -> None:
-        global _CURRENT_BASELINE, _CURRENT_TOTAL
+        global _CURRENT_BASELINE, _CURRENT_TOTAL, _CURRENT_FIRST_RUN
         if event == "folder_status_progress":
             try:
                 total = max(0, int(payload.get("total", 0) or 0))
@@ -445,17 +446,21 @@ def install_core_patch(core: ModuleType) -> None:
             except (TypeError, ValueError):
                 total = processed = 0
             if processed == 0 and total > 0 and not bool(payload.get("done", False)):
+                cached_payload, cache_path = _ensure_loaded()
+                del cached_payload
                 _CURRENT_TOTAL = total
                 _CURRENT_BASELINE = _matching_cached_count(total)
+                _CURRENT_FIRST_RUN = not cache_path.exists()
             baseline = _CURRENT_BASELINE if total == _CURRENT_TOTAL else 0
             effective = min(total, max(processed, baseline)) if total else processed
             payload["processed"] = effective
             payload["percent"] = effective / total * 100.0 if total else 100.0
-            if total and baseline >= total:
-                # A complete prior snapshot makes Select Media immediately
-                # usable. Filesystem-difference validation continues in the
-                # normal status worker and updates changed Artists in place.
-                payload["done"] = True
+            payload["cached_baseline"] = baseline
+            payload["first_status_build"] = _CURRENT_FIRST_RUN
+            # Even a complete prior status snapshot is validated before Select
+            # Media becomes interactive.  The persistent JSON only supplies
+            # the starting coverage/progress; the worker's real done=True
+            # remains authoritative for banner dismissal.
         original_emit_ui(event, **payload)
 
     core.inventory = cached_inventory
