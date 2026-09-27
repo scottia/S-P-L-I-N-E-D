@@ -2086,6 +2086,35 @@ def prepare_tui_library_selection(
             session.pending_albums = None
 
     scoped_artists, scoped_records = current_scope()
+
+    # JSON-first startup: seed Artist status colors from the persistent cache
+    # before any filesystem reconciliation.  This makes Select Media usable
+    # immediately; the background status probe validates structural sentinels
+    # and corrects only changed/new/removed Artists live.
+    if not same_session:
+        cache_module = sys.modules.get("splined_status_cache")
+        snapshot_reader = (
+            getattr(cache_module, "cached_status_snapshot", None)
+            if cache_module is not None
+            else None
+        )
+        if callable(snapshot_reader):
+            cached_snapshot = snapshot_reader(
+                ignored,
+                str(output.get("file_name", "cover")),
+            )
+            with session.lock:
+                for artist_path, (statuses, _album_count) in cached_snapshot.items():
+                    if any(item.path == artist_path for item in session.artists):
+                        session.probed_artist_statuses[artist_path] = (
+                            aggregate_artist_states(statuses)
+                        )
+            debug_log(
+                "picker.status_cache.seed "
+                f"artists={len(cached_snapshot)}"
+            )
+
+    scoped_artists, scoped_records = current_scope()
     elapsed = time.perf_counter() - started
     emit_ui(
         "inventory_state",
@@ -2115,20 +2144,11 @@ def prepare_tui_library_selection(
         ),
     )
     session.select_media_active = True
-    # First paint remains immediate, but on a fresh session the centered
-    # readiness banner blocks interaction while the lightweight status pass
-    # reports real Artist progress.
-    if not same_session and not session.status_probe_complete:
-        emit_ui(
-            "folder_status_progress",
-            processed=0,
-            total=len(scoped_artists),
-            percent=0.0,
-            albums=0,
-            done=False,
-        )
+    # The persistent status model is painted first and remains interactive.
+    # Filesystem reconciliation is deliberately background-only; it publishes
+    # live corrections but no longer owns a modal startup gate.
     emit_library(initial_event)
-    start_status_probe(wait=False, publish_updates=True)
+    start_status_probe(wait=False, publish_updates=False)
 
     event = "library_update"
     while True:
