@@ -1818,31 +1818,34 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
     lines: list[Line] = []
     for offset, artist in enumerate(visible):
         index = start + offset
-        marker = "›" if index == state.artist_index else " "
-        checked = "☑" if artist.selected_count else "☐"
+        focused = index == state.artist_index
+        selected = artist.selected_count > 0
+        hovered = (
+            state.hover_target == "artist-row"
+            and state.hover_index == index
+        )
         semantic = _artist_status_semantic(artist.status)
-        if artist.status is not None:
-            status_suffix = f"  {STATUS_LABELS[artist.status]}"
-            if artist.loaded:
-                status_suffix += f" {artist.selected_count}/{artist.album_count}"
-        elif artist.loaded:
-            status_suffix = "  No Albums"
-        else:
-            status_suffix = ""
-        name_width = max(4, int(body.width) - 5 - len(status_suffix))
-        lines.append(Line([
-            Span(
-                f"{marker} ",
-                style(
-                    theme,
-                    Semantic.ACTIVE if index == state.artist_index else Semantic.MUTED,
-                    bold=index == state.artist_index,
-                ),
-            ),
-            Span(f"{checked} ", style(theme, semantic)),
-            Span(_truncate(artist.name, name_width), style(theme, semantic)),
-            Span(status_suffix, style(theme, semantic)),
-        ]))
+        row_style = _interactive_row_style(
+            theme,
+            semantic,
+            hovered=hovered,
+            selected=selected,
+            focused=focused,
+        )
+        lines.append(
+            Line(
+                [
+                    Span(f"{'›' if focused else ' '} ", row_style),
+                    Span(
+                        _truncate(
+                            artist.name,
+                            max(4, int(body.width) - 4),
+                        ),
+                        row_style,
+                    ),
+                ]
+            )
+        )
     if not lines:
         lines.append(Line([Span("No artists match the active filters.", style(theme, Semantic.MUTED))]))
     frame.render_widget(
@@ -1852,8 +1855,13 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
     _register_hit(state, "artist-scroll", body)
     for offset, artist in enumerate(visible):
         index = start + offset
-        _register_hit(state, "artist-row", _row_rect(body, offset), index=index, value=artist.name)
-        _register_hit(state, "artist-checkbox", _checkbox_rect(body, offset), index=index, value=artist.name)
+        _register_hit(
+            state,
+            "artist-row",
+            _row_rect(body, offset),
+            index=index,
+            value=artist.name,
+        )
     filter_text = f"{model.artist_filter}{'▌' if state.library_focus == 4 else ''}"
     frame.render_widget(
         Paragraph.from_string(filter_text).block(card(theme, "ARTIST FILTER · TYPE TO FILTER", Semantic.SPECIAL if state.library_focus == 4 else Semantic.ACTIVE)),
@@ -1878,24 +1886,33 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
     lines: list[Line] = []
     for offset, album in enumerate(visible):
         index = start + offset
-        marker = "›" if index == state.album_index_cursor else " "
-        checked = "☑" if album.selected else "☐"
+        focused = index == state.album_index_cursor
+        hovered = (
+            state.hover_target == "album-row"
+            and state.hover_index == index
+        )
         semantic = _album_status_semantic(album.status)
-        lines.append(Line([
-            Span(
-                f"{marker} ",
-                style(
-                    theme,
-                    Semantic.ACTIVE
-                    if index == state.album_index_cursor
-                    else Semantic.MUTED,
-                    bold=index == state.album_index_cursor,
-                ),
-            ),
-            Span(f"{checked} ", style(theme, semantic)),
-            Span(_truncate(album.title, max(4, body.width - 23)), style(theme, semantic)),
-            Span(f"  {STATUS_LABELS[album.status]}", style(theme, semantic)),
-        ]))
+        row_style = _interactive_row_style(
+            theme,
+            semantic,
+            hovered=hovered,
+            selected=album.selected,
+            focused=focused,
+        )
+        lines.append(
+            Line(
+                [
+                    Span(f"{'›' if focused else ' '} ", row_style),
+                    Span(
+                        _truncate(
+                            album.title,
+                            max(4, int(body.width) - 4),
+                        ),
+                        row_style,
+                    ),
+                ]
+            )
+        )
     if not lines:
         lines.append(Line([Span("No albums match the active filters.", style(theme, Semantic.MUTED))]))
     frame.render_widget(
@@ -1905,8 +1922,13 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
     _register_hit(state, "album-scroll", body)
     for offset, album in enumerate(visible):
         index = start + offset
-        _register_hit(state, "album-row", _row_rect(body, offset), index=index, value=album.path)
-        _register_hit(state, "album-checkbox", _checkbox_rect(body, offset), index=index, value=album.path)
+        _register_hit(
+            state,
+            "album-row",
+            _row_rect(body, offset),
+            index=index,
+            value=album.path,
+        )
     filter_text = f"{model.album_filter}{'▌' if state.library_focus == 6 else ''}"
     frame.render_widget(
         Paragraph.from_string(filter_text).block(card(theme, "ALBUM FILTER · TYPE TO FILTER", Semantic.SPECIAL if state.library_focus == 6 else Semantic.ACTIVE)),
