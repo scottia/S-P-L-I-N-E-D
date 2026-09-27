@@ -171,6 +171,9 @@ class Ref:
     types: list[str] = field(default_factory=lambda: ["Front"])
     width: int | None = None
     height: int | None = None
+    # Final URL after redirects.  TUI/browser presentation should use this
+    # instead of the discovery URL when available.
+    browser_url: str = ""
 
 
 @dataclass
@@ -4140,6 +4143,9 @@ def download_candidates(
                     raise SplinedError(
                         f"artwork download returned HTTP {response.status_code}"
                     )
+                resolved_url = str(getattr(response, "url", "") or ref.url).strip()
+                if resolved_url:
+                    ref.browser_url = resolved_url
                 artwork = read_bounded_artwork_response(response)
             with Image.open(io.BytesIO(artwork)) as im:
                 fmt = image_format(im)
