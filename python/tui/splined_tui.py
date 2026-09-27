@@ -1634,7 +1634,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
             area,
             [
                 Constraint.percentage(35),
-                Constraint.percentage(22),
+                Constraint.percentage(21),
                 Constraint.percentage(21),
                 Constraint.fill(1),
             ],
@@ -3324,18 +3324,10 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             active = state.candidates[
                 max(0, min(state.remote_hover_index, len(state.candidates) - 1))
             ]
-            protocol = str(
-                getattr(
-                    state.remote_hover_overlay,
-                    "protocol",
-                    state.image_protocol,
-                )
-            ).upper()
-            fallback = " FALLBACK" if protocol.casefold() == "halfblocks" else ""
             preview_title = (
-                f"ARTWORK / URL PREVIEW · {active.source.upper()} · {protocol}{fallback}"
+                f"ARTWORK / URL PREVIEW · {active.source.upper()}"
                 if state.remote_hover_active
-                else f"ARTWORK / ⭐ (S) PREFERRED · {protocol}{fallback}"
+                else "ARTWORK / ⭐️ (S) PREFERRED"
             )
             if state.remote_hover_overlay is not None:
                 frame.render_widget(
@@ -3355,7 +3347,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                             (
                                 "ARTWORK / URL PREVIEW"
                                 if state.remote_hover_active
-                                else "ARTWORK / ⭐ (S) PREFERRED"
+                                else "ARTWORK / ⭐️ (S) PREFERRED"
                             ),
                             Semantic.ACTIVE,
                         )
@@ -3372,7 +3364,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                     .block(
                         card(
                             theme,
-                            "ARTWORK / ⭐ (S) PREFERRED",
+                            "ARTWORK / ⭐️ (S) PREFERRED",
                             Semantic.WARNING,
                         )
                     ),
@@ -3386,7 +3378,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 state,
                 theme,
                 preferred,
-                title="ARTWORK / ⭐ (S) PREFERRED",
+                title="ARTWORK / ⭐️ (S) PREFERRED",
             )
         else:
             frame.render_widget(
@@ -3398,7 +3390,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 .block(
                     card(
                         theme,
-                        "ARTWORK / ⭐ (S) PREFERRED",
+                        "ARTWORK / ⭐️ (S) PREFERRED",
                         Semantic.ACTIVE,
                     )
                 ),
