@@ -132,11 +132,51 @@ def _contained_sample_size(
     return contained_width * 2, contained_height
 
 
+def _half_block_preview(
+    image: Image.Image,
+    *,
+    width: int,
+    height: int,
+) -> ArtworkPreview:
+    """Use exact Pillow RGB pairs for smoother large terminal previews."""
+    target_width = max(1, width)
+    target_height = max(1, height) * 2
+    source = ImageOps.contain(
+        ImageOps.exif_transpose(image).convert("RGB"),
+        (target_width, target_height),
+        method=Image.Resampling.LANCZOS,
+    )
+    pixels = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+    pixels.paste(
+        source,
+        (
+            (target_width - source.width) // 2,
+            (target_height - source.height) // 2,
+        ),
+    )
+    rows: list[tuple[PreviewCell, ...]] = []
+    for row in range(max(1, height)):
+        cells: list[PreviewCell] = []
+        for column in range(target_width):
+            top = tuple(
+                int(value)
+                for value in pixels.getpixel((column, row * 2))
+            )
+            bottom = tuple(
+                int(value)
+                for value in pixels.getpixel((column, row * 2 + 1))
+            )
+            cells.append(PreviewCell("▀", top, bottom))  # type: ignore[arg-type]
+        rows.append(tuple(cells))
+    return ArtworkPreview(tuple(rows))
+
+
 def generate_preview(
     path: str | Path,
     *,
     width: int = 28,
     height: int = 12,
+    mode: str = "quadrant",
 ) -> ArtworkPreview | None:
     """Decode one existing candidate file once and prepare it safely.
 
@@ -148,6 +188,10 @@ def generate_preview(
         return None
     try:
         with Image.open(candidate) as image:
+            if mode == "half":
+                return _half_block_preview(image, width=width, height=height)
+            if mode != "quadrant":
+                raise ValueError(f"Unsupported preview mode: {mode}")
             target_width = max(1, width)
             target_height = max(1, height) * 2
             oriented = ImageOps.exif_transpose(image).convert("RGB")
