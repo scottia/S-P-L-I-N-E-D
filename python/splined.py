@@ -4443,9 +4443,9 @@ def candidate_key(c: Candidate, cfg: dict[str, Any], format_order: list[str]):
         projected["distance"],
         range_rank,
         transform_penalty,
+        -projected["short_side"],
         c.source_priority,
         format_order.index(projected["format"]) if projected["format"] in format_order else 999999,
-        -projected["short_side"],
         provider_label(c.source).lower(),
         str(c.ref.id),
     )
