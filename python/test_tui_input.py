@@ -121,9 +121,7 @@ class RenderHitMapTests(unittest.TestCase):
             "select-control",
             "scan-control",
             "artist-row",
-            "artist-checkbox",
             "album-row",
-            "album-checkbox",
             "artist-filter",
             "album-filter",
             "artist-scroll",
@@ -146,13 +144,14 @@ class RenderHitMapTests(unittest.TestCase):
                     )
                 )
 
-    def test_hit_test_prefers_checkbox_over_containing_row(self) -> None:
+    def test_artist_and_album_rows_are_the_only_selection_hit_surfaces(self) -> None:
         state = _library_state()
         render(_Frame(150, 44), state, select_theme("OLED"))
-        checkbox = _region(state, "artist-checkbox", 0)
-        hit = hit_test(state, checkbox.x, checkbox.y)
-        self.assertIsNotNone(hit)
-        self.assertEqual(hit.target, "artist-checkbox")
+        targets = {item.target for item in state.hit_regions}
+        self.assertIn("artist-row", targets)
+        self.assertIn("album-row", targets)
+        self.assertNotIn("artist-checkbox", targets)
+        self.assertNotIn("album-checkbox", targets)
 
 
 class ReportAndStatusAuthorityTests(unittest.TestCase):
@@ -284,7 +283,7 @@ class CancelAndBypassSafetyTests(unittest.TestCase):
         handle_mouse(
             state,
             adapter,
-            _center(_region(state, "album-checkbox", 0)),
+            _center(_region(state, "album-row", 0)),
         )
         self.assertEqual(state.dialog_kind, "library-bypass-remove")
         render(_Frame(150, 44), state, select_theme("OLED"))
@@ -324,35 +323,49 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.adapter.waiting.set()
         render(_Frame(150, 44), self.state, select_theme("OLED"))
 
-    def test_artist_and_album_row_vs_checkbox_contract(self) -> None:
+    def test_artist_and_album_rows_select_directly(self) -> None:
         model = self.state.library
         assert model is not None
+
         artist_one = _region(self.state, "artist-row", 1)
         handle_mouse(self.state, self.adapter, _center(artist_one))
         self.assertEqual(model.active_artist, artist_one.value)
         self.assertTrue(
-            any(item.selected for item in model.albums if item.artist == artist_one.value)
+            any(
+                item.selected
+                for item in model.albums
+                if item.artist == artist_one.value
+            )
         )
 
-        # The explicit checkbox follows the same Artist cascade path and
-        # therefore toggles those normally eligible child Albums back off.
-        render(_Frame(150, 44), self.state, select_theme("OLED"))
+        # Clicking the same Artist row again is the same selection toggle.
+        self.state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
         self.adapter.waiting.set()
-        artist_check = _region(self.state, "artist-checkbox", 1)
-        handle_mouse(self.state, self.adapter, _center(artist_check))
+        render(_Frame(150, 44), self.state, select_theme("OLED"))
+        artist_one = _region(self.state, "artist-row", 1)
+        handle_mouse(self.state, self.adapter, _center(artist_one))
         self.assertFalse(
-            any(item.selected for item in model.albums if item.artist == artist_check.value)
+            any(
+                item.selected
+                for item in model.albums
+                if item.artist == artist_one.value
+            )
         )
 
+        self.state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
+        self.adapter.waiting.set()
         render(_Frame(150, 44), self.state, select_theme("OLED"))
         album_row = _region(self.state, "album-row", 1)
         albums = model.visible_albums(active_artist_only=True)
         before = albums[1].selected
         handle_mouse(self.state, self.adapter, _center(album_row))
         self.assertEqual(self.state.album_index_cursor, 1)
-        self.assertEqual(albums[1].selected, before)
-        album_check = _region(self.state, "album-checkbox", 1)
-        handle_mouse(self.state, self.adapter, _center(album_check))
         self.assertNotEqual(albums[1].selected, before)
 
     def test_engine_artist_status_is_not_reinterpreted_by_tui(self) -> None:
@@ -595,7 +608,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.assertEqual(keyboard_request["action"], "load-artist")
         self.assertFalse(keyboard_request["select_after_load"])
 
-    def test_unindexed_artist_checkbox_requests_load_and_select(self) -> None:
+    def test_unindexed_artist_row_requests_load_and_select(self) -> None:
         payload = _payload(0, 0)
         payload["artists"] = [
             {
@@ -608,11 +621,18 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         ]
         state = TuiState(started_at=time.monotonic() - 10)
         state.apply("library", payload)
-        state.apply("input", {"prompt": "", "context": {"kind": "library-selection"}})
+        state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
         adapter = TuiAdapter()
         adapter.waiting.set()
         render(_Frame(150, 44), state, select_theme("OLED"))
-        handle_mouse(state, adapter, _center(_region(state, "artist-checkbox", 0)))
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "artist-row", 0)),
+        )
         request = json.loads(adapter.responses.get_nowait())
         self.assertEqual(request["action"], "load-artist")
         self.assertTrue(request["select_after_load"])
@@ -666,7 +686,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             if expected_action == "select-filtered":
                 self.assertIn("artist_paths", response)
                 self.assertIn("album_filter", response)
-                self.assertIn("status_filters", response)
+                self.assertNotIn("status_filters", response)
 
         state = _library_state()
         none_model = state.library
@@ -709,7 +729,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             handle_mouse(
                 state,
                 adapter,
-                _center(_region(state, "artist-checkbox", index)),
+                _center(_region(state, "artist-row", index)),
             )
             render(_Frame(150, 44), state, select_theme("OLED"))
 
@@ -743,14 +763,24 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         self.assertEqual(state.workspace, "policy")
         render(_Frame(150, 44), state, select_theme("CHALK"))
         self.assertTrue(
-            {"policy-source", "policy-source-enabled", "policy-field", "policy-global-field"}
+            {"policy-source", "policy-field", "policy-global-field"}
             <= {item.target for item in state.hit_regions}
         )
-        enabled = _region(state, "policy-source-enabled", 0)
-        source = enabled.value
+        self.assertNotIn(
+            "policy-source-enabled",
+            {item.target for item in state.hit_regions},
+        )
+
+        source_row = _region(state, "policy-source", 0)
+        source = source_row.value
+        handle_mouse(state, adapter, _center(source_row))
         before = state.policy.policies[source]["enabled"]  # type: ignore[union-attr]
-        handle_mouse(state, adapter, _center(enabled))
-        self.assertNotEqual(state.policy.policies[source]["enabled"], before)  # type: ignore[union-attr]
+        render(_Frame(150, 44), state, select_theme("CHALK"))
+        enabled_field = _region(state, "policy-field", 0)
+        handle_mouse(state, adapter, _center(enabled_field))
+        self.assertNotEqual(
+            state.policy.policies[source]["enabled"], before  # type: ignore[union-attr]
+        )
 
         render(_Frame(150, 44), state, select_theme("CHALK"))
         source_row = _region(state, "policy-source", 2)
