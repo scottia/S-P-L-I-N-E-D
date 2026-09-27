@@ -48,17 +48,21 @@ retains the loaded result in memory for the Select Media session. Explicit
 whole-library actions such as Select [ALL] or Auto Scan [ALL] may traverse all
 Artists because those operations require complete Album knowledge.
 
-There is no normal-startup SQLite picker snapshot, full-library cache build, or
-background complete-library validation. Picker identities remain folder-derived
+There is no normal-startup SQLite picker snapshot, blocking full-library cache
+build, or background picker-cache validation. After the immediate Artist list
+is visible, a non-blocking folder-status probe may inspect folder/file names and
+retained history to resolve initial Artist colors without loading Album topology
+into the picker. Picker identities remain folder-derived
 and stable. Tag parsing, MusicBrainz authority, providers, candidate downloads,
 image ranking/transformation, and AISPLINE processing do not run merely to
 populate Select Media; the small Selected Album Statistics surface may read
 Mutagen tags asynchronously for at most 10 checked Albums.
 
-Artist filtering operates against the immediate root Artist list. Album/status
-filtering operates against resident loaded Album rows, with retained
-history/bypass authority contributing known status counts without forcing a
-recursive filesystem scan.
+Artist filtering operates against the immediate root Artist list. Album
+filtering operates against resident loaded Album rows. Folder-status
+presentation may additionally use the non-blocking status probe plus retained
+history/bypass authority so initial Artist colors do not depend on manually
+opening each Artist.
 
 The startup brand is readiness-driven rather than timed: a medium, solid,
 three-row spectral S:P:L:I:N:E:D wordmark remains above a centered cache-build
