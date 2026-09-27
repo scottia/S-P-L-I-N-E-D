@@ -285,7 +285,7 @@ class TuiState:
     ai_activity: AiActivityState = field(default_factory=AiActivityState)
     upscale_below_ideal: bool = False
     dialog_kind: str = ""
-    preview_cache: dict[tuple[str, int, int, int, int], ArtworkPreview | None] = field(default_factory=dict)
+    preview_cache: dict[tuple[str, str, int, int, int, int], ArtworkPreview | None] = field(default_factory=dict)
     preview_identity: dict[str, tuple[int, int]] = field(default_factory=dict)
     preview_modal_open: bool = False
     preview_modal_index: int = 0
@@ -2177,7 +2177,13 @@ def _render_candidate_thumbnail(
     ):
         return
     width = min(3, max(1, grid.width("url") - 6))
-    preview = _candidate_preview(state, candidate, width=width, height=1)
+    preview = _candidate_preview(
+        state,
+        candidate,
+        width=width,
+        height=1,
+        mode="quadrant",
+    )
     if preview is None or not preview.rows:
         return
     spans = [
@@ -2338,6 +2344,8 @@ def _candidate_preview(
     candidate: CandidateView,
     width: int = 28,
     height: int = 12,
+    *,
+    mode: str = "half",
 ) -> ArtworkPreview | None:
     source = candidate.path
     if not source:
@@ -2349,9 +2357,14 @@ def _candidate_preview(
         except OSError:
             state.preview_identity[source] = (-1, -1)
     size, modified = state.preview_identity[source]
-    key = (source, max(1, width), max(1, height), size, modified)
+    key = (source, mode, max(1, width), max(1, height), size, modified)
     if key not in state.preview_cache:
-        state.preview_cache[key] = generate_preview(source, width=width, height=height)
+        state.preview_cache[key] = generate_preview(
+            source,
+            width=width,
+            height=height,
+            mode=mode,
+        )
     return state.preview_cache[key]
 
 
@@ -2364,7 +2377,13 @@ def _render_candidate_preview(
 ) -> None:
     preview_width = max(1, int(area.width) - 2)
     preview_height = max(1, int(area.height) - 2)
-    preview = _candidate_preview(state, candidate, preview_width, preview_height)
+    preview = _candidate_preview(
+        state,
+        candidate,
+        preview_width,
+        preview_height,
+        mode="half",
+    )
     if preview is None:
         frame.render_widget(
             Paragraph.from_string("NO PREVIEW")
