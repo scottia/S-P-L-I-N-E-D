@@ -2392,7 +2392,7 @@ def _register_candidate_hits(
             value=candidate.ai_key,
         )
     if "url" in grid.columns:
-        url_x = int(area.x) + 1 + grid.start("url")
+        url_x = int(area.x) + grid.start("url")
         if candidate.provenance == "[URL]" and candidate.url:
             _register_hit(
                 state,
@@ -2978,7 +2978,24 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             selected = state.candidates[
                 max(0, min(state.selected_index, len(state.candidates) - 1))
             ]
-            _render_candidate_preview(frame, preview_area, state, theme, selected)
+            if selected.provenance == "[LOCAL]":
+                _render_candidate_preview(
+                    frame,
+                    preview_area,
+                    state,
+                    theme,
+                    selected,
+                )
+            else:
+                frame.render_widget(
+                    Paragraph.from_string(
+                        "Hover [URL] for live source artwork preview."
+                    )
+                    .centered()
+                    .style(style(theme, Semantic.MUTED))
+                    .block(card(theme, "ARTWORK", Semantic.MUTED)),
+                    preview_area,
+                )
 
 
 POLICY_FIELDS = (
@@ -4092,8 +4109,8 @@ def write_terminal_links(state: TuiState, writer: Any) -> None:
     writer.write("\x1b7")
     for region in targets:
         writer.write(
-            f"\x1b[{region.y + 1};{region.x + 1}H"
-            f"{osc8_link('[URL]', region.value)}"
+            f"\x1b[{region.y + 1};{region.x + 2}H"
+            f"{osc8_link('URL', region.value)}"
         )
     writer.write("\x1b8")
     writer.flush()
