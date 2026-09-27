@@ -8,6 +8,8 @@ import json
 import queue
 import re
 import signal
+
+import requests
 import sys
 import threading
 import time
@@ -40,9 +42,11 @@ from pyratatui import (
 try:
     from splined_pyratatui_input import EventReader as InputEventReader
     from splined_pyratatui_input import emergency_restore as emergency_terminal_restore
+    from splined_pyratatui_input import render_image_cells as native_render_image_cells
 except ImportError:  # plain CLI and automatic fallback remain independently usable
     InputEventReader = None  # type: ignore[assignment,misc]
     emergency_terminal_restore = None  # type: ignore[assignment]
+    native_render_image_cells = None  # type: ignore[assignment]
 
 from .animation import animation_step, fit_phrase, startup_frame
 from .aispline import (
@@ -67,7 +71,7 @@ from .layout import (
     candidate_column_layout,
     layout_spec,
 )
-from .preview import ArtworkPreview, generate_preview
+from .preview import ArtworkPreview, PreviewCell, generate_preview
 from .semantic import Semantic, log_semantic, outcome_semantic, range_semantic
 from .status import use_adapter
 from .source_settings import PolicyDraft, PRIMARY_METADATA_SOURCES
@@ -289,6 +293,19 @@ class TuiState:
     preview_identity: dict[str, tuple[int, int]] = field(default_factory=dict)
     preview_modal_open: bool = False
     preview_modal_index: int = 0
+    remote_hover_index: int = -1
+    remote_hover_url: str = ""
+    remote_hover_preview: ArtworkPreview | None = None
+    remote_hover_loading: bool = False
+    remote_hover_error: str = ""
+    remote_hover_token: int = 0
+    remote_preview_width: int = 48
+    remote_preview_height: int = 24
+    status_loading: bool = False
+    status_processed: int = 0
+    status_total: int = 0
+    status_percent: float = 0.0
+    status_albums: int = 0
     bypass_dialog_path: str = ""
     bypass_dialog_enable: bool | None = None
     bypass_dialog_select_after: bool = False
@@ -332,6 +349,32 @@ class TuiState:
             self.inventory_artist = str(payload.get("current_artist", self.inventory_artist))
             self.inventory_recovered = bool(
                 payload.get("recovered", self.inventory_recovered)
+            )
+        elif event == "folder_status_progress":
+            self.status_loading = not bool(payload.get("done", False))
+            self.status_processed = int(payload.get("processed", 0) or 0)
+            self.status_total = int(payload.get("total", 0) or 0)
+            percent = payload.get("percent")
+            self.status_percent = (
+                float(percent)
+                if isinstance(percent, (int, float))
+                else (
+                    (self.status_processed / self.status_total * 100.0)
+                    if self.status_total
+                    else 0.0
+                )
+            )
+            self.status_albums = int(payload.get("albums", 0) or 0)
+        elif event == "remote_hover_preview":
+            token = int(payload.get("token", -1))
+            index = int(payload.get("index", -1))
+            if token != self.remote_hover_token or index != self.remote_hover_index:
+                return
+            self.remote_hover_loading = False
+            self.remote_hover_error = str(payload.get("error", ""))
+            preview = payload.get("preview")
+            self.remote_hover_preview = (
+                preview if isinstance(preview, ArtworkPreview) else None
             )
         elif event in {"library", "library_update"}:
             self.workflow = "library"
