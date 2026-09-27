@@ -405,6 +405,21 @@ mod tests {
     }
 
     #[test]
+    fn mouse_move_events_are_exposed_for_url_hover() {
+        let event = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 19,
+            row: 8,
+            modifiers: KeyModifiers::NONE,
+        });
+        let converted = convert_event(event).expect("mouse move event");
+        assert_eq!(converted.kind, "mouse");
+        assert_eq!(converted.code, "moved");
+        assert_eq!(converted.button, "none");
+        assert_eq!((converted.column, converted.row), (19, 8));
+    }
+
+    #[test]
     fn wheel_directions_are_stable() {
         for (kind, expected) in [
             (MouseEventKind::ScrollUp, "scroll_up"),
