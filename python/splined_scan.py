@@ -911,6 +911,21 @@ def record_album_bypass(path: Path, history: dict[str, Any], album: core.AlbumDi
     save_bypass_history(path, history)
 
 
+def remove_album_bypass(
+    path: Path,
+    history: dict[str, Any],
+    album_path: str | Path,
+) -> bool:
+    """Remove one persistent bypass record and save atomically."""
+    key = str(album_path)
+    albums = history.setdefault("albums", {})
+    if key not in albums:
+        return False
+    del albums[key]
+    save_bypass_history(path, history)
+    return True
+
+
 def _value(text: str, formatter=core.green) -> str:
     return core.white("[") + formatter(str(text)) + core.white("]")
 
@@ -1042,6 +1057,8 @@ def local_comparison_prompt(local_candidate: core.Candidate, remote: list[core.C
             kind="local-comparison",
             musicbrainz=mb_retry_available,
         ).strip().lower()
+        if answer == "__cancel__":
+            raise core.TuiSessionExit()
         if answer == "s":
             if suggested is None:
                 print(f"  {core.yellow('No suggested provider candidate is available.')}")
@@ -1178,6 +1195,21 @@ def _run_scan_dir_batch(
             if _BYPASS_OVERRIDE
             else {str(value) for value in bypass_history.get("albums", {})}
         )
+        def persist_picker_bypass(album_path: str, enabled: bool) -> None:
+            path = Path(album_path)
+            if enabled:
+                record_album_bypass(
+                    bypass_path,
+                    bypass_history,
+                    core.AlbumDir(path, []),
+                    None,
+                    path.parent.name,
+                    path.name,
+                    "select-media",
+                )
+            else:
+                remove_album_bypass(bypass_path, bypass_history, path)
+
         albums, bypass_overrides, timeout_paths, sources, discovered_albums = (
             core.prepare_tui_library_selection(
                 config_file,
@@ -1189,6 +1221,7 @@ def _run_scan_dir_batch(
                 cache=cache,
                 library_root=library_root,
                 bypassed_paths=bypassed_paths,
+                bypass_update=persist_picker_bypass,
                 picker_session=picker_session,
                 initial_event=initial_library_event,
             )
@@ -1686,6 +1719,10 @@ def _run_scan_dir_batch(
                         continue
 
                     if comparison_action == "bypass":
+                        if is_album_bypassed(bypass_history, album):
+                            remove_album_bypass(bypass_path, bypass_history, album.path)
+                            print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
+                            continue
                         record_album_bypass(bypass_path, bypass_history, album, mbid, search_artist, search_album, "local-source-comparison")
                         summary.unresolved += 1
                         completion_outcome = "fallback-bypassed-persistent"
@@ -1778,6 +1815,12 @@ def _run_scan_dir_batch(
                     kind="fallback-picker",
                 ).strip().lower()
 
+                if answer == "__cancel__":
+                    raise core.TuiSessionExit()
+                if answer == "unbypass":
+                    if remove_album_bypass(bypass_path, bypass_history, album.path):
+                        print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
+                    continue
                 if answer == "b":
                     record_album_bypass(bypass_path, bypass_history, album, mbid, search_artist, search_album, "fallback-recovery")
                     summary.unresolved += 1
@@ -1916,6 +1959,10 @@ def _run_scan_dir_batch(
             comparison_action, comparison_candidate = local_comparison_prompt(local_candidate, remote, cfg, format_order, mb_retry_available=False)
 
             if comparison_action == "bypass":
+                if is_album_bypassed(bypass_history, album):
+                    remove_album_bypass(bypass_path, bypass_history, album.path)
+                    print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
+                    continue
                 record_album_bypass(bypass_path, bypass_history, album, mbid, release.artist_credit, release.title, "local-source-comparison")
                 summary.unresolved += 1
                 print(f"  {core.cyan('Artwork:'):13} {core.bracketed_text('BYPASSED', core.yellow)}")
