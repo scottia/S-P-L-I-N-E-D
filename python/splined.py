@@ -6733,6 +6733,14 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      --scan", "Use [library].music_library for preview/inventory")
     print()
 
+    print("Select Media TUI:")
+    help_row("      FOLDER STATUS", "Filters Artist/Album visibility by authoritative folder state")
+    help_row("      ALBUM SELECTION", "Defaults to Select [NONE]; ALL selects the active Artist; FILTERED requires filter text")
+    help_row("      ALBUM SCANNING", "Chooses Auto Scan [ALL] or [SELECTED] scope only; does not choose READ/WRITE")
+    help_row("      SPLINED LAUNCH", "Explicitly choose Launch [READ] Source Results or Launch [LIVE WRITE] Choice Results")
+    help_row("", "Auto Scan will prompt for a LAUNCH choice instead of silently defaulting to READ")
+    print()
+
     print("Source Scanning:")
     help_row(
         "      scan_mode",
