@@ -2489,38 +2489,6 @@ def _candidate_preview(
     return state.preview_cache[key]
 
 
-def _ratatui_remote_preview(
-    data: bytes,
-    *,
-    width: int,
-    height: int,
-) -> ArtworkPreview:
-    if native_render_image_cells is None:
-        raise RuntimeError("ratatui-image renderer is unavailable")
-    rendered_width, rendered_height, cells = native_render_image_cells(
-        data,
-        max(1, int(width)),
-        max(1, int(height)),
-        1000,
-    )
-    rows: list[tuple[PreviewCell, ...]] = []
-    offset = 0
-    for _row in range(int(rendered_height)):
-        values: list[PreviewCell] = []
-        for _column in range(int(rendered_width)):
-            symbol, foreground, background = cells[offset]
-            offset += 1
-            values.append(
-                PreviewCell(
-                    str(symbol),
-                    tuple(int(value) for value in foreground),
-                    tuple(int(value) for value in background),
-                )
-            )
-        rows.append(tuple(values))
-    return ArtworkPreview(tuple(rows))
-
-
 def _start_remote_hover_preview(
     state: TuiState,
     adapter: TuiAdapter,
@@ -2531,12 +2499,15 @@ def _start_remote_hover_preview(
     candidate = state.candidates[candidate_index]
     if candidate.provenance != "[URL]" or not candidate.url:
         return
+    if native_prepare_image_overlay is None:
+        state.remote_hover_error = "ratatui-image renderer is unavailable"
+        return
 
     state.remote_hover_token += 1
     token = state.remote_hover_token
     state.remote_hover_index = candidate_index
     state.remote_hover_url = candidate.url
-    state.remote_hover_preview = None
+    state.remote_hover_overlay = None
     state.remote_hover_loading = True
     state.remote_hover_error = ""
     width = max(1, state.remote_preview_width)
@@ -2545,7 +2516,7 @@ def _start_remote_hover_preview(
 
     def worker() -> None:
         error = ""
-        preview: ArtworkPreview | None = None
+        overlay: Any | None = None
         try:
             with requests.get(
                 url,
@@ -2555,11 +2526,6 @@ def _start_remote_hover_preview(
                 headers={"User-Agent": "SPLINED/1.0.9 remote-preview"},
             ) as response:
                 response.raise_for_status()
-                content_type = str(response.headers.get("Content-Type", "")).lower()
-                if content_type and "image/" not in content_type:
-                    raise RuntimeError(
-                        f"URL returned {content_type or 'non-image content'}"
-                    )
                 length = response.headers.get("Content-Length")
                 if length is not None and int(length) > 25 * 1024 * 1024:
                     raise RuntimeError("remote preview exceeds 25 MiB limit")
@@ -2570,10 +2536,14 @@ def _start_remote_hover_preview(
                     body.extend(chunk)
                     if len(body) > 25 * 1024 * 1024:
                         raise RuntimeError("remote preview exceeds 25 MiB limit")
-            preview = _ratatui_remote_preview(
+            # The exact browser/source URL response is decoded entirely in
+            # memory. ratatui-image + Chafa prepares a terminal-native overlay;
+            # no cache/sample file is created.
+            overlay = native_prepare_image_overlay(
                 bytes(body),
-                width=width,
-                height=height,
+                width,
+                height,
+                1000,
             )
         except Exception as exc:
             error = str(exc)
@@ -2584,7 +2554,7 @@ def _start_remote_hover_preview(
                 "token": token,
                 "index": candidate_index,
                 "url": url,
-                "preview": preview,
+                "overlay": overlay,
                 "error": error,
             },
         )
@@ -2602,9 +2572,25 @@ def _clear_remote_hover_preview(state: TuiState) -> None:
     state.remote_hover_token += 1
     state.remote_hover_index = -1
     state.remote_hover_url = ""
-    state.remote_hover_preview = None
+    state.remote_hover_overlay = None
     state.remote_hover_loading = False
     state.remote_hover_error = ""
+    state.remote_preview_rect = None
+
+
+def _draw_remote_hover_overlay(state: TuiState) -> None:
+    overlay = state.remote_hover_overlay
+    rect = state.remote_preview_rect
+    if overlay is None or rect is None or state.remote_hover_index < 0:
+        return
+    x, y, width, height = rect
+    if width <= 0 or height <= 0:
+        return
+    try:
+        overlay.draw(x, y)
+    except Exception as exc:
+        state.remote_hover_error = str(exc)
+        state.remote_hover_overlay = None
 
 
 def _render_prepared_preview(
