@@ -44,12 +44,12 @@ read Album folders only when an Artist or explicit bulk action requires them
 ```
 
 No SQLite snapshot or background full-library cache validation is required for
-the folder list. After the immediate Artist root is rendered, Python may run a
-non-blocking **folder-status probe** that inspects directory/file names and
-retained history only so local-artwork-only Artists can receive their correct
-initial White/Purple/Green/Blue state without waiting for a user click.
+the folder list. Before Select Media is first painted, Python completes a lightweight
+**folder-status readiness pass** that inspects directory/file names and retained
+history only. This prevents Artist rows from appearing provisional/grey and
+then slowly recoloring after the workspace is already visible.
 
-The status probe does not populate Album picker topology, read tags, query
+The readiness pass does not populate Album picker topology, read tags, query
 MusicBrainz/providers, decode candidate artwork, rank candidates, or create a
 persistent picker cache. Folder names remain the stable Select Media identity,
 while folder/local-art/history/bypass/timeout remain execution-state authority.
@@ -197,7 +197,7 @@ Normal selection behavior follows the same authority:
 
 - White -> auto-selectable;
 - Orange -> not auto-selected, but may be manually reprocessed;
-- Red -> explicit bypass override required;
+- Red -> selection prompts to remove the saved bypass before processing;
 - Purple -> protected while timeout remains active.
 
 ---
@@ -313,7 +313,9 @@ Orange albums may be deliberately reselected for another processing pass.
 
 Manual selection does not mean the old completion history must be erased first.
 
-Likewise, a temporary override of a Red album should not silently remove its persistent bypass record.
+Red is persistent state. Pressing **B** on a Red Album confirms removal of that
+saved bypass; pressing **B** on a non-Red Album confirms creation of the bypass.
+Selecting a Red Album uses the same removal confirmation before selection.
 
 ---
 
