@@ -26,7 +26,9 @@ Artist and Album status:
 - supported audio-file paths;
 - local cover-art paths;
 - relevant inventory fingerprints;
-- directory modification signatures;
+- compact Artist-root and first-level structural modification sentinels;
+- deep directory signatures retained for reinventory/debugging;
+- live Album folder status (`unprocessed`, `processed`, `bypassed`, or `timeout`);
 - partial/full completion progress.
 
 It does not store tags, MusicBrainz/provider results, candidate rankings,
@@ -45,15 +47,29 @@ Once the JSON exists, SPLINED shows the same-size **LOADING ALBUM STATUS**
 banner while validating the saved inventory against the current library.
 The progress bar represents this run's real validation progress; cached coverage
 is reported separately and does not falsely force the bar to 100% before
-validation finishes. Select Media becomes interactive when that validation pass
-finishes:
+validation finishes.
 
-- unchanged Artists reuse the cached inventory;
-- new Artists are inventoried;
-- removed Artists are ignored;
-- an Artist whose Album/directories changed is inventoried again;
-- current completion history, bypass state and timeout policy are still applied
-  fresh on every run.
+Later-run validation uses a two-tier filesystem path. SPLINED first checks the
+Artist root plus its immediate structural/category directories. An unchanged
+sentinel set reuses that Artist's cached Album inventory without statting every
+cached Album directory. A changed/new Artist falls back to the authoritative
+deep inventory and rewrites only that Artist's cache entry.
+
+Album status transitions emitted by the resident Select Media session are
+written atomically to the JSON immediately. They are not deferred until process
+exit. This keeps the persisted status snapshot synchronized with processing,
+bypass and timeout-visible state before a relaunch. Completion history, bypass
+authority and timeout policy are still applied fresh by the engine; the JSON
+does not become execution authority.
+
+At the end of validation SPLINED reports instrumentation in the form:
+
+```text
+Album status cache: 1,031 Artists checked · 1,026 unchanged · 5 changed · 5 rescanned · validation: 2.4s
+```
+
+New Artists are inventoried, removed Artists are ignored, and changed structural
+sentinels trigger reinventory.
 
 The file may be deleted safely. SPLINED will rebuild it without changing
 library files, completion/bypass history, or selection policy.
