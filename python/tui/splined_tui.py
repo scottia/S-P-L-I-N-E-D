@@ -769,6 +769,7 @@ class TuiAdapter:
         self.events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
         self.responses: queue.Queue[str] = queue.Queue()
         self.waiting = threading.Event()
+        self.cancel_event = threading.Event()
 
     def emit(self, event: str, payload: dict[str, Any]) -> None:
         self.events.put((event, payload))
@@ -806,9 +807,15 @@ class TuiAdapter:
         )
         return False
 
+    def cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
     def cancel_wait(self) -> None:
         # Cancellation must never alias the engine's persistent bypass command.
-        self.respond("__cancel__")
+        # Set a cooperative flag even when the engine is busy outside read().
+        self.cancel_event.set()
+        if self.waiting.is_set():
+            self.responses.put("__cancel__")
 
 
 class EventWriter(io.TextIOBase):
