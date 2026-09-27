@@ -35,14 +35,18 @@ AISPLINE output, approvals, or final-write decisions.
 ## First run and interrupted runs
 
 A first run inventories Artist folders normally and writes the JSON atomically
-in batches. If the run is cancelled or interrupted, completed Artist entries
-remain available. The next run begins its loading banner at the retained cache
-progress and inventories only uncached or changed Artists.
+in batches. The centered **BUILDING ALBUM STATUS INDEX** banner identifies this
+as a one-time setup pass. If the run is cancelled or interrupted, completed
+Artist entries remain available for the next run.
 
 ## Later runs
 
-A complete cache makes Select Media immediately usable. SPLINED validates
-cached directory signatures in the normal background status worker:
+Once the JSON exists, SPLINED shows the same-size **LOADING ALBUM STATUS**
+banner while validating the saved inventory against the current library.
+The progress bar represents this run's real validation progress; cached coverage
+is reported separately and does not falsely force the bar to 100% before
+validation finishes. Select Media becomes interactive when that validation pass
+finishes:
 
 - unchanged Artists reuse the cached inventory;
 - new Artists are inventoried;
