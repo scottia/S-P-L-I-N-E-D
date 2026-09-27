@@ -1949,17 +1949,19 @@ def _render_processing(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     )
     authority_semantic = Semantic.FALLBACK if state.fallback_reason else Semantic.ACCEPTED
     authority_text = state.fallback_reason or state.authority or "Evaluating authority and artwork sources…"
-    if spec.stack_cards:
-        cards = _split_vertical(rows[1], [Constraint.percentage(50), Constraint.percentage(50)])
-    else:
-        cards = _split_horizontal(rows[1], [Constraint.percentage(50), Constraint.percentage(50)])
-    frame.render_widget(
-        Paragraph.from_string(authority_text)
-        .wrap(True, True)
-        .block(card(theme, "AUTHORITY", authority_semantic)),
-        cards[0],
+    # Authority is a compact full-width strip above the live activity region.
+    # Keeping both horizontal prevents the short authority value from consuming
+    # half of the available activity width on WIDE terminals.
+    authority_area, activity_area = _split_vertical(
+        rows[1],
+        [Constraint.length(4), Constraint.fill(1)],
     )
-    _render_activity_region(frame, cards[1], state, theme)
+    frame.render_widget(
+        Paragraph.from_string(_truncate(authority_text, max(1, int(authority_area.width) - 4)))
+        .block(card(theme, "AUTHORITY", authority_semantic)),
+        authority_area,
+    )
+    _render_activity_region(frame, activity_area, state, theme)
 
 
 COLUMN_WIDTHS = {
@@ -2495,8 +2497,8 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     )
     preview_area: Rect | None = None
     if preview_enabled:
-        preview_width = 30 if spec.breakpoint is Breakpoint.WIDE else 20
-        preview_height = 14 if spec.breakpoint is Breakpoint.WIDE else 10
+        preview_width = 40 if spec.breakpoint is Breakpoint.WIDE else 26
+        preview_height = 20 if spec.breakpoint is Breakpoint.WIDE else 14
         area, preview_column = _split_horizontal(
             area,
             [Constraint.fill(1), Constraint.length(preview_width)],
@@ -3068,8 +3070,8 @@ def _render_candidate_preview_modal(
         return
     index = max(0, min(state.preview_modal_index, len(state.candidates) - 1))
     candidate = state.candidates[index]
-    width = min(max(42, int(area.width) - 20), 72)
-    height = min(max(16, int(area.height) - 8), 28)
+    width = min(max(56, int(area.width) - 12), 104)
+    height = min(max(20, int(area.height) - 4), 38)
     popup = Rect(
         int(area.x) + max(0, (int(area.width) - width) // 2),
         int(area.y) + max(0, (int(area.height) - height) // 2),
@@ -3910,7 +3912,15 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "artist-row" and model is not None:
         state.library_focus = 3
         state.artist_index = region.index
-        _open_artist(state, adapter, region.value)
+        # Touch/click on an Artist row performs the Artist selection action.
+        # Keyboard Enter remains the open-only fallback; the explicit checkbox
+        # follows the same cascade path.
+        _open_artist(
+            state,
+            adapter,
+            region.value,
+            select_after_load=True,
+        )
     elif region.target == "artist-checkbox" and model is not None:
         if not _library_input_ready(state, adapter):
             return
