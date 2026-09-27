@@ -2,7 +2,7 @@
 name = "splined-pyratatui-input"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 description = "Minimal crossterm input extension for SPLINED's pyratatui UI"
 license = "MIT"
 publish = false
@@ -17,13 +17,6 @@ image = { version = "=0.25.9", default-features = false, features = ["jpeg", "pn
 pyo3 = { version = "0.28", features = ["abi3-py310", "generate-import-lib"] }
 ratatui = { version = "=0.30.1", default-features = false, features = ["crossterm"] }
 ratatui-image = { version = "=12.0.0-rc.0", default-features = false, features = ["chafa-dyn"] }
-
-# ratatui-image's published semver ranges currently float to newer SIMD/
-# quantization releases whose MSRV exceeds SPLINED's Rust 1.88 builder.
-# Keep the dependency graph aligned with ratatui-image's own current lock.
-quantette = "=0.5.1"
-safe_arch = "=0.9.3"
-wide = "=0.8.3"
 
 [profile.release]
 strip = true
