@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
-use crossterm::cursor::{RestorePosition, SavePosition, Show};
+use crossterm::cursor::{MoveTo, RestorePosition, SavePosition, Show};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseButton, MouseEventKind,
@@ -430,6 +430,26 @@ fn prepare_image_overlay(
 
 
 #[pyfunction]
+fn clear_image_area(x: u16, y: u16, width: u16, height: u16) -> PyResult<()> {
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let mut stdout = io::stdout();
+    execute!(stdout, SavePosition).map_err(input_error)?;
+    for row in 0..height {
+        execute!(stdout, MoveTo(x, y.saturating_add(row))).map_err(input_error)?;
+        // ECH is the same terminal-cell erasure primitive ratatui-image uses
+        // before Sixel/iTerm2 placement.  Using it here removes stale native
+        // image pixels before Ratatui repaints the underlying view.
+        write!(stdout, "\x1b[{width}X").map_err(input_error)?;
+    }
+    execute!(stdout, RestorePosition).map_err(input_error)?;
+    stdout.flush().map_err(input_error)?;
+    Ok(())
+}
+
+
+#[pyfunction]
 fn emergency_restore() -> PyResult<()> {
     // Safe to call after partial initialization: each operation is idempotent
     // enough for a terminal cleanup path and later failures do not prevent the
@@ -527,6 +547,7 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyInputEvent>()?;
     module.add_class::<ImageOverlay>()?;
     module.add_function(wrap_pyfunction!(prepare_image_overlay, module)?)?;
+    module.add_function(wrap_pyfunction!(clear_image_area, module)?)?;
     module.add_function(wrap_pyfunction!(emergency_restore, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
