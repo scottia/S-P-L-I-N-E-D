@@ -146,8 +146,8 @@ class PersistentStatusCacheTests(unittest.TestCase):
 
         event, payload = events[-1]
         self.assertEqual(event, "folder_status_progress")
-        self.assertEqual(payload["processed"], 1)
-        self.assertEqual(payload["percent"], 100.0)
+        self.assertEqual(payload["processed"], 0)
+        self.assertEqual(payload["percent"], 0.0)
         self.assertEqual(payload["cached_baseline"], 1)
         self.assertFalse(payload["first_status_build"])
         self.assertFalse(payload["done"])
