@@ -3,16 +3,17 @@
 SPLINED keeps a status-only JSON cache at:
 
 ```text
-<_cache>/select-media-status.json
+<_history>/select-media-status.json
 ```
 
 With the default Docker paths this is:
 
 ```text
-/_cache/select-media-status.json
+/_logs/_history/select-media-status.json
 ```
 
-The cache accelerates the Artist-status readiness pass. It is **not** the
+The cache accelerates the Artist-status readiness pass and deliberately lives
+outside the transient candidate cache so normal run-cache cleanup cannot erase it. It is **not** the
 retired SQLite picker cache and is not selection or execution authority.
 
 ## Stored data
@@ -50,5 +51,5 @@ cached directory signatures in the normal background status worker:
 - current completion history, bypass state and timeout policy are still applied
   fresh on every run.
 
-The cache may be deleted safely. SPLINED will rebuild it without changing
-library files, history, or selection policy.
+The file may be deleted safely. SPLINED will rebuild it without changing
+library files, completion/bypass history, or selection policy.
