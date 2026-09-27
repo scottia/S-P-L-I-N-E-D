@@ -719,7 +719,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             response = json.loads(adapter.responses.get_nowait())
             self.assertEqual(response["scan_mode"], mode)
 
-    def test_filtered_scan_mouse_launch_keeps_multiple_artist_checkbox_scope(self) -> None:
+    def test_filtered_scan_mouse_launch_keeps_multiple_artist_row_scope(self) -> None:
         state = _library_state(artists=3, albums_each=2)
         adapter = TuiAdapter()
         adapter.waiting.set()
