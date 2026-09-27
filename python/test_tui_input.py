@@ -425,7 +425,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         handle_mouse(
             state,
             adapter,
-            _center(_region(state, "album-checkbox", 0)),
+            _center(_region(state, "album-row", 0)),
         )
         self.assertEqual(album.selected, before)
         self.assertTrue(adapter.responses.empty())
