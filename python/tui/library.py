@@ -176,11 +176,18 @@ class LibraryModel:
                 )
             except ValueError:
                 base_status = None
+            # Production payloads publish the Artist aggregate from the
+            # authoritative engine status/history path.  Do not reinterpret
+            # that state in the TUI.  The local aggregate is only a compatibility
+            # fallback for older/test payloads that omit Artist status.
+            effective_status = base_status
+            if effective_status is None and loaded and children:
+                effective_status = artist_status(children)
             artists.append(
                 ArtistItem(
                     str(raw.get("path", "")),
                     name,
-                    artist_status(children) if loaded and children else base_status,
+                    effective_status,
                     int(raw.get("album_count", len(children))),
                     sum(child.selected for child in children),
                     indexed,
@@ -342,7 +349,11 @@ class LibraryModel:
             if self.artist_filter.casefold() not in base.name.casefold():
                 continue
             children = groups.get(base.name, [])
-            aggregate = artist_status(children) if base.loaded and children else base.status
+            # base.status is engine-authoritative whenever supplied.  A local
+            # aggregate exists only for compatibility payloads with no status.
+            aggregate = base.status
+            if aggregate is None and base.loaded and children:
+                aggregate = artist_status(children)
             if aggregate is not None and aggregate not in self.artist_status_filters:
                 continue
             rows.append(
