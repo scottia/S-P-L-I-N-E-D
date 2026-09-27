@@ -16,6 +16,7 @@ from typing import Any, Iterator, Protocol
 class Adapter(Protocol):
     def emit(self, event: str, payload: dict[str, Any]) -> None: ...
     def read(self, prompt: str, context: dict[str, Any]) -> str: ...
+    def cancelled(self) -> bool: ...
 
 
 _lock = threading.RLock()
@@ -47,6 +48,16 @@ def emit(event: str, **payload: Any) -> None:
         adapter = _adapter
     if adapter is not None:
         adapter.emit(event, payload)
+
+
+def cancelled() -> bool:
+    """Return whether the active TUI requested operational cancellation."""
+    with _lock:
+        adapter = _adapter
+    if adapter is None:
+        return False
+    checker = getattr(adapter, "cancelled", None)
+    return bool(checker()) if callable(checker) else False
 
 
 def read_input(prompt: str = "", **context: Any) -> str:
