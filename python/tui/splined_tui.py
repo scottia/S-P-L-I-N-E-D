@@ -1727,17 +1727,34 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         .block(card(theme, "", Semantic.WARNING)),
         panels[3],
     )
-    if int(panels[3].width) > 8:
-        launch_title = spectral_title(theme, title=SPLINED_TITLE)
-        launch_title.spans.append(
-            Span(" LAUNCH ", style(theme, Semantic.WARNING, bold=True))
+    if int(panels[3].width) > len(SPLINED_TITLE) + 10:
+        title_x = int(panels[3].x) + 2
+        frame.render_widget(
+            Paragraph(Text([spectral_title(theme, title=SPLINED_TITLE)])),
+            Rect(
+                title_x,
+                int(panels[3].y),
+                len(SPLINED_TITLE) + 1,
+                1,
+            ),
         )
         frame.render_widget(
-            Paragraph(Text([launch_title])),
+            Paragraph.from_string(" LAUNCH ").style(
+                style(theme, Semantic.WARNING, bold=True)
+            ),
             Rect(
-                int(panels[3].x) + 2,
+                title_x + len(SPLINED_TITLE),
                 int(panels[3].y),
-                max(1, int(panels[3].width) - 4),
+                min(
+                    9,
+                    max(
+                        1,
+                        int(panels[3].x + panels[3].width)
+                        - title_x
+                        - len(SPLINED_TITLE)
+                        - 1,
+                    ),
+                ),
                 1,
             ),
         )
@@ -2253,7 +2270,7 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
     spec = layout_spec(area.width, area.height)
     if spec.stack_cards:
         controls, lower = _split_vertical(
-            area, [Constraint.length(20), Constraint.fill(1)]
+            area, [Constraint.length(26), Constraint.fill(1)]
         )
         picker_height = max(6, int(lower.height) // 2)
         pickers, side = _split_vertical(
