@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 crossterm = "0.29"
 image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png", "webp"] }
 pyo3 = { version = "0.28", features = ["abi3-py310", "generate-import-lib"] }
-ratatui = { version = "=0.30.1", default-features = false }
+ratatui = { version = "=0.30.1", default-features = false, features = ["crossterm"] }
 ratatui-image = { version = "=12.0.0-rc.0", default-features = false, features = ["chafa-dyn"] }
 
 # ratatui-image's published semver ranges currently float to newer SIMD/
