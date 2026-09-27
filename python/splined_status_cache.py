@@ -24,7 +24,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_FILE = "select-media-status.json"
 SAVE_BATCH = 16
 SAVE_INTERVAL_SECONDS = 2.0
@@ -38,6 +38,10 @@ _CURRENT_BASELINE = 0
 _CURRENT_TOTAL = 0
 _CURRENT_FIRST_RUN = False
 _INSTALLED = False
+_VALIDATION_STARTED = 0.0
+_VALIDATION_CHECKED = 0
+_VALIDATION_UNCHANGED = 0
+_VALIDATION_RESCANNED = 0
 
 
 def _config_path() -> Path:
@@ -166,9 +170,8 @@ def _save_locked(*, force: bool = False) -> None:
         return
     _PAYLOAD["version"] = CACHE_VERSION
     _PAYLOAD["updated_at_unix"] = time.time()
-    body = (json.dumps(_PAYLOAD, indent=2, sort_keys=True) + "\n").encode(
-        "utf-8"
-    )
+    # Machine-owned cache: compact JSON reduces parse/write overhead.
+    body = (json.dumps(_PAYLOAD, separators=(",", ":")) + "\n").encode("utf-8")
     _atomic_write(_CACHE_PATH, body)
     _DIRTY = 0
     _LAST_SAVE = now
@@ -194,6 +197,42 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+def _structural_snapshot(root: Path) -> dict[str, int]:
+    """Snapshot only the Artist root and its immediate structural directories."""
+    paths: list[Path] = [root]
+    try:
+        with os.scandir(root) as iterator:
+            for item in iterator:
+                try:
+                    if not item.is_symlink() and item.is_dir(follow_symlinks=False):
+                        paths.append(Path(item.path))
+                except OSError:
+                    continue
+    except OSError:
+        return {}
+
+    snapshot: dict[str, int] = {}
+    for path in sorted(paths, key=lambda value: str(value).casefold()):
+        try:
+            snapshot[str(path)] = path.stat().st_mtime_ns
+        except OSError:
+            return {}
+    return snapshot
+
+
+def _sentinels_match(root: Path, entry: dict[str, Any]) -> bool:
+    sentinels = entry.get("structural_sentinels")
+    if not isinstance(sentinels, dict) or not sentinels:
+        return False
+    current = _structural_snapshot(root)
+    if not current or current.keys() != sentinels.keys():
+        return False
+    try:
+        return all(current[path] == int(value) for path, value in sentinels.items())
+    except (TypeError, ValueError):
+        return False
+
+
 def _entry_albums(
     core: ModuleType,
     root: Path,
@@ -205,17 +244,11 @@ def _entry_albums(
     if not isinstance(directories, dict) or not isinstance(raw_albums, list):
         return None
 
-    for raw_path, raw_mtime in directories.items():
-        directory = Path(str(raw_path))
-        if not _inside(directory, root):
-            return None
-        try:
-            current = directory.stat().st_mtime_ns
-            expected = int(raw_mtime)
-        except (OSError, TypeError, ValueError):
-            return None
-        if current != expected:
-            return None
+    # Version 2 uses shallow structural sentinels as the normal fast path.
+    # A sentinel mismatch is intentionally a cache miss: the caller performs
+    # the authoritative deep inventory for that Artist and rewrites the entry.
+    if not _sentinels_match(root, entry):
+        return None
 
     albums: list[Any] = []
     for raw in raw_albums:
@@ -301,17 +334,69 @@ def _cache_entry(
         "inventory_key": inventory_key,
         "complete": True,
         "directories": _directory_snapshot(root, albums),
+        "structural_sentinels": _structural_snapshot(root),
         "albums": [
             {
                 "path": str(album.path),
                 "audio": [str(path) for path in album.audio_files],
                 "local_art": [str(path) for path in album.local_art_files],
                 "inventory_fingerprint": album.inventory_fingerprint,
+                "status": None,
+                "status_updated_at_unix": 0.0,
             }
             for album in albums
         ],
         "updated_at_unix": time.time(),
     }
+
+
+def _persist_live_statuses(payload: dict[str, Any]) -> int:
+    """Persist visible Album status transitions synchronously during a session."""
+    rows = payload.get("albums")
+    if not isinstance(rows, list) or not rows:
+        return 0
+    cache_payload, _path = _ensure_loaded()
+    artists = cache_payload.get("artists", {})
+    if not isinstance(artists, dict):
+        return 0
+
+    by_album: dict[str, dict[str, Any]] = {}
+    for entry in artists.values():
+        if not isinstance(entry, dict):
+            continue
+        albums = entry.get("albums")
+        if not isinstance(albums, list):
+            continue
+        for album in albums:
+            if isinstance(album, dict):
+                path = str(album.get("path", ""))
+                if path:
+                    by_album[path] = album
+
+    changed = 0
+    now = time.time()
+    global _DIRTY
+    with _LOCK:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("path", ""))
+            status = str(row.get("status", "")).strip().casefold()
+            cached = by_album.get(path)
+            if cached is None or status not in {
+                "unprocessed", "processed", "bypassed", "timeout"
+            }:
+                continue
+            if cached.get("status") != status:
+                cached["status"] = status
+                cached["status_updated_at_unix"] = now
+                changed += 1
+        if changed:
+            _DIRTY += changed
+            # Status transitions are correctness-sensitive across relaunches:
+            # commit them atomically now rather than waiting for batch/exit.
+            _save_locked(force=True)
+    return changed
 
 
 def _should_cache_status_inventory(
@@ -408,6 +493,9 @@ def install_core_patch(core: ModuleType) -> None:
         ):
             cached = _entry_albums(core, root, entry, fingerprints)
             if cached is not None:
+                global _VALIDATION_CHECKED, _VALIDATION_UNCHANGED
+                _VALIDATION_CHECKED += 1
+                _VALIDATION_UNCHANGED += 1
                 core.debug_log(
                     f"picker.status_cache.hit artist={str(root)!r} albums={len(cached)}"
                 )
@@ -432,6 +520,9 @@ def install_core_patch(core: ModuleType) -> None:
                     _save_locked(force=False)
                 except (OSError, TypeError, ValueError):
                     pass
+        global _VALIDATION_CHECKED, _VALIDATION_RESCANNED
+        _VALIDATION_CHECKED += 1
+        _VALIDATION_RESCANNED += 1
         core.debug_log(
             f"picker.status_cache.miss artist={str(root)!r} albums={len(albums)}"
         )
@@ -439,6 +530,14 @@ def install_core_patch(core: ModuleType) -> None:
 
     def cached_emit_ui(event: str, **payload: Any) -> None:
         global _CURRENT_BASELINE, _CURRENT_TOTAL, _CURRENT_FIRST_RUN
+        global _VALIDATION_STARTED, _VALIDATION_CHECKED
+        global _VALIDATION_UNCHANGED, _VALIDATION_RESCANNED
+        if event in {"library", "library_update"}:
+            changed = _persist_live_statuses(payload)
+            if changed:
+                core.debug_log(
+                    f"picker.status_cache.live_status_saved albums={changed}"
+                )
         if event == "folder_status_progress":
             try:
                 total = max(0, int(payload.get("total", 0) or 0))
@@ -446,6 +545,10 @@ def install_core_patch(core: ModuleType) -> None:
             except (TypeError, ValueError):
                 total = processed = 0
             if processed == 0 and total > 0 and not bool(payload.get("done", False)):
+                _VALIDATION_STARTED = time.perf_counter()
+                _VALIDATION_CHECKED = 0
+                _VALIDATION_UNCHANGED = 0
+                _VALIDATION_RESCANNED = 0
                 cached_payload, cache_path = _ensure_loaded()
                 del cached_payload
                 _CURRENT_TOTAL = total
@@ -466,6 +569,26 @@ def install_core_patch(core: ModuleType) -> None:
             # the starting coverage/progress; the worker's real done=True
             # remains authoritative for banner dismissal.
         original_emit_ui(event, **payload)
+        if event == "folder_status_progress" and bool(payload.get("done", False)):
+            elapsed = max(0.0, time.perf_counter() - _VALIDATION_STARTED)
+            checked = _VALIDATION_CHECKED
+            unchanged = _VALIDATION_UNCHANGED
+            rescanned = _VALIDATION_RESCANNED
+            changed = rescanned
+            message = (
+                "Album status cache: "
+                f"{checked:,} Artists checked · {unchanged:,} unchanged · "
+                f"{changed:,} changed · {rescanned:,} rescanned · "
+                f"validation: {elapsed:.1f}s"
+            )
+            core.debug_log(message)
+            original_emit_ui(
+                "activity",
+                category="inventory",
+                state="done",
+                source="status-cache",
+                message=message,
+            )
 
     core.inventory = cached_inventory
     core.emit_ui = cached_emit_ui
