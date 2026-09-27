@@ -5109,10 +5109,26 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         dirty = False
                     event = input_reader.poll_event(timeout_ms=80)
                     if event is not None:
-                        if str(getattr(event, "kind", "key")) == "mouse":
+                        event_kind = str(getattr(event, "kind", "key"))
+                        if event_kind == "mouse":
                             handle_mouse(state, adapter, event)
-                        elif str(getattr(event, "kind", "key")) == "key":
+                        elif event_kind == "key":
                             handle_key(state, adapter, event)
+                        elif event_kind == "resize":
+                            if state.remote_drawn_rect is not None:
+                                _clear_stale_remote_overlay(
+                                    state
+                                )
+                                if state.remote_drawn_rect is not None:
+                                    if native_clear_image_area is not None:
+                                        try:
+                                            native_clear_image_area(
+                                                *state.remote_drawn_rect
+                                            )
+                                        except Exception:
+                                            pass
+                                    state.remote_drawn_rect = None
+                            state.remote_preview_rect = None
                         dirty = True
         except BaseException as exc:
             if thread.ident is None:
