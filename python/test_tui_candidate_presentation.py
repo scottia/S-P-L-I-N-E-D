@@ -22,7 +22,6 @@ from tui.splined_tui import (
     TuiState,
     _candidate_preview,
     _candidate_value,
-    _ratatui_remote_preview,
     _render_candidates,
 )
 from tui.theme import select_theme
@@ -285,34 +284,23 @@ class SuggestedCandidateRankingTests(unittest.TestCase):
 
 
 class RatatuiImageRemotePreviewTests(unittest.TestCase):
-    def test_remote_preview_uses_native_ratatui_image_cells(self) -> None:
-        encoded = (
-            2,
-            1,
-            [
-                ("▀", (10, 20, 30), (40, 50, 60)),
-                ("▄", (70, 80, 90), (100, 110, 120)),
-            ],
+    def test_remote_overlay_event_is_kept_in_memory_only(self) -> None:
+        state = TuiState()
+        state.remote_hover_index = 1
+        state.remote_hover_token = 7
+        overlay = mock.sentinel.native_overlay
+        state.apply(
+            "remote_hover_preview",
+            {
+                "token": 7,
+                "index": 1,
+                "url": "https://example.test/live.jpg",
+                "overlay": overlay,
+                "error": "",
+            },
         )
-        with mock.patch(
-            "tui.splined_tui.native_render_image_cells",
-            return_value=encoded,
-        ) as renderer:
-            preview = _ratatui_remote_preview(
-                b"remote-image-bytes",
-                width=2,
-                height=1,
-            )
-        renderer.assert_called_once_with(
-            b"remote-image-bytes",
-            2,
-            1,
-            1000,
-        )
-        self.assertEqual(preview.width, 2)
-        self.assertEqual(preview.height, 1)
-        self.assertEqual(preview.rows[0][0].glyph, "▀")
-        self.assertEqual(preview.rows[0][1].background, (100, 110, 120))
+        self.assertIs(state.remote_hover_overlay, overlay)
+        self.assertFalse(state.remote_hover_loading)
 
 
 class BrowserUrlProjectionTests(unittest.TestCase):
