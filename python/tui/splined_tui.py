@@ -1449,12 +1449,10 @@ def _interactive_row_style(
     result = style(
         theme,
         semantic,
-        bold=selected or focused,
+        bold=selected,
     )
     if hovered:
         result = result.bg(Color.rgb(*theme.color("muted")))
-    elif selected:
-        result = result.bg(Color.rgb(*theme.color("disabled")))
     return result
 
 
