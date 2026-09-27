@@ -2832,6 +2832,7 @@ def run_musicbrainz_login(config_file: Path, cfg: dict[str, Any]) -> int:
 
 
 def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str) -> Release:
+    lookup_started = time.perf_counter()
     headers, _ = mb_headers(config_file, cfg)
     mbcfg = musicbrainz_settings(config_file, cfg)
     if not mbcfg["enabled"]:
@@ -2855,6 +2856,7 @@ def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str
             if wait > 0:
                 time.sleep(wait)
 
+        attempt_started = time.perf_counter()
         try:
             http.last_mb_request = time.monotonic()
             r = http.get(
@@ -2942,12 +2944,23 @@ def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str
             track_count=track_count if found_count else None,
             external_urls=external_urls,
         )
+        attempt_elapsed = time.perf_counter() - attempt_started
+        total_elapsed = time.perf_counter() - lookup_started
+        debug_log(
+            "musicbrainz.lookup.done "
+            f"mbid={mbid} attempt={attempt + 1}/{retry_max + 1} "
+            f"attempt_elapsed={attempt_elapsed:.3f}s "
+            f"total_elapsed={total_elapsed:.3f}s"
+        )
         emit_ui(
             "activity",
             category="authority",
             state="done",
             source="musicbrainz",
-            message=f"Authority resolved · {release.artist_credit} · {release.title}",
+            message=(
+                f"Authority resolved in {total_elapsed:.2f}s · "
+                f"{release.artist_credit} · {release.title}"
+            ),
         )
         return release
 
