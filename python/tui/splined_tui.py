@@ -502,6 +502,12 @@ class TuiState:
             self.report_scroll = 0
         elif event == "album":
             path = str(payload.get("path", ""))
+            self.remote_hover_token += 1
+            self.remote_hover_index = -1
+            self.remote_hover_url = ""
+            self.remote_hover_preview = None
+            self.remote_hover_loading = False
+            self.remote_hover_error = ""
             # Candidate cache files can reuse names between Albums.  Identity
             # and decoded terminal previews therefore belong to one Album
             # decision only, while each frame inside that decision remains
@@ -549,6 +555,12 @@ class TuiState:
             self.activity.clear()
         elif event == "candidates":
             self.workflow = "candidates"
+            self.remote_hover_token += 1
+            self.remote_hover_index = -1
+            self.remote_hover_url = ""
+            self.remote_hover_preview = None
+            self.remote_hover_loading = False
+            self.remote_hover_error = ""
             self.candidates = [
                 CandidateView.from_payload(item)
                 for item in payload.get("items", [])
