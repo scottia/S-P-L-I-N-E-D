@@ -44,10 +44,12 @@ read Album folders only when an Artist or explicit bulk action requires them
 ```
 
 No SQLite snapshot or background full-library cache validation is required for
-the folder list. Before Select Media is first painted, Python completes a lightweight
-**folder-status readiness pass** that inspects directory/file names and retained
-history only. This prevents Artist rows from appearing provisional/grey and
-then slowly recoloring after the workspace is already visible.
+the folder list. Select Media paints immediately, but a centered **LOADING ARTIST STATUS**
+readiness banner blocks interaction while the lightweight status pass inspects
+directory/file names and retained history. The banner reports real
+Artist-completion percentage and disappears only when the status pass is done,
+preventing the visible grey/White-to-Green repaint wave from looking like a
+usable-but-incomplete picker.
 
 The readiness pass does not populate Album picker topology, read tags, query
 MusicBrainz/providers, decode candidate artwork, rank candidates, or create a
