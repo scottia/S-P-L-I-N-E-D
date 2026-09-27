@@ -2748,10 +2748,25 @@ def _candidate_preview(
     return state.preview_cache[key]
 
 
-def _start_remote_hover_preview(
+def _preferred_candidate_index(state: TuiState) -> int:
+    if not state.candidates:
+        return -1
+    return next(
+        (
+            index
+            for index, candidate in enumerate(state.candidates)
+            if candidate.suggested
+        ),
+        max(0, min(state.selected_index, len(state.candidates) - 1)),
+    )
+
+
+def _start_remote_source_preview(
     state: TuiState,
     adapter: TuiAdapter,
     candidate_index: int,
+    *,
+    hover_active: bool,
 ) -> None:
     if not 0 <= candidate_index < len(state.candidates):
         return
@@ -2766,9 +2781,17 @@ def _start_remote_hover_preview(
     token = state.remote_hover_token
     state.remote_hover_index = candidate_index
     state.remote_hover_url = candidate.url
+    state.remote_hover_active = hover_active
+    state.remote_hover_error = ""
+
+    cached = state.remote_overlay_cache.get(candidate.url)
+    if cached is not None:
+        state.remote_hover_overlay = cached
+        state.remote_hover_loading = False
+        return
+
     state.remote_hover_overlay = None
     state.remote_hover_loading = True
-    state.remote_hover_error = ""
     width = max(1, state.remote_preview_width)
     height = max(1, state.remote_preview_height)
     url = candidate.url
@@ -2795,10 +2818,6 @@ def _start_remote_hover_preview(
                     body.extend(chunk)
                     if len(body) > 25 * 1024 * 1024:
                         raise RuntimeError("remote preview exceeds 25 MiB limit")
-            # The exact browser/source URL response is decoded entirely in
-            # memory. ratatui-image renders through the protocol detected at
-            # TUI startup (Kitty/Sixel/iTerm2, with Halfblocks only as the
-            # terminal fallback). No cache/sample file is created.
             overlay = native_prepare_image_overlay(
                 bytes(body),
                 width,
@@ -2821,42 +2840,123 @@ def _start_remote_hover_preview(
 
     threading.Thread(
         target=worker,
-        name="splined-url-hover-preview",
+        name="splined-url-preview",
         daemon=True,
     ).start()
 
 
-def _clear_remote_hover_preview(state: TuiState) -> None:
-    if state.remote_hover_index < 0 and not state.remote_hover_loading:
+def _start_remote_hover_preview(
+    state: TuiState,
+    adapter: TuiAdapter,
+    candidate_index: int,
+) -> None:
+    _start_remote_source_preview(
+        state,
+        adapter,
+        candidate_index,
+        hover_active=True,
+    )
+
+
+def _start_preferred_preview(
+    state: TuiState,
+    adapter: TuiAdapter,
+) -> None:
+    index = _preferred_candidate_index(state)
+    if not 0 <= index < len(state.candidates):
         return
+    candidate = state.candidates[index]
+    if candidate.provenance != "[URL]" or not candidate.url:
+        return
+    if (
+        state.remote_hover_index == index
+        and state.remote_hover_url == candidate.url
+        and (
+            state.remote_hover_overlay is not None
+            or state.remote_hover_loading
+        )
+        and not state.remote_hover_active
+    ):
+        return
+    _start_remote_source_preview(
+        state,
+        adapter,
+        index,
+        hover_active=False,
+    )
+
+
+def _clear_remote_hover_preview(
+    state: TuiState,
+    adapter: TuiAdapter | None = None,
+) -> None:
+    if adapter is not None and state.candidates:
+        state.remote_hover_active = False
+        preferred = _preferred_candidate_index(state)
+        if 0 <= preferred < len(state.candidates):
+            candidate = state.candidates[preferred]
+            if candidate.provenance == "[URL]" and candidate.url:
+                _start_remote_source_preview(
+                    state,
+                    adapter,
+                    preferred,
+                    hover_active=False,
+                )
+                return
+
     state.remote_hover_token += 1
     state.remote_hover_index = -1
     state.remote_hover_url = ""
     state.remote_hover_overlay = None
     state.remote_hover_loading = False
     state.remote_hover_error = ""
+    state.remote_hover_active = False
     state.remote_preview_rect = None
 
 
+def _remote_overlay_is_visible(state: TuiState) -> bool:
+    return bool(
+        state.tab == "main"
+        and state.workflow in {"candidates", "picker"}
+        and state.remote_hover_overlay is not None
+        and state.remote_preview_rect is not None
+        and state.remote_hover_index >= 0
+    )
+
+
+def _clear_stale_remote_overlay(state: TuiState) -> None:
+    drawn = state.remote_drawn_rect
+    if drawn is None:
+        return
+    if (
+        _remote_overlay_is_visible(state)
+        and state.remote_preview_rect == drawn
+    ):
+        return
+    if native_clear_image_area is not None:
+        try:
+            native_clear_image_area(*drawn)
+        except Exception:
+            pass
+    state.remote_drawn_rect = None
+
+
 def _draw_remote_hover_overlay(state: TuiState) -> None:
-    # Native terminal graphics must never be painted outside the main
-    # candidate workspace.  Unlike ordinary Ratatui cells, Sixel/Kitty/iTerm2
-    # graphics can survive a subsequent text-buffer redraw, so stale hover
-    # state must not bleed into Logs/History/Run Report views.
-    if state.tab != "main" or state.workflow not in {"candidates", "picker"}:
+    if not _remote_overlay_is_visible(state):
         return
     overlay = state.remote_hover_overlay
     rect = state.remote_preview_rect
-    if overlay is None or rect is None or state.remote_hover_index < 0:
-        return
+    assert overlay is not None and rect is not None
     x, y, width, height = rect
     if width <= 0 or height <= 0:
         return
     try:
         overlay.draw(x, y)
+        state.remote_drawn_rect = rect
     except Exception as exc:
         state.remote_hover_error = str(exc)
         state.remote_hover_overlay = None
+
 
 
 def _render_prepared_preview(
