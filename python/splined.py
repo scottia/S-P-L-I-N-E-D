@@ -1632,16 +1632,16 @@ def prepare_tui_library_selection(
             artist_path = str(row.get("artist_path", ""))
             rows_by_artist.setdefault(artist_path, []).append(status)
 
-        history_bypass_artists = {
-            artist_path
-            for artist_path, status in known_history.values()
-            if status == "bypassed"
-        }
+        history_by_artist: dict[str, list[str]] = {}
+        for _path, (artist_path, status) in known_history.items():
+            history_by_artist.setdefault(artist_path, []).append(status)
+
         for artist in artist_rows:
             artist_path = str(artist.get("path", ""))
             statuses = rows_by_artist.get(artist_path, [])
             aggregate: str | None = None
             if bool(artist.get("loaded", False)):
+                # Loaded topology is exact and replaces history-only inference.
                 if statuses and "bypassed" in statuses:
                     aggregate = "contains-bypass"
                 elif statuses and all(
@@ -1654,14 +1654,21 @@ def prepare_tui_library_selection(
                     aggregate = "partial"
                 elif statuses:
                     aggregate = "unprocessed"
-            elif artist_path in history_bypass_artists:
-                # One retained bypass is sufficient to know this aggregate
-                # even before the rest of the Artist folder is inventoried.
-                aggregate = "contains-bypass"
+            else:
+                # Direct/lazy startup deliberately does not recurse into every
+                # Artist.  Use retained operational history as the initial
+                # folder-state authority, then refine it when the Artist is
+                # actually opened.
+                retained = history_by_artist.get(artist_path, [])
+                if "bypassed" in retained:
+                    aggregate = "contains-bypass"
+                elif retained:
+                    aggregate = "complete"
+                else:
+                    aggregate = "unprocessed"
 
             artist["status"] = aggregate
-            if aggregate is not None:
-                artist_counts[aggregate] += 1
+            artist_counts[aggregate] += 1
 
         return album_counts, artist_counts
 
