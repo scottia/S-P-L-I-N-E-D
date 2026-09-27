@@ -656,7 +656,16 @@ terminal's supported graphics backend when available:
 - Halfblocks only when the terminal exposes no supported graphics protocol.
 
 The active backend is shown in the live preview title and written to the debug
-log. The hover fetch is bounded, uses no `/_cache` or sample file, writes
-nothing to disk, and is discarded when the pointer leaves the URL cell. Source
-images are constrained to a 1000×1000 maximum decode/render working size for
-the hover surface.
+log.
+
+WebSSH is a special compatibility case: it renders SIXEL but deliberately does
+not advertise SIXEL through the DA1 response that ratatui-image normally uses.
+When normal picker detection returns Halfblocks, SPLINED therefore performs an
+XTSMGRAPHICS color-register query. A positive response upgrades the picker to
+SIXEL; terminals that do not answer remain on the normal ratatui-image
+fallback.
+
+The hover fetch is bounded, uses no `/_cache` or sample file, writes nothing to
+disk, and is discarded when the pointer leaves the URL cell. Source images are
+constrained to a 1000×1000 maximum decode/render working size for the hover
+surface.
