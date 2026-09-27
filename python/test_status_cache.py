@@ -255,6 +255,33 @@ class PersistentStatusCacheTests(unittest.TestCase):
         self.assertIn("0 rescanned", activity[-1]["message"])
 
 
+    def test_cached_artist_statuses_returns_live_statuses_for_unchanged_artist(self) -> None:
+        core, _calls, _events = self._core()
+        with mock.patch.object(
+            cachemod,
+            "_runtime_settings",
+            return_value=(self.history, self.library, [], "cover"),
+        ):
+            cachemod.install_core_patch(core)
+            core.inventory(self.artist, [], "cover", workers=1)
+            cachemod.flush()
+            core.emit_ui(
+                "library_update",
+                albums=[{"path": str(self.album), "status": "processed"}],
+            )
+            cached = cachemod.cached_artist_statuses(self.artist, [], "cover")
+            self.assertIsNotNone(cached)
+            assert cached is not None
+            statuses, artist_path = cached
+            self.assertEqual(statuses, ["processed"])
+            self.assertEqual(artist_path, str(self.artist))
+
+            (self.artist / "New Album").mkdir()
+            self.assertIsNone(
+                cachemod.cached_artist_statuses(self.artist, [], "cover")
+            )
+
+
 
 if __name__ == "__main__":
     unittest.main()
