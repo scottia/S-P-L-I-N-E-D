@@ -1,7 +1,8 @@
 FROM rust:1.88-slim-bookworm AS pyratatui-input-builder
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-venv \
+    && apt-get install -y --no-install-recommends \
+        python3 python3-venv pkg-config libchafa-dev \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/maturin
 
@@ -11,7 +12,6 @@ COPY pyratatui_input /build/pyratatui_input
 RUN /opt/maturin/bin/maturin build \
         --manifest-path /build/pyratatui_input/Cargo.toml \
         --release \
-        --locked \
         --out /wheels
 
 
@@ -20,7 +20,7 @@ FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e2
 ARG SPLINED_BUILD_CHANNEL=dev
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends micro \
+    && apt-get install -y --no-install-recommends micro libchafa0 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
