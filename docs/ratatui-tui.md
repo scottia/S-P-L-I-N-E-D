@@ -123,10 +123,16 @@ apply hidden/ignored directory rules
 render Artist Picker immediately
 ```
 
-No SQLite picker snapshot, complete Album inventory, or background
-whole-library validation is required to render Select Media. The configured
+No SQLite picker snapshot, blocking complete Album inventory, or background
+picker-cache validation is required to render Select Media. The configured
 cache directory remains available to SPLINED for candidate/sample data, but it
 is not an authority or prerequisite for the Artist folder list.
+
+After first paint, a non-blocking folder-status probe may traverse folder/file
+names plus retained history to resolve initial Artist colors, including
+local-artwork-only Processed Albums. That probe does not add Albums to the
+resident picker model; opening an Artist remains the authoritative topology
+load.
 
 Album topology is loaded lazily:
 
@@ -158,10 +164,10 @@ Artist display identity = Artist folder name
 Album display identity  = Album folder name
 ```
 
-Before Launch, folder inventory may enumerate directories and filenames,
-identify supported audio extensions, detect local artwork by filename, apply
-ignored-directory rules, and reconcile retained history/bypass/timeout state
-for Albums that have actually been loaded. It must not perform Mutagen tag
+Before Launch, folder inventory/status probing may enumerate directories and
+filenames, identify supported audio extensions, detect local artwork by
+filename, apply ignored-directory rules, and reconcile retained
+history/bypass/timeout state. It must not perform Mutagen tag
 parsing, MusicBrainz lookup, provider discovery, artwork download, image
 decoding/ranking/transformation, or AISPLINE work.
 
