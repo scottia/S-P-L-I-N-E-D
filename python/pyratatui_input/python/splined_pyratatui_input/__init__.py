@@ -1,6 +1,12 @@
 """Crossterm event extension used alongside pyratatui 0.3.0."""
 
-from ._native import EventReader, InputEvent, __version__, emergency_restore
+from ._native import (
+    EventReader,
+    InputEvent,
+    __version__,
+    emergency_restore,
+    render_image_cells,
+)
 
 # MouseEvent is the public compatibility name requested by the TUI contract.
 # The native value remains one compact event record because EventReader also
@@ -12,5 +18,6 @@ __all__ = [
     "InputEvent",
     "MouseEvent",
     "emergency_restore",
+    "render_image_cells",
     "__version__",
 ]
