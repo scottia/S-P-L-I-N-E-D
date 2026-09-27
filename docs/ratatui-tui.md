@@ -98,12 +98,13 @@ meaning or precedence.
 ## Library selection workspace
 
 The TUI includes an interactive library-selection workspace modeled on the
-Windows Select Media behavior. Wide terminals present the three control
-regions across the top, followed by the three library regions:
+Windows Select Media behavior. Wide terminals present four operational control regions across the top,
+followed by the three library regions:
 
-- Album Status Mode;
-- Album Select Mode;
-- Scan Mode;
+- Folder Status;
+- Album Selection;
+- Album Scanning — Auto Scan [ALL] / Auto Scan [SELECTED];
+- S:P:L:I:N:E:D Launch — Launch [READ] Source Results / Launch [LIVE WRITE] Choice Results;
 - Artist Picker;
 - Album Picker;
 - Media Library Statistics;
@@ -128,10 +129,12 @@ picker-cache validation is required to render Select Media. The configured
 cache directory remains available to SPLINED for candidate/sample data, but it
 is not an authority or prerequisite for the Artist folder list.
 
-Select Media paints immediately, then a centered blocking **LOADING ARTIST
-STATUS** banner reports the lightweight folder-status readiness pass. The
-banner shows real Artist progress and prevents selection/scan interaction until
-status loading finishes; Ctrl+C remains available. The readiness pass inspects
+Select Media paints behind a centered blocking status-readiness banner. On the
+first run, **BUILDING ALBUM STATUS INDEX** explicitly identifies the one-time
+persistent JSON build. Once that JSON exists, later runs use **LOADING ALBUM
+STATUS** while validating saved Artist/Album differences. Both banners show the
+real validation percentage and block selection/launch interaction until the
+current pass is complete; Ctrl+C remains available. The readiness pass inspects
 folder/file names plus retained history, including local-artwork-only Processed
 Albums, without adding Albums to the resident picker model. Opening an Artist
 remains the authoritative topology load.
@@ -640,10 +643,12 @@ document.
 
 ### Live URL hover artwork preview
 
-Candidate `[URL]` cells retain their terminal-client browser hyperlink. While
-the pointer is over a `[URL]` cell, SPLINED fetches that exact remote URL in
-memory and renders the response in the right-side Artwork pane using
-`ratatui-image`.
+Candidate `[URL]` cells retain their terminal-client browser hyperlink. The
+right-side **ARTWORK / ⭐ (S) PREFERRED** pane automatically fetches and shows
+the suggested remote source when the candidate screen opens. Hovering another
+`[URL]` temporarily replaces that pane with the exact remote image from that
+URL; leaving the link restores the preferred source. Remote images remain
+memory-only and are rendered with `ratatui-image`.
 
 At TUI startup, SPLINED calls `Picker::from_query_stdio()` after entering the
 alternate screen and before beginning mouse/event reads, matching
@@ -665,7 +670,20 @@ XTSMGRAPHICS color-register query. A positive response upgrades the picker to
 SIXEL; terminals that do not answer remain on the normal ratatui-image
 fallback.
 
-The hover fetch is bounded, uses no `/_cache` or sample file, writes nothing to
-disk, and is discarded when the pointer leaves the URL cell. Source images are
+Each remote fetch is bounded, uses no `/_cache` or sample file, writes nothing
+to disk, and may be retained only in memory for the current Album decision so
+hovering between source URLs remains responsive. Native image regions are
+explicitly erased before leaving the candidate view so Sixel/Kitty/iTerm2
+pixels cannot bleed into History, Logs, or Run Report surfaces. Source images are
 constrained to a 1000×1000 maximum decode/render working size for the hover
 surface.
+
+
+### Row-selection presentation
+
+Selectable TUI rows do not use checkbox glyphs. Folder-status controls,
+selection actions, scanning/launch actions, Artist rows, Album rows, and source
+priority rows use semantic row highlighting for active selection and mouse
+hover. Clicking an Artist or Album row performs its selection action directly.
+Artist/Album folder-state names are omitted from the row text because the
+Folder Status legend is the authoritative label for those colors.
