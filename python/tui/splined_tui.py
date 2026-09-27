@@ -289,6 +289,9 @@ class TuiState:
     preview_identity: dict[str, tuple[int, int]] = field(default_factory=dict)
     preview_modal_open: bool = False
     preview_modal_index: int = 0
+    bypass_dialog_path: str = ""
+    bypass_dialog_enable: bool | None = None
+    bypass_dialog_select_after: bool = False
     transient: str = ""
     help_open: bool = False
     dialog_open: bool = False
@@ -804,7 +807,8 @@ class TuiAdapter:
         return False
 
     def cancel_wait(self) -> None:
-        self.respond("b")
+        # Cancellation must never alias the engine's persistent bypass command.
+        self.respond("__cancel__")
 
 
 class EventWriter(io.TextIOBase):
@@ -2999,6 +3003,25 @@ def _render_dialog(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         accept, reject = "Yes · deliberate exception", "No · cancel"
         semantic = Semantic.WARNING
         title = "BELOW-FLOOR EXPERIMENT"
+    elif state.dialog_kind in {"library-bypass-add", "library-bypass-remove"}:
+        removing = state.dialog_kind == "library-bypass-remove"
+        question = (
+            "Remove the saved bypass for this album?"
+            if removing
+            else "Bypass this album persistently?"
+        )
+        accept, reject = (
+            ("Yes · remove bypass", "No · keep bypass")
+            if removing
+            else ("Yes · bypass album", "No · cancel")
+        )
+        semantic = Semantic.FALLBACK
+        title = "ALBUM BYPASS"
+    elif state.dialog_kind == "bypass-remove":
+        question = "Remove the saved bypass for this album?"
+        accept, reject = "Yes · remove bypass", "No · keep bypass"
+        semantic = Semantic.FALLBACK
+        title = "ALBUM BYPASS"
     else:
         question = BYPASS_DIALOG.question
         accept, reject = BYPASS_DIALOG.accept_label, BYPASS_DIALOG.reject_label
@@ -3574,13 +3597,29 @@ def _handle_library_key(
                     f"path={album.path!r} before={before} after={album.selected} "
                     f"result={result!r} {_library_snapshot(state)}"
                 )
-                if result == "bypass-confirmation-required":
-                    state.dialog_kind = "library-bypass"
+                if result == "bypass-removal-required":
+                    state.dialog_kind = "library-bypass-remove"
+                    state.bypass_dialog_path = album.path
+                    state.bypass_dialog_enable = False
+                    state.bypass_dialog_select_after = True
                     state.dialog_open = True
                 elif result == "timeout-active":
                     state.transient = "Timeout-active albums remain protected during automatic selection."
                 else:
                     _sync_library_selection(state, adapter)
+        return True
+    if action is Action.BYPASS and state.library_focus == 5:
+        albums = model.visible_albums(active_artist_only=True)
+        if albums:
+            album = albums[state.album_index_cursor]
+            removing = album.status is AlbumStatus.BYPASSED
+            state.dialog_kind = (
+                "library-bypass-remove" if removing else "library-bypass-add"
+            )
+            state.bypass_dialog_path = album.path
+            state.bypass_dialog_enable = not removing
+            state.bypass_dialog_select_after = False
+            state.dialog_open = True
         return True
     if action is Action.BACK:
         state.transient = "Library selection remains open; choose a Scan Mode or press Ctrl+C."
@@ -3607,15 +3646,25 @@ def _apply_dialog_decision(
     state: TuiState, adapter: TuiAdapter, decision: bool
 ) -> None:
     if decision:
-        if state.dialog_kind == "library-bypass" and state.library is not None:
-            albums = state.library.visible_albums(active_artist_only=True)
-            if albums:
-                state.library.toggle_album(
-                    albums[state.album_index_cursor], bypass_override=True
-                )
-                _sync_library_selection(state, adapter)
+        if (
+            state.dialog_kind in {"library-bypass-add", "library-bypass-remove"}
+            and state.library is not None
+            and state.bypass_dialog_path
+            and state.bypass_dialog_enable is not None
+        ):
+            _respond_library_action(
+                state,
+                adapter,
+                "set-bypass",
+                album_path=state.bypass_dialog_path,
+                bypassed=state.bypass_dialog_enable,
+                select_after=state.bypass_dialog_select_after,
+            )
             state.dialog_open = False
             state.dialog_kind = ""
+            state.bypass_dialog_path = ""
+            state.bypass_dialog_enable = None
+            state.bypass_dialog_select_after = False
         elif state.dialog_kind == "upscale" and state.ai_selection is not None:
             state.ai_selection.confirm_upscale(True)
             state.dialog_open = False
@@ -3634,6 +3683,8 @@ def _apply_dialog_decision(
                     state.dialog_open = False
                     state.dialog_kind = ""
                     state.transient = result.replace("-", " ")
+        elif state.dialog_kind == "bypass-remove":
+            _submit(state, adapter, "unbypass")
         else:
             _submit(state, adapter, "b")
     else:
@@ -3641,6 +3692,9 @@ def _apply_dialog_decision(
             state.ai_selection.confirm_upscale(False)
         state.dialog_open = False
         state.dialog_kind = ""
+        state.bypass_dialog_path = ""
+        state.bypass_dialog_enable = None
+        state.bypass_dialog_select_after = False
 
 
 def _open_candidate_preview(state: TuiState, candidate_index: int) -> None:
@@ -3915,8 +3969,11 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
                 f"path={album.path!r} before={before} after={album.selected} "
                 f"result={result!r} {_library_snapshot(state)}"
             )
-            if result == "bypass-confirmation-required":
-                state.dialog_kind = "library-bypass"
+            if result == "bypass-removal-required":
+                state.dialog_kind = "library-bypass-remove"
+                state.bypass_dialog_path = album.path
+                state.bypass_dialog_enable = False
+                state.bypass_dialog_select_after = True
                 state.dialog_open = True
             elif result == "timeout-active":
                 state.transient = "Timeout-active albums remain protected during automatic selection."
@@ -4100,8 +4157,30 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             state.selected_index = int(code) - 1
         return
     if action is Action.BYPASS:
-        state.dialog_kind = "bypass"
+        current = (
+            next(
+                (
+                    item
+                    for item in state.library.albums
+                    if item.path == state.album_path
+                ),
+                None,
+            )
+            if state.library is not None
+            else None
+        )
+        state.dialog_kind = (
+            "bypass-remove"
+            if current is not None and current.status is AlbumStatus.BYPASSED
+            else "bypass"
+        )
         state.dialog_open = True
+        return
+    if action is Action.BACK:
+        if request.kind == "musicbrainz":
+            _submit(state, adapter, "b")
+        else:
+            _submit(state, adapter, "__cancel__")
         return
     if action is Action.URL and state.candidates:
         _focus_candidate_url(state, state.selected_index)
