@@ -1281,6 +1281,30 @@ def _selection_control_lines(
     return Text(lines)
 
 
+def _folder_status_count(
+    index: int,
+    album_counts: dict[AlbumStatus, int],
+    artist_counts: dict[ArtistStatus, int],
+) -> int:
+    """Return the row count across both Album and loaded Artist semantics."""
+    if index == 0:
+        return (
+            album_counts[AlbumStatus.UNPROCESSED]
+            + artist_counts[ArtistStatus.UNPROCESSED]
+        )
+    if index == 3:
+        return (
+            album_counts[AlbumStatus.TIMEOUT]
+            + artist_counts[ArtistStatus.PARTIAL]
+        )
+    status = STATUS_CONTROLS[index][1]
+    return (
+        album_counts[status]
+        if isinstance(status, AlbumStatus)
+        else artist_counts[status]
+    )
+
+
 def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     model = state.library
     assert model is not None
@@ -1317,24 +1341,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
     artist_counts = model.indexed_artist_status_counts()
 
     def status_suffix(index: int) -> str:
-        if index == 0:
-            count = (
-                album_counts[AlbumStatus.UNPROCESSED]
-                + artist_counts[ArtistStatus.UNPROCESSED]
-            )
-        elif index == 3:
-            count = (
-                album_counts[AlbumStatus.TIMEOUT]
-                + artist_counts[ArtistStatus.PARTIAL]
-            )
-        else:
-            status = STATUS_CONTROLS[index][1]
-            count = (
-                album_counts[status]
-                if isinstance(status, AlbumStatus)
-                else artist_counts[status]
-            )
-        return f"  [{count:,}]"
+        return f"  [{_folder_status_count(index, album_counts, artist_counts):,}]"
 
     selected_count = sum(item.selected for item in model.albums)
 
