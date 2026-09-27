@@ -85,7 +85,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
         )
         return core, calls, events
 
-    def test_cache_reuses_unchanged_artist_and_rescans_changed_album(self) -> None:
+    def test_cache_reuses_unchanged_artist_and_rescans_changed_structure(self) -> None:
         core, calls, _events = self._core()
         with mock.patch.object(
             cachemod,
@@ -115,11 +115,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
             self.assertEqual(len(second), 1)
             self.assertEqual(calls, [self.artist])
 
-            stat = self.album.stat()
-            os.utime(
-                self.album,
-                ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000),
-            )
+            (self.artist / "New Album").mkdir()
             third, _ = core.inventory(
                 self.artist,
                 [],
