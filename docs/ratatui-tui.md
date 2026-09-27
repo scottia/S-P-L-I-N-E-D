@@ -196,10 +196,15 @@ whole-library crawl. Unprocessed is therefore known only for loaded Albums;
 retained Processed/Bypass history can contribute counts before an Artist is
 opened.
 
-Unloaded Artist rows remain muted unless a retained bypass is already sufficient
-to establish Contains Bypass. They do not repeat a "Not loaded" suffix. Selecting
-an Artist loads that Artist and then cascades only to eligible child Albums.
-History, bypass, timeout, and manual-reprocessing rules remain authoritative.
+Unloaded Artist rows receive an initial history-derived folder state without a
+recursive filesystem walk: retained processed completion history seeds
+Complete/Green, retained bypass seeds Contains Bypass/Blue, and no retained
+authority seeds Unprocessed/White. They do not repeat a "Not loaded" suffix.
+
+Opening an Artist loads its actual child Album topology and replaces that
+provisional history aggregate with the exact White/Purple/Green/Blue state.
+Selecting an Artist then cascades only to eligible child Albums. History,
+bypass, timeout, and manual-reprocessing rules remain authoritative.
 
 Detailed Selected Album Statistics are bounded to the first 10 checked Albums
 and are populated asynchronously. Selection itself remains path-exact and must
