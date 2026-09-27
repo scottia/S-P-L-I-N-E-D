@@ -354,7 +354,18 @@ class LibraryModel:
             aggregate = base.status
             if aggregate is None and base.loaded and children:
                 aggregate = artist_status(children)
-            if aggregate is not None and aggregate not in self.artist_status_filters:
+            # Album-status filters and Artist aggregate filters are parallel
+            # dimensions.  A loaded Artist must remain visible when one of its
+            # Albums matches the active Album-status filter, even if its
+            # aggregate Artist status is currently filtered out.
+            child_status_match = any(
+                child.status in self.status_filters for child in children
+            )
+            if (
+                aggregate is not None
+                and aggregate not in self.artist_status_filters
+                and not child_status_match
+            ):
                 continue
             rows.append(
                 ArtistItem(
