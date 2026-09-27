@@ -22,6 +22,7 @@ from tui.splined_tui import (
     TuiState,
     _candidate_preview,
     _candidate_value,
+    _ratatui_remote_preview,
     _render_candidates,
 )
 from tui.theme import select_theme
@@ -232,6 +233,86 @@ class ArtworkPreviewTests(unittest.TestCase):
             frame = Frame(78, 40)
             _render_candidates(frame, frame.area, state, select_theme("OLED"))
             rendered.assert_not_called()
+
+
+class SuggestedCandidateRankingTests(unittest.TestCase):
+    def test_larger_equivalent_ideal_candidate_beats_source_priority(self) -> None:
+        itunes = splined.Candidate(
+            splined.Ref("itunes", "itunes", "https://example.test/itunes.jpg"),
+            Path("itunes.jpg"),
+            3000,
+            3000,
+            "jpeg",
+            0,
+        )
+        coverart = splined.Candidate(
+            splined.Ref("coverartarchive", "coverart", "https://example.test/coverart.jpg"),
+            Path("coverart.jpg"),
+            3024,
+            3024,
+            "jpeg",
+            2,
+        )
+
+        def projected(candidate, _cfg, _formats):
+            return {
+                "policy_status": "accept",
+                "acceptable": True,
+                "distance": 0,
+                "range_type": "Ideal",
+                "upscaled": False,
+                "cropped": False,
+                "resized": False,
+                "converted": False,
+                "square": True,
+                "short_side": min(candidate.width, candidate.height),
+                "format": "jpeg",
+            }
+
+        with mock.patch.object(
+            splined_scan,
+            "project_candidate",
+            side_effect=projected,
+        ):
+            self.assertIs(
+                splined_scan.select_best([itunes, coverart], {}, ["jpeg"]),
+                coverart,
+            )
+            self.assertIs(
+                splined_scan.fallback_suggested([itunes, coverart], {}, ["jpeg"]),
+                coverart,
+            )
+
+
+class RatatuiImageRemotePreviewTests(unittest.TestCase):
+    def test_remote_preview_uses_native_ratatui_image_cells(self) -> None:
+        encoded = (
+            2,
+            1,
+            [
+                ("▀", (10, 20, 30), (40, 50, 60)),
+                ("▄", (70, 80, 90), (100, 110, 120)),
+            ],
+        )
+        with mock.patch(
+            "tui.splined_tui.native_render_image_cells",
+            return_value=encoded,
+        ) as renderer:
+            preview = _ratatui_remote_preview(
+                b"remote-image-bytes",
+                width=2,
+                height=1,
+            )
+        renderer.assert_called_once_with(
+            b"remote-image-bytes",
+            2,
+            1,
+            1000,
+        )
+        self.assertEqual(preview.width, 2)
+        self.assertEqual(preview.height, 1)
+        self.assertEqual(preview.rows[0][0].glyph, "▀")
+        self.assertEqual(preview.rows[0][1].background, (100, 110, 120))
 
 
 class BrowserUrlProjectionTests(unittest.TestCase):
