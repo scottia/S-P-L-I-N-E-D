@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import concurrent.futures
 from collections import deque
@@ -2113,6 +2114,10 @@ def compact(paths: list[Path]) -> str:
 
 
 _RUNTIME_LOG_PATH: Path | None = None
+_RUNTIME_LOG_HANDLE: io.TextIOBase | None = None
+_RUNTIME_LOG_LOCK = threading.Lock()
+_RUNTIME_LOG_PENDING = 0
+_RUNTIME_LOG_LAST_FLUSH = 0.0
 _RUNTIME_VERBOSITY = "info"
 _DEBUG_ENABLED = False
 
@@ -2138,9 +2143,26 @@ def runtime_log_path() -> Path | None:
     return _RUNTIME_LOG_PATH
 
 
+def _close_runtime_log() -> None:
+    global _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
+    with _RUNTIME_LOG_LOCK:
+        handle = _RUNTIME_LOG_HANDLE
+        _RUNTIME_LOG_HANDLE = None
+        _RUNTIME_LOG_PENDING = 0
+        if handle is None:
+            return
+        try:
+            handle.flush()
+            handle.close()
+        except OSError:
+            pass
+
+
 def runtime_log(level: str, message: str) -> None:
-    """Write one filtered line to this run's ephemeral runtime log."""
-    if _RUNTIME_LOG_PATH is None:
+    """Write one filtered line without reopening NAS-backed storage per event."""
+    global _RUNTIME_LOG_PENDING, _RUNTIME_LOG_LAST_FLUSH
+    handle = _RUNTIME_LOG_HANDLE
+    if _RUNTIME_LOG_PATH is None or handle is None:
         return
 
     normalized = str(level).strip().lower()
@@ -2152,12 +2174,25 @@ def runtime_log(level: str, message: str) -> None:
         return
 
     safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
+    now = time.monotonic()
     try:
-        with _RUNTIME_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(
+        with _RUNTIME_LOG_LOCK:
+            current = _RUNTIME_LOG_HANDLE
+            if current is None:
+                return
+            current.write(
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
                 f"{normalized.upper():<7} {safe}\n"
             )
+            _RUNTIME_LOG_PENDING += 1
+            if (
+                normalized in {"warning", "error"}
+                or _RUNTIME_LOG_PENDING >= 32
+                or now - _RUNTIME_LOG_LAST_FLUSH >= 1.0
+            ):
+                current.flush()
+                _RUNTIME_LOG_PENDING = 0
+                _RUNTIME_LOG_LAST_FLUSH = now
     except OSError:
         # Runtime diagnostics must never make an operational scan fail.
         pass
@@ -2170,7 +2205,8 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
     callers/tests. Runtime logs now live under <log_dir>/run and the prior run
     is removed at the beginning of the next invocation.
     """
-    global _RUNTIME_LOG_PATH, _RUNTIME_VERBOSITY, _DEBUG_ENABLED
+    global _RUNTIME_LOG_PATH, _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
+    global _RUNTIME_LOG_LAST_FLUSH, _RUNTIME_VERBOSITY, _DEBUG_ENABLED
 
     log_dir = runtime_log_dir(config_file, cfg)
     if log_dir.exists() and (log_dir.is_symlink() or not log_dir.is_dir()):
@@ -2220,16 +2256,24 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
         run_dir
         / f"splined-{_RUNTIME_VERBOSITY}-{stamp}-{unique}-p{os.getpid()}.log"
     )
-    with _RUNTIME_LOG_PATH.open("x", encoding="utf-8") as handle:
-        handle.write(
-            f"=== SPLINED {display_version()} RUNTIME LOG ===\n"
-            f"started={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"verbosity={_RUNTIME_VERBOSITY}\n"
-            f"config={config_file}\n"
-            f"pid={os.getpid()}\n"
-            f"argv={json.dumps(sys.argv, ensure_ascii=False)}\n"
-            "========================================\n"
-        )
+    _close_runtime_log()
+    _RUNTIME_LOG_HANDLE = _RUNTIME_LOG_PATH.open(
+        "x",
+        encoding="utf-8",
+        buffering=64 * 1024,
+    )
+    _RUNTIME_LOG_HANDLE.write(
+        f"=== SPLINED {display_version()} RUNTIME LOG ===\n"
+        f"started={time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"verbosity={_RUNTIME_VERBOSITY}\n"
+        f"config={config_file}\n"
+        f"pid={os.getpid()}\n"
+        f"argv={json.dumps(sys.argv, ensure_ascii=False)}\n"
+        "========================================\n"
+    )
+    _RUNTIME_LOG_HANDLE.flush()
+    _RUNTIME_LOG_PENDING = 0
+    _RUNTIME_LOG_LAST_FLUSH = time.monotonic()
 
     runtime_log(
         "info",
@@ -2237,6 +2281,9 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
         f"log={str(_RUNTIME_LOG_PATH)!r}",
     )
     return _RUNTIME_LOG_PATH
+
+
+atexit.register(_close_runtime_log)
 
 
 def debug_log(message: str) -> None:
