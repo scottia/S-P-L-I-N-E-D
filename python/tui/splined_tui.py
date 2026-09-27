@@ -1408,12 +1408,15 @@ STATUS_CONTROLS: tuple[tuple[str, AlbumStatus | ArtistStatus], ...] = (
     ("Artist Contains Bypass", ArtistStatus.CONTAINS_BYPASS),
 )
 SELECT_CONTROLS = ("Select [ALL]", "Select [NONE]", "Select [FILTERED]")
-SCAN_CONTROLS = (
-    "Filter Scan [READ]",
-    "Filter Scan [WRITE]",
+LAUNCH_CONTROLS = (
+    "Launch [READ] Source Results",
+    "Launch [LIVE WRITE] Choice Results",
+)
+AUTO_SCAN_CONTROLS = (
     "Auto Scan [ALL]",
     "Auto Scan [SELECTED]",
 )
+SCAN_CONTROLS = LAUNCH_CONTROLS + AUTO_SCAN_CONTROLS
 
 
 def _album_status_semantic(status: AlbumStatus) -> Semantic:
@@ -1436,22 +1439,66 @@ def _artist_status_semantic(status: ArtistStatus | None) -> Semantic:
     }[status]
 
 
+def _interactive_row_style(
+    theme: Theme,
+    semantic: Semantic,
+    *,
+    hovered: bool = False,
+    selected: bool = False,
+    focused: bool = False,
+) -> Style:
+    result = style(
+        theme,
+        semantic,
+        bold=selected or focused,
+    )
+    if hovered:
+        result = result.bg(Color.rgb(*theme.color("muted")))
+    elif selected:
+        result = result.bg(Color.rgb(*theme.color("disabled")))
+    return result
+
+
 def _control_lines(
     labels: tuple[str, ...],
     selected: int,
     active: Callable[[int], bool],
     theme: Theme,
     suffix: Callable[[int], str] | None = None,
+    *,
+    hover_index: int = -1,
+    index_offset: int = 0,
 ) -> Text:
     lines: list[Line] = []
-    for index, label in enumerate(labels):
-        marker = "›" if index == selected else " "
-        checked = "☑" if active(index) else "☐"
-        semantic = Semantic.ACTIVE if index == selected else (
-            Semantic.ACCEPTED if active(index) else Semantic.MUTED
+    for local_index, label in enumerate(labels):
+        index = local_index + index_offset
+        focused = index == selected
+        is_active = active(index)
+        hovered = index == hover_index
+        semantic = (
+            Semantic.ACTIVE
+            if focused
+            else Semantic.ACCEPTED
+            if is_active
+            else Semantic.MUTED
         )
         extra = suffix(index) if suffix is not None else ""
-        lines.append(Line([Span(f"{marker} {checked} {label}{extra}", style(theme, semantic, bold=index == selected))]))
+        lines.append(
+            Line(
+                [
+                    Span(
+                        f"{'›' if focused else ' '} • {label}{extra}",
+                        _interactive_row_style(
+                            theme,
+                            semantic,
+                            hovered=hovered,
+                            selected=is_active,
+                            focused=focused,
+                        ),
+                    )
+                ]
+            )
+        )
     return Text(lines)
 
 
@@ -1471,34 +1518,35 @@ def _status_control_lines(
     active: Callable[[int], bool],
     theme: Theme,
     suffix: Callable[[int], str] | None = None,
+    *,
+    hover_index: int = -1,
 ) -> Text:
     lines: list[Line] = []
     for index, (label, _status) in enumerate(STATUS_CONTROLS):
-        marker = "›" if index == selected else " "
-        checked = active(index)
+        focused = index == selected
+        is_active = active(index)
+        hovered = index == hover_index
         extra = suffix(index) if suffix is not None else ""
         state_semantic = _status_control_semantic(index)
-        checkbox_semantic = Semantic.ACCEPTED if checked else Semantic.REJECTED
+        row_style = _interactive_row_style(
+            theme,
+            state_semantic,
+            hovered=hovered,
+            selected=is_active,
+            focused=focused,
+        )
         lines.append(
             Line(
                 [
-                    Span(
-                        f"{marker} ",
-                        style(
-                            theme,
-                            Semantic.ACTIVE if index == selected else Semantic.MUTED,
-                            bold=index == selected,
-                        ),
-                    ),
-                    Span(
-                        "☑" if checked else "☐",
-                        style(theme, checkbox_semantic, bold=checked),
-                    ),
-                    Span("  ●  ", style(theme, state_semantic)),
-                    Span(
-                        f"{label}{extra}",
-                        style(theme, state_semantic, bold=index == selected),
-                    ),
+                    Span(f"{'›' if focused else ' '} ", row_style),
+                    Span("●  ", _interactive_row_style(
+                        theme,
+                        state_semantic,
+                        hovered=hovered,
+                        selected=is_active,
+                        focused=focused,
+                    )),
+                    Span(f"{label}{extra}", row_style),
                 ]
             )
         )
@@ -1509,6 +1557,8 @@ def _selection_control_lines(
     selected: int,
     selected_count: int,
     theme: Theme,
+    *,
+    hover_index: int = -1,
 ) -> Text:
     lines = [
         Line(
@@ -1521,14 +1571,19 @@ def _selection_control_lines(
         )
     ]
     for index, label in enumerate(SELECT_CONTROLS):
-        marker = "›" if index == selected else " "
-        semantic = Semantic.ACTIVE if index == selected else Semantic.MUTED
+        focused = index == selected
+        hovered = index == hover_index
         lines.append(
             Line(
                 [
                     Span(
-                        f"{marker} ☐ {label}",
-                        style(theme, semantic, bold=index == selected),
+                        f"{'›' if focused else ' '} • {label}",
+                        _interactive_row_style(
+                            theme,
+                            Semantic.ACTIVE if focused else Semantic.MUTED,
+                            hovered=hovered,
+                            focused=focused,
+                        ),
                     )
                 ]
             )
