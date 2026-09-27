@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
 use crossterm::cursor::{RestorePosition, SavePosition, Show};
@@ -13,13 +14,14 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    buffer::Buffer,
+    buffer::{Buffer, CellDiffOption},
     layout::{Rect, Size},
     widgets::Widget,
 };
 use ratatui_image::{
     Image as RatatuiImage,
-    protocol::{Protocol, halfblocks::Halfblocks},
+    Resize,
+    picker::{Picker, ProtocolType},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,9 +189,44 @@ fn input_error(error: io::Error) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
 }
 
+static IMAGE_PICKER: OnceLock<RwLock<Picker>> = OnceLock::new();
+
+fn image_picker() -> &'static RwLock<Picker> {
+    IMAGE_PICKER.get_or_init(|| RwLock::new(Picker::halfblocks()))
+}
+
+fn protocol_name(protocol: ProtocolType) -> &'static str {
+    match protocol {
+        ProtocolType::Halfblocks => "Halfblocks",
+        ProtocolType::Sixel => "Sixel",
+        ProtocolType::Kitty => "Kitty",
+        ProtocolType::Iterm2 => "iTerm2",
+    }
+}
+
+fn detect_image_picker() -> String {
+    // ratatui-image explicitly requires this query after alternate-screen
+    // entry and before terminal-event reading. EventReader::__enter__ is that
+    // boundary in SPLINED.
+    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    let name = protocol_name(picker.protocol_type()).to_string();
+    if let Ok(mut active) = image_picker().write() {
+        *active = picker;
+    }
+    name
+}
+
+fn current_image_picker() -> Picker {
+    image_picker()
+        .read()
+        .map(|picker| picker.clone())
+        .unwrap_or_else(|_| Picker::halfblocks())
+}
+
 #[pyclass(module = "splined_pyratatui_input", name = "EventReader", unsendable)]
 struct EventReader {
     mouse_captured: bool,
+    image_protocol: String,
 }
 
 impl EventReader {
@@ -207,6 +244,7 @@ struct ImageOverlay {
     buffer: Buffer,
     width: u16,
     height: u16,
+    protocol: String,
 }
 
 #[pymethods]
@@ -221,6 +259,11 @@ impl ImageOverlay {
         self.height
     }
 
+    #[getter]
+    fn protocol(&self) -> &str {
+        &self.protocol
+    }
+
     fn draw(&self, x: u16, y: u16) -> PyResult<()> {
         let mut stdout = io::stdout();
         execute!(stdout, SavePosition).map_err(input_error)?;
@@ -231,9 +274,13 @@ impl ImageOverlay {
             let height = self.height;
             let cells = (0..height).flat_map(move |row| {
                 (0..width).filter_map(move |column| {
-                    buffer
-                        .cell((column, row))
-                        .map(|cell| (x + column, y + row, cell))
+                    buffer.cell((column, row)).and_then(|cell| {
+                        if matches!(cell.diff_option, CellDiffOption::Skip) {
+                            None
+                        } else {
+                            Some((x + column, y + row, cell))
+                        }
+                    })
                 })
             });
             backend.draw(cells).map_err(input_error)?;
@@ -270,18 +317,29 @@ fn prepare_image_overlay(
         );
     }
 
-    let size = Size::new(width, height);
-    let halfblocks = Halfblocks::new(image, size)
-        .map_err(|error| PyRuntimeError::new_err(format!("ratatui-image encode failed: {error}")))?;
-    let protocol = Protocol::Halfblocks(halfblocks);
-    let area = Rect::new(0, 0, width, height);
+    let picker = current_image_picker();
+    let protocol_name = protocol_name(picker.protocol_type()).to_string();
+    let protocol = picker
+        .new_protocol(
+            image,
+            Size::new(width, height),
+            Resize::Fit(None),
+        )
+        .map_err(|error| {
+            PyRuntimeError::new_err(format!(
+                "ratatui-image {protocol_name} encode failed: {error}"
+            ))
+        })?;
+    let rendered = protocol.size();
+    let area = Rect::new(0, 0, rendered.width, rendered.height);
     let mut buffer = Buffer::empty(area);
     RatatuiImage::new(&protocol).render(area, &mut buffer);
 
     Ok(ImageOverlay {
         buffer,
-        width,
-        height,
+        width: rendered.width,
+        height: rendered.height,
+        protocol: protocol_name,
     })
 }
 
@@ -317,10 +375,14 @@ impl EventReader {
     fn new() -> Self {
         Self {
             mouse_captured: false,
+            image_protocol: "Undetected".into(),
         }
     }
 
     fn __enter__(mut slf: PyRefMut<'_, Self>) -> PyResult<PyRefMut<'_, Self>> {
+        // Query image capabilities before mouse capture/event polling. This is
+        // the ordering required by ratatui-image.
+        slf.image_protocol = detect_image_picker();
         slf.enable_mouse_capture()?;
         Ok(slf)
     }
@@ -356,6 +418,11 @@ impl EventReader {
     #[getter]
     fn mouse_capture_enabled(&self) -> bool {
         self.mouse_captured
+    }
+
+    #[getter]
+    fn image_protocol(&self) -> &str {
+        &self.image_protocol
     }
 
     #[pyo3(signature = (timeout_ms=0))]
