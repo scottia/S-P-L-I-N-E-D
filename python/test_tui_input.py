@@ -20,6 +20,7 @@ from tui.splined_tui import (
     InputRequest,
     STATUS_CONTROLS,
     TuiAdapter,
+    _folder_status_count,
     TuiState,
     _status_control_semantic,
     handle_key,
@@ -220,6 +221,22 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
                 Semantic.ACCEPTED,
                 Semantic.DEBUG,
             ],
+        )
+        album_counts = {
+            AlbumStatus.UNPROCESSED: 11,
+            AlbumStatus.PROCESSED: 7,
+            AlbumStatus.BYPASSED: 2,
+            AlbumStatus.TIMEOUT: 3,
+        }
+        artist_counts = {
+            ArtistStatus.UNPROCESSED: 5,
+            ArtistStatus.PARTIAL: 4,
+            ArtistStatus.COMPLETE: 6,
+            ArtistStatus.CONTAINS_BYPASS: 1,
+        }
+        self.assertEqual(
+            [_folder_status_count(i, album_counts, artist_counts) for i in range(6)],
+            [16, 7, 2, 7, 6, 1],
         )
 
 
@@ -503,6 +520,13 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             region = _region(self.state, "status-control", index)
             handle_mouse(self.state, self.adapter, _center(region))
             self.assertEqual(self.state.status_index, index)
+            if index == 0:
+                self.assertNotIn(
+                    AlbumStatus.UNPROCESSED, model.status_filters
+                )
+                self.assertNotIn(
+                    ArtistStatus.UNPROCESSED, model.artist_status_filters
+                )
             if index == 3:
                 self.assertNotIn(AlbumStatus.TIMEOUT, model.status_filters)
                 self.assertNotIn(
