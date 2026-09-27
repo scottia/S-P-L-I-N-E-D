@@ -61,7 +61,6 @@ from .aispline import (
 from .dialogs import BYPASS_DIALOG, confirm_key
 from .keys import Action, map_key, picker_response
 from .library import (
-    STATUS_LABELS,
     AlbumStatus,
     ArtistStatus,
     LibraryModel,
@@ -4743,39 +4742,14 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "artist-row" and model is not None:
         state.library_focus = 3
         state.artist_index = region.index
-        # Touch/click on an Artist row performs the Artist selection action.
-        # Keyboard Enter remains the open-only fallback; the explicit checkbox
-        # follows the same cascade path.
+        # Touch/click on an Artist row is the selection action. Keyboard
+        # Enter remains the open-only navigation path.
         _open_artist(
             state,
             adapter,
             region.value,
             select_after_load=True,
         )
-    elif region.target == "artist-checkbox" and model is not None:
-        if not _library_input_ready(state, adapter):
-            return
-        state.library_focus = 3
-        state.artist_index = region.index
-        artist = model.artist(region.value)
-        if artist is not None and artist.indexed:
-            model.active_artist = region.value
-            before_selected = sum(item.selected for item in model.albums)
-            model.toggle_artist(region.value)
-            _runtime_trace(
-                "mouse.artist_checkbox "
-                f"artist={region.value!r} before_selected={before_selected} "
-                f"after_selected={sum(item.selected for item in model.albums)} "
-                f"{_library_snapshot(state)}"
-            )
-            _sync_library_selection(state, adapter)
-        else:
-            _open_artist(
-                state,
-                adapter,
-                region.value,
-                select_after_load=True,
-            )
     elif region.target == "album-row" and model is not None:
         if not _library_input_ready(state, adapter):
             return
