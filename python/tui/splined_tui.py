@@ -1105,6 +1105,37 @@ def _solid_spectral_brand(theme: Theme, title: str, phase: int = 0) -> list[Line
     return [Line(spans).centered() for spans in rows]
 
 
+def _spectral_phrase(
+    theme: Theme,
+    text: str,
+    phase: int = 0,
+    *,
+    centered: bool = True,
+) -> Line:
+    spans: list[Span] = []
+    color_index = 0
+    for character in text:
+        if character == ":":
+            spans.append(Span(character, style(theme, Semantic.MUTED)))
+        elif character.isspace():
+            spans.append(Span(character, style(theme, Semantic.TEXT)))
+        else:
+            rgb = theme.title_spectrum[
+                (color_index + phase) % len(theme.title_spectrum)
+            ]
+            spans.append(
+                Span(
+                    character,
+                    Style()
+                    .fg(Color.rgb(*rgb))
+                    .bg(Color.rgb(*theme.color("background"))),
+                )
+            )
+            color_index += 1
+    line = Line(spans)
+    return line.centered() if centered else line
+
+
 def _render_startup(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
     frame.render_widget(_background(theme), area)
@@ -1124,28 +1155,29 @@ def _render_startup(frame: Any, state: TuiState, theme: Theme) -> None:
         )
         brand_lines.extend(
             [
-                Line(
-                    [
-                        Span(
-                            (" " * brand.offset) + phrase,
-                            style(theme, Semantic.SPECIAL),
-                        )
-                    ]
-                ).centered(),
+                _spectral_phrase(
+                    theme,
+                    (" " * brand.offset) + phrase,
+                    animation_step(time.monotonic() - state.started_at),
+                ),
             ]
         )
-        brand_widget = Paragraph(Text(brand_lines)).block(
-            card(theme, "S:P:L:I:N:E:D", Semantic.SPECIAL)
-        )
+        # Startup branding intentionally floats on the terminal background.
+        # Only operational/status surfaces retain frames.
+        brand_widget = Paragraph(Text(brand_lines))
     else:
         brand_widget = Paragraph(
             Text(
                 [
                     spectral_title(theme, centered=True),
-                    Line([Span(phrase, style(theme, Semantic.SPECIAL))]).centered(),
+                    _spectral_phrase(
+                        theme,
+                        phrase,
+                        animation_step(time.monotonic() - state.started_at),
+                    ),
                 ]
             )
-        ).block(card(theme, "STARTING", Semantic.SPECIAL))
+        )
     frame.render_widget(brand_widget, brand_area)
 
     panel_width = min(max(48, int(inventory_area.width) - 8), 86)
@@ -1260,29 +1292,41 @@ def _render_artist_status_loading_banner(
         f"Artists {state.status_processed:,} / {state.status_total:,}"
         f"   ·   {state.status_percent:.0f}%"
     )
+    if state.status_first_build:
+        title = "BUILDING ALBUM STATUS INDEX"
+        headline = "One-time Select Media setup…"
+        message_one = (
+            "Please wait — SPLINED is building the persistent Album status index."
+        )
+        message_two = "Future runs will reuse this saved status inventory."
+    else:
+        title = "LOADING ALBUM STATUS"
+        headline = "Checking saved Album status…"
+        message_one = (
+            "Please wait — SPLINED is validating saved Artist / Album status changes."
+        )
+        message_two = (
+            f"Cached Artists: {state.status_cached_baseline:,}"
+            if state.status_cached_baseline
+            else "Using saved status inventory."
+        )
+
     body = Text(
         [
-            Line([Span("Preparing Select Media…", style(theme, Semantic.ACTIVE, bold=True))]).centered(),
-            Line(""),
+            Line([Span(headline, style(theme, Semantic.ACTIVE, bold=True))]).centered(),
+            Line([]),
             Line([Span(progress, style(theme, Semantic.TEXT, bold=True))]).centered(),
             Line(bar_spans).centered(),
-            Line(""),
-            Line(
-                [
-                    Span(
-                        "Please wait — Select Media will open when folder status loading",
-                        style(theme, Semantic.TEXT),
-                    )
-                ]
-            ).centered(),
-            Line([Span("is complete.", style(theme, Semantic.TEXT))]).centered(),
-            Line(""),
+            Line([]),
+            Line([Span(message_one, style(theme, Semantic.TEXT))]).centered(),
+            Line([Span(message_two, style(theme, Semantic.TEXT))]).centered(),
+            Line([]),
             Line([Span("Ctrl+C to cancel startup", style(theme, Semantic.MUTED))]).centered(),
         ]
     )
     frame.render_widget(
         Paragraph(body).block(
-            card(theme, "LOADING ARTIST STATUS", Semantic.SPECIAL)
+            card(theme, title, Semantic.SPECIAL)
         ),
         popup,
     )
