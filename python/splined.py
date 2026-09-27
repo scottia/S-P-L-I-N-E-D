@@ -1842,6 +1842,36 @@ def prepare_tui_library_selection(
                 with session.lock:
                     if artist_path in session.loaded_artists:
                         return artist_path, "", 0
+
+                # Status-cache v2 fast path: when the Artist structural
+                # sentinels are unchanged and every cached Album has a valid
+                # live-persisted status, aggregate those statuses directly.
+                # Missing/invalid status or a sentinel mismatch falls through
+                # to the authoritative inventory/classification path below.
+                cache_module = sys.modules.get("splined_status_cache")
+                cached_status_reader = (
+                    getattr(cache_module, "cached_artist_statuses", None)
+                    if cache_module is not None
+                    else None
+                )
+                if callable(cached_status_reader):
+                    cached_status = cached_status_reader(
+                        Path(artist_path),
+                        ignored,
+                        str(output.get("file_name", "cover")),
+                    )
+                    if cached_status is not None:
+                        statuses, _cached_artist = cached_status
+                        debug_log(
+                            "picker.status_probe.status_hit "
+                            f"artist={artist_path!r} albums={len(statuses)}"
+                        )
+                        return (
+                            artist_path,
+                            aggregate_artist_states(statuses),
+                            len(statuses),
+                        )
+
                 albums, _probe_ignored = inventory(
                     Path(artist_path),
                     ignored,
