@@ -2995,6 +2995,8 @@ def _render_candidate_preview(
     state: TuiState,
     theme: Theme,
     candidate: CandidateView,
+    *,
+    title: str = "ARTWORK",
 ) -> None:
     preview_width = max(1, int(area.width) - 2)
     preview_height = max(1, int(area.height) - 2)
@@ -3010,7 +3012,7 @@ def _render_candidate_preview(
             Paragraph.from_string("NO PREVIEW")
             .centered()
             .style(style(theme, Semantic.MUTED))
-            .block(card(theme, "ARTWORK", Semantic.MUTED)),
+            .block(card(theme, title, Semantic.MUTED)),
             area,
         )
         return
@@ -3019,7 +3021,7 @@ def _render_candidate_preview(
         area,
         preview,
         theme,
-        title="ARTWORK",
+        title=title,
     )
 
 
@@ -3295,36 +3297,53 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             state.remote_preview_width,
             state.remote_preview_height,
         )
+        preferred_index = _preferred_candidate_index(state)
+        preferred = (
+            state.candidates[preferred_index]
+            if 0 <= preferred_index < len(state.candidates)
+            else None
+        )
+
         if state.remote_hover_index >= 0:
-            source = state.candidates[
+            active = state.candidates[
                 max(0, min(state.remote_hover_index, len(state.candidates) - 1))
-            ].source
+            ]
+            protocol = str(
+                getattr(
+                    state.remote_hover_overlay,
+                    "protocol",
+                    state.image_protocol,
+                )
+            ).upper()
+            fallback = " FALLBACK" if protocol.casefold() == "halfblocks" else ""
+            preview_title = (
+                f"ARTWORK / URL PREVIEW · {active.source.upper()} · {protocol}{fallback}"
+                if state.remote_hover_active
+                else f"ARTWORK / ⭐ (S) PREFERRED · {protocol}{fallback}"
+            )
             if state.remote_hover_overlay is not None:
                 frame.render_widget(
                     Paragraph.from_string("")
-                    .block(
-                        card(
-                            theme,
-                            (
-                                f"LIVE URL PREVIEW · {source.upper()} · "
-                                f"{str(getattr(state.remote_hover_overlay, 'protocol', state.image_protocol)).upper()}"
-                                + (
-                                    " FALLBACK"
-                                    if str(getattr(state.remote_hover_overlay, 'protocol', state.image_protocol)).casefold()
-                                    == "halfblocks"
-                                    else ""
-                                )
-                            ),
-                            Semantic.ACTIVE,
-                        )
-                    ),
+                    .block(card(theme, preview_title, Semantic.ACTIVE)),
                     preview_area,
                 )
             elif state.remote_hover_loading:
                 frame.render_widget(
-                    Paragraph.from_string("Loading image directly from source URL…")
+                    Paragraph.from_string(
+                        "Loading image directly from source URL…"
+                    )
                     .centered()
-                    .block(card(theme, "LIVE URL PREVIEW", Semantic.ACTIVE)),
+                    .block(
+                        card(
+                            theme,
+                            (
+                                "ARTWORK / URL PREVIEW"
+                                if state.remote_hover_active
+                                else "ARTWORK / ⭐ (S) PREFERRED"
+                            ),
+                            Semantic.ACTIVE,
+                        )
+                    ),
                     preview_area,
                 )
             else:
@@ -3334,32 +3353,41 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                         _truncate(message, max(1, int(preview_area.width) - 4))
                     )
                     .centered()
-                    .block(card(theme, "LIVE URL PREVIEW", Semantic.WARNING)),
+                    .block(
+                        card(
+                            theme,
+                            "ARTWORK / ⭐ (S) PREFERRED",
+                            Semantic.WARNING,
+                        )
+                    ),
                     preview_area,
                 )
-        else:
+        elif preferred is not None and preferred.provenance == "[LOCAL]":
             state.remote_preview_rect = None
-            selected = state.candidates[
-                max(0, min(state.selected_index, len(state.candidates) - 1))
-            ]
-            if selected.provenance == "[LOCAL]":
-                _render_candidate_preview(
-                    frame,
-                    preview_area,
-                    state,
-                    theme,
-                    selected,
+            _render_candidate_preview(
+                frame,
+                preview_area,
+                state,
+                theme,
+                preferred,
+                title="ARTWORK / ⭐ (S) PREFERRED",
+            )
+        else:
+            frame.render_widget(
+                Paragraph.from_string(
+                    "Loading preferred source artwork…"
                 )
-            else:
-                frame.render_widget(
-                    Paragraph.from_string(
-                        "Hover [URL] for live source artwork preview."
+                .centered()
+                .style(style(theme, Semantic.MUTED))
+                .block(
+                    card(
+                        theme,
+                        "ARTWORK / ⭐ (S) PREFERRED",
+                        Semantic.ACTIVE,
                     )
-                    .centered()
-                    .style(style(theme, Semantic.MUTED))
-                    .block(card(theme, "ARTWORK", Semantic.MUTED)),
-                    preview_area,
-                )
+                ),
+                preview_area,
+            )
 
 
 POLICY_FIELDS = (
