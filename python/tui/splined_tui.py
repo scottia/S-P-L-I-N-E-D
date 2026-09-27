@@ -2303,7 +2303,9 @@ def _render_library_embedded(frame: Any, area: Rect, state: TuiState, theme: The
     _render_library_controls(frame, top, state, theme)
     columns = _split_horizontal(
         bottom,
-        [Constraint.percentage(32), Constraint.percentage(39), Constraint.fill(1)],
+        # Match the primary Select Media geometry exactly so processing does
+        # not shift the control/picker/statistics column boundaries.
+        [Constraint.percentage(34), Constraint.percentage(38), Constraint.fill(1)],
     )
     _render_artist_picker(frame, columns[0], state, theme)
     _render_album_picker(frame, columns[1], state, theme)
