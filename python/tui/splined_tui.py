@@ -665,7 +665,16 @@ class TuiState:
             if message:
                 self.logs.append((level, message))
                 self.logs = self.logs[-500:]
-                if level == "ERROR" and self.active_report is not None:
+                if (
+                    level == "ERROR"
+                    and self.active_report is not None
+                    and self.active_report.outcome == "Incomplete"
+                ):
+                    # Generic stderr/log lines may describe a provider,
+                    # diagnostic, or post-result problem.  Once the engine has
+                    # emitted album_material_result/history, that explicit
+                    # Album outcome is authoritative and must not be replaced
+                    # by a later generic ERROR line.
                     self.active_report.outcome = "Failed"
                     self.active_report.detail = message
                     self.active_report.finish()
@@ -1138,7 +1147,7 @@ def _render_header(
 STATUS_CONTROLS: tuple[tuple[str, AlbumStatus | ArtistStatus], ...] = (
     ("Unprocessed", AlbumStatus.UNPROCESSED),
     ("Processed", AlbumStatus.PROCESSED),
-    ("Bypass", AlbumStatus.BYPASSED),
+    ("Bypassed", AlbumStatus.BYPASSED),
     ("Partial / Timeout", AlbumStatus.TIMEOUT),
     ("Artist Complete", ArtistStatus.COMPLETE),
     ("Artist Contains Bypass", ArtistStatus.CONTAINS_BYPASS),
@@ -1188,6 +1197,56 @@ def _control_lines(
         )
         extra = suffix(index) if suffix is not None else ""
         lines.append(Line([Span(f"{marker} {checked} {label}{extra}", style(theme, semantic, bold=index == selected))]))
+    return Text(lines)
+
+
+def _status_control_semantic(index: int) -> Semantic:
+    return (
+        Semantic.TEXT,
+        Semantic.FALLBACK,
+        Semantic.REJECTED,
+        Semantic.HISTORY,
+        Semantic.ACCEPTED,
+        Semantic.DEBUG,
+    )[index]
+
+
+def _status_control_lines(
+    selected: int,
+    active: Callable[[int], bool],
+    theme: Theme,
+    suffix: Callable[[int], str] | None = None,
+) -> Text:
+    lines: list[Line] = []
+    for index, (label, _status) in enumerate(STATUS_CONTROLS):
+        marker = "›" if index == selected else " "
+        checked = active(index)
+        extra = suffix(index) if suffix is not None else ""
+        state_semantic = _status_control_semantic(index)
+        checkbox_semantic = Semantic.ACCEPTED if checked else Semantic.REJECTED
+        lines.append(
+            Line(
+                [
+                    Span(
+                        f"{marker} ",
+                        style(
+                            theme,
+                            Semantic.ACTIVE if index == selected else Semantic.MUTED,
+                            bold=index == selected,
+                        ),
+                    ),
+                    Span(
+                        "☑" if checked else "☐",
+                        style(theme, checkbox_semantic, bold=checked),
+                    ),
+                    Span("  ●  ", style(theme, state_semantic)),
+                    Span(
+                        f"{label}{extra}",
+                        style(theme, state_semantic, bold=index == selected),
+                    ),
+                ]
+            )
+        )
     return Text(lines)
 
 
@@ -1270,7 +1329,14 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
     selected_count = sum(item.selected for item in model.albums)
 
     frame.render_widget(
-        Paragraph(_control_lines(tuple(x[0] for x in STATUS_CONTROLS), state.status_index, status_active, theme, status_suffix))
+        Paragraph(
+            _status_control_lines(
+                state.status_index,
+                status_active,
+                theme,
+                status_suffix,
+            )
+        )
         .block(card(theme, "ALBUM STATUS MODE", Semantic.ACTIVE)),
         panels[0],
     )
@@ -1355,7 +1421,15 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
             status_suffix = ""
         name_width = max(4, int(body.width) - 5 - len(status_suffix))
         lines.append(Line([
-            Span(f"{marker} {checked} ", style(theme, Semantic.ACTIVE if index == state.artist_index else semantic, bold=index == state.artist_index)),
+            Span(
+                f"{marker} ",
+                style(
+                    theme,
+                    Semantic.ACTIVE if index == state.artist_index else Semantic.MUTED,
+                    bold=index == state.artist_index,
+                ),
+            ),
+            Span(f"{checked} ", style(theme, semantic)),
             Span(_truncate(artist.name, name_width), style(theme, semantic)),
             Span(status_suffix, style(theme, semantic)),
         ]))
