@@ -2497,8 +2497,8 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     )
     preview_area: Rect | None = None
     if preview_enabled:
-        preview_width = 40 if spec.breakpoint is Breakpoint.WIDE else 26
-        preview_height = 20 if spec.breakpoint is Breakpoint.WIDE else 14
+        preview_width = 48 if spec.breakpoint is Breakpoint.WIDE else 30
+        preview_height = 24 if spec.breakpoint is Breakpoint.WIDE else 16
         area, preview_column = _split_horizontal(
             area,
             [Constraint.fill(1), Constraint.length(preview_width)],
@@ -3070,8 +3070,8 @@ def _render_candidate_preview_modal(
         return
     index = max(0, min(state.preview_modal_index, len(state.candidates) - 1))
     candidate = state.candidates[index]
-    width = min(max(56, int(area.width) - 12), 104)
-    height = min(max(20, int(area.height) - 4), 38)
+    width = min(max(64, int(area.width) - 8), 132)
+    height = min(max(24, int(area.height) - 2), 48)
     popup = Rect(
         int(area.x) + max(0, (int(area.width) - width) // 2),
         int(area.y) + max(0, (int(area.height) - height) // 2),
