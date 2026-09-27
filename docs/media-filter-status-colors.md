@@ -132,6 +132,33 @@ Current status concepts:
 
 The same color may have different meaning depending on row type. Purple is the primary example.
 
+The displayed count for each row follows the row type it represents across the
+currently known tree:
+
+```text
+Unprocessed            = White Albums + loaded White Artists
+Processed              = Orange Albums
+Bypassed               = Red Albums
+Partial / Timeout      = Purple timeout Albums + loaded Purple Artists
+Artist Complete        = loaded Green Artists
+Artist Contains Bypass = loaded/known Blue Artists
+```
+
+For a loaded Artist, its folder state is derived only from its child Album
+states using the locked precedence:
+
+```text
+BLUE   -> any Red/bypassed child Album exists
+GREEN  -> all eligible child Albums are Processed/timeout-protected, no bypass
+PURPLE -> mixed processed/unprocessed child state, no bypass
+WHITE  -> all eligible child Albums are Unprocessed, no bypass
+```
+
+The Unprocessed and Partial / Timeout filter rows therefore control both the
+Album and Artist contexts represented by those shared colors. Filtering changes
+visibility only; it does not rewrite selection, history, bypass, or timeout
+authority.
+
 The Python Ratatui Folder Status control follows the Windows order exactly and
 renders the six classifications as consecutive rows with no blank spacer rows:
 
