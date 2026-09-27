@@ -415,6 +415,49 @@ def _should_cache_status_inventory(
         return root.parent == library_root
 
 
+def cached_status_snapshot(
+    ignored_subs: list[str],
+    configured_file_name: str = "cover",
+) -> dict[str, tuple[list[str], int]]:
+    """Return persisted statuses immediately, before filesystem reconciliation.
+
+    This is intentionally JSON-only: no stat/scandir calls.  The background
+    status probe remains responsible for structural-sentinel validation and
+    correction of changed/new/removed Artists.
+    """
+    payload, _path = _ensure_loaded()
+    key = _inventory_key(ignored_subs, configured_file_name)
+    snapshot: dict[str, tuple[list[str], int]] = {}
+    valid = {"unprocessed", "processed", "bypassed", "timeout"}
+    with _LOCK:
+        artists = payload.get("artists", {})
+        items = list(artists.items()) if isinstance(artists, dict) else []
+    for artist_path, entry in items:
+        if (
+            not isinstance(entry, dict)
+            or entry.get("complete") is not True
+            or entry.get("inventory_key") != key
+        ):
+            continue
+        raw_albums = entry.get("albums")
+        if not isinstance(raw_albums, list):
+            continue
+        statuses: list[str] = []
+        usable = True
+        for album in raw_albums:
+            if not isinstance(album, dict):
+                usable = False
+                break
+            status = str(album.get("status", "")).strip().casefold()
+            if status not in valid:
+                usable = False
+                break
+            statuses.append(status)
+        if usable:
+            snapshot[str(artist_path)] = (statuses, len(raw_albums))
+    return snapshot
+
+
 def cached_artist_statuses(
     root: Path,
     ignored_subs: list[str],
