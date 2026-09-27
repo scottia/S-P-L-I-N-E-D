@@ -24,6 +24,7 @@ RUN apt-get update \
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     SPLINED_BUILD_CHANNEL=${SPLINED_BUILD_CHANNEL} \
     SPLINED_CONFIG=/config/config.toml \
     SPLINED_LOG_DIR=/_logs \
@@ -38,16 +39,22 @@ COPY --from=pyratatui-input-builder /wheels /wheels
 RUN pip install --disable-pip-version-check --no-cache-dir /wheels/*.whl \
     && rm -rf /wheels
 
+COPY sitecustomize.py /app/sitecustomize.py
+COPY splined_status_cache.py /app/splined_status_cache.py
 COPY splined.py /app/splined.py
 COPY splined_scan.py /app/splined_scan.py
 COPY splined_oauth_validation.py /app/splined_oauth_validation.py
 COPY tui /app/tui
 RUN python3 -m py_compile \
+        /app/sitecustomize.py \
+        /app/splined_status_cache.py \
         /app/splined.py \
         /app/splined_scan.py \
         /app/splined_oauth_validation.py \
     && python3 -m compileall -q /app/tui \
     && chmod 0555 \
+        /app/sitecustomize.py \
+        /app/splined_status_cache.py \
         /app/splined.py \
         /app/splined_scan.py \
         /app/splined_oauth_validation.py \
