@@ -868,6 +868,72 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
                 self.assertEqual(adapter.responses.get_nowait(), expected)
 
 
+class HoverAndStatusLoadingTests(unittest.TestCase):
+    def test_url_hover_starts_live_remote_preview_and_leave_clears_it(self) -> None:
+        state = CandidateInteractionTests()._candidate_state()
+        adapter = TuiAdapter()
+        render(_Frame(160, 44), state, select_theme("OLED"))
+        url = _region(state, "candidate-url")
+        moved = _Event(
+            "moved",
+            kind="mouse",
+            button="none",
+            column=url.x + 1,
+            row=url.y,
+        )
+        with mock.patch(
+            "tui.splined_tui._start_remote_hover_preview"
+        ) as start:
+            handle_mouse(state, adapter, moved)
+        start.assert_called_once_with(state, adapter, url.index)
+
+        state.remote_hover_index = url.index
+        state.remote_hover_loading = True
+        handle_mouse(
+            state,
+            adapter,
+            _Event("moved", kind="mouse", button="none", column=0, row=0),
+        )
+        self.assertEqual(state.remote_hover_index, -1)
+        self.assertFalse(state.remote_hover_loading)
+
+    def test_artist_status_loading_blocks_actions_but_not_ctrl_c(self) -> None:
+        state = _library_state(artists=1, albums_each=1)
+        state.apply(
+            "folder_status_progress",
+            {
+                "processed": 25,
+                "total": 100,
+                "percent": 25.0,
+                "albums": 50,
+                "done": False,
+            },
+        )
+        self.assertTrue(state.status_loading)
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+
+        handle_key(state, adapter, _Event("b"))
+        self.assertTrue(adapter.responses.empty())
+        self.assertFalse(state.dialog_open)
+
+        handle_key(state, adapter, _Event("c", ctrl=True))
+        self.assertTrue(state.exit_requested)
+        self.assertEqual(adapter.responses.get_nowait(), "__cancel__")
+
+        state.apply(
+            "folder_status_progress",
+            {
+                "processed": 100,
+                "total": 100,
+                "percent": 100.0,
+                "albums": 200,
+                "done": True,
+            },
+        )
+        self.assertFalse(state.status_loading)
+
+
 class CaptureLifecycleTests(unittest.TestCase):
     class FakeTerminal:
         entered = 0
