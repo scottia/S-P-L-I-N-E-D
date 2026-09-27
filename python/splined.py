@@ -2005,20 +2005,11 @@ def prepare_tui_library_selection(
         ),
     )
     session.select_media_active = True
-    emit_ui(
-        "inventory_state",
-        library_root=str(index_root),
-        picker_index="",
-        status="Resolving folder status…",
-        root_artists=len(scoped_artists),
-        cached_artists=0,
-        indexed_artists=len(session.loaded_artists),
-        albums_known=len(scoped_records),
-        current_artist="",
-        recovered=False,
-    )
-    start_status_probe(wait=True, publish_updates=False)
+    # First paint must never wait on whole-library status enrichment.  The
+    # immediate payload already carries the best retained-history authority;
+    # local-art-only refinements arrive asynchronously afterward.
     emit_library(initial_event)
+    start_status_probe(wait=False, publish_updates=True)
 
     event = "library_update"
     while True:
