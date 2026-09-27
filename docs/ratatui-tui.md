@@ -643,7 +643,20 @@ document.
 Candidate `[URL]` cells retain their terminal-client browser hyperlink. While
 the pointer is over a `[URL]` cell, SPLINED fetches that exact remote URL in
 memory and renders the response in the right-side Artwork pane using
-`ratatui-image` with Chafa-backed terminal cells. The hover fetch is bounded,
-uses no `/_cache` or sample file, writes nothing to disk, and is discarded
-when the pointer leaves the URL cell. Source images are constrained to a
-1000×1000 maximum decode/render working size for the hover surface.
+`ratatui-image`.
+
+At TUI startup, SPLINED calls `Picker::from_query_stdio()` after entering the
+alternate screen and before beginning mouse/event reads, matching
+`ratatui-image`'s required initialization order. The picker selects the
+terminal's supported graphics backend when available:
+
+- Kitty graphics;
+- Sixel;
+- iTerm2 inline images;
+- Halfblocks only when the terminal exposes no supported graphics protocol.
+
+The active backend is shown in the live preview title and written to the debug
+log. The hover fetch is bounded, uses no `/_cache` or sample file, writes
+nothing to disk, and is discarded when the pointer leaves the URL cell. Source
+images are constrained to a 1000×1000 maximum decode/render working size for
+the hover surface.
