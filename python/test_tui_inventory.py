@@ -227,6 +227,69 @@ class DirectLazyInventoryTests(unittest.TestCase):
         artist = next(row for row in update["artists"] if row["name"] == "10,000 Maniacs")
         self.assertTrue(artist["loaded"])
 
+    def test_select_all_scopes_to_active_artist_and_excludes_processed(self) -> None:
+        artist_path = str(self.root / "10,000 Maniacs")
+        (selected, _overrides, _timeouts, _sources, _known), _emitted = self._run(
+            [
+                {
+                    "action": "select-all",
+                    "artist_path": artist_path,
+                    "selected": [],
+                },
+                {
+                    "action": "launch",
+                    "scan_mode": "auto-selected",
+                    "selected": [str(self.eden)],
+                },
+            ]
+        )
+        self.assertEqual([album.path for album in selected], [self.eden])
+
+    def test_select_filtered_is_library_wide_text_and_includes_processed(self) -> None:
+        (selected, _overrides, _timeouts, _sources, _known), _emitted = self._run(
+            [
+                {
+                    "action": "select-filtered",
+                    "artist_paths": [
+                        str(self.root / "10,000 Maniacs"),
+                    ],
+                    "artist_filter": "10,000",
+                    "album_filter": "",
+                    "selected": [],
+                },
+                {
+                    "action": "launch",
+                    "scan_mode": "auto-selected",
+                    "selected": [str(self.love), str(self.eden)],
+                },
+            ]
+        )
+        self.assertEqual(
+            {album.path for album in selected},
+            {self.love, self.eden},
+        )
+
+        (selected, _overrides, _timeouts, _sources, _known), _emitted = self._run(
+            [
+                {
+                    "action": "select-filtered",
+                    "artist_paths": [
+                        str(self.root / "10,000 Maniacs"),
+                        str(self.root / "Aerosmith"),
+                    ],
+                    "artist_filter": "",
+                    "album_filter": "toys",
+                    "selected": [],
+                },
+                {
+                    "action": "launch",
+                    "scan_mode": "auto-selected",
+                    "selected": [str(self.toys)],
+                },
+            ]
+        )
+        self.assertEqual([album.path for album in selected], [self.toys])
+
     def test_same_session_return_uses_resident_folder_model(self) -> None:
         artist_path = str(self.root / "10,000 Maniacs")
         session = splined.PickerSessionState()
