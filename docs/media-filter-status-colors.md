@@ -353,10 +353,15 @@ to reflect retained history without recursively crawling every Artist folder.
 Unprocessed is known only for loaded Album rows. Timeout is shown only after
 the loaded Album has passed the normal timeout/fingerprint authority checks.
 
-Artist aggregate state remains exact once that Artist is loaded. A retained
-bypass is sufficient to mark an otherwise-unloaded Artist as Contains Bypass;
-Processed history alone is not enough to claim that an unloaded Artist is
-Complete because unprocessed child folders may still exist.
+Artist aggregate state is seeded at startup from retained operational history:
+an Artist with retained processed completion history and no bypass is initially
+shown Complete/Green; retained bypass makes it Contains Bypass/Blue; an Artist
+with no retained state is initially Unprocessed/White. This is a direct/lazy
+history-derived presentation and does not recurse through every Artist folder.
+
+Once an Artist is opened, its actual child Album topology becomes authoritative
+and replaces the history-only aggregate. That exact loaded state may therefore
+refine the initial color to White, Purple, Green, or Blue.
 
 Statistics distinguish root Artists, loaded Artists, loaded Albums, exact
 selection, active-Artist detail, known status totals, and loaded local-art
