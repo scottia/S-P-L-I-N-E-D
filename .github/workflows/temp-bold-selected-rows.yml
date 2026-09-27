@@ -1,0 +1,138 @@
+name: TEMP selected-row styling fix
+
+on:
+  push:
+    branches: [dev]
+    paths: [.github/workflows/temp-bold-selected-rows.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temp-bold-selected-rows-dev
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.repository == 'scottia/S-P-L-I-N-E-D' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Verify, test and commit the exact row-style change
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import ast
+          import base64
+          import hashlib
+          import itertools
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          import __future__
+
+          repo = "scottia/S-P-L-I-N-E-D"
+          path = "python/tui/splined_tui.py"
+          expected = "5a6a6ee0b1249fdd3efe3a1cc3bf712d01200cad"
+          if os.environ.get("GITHUB_REPOSITORY") != repo:
+              raise SystemExit("Refusing to modify another repository")
+          if os.environ.get("GITHUB_REF") != "refs/heads/dev":
+              raise SystemExit("Refusing to modify another branch")
+
+          api = f"https://api.github.com/repos/{repo}"
+          headers = {
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "SPLINED-one-time-row-style-fix",
+          }
+
+          def request(endpoint, payload=None):
+              data = None if payload is None else json.dumps(payload).encode("utf-8")
+              req = urllib.request.Request(
+                  api + endpoint, data=data, headers=headers,
+                  method="GET" if payload is None else "PUT",
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit(f"GitHub API rejected the operation: HTTP {exc.code}") from None
+
+          record = request(f"/contents/{path}?ref=dev")
+          if record["sha"] != expected:
+              raise SystemExit("Source changed since inspection; no files were updated")
+          raw = base64.b64decode(record["content"])
+          blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+          if blob != expected:
+              raise SystemExit("Source blob verification failed")
+          original = raw.decode("utf-8")
+          start = original.index("def _interactive_row_style(")
+          end = original.index("\ndef _control_lines(", start)
+          helper = original[start:end]
+          old_bold = "        bold=selected or focused,\n"
+          old_background = (
+              "    elif selected:\n"
+              "        result = result.bg(Color.rgb(*theme.color(\"disabled\")))\n"
+          )
+          if helper.count(old_bold) != 1 or helper.count(old_background) != 1:
+              raise SystemExit("Unexpected helper structure; no files were updated")
+          replacement = helper.replace(old_bold, "        bold=selected,\n", 1)
+          replacement = replacement.replace(old_background, "", 1)
+          updated = original[:start] + replacement + original[end:]
+          compile(updated, path, "exec")
+
+          class SpyStyle:
+              def __init__(self, theme, semantic, bold):
+                  self.theme = theme
+                  self.semantic = semantic
+                  self.bold = bold
+                  self.background = None
+
+              def bg(self, color):
+                  self.background = color
+                  return self
+
+          class TestTheme:
+              def color(self, name):
+                  if name != "muted":
+                      raise AssertionError("Only hover may request a background color")
+                  return (123, 124, 125)
+
+          class TestColor:
+              @staticmethod
+              def rgb(*color):
+                  return color
+
+          namespace = {
+              "style": lambda theme, semantic, *, bold: SpyStyle(theme, semantic, bold),
+              "Color": TestColor,
+          }
+          module = ast.Module(body=[ast.parse(replacement).body[0]], type_ignores=[])
+          exec(compile(module, path, "exec", flags=__future__.annotations.compiler_flag), namespace)
+          render_style = namespace["_interactive_row_style"]
+          theme = TestTheme()
+          semantic = object()
+          count = 0
+          for hovered, selected, focused in itertools.product((False, True), repeat=3):
+              result = render_style(
+                  theme, semantic, hovered=hovered, selected=selected, focused=focused,
+              )
+              assert result.theme is theme
+              assert result.semantic is semantic
+              assert result.bold is selected, (hovered, selected, focused)
+              assert result.background == ((123, 124, 125) if hovered else None)
+              count += 1
+          print(f"PASS: full-file syntax and {count} selected/hover/focus combinations")
+          result = request(f"/contents/{path}", {
+              "message": "tui: use bold-only selected rows and retain hover highlighting",
+              "content": base64.b64encode(updated.encode("utf-8")).decode("ascii"),
+              "sha": expected,
+              "branch": "dev",
+          })
+          print("PATCH_COMMIT=" + result["commit"]["sha"])
+          print("CONTENT_SHA=" + result["content"]["sha"])
+          PY
