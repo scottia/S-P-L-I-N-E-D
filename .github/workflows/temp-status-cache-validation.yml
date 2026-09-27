@@ -1,0 +1,21 @@
+name: TEMP status-cache optimization validation
+on:
+  push:
+    branches: [dev]
+permissions:
+  contents: read
+jobs:
+  test:
+    if: github.event.head_commit.message == 'chore: validate status-cache optimization'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: pip install -r python/requirements.txt
+      - name: Compile optimized cache
+        run: python -m py_compile python/splined_status_cache.py python/test_status_cache.py
+      - name: Status cache regression tests
+        working-directory: python
+        run: python -m unittest -v test_status_cache.py
