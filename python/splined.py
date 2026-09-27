@@ -1829,6 +1829,17 @@ def prepare_tui_library_selection(
             if session.status_probe_complete:
                 return
 
+        with session.lock:
+            artist_total = len(session.artists)
+        emit_ui(
+            "folder_status_progress",
+            processed=0,
+            total=artist_total,
+            percent=0.0,
+            albums=0,
+            done=False,
+        )
+
         def worker() -> None:
             started_probe = time.perf_counter()
             with session.lock:
@@ -1902,6 +1913,18 @@ def prepare_tui_library_selection(
                             f"resolved={completed} albums={album_total}"
                         )
                         if publish_updates and session.select_media_active:
+                            emit_ui(
+                                "folder_status_progress",
+                                processed=futures_seen,
+                                total=len(artist_paths),
+                                percent=(
+                                    futures_seen / len(artist_paths) * 100.0
+                                    if artist_paths
+                                    else 100.0
+                                ),
+                                albums=album_total,
+                                done=False,
+                            )
                             emit_library("library_update")
 
                 with session.lock:
@@ -1912,6 +1935,15 @@ def prepare_tui_library_selection(
                     f"artists={completed} albums={album_total} "
                     f"elapsed_seconds={time.perf_counter() - started_probe:.6f}"
                 )
+                if session.select_media_active:
+                    emit_ui(
+                        "folder_status_progress",
+                        processed=len(artist_paths),
+                        total=len(artist_paths),
+                        percent=100.0,
+                        albums=album_total,
+                        done=True,
+                    )
             except TuiSessionExit:
                 debug_log(
                     "picker.status_probe.cancel "
@@ -1926,6 +1958,20 @@ def prepare_tui_library_selection(
                 )
                 with session.lock:
                     session.status_probe_complete = True
+                if session.select_media_active:
+                    emit_ui(
+                        "folder_status_progress",
+                        processed=futures_seen,
+                        total=len(artist_paths),
+                        percent=(
+                            futures_seen / len(artist_paths) * 100.0
+                            if artist_paths
+                            else 100.0
+                        ),
+                        albums=album_total,
+                        done=True,
+                        error=str(exc),
+                    )
             finally:
                 cancelled_probe = (
                     not session.select_media_active
