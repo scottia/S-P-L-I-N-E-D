@@ -1814,37 +1814,42 @@ def prepare_tui_library_selection(
 
             completed = 0
             album_total = 0
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(
+                    1,
+                    min(INVENTORY_WORKERS, len(artist_paths)),
+                ),
+                thread_name_prefix="splined-folder-status",
+            )
+            futures: list[concurrent.futures.Future[tuple[str, str, int]]] = []
             try:
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=max(
-                        1,
-                        min(INVENTORY_WORKERS, len(artist_paths)),
-                    ),
-                    thread_name_prefix="splined-folder-status",
-                ) as executor:
-                    futures = [
-                        executor.submit(probe_one, artist_path)
-                        for artist_path in artist_paths
-                    ]
-                    for future in concurrent.futures.as_completed(futures):
-                        if not session.select_media_active:
-                            return
-                        artist_path, aggregate, album_count = future.result()
-                        album_total += album_count
-                        completed += 1
-                        with session.lock:
-                            session.probed_artist_statuses[artist_path] = aggregate
+                futures = [
+                    executor.submit(probe_one, artist_path)
+                    for artist_path in artist_paths
+                ]
+                for future in concurrent.futures.as_completed(futures):
+                    if not session.select_media_active:
+                        debug_log(
+                            "picker.status_probe.cancel "
+                            f"completed={completed}/{len(artist_paths)}"
+                        )
+                        return
+                    artist_path, aggregate, album_count = future.result()
+                    album_total += album_count
+                    completed += 1
+                    with session.lock:
+                        session.probed_artist_statuses[artist_path] = aggregate
 
-                        # Publish progressive state without flooding the event
-                        # queue. The final result is always emitted.
-                        if completed % 16 == 0 or completed == len(artist_paths):
-                            debug_log(
-                                "picker.status_probe.progress "
-                                f"artists={completed}/{len(artist_paths)} "
-                                f"albums={album_total}"
-                            )
-                            if session.select_media_active:
-                                emit_library("library_update")
+                    # Publish progressive state without flooding the event
+                    # queue. The final result is always emitted.
+                    if completed % 16 == 0 or completed == len(artist_paths):
+                        debug_log(
+                            "picker.status_probe.progress "
+                            f"artists={completed}/{len(artist_paths)} "
+                            f"albums={album_total}"
+                        )
+                        if session.select_media_active:
+                            emit_library("library_update")
 
                 with session.lock:
                     session.status_probe_complete = True
@@ -1861,6 +1866,14 @@ def prepare_tui_library_selection(
                 )
                 with session.lock:
                     session.status_probe_complete = True
+            finally:
+                if not session.select_media_active:
+                    for future in futures:
+                        future.cancel()
+                executor.shutdown(
+                    wait=session.select_media_active,
+                    cancel_futures=not session.select_media_active,
+                )
 
         thread = threading.Thread(
             target=worker,
