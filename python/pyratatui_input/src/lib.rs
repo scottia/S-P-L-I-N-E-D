@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
@@ -204,12 +204,97 @@ fn protocol_name(protocol: ProtocolType) -> &'static str {
     }
 }
 
+fn xtsmgraphics_reports_sixel_bytes(data: &[u8]) -> bool {
+    // XTSMGRAPHICS color-register query response:
+    //   CSI ? 1 ; 0 ; <register-count> S
+    // A positive register count is sufficient proof that SIXEL graphics are
+    // available, even when DA1 deliberately omits SIXEL capability bit 4.
+    const PREFIX: &[u8] = b"\x1b[?1;0;";
+    let mut offset = 0usize;
+    while let Some(relative) = data[offset..]
+        .windows(PREFIX.len())
+        .position(|window| window == PREFIX)
+    {
+        let start = offset + relative + PREFIX.len();
+        let tail = &data[start..];
+        let Some(end) = tail.iter().position(|byte| *byte == b'S') else {
+            return false;
+        };
+        let value = &tail[..end];
+        if !value.is_empty()
+            && value.iter().all(u8::is_ascii_digit)
+            && std::str::from_utf8(value)
+                .ok()
+                .and_then(|text| text.parse::<u32>().ok())
+                .is_some_and(|count| count > 0)
+        {
+            return true;
+        }
+        offset = start + end + 1;
+        if offset >= data.len() {
+            break;
+        }
+    }
+    false
+}
+
+fn probe_xtsmgraphics_sixel() -> bool {
+    // WebSSH intentionally keeps the stock xterm.js DA1 response and therefore
+    // does not advertise SIXEL there, but it does answer XTSMGRAPHICS. Append
+    // DSR so the blocking read has a deterministic end marker even when the
+    // graphics query is unsupported.
+    let mut stdout = io::stdout();
+    if stdout
+        .write_all(b"\x1b[?1;1;0S\x1b[5n")
+        .and_then(|_| stdout.flush())
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut response = Vec::with_capacity(256);
+    let mut stdin = io::stdin();
+    let mut chunk = [0u8; 128];
+    loop {
+        let Ok(read) = stdin.read(&mut chunk) else {
+            return false;
+        };
+        if read == 0 {
+            return false;
+        }
+        response.extend_from_slice(&chunk[..read]);
+        if response.windows(4).any(|window| window == b"\x1b[0n") {
+            break;
+        }
+        if response.len() >= 4096 {
+            break;
+        }
+    }
+    xtsmgraphics_reports_sixel_bytes(&response)
+}
+
 fn detect_image_picker() -> String {
     // ratatui-image explicitly requires this query after alternate-screen
     // entry and before terminal-event reading. EventReader::__enter__ is that
     // boundary in SPLINED.
-    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    let name = protocol_name(picker.protocol_type()).to_string();
+    let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+
+    // Some terminals (notably WebSSH) render SIXEL but deliberately omit the
+    // SIXEL bit from DA1. ratatui-image then correctly falls back to Halfblocks
+    // because it cannot know better. XTSMGRAPHICS provides the missing
+    // terminal-side proof, so promote only a Halfblocks result that positively
+    // answers that query.
+    let xtsm_sixel = picker.protocol_type() == ProtocolType::Halfblocks
+        && probe_xtsmgraphics_sixel();
+    if xtsm_sixel {
+        picker.set_protocol_type(ProtocolType::Sixel);
+    }
+
+    let name = if xtsm_sixel {
+        "Sixel (XTSMGRAPHICS)".to_string()
+    } else {
+        protocol_name(picker.protocol_type()).to_string()
+    };
     if let Ok(mut active) = image_picker().write() {
         *active = picker;
     }
@@ -482,6 +567,22 @@ mod tests {
         assert_eq!(converted.button, "left");
         assert_eq!((converted.column, converted.row), (42, 7));
         assert!(converted.alt);
+    }
+
+    #[test]
+    fn xtsmgraphics_positive_register_response_proves_sixel() {
+        assert!(xtsmgraphics_reports_sixel_bytes(
+            b"junk\x1b[?1;0;256S\x1b[0n"
+        ));
+        assert!(xtsmgraphics_reports_sixel_bytes(
+            b"\x1b[?1;0;4096S"
+        ));
+        assert!(!xtsmgraphics_reports_sixel_bytes(
+            b"\x1b[?1;0;0S\x1b[0n"
+        ));
+        assert!(!xtsmgraphics_reports_sixel_bytes(
+            b"\x1b[?1;2c\x1b[0n"
+        ));
     }
 
     #[test]
