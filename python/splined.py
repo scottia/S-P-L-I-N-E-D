@@ -131,6 +131,10 @@ class PickerSessionState:
     selected_statistics: dict[str, dict[str, Any]] = field(default_factory=dict)
     selected_statistics_pending: set[str] = field(default_factory=set)
     initialized_paths: set[str] = field(default_factory=set)
+    probed_artist_statuses: dict[str, str] = field(default_factory=dict)
+    status_probe_started: bool = False
+    status_probe_complete: bool = False
+    status_probe_thread: threading.Thread | None = None
     select_new: bool = False
     select_media_active: bool = False
     validation_started: bool = False
@@ -1550,6 +1554,41 @@ def prepare_tui_library_selection(
         ]
         return artist_rows, rows
 
+    def classify_album_state(album: AlbumDir) -> str:
+        history_entry = history_albums.get(str(album.path))
+        history_outcome = (
+            str(history_entry.get("outcome", ""))
+            if isinstance(history_entry, dict)
+            else ""
+        )
+        postponed, _age_hours = scan_completion_status(
+            completion_history,
+            album,
+            cfg,
+            sources,
+            timeout_hours,
+            now=time.time(),
+            policy_fingerprint=policy_fingerprint,
+        )
+        if str(album.path) in bypassed or "bypass" in history_outcome.casefold():
+            return "bypassed"
+        if postponed:
+            return "timeout"
+        if isinstance(history_entry, dict) or album.local_art_files:
+            return "processed"
+        return "unprocessed"
+
+    def aggregate_artist_states(statuses: list[str]) -> str:
+        if "bypassed" in statuses:
+            return "contains-bypass"
+        if statuses and all(
+            status in {"processed", "timeout"} for status in statuses
+        ):
+            return "complete"
+        if any(status in {"processed", "timeout"} for status in statuses):
+            return "partial"
+        return "unprocessed"
+
     def known_status_summary(
         artist_rows: list[dict[str, Any]],
         rows: list[dict[str, Any]],
@@ -1637,29 +1676,23 @@ def prepare_tui_library_selection(
         for _path, (artist_path, status) in known_history.items():
             history_by_artist.setdefault(artist_path, []).append(status)
 
+        with session.lock:
+            probed_statuses = dict(session.probed_artist_statuses)
+
         for artist in artist_rows:
             artist_path = str(artist.get("path", ""))
             statuses = rows_by_artist.get(artist_path, [])
             aggregate: str | None = None
             if bool(artist.get("loaded", False)):
-                # Loaded topology is exact and replaces history-only inference.
-                if statuses and "bypassed" in statuses:
-                    aggregate = "contains-bypass"
-                elif statuses and all(
-                    status in {"processed", "timeout"} for status in statuses
-                ):
-                    aggregate = "complete"
-                elif statuses and any(
-                    status in {"processed", "timeout"} for status in statuses
-                ):
-                    aggregate = "partial"
-                elif statuses:
-                    aggregate = "unprocessed"
+                # Loaded topology is exact and replaces every provisional state.
+                aggregate = aggregate_artist_states(statuses)
+            elif artist_path in probed_statuses:
+                # Background status-only inventory has inspected folder/local
+                # artwork state without loading Album topology into the picker.
+                aggregate = probed_statuses[artist_path]
             else:
-                # Direct/lazy startup deliberately does not recurse into every
-                # Artist.  Use retained operational history as the initial
-                # folder-state authority, then refine it when the Artist is
-                # actually opened.
+                # Immediate first paint uses retained history only while the
+                # non-blocking status probe is still resolving local state.
                 retained = history_by_artist.get(artist_path, [])
                 if "bypassed" in retained:
                     aggregate = "contains-bypass"
@@ -1752,6 +1785,77 @@ def prepare_tui_library_selection(
             daemon=True,
         ).start()
 
+    def start_status_probe() -> None:
+        with session.lock:
+            if session.status_probe_started:
+                return
+            session.status_probe_started = True
+            session.status_probe_complete = False
+
+        def worker() -> None:
+            started_probe = time.perf_counter()
+            debug_log("picker.status_probe.start")
+            try:
+                albums, _probe_ignored = inventory(
+                    index_root,
+                    ignored,
+                    str(output.get("file_name", "cover")),
+                    fingerprint_paths=fingerprint_paths,
+                )
+                grouped: dict[str, list[str]] = {}
+                for album in albums:
+                    try:
+                        relative = album.path.relative_to(index_root)
+                    except ValueError:
+                        continue
+                    if not relative.parts:
+                        continue
+                    artist_path = str(index_root / relative.parts[0])
+                    grouped.setdefault(artist_path, []).append(
+                        classify_album_state(album)
+                    )
+
+                with session.lock:
+                    if not session.select_media_active:
+                        return
+                    current_artist_paths = {item.path for item in session.artists}
+                    session.probed_artist_statuses = {
+                        artist_path: aggregate_artist_states(statuses)
+                        for artist_path, statuses in grouped.items()
+                        if artist_path in current_artist_paths
+                    }
+                    # Empty Artist folders remain ordinary unprocessed folders.
+                    for artist_path in current_artist_paths:
+                        session.probed_artist_statuses.setdefault(
+                            artist_path, "unprocessed"
+                        )
+                    session.status_probe_complete = True
+
+                debug_log(
+                    "picker.status_probe.done "
+                    f"artists={len(session.probed_artist_statuses)} "
+                    f"albums={len(albums)} "
+                    f"elapsed_seconds={time.perf_counter() - started_probe:.6f}"
+                )
+                if session.select_media_active:
+                    emit_library("library_update")
+            except Exception as exc:
+                debug_log(
+                    "picker.status_probe.error "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+                with session.lock:
+                    session.status_probe_complete = True
+
+        thread = threading.Thread(
+            target=worker,
+            name="splined-folder-status",
+            daemon=True,
+        )
+        with session.lock:
+            session.status_probe_thread = thread
+        thread.start()
+
     def emit_library(event: str, *, preserve_selection: bool = False) -> None:
         artist_rows, rows = model_payload()
         status_counts, artist_status_counts = known_status_summary(
@@ -1807,6 +1911,10 @@ def prepare_tui_library_selection(
             session.artists = artists
             session.album_records = []
             session.loaded_artists.clear()
+            session.probed_artist_statuses.clear()
+            session.status_probe_started = False
+            session.status_probe_complete = False
+            session.status_probe_thread = None
             session.ready = True
             session.library_root = str(index_root)
             session.picker_path = ""
@@ -1847,6 +1955,7 @@ def prepare_tui_library_selection(
     )
     session.select_media_active = True
     emit_library(initial_event)
+    start_status_probe()
 
     event = "library_update"
     while True:
@@ -1986,6 +2095,11 @@ def prepare_tui_library_selection(
                     for record in session.album_records
                     if record.artist_path in refreshed_paths
                 ]
+                session.probed_artist_statuses = {
+                    path: status
+                    for path, status in session.probed_artist_statuses.items()
+                    if path in refreshed_paths
+                }
             known_paths = {record.path for record in session.album_records}
             selected_paths.intersection_update(known_paths)
             emit_ui(
