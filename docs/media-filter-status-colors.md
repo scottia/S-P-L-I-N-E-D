@@ -278,13 +278,16 @@ Background cache validation may preserve already checked paths, but discovery of
 
 # Select Mode
 
-The Select Mode group contains mutually exclusive selection actions:
+The Select Mode group contains selection actions with distinct scopes:
 
-- **Select [ALL]** selects normally eligible Albums across the complete active
-  snapshot (after validation when required);
-- **Select [NONE]** clears transient selection;
-- **Select [FILTERED]** selects Albums in the complete current in-memory filter
-  result.
+- **Select [ALL]** selects all White/Unprocessed Albums for the currently active
+  Artist only. Orange/Processed Albums are excluded from this automatic Artist
+  selection.
+- **Select [NONE]** clears transient selection.
+- **Select [FILTERED]** applies the current Artist and/or Album **text filter
+  library-wide** and selects matching White/Unprocessed plus Orange/Processed
+  Albums. Red/Bypassed and Purple/Timeout Albums remain protected and are not
+  selected implicitly.
 
 Selection actions respect history, bypass, and timeout authority and never erase persistent records.
 
@@ -300,7 +303,7 @@ Expected automatic behavior:
 White Album  -> selected
 Orange Album -> skipped unless manually reselected
 Purple Album -> skipped while timeout-active
-Red Album    -> requires explicit bypass override
+Red Album    -> requires saved bypass removal before selection
 ```
 
 A Blue artist can therefore be selected without automatically overriding its Red child albums.
