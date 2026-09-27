@@ -376,10 +376,16 @@ class TuiState:
                     ),
                     min(self.album_index_cursor, max(0, len(visible_albums) - 1)),
                 )
+            loaded_states = {
+                item.name: (item.status.value if item.status is not None else "")
+                for item in self.library.artists
+                if item.loaded
+            }
             _runtime_trace(
                 f"library_apply event={event!r} payload_artists="
                 f"{len(payload.get('artists', [])) if isinstance(payload.get('artists'), list) else 'invalid'} "
                 f"payload_albums={len(payload.get('albums', [])) if isinstance(payload.get('albums'), list) else 'invalid'} "
+                f"loaded_artist_states={loaded_states!r} "
                 f"{_library_snapshot(self)}"
             )
             raw_selected_stats = payload.get("selected_album_stats", [])
