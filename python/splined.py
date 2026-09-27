@@ -2204,7 +2204,7 @@ def prepare_tui_library_selection(
                     and album_filter not in str(row["album"]).casefold()
                 ):
                     continue
-                if row["status"] != "unprocessed":
+                if row["status"] not in {"unprocessed", "processed"}:
                     continue
                 path = str(row["path"])
                 if path not in selected_paths:
@@ -2213,6 +2213,7 @@ def prepare_tui_library_selection(
             debug_log(
                 "picker.select_filtered.done "
                 f"artists={len(requested)} added={added} "
+                "eligible_statuses=unprocessed,processed "
                 f"selected={len(selected_paths)}"
             )
             emit_library(event)
