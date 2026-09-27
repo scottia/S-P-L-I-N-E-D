@@ -253,12 +253,19 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         artist_one = _region(self.state, "artist-row", 1)
         handle_mouse(self.state, self.adapter, _center(artist_one))
         self.assertEqual(model.active_artist, artist_one.value)
-        self.assertFalse(any(item.selected for item in model.albums if item.artist == artist_one.value))
+        self.assertTrue(
+            any(item.selected for item in model.albums if item.artist == artist_one.value)
+        )
 
+        # The explicit checkbox follows the same Artist cascade path and
+        # therefore toggles those normally eligible child Albums back off.
         render(_Frame(150, 44), self.state, select_theme("OLED"))
+        self.adapter.waiting.set()
         artist_check = _region(self.state, "artist-checkbox", 1)
         handle_mouse(self.state, self.adapter, _center(artist_check))
-        self.assertTrue(any(item.selected for item in model.albums if item.artist == artist_check.value))
+        self.assertFalse(
+            any(item.selected for item in model.albums if item.artist == artist_check.value)
+        )
 
         render(_Frame(150, 44), self.state, select_theme("OLED"))
         album_row = _region(self.state, "album-row", 1)
@@ -501,13 +508,15 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         request = json.loads(adapter.responses.get_nowait())
         self.assertEqual(request["action"], "load-artist")
         self.assertEqual(request["artist_path"], "/music/10,000 Maniacs")
-        self.assertFalse(request["select_after_load"])
+        self.assertTrue(request["select_after_load"])
 
         state.apply("input", {"prompt": "", "context": {"kind": "library-selection"}})
         adapter.waiting.set()
         state.library_focus = 3
         handle_key(state, adapter, _Event("Enter"))
-        self.assertEqual(json.loads(adapter.responses.get_nowait())["action"], "load-artist")
+        keyboard_request = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(keyboard_request["action"], "load-artist")
+        self.assertFalse(keyboard_request["select_after_load"])
 
     def test_unindexed_artist_checkbox_requests_load_and_select(self) -> None:
         payload = _payload(0, 0)
