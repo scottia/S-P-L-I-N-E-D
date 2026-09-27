@@ -10,6 +10,7 @@ use crossterm::execute;
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use ratatui::{
     buffer::Buffer,
     layout::{Rect, Size},
@@ -228,7 +229,7 @@ fn rgb(color: Color) -> (u8, u8, u8) {
 #[pyfunction]
 #[pyo3(signature = (data, width, height, max_side=1000))]
 fn render_image_cells(
-    data: Vec<u8>,
+    data: &Bound<'_, PyBytes>,
     width: u16,
     height: u16,
     max_side: u32,
@@ -237,7 +238,7 @@ fn render_image_cells(
         return Ok((0, 0, Vec::new()));
     }
 
-    let mut image = image::load_from_memory(&data)
+    let mut image = image::load_from_memory(data.as_bytes())
         .map_err(|error| PyRuntimeError::new_err(format!("image decode failed: {error}")))?;
     let limit = max_side.max(1);
     if image.width() > limit || image.height() > limit {
