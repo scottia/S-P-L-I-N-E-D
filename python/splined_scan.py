@@ -1253,8 +1253,9 @@ def _run_scan_dir_batch(
                 initial_event=initial_library_event,
             )
         )
-        # The TUI can override bypass only through its explicit confirmation;
-        # timeout-active rows remain unselected by the shared model.
+        # TUI selection never creates a temporary bypass override. Confirming
+        # a Red Album removes its saved bypass before selection; timeout-active
+        # rows remain protected by the shared model.
         albums = [
             album
             for album in albums
@@ -1759,12 +1760,12 @@ def _run_scan_dir_batch(
                     if comparison_action == "bypass":
                         if is_album_bypassed(bypass_history, album):
                             remove_album_bypass_state(
-                    bypass_path,
-                    bypass_history,
-                    completion_path,
-                    completion_history,
-                    album.path,
-                )
+                                bypass_path,
+                                bypass_history,
+                                completion_path,
+                                completion_history,
+                                album.path,
+                            )
                             print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                             continue
                         record_album_bypass(bypass_path, bypass_history, album, mbid, search_artist, search_album, "local-source-comparison")
@@ -1862,7 +1863,13 @@ def _run_scan_dir_batch(
                 if answer == "__cancel__":
                     raise core.TuiSessionExit()
                 if answer == "unbypass":
-                    if remove_album_bypass(bypass_path, bypass_history, album.path):
+                    if remove_album_bypass_state(
+                        bypass_path,
+                        bypass_history,
+                        completion_path,
+                        completion_history,
+                        album.path,
+                    ):
                         print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                     continue
                 if answer == "b":
