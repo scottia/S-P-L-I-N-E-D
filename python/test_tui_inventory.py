@@ -234,12 +234,11 @@ class DirectLazyInventoryTests(unittest.TestCase):
                 {
                     "action": "select-all",
                     "artist_path": artist_path,
-                    "selected": [],
+                    "selected": [str(self.toys)],
                 },
                 {
                     "action": "launch",
                     "scan_mode": "auto-selected",
-                    "selected": [str(self.eden)],
                 },
             ]
         )
@@ -255,12 +254,11 @@ class DirectLazyInventoryTests(unittest.TestCase):
                     ],
                     "artist_filter": "10,000",
                     "album_filter": "",
-                    "selected": [],
+                    "selected": [str(self.toys)],
                 },
                 {
                     "action": "launch",
                     "scan_mode": "auto-selected",
-                    "selected": [str(self.love), str(self.eden)],
                 },
             ]
         )
@@ -279,12 +277,11 @@ class DirectLazyInventoryTests(unittest.TestCase):
                     ],
                     "artist_filter": "",
                     "album_filter": "toys",
-                    "selected": [],
+                    "selected": [str(self.eden)],
                 },
                 {
                     "action": "launch",
                     "scan_mode": "auto-selected",
-                    "selected": [str(self.toys)],
                 },
             ]
         )
