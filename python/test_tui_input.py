@@ -870,7 +870,7 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
 
 class HoverAndStatusLoadingTests(unittest.TestCase):
     def test_url_hover_starts_live_remote_preview_and_leave_clears_it(self) -> None:
-        state = CandidateInteractionTests()._candidate_state()
+        state = PolicyAndCandidateMouseTests()._candidate_state()
         adapter = TuiAdapter()
         render(_Frame(160, 44), state, select_theme("OLED"))
         url = _region(state, "candidate-url")
