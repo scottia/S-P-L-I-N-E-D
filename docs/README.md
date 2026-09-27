@@ -49,10 +49,12 @@ whole-library actions such as Select [ALL] or Auto Scan [ALL] may traverse all
 Artists because those operations require complete Album knowledge.
 
 There is no normal-startup SQLite picker snapshot, blocking full-library cache
-build, or background picker-cache validation. Before the initial Artist list is shown, a lightweight folder-status readiness
-pass inspects folder/file names and retained history so Select Media first paint
-already has stable White/Purple/Green/Blue Artist colors without loading Album
-topology into the picker. Picker identities remain folder-derived
+build, or background picker-cache validation. Select Media paints immediately
+under a centered **LOADING ARTIST STATUS** banner while a lightweight
+folder-status readiness pass inspects folder/file names and retained history.
+Normal selection/scan controls remain blocked until that real progress reaches
+completion; Album topology is still not loaded into the resident picker by the
+status pass. Picker identities remain folder-derived
 and stable. Tag parsing, MusicBrainz authority, providers, candidate downloads,
 image ranking/transformation, and AISPLINE processing do not run merely to
 populate Select Media; the small Selected Album Statistics surface may read
@@ -76,7 +78,13 @@ replaced by a Windows-style per-Album final run report in processing order.
 The report remains until Enter or Esc returns to the same in-memory Select
 Media session; no root scan, SQLite reload, or picker rebuild occurs.
 
-The TUI includes source-grouped candidate presentation on one shared Ratatui column grid, WIDE-mode terminal-cell artwork previews, live authority/provider/download activity, and URL/provenance markers instead of provider IDs. `[URL]` uses terminal-client OSC 8 hyperlink handling; SPLINED does not launch a browser inside its Docker/SSH host. Direct mouse/touch interaction remains provided through the isolated `splined-pyratatui-input` crossterm extension. Render-time hit regions drive taps and the list under the pointer receives wheel/touch scrolling.
+The TUI includes source-grouped candidate presentation on one shared Ratatui
+column grid, live authority/provider/download activity, and URL/provenance
+markers instead of provider IDs. `[URL]` keeps terminal-client OSC 8 browser
+handling and additionally provides a memory-only hover preview of that exact
+remote resource in the Artwork pane using `ratatui-image`; the hover path does
+not write cache/sample files. SPLINED does not launch a browser inside its
+Docker/SSH host. Direct mouse/touch interaction remains provided through the isolated `splined-pyratatui-input` crossterm extension. Render-time hit regions drive taps and the list under the pointer receives wheel/touch scrolling.
 
 The user's WebSSH iOS terminal is a verified touch target: the prior SPLINED `--tui` supported touch-driven result selection and scrolling. Restoring this behavior in the current Ratatui path is therefore an implementation/binding parity requirement, not a speculative terminal feature.
 
