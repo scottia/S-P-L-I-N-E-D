@@ -5092,7 +5092,16 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         dirty = True
                     last_animation_step = current_animation_step
                     if dirty:
+                        _clear_stale_remote_overlay(state)
                         terminal.draw(lambda frame: render(frame, state, theme))
+                        if (
+                            state.tab == "main"
+                            and state.workflow in {"candidates", "picker"}
+                            and state.candidates
+                            and state.remote_hover_index < 0
+                            and not state.remote_hover_loading
+                        ):
+                            _start_preferred_preview(state, adapter)
                         _draw_remote_hover_overlay(state)
                         writer = getattr(sys, "__stdout__", None)
                         if writer is not None:
