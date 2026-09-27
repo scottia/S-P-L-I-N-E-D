@@ -71,9 +71,14 @@ def _runtime_settings() -> tuple[Path, Path | None, list[str], str]:
     scan = _section(cfg, "scan")
     library = _section(cfg, "library")
     output = _section(cfg, "output")
-    cache_dir = _resolve_config_path(
-        str(scan.get("cache_dir", "")),
-        Path("/_cache"),
+    history_env = os.environ.get("SPLINED_HISTORY_DIR", "").strip()
+    history_dir = (
+        Path(history_env)
+        if history_env
+        else _resolve_config_path(
+            str(scan.get("history_dir", "")),
+            Path("/_logs/_history"),
+        )
     )
     raw_library = str(library.get("music_library", "")).strip()
     library_root = (
@@ -83,7 +88,7 @@ def _runtime_settings() -> tuple[Path, Path | None, list[str], str]:
     )
     ignored = [str(value) for value in library.get("ignored_subs", [])]
     cover_name = str(output.get("file_name", "cover")).strip() or "cover"
-    return cache_dir, library_root, ignored, cover_name
+    return history_dir, library_root, ignored, cover_name
 
 
 def _inventory_key(ignored: list[str], configured_file_name: str) -> str:
@@ -109,8 +114,8 @@ def _empty_payload() -> dict[str, Any]:
 def _ensure_loaded() -> tuple[dict[str, Any], Path]:
     global _PAYLOAD, _CACHE_PATH
     with _LOCK:
-        cache_dir, _library_root, _ignored, _cover_name = _runtime_settings()
-        path = cache_dir / CACHE_FILE
+        history_dir, _library_root, _ignored, _cover_name = _runtime_settings()
+        path = history_dir / CACHE_FILE
         if _PAYLOAD is not None and _CACHE_PATH == path:
             return _PAYLOAD, path
 
@@ -315,7 +320,7 @@ def _should_cache_status_inventory(
 ) -> bool:
     if workers != 1 or progress is not None:
         return False
-    _cache_dir, library_root, _ignored, _cover_name = _runtime_settings()
+    _history_dir, library_root, _ignored, _cover_name = _runtime_settings()
     if library_root is None:
         return True
     try:
@@ -326,7 +331,7 @@ def _should_cache_status_inventory(
 
 def _matching_cached_count(total: int) -> int:
     payload, _path = _ensure_loaded()
-    _cache_dir, library_root, ignored, cover_name = _runtime_settings()
+    _history_dir, library_root, ignored, cover_name = _runtime_settings()
     if library_root is None or total <= 0:
         return 0
     key = _inventory_key(ignored, cover_name)
