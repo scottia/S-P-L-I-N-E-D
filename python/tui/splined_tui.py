@@ -491,6 +491,13 @@ class TuiState:
                 f"{_library_snapshot(self)}"
             )
         elif event == "scan_start":
+            self.remote_hover_token += 1
+            self.remote_hover_index = -1
+            self.remote_hover_url = ""
+            self.remote_hover_overlay = None
+            self.remote_hover_loading = False
+            self.remote_hover_error = ""
+            self.remote_preview_rect = None
             self.workflow = "overview"
             self.album_total = int(payload.get("total", 0))
             self.album_path = str(payload.get("root", self.album_path))
@@ -639,8 +646,22 @@ class TuiState:
             context = dict(payload.get("context") or {})
             input_kind = str(context.get("kind", "picker"))
             if input_kind == "library-selection":
+                self.remote_hover_token += 1
+                self.remote_hover_index = -1
+                self.remote_hover_url = ""
+                self.remote_hover_overlay = None
+                self.remote_hover_loading = False
+                self.remote_hover_error = ""
+                self.remote_preview_rect = None
                 self.workflow = "library"
             elif input_kind == "batch-summary":
+                self.remote_hover_token += 1
+                self.remote_hover_index = -1
+                self.remote_hover_url = ""
+                self.remote_hover_overlay = None
+                self.remote_hover_loading = False
+                self.remote_hover_error = ""
+                self.remote_preview_rect = None
                 self.workflow = "batch-report"
             else:
                 self.workflow = "picker"
@@ -711,6 +732,13 @@ class TuiState:
                 self.active_report.detail = str(payload.get("detail", ""))
                 self.active_report.finish()
         elif event == "summary":
+            self.remote_hover_token += 1
+            self.remote_hover_index = -1
+            self.remote_hover_url = ""
+            self.remote_hover_overlay = None
+            self.remote_hover_loading = False
+            self.remote_hover_error = ""
+            self.remote_preview_rect = None
             self.summary = dict(payload)
             self.exit_code = int(payload.get("exit_code", 0) or 0)
             if self.active_report is not None:
@@ -2581,6 +2609,12 @@ def _clear_remote_hover_preview(state: TuiState) -> None:
 
 
 def _draw_remote_hover_overlay(state: TuiState) -> None:
+    # Native terminal graphics must never be painted outside the main
+    # candidate workspace.  Unlike ordinary Ratatui cells, Sixel/Kitty/iTerm2
+    # graphics can survive a subsequent text-buffer redraw, so stale hover
+    # state must not bleed into Logs/History/Run Report views.
+    if state.tab != "main" or state.workflow not in {"candidates", "picker"}:
+        return
     overlay = state.remote_hover_overlay
     rect = state.remote_preview_rect
     if overlay is None or rect is None or state.remote_hover_index < 0:
@@ -4453,7 +4487,10 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if action in {Action.NEXT_REGION, Action.PREVIOUS_REGION}:
         tabs = ["main", "history", "logs"]
         step = -1 if action is Action.PREVIOUS_REGION else 1
-        state.tab = tabs[(tabs.index(state.tab) + step) % len(tabs)]
+        next_tab = tabs[(tabs.index(state.tab) + step) % len(tabs)]
+        if next_tab != "main":
+            _clear_remote_hover_preview(state)
+        state.tab = next_tab
         return
 
     request = state.input_request
