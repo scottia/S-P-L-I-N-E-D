@@ -1296,6 +1296,11 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         )
 
     def status_active(index: int) -> bool:
+        if index == 0:
+            return (
+                AlbumStatus.UNPROCESSED in model.status_filters
+                and ArtistStatus.UNPROCESSED in model.artist_status_filters
+            )
         if index == 3:
             return (
                 AlbumStatus.TIMEOUT in model.status_filters
@@ -1312,7 +1317,12 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
     artist_counts = model.indexed_artist_status_counts()
 
     def status_suffix(index: int) -> str:
-        if index == 3:
+        if index == 0:
+            count = (
+                album_counts[AlbumStatus.UNPROCESSED]
+                + artist_counts[ArtistStatus.UNPROCESSED]
+            )
+        elif index == 3:
             count = (
                 album_counts[AlbumStatus.TIMEOUT]
                 + artist_counts[ArtistStatus.PARTIAL]
@@ -1337,7 +1347,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
                 status_suffix,
             )
         )
-        .block(card(theme, "ALBUM STATUS MODE", Semantic.ACTIVE)),
+        .block(card(theme, "FOLDER STATUS MODE", Semantic.ACTIVE)),
         panels[0],
     )
     frame.render_widget(
@@ -3524,7 +3534,10 @@ def _handle_library_key(
         return True
     if action in {Action.ACTIVATE, Action.TOGGLE}:
         if state.library_focus == 0:
-            if state.status_index == 3:
+            if state.status_index == 0:
+                model.toggle_status(AlbumStatus.UNPROCESSED)
+                model.toggle_artist_status(ArtistStatus.UNPROCESSED)
+            elif state.status_index == 3:
                 model.toggle_status(AlbumStatus.TIMEOUT)
                 model.toggle_artist_status(ArtistStatus.PARTIAL)
             else:
@@ -3845,7 +3858,10 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if region.target == "status-control" and model is not None:
         state.library_focus = 0
         state.status_index = region.index
-        if region.index == 3:
+        if region.index == 0:
+            model.toggle_status(AlbumStatus.UNPROCESSED)
+            model.toggle_artist_status(ArtistStatus.UNPROCESSED)
+        elif region.index == 3:
             model.toggle_status(AlbumStatus.TIMEOUT)
             model.toggle_artist_status(ArtistStatus.PARTIAL)
         else:
