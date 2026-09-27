@@ -128,11 +128,11 @@ picker-cache validation is required to render Select Media. The configured
 cache directory remains available to SPLINED for candidate/sample data, but it
 is not an authority or prerequisite for the Artist folder list.
 
-After first paint, a non-blocking folder-status probe may traverse folder/file
-names plus retained history to resolve initial Artist colors, including
-local-artwork-only Processed Albums. That probe does not add Albums to the
-resident picker model; opening an Artist remains the authoritative topology
-load.
+Before first Select Media paint, a lightweight folder-status readiness pass
+traverses folder/file names plus retained history to resolve initial Artist
+colors, including local-artwork-only Processed Albums. The readiness pass does
+not add Albums to the resident picker model; opening an Artist remains the
+authoritative topology load.
 
 Album topology is loaded lazily:
 
