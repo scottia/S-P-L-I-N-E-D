@@ -39,6 +39,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
             cachemod._LAST_SAVE = 0.0
             cachemod._CURRENT_BASELINE = 0
             cachemod._CURRENT_TOTAL = 0
+            cachemod._CURRENT_FIRST_RUN = False
 
     def tearDown(self) -> None:
         with cachemod._LOCK:
@@ -47,6 +48,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
             cachemod._DIRTY = 0
             cachemod._CURRENT_BASELINE = 0
             cachemod._CURRENT_TOTAL = 0
+            cachemod._CURRENT_FIRST_RUN = False
         self.temp.cleanup()
 
     def _core(self):
@@ -123,7 +125,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
             self.assertEqual(len(third), 1)
             self.assertEqual(calls, [self.artist, self.artist])
 
-    def test_complete_cache_makes_initial_progress_immediately_ready(self) -> None:
+    def test_complete_cache_starts_at_full_coverage_but_waits_for_validation(self) -> None:
         core, _calls, events = self._core()
         with mock.patch.object(
             cachemod,
@@ -146,7 +148,30 @@ class PersistentStatusCacheTests(unittest.TestCase):
         self.assertEqual(event, "folder_status_progress")
         self.assertEqual(payload["processed"], 1)
         self.assertEqual(payload["percent"], 100.0)
-        self.assertTrue(payload["done"])
+        self.assertEqual(payload["cached_baseline"], 1)
+        self.assertFalse(payload["first_status_build"])
+        self.assertFalse(payload["done"])
+
+    def test_missing_status_json_marks_one_time_first_build(self) -> None:
+        core, _calls, events = self._core()
+        with mock.patch.object(
+            cachemod,
+            "_runtime_settings",
+            return_value=(self.history, self.library, [], "cover"),
+        ):
+            cachemod.install_core_patch(core)
+            core.emit_ui(
+                "folder_status_progress",
+                processed=0,
+                total=1,
+                percent=0.0,
+                albums=0,
+                done=False,
+            )
+
+        _event, payload = events[-1]
+        self.assertTrue(payload["first_status_build"])
+        self.assertEqual(payload["cached_baseline"], 0)
 
 
 if __name__ == "__main__":
