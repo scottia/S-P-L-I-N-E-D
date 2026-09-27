@@ -40,6 +40,10 @@ class PersistentStatusCacheTests(unittest.TestCase):
             cachemod._CURRENT_BASELINE = 0
             cachemod._CURRENT_TOTAL = 0
             cachemod._CURRENT_FIRST_RUN = False
+            cachemod._VALIDATION_STARTED = 0.0
+            cachemod._VALIDATION_CHECKED = 0
+            cachemod._VALIDATION_UNCHANGED = 0
+            cachemod._VALIDATION_RESCANNED = 0
 
     def tearDown(self) -> None:
         with cachemod._LOCK:
@@ -172,6 +176,88 @@ class PersistentStatusCacheTests(unittest.TestCase):
         _event, payload = events[-1]
         self.assertTrue(payload["first_status_build"])
         self.assertEqual(payload["cached_baseline"], 0)
+
+    def test_shallow_sentinel_reuses_unchanged_artist_and_rescans_structure_change(self) -> None:
+        core, calls, _events = self._core()
+        category = self.artist / "Category"
+        category.mkdir()
+        with mock.patch.object(
+            cachemod,
+            "_runtime_settings",
+            return_value=(self.history, self.library, [], "cover"),
+        ):
+            cachemod.install_core_patch(core)
+            core.inventory(self.artist, [], "cover", workers=1)
+            cachemod.flush()
+            self.assertEqual(calls, [self.artist])
+
+            core.inventory(self.artist, [], "cover", workers=1)
+            self.assertEqual(calls, [self.artist])
+
+            added = self.artist / "New Category"
+            added.mkdir()
+            core.inventory(self.artist, [], "cover", workers=1)
+            self.assertEqual(calls, [self.artist, self.artist])
+
+    def test_library_update_persists_status_immediately(self) -> None:
+        core, _calls, _events = self._core()
+        with mock.patch.object(
+            cachemod,
+            "_runtime_settings",
+            return_value=(self.history, self.library, [], "cover"),
+        ):
+            cachemod.install_core_patch(core)
+            core.inventory(self.artist, [], "cover", workers=1)
+            cachemod.flush()
+            core.emit_ui(
+                "library_update",
+                albums=[
+                    {
+                        "path": str(self.album),
+                        "status": "processed",
+                    }
+                ],
+            )
+            history_file = self.history / cachemod.CACHE_FILE
+            raw = __import__("json").loads(history_file.read_text(encoding="utf-8"))
+            cached_album = raw["artists"][str(self.artist)]["albums"][0]
+            self.assertEqual(cached_album["status"], "processed")
+            self.assertGreater(cached_album["status_updated_at_unix"], 0.0)
+            self.assertEqual(cachemod._DIRTY, 0)
+
+    def test_validation_metrics_report_cache_hits(self) -> None:
+        core, _calls, events = self._core()
+        with mock.patch.object(
+            cachemod,
+            "_runtime_settings",
+            return_value=(self.history, self.library, [], "cover"),
+        ):
+            cachemod.install_core_patch(core)
+            core.inventory(self.artist, [], "cover", workers=1)
+            cachemod.flush()
+            core.emit_ui(
+                "folder_status_progress",
+                processed=0,
+                total=1,
+                percent=0.0,
+                albums=0,
+                done=False,
+            )
+            core.inventory(self.artist, [], "cover", workers=1)
+            core.emit_ui(
+                "folder_status_progress",
+                processed=1,
+                total=1,
+                percent=100.0,
+                albums=1,
+                done=True,
+            )
+        activity = [payload for event, payload in events if event == "activity"]
+        self.assertTrue(activity)
+        self.assertIn("1 Artists checked", activity[-1]["message"])
+        self.assertIn("1 unchanged", activity[-1]["message"])
+        self.assertIn("0 rescanned", activity[-1]["message"])
+
 
 
 if __name__ == "__main__":
