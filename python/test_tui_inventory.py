@@ -123,20 +123,19 @@ class DirectLazyInventoryTests(unittest.TestCase):
             )
         return result, emitted
 
-    def test_initial_startup_reads_root_only_without_picker_cache(self) -> None:
-        visited: list[Path] = []
-        original_scandir = os.scandir
+    def test_initial_startup_resolves_status_without_loading_picker_albums(self) -> None:
+        inventory_calls: list[Path] = []
+        original_inventory = splined.inventory
 
-        def recording(path: Path | str):
-            visited.append(Path(path))
-            return original_scandir(path)
+        def recording_inventory(path: Path, *args, **kwargs):
+            inventory_calls.append(Path(path))
+            return original_inventory(path, *args, **kwargs)
 
         with (
-            mock.patch.object(splined.os, "scandir", side_effect=recording),
             mock.patch.object(
                 splined,
                 "inventory",
-                side_effect=AssertionError("descended into Album topology"),
+                side_effect=recording_inventory,
             ),
             mock.patch.object(
                 PickerIndex,
@@ -148,7 +147,10 @@ class DirectLazyInventoryTests(unittest.TestCase):
                 [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
             )
 
-        self.assertEqual(visited, [self.root])
+        self.assertEqual(
+            set(inventory_calls),
+            {self.root / "10,000 Maniacs", self.root / "Aerosmith"},
+        )
         self.assertEqual(selected, [])
         self.assertEqual(known, [])
         payload = next(payload for event, payload in emitted if event == "library")
@@ -156,11 +158,12 @@ class DirectLazyInventoryTests(unittest.TestCase):
             [row["name"] for row in payload["artists"]],
             ["10,000 Maniacs", "Aerosmith"],
         )
+        # Status-only probing must not populate resident Album picker topology.
         self.assertEqual(payload["albums"], [])
         self.assertTrue(all(not row["loaded"] for row in payload["artists"]))
-        self.assertTrue(
-            all(row["status"] == "unprocessed" for row in payload["artists"])
-        )
+        statuses = {row["name"]: row["status"] for row in payload["artists"]}
+        self.assertEqual(statuses["10,000 Maniacs"], "partial")
+        self.assertEqual(statuses["Aerosmith"], "unprocessed")
         self.assertFalse(
             any(event in {"cache_build_start", "cache_progress"} for event, _ in emitted)
         )
@@ -213,7 +216,11 @@ class DirectLazyInventoryTests(unittest.TestCase):
                 responses
             )
 
-        self.assertEqual(calls, [Path(artist_path)])
+        # Initial status readiness probes both Artists without populating the
+        # Album picker; opening 10,000 Maniacs then performs its exact topology
+        # load once.
+        self.assertEqual(calls.count(Path(artist_path)), 2)
+        self.assertEqual(calls.count(self.root / "Aerosmith"), 1)
         self.assertEqual([album.path for album in selected], [self.eden])
         self.assertEqual({album.path for album in known}, {self.love, self.eden})
         update = [payload for event, payload in emitted if event == "library_update"][-1]
