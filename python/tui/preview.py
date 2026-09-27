@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
 
 Rgb = tuple[int, int, int]
@@ -44,14 +44,28 @@ def generate_preview(
         with Image.open(candidate) as image:
             target_width = max(1, width)
             target_height = max(1, height) * 2
-            source = image.convert("RGB")
-            source.thumbnail(
+
+            # Pillow owns the thumbnail pipeline end-to-end.  Use high-quality
+            # LANCZOS contain-resampling, then restore a small amount of edge
+            # definition that is inevitably lost when artwork is reduced to a
+            # terminal-cell bitmap.
+            source = ImageOps.contain(
+                image.convert("RGB"),
                 (target_width, target_height),
-                Image.Resampling.LANCZOS,
+                method=Image.Resampling.LANCZOS,
             )
+            if source.width > 8 and source.height > 8:
+                source = source.filter(
+                    ImageFilter.UnsharpMask(
+                        radius=0.65,
+                        percent=145,
+                        threshold=2,
+                    )
+                )
+
             # Terminal cells are twice as tall in the sampled bitmap because
             # each upper-half block carries a foreground and background pixel.
-            # Contain + centered letterboxing preserves non-square artwork.
+            # Centered letterboxing preserves non-square artwork.
             pixels = Image.new("RGB", (target_width, target_height), (0, 0, 0))
             pixels.paste(
                 source,
