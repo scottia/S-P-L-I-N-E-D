@@ -1752,12 +1752,19 @@ def prepare_tui_library_selection(
         cover_name = str(output.get("file_name", "cover"))
         stat_paths = selected_stats_targets()
         selected_stats = cached_selected_stats(stat_paths)
+        loaded_artist_states = {
+            str(item.get("name", "")): str(item.get("status", ""))
+            for item in artist_rows
+            if bool(item.get("loaded", False))
+        }
         debug_log(
             "picker.library_emit "
             f"event={event} artists={len(artist_rows)} albums={len(rows)} "
             f"selected={len(selected_paths)} selected_stats={len(selected_stats)} "
             f"selected_stats_limit={SELECTED_STATS_LIMIT} "
             f"loaded_artists={len(session.loaded_artists)} "
+            f"artist_status_counts={artist_status_counts!r} "
+            f"loaded_artist_states={loaded_artist_states!r} "
             f"preserve_selection={preserve_selection}"
         )
         emit_ui(
