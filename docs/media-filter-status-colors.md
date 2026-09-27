@@ -132,6 +132,22 @@ Current status concepts:
 
 The same color may have different meaning depending on row type. Purple is the primary example.
 
+The Python Ratatui Folder Status control follows the Windows order exactly and
+renders the six classifications as consecutive rows with no blank spacer rows:
+
+```text
+Unprocessed            White
+Processed              Orange
+Bypassed               Red
+Partial / Timeout      Purple
+Artist Complete        Green
+Artist Contains Bypass Blue
+```
+
+The status color is semantic state, not focus/checked color. Moving the cursor
+or checking a filter must not recolor Processed/Bypassed/Partial/etc. into a
+generic active color. Artist and Album rows use the same state-color mapping.
+
 ---
 
 # Album colors
