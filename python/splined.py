@@ -1278,6 +1278,7 @@ def prepare_tui_library_selection(
     cache: Path,
     library_root: Path | None = None,
     bypassed_paths: set[str] | None = None,
+    bypass_update: Callable[[str, bool], None] | None = None,
     picker_session: PickerSessionState | None = None,
     initial_event: str = "library",
 ) -> tuple[list[AlbumDir], set[str], set[str], list[str], list[AlbumDir]]:
@@ -1788,12 +1789,21 @@ def prepare_tui_library_selection(
             daemon=True,
         ).start()
 
-    def start_status_probe() -> None:
+    def start_status_probe(
+        *,
+        wait: bool = False,
+        publish_updates: bool = True,
+    ) -> None:
         with session.lock:
+            existing = session.status_probe_thread
             if session.status_probe_started:
-                return
-            session.status_probe_started = True
-            session.status_probe_complete = False
+                if wait and existing is not None and existing.is_alive():
+                    pass
+                else:
+                    return
+            else:
+                session.status_probe_started = True
+                session.status_probe_complete = False
 
         def worker() -> None:
             started_probe = time.perf_counter()
@@ -1851,7 +1861,7 @@ def prepare_tui_library_selection(
                             f"artists={completed}/{len(artist_paths)} "
                             f"albums={album_total}"
                         )
-                        if session.select_media_active:
+                        if publish_updates and session.select_media_active:
                             emit_library("library_update")
 
                 with session.lock:
@@ -1886,6 +1896,8 @@ def prepare_tui_library_selection(
         with session.lock:
             session.status_probe_thread = thread
         thread.start()
+        if wait:
+            thread.join()
 
     def emit_library(event: str, *, preserve_selection: bool = False) -> None:
         artist_rows, rows = model_payload()
@@ -1985,12 +1997,27 @@ def prepare_tui_library_selection(
         ),
     )
     session.select_media_active = True
+    emit_ui(
+        "inventory_state",
+        library_root=str(index_root),
+        picker_index="",
+        status="Resolving folder status…",
+        root_artists=len(scoped_artists),
+        cached_artists=0,
+        indexed_artists=len(session.loaded_artists),
+        albums_known=len(scoped_records),
+        current_artist="",
+        recovered=False,
+    )
+    start_status_probe(wait=True, publish_updates=False)
     emit_library(initial_event)
-    start_status_probe()
 
     event = "library_update"
     while True:
         raw = read_input("", kind="library-selection")
+        if raw == "__cancel__":
+            session.select_media_active = False
+            raise TuiSessionExit()
         try:
             response = json.loads(raw)
         except (TypeError, ValueError) as exc:
@@ -2025,6 +2052,36 @@ def prepare_tui_library_selection(
         if action == "exit":
             session.select_media_active = False
             raise TuiSessionExit()
+
+        if action == "set-bypass":
+            album_path = str(response.get("album_path", ""))
+            enable = bool(response.get("bypassed", False))
+            select_after = bool(response.get("select_after", False))
+            if album_path:
+                if bypass_update is not None:
+                    bypass_update(album_path, enable)
+                if enable:
+                    bypassed.add(album_path)
+                    selected_paths.discard(album_path)
+                    overrides.discard(album_path)
+                else:
+                    bypassed.discard(album_path)
+                    overrides.discard(album_path)
+                    if select_after:
+                        refreshed_rows = {
+                            str(row["path"]): row
+                            for row in model_payload()[1]
+                        }
+                        row = refreshed_rows.get(album_path)
+                        if row is not None and row["status"] != "timeout":
+                            selected_paths.add(album_path)
+                debug_log(
+                    "picker.bypass_update "
+                    f"path={album_path!r} bypassed={enable} "
+                    f"select_after={select_after}"
+                )
+            emit_library(event)
+            continue
 
         if action == "load-artist":
             artist_path = str(response.get("artist_path", ""))
@@ -5830,7 +5887,7 @@ def run_scan_dir(
             return session_exit_code
         session_exit_code = max(session_exit_code, batch_exit_code)
         answer = read_input("", kind="batch-summary").strip().lower()
-        if answer == "exit":
+        if answer in {"exit", "__cancel__"}:
             picker_session.validation_cancel.set()
             return session_exit_code
         library_event = "library_update"
