@@ -926,6 +926,25 @@ def remove_album_bypass(
     return True
 
 
+def remove_album_bypass_state(
+    bypass_path: Path,
+    bypass_history: dict[str, Any],
+    completion_path: Path,
+    completion_history: dict[str, Any],
+    album_path: str | Path,
+) -> bool:
+    """Remove persistent bypass authority from both saved history surfaces."""
+    key = str(album_path)
+    changed = remove_album_bypass(bypass_path, bypass_history, key)
+    albums = completion_history.setdefault("albums", {})
+    entry = albums.get(key)
+    if isinstance(entry, dict) and "bypass" in str(entry.get("outcome", "")).casefold():
+        del albums[key]
+        core.save_scan_completion_history(completion_path, completion_history)
+        changed = True
+    return changed
+
+
 def _value(text: str, formatter=core.green) -> str:
     return core.white("[") + formatter(str(text)) + core.white("]")
 
@@ -1210,7 +1229,13 @@ def _run_scan_dir_batch(
                     "select-media",
                 )
             else:
-                remove_album_bypass(bypass_path, bypass_history, path)
+                remove_album_bypass_state(
+                    bypass_path,
+                    bypass_history,
+                    completion_path,
+                    completion_history,
+                    path,
+                )
 
         albums, bypass_overrides, timeout_paths, sources, discovered_albums = (
             core.prepare_tui_library_selection(
@@ -1711,7 +1736,13 @@ def _run_scan_dir_batch(
                     comparison_action, comparison_candidate = local_comparison_prompt(local_candidate, remote, cfg, format_order, mb_retry_available=mb_retry_available)
 
                     if comparison_action == "unbypass":
-                        if remove_album_bypass(bypass_path, bypass_history, album.path):
+                        if remove_album_bypass_state(
+                            bypass_path,
+                            bypass_history,
+                            completion_path,
+                            completion_history,
+                            album.path,
+                        ):
                             print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                         continue
 
@@ -1727,7 +1758,13 @@ def _run_scan_dir_batch(
 
                     if comparison_action == "bypass":
                         if is_album_bypassed(bypass_history, album):
-                            remove_album_bypass(bypass_path, bypass_history, album.path)
+                            remove_album_bypass_state(
+                    bypass_path,
+                    bypass_history,
+                    completion_path,
+                    completion_history,
+                    album.path,
+                )
                             print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                             continue
                         record_album_bypass(bypass_path, bypass_history, album, mbid, search_artist, search_album, "local-source-comparison")
