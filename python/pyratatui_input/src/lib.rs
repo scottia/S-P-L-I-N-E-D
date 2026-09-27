@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use crossterm::cursor::Show;
+use crossterm::cursor::{RestorePosition, SavePosition, Show};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
     MouseButton, MouseEventKind,
@@ -12,9 +12,9 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use ratatui::{
+    backend::{Backend, CrosstermBackend},
     buffer::Buffer,
     layout::{Rect, Size},
-    style::Color,
     widgets::Widget,
 };
 use ratatui_image::{
@@ -202,40 +202,61 @@ impl EventReader {
     }
 }
 
-fn rgb(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Black => (0, 0, 0),
-        Color::Red => (205, 49, 49),
-        Color::Green => (13, 188, 121),
-        Color::Yellow => (229, 229, 16),
-        Color::Blue => (36, 114, 200),
-        Color::Magenta => (188, 63, 188),
-        Color::Cyan => (17, 168, 205),
-        Color::Gray => (229, 229, 229),
-        Color::DarkGray => (102, 102, 102),
-        Color::LightRed => (241, 76, 76),
-        Color::LightGreen => (35, 209, 139),
-        Color::LightYellow => (245, 245, 67),
-        Color::LightBlue => (59, 142, 234),
-        Color::LightMagenta => (214, 112, 214),
-        Color::LightCyan => (41, 184, 219),
-        Color::White => (255, 255, 255),
-        Color::Indexed(value) => (value, value, value),
-        Color::Reset => (0, 0, 0),
+#[pyclass(module = "splined_pyratatui_input", name = "ImageOverlay")]
+struct ImageOverlay {
+    buffer: Buffer,
+    width: u16,
+    height: u16,
+}
+
+#[pymethods]
+impl ImageOverlay {
+    #[getter]
+    fn width(&self) -> u16 {
+        self.width
+    }
+
+    #[getter]
+    fn height(&self) -> u16 {
+        self.height
+    }
+
+    fn draw(&self, x: u16, y: u16) -> PyResult<()> {
+        let mut stdout = io::stdout();
+        execute!(stdout, SavePosition).map_err(input_error)?;
+        {
+            let mut backend = CrosstermBackend::new(&mut stdout);
+            let buffer = &self.buffer;
+            let width = self.width;
+            let height = self.height;
+            let cells = (0..height).flat_map(move |row| {
+                (0..width).filter_map(move |column| {
+                    buffer
+                        .cell((column, row))
+                        .map(|cell| (x + column, y + row, cell))
+                })
+            });
+            backend.draw(cells).map_err(input_error)?;
+            backend.flush().map_err(input_error)?;
+        }
+        execute!(stdout, RestorePosition).map_err(input_error)?;
+        stdout.flush().map_err(input_error)?;
+        Ok(())
     }
 }
 
 #[pyfunction]
 #[pyo3(signature = (data, width, height, max_side=1000))]
-fn render_image_cells(
+fn prepare_image_overlay(
     data: &Bound<'_, PyBytes>,
     width: u16,
     height: u16,
     max_side: u32,
-) -> PyResult<(u16, u16, Vec<(String, (u8, u8, u8), (u8, u8, u8))>)> {
+) -> PyResult<ImageOverlay> {
     if width == 0 || height == 0 {
-        return Ok((0, 0, Vec::new()));
+        return Err(PyRuntimeError::new_err(
+            "ratatui-image overlay requires a non-zero area",
+        ));
     }
 
     let mut image = image::load_from_memory(data.as_bytes())
@@ -257,21 +278,11 @@ fn render_image_cells(
     let mut buffer = Buffer::empty(area);
     RatatuiImage::new(&protocol).render(area, &mut buffer);
 
-    let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
-    for y in 0..height {
-        for x in 0..width {
-            let cell = buffer
-                .cell((x, y))
-                .ok_or_else(|| PyRuntimeError::new_err("ratatui-image buffer cell missing"))?;
-            cells.push((
-                cell.symbol().to_string(),
-                rgb(cell.fg),
-                rgb(cell.bg),
-            ));
-        }
-    }
-
-    Ok((width, height, cells))
+    Ok(ImageOverlay {
+        buffer,
+        width,
+        height,
+    })
 }
 
 
@@ -362,7 +373,8 @@ impl EventReader {
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<EventReader>()?;
     module.add_class::<PyInputEvent>()?;
-    module.add_function(wrap_pyfunction!(render_image_cells, module)?)?;
+    module.add_class::<ImageOverlay>()?;
+    module.add_function(wrap_pyfunction!(prepare_image_overlay, module)?)?;
     module.add_function(wrap_pyfunction!(emergency_restore, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
