@@ -22,7 +22,9 @@ from tui.splined_tui import (
     TuiAdapter,
     _folder_status_count,
     TuiState,
+    _clear_stale_remote_overlay,
     _draw_remote_hover_overlay,
+    _preferred_candidate_index,
     _status_control_semantic,
     handle_key,
     handle_mouse,
@@ -838,7 +840,7 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         stream = io.StringIO()
         write_terminal_links(state, stream)
         encoded = stream.getvalue()
-        self.assertIn(osc8_link("[URL]", url.value), encoded)
+        self.assertIn(osc8_link("URL", url.value), encoded)
         self.assertNotIn("OPEN IN DEFAULT BROWSER", encoded)
         self.assertNotIn("\x1b[4m", encoded)
 
@@ -870,33 +872,42 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
 
 
 class HoverAndStatusLoadingTests(unittest.TestCase):
-    def test_url_hover_starts_live_remote_preview_and_leave_clears_it(self) -> None:
+    def test_url_hover_starts_live_preview_and_leave_restores_preferred(self) -> None:
         state = PolicyAndCandidateMouseTests()._candidate_state()
         adapter = TuiAdapter()
         render(_Frame(160, 44), state, select_theme("OLED"))
-        url = _region(state, "candidate-url")
+        urls = [
+            item for item in state.hit_regions
+            if item.target == "candidate-url"
+        ]
+        alternate = next(item for item in urls if item.index != _preferred_candidate_index(state))
         moved = _Event(
             "moved",
             kind="mouse",
             button="none",
-            column=url.x + 1,
-            row=url.y,
+            column=alternate.x + 1,
+            row=alternate.y,
         )
         with mock.patch(
             "tui.splined_tui._start_remote_hover_preview"
         ) as start:
             handle_mouse(state, adapter, moved)
-        start.assert_called_once_with(state, adapter, url.index)
+        start.assert_called_once_with(state, adapter, alternate.index)
 
-        state.remote_hover_index = url.index
+        state.remote_hover_index = alternate.index
+        state.remote_hover_url = alternate.value
+        state.remote_hover_active = True
         state.remote_hover_loading = True
-        handle_mouse(
-            state,
-            adapter,
-            _Event("moved", kind="mouse", button="none", column=0, row=0),
-        )
-        self.assertEqual(state.remote_hover_index, -1)
-        self.assertFalse(state.remote_hover_loading)
+        with mock.patch(
+            "tui.splined_tui._start_remote_source_preview"
+        ) as restore:
+            handle_mouse(
+                state,
+                adapter,
+                _Event("moved", kind="mouse", button="none", column=0, row=0),
+            )
+        restore.assert_called_once()
+        self.assertFalse(state.remote_hover_active)
 
     def test_artist_status_loading_blocks_actions_but_not_ctrl_c(self) -> None:
         state = _library_state(artists=1, albums_each=1)
@@ -955,7 +966,14 @@ class NativeOverlayLifecycleTests(unittest.TestCase):
         _draw_remote_hover_overlay(state)
         self.assertEqual(overlay.calls, [(10, 5)])
 
+        state.remote_drawn_rect = (10, 5, 20, 10)
         state.tab = "logs"
+        with mock.patch(
+            "tui.splined_tui.native_clear_image_area"
+        ) as clear:
+            _clear_stale_remote_overlay(state)
+        clear.assert_called_once_with(10, 5, 20, 10)
+        self.assertIsNone(state.remote_drawn_rect)
         _draw_remote_hover_overlay(state)
         self.assertEqual(overlay.calls, [(10, 5)])
 
