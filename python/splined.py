@@ -1931,19 +1931,22 @@ def prepare_tui_library_selection(
                             f"artists={futures_seen}/{len(artist_paths)} "
                             f"resolved={completed} albums={album_total}"
                         )
-                        if publish_updates and session.select_media_active:
-                            emit_ui(
-                                "folder_status_progress",
-                                processed=futures_seen,
-                                total=len(artist_paths),
-                                percent=(
-                                    futures_seen / len(artist_paths) * 100.0
-                                    if artist_paths
-                                    else 100.0
-                                ),
-                                albums=album_total,
-                                done=False,
-                            )
+                        if session.select_media_active:
+                            if publish_updates:
+                                emit_ui(
+                                    "folder_status_progress",
+                                    processed=futures_seen,
+                                    total=len(artist_paths),
+                                    percent=(
+                                        futures_seen / len(artist_paths) * 100.0
+                                        if artist_paths
+                                        else 100.0
+                                    ),
+                                    albums=album_total,
+                                    done=False,
+                                )
+                            # Reconciliation corrections must remain visible
+                            # even when the modal progress banner is suppressed.
                             emit_library("library_update")
 
                 with session.lock:
