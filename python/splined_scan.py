@@ -2025,12 +2025,12 @@ def _run_scan_dir_batch(
             if comparison_action == "bypass":
                 if is_album_bypassed(bypass_history, album):
                     remove_album_bypass_state(
-                    bypass_path,
-                    bypass_history,
-                    completion_path,
-                    completion_history,
-                    album.path,
-                )
+                        bypass_path,
+                        bypass_history,
+                        completion_path,
+                        completion_history,
+                        album.path,
+                    )
                     print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                     continue
                 record_album_bypass(bypass_path, bypass_history, album, mbid, release.artist_credit, release.title, "local-source-comparison")
@@ -2140,12 +2140,12 @@ def _run_scan_dir_batch(
                     raise core.TuiSessionExit()
                 if answer == "unbypass":
                     if remove_album_bypass_state(
-                    bypass_path,
-                    bypass_history,
-                    completion_path,
-                    completion_history,
-                    album.path,
-                ):
+                        bypass_path,
+                        bypass_history,
+                        completion_path,
+                        completion_history,
+                        album.path,
+                    ):
                         print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                     continue
                 if answer == "b":
