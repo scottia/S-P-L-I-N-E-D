@@ -22,6 +22,7 @@ from tui.splined_tui import (
     TuiAdapter,
     _folder_status_count,
     TuiState,
+    _draw_remote_hover_overlay,
     _status_control_semantic,
     handle_key,
     handle_mouse,
@@ -932,6 +933,59 @@ class HoverAndStatusLoadingTests(unittest.TestCase):
             },
         )
         self.assertFalse(state.status_loading)
+
+
+class NativeOverlayLifecycleTests(unittest.TestCase):
+    def test_native_overlay_is_not_drawn_outside_main_candidate_view(self) -> None:
+        class Overlay:
+            def __init__(self) -> None:
+                self.calls: list[tuple[int, int]] = []
+
+            def draw(self, x: int, y: int) -> None:
+                self.calls.append((x, y))
+
+        state = TuiState(started_at=time.monotonic() - 1)
+        overlay = Overlay()
+        state.workflow = "picker"
+        state.tab = "main"
+        state.remote_hover_index = 0
+        state.remote_hover_overlay = overlay
+        state.remote_preview_rect = (10, 5, 20, 10)
+
+        _draw_remote_hover_overlay(state)
+        self.assertEqual(overlay.calls, [(10, 5)])
+
+        state.tab = "logs"
+        _draw_remote_hover_overlay(state)
+        self.assertEqual(overlay.calls, [(10, 5)])
+
+        state.tab = "main"
+        state.workflow = "batch-report"
+        _draw_remote_hover_overlay(state)
+        self.assertEqual(overlay.calls, [(10, 5)])
+
+    def test_tab_to_logs_clears_remote_hover_state(self) -> None:
+        state = TuiState(started_at=time.monotonic() - 1)
+        state.workflow = "picker"
+        state.tab = "main"
+        state.remote_hover_index = 2
+        state.remote_hover_url = "https://example.test/image.jpg"
+        state.remote_hover_overlay = object()
+        state.remote_preview_rect = (10, 5, 20, 10)
+        state.input_request = InputRequest(
+            "",
+            "local-comparison",
+            {},
+        )
+        adapter = TuiAdapter()
+
+        handle_key(state, adapter, _Event("tab"))
+
+        self.assertEqual(state.tab, "history")
+        self.assertEqual(state.remote_hover_index, -1)
+        self.assertEqual(state.remote_hover_url, "")
+        self.assertIsNone(state.remote_hover_overlay)
+        self.assertIsNone(state.remote_preview_rect)
 
 
 class CaptureLifecycleTests(unittest.TestCase):
