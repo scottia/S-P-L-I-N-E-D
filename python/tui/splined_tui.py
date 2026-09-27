@@ -1618,15 +1618,27 @@ def _folder_status_count(
 def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     model = state.library
     assert model is not None
-    # This function receives only the short control-row rectangle, so its
-    # height is not the terminal height and must not drive the breakpoint.
+    # WIDE/NORMAL layouts keep all four operational control surfaces on one
+    # row. Narrow layouts stack them without changing action semantics.
     if int(area.width) < 96:
         panels = _split_vertical(
-            area, [Constraint.length(8), Constraint.length(6), Constraint.length(6)]
+            area,
+            [
+                Constraint.length(8),
+                Constraint.length(6),
+                Constraint.length(5),
+                Constraint.length(5),
+            ],
         )
     else:
         panels = _split_horizontal(
-            area, [Constraint.percentage(38), Constraint.percentage(27), Constraint.fill(1)]
+            area,
+            [
+                Constraint.percentage(35),
+                Constraint.percentage(22),
+                Constraint.percentage(21),
+                Constraint.fill(1),
+            ],
         )
 
     def status_active(index: int) -> bool:
@@ -1654,6 +1666,9 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         return f"  [{_folder_status_count(index, album_counts, artist_counts):,}]"
 
     selected_count = sum(item.selected for item in model.albums)
+    status_hover = state.hover_index if state.hover_target == "status-control" else -1
+    select_hover = state.hover_index if state.hover_target == "select-control" else -1
+    scan_hover = state.hover_index if state.hover_target == "scan-control" else -1
 
     frame.render_widget(
         Paragraph(
@@ -1662,9 +1677,10 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
                 status_active,
                 theme,
                 status_suffix,
+                hover_index=status_hover,
             )
         )
-        .block(card(theme, "FOLDER STATUS MODE", Semantic.ACTIVE)),
+        .block(card(theme, "FOLDER STATUS", Semantic.ACTIVE)),
         panels[0],
     )
     frame.render_widget(
@@ -1673,28 +1689,95 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
                 state.select_index,
                 selected_count,
                 theme,
+                hover_index=select_hover,
             )
         )
-        .block(card(theme, "ALBUM SELECT MODE", Semantic.SPECIAL)),
+        .block(card(theme, "ALBUM SELECTION", Semantic.SPECIAL)),
         panels[1],
     )
+
     frame.render_widget(
-        Paragraph(_control_lines(SCAN_CONTROLS, state.scan_index, lambda i: i == state.scan_index, theme))
-        .block(card(theme, "SCAN MODE", Semantic.ACCEPTED)),
+        Paragraph(
+            _control_lines(
+                AUTO_SCAN_CONTROLS,
+                state.scan_index,
+                lambda i: i == state.scan_index,
+                theme,
+                hover_index=scan_hover,
+                index_offset=2,
+            )
+        )
+        .block(card(theme, "ALBUM SCANNING", Semantic.SPECIAL)),
         panels[2],
     )
-    for index in range(min(len(STATUS_CONTROLS), max(0, int(panels[0].height) - 2))):
-        _register_hit(state, "status-control", _row_rect(panels[0], index), index=index)
-    for index in range(min(len(SELECT_CONTROLS), max(0, int(panels[1].height) - 3))):
+
+    # LAUNCH keeps the yellow operational frame but overlays a spectral
+    # S:P:L:I:N:E:D wordmark into the frame title.
+    frame.render_widget(
+        Paragraph(
+            _control_lines(
+                LAUNCH_CONTROLS,
+                state.scan_index,
+                lambda i: i == state.scan_index,
+                theme,
+                hover_index=scan_hover,
+                index_offset=0,
+            )
+        )
+        .block(card(theme, "", Semantic.WARNING)),
+        panels[3],
+    )
+    if int(panels[3].width) > 8:
+        launch_title = spectral_title(theme, title=SPLINED_TITLE)
+        launch_title.spans.append(
+            Span(" LAUNCH ", style(theme, Semantic.WARNING, bold=True))
+        )
+        frame.render_widget(
+            Paragraph(Text([launch_title])),
+            Rect(
+                int(panels[3].x) + 2,
+                int(panels[3].y),
+                max(1, int(panels[3].width) - 4),
+                1,
+            ),
+        )
+
+    for index in range(
+        min(len(STATUS_CONTROLS), max(0, int(panels[0].height) - 2))
+    ):
+        _register_hit(
+            state,
+            "status-control",
+            _row_rect(panels[0], index),
+            index=index,
+        )
+    for index in range(
+        min(len(SELECT_CONTROLS), max(0, int(panels[1].height) - 3))
+    ):
         _register_hit(
             state,
             "select-control",
             _row_rect(panels[1], index + 1),
             index=index,
         )
-    for index in range(min(len(SCAN_CONTROLS), max(0, int(panels[2].height) - 2))):
-        _register_hit(state, "scan-control", _row_rect(panels[2], index), index=index)
-
+    for local_index in range(
+        min(len(AUTO_SCAN_CONTROLS), max(0, int(panels[2].height) - 2))
+    ):
+        _register_hit(
+            state,
+            "scan-control",
+            _row_rect(panels[2], local_index),
+            index=local_index + 2,
+        )
+    for index in range(
+        min(len(LAUNCH_CONTROLS), max(0, int(panels[3].height) - 2))
+    ):
+        _register_hit(
+            state,
+            "scan-control",
+            _row_rect(panels[3], index),
+            index=index,
+        )
 
 def _visible_window(
     items: list[Any], selected: int, height: int, scroll: int | None = None
