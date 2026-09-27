@@ -44,12 +44,12 @@ read Album folders only when an Artist or explicit bulk action requires them
 ```
 
 No SQLite snapshot or background full-library cache validation is required for
-the folder list. Select Media paints immediately, but a centered **LOADING ARTIST STATUS**
-readiness banner blocks interaction while the lightweight status pass inspects
-directory/file names and retained history. The banner reports real
-Artist-completion percentage and disappears only when the status pass is done,
-preventing the visible grey/White-to-Green repaint wave from looking like a
-usable-but-incomplete picker.
+the folder list. Select Media paints behind a centered status-readiness banner. A missing
+persistent status JSON produces the one-time **BUILDING ALBUM STATUS INDEX**
+banner; later runs use **LOADING ALBUM STATUS** while validating the saved
+inventory against current Artist/Album differences. The percentage reflects
+the current validation pass and the banner disappears only when that pass is
+done.
 
 The readiness pass does not populate Album picker topology, read tags, query
 MusicBrainz/providers, decode candidate artwork, rank candidates, or create a
@@ -545,3 +545,13 @@ Select Media consumes that authority; it does not replace it.
 - [Source policies and Range Types](source-policies-range-types.md)
 - [Python Ratatui TUI](ratatui-tui.md)
 - [Documentation home](README.md)
+
+
+## TUI row presentation
+
+The Python Ratatui Select Media workspace uses color as the visible folder-state
+label. Artist and Album rows therefore omit textual suffixes such as
+`Complete`, `Processed`, `Bypass`, and `Unprocessed`; the Folder Status
+legend defines those meanings. Selectable rows are highlighted on mouse hover
+and selected rows remain highlighted after activation rather than showing
+checkbox glyphs.
