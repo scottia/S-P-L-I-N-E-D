@@ -271,6 +271,35 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         handle_mouse(self.state, self.adapter, _center(album_check))
         self.assertNotEqual(albums[1].selected, before)
 
+    def test_engine_artist_status_is_not_reinterpreted_by_tui(self) -> None:
+        payload = _payload(0, 0)
+        payload["artists"] = [
+            {
+                "path": "/music/Authority Artist",
+                "name": "Authority Artist",
+                "indexed": True,
+                "loaded": True,
+                "album_count": 1,
+                "status": "complete",
+            }
+        ]
+        payload["albums"] = [
+            {
+                "path": "/music/Authority Artist/New Album",
+                "artist": "Authority Artist",
+                "album": "New Album",
+                "status": "unprocessed",
+                "selected": False,
+                "formats": [],
+            }
+        ]
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.apply("library", payload)
+        model = state.library
+        assert model is not None
+        artist = model.visible_artists()[0]
+        self.assertEqual(artist.status, ArtistStatus.COMPLETE)
+
     def test_processed_album_selection_survives_authoritative_payload(self) -> None:
         payload = _payload(1, 1)
         albums = payload["albums"]
