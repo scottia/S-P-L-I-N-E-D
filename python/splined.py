@@ -2147,20 +2147,11 @@ def prepare_tui_library_selection(
         ),
     )
     session.select_media_active = True
-    # Paint cached status immediately, then retain the Album Status progress
-    # banner while background reconciliation validates the filesystem.  The
-    # JSON-first seed avoids rebuilding status merely to paint the picker.
-    if not same_session and not session.status_probe_complete:
-        emit_ui(
-            "folder_status_progress",
-            processed=0,
-            total=len(scoped_artists),
-            percent=0.0,
-            albums=0,
-            done=False,
-        )
+    # JSON-first status remains immediately usable.  Filesystem reconciliation
+    # runs in the background and publishes live corrections without restoring
+    # the modal Album Status startup gate.
     emit_library(initial_event)
-    start_status_probe(wait=False, publish_updates=True)
+    start_status_probe(wait=False, publish_updates=False)
 
     event = "library_update"
     while True:
