@@ -42,11 +42,11 @@ from pyratatui import (
 try:
     from splined_pyratatui_input import EventReader as InputEventReader
     from splined_pyratatui_input import emergency_restore as emergency_terminal_restore
-    from splined_pyratatui_input import render_image_cells as native_render_image_cells
+    from splined_pyratatui_input import prepare_image_overlay as native_prepare_image_overlay
 except ImportError:  # plain CLI and automatic fallback remain independently usable
     InputEventReader = None  # type: ignore[assignment,misc]
     emergency_terminal_restore = None  # type: ignore[assignment]
-    native_render_image_cells = None  # type: ignore[assignment]
+    native_prepare_image_overlay = None  # type: ignore[assignment]
 
 from .animation import animation_step, fit_phrase, startup_frame
 from .aispline import (
@@ -71,7 +71,7 @@ from .layout import (
     candidate_column_layout,
     layout_spec,
 )
-from .preview import ArtworkPreview, PreviewCell, generate_preview
+from .preview import ArtworkPreview, generate_preview
 from .semantic import Semantic, log_semantic, outcome_semantic, range_semantic
 from .status import use_adapter
 from .source_settings import PolicyDraft, PRIMARY_METADATA_SOURCES
@@ -295,12 +295,13 @@ class TuiState:
     preview_modal_index: int = 0
     remote_hover_index: int = -1
     remote_hover_url: str = ""
-    remote_hover_preview: ArtworkPreview | None = None
+    remote_hover_overlay: Any | None = None
     remote_hover_loading: bool = False
     remote_hover_error: str = ""
     remote_hover_token: int = 0
     remote_preview_width: int = 48
     remote_preview_height: int = 24
+    remote_preview_rect: tuple[int, int, int, int] | None = None
     status_loading: bool = False
     status_processed: int = 0
     status_total: int = 0
@@ -372,10 +373,7 @@ class TuiState:
                 return
             self.remote_hover_loading = False
             self.remote_hover_error = str(payload.get("error", ""))
-            preview = payload.get("preview")
-            self.remote_hover_preview = (
-                preview if isinstance(preview, ArtworkPreview) else None
-            )
+            self.remote_hover_overlay = payload.get("overlay")
         elif event in {"library", "library_update"}:
             self.workflow = "library"
             self.workspace = "library"
@@ -505,7 +503,7 @@ class TuiState:
             self.remote_hover_token += 1
             self.remote_hover_index = -1
             self.remote_hover_url = ""
-            self.remote_hover_preview = None
+            self.remote_hover_overlay = None
             self.remote_hover_loading = False
             self.remote_hover_error = ""
             # Candidate cache files can reuse names between Albums.  Identity
@@ -558,7 +556,7 @@ class TuiState:
             self.remote_hover_token += 1
             self.remote_hover_index = -1
             self.remote_hover_url = ""
-            self.remote_hover_preview = None
+            self.remote_hover_overlay = None
             self.remote_hover_loading = False
             self.remote_hover_error = ""
             self.candidates = [
