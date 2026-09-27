@@ -415,6 +415,45 @@ def _should_cache_status_inventory(
         return root.parent == library_root
 
 
+def cached_artist_statuses(
+    root: Path,
+    ignored_subs: list[str],
+    configured_file_name: str = "cover",
+) -> tuple[list[str], str] | None:
+    """Return persisted Album statuses for an unchanged cached Artist.
+
+    The structural sentinel is the filesystem invalidation boundary.  Missing
+    or invalid statuses deliberately return None so the authoritative engine
+    can classify and repopulate them instead of trusting incomplete cache data.
+    """
+    root = Path(root)
+    payload, _path = _ensure_loaded()
+    key = _inventory_key(ignored_subs, configured_file_name)
+    with _LOCK:
+        artists = payload.get("artists", {})
+        entry = artists.get(str(root)) if isinstance(artists, dict) else None
+    if (
+        not isinstance(entry, dict)
+        or entry.get("complete") is not True
+        or entry.get("inventory_key") != key
+        or not _sentinels_match(root, entry)
+    ):
+        return None
+    raw_albums = entry.get("albums")
+    if not isinstance(raw_albums, list):
+        return None
+    valid = {"unprocessed", "processed", "bypassed", "timeout"}
+    statuses: list[str] = []
+    for album in raw_albums:
+        if not isinstance(album, dict):
+            return None
+        status = str(album.get("status", "")).strip().casefold()
+        if status not in valid:
+            return None
+        statuses.append(status)
+    return statuses, str(root)
+
+
 def _matching_cached_count(total: int) -> int:
     payload, _path = _ensure_loaded()
     _history_dir, library_root, ignored, cover_name = _runtime_settings()
