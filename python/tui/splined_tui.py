@@ -2923,14 +2923,27 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     if preview_area is not None and state.candidates:
         state.remote_preview_width = max(1, int(preview_area.width) - 2)
         state.remote_preview_height = max(1, int(preview_area.height) - 2)
+        state.remote_preview_rect = (
+            int(preview_area.x) + 1,
+            int(preview_area.y) + 1,
+            state.remote_preview_width,
+            state.remote_preview_height,
+        )
         if state.remote_hover_index >= 0:
-            if state.remote_hover_preview is not None:
-                _render_prepared_preview(
-                    frame,
+            source = state.candidates[
+                max(0, min(state.remote_hover_index, len(state.candidates) - 1))
+            ].source
+            if state.remote_hover_overlay is not None:
+                frame.render_widget(
+                    Paragraph.from_string("")
+                    .block(
+                        card(
+                            theme,
+                            f"LIVE URL PREVIEW · {source.upper()} · RATATUI-IMAGE",
+                            Semantic.ACTIVE,
+                        )
+                    ),
                     preview_area,
-                    state.remote_hover_preview,
-                    theme,
-                    title="LIVE URL PREVIEW · RATATUI-IMAGE",
                 )
             elif state.remote_hover_loading:
                 frame.render_widget(
@@ -2950,6 +2963,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                     preview_area,
                 )
         else:
+            state.remote_preview_rect = None
             selected = state.candidates[
                 max(0, min(state.selected_index, len(state.candidates) - 1))
             ]
@@ -4601,6 +4615,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                     last_animation_step = current_animation_step
                     if dirty:
                         terminal.draw(lambda frame: render(frame, state, theme))
+                        _draw_remote_hover_overlay(state)
                         writer = getattr(sys, "__stdout__", None)
                         if writer is not None:
                             write_terminal_links(state, writer)
