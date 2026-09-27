@@ -1252,6 +1252,7 @@ def _run_scan_dir_batch(
 
     records: list[dict[str, Any]] = []
     for inventory_index, album in enumerate(albums, 1):
+        authority_started = core.time.perf_counter()
         core.emit_ui(
             "album",
             index=inventory_index,
@@ -1295,8 +1296,15 @@ def _run_scan_dir_batch(
                     )
                 album = exact
                 record["album"] = album
+            tags_started = core.time.perf_counter()
             tracks = core.read_album_tracks(album)
+            tags_elapsed = core.time.perf_counter() - tags_started
             record["tracks"] = tracks
+            core.debug_log(
+                "authority.tags.done "
+                f"album={str(album.path)!r} tracks={len(tracks)} "
+                f"elapsed={tags_elapsed:.3f}s"
+            )
             record["file_count"] = len(tracks)
             record["compilation"] = (
                 "Compilation"
@@ -1331,6 +1339,12 @@ def _run_scan_dir_batch(
         except Exception as exc:
             record["fatal_error"] = str(exc)
             record["fallback_reason"] = "TAG READ FAILURE"
+        core.debug_log(
+            "authority.album.done "
+            f"album={str(record['album'].path)!r} "
+            f"fallback={str(record.get('fallback_reason') or '')!r} "
+            f"elapsed={core.time.perf_counter() - authority_started:.3f}s"
+        )
         records.append(record)
 
     fallback_records = [record for record in records if record.get("fallback_reason")]
@@ -1364,7 +1378,7 @@ def _run_scan_dir_batch(
         + core.ljust_color(core.white("Preserve"), 11)
         + core.bracketed_text(core.bool_text(preserve), core.green if preserve else core.red)
         + " "
-        + core.white("Albums") + " " + core.bracketed_text(str(len(discovered_albums)), core.white)
+        + core.white("Albums") + " " + core.bracketed_text(str(len(albums)), core.white)
         + " "
         + core.white("Postponed") + " " + core.bracketed_text(
             str(len(postponed_albums)), core.cyan if postponed_albums else core.white
@@ -1446,7 +1460,13 @@ def _run_scan_dir_batch(
             print(f"  {core.red('ERROR: ' + str(record['fatal_error']))}\n")
             continue
 
+        preflight_started = core.time.perf_counter()
         preflight = inspect_local_preflight(album, cfg, cache, format_order)
+        core.debug_log(
+            "local.preflight.done "
+            f"album={str(album.path)!r} action={str(preflight.get('action', ''))!r} "
+            f"elapsed={core.time.perf_counter() - preflight_started:.3f}s"
+        )
         for diagnostic in preflight["diagnostics"]:
             print(f"  {core.cyan('Local Art:'):13} {core.yellow(diagnostic)}")
 
