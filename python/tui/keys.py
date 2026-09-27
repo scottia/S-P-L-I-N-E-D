@@ -107,7 +107,6 @@ def picker_response(action: Action, selected_index: int | None = None) -> str | 
         Action.MUSICBRAINZ: "m",
         Action.BYPASS: "b",
         Action.KEEP: "k",
-        Action.BACK: "b",
     }.get(action) or (
         str(selected_index + 1)
         if action is Action.ACTIVATE and selected_index is not None
