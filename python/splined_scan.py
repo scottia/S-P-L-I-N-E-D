@@ -78,11 +78,11 @@ def candidate_key(candidate: core.Candidate, cfg: dict[str, Any], format_order: 
         projected["distance"],
         range_rank,
         transform_penalty,
+        -projected["short_side"],
         candidate.source_priority,
         format_order.index(projected["format"])
         if projected["format"] in format_order
         else 999999,
-        -projected["short_side"],
         provider_label(candidate.source).lower(),
         str(candidate.ref.id),
     )
@@ -130,11 +130,11 @@ def fallback_suggested(
             projected["distance"],
             0 if projected["square"] else 1,
             0 if candidate.ref.approved else 1,
+            -projected["short_side"],
             candidate.source_priority,
             format_order.index(projected["format"])
             if projected["format"] in format_order
             else 999999,
-            -projected["short_side"],
             str(candidate.ref.id),
         )
 
