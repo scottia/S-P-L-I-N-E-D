@@ -468,6 +468,7 @@ def install_core_patch(core: ModuleType) -> None:
         workers: int = 8,
         cancelled: Callable[[], bool] | None = None,
     ):
+        global _VALIDATION_CHECKED, _VALIDATION_UNCHANGED, _VALIDATION_RESCANNED
         root = Path(root)
         if not _should_cache_status_inventory(root, workers, progress):
             return original_inventory(
@@ -493,7 +494,6 @@ def install_core_patch(core: ModuleType) -> None:
         ):
             cached = _entry_albums(core, root, entry, fingerprints)
             if cached is not None:
-                global _VALIDATION_CHECKED, _VALIDATION_UNCHANGED
                 _VALIDATION_CHECKED += 1
                 _VALIDATION_UNCHANGED += 1
                 core.debug_log(
@@ -520,7 +520,6 @@ def install_core_patch(core: ModuleType) -> None:
                     _save_locked(force=False)
                 except (OSError, TypeError, ValueError):
                     pass
-        global _VALIDATION_CHECKED, _VALIDATION_RESCANNED
         _VALIDATION_CHECKED += 1
         _VALIDATION_RESCANNED += 1
         core.debug_log(
