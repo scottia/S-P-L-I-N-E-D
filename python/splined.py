@@ -35,6 +35,7 @@ from mutagen.mp4 import MP4
 from PIL import Image
 
 from tui.status import active as tui_active
+from tui.status import cancelled as tui_cancelled
 from tui.status import emit as emit_ui
 from tui.status import read_input
 from tui.picker_index import (
@@ -135,6 +136,9 @@ class PickerSessionState:
     status_probe_started: bool = False
     status_probe_complete: bool = False
     status_probe_thread: threading.Thread | None = None
+    status_probe_cancel: threading.Event = field(
+        default_factory=threading.Event, repr=False
+    )
     select_new: bool = False
     select_media_active: bool = False
     validation_started: bool = False
@@ -881,6 +885,7 @@ def inventory(
     fingerprint_paths: set[str] | None = None,
     progress: Callable[[int, int], None] | None = None,
     workers: int = INVENTORY_WORKERS,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[list[AlbumDir], list[Path]]:
     if not root.exists():
         raise SplinedError(f"SPLINED scan directory does not exist: {root}")
@@ -959,13 +964,19 @@ def inventory(
         thread_name_prefix="splined-inventory",
     ) as executor:
         while queued or pending:
+            if cancelled is not None and cancelled():
+                raise TuiSessionExit()
             while queued and len(pending) < worker_count * 2:
+                if cancelled is not None and cancelled():
+                    raise TuiSessionExit()
                 directory = queued.popleft()
                 pending[executor.submit(inspect_directory, directory)] = directory
             done, _ = concurrent.futures.wait(
                 pending,
                 return_when=concurrent.futures.FIRST_COMPLETED,
             )
+            if cancelled is not None and cancelled():
+                raise TuiSessionExit()
             for future in done:
                 pending.pop(future)
                 album, children = future.result()
@@ -1415,6 +1426,7 @@ def prepare_tui_library_selection(
             ignored,
             str(output.get("file_name", "cover")),
             fingerprint_paths=fingerprint_paths,
+            cancelled=tui_cancelled,
         )
         if root != index_root:
             albums = [album for album in albums if path_is_within(album.path, root)]
@@ -1466,7 +1478,11 @@ def prepare_tui_library_selection(
                 seen.add(path)
                 unique.append(path)
         total = len(unique)
+        if total > 1:
+            session.status_probe_cancel.set()
         for number, artist_path in enumerate(unique, 1):
+            if tui_cancelled():
+                raise TuiSessionExit()
             load_artist(artist_path)
             if total > 1:
                 emit_ui(
@@ -1823,12 +1839,20 @@ def prepare_tui_library_selection(
             )
 
             def probe_one(artist_path: str) -> tuple[str, str, int]:
+                with session.lock:
+                    if artist_path in session.loaded_artists:
+                        return artist_path, "", 0
                 albums, _probe_ignored = inventory(
                     Path(artist_path),
                     ignored,
                     str(output.get("file_name", "cover")),
                     fingerprint_paths=fingerprint_paths,
                     workers=1,
+                    cancelled=lambda: (
+                        session.status_probe_cancel.is_set()
+                        or tui_cancelled()
+                        or not session.select_media_active
+                    ),
                 )
                 statuses = [classify_album_state(album) for album in albums]
                 return artist_path, aggregate_artist_states(statuses), len(albums)
@@ -1849,17 +1873,22 @@ def prepare_tui_library_selection(
                     for artist_path in artist_paths
                 ]
                 for future in concurrent.futures.as_completed(futures):
-                    if not session.select_media_active:
+                    if (
+                        not session.select_media_active
+                        or session.status_probe_cancel.is_set()
+                        or tui_cancelled()
+                    ):
                         debug_log(
                             "picker.status_probe.cancel "
                             f"completed={completed}/{len(artist_paths)}"
                         )
                         return
                     artist_path, aggregate, album_count = future.result()
-                    album_total += album_count
-                    completed += 1
-                    with session.lock:
-                        session.probed_artist_statuses[artist_path] = aggregate
+                    if aggregate:
+                        album_total += album_count
+                        completed += 1
+                        with session.lock:
+                            session.probed_artist_statuses[artist_path] = aggregate
 
                     # Publish progressive state without flooding the event
                     # queue. The final result is always emitted.
@@ -1880,6 +1909,13 @@ def prepare_tui_library_selection(
                     f"artists={completed} albums={album_total} "
                     f"elapsed_seconds={time.perf_counter() - started_probe:.6f}"
                 )
+            except TuiSessionExit:
+                debug_log(
+                    "picker.status_probe.cancel "
+                    f"completed={completed}/{len(artist_paths)}"
+                )
+                with session.lock:
+                    session.status_probe_complete = True
             except Exception as exc:
                 debug_log(
                     "picker.status_probe.error "
@@ -1888,12 +1924,17 @@ def prepare_tui_library_selection(
                 with session.lock:
                     session.status_probe_complete = True
             finally:
-                if not session.select_media_active:
+                cancelled_probe = (
+                    not session.select_media_active
+                    or session.status_probe_cancel.is_set()
+                    or tui_cancelled()
+                )
+                if cancelled_probe:
                     for future in futures:
                         future.cancel()
                 executor.shutdown(
-                    wait=session.select_media_active,
-                    cancel_futures=not session.select_media_active,
+                    wait=not cancelled_probe,
+                    cancel_futures=cancelled_probe,
                 )
 
         thread = threading.Thread(
@@ -1966,6 +2007,7 @@ def prepare_tui_library_selection(
             session.status_probe_started = False
             session.status_probe_complete = False
             session.status_probe_thread = None
+            session.status_probe_cancel.clear()
             session.ready = True
             session.library_root = str(index_root)
             session.picker_path = ""
