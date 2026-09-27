@@ -1472,7 +1472,17 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
         checked = "☑" if album.selected else "☐"
         semantic = _album_status_semantic(album.status)
         lines.append(Line([
-            Span(f"{marker} {checked} ", style(theme, Semantic.ACTIVE if index == state.album_index_cursor else semantic, bold=index == state.album_index_cursor)),
+            Span(
+                f"{marker} ",
+                style(
+                    theme,
+                    Semantic.ACTIVE
+                    if index == state.album_index_cursor
+                    else Semantic.MUTED,
+                    bold=index == state.album_index_cursor,
+                ),
+            ),
+            Span(f"{checked} ", style(theme, semantic)),
             Span(_truncate(album.title, max(4, body.width - 23)), style(theme, semantic)),
             Span(f"  {STATUS_LABELS[album.status]}", style(theme, semantic)),
         ]))
