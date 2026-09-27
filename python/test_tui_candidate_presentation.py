@@ -174,6 +174,20 @@ class ArtworkPreviewTests(unittest.TestCase):
         self.assertEqual(cell.glyph, "▌")
         self.assertEqual({cell.foreground, cell.background}, {(0, 0, 0), (255, 255, 255)})
 
+    def test_large_preview_uses_exact_pillow_half_block_pairs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "horizontal.png"
+            image = Image.new("RGB", (1, 2), (10, 20, 30))
+            image.putpixel((0, 1), (200, 210, 220))
+            image.save(path)
+            preview = generate_preview(path, width=1, height=1, mode="half")
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        cell = preview.rows[0][0]
+        self.assertEqual(cell.glyph, "▀")
+        self.assertEqual(cell.foreground, (10, 20, 30))
+        self.assertEqual(cell.background, (200, 210, 220))
+
     def test_preview_is_cached_and_corrupt_art_is_nonfatal(self) -> None:
         state = TuiState()
         item = candidate(1, "iTunes", (1500, 1500), "LowerRange", path="/already/acquired.jpg")
@@ -181,7 +195,12 @@ class ArtworkPreviewTests(unittest.TestCase):
         with mock.patch("tui.splined_tui.generate_preview", return_value=sentinel) as generated:
             self.assertIs(_candidate_preview(state, item), sentinel)
             self.assertIs(_candidate_preview(state, item), sentinel)
-        generated.assert_called_once_with(item.path, width=28, height=12)
+        generated.assert_called_once_with(
+            item.path,
+            width=28,
+            height=12,
+            mode="half",
+        )
         with tempfile.TemporaryDirectory() as directory:
             corrupt = Path(directory) / "broken.jpg"
             corrupt.write_bytes(b"not artwork")
