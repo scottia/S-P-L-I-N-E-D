@@ -43,10 +43,12 @@ try:
     from splined_pyratatui_input import EventReader as InputEventReader
     from splined_pyratatui_input import emergency_restore as emergency_terminal_restore
     from splined_pyratatui_input import prepare_image_overlay as native_prepare_image_overlay
+    from splined_pyratatui_input import clear_image_area as native_clear_image_area
 except ImportError:  # plain CLI and automatic fallback remain independently usable
     InputEventReader = None  # type: ignore[assignment,misc]
     emergency_terminal_restore = None  # type: ignore[assignment]
     native_prepare_image_overlay = None  # type: ignore[assignment]
+    native_clear_image_area = None  # type: ignore[assignment]
 
 from .animation import animation_step, fit_phrase, startup_frame
 from .aispline import (
@@ -299,15 +301,22 @@ class TuiState:
     remote_hover_loading: bool = False
     remote_hover_error: str = ""
     remote_hover_token: int = 0
+    remote_hover_active: bool = False
+    remote_overlay_cache: dict[str, Any] = field(default_factory=dict)
     image_protocol: str = "unknown"
     remote_preview_width: int = 48
     remote_preview_height: int = 24
     remote_preview_rect: tuple[int, int, int, int] | None = None
+    remote_drawn_rect: tuple[int, int, int, int] | None = None
+    hover_target: str = ""
+    hover_index: int = -1
     status_loading: bool = False
     status_processed: int = 0
     status_total: int = 0
     status_percent: float = 0.0
     status_albums: int = 0
+    status_first_build: bool = False
+    status_cached_baseline: int = 0
     bypass_dialog_path: str = ""
     bypass_dialog_enable: bool | None = None
     bypass_dialog_select_after: bool = False
@@ -367,6 +376,12 @@ class TuiState:
                 )
             )
             self.status_albums = int(payload.get("albums", 0) or 0)
+            self.status_first_build = bool(
+                payload.get("first_status_build", self.status_first_build)
+            )
+            self.status_cached_baseline = int(
+                payload.get("cached_baseline", self.status_cached_baseline) or 0
+            )
         elif event == "remote_hover_preview":
             token = int(payload.get("token", -1))
             index = int(payload.get("index", -1))
@@ -375,6 +390,13 @@ class TuiState:
             self.remote_hover_loading = False
             self.remote_hover_error = str(payload.get("error", ""))
             self.remote_hover_overlay = payload.get("overlay")
+            if (
+                self.remote_hover_overlay is not None
+                and self.remote_hover_url
+            ):
+                self.remote_overlay_cache[
+                    self.remote_hover_url
+                ] = self.remote_hover_overlay
         elif event in {"library", "library_update"}:
             self.workflow = "library"
             self.workspace = "library"
@@ -514,6 +536,8 @@ class TuiState:
             self.remote_hover_overlay = None
             self.remote_hover_loading = False
             self.remote_hover_error = ""
+            self.remote_hover_active = False
+            self.remote_overlay_cache.clear()
             # Candidate cache files can reuse names between Albums.  Identity
             # and decoded terminal previews therefore belong to one Album
             # decision only, while each frame inside that decision remains
@@ -567,6 +591,8 @@ class TuiState:
             self.remote_hover_overlay = None
             self.remote_hover_loading = False
             self.remote_hover_error = ""
+            self.remote_hover_active = False
+            self.remote_overlay_cache.clear()
             self.candidates = [
                 CandidateView.from_payload(item)
                 for item in payload.get("items", [])
