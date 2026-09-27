@@ -452,7 +452,11 @@ def install_core_patch(core: ModuleType) -> None:
                 _CURRENT_BASELINE = _matching_cached_count(total)
                 _CURRENT_FIRST_RUN = not cache_path.exists()
             baseline = _CURRENT_BASELINE if total == _CURRENT_TOTAL else 0
-            effective = min(total, max(processed, baseline)) if total else processed
+            # The persistent JSON supplies the cached inventory baseline, but
+            # the visible progress bar represents this run's real validation
+            # work so a complete cache does not misleadingly sit at 100% for
+            # the entire validation pass.
+            effective = min(total, processed) if total else processed
             payload["processed"] = effective
             payload["percent"] = effective / total * 100.0 if total else 100.0
             payload["cached_baseline"] = baseline
