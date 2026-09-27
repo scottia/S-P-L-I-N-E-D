@@ -265,8 +265,8 @@ class TuiState:
     workspace: str = "library"
     library_focus: int = 0
     status_index: int = 0
-    select_index: int = 0
-    scan_index: int = 3
+    select_index: int = 1
+    scan_index: int = -1
     artist_index: int = 0
     album_index_cursor: int = 0
     group_scroll: int = 0
@@ -3948,7 +3948,17 @@ def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> bool:
 def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
     if state.library is None:
         return
-    modes = ("filtered-read", "filtered-write", "auto-all", "auto-selected")
+    # ALBUM SCANNING defines scope only. A READ/WRITE LAUNCH choice is
+    # mandatory so Auto Scan can never silently default to READ.
+    if state.scan_index in {2, 3}:
+        state.transient = (
+            "Select SPLINED LAUNCH [READ] or [LIVE WRITE] before Auto Scan."
+        )
+        return
+    if state.scan_index not in {0, 1}:
+        state.transient = "Select a SPLINED LAUNCH option."
+        return
+    modes = ("filtered-read", "filtered-write")
     mode = modes[state.scan_index]
     payload = state.library.selection_payload(mode)
     _runtime_trace(
