@@ -43,9 +43,16 @@ Select Media becomes usable
 read Album folders only when an Artist or explicit bulk action requires them
 ```
 
-No SQLite snapshot or background full-library validation is required for the
-folder list. Folder names remain the stable Select Media identity, while
-history/bypass/timeout remain the execution-state authority.
+No SQLite snapshot or background full-library cache validation is required for
+the folder list. After the immediate Artist root is rendered, Python may run a
+non-blocking **folder-status probe** that inspects directory/file names and
+retained history only so local-artwork-only Artists can receive their correct
+initial White/Purple/Green/Blue state without waiting for a user click.
+
+The status probe does not populate Album picker topology, read tags, query
+MusicBrainz/providers, decode candidate artwork, rank candidates, or create a
+persistent picker cache. Folder names remain the stable Select Media identity,
+while folder/local-art/history/bypass/timeout remain execution-state authority.
 
 Opening/selecting an Artist inventories only that Artist. **Select [ALL]** and
 **Auto Scan [ALL]** may explicitly traverse every root Artist because those
