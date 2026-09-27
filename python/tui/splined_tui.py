@@ -2537,8 +2537,9 @@ def _start_remote_hover_preview(
                     if len(body) > 25 * 1024 * 1024:
                         raise RuntimeError("remote preview exceeds 25 MiB limit")
             # The exact browser/source URL response is decoded entirely in
-            # memory. ratatui-image + Chafa prepares a terminal-native overlay;
-            # no cache/sample file is created.
+            # memory. ratatui-image renders through the protocol detected at
+            # TUI startup (Kitty/Sixel/iTerm2, with Halfblocks only as the
+            # terminal fallback). No cache/sample file is created.
             overlay = native_prepare_image_overlay(
                 bytes(body),
                 width,
@@ -2939,7 +2940,10 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                     .block(
                         card(
                             theme,
-                            f"LIVE URL PREVIEW · {source.upper()} · RATATUI-IMAGE",
+                            (
+                                f"LIVE URL PREVIEW · {source.upper()} · "
+                                f"{str(getattr(state.remote_hover_overlay, 'protocol', 'ratatui-image')).upper()}"
+                            ),
                             Semantic.ACTIVE,
                         )
                     ),
@@ -4600,6 +4604,10 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
             terminal = Terminal()
             input_reader = InputEventReader()
             with terminal, input_reader:
+                _runtime_trace(
+                    "tui.image_protocol "
+                    f"protocol={str(getattr(input_reader, 'image_protocol', 'unknown'))!r}"
+                )
                 thread.start()
                 dirty = True
                 last_animation_step = -1
