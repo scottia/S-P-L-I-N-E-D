@@ -299,6 +299,7 @@ class TuiState:
     remote_hover_loading: bool = False
     remote_hover_error: str = ""
     remote_hover_token: int = 0
+    image_protocol: str = "unknown"
     remote_preview_width: int = 48
     remote_preview_height: int = 24
     remote_preview_rect: tuple[int, int, int, int] | None = None
@@ -2942,7 +2943,13 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                             theme,
                             (
                                 f"LIVE URL PREVIEW · {source.upper()} · "
-                                f"{str(getattr(state.remote_hover_overlay, 'protocol', 'ratatui-image')).upper()}"
+                                f"{str(getattr(state.remote_hover_overlay, 'protocol', state.image_protocol)).upper()}"
+                                + (
+                                    " FALLBACK"
+                                    if str(getattr(state.remote_hover_overlay, 'protocol', state.image_protocol)).casefold()
+                                    == "halfblocks"
+                                    else ""
+                                )
                             ),
                             Semantic.ACTIVE,
                         )
@@ -4604,9 +4611,12 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
             terminal = Terminal()
             input_reader = InputEventReader()
             with terminal, input_reader:
+                state.image_protocol = str(
+                    getattr(input_reader, "image_protocol", "unknown")
+                )
                 _runtime_trace(
-                    "tui.image_protocol "
-                    f"protocol={str(getattr(input_reader, 'image_protocol', 'unknown'))!r}"
+                    "image_protocol "
+                    f"protocol={state.image_protocol!r}"
                 )
                 thread.start()
                 dirty = True
