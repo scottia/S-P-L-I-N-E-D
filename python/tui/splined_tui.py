@@ -1631,9 +1631,13 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels = _split_horizontal(
             area,
             [
-                Constraint.percentage(35),
-                Constraint.percentage(21),
-                Constraint.percentage(21),
+                # Match the control-row geometry to the three library columns:
+                # FOLDER STATUS == ARTIST PICKER (34%),
+                # ALBUM SELECTION + ALBUM SCANNING == ALBUM PICKER (38%),
+                # and S:P:L:I:N:E:D LAUNCH == the right-side statistics column.
+                Constraint.percentage(34),
+                Constraint.percentage(19),
+                Constraint.percentage(19),
                 Constraint.fill(1),
             ],
         )
