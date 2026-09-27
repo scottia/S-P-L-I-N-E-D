@@ -1135,6 +1135,94 @@ def _render_startup(frame: Any, state: TuiState, theme: Theme) -> None:
         )
 
 
+def _status_gradient_rgb(position: float) -> tuple[int, int, int]:
+    stops = (
+        (0.0, (255, 70, 70)),
+        (0.33, (255, 145, 35)),
+        (0.66, (255, 220, 50)),
+        (1.0, (60, 255, 135)),
+    )
+    value = max(0.0, min(1.0, position))
+    for index in range(len(stops) - 1):
+        left_pos, left = stops[index]
+        right_pos, right = stops[index + 1]
+        if value <= right_pos:
+            span = max(0.0001, right_pos - left_pos)
+            ratio = (value - left_pos) / span
+            return tuple(
+                round(left[channel] + (right[channel] - left[channel]) * ratio)
+                for channel in range(3)
+            )  # type: ignore[return-value]
+    return stops[-1][1]
+
+
+def _render_artist_status_loading_banner(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    width = min(max(64, int(area.width) - 24), 78)
+    height = min(11, int(area.height))
+    popup = Rect(
+        int(area.x) + max(0, (int(area.width) - width) // 2),
+        int(area.y) + max(0, (int(area.height) - height) // 2),
+        width,
+        height,
+    )
+    frame.render_widget(Clear(), popup)
+
+    inner_width = max(10, width - 8)
+    ratio = max(0.0, min(1.0, state.status_percent / 100.0))
+    filled = min(inner_width, round(inner_width * ratio))
+    bar_spans: list[Span] = [Span("[", style(theme, Semantic.MUTED))]
+    for index in range(inner_width):
+        if index < filled:
+            rgb = _status_gradient_rgb(
+                index / max(1, inner_width - 1)
+            )
+            bar_spans.append(
+                Span(
+                    "█",
+                    Style().fg(Color.rgb(*rgb)),
+                )
+            )
+        else:
+            bar_spans.append(Span("░", style(theme, Semantic.MUTED)))
+    bar_spans.append(Span("]", style(theme, Semantic.MUTED)))
+
+    progress = (
+        f"Artists {state.status_processed:,} / {state.status_total:,}"
+        f"   ·   {state.status_percent:.0f}%"
+    )
+    body = Text(
+        [
+            Line([Span("Preparing Select Media…", style(theme, Semantic.ACTIVE, bold=True))]).centered(),
+            Line(""),
+            Line([Span(progress, style(theme, Semantic.TEXT, bold=True))]).centered(),
+            Line(bar_spans).centered(),
+            Line(""),
+            Line(
+                [
+                    Span(
+                        "Please wait — Select Media will open when folder status loading",
+                        style(theme, Semantic.TEXT),
+                    )
+                ]
+            ).centered(),
+            Line([Span("is complete.", style(theme, Semantic.TEXT))]).centered(),
+            Line(""),
+            Line([Span("Ctrl+C to cancel startup", style(theme, Semantic.MUTED))]).centered(),
+        ]
+    )
+    frame.render_widget(
+        Paragraph(body).block(
+            card(theme, "LOADING ARTIST STATUS", Semantic.SPECIAL)
+        ),
+        popup,
+    )
+
+
 def _header_context(state: TuiState, ai_context: bool) -> str:
     if ai_context:
         return "AI ACTIVITY"
@@ -3364,6 +3452,8 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         .style(style(theme, Semantic.MUTED)),
         rows[2],
     )
+    if state.status_loading and state.workflow == "library":
+        _render_artist_status_loading_banner(frame, area, state, theme)
     if state.help_open:
         _render_help(frame, area, state, theme)
     if state.dialog_open:
@@ -4080,6 +4170,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     code = str(getattr(event, "code", "")).lower()
     column = int(getattr(event, "column", -1))
     row = int(getattr(event, "row", -1))
+    if state.status_loading:
+        return
     if code == "moved":
         region = hit_test(state, column, row)
         if (
@@ -4285,6 +4377,8 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.exit_code = 130
         state.exit_requested = True
         adapter.cancel_wait()
+        return
+    if state.status_loading:
         return
     if state.preview_modal_open:
         if str(event.code).lower() in {"esc", "escape", "enter", "return", "space", " "}:
