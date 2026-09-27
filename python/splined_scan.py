@@ -2012,13 +2012,25 @@ def _run_scan_dir_batch(
             comparison_action, comparison_candidate = local_comparison_prompt(local_candidate, remote, cfg, format_order, mb_retry_available=False)
 
             if comparison_action == "unbypass":
-                if remove_album_bypass(bypass_path, bypass_history, album.path):
+                if remove_album_bypass_state(
+                    bypass_path,
+                    bypass_history,
+                    completion_path,
+                    completion_history,
+                    album.path,
+                ):
                     print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                 continue
 
             if comparison_action == "bypass":
                 if is_album_bypassed(bypass_history, album):
-                    remove_album_bypass(bypass_path, bypass_history, album.path)
+                    remove_album_bypass_state(
+                    bypass_path,
+                    bypass_history,
+                    completion_path,
+                    completion_history,
+                    album.path,
+                )
                     print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                     continue
                 record_album_bypass(bypass_path, bypass_history, album, mbid, release.artist_credit, release.title, "local-source-comparison")
@@ -2127,7 +2139,13 @@ def _run_scan_dir_batch(
                 if answer == "__cancel__":
                     raise core.TuiSessionExit()
                 if answer == "unbypass":
-                    if remove_album_bypass(bypass_path, bypass_history, album.path):
+                    if remove_album_bypass_state(
+                    bypass_path,
+                    bypass_history,
+                    completion_path,
+                    completion_history,
+                    album.path,
+                ):
                         print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
                     continue
                 if answer == "b":
