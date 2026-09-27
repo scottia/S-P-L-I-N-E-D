@@ -56,10 +56,12 @@ MusicBrainz/providers, decode candidate artwork, rank candidates, or create a
 persistent picker cache. Folder names remain the stable Select Media identity,
 while folder/local-art/history/bypass/timeout remain execution-state authority.
 
-Opening/selecting an Artist inventories only that Artist. **Select [ALL]** and
-**Auto Scan [ALL]** may explicitly traverse every root Artist because those
-actions require complete Album knowledge. **R / Refresh Folder List** rereads
-only the immediate Artist root and preserves still-valid loaded Artist data.
+Opening/selecting an Artist inventories only that Artist. **Select [ALL]**
+is scoped to the active Artist. **Select [FILTERED]** may traverse the
+library-wide Artist/Album text-filter result, and **Auto Scan [ALL]** may
+explicitly traverse every root Artist because those actions require broader
+Album knowledge. **R / Refresh Folder List** rereads only the immediate Artist
+root and preserves still-valid loaded Artist data.
 
 No pre-Launch folder operation reads tags, performs MusicBrainz/provider work,
 decodes artwork, ranks candidates, or calls AISPLINE.
