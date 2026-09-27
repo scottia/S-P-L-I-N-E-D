@@ -485,6 +485,14 @@ mod tests {
     }
 
     #[test]
+    fn image_protocol_labels_cover_every_ratatui_backend() {
+        assert_eq!(protocol_name(ProtocolType::Halfblocks), "Halfblocks");
+        assert_eq!(protocol_name(ProtocolType::Sixel), "Sixel");
+        assert_eq!(protocol_name(ProtocolType::Kitty), "Kitty");
+        assert_eq!(protocol_name(ProtocolType::Iterm2), "iTerm2");
+    }
+
+    #[test]
     fn mouse_move_events_are_exposed_for_url_hover() {
         let event = Event::Mouse(MouseEvent {
             kind: MouseEventKind::Moved,
