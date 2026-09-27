@@ -1298,7 +1298,7 @@ def prepare_tui_library_selection(
     output = section(cfg, "output")
     ignored = [str(value) for value in library.get("ignored_subs", [])]
     index_root = library_root or root
-    bypassed = bypassed_paths or set()
+    bypassed = bypassed_paths if bypassed_paths is not None else set()
     fingerprint_paths = timeout_fingerprint_paths(
         completion_history, cfg, sources, timeout_hours
     )
@@ -1797,13 +1797,21 @@ def prepare_tui_library_selection(
         with session.lock:
             existing = session.status_probe_thread
             if session.status_probe_started:
-                if wait and existing is not None and existing.is_alive():
-                    pass
-                else:
-                    return
+                should_wait_existing = (
+                    wait and existing is not None and existing.is_alive()
+                )
             else:
+                should_wait_existing = False
                 session.status_probe_started = True
                 session.status_probe_complete = False
+
+        if should_wait_existing:
+            assert existing is not None
+            existing.join()
+            return
+        if session.status_probe_started and existing is not None and not existing.is_alive():
+            if session.status_probe_complete:
+                return
 
         def worker() -> None:
             started_probe = time.perf_counter()
@@ -4508,6 +4516,8 @@ def musicbrainz_picker(
             kind="musicbrainz",
             options=results,
         ).strip().lower()
+        if answer == "__cancel__":
+            raise TuiSessionExit()
         if answer in {"b", ""}:
             return None
         if answer.isdigit():
@@ -5488,6 +5498,8 @@ def _run_scan_dir_batch(
                     kind="fallback-picker",
                 ).strip().lower()
 
+                if answer == "__cancel__":
+                    raise TuiSessionExit()
                 if answer == "b":
                     summary.unresolved += 1
                     completion_outcome = "fallback-bypassed"
@@ -5539,6 +5551,8 @@ def _run_scan_dir_batch(
                         f"  Album  [{search_album}]: ",
                         kind="album",
                     ).strip()
+                    if "__cancel__" in {entered_artist, entered_album}:
+                        raise TuiSessionExit()
                     if entered_artist:
                         search_artist = entered_artist
                     if entered_album:
@@ -5691,6 +5705,8 @@ def _run_scan_dir_batch(
                     kind="out-of-range-picker",
                 ).strip().lower()
 
+                if answer == "__cancel__":
+                    raise TuiSessionExit()
                 if answer == "b":
                     summary.resolved += 1
                     print(
