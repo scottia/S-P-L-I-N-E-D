@@ -1059,6 +1059,8 @@ def local_comparison_prompt(local_candidate: core.Candidate, remote: list[core.C
         ).strip().lower()
         if answer == "__cancel__":
             raise core.TuiSessionExit()
+        if answer == "unbypass":
+            return "unbypass", None
         if answer == "s":
             if suggested is None:
                 print(f"  {core.yellow('No suggested provider candidate is available.')}")
@@ -1708,6 +1710,11 @@ def _run_scan_dir_batch(
                     local_candidate = local_fallback[0]
                     comparison_action, comparison_candidate = local_comparison_prompt(local_candidate, remote, cfg, format_order, mb_retry_available=mb_retry_available)
 
+                    if comparison_action == "unbypass":
+                        if remove_album_bypass(bypass_path, bypass_history, album.path):
+                            print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
+                        continue
+
                     if comparison_action == "mb-retry":
                         recovered = core.musicbrainz_picker(http, config_file, cfg, search_artist, search_album, exact_mbid=mbid if mbid and release is None else None)
                         if recovered is not None:
@@ -1883,6 +1890,8 @@ def _run_scan_dir_batch(
                         f"  Album  [{search_album}]: ",
                         kind="album",
                     ).strip()
+                    if "__cancel__" in {entered_artist, entered_album}:
+                        raise core.TuiSessionExit()
                     if entered_artist:
                         search_artist = entered_artist
                     if entered_album:
@@ -1957,6 +1966,11 @@ def _run_scan_dir_batch(
         if local_fallback:
             local_candidate = local_fallback[0]
             comparison_action, comparison_candidate = local_comparison_prompt(local_candidate, remote, cfg, format_order, mb_retry_available=False)
+
+            if comparison_action == "unbypass":
+                if remove_album_bypass(bypass_path, bypass_history, album.path):
+                    print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
+                continue
 
             if comparison_action == "bypass":
                 if is_album_bypassed(bypass_history, album):
@@ -2066,6 +2080,12 @@ def _run_scan_dir_batch(
                     kind="out-of-range-picker",
                 ).strip().lower()
 
+                if answer == "__cancel__":
+                    raise core.TuiSessionExit()
+                if answer == "unbypass":
+                    if remove_album_bypass(bypass_path, bypass_history, album.path):
+                        print(f"  {core.cyan('Bypass:'):13} {core.green('REMOVED')}")
+                    continue
                 if answer == "b":
                     record_album_bypass(bypass_path, bypass_history, album, mbid, release.artist_credit, release.title, "normal-out-of-range")
                     summary.resolved += 1
@@ -2261,7 +2281,7 @@ def run_scan_dir(
             "",
             kind="batch-summary",
         ).strip().lower()
-        if answer == "exit":
+        if answer in {"exit", "__cancel__"}:
             picker_session.validation_cancel.set()
             return session_exit_code
         core.debug_log("picker.batch.return")
