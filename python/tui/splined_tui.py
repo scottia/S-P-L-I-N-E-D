@@ -1631,13 +1631,10 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels = _split_horizontal(
             area,
             [
-                # Match the control-row geometry to the three library columns:
-                # FOLDER STATUS == ARTIST PICKER (34%),
-                # ALBUM SELECTION + ALBUM SCANNING == ALBUM PICKER (38%),
-                # and S:P:L:I:N:E:D LAUNCH == the right-side statistics column.
-                Constraint.percentage(34),
-                Constraint.percentage(19),
-                Constraint.percentage(19),
+                # Four equal control panels across the full terminal width.
+                Constraint.percentage(25),
+                Constraint.percentage(25),
+                Constraint.percentage(25),
                 Constraint.fill(1),
             ],
         )
@@ -2290,7 +2287,7 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
         _render_library_controls(frame, top, state, theme)
         columns = _split_horizontal(
             bottom,
-            [Constraint.percentage(34), Constraint.percentage(38), Constraint.fill(1)],
+            [Constraint.percentage(25), Constraint.percentage(50), Constraint.fill(1)],
         )
         _render_artist_picker(frame, columns[0], state, theme)
         _render_album_picker(frame, columns[1], state, theme)
@@ -2305,7 +2302,7 @@ def _render_library_embedded(frame: Any, area: Rect, state: TuiState, theme: The
         bottom,
         # Match the primary Select Media geometry exactly so processing does
         # not shift the control/picker/statistics column boundaries.
-        [Constraint.percentage(34), Constraint.percentage(38), Constraint.fill(1)],
+        [Constraint.percentage(25), Constraint.percentage(50), Constraint.fill(1)],
     )
     _render_artist_picker(frame, columns[0], state, theme)
     _render_album_picker(frame, columns[1], state, theme)
