@@ -1,5 +1,8 @@
 name: TEMP status cache validation
 on:
+  push:
+    branches:
+      - dev
   workflow_dispatch:
 permissions:
   contents: read
