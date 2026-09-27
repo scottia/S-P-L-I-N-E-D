@@ -10,6 +10,16 @@ use crossterm::execute;
 use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use ratatui::{
+    buffer::Buffer,
+    layout::{Rect, Size},
+    style::Color,
+    widgets::Widget,
+};
+use ratatui_image::{
+    Image as RatatuiImage,
+    protocol::{Protocol, halfblocks::Halfblocks},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EventFields {
@@ -191,6 +201,79 @@ impl EventReader {
     }
 }
 
+fn rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Black => (0, 0, 0),
+        Color::Red => (205, 49, 49),
+        Color::Green => (13, 188, 121),
+        Color::Yellow => (229, 229, 16),
+        Color::Blue => (36, 114, 200),
+        Color::Magenta => (188, 63, 188),
+        Color::Cyan => (17, 168, 205),
+        Color::Gray => (229, 229, 229),
+        Color::DarkGray => (102, 102, 102),
+        Color::LightRed => (241, 76, 76),
+        Color::LightGreen => (35, 209, 139),
+        Color::LightYellow => (245, 245, 67),
+        Color::LightBlue => (59, 142, 234),
+        Color::LightMagenta => (214, 112, 214),
+        Color::LightCyan => (41, 184, 219),
+        Color::White => (255, 255, 255),
+        Color::Indexed(value) => (value, value, value),
+        Color::Reset => (0, 0, 0),
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (data, width, height, max_side=1000))]
+fn render_image_cells(
+    data: Vec<u8>,
+    width: u16,
+    height: u16,
+    max_side: u32,
+) -> PyResult<(u16, u16, Vec<(String, (u8, u8, u8), (u8, u8, u8))>)> {
+    if width == 0 || height == 0 {
+        return Ok((0, 0, Vec::new()));
+    }
+
+    let mut image = image::load_from_memory(&data)
+        .map_err(|error| PyRuntimeError::new_err(format!("image decode failed: {error}")))?;
+    let limit = max_side.max(1);
+    if image.width() > limit || image.height() > limit {
+        image = image.resize(
+            limit,
+            limit,
+            image::imageops::FilterType::Lanczos3,
+        );
+    }
+
+    let size = Size::new(width, height);
+    let halfblocks = Halfblocks::new(image, size)
+        .map_err(|error| PyRuntimeError::new_err(format!("ratatui-image encode failed: {error}")))?;
+    let protocol = Protocol::Halfblocks(halfblocks);
+    let area = Rect::new(0, 0, width, height);
+    let mut buffer = Buffer::empty(area);
+    RatatuiImage::new(&protocol).render(area, &mut buffer);
+
+    let mut cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for y in 0..height {
+        for x in 0..width {
+            let cell = buffer
+                .cell((x, y))
+                .ok_or_else(|| PyRuntimeError::new_err("ratatui-image buffer cell missing"))?;
+            cells.push((
+                cell.symbol().to_string(),
+                rgb(cell.fg),
+                rgb(cell.bg),
+            ));
+        }
+    }
+
+    Ok((width, height, cells))
+}
+
+
 #[pyfunction]
 fn emergency_restore() -> PyResult<()> {
     // Safe to call after partial initialization: each operation is idempotent
@@ -278,6 +361,7 @@ impl EventReader {
 fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<EventReader>()?;
     module.add_class::<PyInputEvent>()?;
+    module.add_function(wrap_pyfunction!(render_image_cells, module)?)?;
     module.add_function(wrap_pyfunction!(emergency_restore, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
