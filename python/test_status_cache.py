@@ -24,7 +24,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.base = Path(self.temp.name)
         self.library = self.base / "music"
-        self.cache = self.base / "cache"
+        self.history = self.base / "history"
         self.artist = self.library / "Artist"
         self.album = self.artist / "Album"
         self.album.mkdir(parents=True)
@@ -84,7 +84,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
         with mock.patch.object(
             cachemod,
             "_runtime_settings",
-            return_value=(self.cache, self.library, [], "cover"),
+            return_value=(self.history, self.library, [], "cover"),
         ):
             cachemod.install_core_patch(core)
             first, _ = core.inventory(
@@ -96,7 +96,9 @@ class PersistentStatusCacheTests(unittest.TestCase):
             self.assertEqual(len(first), 1)
             self.assertEqual(calls, [self.artist])
             cachemod.flush()
-            self.assertTrue((self.cache / cachemod.CACHE_FILE).is_file())
+            history_file = self.history / cachemod.CACHE_FILE
+            self.assertTrue(history_file.is_file())
+            self.assertFalse((self.base / "cache" / cachemod.CACHE_FILE).exists())
 
             second, _ = core.inventory(
                 self.artist,
@@ -126,7 +128,7 @@ class PersistentStatusCacheTests(unittest.TestCase):
         with mock.patch.object(
             cachemod,
             "_runtime_settings",
-            return_value=(self.cache, self.library, [], "cover"),
+            return_value=(self.history, self.library, [], "cover"),
         ):
             cachemod.install_core_patch(core)
             core.inventory(self.artist, [], "cover", workers=1)
