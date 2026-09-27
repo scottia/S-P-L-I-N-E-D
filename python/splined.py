@@ -1829,17 +1829,6 @@ def prepare_tui_library_selection(
             if session.status_probe_complete:
                 return
 
-        with session.lock:
-            artist_total = len(session.artists)
-        emit_ui(
-            "folder_status_progress",
-            processed=0,
-            total=artist_total,
-            percent=0.0,
-            albums=0,
-            done=False,
-        )
-
         def worker() -> None:
             started_probe = time.perf_counter()
             with session.lock:
@@ -2096,9 +2085,18 @@ def prepare_tui_library_selection(
         ),
     )
     session.select_media_active = True
-    # First paint must never wait on whole-library status enrichment.  The
-    # immediate payload already carries the best retained-history authority;
-    # local-art-only refinements arrive asynchronously afterward.
+    # First paint remains immediate, but on a fresh session the centered
+    # readiness banner blocks interaction while the lightweight status pass
+    # reports real Artist progress.
+    if not same_session and not session.status_probe_complete:
+        emit_ui(
+            "folder_status_progress",
+            processed=0,
+            total=len(scoped_artists),
+            percent=0.0,
+            albums=0,
+            done=False,
+        )
     emit_library(initial_event)
     start_status_probe(wait=False, publish_updates=True)
 
