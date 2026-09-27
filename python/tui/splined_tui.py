@@ -3448,9 +3448,35 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
     source_lines: list[Line] = []
     for offset, value in enumerate(visible_sources):
         index = state.policy_source_scroll + offset
-        marker = "›" if index == source_index else " "
-        enabled = draft.policies[value]["enabled"]
-        source_lines.append(Line([Span(f"{marker} {'☑' if enabled else '☐'} {value}", style(theme, Semantic.ACTIVE if index == source_index else Semantic.ACCEPTED if enabled else Semantic.DISABLED, bold=index == source_index))]))
+        focused = index == source_index
+        enabled = bool(draft.policies[value]["enabled"])
+        hovered = (
+            state.hover_target == "policy-source"
+            and state.hover_index == index
+        )
+        semantic = (
+            Semantic.ACTIVE
+            if focused
+            else Semantic.ACCEPTED
+            if enabled
+            else Semantic.DISABLED
+        )
+        source_lines.append(
+            Line(
+                [
+                    Span(
+                        f"{'›' if focused else ' '} • {value}",
+                        _interactive_row_style(
+                            theme,
+                            semantic,
+                            hovered=hovered,
+                            selected=enabled,
+                            focused=focused,
+                        ),
+                    )
+                ]
+            )
+        )
     source_lines.extend([
         Line([Span("", style(theme, Semantic.MUTED))]),
         Line([Span("← Move Earlier   → Move Later", style(theme, Semantic.DEBUG))]),
@@ -3459,8 +3485,13 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
     _register_hit(state, "policy-source-scroll", panels[0])
     for offset, value in enumerate(visible_sources):
         index = state.policy_source_scroll + offset
-        _register_hit(state, "policy-source", _row_rect(panels[0], offset), index=index, value=value)
-        _register_hit(state, "policy-source-enabled", _checkbox_rect(panels[0], offset), index=index, value=value)
+        _register_hit(
+            state,
+            "policy-source",
+            _row_rect(panels[0], offset),
+            index=index,
+            value=value,
+        )
     priority_row = len(visible_sources) + 1
     priority_area = _row_rect(panels[0], priority_row)
     half = max(1, int(priority_area.width) // 2)
@@ -4621,6 +4652,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if code == "moved":
         region = hit_test(state, column, row)
+        state.hover_target = region.target if region is not None else ""
+        state.hover_index = region.index if region is not None else -1
         if (
             region is not None
             and region.target == "candidate-url"
@@ -4629,10 +4662,11 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             if (
                 state.remote_hover_index != region.index
                 or state.remote_hover_url != region.value
+                or not state.remote_hover_active
             ):
                 _start_remote_hover_preview(state, adapter, region.index)
-        else:
-            _clear_remote_hover_preview(state)
+        elif state.remote_hover_active:
+            _clear_remote_hover_preview(state, adapter)
         return
     if code in {"scroll_up", "scroll_down"}:
         region = _scroll_hit_test(state, column, row)
@@ -4743,9 +4777,6 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
                 select_after_load=True,
             )
     elif region.target == "album-row" and model is not None:
-        state.library_focus = 5
-        state.album_index_cursor = region.index
-    elif region.target == "album-checkbox" and model is not None:
         if not _library_input_ready(state, adapter):
             return
         state.library_focus = 5
@@ -4756,7 +4787,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             before = album.selected
             result = model.toggle_album(album)
             _runtime_trace(
-                "mouse.album_checkbox "
+                "mouse.album_row_select "
                 f"path={album.path!r} before={before} after={album.selected} "
                 f"result={result!r} {_library_snapshot(state)}"
             )
@@ -4767,7 +4798,9 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
                 state.bypass_dialog_select_after = True
                 state.dialog_open = True
             elif result == "timeout-active":
-                state.transient = "Timeout-active albums remain protected during automatic selection."
+                state.transient = (
+                    "Timeout-active albums remain protected during automatic selection."
+                )
             else:
                 _sync_library_selection(state, adapter)
     elif region.target == "artist-filter":
@@ -4783,11 +4816,9 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "library-refresh":
         state.transient = "Refreshing Artist folder list…"
         _respond_library_action(state, adapter, "refresh-index")
-    elif region.target in {"policy-source", "policy-source-enabled"} and state.policy is not None:
+    elif region.target == "policy-source" and state.policy is not None:
         state.library_focus = 0
         state.artist_index = region.index
-        if region.target == "policy-source-enabled":
-            state.policy.toggle(region.value, "enabled")
     elif region.target in {"policy-move-earlier", "policy-move-later"} and state.policy is not None:
         delta = -1 if region.target.endswith("earlier") else 1
         state.policy.move(region.value, delta)
