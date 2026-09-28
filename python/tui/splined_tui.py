@@ -2140,17 +2140,7 @@ def _render_selected_album_stats(
         _prepare_local_cover_overlay(state, area)
         resolution = str(item.get("cover_resolution", "") or "—")
         frame.render_widget(
-            Paragraph(
-                Text(
-                    [
-                        Line([]),
-                        Line(
-                            [Span(resolution, style(theme, Semantic.WARNING, bold=True))]
-                        ).centered(),
-                    ]
-                )
-            )
-            .block(
+            Paragraph(Text([])).block(
                 card(
                     theme,
                     "MEDIA LIBRARY / SELECTED ALBUM ARTWORK",
@@ -2158,6 +2148,23 @@ def _render_selected_album_stats(
                 )
             ),
             area,
+        )
+        frame.render_widget(
+            Paragraph(
+                Text(
+                    [
+                        Line(
+                            [Span(resolution, style(theme, Semantic.WARNING, bold=True))]
+                        ).centered()
+                    ]
+                )
+            ),
+            Rect(
+                int(area.x) + 1,
+                int(area.y) + max(1, int(area.height) - 2),
+                max(1, int(area.width) - 2),
+                1,
+            ),
         )
         return
 
