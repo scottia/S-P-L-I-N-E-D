@@ -2254,6 +2254,22 @@ def _scan_directory_stat_lines(
     ]
 
 
+def _render_selected_album_info(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    lines = _selected_album_stat_lines(state, theme, int(area.width))
+    capacity = max(1, int(area.height) - 2)
+    state.selected_stats_page_size = capacity
+    maximum = max(0, len(lines) - capacity)
+    state.selected_stats_scroll = max(0, min(state.selected_stats_scroll, maximum))
+    shown = lines[state.selected_stats_scroll : state.selected_stats_scroll + capacity]
+    frame.render_widget(
+        Paragraph(Text(shown)).wrap(True, False).block(
+            card(theme, "MEDIA LIBRARY / SELECTED ALBUM STATISTICS", Semantic.ACTIVE)
+        ),
+        area,
+    )
+    _register_hit(state, "selected-stats-scroll", area)
+
+
 def _render_library_scan_stats(
     frame: Any,
     area: Rect,
@@ -2376,7 +2392,7 @@ def _render_library_side_panels(
         state.debug_library_geometry = geometry
         _runtime_trace(f"library_panels {geometry}")
     _render_selected_album_stats(frame, panels[0], state, theme)
-    _render_library_scan_stats(frame, panels[1], state, theme)
+    _render_selected_album_info(frame, panels[1], state, theme)
     _render_library_tools(frame, panels[2], state, theme)
 
 
