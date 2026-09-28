@@ -281,6 +281,8 @@ class TuiState:
     selected_stats_scroll: int = 0
     selected_stats_page_size: int = 1
     selected_album_stats: list[dict[str, Any]] = field(default_factory=list)
+    album_info_loading: bool = False
+    album_info_target: str = ""
     debug_library_geometry: str = ""
     filter_edit: str = ""
     hit_regions: list[HitRegion] = field(default_factory=list)
@@ -4907,6 +4909,18 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         if 0 <= region.index < len(albums):
             album = albums[region.index]
             before = album.selected
+            state.album_info_loading = True
+            state.album_info_target = album.path
+            state.selected_album_stats = []
+            if state.local_cover_drawn_rect is not None and native_clear_image_area is not None:
+                try:
+                    native_clear_image_area(*state.local_cover_drawn_rect)
+                except Exception:
+                    pass
+            state.local_cover_drawn_rect = None
+            state.local_cover_overlay = None
+            state.local_cover_rect = None
+            state.local_cover_path = ""
             if not album.selected or sum(item.selected for item in model.albums) != 1:
                 model.select_none()
             result = model.toggle_album(album) if not album.selected else "selected"
