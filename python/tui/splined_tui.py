@@ -655,8 +655,16 @@ class TuiState:
                 for source, message in payload.get("items", [])
             ]
             if self.active_report is not None:
+                grouped_notes: dict[tuple[str, str], int] = {}
+                for source, message in self.diagnostics:
+                    key = (source, message)
+                    grouped_notes[key] = grouped_notes.get(key, 0) + 1
                 self.active_report.provider_notes = [
-                    f"{source}: {message}" for source, message in self.diagnostics
+                    (
+                        f"{source}: {message}"
+                        + (f"  ×{count}" if count > 1 else "")
+                    )
+                    for (source, message), count in grouped_notes.items()
                 ]
                 hidden = sum(
                     "policy-filtered" in message.casefold()
@@ -1560,10 +1568,9 @@ def _selection_control_lines(
     lines = [
         Line(
             [
-                Span(
-                    f"• Selected [{selected_count:,}]",
-                    style(theme, Semantic.SPECIAL, bold=selected_count > 0),
-                )
+                Span("• SELECTED [", style(theme, Semantic.ACTIVE, bold=True)),
+                Span(str(selected_count), style(theme, Semantic.ACCEPTED, bold=True)),
+                Span("]", style(theme, Semantic.ACTIVE, bold=True)),
             ]
         )
     ]
@@ -4584,7 +4591,7 @@ def _toggle_candidate_ai(state: TuiState, candidate_index: int) -> None:
         state.transient = result.replace("-", " ")
 
 
-def _focus_candidate(state: TuiState, index: int) -> None:
+def _focus_candidate(state: TuiState, index: int, adapter: TuiAdapter | None = None) -> None:
     if not state.candidates:
         return
     state.selected_index = max(0, min(index, len(state.candidates) - 1))
@@ -4600,6 +4607,15 @@ def _focus_candidate(state: TuiState, index: int) -> None:
                 len(items),
             )
             break
+    if adapter is not None:
+        selected = state.candidates[state.selected_index]
+        if selected.provenance == "[URL]" and selected.url:
+            _start_remote_source_preview(
+                state,
+                adapter,
+                state.selected_index,
+                hover_active=False,
+            )
 
 
 def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
@@ -4922,7 +4938,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if action is Action.UP and selection_count:
         index = (state.selected_index - 1) % selection_count
         if state.candidates:
-            _focus_candidate(state, index)
+            _focus_candidate(state, index, adapter)
         else:
             state.selected_index = index
             state.input_buffer = str(index + 1)
@@ -4930,7 +4946,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if action is Action.DOWN and selection_count:
         index = (state.selected_index + 1) % selection_count
         if state.candidates:
-            _focus_candidate(state, index)
+            _focus_candidate(state, index, adapter)
         else:
             state.selected_index = index
             state.input_buffer = str(index + 1)
@@ -4943,7 +4959,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         else:
             index = state.selected_index + (-10 if action is Action.PAGE_UP else 10)
         if state.candidates:
-            _focus_candidate(state, index)
+            _focus_candidate(state, index, adapter)
         else:
             state.selected_index = max(0, min(index, selection_count - 1))
             state.input_buffer = str(state.selected_index + 1)
@@ -4951,12 +4967,18 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if action is Action.DIGIT and selection_count:
         proposed = (state.input_buffer + code)[-2:]
         number = int(proposed)
+        index: int | None = None
         if 1 <= number <= selection_count:
             state.input_buffer = proposed
-            state.selected_index = number - 1
+            index = number - 1
         elif code != "0" and int(code) <= selection_count:
             state.input_buffer = code
-            state.selected_index = int(code) - 1
+            index = int(code) - 1
+        if index is not None:
+            if state.candidates:
+                _focus_candidate(state, index, adapter)
+            else:
+                state.selected_index = index
         return
     if action is Action.BYPASS:
         current = (
