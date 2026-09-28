@@ -2453,9 +2453,8 @@ def _render_library_embedded(frame: Any, area: Rect, state: TuiState, theme: The
     )
     _render_artist_picker(frame, columns[0], state, theme)
     _render_album_picker(frame, columns[1], state, theme)
-    # Embedded processing views are intentionally shallow; show the scan-dir
-    # summary only rather than crushing three stacked Select Media panels.
-    _render_library_scan_stats(frame, columns[2], state, theme)
+    # Album-specific processing context; Folder Status owns library-wide counts.
+    _render_selected_album_info(frame, columns[2], state, theme)
 
 
 def _render_overview(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
