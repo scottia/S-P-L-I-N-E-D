@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 
-from splined_media_database import database_path, schema_path
+from splined_media_database import _insert_snapshot, database_path, schema_path
 from splined_media_runtime import stats_from_row
 from splined_media_tags import album_base_key, artist_key
 
@@ -44,16 +45,39 @@ class SplinedMediaIndexTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             connection = sqlite3.connect(Path(directory) / "splined.db")
             connection.executescript(schema_path().read_text(encoding="utf-8"))
-            indexes = connection.execute(
-                "SELECT sql FROM sqlite_master "
-                "WHERE type='index' AND sql IS NOT NULL ORDER BY name"
-            ).fetchall()
-            sql = "\n".join(str(row[0]).casefold() for row in indexes)
-            self.assertIn("albums(artist_key", sql)
-            self.assertIn("albums(artist_key, status)", sql)
-            self.assertNotIn("albums(path", sql)
-            self.assertNotIn("artists(primary_path", sql)
+
+            def indexed_columns(table: str) -> set[str]:
+                columns: set[str] = set()
+                for index_row in connection.execute(
+                    f"PRAGMA index_list({table})"
+                ):
+                    index_name = str(index_row[1]).replace("'", "''")
+                    columns.update(
+                        str(column_row[2])
+                        for column_row in connection.execute(
+                            f"PRAGMA index_info('{index_name}')"
+                        )
+                    )
+                return columns
+
+            artist_columns = indexed_columns("artists")
+            album_columns = indexed_columns("albums")
+            retired_columns = indexed_columns("retired_album_paths")
+            self.assertIn("artist_key", artist_columns)
+            self.assertIn("album_key", album_columns)
+            self.assertIn("artist_key", album_columns)
+            self.assertIn("status", album_columns)
+            self.assertNotIn("primary_path", artist_columns)
+            self.assertNotIn("path", album_columns)
+            self.assertNotIn("representative_file", album_columns)
+            self.assertNotIn("cover_path", album_columns)
+            self.assertNotIn("album_path", retired_columns)
             connection.close()
+
+    def test_retired_path_upsert_conflicts_on_logical_album_key_only(self) -> None:
+        source = inspect.getsource(_insert_snapshot)
+        self.assertIn('"ON CONFLICT(album_key) DO UPDATE SET "', source)
+        self.assertNotIn('"ON CONFLICT(album_key, album_path)', source)
 
     def test_navtagger_style_maintenance_tables_are_present(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
