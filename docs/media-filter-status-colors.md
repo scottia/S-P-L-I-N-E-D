@@ -1,559 +1,304 @@
 # Select Media and Status Colors
 
-This page documents the Windows GUI **Select Media** control, live Artist/Album filtering, status filters, tree colors, and the required Python Ratatui parity model.
+Select Media is the operational library workspace. Text filters, Folder Status
+filters, selection controls, scan scope, and Launch all operate on one resident
+Artist/Album model. Filtering changes visibility only; it does not rewrite
+history, bypass, timeout, credentials, or source policy.
 
-> **Windows target:** v3.0.0 Stable with Config v5.
+The Windows GUI and Python/Docker Ratatui interfaces share the same semantic
+colors, although their storage and presentation implementations differ.
 
----
+## Python/Docker inventory authority
 
-## Select Media purpose
-
-**Select Media** is the single collapsible control beneath Media Library Selection. It changes the visible in-memory tree and provides selection and filtered-scan shortcuts; it is not a separate scan engine.
-
-The filter should operate against the in-memory library model and should not rescan the filesystem on every keystroke.
-
-Filtering must not silently change:
-
-- Config v5;
-- persistent history;
-- bypass state;
-- timeout state;
-- provider credentials;
-- candidate/source policy.
-
-A row filtered out of view remains part of the underlying library model unless another explicit operation changes it.
-
----
-
-# Windows-equivalent folder inventory authority
-
-The Python Ratatui path uses direct, lazy folder inventory rather than a
-complete persistent picker cache. Startup reads only immediate Artist folders
-from the configured music-library root and presents them directly.
-
-Required normal-start behavior:
+The Python/Docker TUI loads the complete Artist/Album read model from:
 
 ```text
-read root Artist folders
-        ↓
-apply ignored/hidden rules
-        ↓
-Select Media becomes usable
-        ↓
-read Album folders only when an Artist or explicit bulk action requires them
+<scan.cache_dir>/splined.db
 ```
 
-No SQLite snapshot or background full-library cache validation is required for
-the folder list. Select Media paints behind a centered status-readiness banner. A missing
-persistent status JSON produces the one-time **BUILDING ALBUM STATUS INDEX**
-banner; later runs use **LOADING ALBUM STATUS** while validating the saved
-inventory against current Artist/Album differences. The percentage reflects
-the current validation pass and the banner disappears only when that pass is
-done.
+The index is populated from Mutagen tags and local artwork inspection. Artist
+and Album identity uses MusicBrainz/tag keys; paths are current locations, not
+SQL identity indexes.
 
-The readiness pass does not populate Album picker topology, read tags, query
-MusicBrainz/providers, decode candidate artwork, rank candidates, or create a
-persistent picker cache. Folder names remain the stable Select Media identity,
-while folder/local-art/history/bypass/timeout remain execution-state authority.
+Warm startup is database-only for Select Media. Opening an Artist, typing a
+filter, scrolling, or changing focus does not scan the filesystem or change a
+row's status.
 
-Opening/selecting an Artist inventories only that Artist. **Select [ALL]**
-is scoped to the active Artist. **Select [FILTERED]** may traverse the
-library-wide Artist/Album text-filter result, and **Auto Scan [ALL]** may
-explicitly traverse every root Artist because those actions require broader
-Album knowledge. **R / Refresh Folder List** rereads only the immediate Artist
-root and preserves still-valid loaded Artist data.
+External Picard, Beets, Navtagger, or filesystem changes are incorporated by
+the explicit Refresh action. Refresh completes its inventory/tag transaction
+before replacing the visible model, so colors do not progressively change
+while the user is working.
 
-No pre-Launch folder operation reads tags, performs MusicBrainz/provider work,
-decodes artwork, ranks candidates, or calls AISPLINE.
+See [SPLINED media database](splined-media-database.md).
 
-## Ignored/excluded folders
+## Ignored and hidden folders
 
-`[library].ignored_subs` is authoritative during recursive library inventory.
-
-Ignored exact names/patterns:
+`[library].ignored_subs` is authoritative during the initial database build and
+explicit Refresh. Matching directories:
 
 - are not traversed;
-- do not appear as Artist rows;
-- do not appear as Album rows;
-- do not contribute to library statistics;
-- do not participate in status/history reconciliation;
-- do not appear in selection payloads.
+- do not appear as Artist or Album rows;
+- do not contribute to counts;
+- do not enter selection payloads.
 
-Wildcard behavior should remain compatible with current SPLINED/Windows matching. Symlink/reparse-style recursive loops are not followed.
+POSIX directory basenames beginning with `.` are excluded automatically.
+Symlink/reparse-style loops are not followed.
 
-POSIX/Linux directory basenames beginning with `.` are always excluded at the
-root and during nested traversal. They never become Artist/Album rows, affect
-counts or status, enter selection payloads, or persist in the picker index.
-This automatic filesystem rule is additional to `[library].ignored_subs` and
-does not rewrite Config v5.
+## Artist and Album text filters
 
----
-
-# Artist and Album text filters
-
-Select Media provides live text filtering for:
-
-```text
-Artist
-Album
-```
-
-Text matching is case-insensitive.
+Artist and Album filters are case-insensitive and combine with each other and
+with Folder Status filters.
 
 Examples:
 
 ```text
 Artist: maniacs
+Album:  ruins
 ```
 
 can match:
 
 ```text
 10,000 Maniacs
-```
-
-and:
-
-```text
-Album: ruins
-```
-
-can match:
-
-```text
 Love Among the Ruins
 ```
 
-Artist and Album filters combine with each other and with status filters.
+Filtering is performed against the resident model. Keystrokes do not trigger
+filesystem, Mutagen, MusicBrainz, provider, image, or AI work.
 
----
+## Folder Status order
 
-# Status filters
+The top-left Folder Status panel uses six consecutive rows:
 
-Current status concepts:
+```text
+Unprocessed
+Processed
+Bypassed
+Partial / Timeout
+Artist Complete
+Artist Contains Bypass
+```
 
-| Filter | Color | Meaning |
+The bullet/label uses the semantic status color. The count is right-aligned in
+a fixed second column. Focus, hover, and selection emphasis must not replace the
+underlying status color.
+
+## Album states
+
+| Color | Album meaning | Normal automatic selection |
 | --- | --- | --- |
-| Unprocessed | White | Album/artist has no retained processed/bypass/timeout authority for normal eligibility |
-| Processed | Orange | Album has retained processed history or Windows-equivalent detected local artwork state |
-| Bypassed | Red | Album has persistent bypass state |
-| Partial / Timeout | Purple | Artist is partially processed, or Album is timeout-active depending on row type |
-| Artist Complete | Green | All eligible child albums are processed and none bypassed |
-| Artist Contains Bypass | Blue | One or more child albums are bypassed |
+| White | Unprocessed / no current processed authority | Yes |
+| Orange | Processed/history or recognized canonical local cover | No |
+| Red | Persistent bypass | No |
+| Purple | Timeout active | No |
 
-The same color may have different meaning depending on row type. Purple is the primary example.
+Orange Albums may be deliberately selected for reprocessing. Red Albums require
+intentional saved-bypass removal. Purple Albums remain protected while timeout
+is active.
 
-The displayed count for each row follows the row type it represents across the
-currently known tree:
+READ mode may evaluate a candidate, but a no-cover Album does not become
+durably processed merely because a possible image was found. LIVE WRITE updates
+the database after the actual Album result and local `cover.*` state are known.
 
-```text
-Unprocessed            = White Albums + loaded White Artists
-Processed              = Orange Albums
-Bypassed               = Red Albums
-Partial / Timeout      = Purple timeout Albums + loaded Purple Artists
-Artist Complete        = loaded Green Artists
-Artist Contains Bypass = loaded/known Blue Artists
-```
-
-For a loaded Artist, its folder state is derived only from its child Album
-states using the locked precedence:
-
-```text
-BLUE   -> any Red/bypassed child Album exists
-GREEN  -> all eligible child Albums are Processed/timeout-protected, no bypass
-PURPLE -> mixed processed/unprocessed child state, no bypass
-WHITE  -> all eligible child Albums are Unprocessed, no bypass
-```
-
-The Unprocessed and Partial / Timeout filter rows therefore control both the
-Album and Artist contexts represented by those shared colors. Filtering changes
-visibility only; it does not rewrite selection, history, bypass, or timeout
-authority.
-
-The Python Ratatui Folder Status control follows the Windows order exactly and
-renders the six classifications as consecutive rows with no blank spacer rows:
-
-```text
-Unprocessed            White
-Processed              Orange
-Bypassed               Red
-Partial / Timeout      Purple
-Artist Complete        Green
-Artist Contains Bypass Blue
-```
-
-The status color is semantic state, not focus/checked color. Moving the cursor
-or checking a filter must not recolor Processed/Bypassed/Partial/etc. into a
-generic active color. Artist and Album rows use the same state-color mapping.
-
----
-
-# Album colors
-
-| Color | Album meaning |
-| --- | --- |
-| White | Unprocessed / normally eligible |
-| Orange | Processed / history retained or local artwork reconciled by Windows-equivalent inventory |
-| Red | Bypassed |
-| Purple | Timeout-active |
-
-Normal selection behavior follows the same authority:
-
-- White -> auto-selectable;
-- Orange -> not auto-selected, but may be manually reprocessed;
-- Red -> selection prompts to remove the saved bypass before processing;
-- Purple -> protected while timeout remains active.
-
----
-
-# Artist colors
-
-Artist rows summarize child-album state.
+## Artist aggregate states
 
 | Color | Artist meaning |
 | --- | --- |
-| White | All eligible albums unprocessed, none bypassed |
-| Purple | Mixed processed/unprocessed state, none bypassed |
-| Green | All eligible albums processed, none bypassed |
-| Blue | At least one child album bypassed |
+| White | All eligible Albums unprocessed, no bypass |
+| Purple | Mixed processed/unprocessed/timeout state, no bypass |
+| Green | All eligible Albums processed or timeout-protected, no bypass |
+| Blue | One or more child Albums bypassed |
 
-Artist aggregate precedence:
+Precedence:
 
 ```text
-BLUE   -> any bypass exists
-GREEN  -> all eligible albums processed, no bypass
-PURPLE -> mixed processed/unprocessed, no bypass
-WHITE  -> all eligible albums unprocessed, no bypass
+BLUE   → any bypass exists
+GREEN  → every eligible Album is processed or timeout-protected
+PURPLE → mixed state without bypass
+WHITE  → all eligible Albums are unprocessed
 ```
 
-Blue therefore has priority when an artist contains one or more Red albums.
-
----
-
-# Purple is context-sensitive
+Purple is context-sensitive:
 
 ```text
-Artist row -> partial aggregate state
-Album row  -> timeout-active state
+Album row  → timeout active
+Artist row → partial aggregate
 ```
 
-These are separate execution meanings. UI row context/status text should make the distinction clear.
+Color should be accompanied by row context and status text where practical.
 
----
+## Counts
 
-# Filtering does not alter selection authority
-
-If a checked album becomes hidden because a text/status filter changes, the application should preserve the underlying state rather than silently rewriting history or eligibility.
-
-In particular:
+Folder Status counts are exact for the resident SQLite model:
 
 ```text
-hidden by filter != bypassed
-hidden by filter != processed
-hidden by filter != timeout-active
+Unprocessed            = White Albums / White Artists for shared context
+Processed              = Orange Albums
+Bypassed               = Red Albums
+Partial / Timeout      = Purple Albums + Purple Artists
+Artist Complete        = Green Artists
+Artist Contains Bypass = Blue Artists
 ```
 
----
+The count is not the current selection count. Selection count appears in Album
+Selection as `SELECTED [n]`.
 
-# Combining filters
+## Initial and direct selection
 
-Filters combine as constraints over the same loaded tree.
-
-Example:
+Album Selection defaults to:
 
 ```text
-Artist contains: 10,000
-Status: Processed + Unprocessed
+Select [NONE]
 ```
 
-shows matching rows allowed by those active filters.
+A direct Album-row click is exclusive: focus moves to that Album, the selected
+count stays at one, and the right-side artwork/statistics follow that Album.
 
-Status filters should work together with Artist/Album text filters without triggering a full filesystem reload.
+Bulk actions are explicit:
 
----
+- **Select [ALL]** — eligible Albums for the active Artist;
+- **Select [FILTERED]** — eligible Albums matching active text filters;
+- **Select [NONE]** — clear transient selection.
 
-# Initial selection
+A row hidden by a filter remains in the underlying model and does not become
+processed, bypassed, or timeout-active merely because it is hidden.
 
-Opening or reloading Select Media does not auto-check newly discovered Albums. A previously saved explicit selection may be restored; otherwise no Album is checked until the user selects an Album, selects an Artist, uses **Select [ALL]**, or uses **Select [FILTERED]**.
+## Selecting an Artist
 
-Background cache validation may preserve already checked paths, but discovery of a new Album must not select that Album merely because it is new or White/Unprocessed.
-
----
-
-# Select Mode
-
-The Select Mode group contains selection actions with distinct scopes:
-
-- **Select [ALL]** selects all White/Unprocessed Albums for the currently active
-  Artist only. Orange/Processed Albums are excluded from this automatic Artist
-  selection.
-- **Select [NONE]** clears transient selection.
-- **Select [FILTERED]** applies the current Artist and/or Album **text filter
-  library-wide** and selects matching White/Unprocessed plus Orange/Processed
-  Albums. Red/Bypassed and Purple/Timeout Albums remain protected and are not
-  selected implicitly.
-
-Selection actions respect history, bypass, and timeout authority and never erase persistent records.
-
----
-
-# Selecting an Artist
-
-Selecting an Artist normally cascades to eligible child albums.
-
-Expected automatic behavior:
+Selecting an Artist cascades only to eligible children:
 
 ```text
-White Album  -> selected
-Orange Album -> skipped unless manually reselected
-Purple Album -> skipped while timeout-active
-Red Album    -> requires saved bypass removal before selection
+White Album  → selectable
+Orange Album → skipped by automatic selection; manually reprocessable
+Purple Album → protected while timeout active
+Red Album    → saved bypass removal required
 ```
 
-A Blue artist can therefore be selected without automatically overriding its Red child albums.
+A Blue Artist can therefore be selected without silently including Red child
+Albums.
 
----
+## Album Scanning and Launch
 
-# Manual reprocessing
-
-Orange albums may be deliberately reselected for another processing pass.
-
-Manual selection does not mean the old completion history must be erased first.
-
-Red is persistent state. Pressing **B** on a Red Album confirms removal of that
-saved bypass; pressing **B** on a non-Red Album confirms creation of the bypass.
-Selecting a Red Album uses the same removal confirmation before selection.
-
----
-
-# Scan Mode
-
-The Scan Mode group contains mutually exclusive:
-
-- **Filtered Scan [READ]**;
-- **Filtered Scan [WRITE]**.
-
-These are operational shortcuts for the current filtered selection, not replacements for persistent album bypass.
-
-Launching a filtered scan intersects the visible filter result with albums that
-are already checked. It must not expand the run to other visible eligible
-albums. **AUTO LAUNCH** likewise processes only the checked Album set; selecting
-an Artist or using **Select [FILTERED]** is what changes that set.
-
-# Auto Mode
-
-**AUTO LAUNCH** starts the existing launch workflow for the eligible selection.
-
-It must still respect history, persistent bypass, timeout authority, source policy, and Read/Write mode.
-
----
-
-# Tree refresh
-
-Library refresh/reload should recalculate colors from authoritative state.
-
-It should not preserve stale colors, derive colors solely from previous paint state, or rebuild unrelated theme state just because the library model changed.
-
-The tree is a presentation of current authority.
-
-## Count scopes
-
-Album-status suffixes are **known-authority counts**, not selection counts.
-They combine retained completion/bypass history with exact Album state for
-Artists that have been loaded into the resident Select Media session. When an
-Artist is loaded, its live Album rows replace history-only assumptions for that
-Artist.
-
-This preserves direct/lazy startup while allowing Processed and Bypass totals
-to reflect retained history without recursively crawling every Artist folder.
-Unprocessed is known only for loaded Album rows. Timeout is shown only after
-the loaded Album has passed the normal timeout/fingerprint authority checks.
-
-Artist aggregate state is seeded at startup from retained operational history:
-an Artist with retained processed completion history and no bypass is initially
-shown Complete/Green; retained bypass makes it Contains Bypass/Blue; an Artist
-with no retained state is initially Unprocessed/White. This is a direct/lazy
-history-derived presentation and does not recurse through every Artist folder.
-
-Once an Artist is opened, its actual child Album topology becomes authoritative
-and replaces the history-only aggregate. That exact loaded state may therefore
-refine the initial color to White, Purple, Green, or Blue.
-
-Statistics distinguish root Artists, loaded Artists, loaded Albums, exact
-selection, active-Artist detail, known status totals, and loaded local-art
-format counts. Unloaded Artists remain visually muted without repeating a
-"Not loaded" label on every row.
-
-At batch completion, transient Activity becomes a scrolling per-Album final
-run report and pauses indefinitely. Enter or Esc returns to the same in-memory
-Select Media model; already loaded Artist folders are retained without a root
-rescan or recursive library traversal.
-
----
-
-# Status colors when history is unavailable
-
-If retained history is disabled, expired, missing, or unreadable, SPLINED cannot truthfully show processed/aggregate colors that depend on that history.
-
-The UI should warn that status coloring is unavailable/reduced rather than create a hidden UI-only history database.
-
----
-
-# Filter performance expectations
-
-Artist and Album text filtering should be responsive on large libraries.
-
-Expected implementation behavior:
+Album Scanning defines scope:
 
 ```text
-perform one lightweight Windows-equivalent library inventory
--> build in-memory model
--> apply text/status filters in memory
+Auto Scan [ALL]
+Auto Scan [SELECTED]
+```
+
+Launch defines mutation mode:
+
+```text
+Launch [READ] Source Results
+Launch [LIVE WRITE] Choice Results
+```
+
+Auto Scan without an explicit Launch choice prompts inside the Album Scanning
+panel rather than silently defaulting to READ.
+
+The launch payload is path-exact and contains only the checked Album set unless
+Auto Scan [ALL] is explicitly chosen.
+
+## Refresh behavior
+
+Refresh is the only normal action that reconciles external Artist/Album/tag or
+cover changes with the database.
+
+```text
+Refresh requested
+        ↓
+full topology inventory
+        ↓
+reuse unchanged representative tags
+        ↓
+Mutagen-read new/changed Albums
+        ↓
+refresh cover facts and status projection
+        ↓
+one SQLite transaction
+        ↓
+replace visible model
+```
+
+Rows do not progressively change as individual Artists are scanned.
+
+## Selected Album panels
+
+When focus changes, the right side shows a compact `LOADING ALBUM INFO` banner
+until complete data is ready. Indexed Album/tag/statistics values normally make
+this transition immediate.
+
+If `cover.*` exists, the upper panel displays the local image and its saved
+resolution. If no cover exists, the panel is blank except for:
+
+```text
+NO COVER-ART FOUND
+USE
+S:P:L:I:N:E:D LAUNCH
+```
+
+The lower Selected Album Statistics panel remains scrollable.
+
+## Performance contract
+
+Expected warm behavior:
+
+```text
+open splined.db
+→ load Artist/Album/status rows
+→ apply filters in memory
 ```
 
 Avoid:
 
 ```text
-each keystroke
--> rescan filesystem
--> rebuild history
--> reload entire application shell
+open Artist
+→ scan filesystem
+→ change color
 ```
 
-Also avoid performing normal album processing before Select Media becomes usable.
+and:
 
-Filtering should not cause unrelated title/theme/log/candidate panels to reconstruct.
+```text
+each keystroke
+→ scan or parse media
+```
 
----
+## Accessibility
 
-# Python Ratatui parity
+Status should be communicated through more than color where practical:
 
-The Python Ratatui library-selection workspace should follow the same inventory, status, filter, and selection authority described above rather than invent a separate TUI model.
+- label and row context;
+- status descriptions;
+- selection protection behavior;
+- tooltips/help text;
+- counts and result messages.
 
-Required parity direction:
+## Troubleshooting
 
-- Windows-equivalent lightweight pre-selection filesystem/history inventory;
-- authoritative `[library].ignored_subs` exclusion during traversal;
-- no tag/MusicBrainz/provider/candidate/AI work before Launch;
-- live Artist and Album filter boxes;
-- filtering begins as text is entered;
-- filtering operates against the loaded in-memory model;
-- the same White/Orange/Red/Purple/Green/Blue meanings and artist precedence;
-- artist selection cascades only to eligible child albums;
-- filtered READ/WRITE and selection shortcuts use existing SPLINED execution policy;
-- status filtering never rewrites history/bypass/timeout state;
-- direct mouse/touch interaction for rows, checkboxes, filter focus, source policy, candidate actions, and URL where supported;
-- true scrolling for Artist, Album, policy, and candidate regions;
-- keyboard remains a complete fallback.
+### External Album is missing
 
-The user's WebSSH iOS terminal is a verified target for touch interaction: the prior SPLINED `--tui` accepted touches that moved result selection and supported touch/gesture scrolling. The current loss of that behavior is therefore a regression in the new binding/application path, not an unverified terminal capability.
+Run explicit Refresh. Warm startup does not crawl the filesystem for external
+changes.
 
-The published `pyratatui==0.3.0` wheel does not expose crossterm mouse capture
-or `MouseEvent`. Python SPLINED supplies that missing input surface through the
-small `splined-pyratatui-input==0.1.0` PyO3 extension while keeping the
-published pyratatui renderer unchanged. It uses render-time hit rectangles and
-normal crossterm mouse capture/events; it does not parse raw escape sequences
-or rewrite SPLINED in Rust.
+### Artist changed color after processing
 
-OLED and CHALK may render these states with different visual intensity, but state meaning and precedence remain unchanged.
+Expected: SPLINED updated one or more child Album statuses and recomputed the
+parent aggregate.
 
-The TUI should also expose the practical source-policy configuration needed to reduce unwanted candidate clutter before expensive download/AI review, using Config v5 source-policy authority rather than presentation-only filtering.
+### Artist changed color merely by opening it
 
----
+Not expected under the SQLite model. Capture the current runtime debug log and
+report the Artist/Album paths involved.
 
-# Mouse/touch interaction contract
+### Everything is White
 
-When mouse events are available, direct hit-testing should support:
+Verify history/cover state, database path, library-root signature, and that the
+first media-index build or explicit Refresh completed successfully.
 
-- Artist rows and checkboxes;
-- Album rows and checkboxes;
-- Artist/Album filter fields;
-- Album Status controls;
-- Select ALL/NONE/FILTERED;
-- READ/WRITE/Auto scan controls;
-- Source Policy Settings and source-policy fields;
-- candidate rows;
-- `AI ENHANCED` controls when present;
-- `[URL]`;
-- confirmation dialogs;
-- scrollable list regions.
+## Related documentation
 
-Hit regions should be derived from render-time rectangles/rows rather than inferred later from text content. A direct tap on an explicit checkbox/button should perform that action without requiring a second Enter press.
-
-Mouse wheel or terminal-provided touch scrolling should move the list under interaction and must not toggle selection merely because the list scrolled.
-
----
-
-# Tooltips and status explanations
-
-Useful explanations include:
-
-- Orange album: previously processed; manually selectable for reprocessing.
-- Red album: persistent bypass; explicit override required.
-- Purple album: timeout-active; include remaining/next eligible time where available.
-- Purple artist: partial completion across child albums.
-- Green artist: all eligible child albums processed.
-- Blue artist: contains one or more bypassed albums.
-
-Color must not be the only source of meaning.
-
----
-
-# Accessibility
-
-Status should be communicated through more than color where practical: text/tooltips, icons or row context, checkbox/selection behavior, and status descriptions.
-
----
-
-# Troubleshooting
-
-## Artist filter returns nothing
-
-Check spelling/substring, other active status filters, Album filtering, and whether the lightweight library inventory has finished loading.
-
-## Album is Orange but filter says Unprocessed only
-
-This is expected: Orange is processed/history state and is excluded by an Unprocessed-only status filter.
-
-## Artist is Blue but most albums are Orange/White
-
-At least one child album is Red/bypassed.
-
-## Purple row seems ambiguous
-
-Check row type:
-
-- Artist = partial aggregate;
-- Album = timeout-active.
-
-## Status colors disappeared
-
-Check history/retention availability and configured history/log paths.
-
----
-
-# Relationship to history authority
-
-For the full persistence/selection model, see [History, retention, bypass, and timeout](history-retention-bypass-timeout.md).
-
-Select Media consumes that authority; it does not replace it.
-
----
-
-# Related documentation
-
+- [SPLINED media database](splined-media-database.md)
 - [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
-- [Config v5 reference](config-v5-reference.md)
-- [Source policies and Range Types](source-policies-range-types.md)
 - [Python Ratatui TUI](ratatui-tui.md)
-- [Documentation home](README.md)
-
-
-## TUI row presentation
-
-The Python Ratatui Select Media workspace uses color as the visible folder-state
-label. Artist and Album rows therefore omit textual suffixes such as
-`Complete`, `Processed`, `Bypass`, and `Unprocessed`; the Folder Status
-legend defines those meanings. Selectable rows are highlighted on mouse hover
-and selected rows remain highlighted after activation rather than showing
-checkbox glyphs.
+- [Config v5 reference](config-v5-reference.md)
