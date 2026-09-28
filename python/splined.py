@@ -1125,6 +1125,7 @@ def selected_album_statistics(
         "root_files": 0,
         "cover_files": 0,
         "cover_names": [],
+        "cover_resolution": "",
         "other_filenames": [],
         "webp_found": False,
         "webp_size_mb": 0.0,
@@ -1245,6 +1246,21 @@ def selected_album_statistics(
     result["root_files"] = len(sidecars)
     result["cover_files"] = len(cover_files)
     result["cover_names"] = [item.name for item in cover_files]
+    if cover_files:
+        # Prefer the canonical cover.* image and expose its actual saved
+        # dimensions for the Selected Album Statistics panel.
+        cover = sorted(
+            cover_files,
+            key=lambda item: (
+                item.stem.casefold() != cover_prefix,
+                item.name.casefold(),
+            ),
+        )[0]
+        try:
+            with Image.open(cover) as image:
+                result["cover_resolution"] = f"{int(image.width)}x{int(image.height)}"
+        except Exception:
+            result["cover_resolution"] = ""
     result["other_filenames"] = [item.name for item in other_files]
     result["webp_found"] = bool(webps)
 
