@@ -40,7 +40,11 @@ RUN pip install --disable-pip-version-check --no-cache-dir /wheels/*.whl \
     && rm -rf /wheels
 
 COPY sitecustomize.py /app/sitecustomize.py
-COPY splined_status_cache.py /app/splined_status_cache.py
+COPY splined_schema.sql /app/splined_schema.sql
+COPY splined_media_tags.py /app/splined_media_tags.py
+COPY splined_media_database.py /app/splined_media_database.py
+COPY splined_media_runtime.py /app/splined_media_runtime.py
+COPY splined_media_index.py /app/splined_media_index.py
 COPY splined_ranking_policy.py /app/splined_ranking_policy.py
 COPY splined_tui_overlay_policy.py /app/splined_tui_overlay_policy.py
 COPY splined_entry.py /app/splined_entry.py
@@ -49,9 +53,13 @@ COPY splined_scan.py /app/splined_scan.py
 COPY splined_oauth_validation.py /app/splined_oauth_validation.py
 COPY tui /app/tui
 COPY test_candidate_ranking_policy.py /tmp/test_candidate_ranking_policy.py
+COPY test_splined_media_index.py /tmp/test_splined_media_index.py
 RUN python3 -m py_compile \
         /app/sitecustomize.py \
-        /app/splined_status_cache.py \
+        /app/splined_media_tags.py \
+        /app/splined_media_database.py \
+        /app/splined_media_runtime.py \
+        /app/splined_media_index.py \
         /app/splined_ranking_policy.py \
         /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
@@ -60,11 +68,19 @@ RUN python3 -m py_compile \
         /app/splined_oauth_validation.py \
     && python3 -m compileall -q /app/tui \
     && cd /tmp \
-    && python3 -m unittest -v test_candidate_ranking_policy \
-    && rm -f /tmp/test_candidate_ranking_policy.py \
+    && python3 -m unittest -v \
+        test_candidate_ranking_policy \
+        test_splined_media_index \
+    && rm -f \
+        /tmp/test_candidate_ranking_policy.py \
+        /tmp/test_splined_media_index.py \
+    && chmod 0444 /app/splined_schema.sql \
     && chmod 0555 \
         /app/sitecustomize.py \
-        /app/splined_status_cache.py \
+        /app/splined_media_tags.py \
+        /app/splined_media_database.py \
+        /app/splined_media_runtime.py \
+        /app/splined_media_index.py \
         /app/splined_ranking_policy.py \
         /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
@@ -74,7 +90,7 @@ RUN python3 -m py_compile \
     && find /app/tui -type f -name '*.py' -exec chmod 0555 {} + \
     && ln -s /app/splined_entry.py /usr/local/bin/splined
 
-# Persistent runtime data; history lives under /_logs/_history.
+# Persistent media index is /_cache/splined.db; history remains /_logs/_history.
 VOLUME ["/config", "/music", "/_cache", "/_logs", "/credentials"]
 
 ENTRYPOINT ["python3", "/app/splined_entry.py"]
