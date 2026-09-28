@@ -1701,6 +1701,10 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels[1],
     )
 
+    scan_needs_launch = (
+        state.scan_index in {2, 3}
+        and state.transient.startswith("Select SPLINED LAUNCH")
+    )
     frame.render_widget(
         Paragraph(
             _control_lines(
@@ -1715,6 +1719,18 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         .block(card(theme, "ALBUM SCANNING", Semantic.SPECIAL)),
         panels[2],
     )
+    if scan_needs_launch and int(panels[2].height) >= 4:
+        prompt = "Select LAUNCH [READ] or [LIVE WRITE]"
+        frame.render_widget(
+            Paragraph.from_string(_truncate(prompt, max(1, int(panels[2].width) - 4)))
+            .style(style(theme, Semantic.WARNING, bold=True)),
+            Rect(
+                int(panels[2].x) + 2,
+                int(panels[2].y) + int(panels[2].height) - 2,
+                max(1, int(panels[2].width) - 4),
+                1,
+            ),
+        )
 
     # LAUNCH keeps the yellow operational frame but overlays a spectral
     # S:P:L:I:N:E:D wordmark into the frame title.
