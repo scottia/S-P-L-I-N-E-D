@@ -61,13 +61,18 @@ def install(core: Any, scan: Any | None = None) -> None:
         if event == "album":
             set_current_album(str(payload.get("path", "")))
         elif event == "album_material_result":
-            try:
-                sync_material_result(payload)
-            except Exception as exc:
-                core.debug_log(
-                    "splined.db.material_sync_error "
-                    f"error={type(exc).__name__}: {exc}"
-                )
+            # READ evaluates a possible result but does not install cover.* or
+            # create durable processed authority.  The database remains a
+            # materialized view of actual local artwork and Write outcomes.
+            outcome = str(payload.get("outcome", "")).casefold()
+            if "read-only" not in outcome:
+                try:
+                    sync_material_result(payload)
+                except Exception as exc:
+                    core.debug_log(
+                        "splined.db.material_sync_error "
+                        f"error={type(exc).__name__}: {exc}"
+                    )
         elif event in {"library", "library_update"}:
             try:
                 sync_library_payload(payload)
