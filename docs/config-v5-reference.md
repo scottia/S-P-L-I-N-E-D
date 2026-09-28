@@ -1,8 +1,8 @@
 # Config v5 Reference
 
-This page documents the common Config v5 contract. The complete, secret-free
-native/Windows example is [`config.example.toml`](../config.example.toml), and
-the Docker example uses the same schema with container paths.
+This page documents the common Config v5 contract. The complete secret-free
+native/Windows example is [`config.example.toml`](../config.example.toml). The
+Docker example uses the same schema with container paths.
 
 Application release and configuration schema versions are separate:
 
@@ -29,9 +29,8 @@ SPLINED/
 ```
 
 Relative runtime paths are resolved from the SPLINED application directory.
-External, NAS, and UNC paths remain absolute. An optional `config.location`
-file stores the configured config path without moving credential data into the
-main config.
+External, NAS, and UNC paths remain absolute. Docker paths are normally absolute
+container paths supplied by bind mounts.
 
 ## General settings
 
@@ -39,14 +38,14 @@ main config.
 | --- | --- | --- |
 | `config_version` | `5` | Operational schema version |
 | `mode` | `"read"` | `read` evaluates; `write` may install artwork |
-| `verbosity` | `"info"` | Runtime-log threshold and filename level: `debug`, `info`, `warning`, or `error` |
+| `verbosity` | `"info"` | Runtime-log threshold: `debug`, `info`, `warning`, or `error` |
 
 ## `[library]`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `music_library` | empty | Main media-library root |
-| `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans |
+| `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans and index refresh |
 
 ## `[scan]`
 
@@ -55,10 +54,37 @@ main config.
 | `scan_library_dir` | empty | Configured scan target |
 | `scan_mode` | `true` | Enables configured scan-directory behavior |
 | `library_scan` | `false` | Enables full-library scanning |
-| `scan_mode_timeout` | `24` | Hours before completed albums are eligible again; `0` disables timeout |
-| `cache_dir` | `"_cache"` | Disposable candidate/sample cache |
+| `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
+| `cache_dir` | `"_cache"` | Candidate/sample cache and, for Python/Docker, persistent `splined.db` |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 | `history_dir` | `"_logs/_history"` | Completion, chosen-source, bypass, and timeout authority |
+
+### Python/Docker `cache_dir`
+
+The Python/Docker TUI stores its persistent Select Media read model at:
+
+```text
+<scan.cache_dir>/splined.db
+```
+
+Normal run-cache cleanup preserves that file and its SQLite sidecars. Candidate
+downloads, samples, and other cache content remain disposable.
+
+The database location follows `cache_dir`; no additional Config v5 key is
+required. With the Docker example:
+
+```toml
+[scan]
+cache_dir = "/_cache"
+```
+
+SPLINED uses:
+
+```text
+/_cache/splined.db
+```
+
+See [SPLINED media database](splined-media-database.md).
 
 ## `[output]`
 
@@ -73,16 +99,12 @@ main config.
 | `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement below Ideal |
 | `evaluate_final_image` | `true` | Rank the image SPLINED would actually write |
 
-WebP source artwork is preserved by the local-artwork policy. When better
-static artwork replaces a matching JPEG/PNG cover, SPLINED avoids accumulating
-numbered copies and removes the matching obsolete static cover according to the
-active replacement rules.
+WebP source artwork is preserved by local-art policy. When better static artwork
+replaces a matching JPEG/PNG cover, SPLINED avoids accumulating numbered copies
+according to active replacement rules.
 
-When AISPLINE is enabled, `upscale_below_ideal = false` remains meaningful. If
-an interactive user explicitly chooses an AISPLINE enhancement that requires
-upscaling, the preferred behavior is a red warning offering a runtime-only
-override for that one album/candidate/attempt. The override does not rewrite
-Config v5 and does not enable ordinary SPLINED upscaling for later work.
+Embedded JPEG artwork selected as preferred source is materialized using the
+configured filename stem and canonical JPEG output policy.
 
 ## `[range]`
 
@@ -104,65 +126,66 @@ Artwork is classified by its short side.
 | `Ladder` | 2401–3600 |
 | `AboveLadder` | above 3600 |
 
-The required ordering is `min < ideal <= max < ladder`.
+Required ordering:
+
+```text
+min < ideal <= max < ladder
+```
 
 ## `[sources]`
 
-`cover_sources` stores artwork-source priority. Supported artwork sources are
-Deezer, iTunes, Fanart.tv, Last.fm, Cover Art Archive, and Discogs.
-`exclude_cover_sources` disables listed artwork sources without changing their
-saved priority.
+`cover_sources` stores artwork-source priority. Supported sources are Deezer,
+iTunes, Fanart.tv, Last.fm, Cover Art Archive, and Discogs.
+`exclude_cover_sources` disables listed sources without changing saved order.
 
-MusicBrainz is metadata authority and is not added to `cover_sources`.
+MusicBrainz is metadata authority and is not an artwork source.
 
 ## `[source_policies.<provider>]`
-
-Config v5 supports source policies for every artwork provider and MusicBrainz.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | derived/enabled | Whether the source may be used |
 | `source_override` | `false` | Activates saved provider-specific policy |
 | `minimum_range_type` | `"LowerRange"` | Minimum normal artwork range |
-| `allow_below_minimum_fallback` | `false` | Allows only the adjacent lower range as fallback |
+| `allow_below_minimum_fallback` | `false` | Allows the adjacent lower range as fallback |
 | `minimum_short_side` | absent | Optional explicit short-side minimum |
 | `maximum_short_side` | absent | Optional explicit short-side maximum |
 | `minimum_width` | absent | Optional explicit width minimum |
 | `minimum_height` | absent | Optional explicit height minimum |
-| `primary_image_only` | `true` | Uses provider primary/front metadata where available |
+| `primary_image_only` | `true` | Uses primary/front metadata where available |
 
-Artwork-specific fields are not written for MusicBrainz. Its policy contains
-only `enabled` and `source_override`.
-
-When Source Override is off, the source uses the global range. Saved custom
-policy values remain available and are not erased. When fallback is on, only
-the single range immediately below the configured minimum becomes a fallback;
-it does not become a normally accepted range.
-
-Python/TUI should expose the same practical controls where supported so source
-policy can eliminate irrelevant candidates before unnecessary downloads, AI
-review, or candidate-screen clutter. This is parity with existing Config v5
-policy, not a second selection engine.
+MusicBrainz policy contains only `enabled` and `source_override`. When Source
+Override is off, the provider uses the global range while retaining saved
+custom values.
 
 See [Source policies and Range Types](source-policies-range-types.md).
 
 ## `[samples]`
 
-`sample_write = true` writes review samples beneath the configured cache.
+```toml
+[samples]
+sample_write = true
+```
+
+When enabled, review samples are written beneath the configured cache directory.
+Samples are disposable even though `splined.db` in the same parent directory is
+persistent.
 
 ## `[credentials]`
 
-`credential_dir = "credentials"` is the only normal credential setting in
-Config v5. Standard provider JSON names are resolved internally beneath that
-directory.
+```toml
+[credentials]
+credential_dir = "credentials"
+```
 
-Authentication values, API keys, OAuth tokens, shared secrets, and provider
-filenames are not written to `config.toml`.
+This is the only normal credential setting. Standard provider JSON filenames
+are resolved internally. API keys, OAuth tokens, shared secrets, and provider
+filenames do not belong in `config.toml`.
 
 ### MusicBrainz runtime options
 
 MusicBrainz authentication and runtime options share the credential document
-but are updated independently. Defaults used when no options object exists:
+but are updated independently. Defaults when no options object exists:
 
 ```json
 {
@@ -174,9 +197,8 @@ but are updated independently. Defaults used when no options object exists:
 }
 ```
 
-SPLINED reads the existing JSON, merges changed options, preserves
-authentication and unknown fields, and atomically replaces the file. Changing
-source policy does not rewrite the credential.
+SPLINED merges changed options, preserves authentication and unknown fields,
+and atomically replaces the credential file.
 
 See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
@@ -184,53 +206,37 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `logging.retention_days` | `14` | Retention for ordinary diagnostic files directly under the configured log directory |
-| `history.enabled` | `true` | Enables persistent status authority |
+| `logging.retention_days` | `14` | Retention for ordinary diagnostic files |
+| `history.enabled` | `true` | Enables persistent completion/status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
 
-Every initialized SPLINED invocation creates exactly one current-run diagnostic
-file under:
+Every initialized invocation creates one current-run diagnostic file under:
 
 ```text
 <scan.log_dir>/run/
 ```
 
-For the Docker default this is `/_logs/run/`. At the start of the next
-invocation, SPLINED clears the contents of this dedicated `run` directory
-before creating the new file, so it intentionally contains only the latest
-runtime log.
+The next invocation clears that dedicated run directory before creating the new
+file. The filename contains verbosity, timestamp, uniqueness value, and process
+ID.
 
-The filename includes the configured top-level `verbosity`, a timestamp,
-a uniqueness component, and the process id, for example:
+History supplies processed, timeout, chosen-source, and bypass authority. The
+Python/Docker `splined.db` materializes those facts for Select Media but does
+not replace the history files.
+
+Back up:
 
 ```text
-splined-debug-20260926-155501-123456789-p1234.log
-splined-info-20260926-155501-123456789-p1234.log
-splined-warning-20260926-155501-123456789-p1234.log
-splined-error-20260926-155501-123456789-p1234.log
+config/
+credentials/
+<scan.history_dir>/
+<scan.cache_dir>/splined.db   # Python/Docker
 ```
-
-The configured level is a threshold: `debug` is most detailed, followed by
-`info`, `warning`, and `error`. Runtime logs include run metadata and,
-when the TUI is active, the engine's captured stdout/stderr at the configured
-threshold. The legacy fixed `splined_debug.log` file is no longer the active
-per-run destination.
-
-History supplies processed, timeout, chosen-source, and bypass state. Shortening
-or disabling it can remove the authority needed for status colors. `_cache/`
-is disposable and is not the history authority.
-
-AISPLINE-enhanced provenance may also be recorded in history so a validated
-existing enhanced file can be recognized later. A history record alone must not
-resurrect a file that no longer exists or validates.
 
 ## `[aisplined]`
 
-Config v5 uses `[aisplined]` as the canonical integration and policy section for
-the separate A:I:S:P:L:I:N:E:D companion product. Adding AISPLINE policy under
-this section does **not** require a Config v5 schema-version bump.
-
-Baseline direction:
+`[aisplined]` is the reserved canonical boundary for the separate companion
+product:
 
 ```toml
 [aisplined]
@@ -240,82 +246,29 @@ minimum_short_side = 600
 allow_below_minimum_override = false
 ```
 
-Meaning:
-
 | Key | Baseline | Meaning |
 | --- | --- | --- |
-| `enabled` | `false` | Whether SPLINED exposes/uses AISPLINE integration |
-| `endpoint` | empty | Where SPLINED can reach the AISPLINE runtime/interface when configured |
-| `minimum_short_side` | `600` | Default user floor for normal automatic AISPLINE review/enhancement |
-| `allow_below_minimum_override` | `false` | Whether deliberate below-floor experimentation may be offered/allowed |
+| `enabled` | `false` | Whether a future AISPLINE integration is enabled |
+| `endpoint` | empty | Future runtime/interface endpoint |
+| `minimum_short_side` | `600` | Default user floor for normal enhancement consideration |
+| `allow_below_minimum_override` | `false` | Whether explicit below-floor experiments may be allowed |
 
-The 600 px floor is a practical default, not an absolute quality claim. Users
-may deliberately experiment below it when policy allows because a low-resolution
-image can still be the only available source or remain usable despite its size.
-Below-floor attempts must be explicit; they must never silently weaken the
-configured floor.
+AISPLINE processing has not begun. When disabled, no AI review, enhancement,
+activity, or backend work occurs. Placeholder configuration or columns do not
+constitute a finalized companion-product requirement.
 
-When `enabled = false`:
-
-- no AISPLINE review occurs;
-- no AI columns/checkboxes appear in the TUI;
-- no AI activity widget appears;
-- no AISPLINE endpoint/model/backend work occurs.
-
-When enabled, AISPLINE review may occur on relevant local or remote candidates
-before the candidate summary is presented. The user-facing source-summary model
-is:
-
-```text
-AI SPLINED
-    yes/no result of completed AISPLINE review
-
-AI ENHANCED
-    optional user action shown as checkbox + required delta
-    examples: ☐ +300 EH, ☐ +1200 EH, N/A
-```
-
-Only one candidate per album may be selected for enhancement at a time. Selecting
-one enhancement option disables/grays the other enhancement options for that
-album until the selection is changed.
-
-A local image or an uninstalled suggested remote candidate may be handed directly
-to AISPLINE. It does not need to be installed into the album directory first.
-
-Detailed model/backend settings may later live in AISPLINE-owned JSON/runtime
-configuration if that proves cleaner. Such settings may be surfaced in the TUI,
-but this reference does not lock a JSON schema.
-
-Legacy `[splineai]` remains a compatibility concern for existing Python Config
-v5 installations; `[aisplined]` is the canonical public name. Conflicting
-canonical/legacy values must not be merged silently.
-
-The Python Ratatui Source Policy Settings view persists only the existing
-`[sources]`, `[source_policies]`, `[range]`, and relevant `[output]` fields after
-an explicit Save/Apply action. The writer is atomic and preserves unknown keys,
-comments, table order, and all unrelated Config v5 content. It never changes
-`config_version = 5`.
-
-See [Python Ratatui TUI](ratatui-tui.md) and the AISPLINE development policy on
-the AI development branch.
+Legacy `[splineai]` remains a compatibility concern for existing installations;
+`[aisplined]` is the canonical public name.
 
 ## GUI-only `ui.toml`
 
-`config/ui.toml` is deliberately separate from operational Config v5. It stores
-presentation and transient GUI state, including:
-
-- System/Light/Dark theme;
-- status/confirmation and hover preferences;
-- Select Media expansion, filters, and transient selected paths;
-- filtered Read/Write mode;
-- main, Settings, Compare, and Preview sizes/positions;
-- splitter distances and Settings tab positions.
-
-Editing `ui.toml` does not change source policy, credentials, history, or
-artwork-writing rules.
+`config/ui.toml` is separate from operational Config v5. It stores presentation
+and transient GUI state such as theme, window placement, filters, splitter
+positions, and current UI selections. Editing it does not change source policy,
+credentials, history, the media database, or artwork-writing rules.
 
 ## Validation
 
-The Windows Settings **Validate Saved Config** action and **Save and Continue**
-use Config v5 validation before execution. Root native and Python/Docker also
-validate Config v5; use the Docker example for its container-specific paths.
+Windows Settings **Validate Saved Config** and **Save and Continue** validate
+Config v5 before execution. Native and Python/Docker implementations also
+validate Config v5; use the Docker example for container-specific paths.
