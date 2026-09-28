@@ -2098,10 +2098,11 @@ def _prepare_local_cover_overlay(state: TuiState, area: Rect) -> None:
         state.local_cover_path = ""
         return
     width = max(8, int(area.width) - 4)
-    inner_height = max(1, int(area.height) - 3)
+    inner_height = max(1, int(area.height) - 4)
     height = min(inner_height, max(1, width // 2))
     width = min(width, height * 2)
-    state.local_cover_rect = (int(area.x) + 2, int(area.y) + 1, width, height)
+    x = int(area.x) + 1 + max(0, (int(area.width) - 2 - width) // 2)
+    state.local_cover_rect = (x, int(area.y) + 1, width, height)
     if state.local_cover_path == cover_path and state.local_cover_overlay is not None:
         return
     try:
@@ -4883,7 +4884,9 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         if 0 <= region.index < len(albums):
             album = albums[region.index]
             before = album.selected
-            result = model.toggle_album(album)
+            if not album.selected or sum(item.selected for item in model.albums) != 1:
+                model.select_none()
+            result = model.toggle_album(album) if not album.selected else "selected"
             _runtime_trace(
                 "mouse.album_row_select "
                 f"path={album.path!r} before={before} after={album.selected} "
