@@ -5,3 +5,4 @@ __pycache__/
 docker_builds/
 test_*.py
 !test_candidate_ranking_policy.py
+!test_splined_media_index.py
