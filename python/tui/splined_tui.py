@@ -2133,8 +2133,38 @@ def _render_selected_album_stats(
     state: TuiState,
     theme: Theme,
 ) -> None:
+    item = state.selected_album_stats[0] if state.selected_album_stats else None
+    cover_path = str(item.get("cover_path", "") or "") if item else ""
+    if cover_path:
+        _prepare_local_cover_overlay(state, area)
+        resolution = str(item.get("cover_resolution", "") or "—")
+        frame.render_widget(
+            Paragraph(
+                Text(
+                    [
+                        Line([]),
+                        Line(
+                            [Span(resolution, style(theme, Semantic.WARNING, bold=True))]
+                        ).centered(),
+                    ]
+                )
+            )
+            .block(
+                card(
+                    theme,
+                    "MEDIA LIBRARY / SELECTED ALBUM ARTWORK",
+                    Semantic.SPECIAL,
+                )
+            ),
+            area,
+        )
+        return
+
+    state.local_cover_rect = None
+    state.local_cover_overlay = None
+    state.local_cover_path = ""
+    state.local_cover_drawn_rect = None
     lines = _selected_album_stat_lines(state, theme, int(area.width))
-    _prepare_local_cover_overlay(state, area)
     capacity = max(1, int(area.height) - 2)
     state.selected_stats_page_size = capacity
     maximum = max(0, len(lines) - capacity)
