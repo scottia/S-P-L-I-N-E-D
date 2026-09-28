@@ -1,0 +1,209 @@
+"""Install the tag-identified SQLite Select Media index into SPLINED."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Callable
+
+from splined_media_database import (
+    IndexContext,
+    build_index,
+    connect,
+    database_path,
+    index_is_usable,
+    signature,
+)
+from splined_media_runtime import (
+    cached_stats,
+    clean_transient_cache,
+    migrate_legacy_json,
+    populate_session,
+    set_active_database,
+    set_current_album,
+    sync_library_payload,
+    sync_material_result,
+)
+
+
+_INSTALLED = False
+_ACTIVE_CONTEXT: IndexContext | None = None
+
+
+def install(core: Any, scan: Any | None = None) -> None:
+    """Install ``splined.db`` without changing plain CLI scan authority."""
+    del scan
+    global _INSTALLED
+    if _INSTALLED:
+        return
+    _INSTALLED = True
+
+    original_prepare_selection = core.prepare_tui_library_selection
+    original_read_input = core.read_input
+    original_emit_ui = core.emit_ui
+    original_selected_stats = core.selected_album_statistics
+    original_inventory = core.inventory
+
+    def prepare_run_cache(cache: Path) -> None:
+        clean_transient_cache(core, cache)
+
+    def selected_album_statistics(
+        path: Path,
+        *,
+        cover_name: str = "cover",
+    ) -> dict[str, Any]:
+        cached = cached_stats(path)
+        if cached is not None:
+            return cached
+        return original_selected_stats(path, cover_name=cover_name)
+
+    def emit_ui(event: str, **payload: Any) -> None:
+        if event == "album":
+            set_current_album(str(payload.get("path", "")))
+        elif event == "album_material_result":
+            try:
+                sync_material_result(payload)
+            except Exception as exc:
+                core.debug_log(
+                    "splined.db.material_sync_error "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+        elif event in {"library", "library_update"}:
+            try:
+                sync_library_payload(payload)
+            except Exception as exc:
+                core.debug_log(
+                    "splined.db.status_sync_error "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+        original_emit_ui(event, **payload)
+
+    def read_input(prompt: str, **context_payload: Any) -> str:
+        raw = original_read_input(prompt, **context_payload)
+        context = _ACTIVE_CONTEXT
+        if (
+            context is None
+            or str(context_payload.get("kind", "")) != "library-selection"
+        ):
+            return raw
+        try:
+            response = json.loads(raw)
+        except (TypeError, ValueError):
+            return raw
+        if (
+            not isinstance(response, dict)
+            or response.get("action") != "refresh-index"
+        ):
+            return raw
+
+        connection = connect(
+            context.db_path,
+            str(core.display_version()),
+        )
+        try:
+            build_index(context, connection, "explicit-refresh")
+            populate_session(context, connection)
+            migrate_legacy_json(context)
+        finally:
+            connection.close()
+        response["action"] = "selection-change"
+        response["selected"] = sorted(
+            context.session.selected_paths,
+            key=str.casefold,
+        )
+        core.emit_ui(
+            "activity",
+            category="inventory",
+            state="done",
+            source="splined-db",
+            message="SPLINED media index refreshed atomically",
+        )
+        return json.dumps(response, separators=(",", ":"))
+
+    def prepare_tui_library_selection(
+        config_file: Path,
+        cfg: dict[str, Any],
+        sources: list[str],
+        root: Path,
+        completion_history: dict[str, Any],
+        timeout_hours: float,
+        *,
+        cache: Path,
+        library_root: Path | None = None,
+        bypassed_paths: set[str] | None = None,
+        bypass_update: Callable[[str, bool], None] | None = None,
+        picker_session: Any | None = None,
+        initial_event: str = "library",
+    ):
+        global _ACTIVE_CONTEXT
+        session = picker_session or core.PickerSessionState()
+        actual_library_root = Path(library_root or root)
+        library = core.section(cfg, "library")
+        output = core.section(cfg, "output")
+        ignored = [str(value) for value in library.get("ignored_subs", [])]
+        cover_name = str(output.get("file_name", "cover")).strip() or "cover"
+        db = database_path(Path(cache))
+        context = IndexContext(
+            core=core,
+            config_file=Path(config_file),
+            cfg=cfg,
+            sources=sources,
+            root=Path(root),
+            library_root=actual_library_root,
+            cache=Path(cache),
+            db_path=db,
+            completion_history=completion_history,
+            timeout_hours=timeout_hours,
+            ignored=ignored,
+            cover_name=cover_name,
+            bypassed_paths=(
+                bypassed_paths if bypassed_paths is not None else set()
+            ),
+            session=session,
+            original_inventory=original_inventory,
+        )
+        connection = connect(db, str(core.display_version()))
+        try:
+            expected = signature(
+                actual_library_root,
+                ignored,
+                cover_name,
+            )
+            if not index_is_usable(connection, expected):
+                build_index(context, connection, "initial-build")
+            populate_session(context, connection)
+            migrate_legacy_json(context)
+        finally:
+            connection.close()
+
+        _ACTIVE_CONTEXT = context
+        set_active_database(db, cover_name)
+        core.debug_log(
+            f"splined.db.ready path={str(db)!r} "
+            f"artists={len(session.artists)} "
+            f"albums={len(session.album_records)}"
+        )
+        try:
+            return original_prepare_selection(
+                config_file,
+                cfg,
+                sources,
+                root,
+                completion_history,
+                timeout_hours,
+                cache=cache,
+                library_root=library_root,
+                bypassed_paths=bypassed_paths,
+                bypass_update=bypass_update,
+                picker_session=session,
+                initial_event=initial_event,
+            )
+        finally:
+            _ACTIVE_CONTEXT = None
+
+    core.prepare_run_cache = prepare_run_cache
+    core.prepare_tui_library_selection = prepare_tui_library_selection
+    core.read_input = read_input
+    core.emit_ui = emit_ui
+    core.selected_album_statistics = selected_album_statistics
+    core._splined_media_index_installed = True
