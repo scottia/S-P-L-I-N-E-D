@@ -1,388 +1,255 @@
 # History, Retention, Bypass, and Timeout
 
-This page explains the persistent execution-state model used by S:P:L:I:N:E:D and how the Windows GUI derives album/artist status from the same authority used by the scanner.
+History is operational authority, not cosmetic UI state.
 
-> **Windows target:** v3.0.0 Stable with Config v5.
-
----
-
-## Core principle
-
-History is operational state, not cosmetic GUI state.
-
-The Windows GUI must derive its status colors, selection behavior, bypass protection, and timeout behavior from the same persistent execution authority used by SPLINED itself.
-
-It should not maintain a second independent persistent GUI status database.
+Completion, bypass, timeout, and chosen-source history must drive the same
+eligibility decisions used by scanning and Select Media. The Python/Docker
+`splined.db` database materializes those facts for fast indexed display; it does
+not replace or invent execution authority.
 
 Conceptually:
 
 ```text
-persistent history / bypass / timeout authority
-                  ↓
-             scan engine
-                  ↓
-               GUI tree
+persistent history + actual local artwork + current timeout policy
+                            ↓
+                     execution authority
+                            ↓
+                 splined.db Select Media view
+                            ↓
+                      TUI Folder Status
 ```
 
----
+## Persistent history and cache data
 
-# Persistent history vs disposable cache
-
-SPLINED separates persistent state from disposable scan/cache data.
-
-Typical portable layout:
+Typical Python/Docker layout:
 
 ```text
-SPLINED/
+SPLINED data/
 ├── _cache/
-│   └── ... disposable candidate/sample data
+│   ├── splined.db              persistent Select Media read model
+│   ├── samples/                disposable
+│   └── candidate files         disposable
 └── _logs/
     └── _history/
-        └── ... persistent history files
+        ├── chosen-source-history.json
+        ├── scan-completed-history.json
+        └── bypass-source-history.json
 ```
 
-The current Python/Docker runtime documents history files including:
+Deleting candidate/sample cache must not delete history or bypass decisions.
+Deleting `splined.db` does not delete execution history or music files, but the
+next Python/Docker TUI launch must rebuild the full tag-identified media index.
 
-```text
-chosen-source-history.json
-scan-completed-history.json
-bypass-source-history.json
-```
+## Processed history
 
-Windows v3.0.0 may serialize additional or evolved state as required by Config v5 behavior, but the separation remains the same:
-
-```text
-_cache        -> disposable
-_logs/_history -> persistent operational state
-```
-
-Deleting cache should not be treated as deleting scan history or bypass decisions.
-
----
-
-# Processed history
-
-When an album has been successfully processed and history retention is enabled, SPLINED can remember that completion state.
-
-The Windows GUI represents a processed/history album as:
+A successfully processed Album with retained completion authority is shown as:
 
 ```text
 ORANGE
 ```
 
-An Orange album is not automatically selected again during normal selection, but it can be manually reselected for deliberate reprocessing.
+Orange Albums are excluded from normal automatic selection but remain manually
+selectable for deliberate reprocessing.
 
-Processed does not necessarily mean:
+Processed does not mean the artwork can never change. It means SPLINED retains
+a successful prior result and normal automatic behavior respects that result.
+Recognized local `cover.*` can also provide processed presentation without
+fabricating a completion timestamp.
 
-- the artwork can never change;
-- the album is permanently excluded;
-- its local artwork is guaranteed to remain unchanged forever.
+Read mode evaluates candidates but does not create durable processed authority
+for an Album that still has no installed cover.
 
-It means SPLINED has retained a successful prior processing state and normal automatic selection respects that state.
+## Retention
 
-Windows-equivalent folder inventory may also present an Album as Orange when recognized local cover artwork already exists even without retained completion history. That local-artwork state does not fabricate a completion timestamp or history record; the Album remains available for deliberate manual reprocessing.
+Retention controls how long applicable history remains authoritative. When a
+completion record expires, the Album becomes eligible according to remaining
+facts such as local artwork, bypass, or timeout.
 
----
+The SQLite Select Media database is projected against retention at warm startup.
+It does not keep an expired completion state alive merely because an older row
+was previously Orange.
 
-# Retention
+## Bypass
 
-Retention determines how long applicable history remains authoritative.
-
-When retained history is still valid, SPLINED can avoid repeatedly treating already-processed albums as new work.
-
-When history is disabled, expired, or otherwise unavailable, the GUI cannot truthfully show execution-state colors based on history it no longer has.
-
-In that condition, the GUI should fall back to ordinary folder/tree presentation and should warn that status coloring is unavailable or reduced.
-
-Retention should not silently create a second GUI-only state store merely to keep colors visible.
-
----
-
-# Bypass
-
-A bypass is a persistent instruction to skip/protect an album from normal processing.
-
-Album-level bypass state is represented as:
+Persistent bypass is represented as:
 
 ```text
 RED
 ```
 
-A Red album is not normally auto-selected.
+A Red Album is not normally auto-selected. Processing requires deliberate
+removal of the saved bypass through the supported confirmation. Removing a
+bypass is distinct from a temporary command-line override.
 
-To process it in the TUI, the user must deliberately remove the saved bypass
-through the supported confirmation. The TUI does not create a temporary
-`-bp`-style override for Album selection.
-
-Conceptually:
+At Artist level, any bypassed child produces:
 
 ```text
-saved bypass = ON
-       ↓
-normal selection skips album
-       ↓
-user explicitly overrides for this run
-       ↓
-album may run
-       ↓
-saved bypass still exists afterward
+BLUE
 ```
 
-Removing the bypass permanently is a separate intentional action.
+## Timeout
 
----
-
-# Timeout
-
-Timeout protects recently processed or otherwise timeout-governed albums from being immediately reprocessed.
-
-A timeout-active album is represented as:
+A timeout-active Album is represented as:
 
 ```text
 PURPLE
 ```
 
-Album-level Purple means **timeout-active**.
+Timeout prevents immediate automatic reprocessing while the configured window
+is authoritative. If timeout is disabled or zero, an Album must not remain
+Purple solely because a stale timestamp exists.
 
-The GUI should show the remaining timeout and/or next eligible time where practical.
+Timeout is recalculated when the database is loaded. No filesystem sentinel
+crawl is required merely to update clock-based eligibility.
 
-A timeout-active album should not be auto-selected while the timeout is authoritative.
-
-If timeout is disabled or configured to zero, an album must not remain Purple merely because it once had a timeout timestamp.
-
----
-
-# Album status colors
+## Album colors
 
 | Album color | Meaning | Normal auto-selection |
 | --- | --- | --- |
-| White | Unprocessed / no authoritative retained state | Yes |
-| Orange | Processed/history retained | No |
+| White | Unprocessed / no active retained state | Yes |
+| Orange | Processed/history or recognized local cover | No |
 | Red | Persistent bypass | No |
-| Purple | Timeout-active | No |
+| Purple | Timeout active | No |
 
-Manual actions can differ from normal auto-selection where the GUI explicitly allows deliberate reprocessing/override.
+Manual reprocessing can differ where an explicit supported action allows it.
 
----
-
-# Artist aggregate colors
-
-Artist rows summarize the state of eligible child albums.
+## Artist aggregate colors
 
 | Artist color | Meaning |
 | --- | --- |
-| White | All eligible albums are unprocessed and none are bypassed |
-| Purple | Mixed processed/unprocessed state, no bypass |
-| Green | All eligible albums are processed, no bypass |
-| Blue | One or more child albums are bypassed |
+| White | All eligible Albums unprocessed, no bypass |
+| Purple | Mixed processed/unprocessed/timeout state, no bypass |
+| Green | All eligible Albums processed/timeout-protected, no bypass |
+| Blue | One or more child Albums bypassed |
 
-Aggregate precedence:
-
-```text
-BLUE   -> any bypassed album exists
-GREEN  -> all eligible albums processed, none bypassed
-PURPLE -> mixed processed/unprocessed, none bypassed
-WHITE  -> all eligible albums unprocessed, none bypassed
-```
-
-Blue therefore takes precedence over otherwise complete/partial states when a child bypass exists.
-
----
-
-# Two meanings of Purple
-
-Purple is intentionally context-sensitive:
+Precedence:
 
 ```text
-Album row  -> timeout-active
-Artist row -> partially processed aggregate
+BLUE   → any bypass exists
+GREEN  → all eligible Albums processed or timeout-protected
+PURPLE → mixed state, no bypass
+WHITE  → all unprocessed, no bypass
 ```
 
-These are separate internal meanings even though the same visual color is used.
-
-The GUI should use row context/tooltips to avoid ambiguity.
-
----
-
-# Selection behavior
-
-Selecting an Artist normally follows authoritative child state.
-
-Expected behavior:
-
-- White/unprocessed albums -> auto-selectable;
-- Orange/processed albums -> not auto-selected, but manually selectable for reprocessing;
-- Purple/timeout-active albums -> protected while timeout is active;
-- Red/bypassed albums -> remain protected until the saved bypass is explicitly removed.
-
-Selecting a Blue artist should not silently include its Red child albums. Selecting
-a Red Album opens the same confirmation used by **B** to remove the persistent
-bypass before that Album can be processed.
-
----
-
-# Library load and refresh
-
-When the library is loaded or refreshed, SPLINED should derive status from:
-
-- album folder/local state where relevant;
-- retained completion history;
-- bypass history;
-- timeout authority.
-
-A reload should not manufacture new status records merely to reproduce the previous color.
-
-The tree is a view of authoritative state.
-
----
-
-# History expiration
-
-When retained completion state expires according to configured policy, the album becomes eligible according to the remaining authorities.
-
-For example, an expired completion record may result in White/unprocessed behavior unless:
-
-- a bypass is still active;
-- a timeout is still active;
-- another authoritative rule applies.
-
-Expiration of completion history should not automatically erase a bypass unless the configured data model explicitly ties those records together.
-
----
-
-# Bypass and timeout precedence
-
-Bypass is a stronger explicit protection state than ordinary processed history.
-
-At the artist aggregate level, any bypass produces Blue.
-
-At the album level, persistent bypass should be shown as Red rather than Orange processed state.
-
-Timeout is also distinct from processed history; a timeout-active album should show Purple while the timeout remains active.
-
-Where multiple records exist, the GUI should display the state that controls current eligibility rather than whichever file was read last.
-
----
-
-# Manual reprocessing
-
-Manual reprocessing is intentionally different from clearing history.
-
-For an Orange album, manual selection can request another processing pass while retaining the fact that the album was previously processed.
-
-For a Red album, an explicit temporary bypass override can allow a run without deleting the saved bypass.
-
-For a Purple timeout-active album, the configured timeout rules remain authoritative; any manual override must be a deliberate supported action rather than an accidental side effect of tree selection.
-
----
-
-# History disabled
-
-If persistent history is disabled:
-
-- SPLINED cannot reliably distinguish previously processed albums using history alone;
-- Orange/Green/Purple-partial aggregate presentation may be unavailable or reduced;
-- the GUI should explain that standard folder colors are being used instead;
-- the GUI must not secretly create its own persistent status database to compensate.
-
-Bypass data may still be separately authoritative if bypass persistence remains enabled in the implementation.
-
----
-
-# Backing up history
-
-If you want to preserve scan state when moving/reinstalling SPLINED, back up:
+Purple therefore has two context-dependent meanings:
 
 ```text
-_logs/_history/
+Album row  → timeout active
+Artist row → partial aggregate
 ```
 
-along with:
+## Stable TUI presentation
+
+The Python/Docker TUI loads complete Artist/Album/status rows from `splined.db`
+before the first Select Media frame. Opening an Artist does not cause a folder
+scan or status-color transition.
+
+Colors change during a session only after:
+
+- a visible SPLINED processing result;
+- adding or removing bypass;
+- timeout/history projection on a new launch;
+- an explicit media-index Refresh.
+
+External Picard, Beets, Navtagger, or filesystem changes are reconciled by the
+explicit Refresh. The Refresh progress screen completes before the new model is
+shown, preventing progressive Artist color changes while the user works.
+
+## Manual reprocessing
+
+Manual reprocessing is not the same as deleting history.
+
+- Orange Album: may be explicitly selected for another pass.
+- Red Album: saved bypass must be deliberately removed or explicitly overridden
+  by a supported command-line mode.
+- Purple Album: timeout remains authoritative unless an explicit supported
+  override exists.
+
+## History disabled
+
+When persistent history is disabled or expired, SPLINED cannot truthfully infer
+previous processing from history alone. Actual local artwork and separately
+persisted bypass facts may still contribute.
+
+The database must not fabricate completion authority merely to retain a color.
+It stores the current read model and is reprojected from available authority on
+startup.
+
+## Backup
+
+Back up:
 
 ```text
 config/
 credentials/
+_logs/_history/
 ```
 
-`_cache/` can normally be regenerated and should not be relied on as the authoritative history store.
+For Python/Docker, also back up:
 
----
+```text
+<scan.cache_dir>/splined.db
+```
 
-# Moving an installation
+Stop SPLINED before a raw database copy if consistent WAL state is required.
 
-When moving a portable installation:
+## Moving a Python/Docker installation
 
-1. close SPLINED;
-2. copy the application plus `config/`, `credentials/`, and `_logs/_history/`;
-3. update paths in Config v5 if the library/cache/log locations changed;
+1. stop SPLINED;
+2. copy config, credentials, history, and `splined.db`;
+3. update Config v5 paths and Docker bind mounts;
 4. launch and verify the library root;
-5. confirm status colors/history before a Write-mode run.
+5. run explicit Refresh if music paths changed;
+6. verify Folder Status before a LIVE WRITE batch.
 
-SPLINED should not automatically discover and import another installation merely because one exists elsewhere.
+Paths are mutable locations, not SQL identity. Albums with stable MusicBrainz or
+fallback tag identity can retain the same logical row after Refresh updates the
+location.
 
----
+## Troubleshooting
 
-# Troubleshooting
-
-## Everything is White after restart
-
-Check:
-
-- history is enabled;
-- retention has not expired;
-- `_logs/_history/` exists and is readable;
-- the configured history/log location is the expected one;
-- the library path did not change in a way that prevents identity matching.
-
-## Album stays Purple forever
+### Everything is White
 
 Check:
 
-- timeout is enabled;
-- configured timeout duration is non-zero;
-- system clock/time is correct;
-- stored timestamp can be parsed;
-- reload recalculates remaining eligibility rather than persisting a cosmetic Purple flag.
+- history is enabled and not expired;
+- the expected history directory is mounted/readable;
+- `splined.db` was built from the intended library;
+- configured `cover.*` naming matches local files;
+- an explicit Refresh has been run after external changes.
 
-## Red album runs without confirmation
+### Album stays Purple
 
-This is not expected normal behavior. Verify that a temporary/global bypass override was not intentionally enabled.
+Check timeout duration, system time, stored completion time, and policy
+fingerprint. Restarting reloads and reprojects timeout state from the database
+and history.
 
-## Bypass disappeared after one manual run
+### Artist shows Blue
 
-A temporary override should not remove the saved bypass. Verify that the action used was an override rather than a permanent bypass removal.
+At least one child Album is bypassed. Open the Artist and locate the Red row.
 
-## Artist shows Blue
+### Status changes only after Refresh
 
-At least one eligible child album is bypassed. Expand the artist and locate the Red album(s).
+That is expected for external library changes. Warm startup and ordinary Artist
+selection do not crawl Album folders. SPLINED's own writes and bypass actions
+update affected rows immediately.
 
----
+## Data integrity
 
-# Data integrity rules
-
-Persistent state updates should be safe against partial writes where practical.
-
-History/bypass updates should not:
+History and database updates should be atomic and must not:
 
 - truncate unrelated records;
-- recreate files from incomplete in-memory subsets;
-- treat cache deletion as history deletion;
-- replace user-authoritative bypass decisions during ordinary scan completion.
+- treat candidate-cache deletion as history deletion;
+- overwrite saved bypass decisions during ordinary completion;
+- use absolute paths as Artist or Album identity;
+- advertise a partially refreshed picker as complete.
 
-In interactive Ratatui mode, these stores are reconciled for the affected
-Albums before the Windows-style final per-Album report appears. Enter or Esc
-returns from that report to the same resident Select Media session without
-reopening SQLite or rescanning the library. The complete disposable picker
-snapshot remains topology only; it never becomes processed/bypass/timeout
-authority. Multiple batches may run in one TUI process; attempted selection is
-consumed while history/status, other selections, and the session's cumulative
-failure exit state are retained.
+The media-index refresh uses one SQLite transaction and the TUI displays the
+replacement model only after that transaction succeeds.
 
----
+## Related documentation
 
-# Related documentation
-
+- [SPLINED media database](splined-media-database.md)
 - [Select Media and status colors](media-filter-status-colors.md)
 - [Config v5 reference](config-v5-reference.md)
-- [Installation and first run](installation-first-run.md)
-- [Installation and first run](installation-first-run.md)
+- [Python Ratatui TUI](ratatui-tui.md)
