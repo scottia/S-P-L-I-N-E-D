@@ -2189,27 +2189,19 @@ def _render_selected_album_stats(
     state.local_cover_overlay = None
     state.local_cover_path = ""
     state.local_cover_drawn_rect = None
-    lines = _selected_album_stat_lines(state, theme, int(area.width))
-    capacity = max(1, int(area.height) - 2)
-    state.selected_stats_page_size = capacity
-    maximum = max(0, len(lines) - capacity)
-    state.selected_stats_scroll = max(0, min(state.selected_stats_scroll, maximum))
-    shown = lines[
-        state.selected_stats_scroll : state.selected_stats_scroll + capacity
-    ]
     frame.render_widget(
-        Paragraph(Text(shown))
-        .wrap(True, False)
-        .block(
-            card(
-                theme,
-                "MEDIA LIBRARY / SELECTED ALBUM STATISTICS",
-                Semantic.SPECIAL,
-            )
-        ),
+        Paragraph(Text([Line([Span("NO COVER-ART FOUND", style(theme, Semantic.REJECTED, bold=True))]).centered()]))
+        .centered()
+        .block(card(theme, "MEDIA LIBRARY / SELECTED ALBUM ARTWORK", Semantic.SPECIAL)),
         area,
     )
-    _register_hit(state, "selected-stats-scroll", area)
+    prompt_y = int(area.y) + max(2, int(area.height) // 2 + 1)
+    launch_line = spectral_title(theme, title=SPLINED_TITLE)
+    launch_line.spans.append(Span(" LAUNCH", style(theme, Semantic.WARNING, bold=True)))
+    frame.render_widget(
+        Paragraph(Text([launch_line.centered()])),
+        Rect(int(area.x) + 1, prompt_y, max(1, int(area.width) - 2), 1),
+    )
 
 
 def _scan_directory_stat_lines(
