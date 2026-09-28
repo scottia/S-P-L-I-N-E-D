@@ -2180,6 +2180,11 @@ def _render_selected_album_stats(
         )
         return
 
+    if state.local_cover_drawn_rect is not None and native_clear_image_area is not None:
+        try:
+            native_clear_image_area(*state.local_cover_drawn_rect)
+        except Exception:
+            pass
     state.local_cover_rect = None
     state.local_cover_overlay = None
     state.local_cover_path = ""
