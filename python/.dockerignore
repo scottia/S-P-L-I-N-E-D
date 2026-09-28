@@ -4,3 +4,4 @@ __pycache__/
 *.tar.gz
 docker_builds/
 test_*.py
+!test_candidate_ranking_policy.py
