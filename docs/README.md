@@ -25,6 +25,7 @@ Application release versions and configuration schema versions are independent. 
 - [Select Media and status colors](media-filter-status-colors.md)
 - [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
 - [Python Ratatui TUI](ratatui-tui.md)
+- [Select Media status cache](select-media-status-cache.md)
 - [Docker installation](../docker/README.md)
 
 ## Python Ratatui display model
@@ -48,13 +49,7 @@ retains the loaded result in memory for the Select Media session. Explicit
 whole-library actions such as Select [ALL] or Auto Scan [ALL] may traverse all
 Artists because those operations require complete Album knowledge.
 
-There is no normal-startup SQLite picker snapshot, blocking full-library cache
-build, or background picker-cache validation. Select Media paints immediately
-under a centered **LOADING ARTIST STATUS** banner while a lightweight
-folder-status readiness pass inspects folder/file names and retained history.
-Normal selection/scan controls remain blocked until that real progress reaches
-completion; Album topology is still not loaded into the resident picker by the
-status pass. Picker identities remain folder-derived
+There is no normal-startup SQLite picker snapshot or blocking full-library cache build. Select Media uses the version-2 `select-media-status.json` snapshot under `_logs/_history/` to seed cached Artist/Album status immediately. Filesystem structural reconciliation continues in the background and publishes changed/new Artist corrections live; it does not block normal Select Media interaction. Picker identities remain folder-derived
 and stable. Tag parsing, MusicBrainz authority, providers, candidate downloads,
 image ranking/transformation, and AISPLINE processing do not run merely to
 populate Select Media; the small Selected Album Statistics surface may read
@@ -68,8 +63,7 @@ opening each Artist.
 
 The startup brand is readiness-driven rather than timed: a medium, solid,
 three-row spectral S:P:L:I:N:E:D wordmark remains above a centered cache-build
-percentage and gauge until the complete first snapshot is ready. Warm runs
-show Select Media immediately and report background validation compactly.
+percentage and gauge until the complete first snapshot is ready. Warm runs show Select Media immediately from the JSON-first status snapshot while structural reconciliation continues in the background.
 POSIX directories whose basename begins with `.` are excluded automatically
 in addition to `[library].ignored_subs`.
 
