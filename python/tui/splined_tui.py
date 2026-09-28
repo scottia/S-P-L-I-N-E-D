@@ -2196,10 +2196,10 @@ def _render_selected_album_stats(
         area,
     )
     prompt_y = int(area.y) + max(2, int(area.height) // 2 + 1)
-    launch_line = spectral_title(theme, title=SPLINED_TITLE)
-    launch_line.spans.append(Span(" LAUNCH", style(theme, Semantic.WARNING, bold=True)))
+    spectral = spectral_title(theme, title=SPLINED_TITLE)
+    launch_line = Line(list(spectral.spans) + [Span(" LAUNCH", style(theme, Semantic.WARNING, bold=True))]).centered()
     frame.render_widget(
-        Paragraph(Text([launch_line.centered()])),
+        Paragraph(Text([launch_line])),
         Rect(int(area.x) + 1, prompt_y, max(1, int(area.width) - 2), 1),
     )
 
