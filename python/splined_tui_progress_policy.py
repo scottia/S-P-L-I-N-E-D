@@ -1,8 +1,8 @@
 """Restore the multicolor percent bar for SPLINED database builds.
 
-The resumable SQLite builder owns build semantics and text. This policy only
-replaces its single-color Gauge with the established red→orange→yellow→green
-progress treatment used by the prior Album-status banner.
+The resumable SQLite builder owns build semantics and text. This policy keeps
+that banner intact and replaces only its progress surface with the established
+red→orange→yellow→green bar, centered immediately below the Album count.
 """
 
 from __future__ import annotations
@@ -51,15 +51,16 @@ def _patch_build_presentation(module: Any) -> None:
             max(1, int(panel.width) - 4),
             max(1, int(panel.height) - 2),
         )
-        sections = module._split_vertical(
-            inner,
-            [
-                module.Constraint.length(4),
-                module.Constraint.length(2),
-                module.Constraint.fill(1),
-            ],
+
+        # The first three inner rows are the existing one-time/refresh line,
+        # build phase, and Album count. Place the color bar immediately below
+        # those rows and retain the original checkpoint/ETA footer beneath it.
+        progress_area = module.Rect(
+            int(inner.x),
+            int(inner.y) + 3,
+            int(inner.width),
+            min(3, max(1, int(inner.height) - 3)),
         )
-        progress_area = sections[1]
 
         total = int(getattr(state, "cache_total", 0) or 0)
         percent = float(getattr(state, "cache_percent", 0.0) or 0.0)
@@ -94,10 +95,11 @@ def _patch_build_presentation(module: Any) -> None:
             module.Span("]", module.style(theme, module.Semantic.MUTED))
         )
 
-        label = f"{percent:.1f}%" if total else "DISCOVERING"
-        label_red, label_green, label_blue = module._status_gradient_rgb(
-            ratio if total else 0.0
-        )
+        # Discovery has no known denominator yet, so it honestly begins at
+        # 0.0%. Once Album discovery completes, the same line advances through
+        # the representative-tag/checkpoint phase to 100.0%.
+        label = f"{percent:.1f}%"
+        label_red, label_green, label_blue = module._status_gradient_rgb(ratio)
         progress = module.Text(
             [
                 module.Line(bar_spans).centered(),
@@ -115,6 +117,7 @@ def _patch_build_presentation(module: Any) -> None:
                         )
                     ]
                 ).centered(),
+                module.Line([]),
             ]
         )
         frame.render_widget(
