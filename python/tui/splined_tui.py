@@ -2118,6 +2118,16 @@ def _prepare_local_cover_overlay(state: TuiState, area: Rect) -> None:
         state.local_cover_path = cover_path
 
 
+def _clear_local_cover_overlay(state: TuiState) -> None:
+    drawn = state.local_cover_drawn_rect
+    if drawn is not None and native_clear_image_area is not None:
+        try:
+            native_clear_image_area(*drawn)
+        except Exception:
+            pass
+    state.local_cover_drawn_rect = None
+
+
 def _draw_local_cover_overlay(state: TuiState) -> None:
     overlay = state.local_cover_overlay
     rect = state.local_cover_rect
@@ -5249,12 +5259,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                     last_animation_step = current_animation_step
                     if dirty:
                         _clear_stale_remote_overlay(state)
-                        if state.local_cover_drawn_rect is not None and state.workflow != "library" and native_clear_image_area is not None:
-                            try:
-                                native_clear_image_area(*state.local_cover_drawn_rect)
-                            except Exception:
-                                pass
-                            state.local_cover_drawn_rect = None
+                        _clear_local_cover_overlay(state)
                         terminal.draw(lambda frame: render(frame, state, theme))
                         if (
                             state.tab == "main"
