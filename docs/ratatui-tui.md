@@ -129,15 +129,7 @@ picker-cache validation is required to render Select Media. The configured
 cache directory remains available to SPLINED for candidate/sample data, but it
 is not an authority or prerequisite for the Artist folder list.
 
-Select Media paints behind a centered blocking status-readiness banner. On the
-first run, **BUILDING ALBUM STATUS INDEX** explicitly identifies the one-time
-persistent JSON build. Once that JSON exists, later runs use **LOADING ALBUM
-STATUS** while validating saved Artist/Album differences. Both banners show the
-real validation percentage and block selection/launch interaction until the
-current pass is complete; Ctrl+C remains available. The readiness pass inspects
-folder/file names plus retained history, including local-artwork-only Processed
-Albums, without adding Albums to the resident picker model. Opening an Artist
-remains the authoritative topology load.
+Warm Select Media startup is JSON-first and non-blocking. The version-2 `select-media-status.json` snapshot seeds cached Artist/Album status before background structural reconciliation. Changed/new Artists are corrected live and the JSON is updated atomically during the session. A missing/incompatible snapshot is rebuilt incrementally. The status reconciliation must not become a modal startup gate.
 
 Album topology is loaded lazily:
 
@@ -227,6 +219,50 @@ The scan launch payload is always path-exact. Filtered READ/WRITE and AUTO
 SELECTED operate only on checked Albums. **Auto Scan [ALL]** is the explicit
 operation that loads all root Artists before selecting the full normally
 eligible library.
+
+## Current Select Media control and artwork model
+
+On WIDE/NORMAL layouts the four top controls use equal 25% widths. The lower
+library workspace uses 25% Artist Picker, 50% Album Picker, and 25% Album
+artwork/statistics.
+
+**Folder Status** is the library-wide status/count surface. Counts are displayed
+as a fixed right-hand column. **Album Selection** defaults to **Select [NONE]**.
+A direct Album-row click is an exclusive single selection: moving to another
+Album keeps the selected count at one and makes that Album the artwork/info
+focus. Multi-Album selection is explicit through **Select [ALL]** or
+**Select [FILTERED]**.
+
+**Album Scanning** chooses Auto Scan scope only. It does not silently imply
+READ. A scan scope without a Launch choice prompts the user to choose
+**Launch [READ] Source Results** or **Launch [LIVE WRITE] Choice Results**.
+
+Selected Album information is asynchronous. During the gap between changing
+Album focus and receiving complete tag/artwork statistics, the right side shows
+a compact **LOADING ALBUM INFO** indicator. Old native-image overlays are
+cleared before the next Album or processing view is painted.
+
+When a selected Album contains canonical `cover.*`, the upper right panel
+renders that **local file directly from disk** with no network request and shows
+its saved resolution in yellow. The lower, fixed-height
+**MEDIA LIBRARY / SELECTED ALBUM STATISTICS** panel is scrollable and retains
+the detailed template: Path, Album, Artist, Year, Tracks, artwork-format counts,
+root/cover/other filenames, and WebP state/resolution/conversion.
+
+When no `cover.*` exists, the upper artwork surface is blank except for red
+**NO COVER-ART FOUND**, centered **USE**, and the spectral
+**S:P:L:I:N:E:D** plus yellow **LAUNCH** call to action. Album statistics remain
+in the lower scrollable panel.
+
+The same Album-specific statistics replace the old generic
+**MEDIA LIBRARY / SCAN DIR STATISTICS** surface in embedded processing views.
+
+Candidate decision screens use URL-backed artwork preview independently from
+final installation. Hover/focus/numeric candidate changes update the preview;
+full candidate materialization should be deferred where policy/ranking metadata
+is already sufficient. The selected candidate is downloaded/processed when
+needed for final `cover.*` output. Provider diagnostics in the final Album
+report collapse identical repeated messages into a single line with a count.
 
 ## Mouse, touch, hit-testing, and scrolling
 
