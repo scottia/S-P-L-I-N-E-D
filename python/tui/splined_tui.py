@@ -5173,7 +5173,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         ):
                             _start_preferred_preview(state, adapter)
                         _draw_remote_hover_overlay(state)
-                    _draw_local_cover_overlay(state)
+                        _draw_local_cover_overlay(state)
                         writer = getattr(sys, "__stdout__", None)
                         if writer is not None:
                             write_terminal_links(state, writer)
