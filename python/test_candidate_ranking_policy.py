@@ -7,8 +7,11 @@ from types import SimpleNamespace
 from splined_ranking_policy import (
     core_candidate_key,
     install,
+    local_comparison_selection_action,
     operational_candidate_key,
     operational_fallback_suggested,
+    operational_output_extension,
+    operational_preferred_candidate,
 )
 
 
@@ -46,6 +49,23 @@ def projected(candidate: Candidate, _cfg, _format_order):
         "converted": False,
         "square": True,
         "short_side": 3000,
+        "format": "jpeg",
+    }
+
+
+def scale_projected(candidate: Candidate, _cfg, _format_order):
+    short_side = candidate.short_side
+    return {
+        "policy_status": "accept" if short_side >= 1200 else "fallback",
+        "acceptable": True,
+        "distance": abs(1800 - short_side),
+        "range_type": "LowerRange" if short_side >= 1200 else "BelowMinimum",
+        "upscaled": False,
+        "cropped": False,
+        "resized": False,
+        "converted": False,
+        "square": True,
+        "short_side": short_side,
         "format": "jpeg",
     }
 
@@ -105,6 +125,54 @@ class IntrinsicResolutionRankingTests(unittest.TestCase):
         )
         self.assertIs(chosen, self.itunes)
 
+    def test_embedded_art_beats_weaker_remote_by_scale_and_distance(self) -> None:
+        embedded = Candidate("embedded", 1200, 1200, -1, Ref("track-apic"))
+        remote = Candidate(
+            "coverartarchive",
+            310,
+            310,
+            0,
+            Ref("remote-cover"),
+        )
+        scan = SimpleNamespace(
+            project_candidate=scale_projected,
+            provider_label=lambda source: source,
+        )
+        chosen = operational_preferred_candidate(
+            scan,
+            [embedded, remote],
+            {},
+            ["jpeg"],
+        )
+        self.assertIs(chosen, embedded)
+
+    def test_embedded_s_or_numeric_choice_materializes_cover(self) -> None:
+        embedded = Candidate("embedded", 1200, 1200, -1, Ref("track-apic"))
+        self.assertEqual(
+            local_comparison_selection_action(embedded, embedded),
+            "selected",
+        )
+
+    def test_existing_canonical_local_choice_remains_keep(self) -> None:
+        local = Candidate("local", 1200, 1200, -2, Ref("Cover.jpeg"))
+        self.assertEqual(
+            local_comparison_selection_action(local, local),
+            "keep",
+        )
+
+    def test_embedded_jpeg_uses_configured_jpeg_extension(self) -> None:
+        embedded = Candidate("embedded", 1200, 1200, -1, Ref("track-apic"))
+        remote = Candidate("itunes", 1200, 1200, 0, Ref("remote"))
+        core = SimpleNamespace(EXTENSIONS={"jpeg": "jpg"})
+        self.assertEqual(
+            operational_output_extension(core, embedded, "jpeg"),
+            "jpeg",
+        )
+        self.assertEqual(
+            operational_output_extension(core, remote, "jpeg"),
+            "jpg",
+        )
+
     def test_core_and_operational_surfaces_install_one_policy(self) -> None:
         core = SimpleNamespace(
             project_candidate=lambda candidate, cfg, target: projected(
@@ -115,6 +183,7 @@ class IntrinsicResolutionRankingTests(unittest.TestCase):
             target_format_for_candidate=lambda _candidate, order: order[0],
             provider_label=lambda source: source,
             candidate_key=lambda *_args: (999,),
+            EXTENSIONS={"jpeg": "jpg"},
         )
         scan = SimpleNamespace(
             project_candidate=projected,
@@ -122,6 +191,12 @@ class IntrinsicResolutionRankingTests(unittest.TestCase):
             candidate_key=lambda *_args: (999,),
             fallback_sort_key=lambda *_args: (999,),
             fallback_suggested=lambda *_args: None,
+            render_local_suggested_comparison=lambda *_args, **_kwargs: None,
+            preview_destination=lambda *_args, **_kwargs: None,
+            finalize=lambda *_args, **_kwargs: None,
+            apply_local_preflight=lambda *_args, **_kwargs: True,
+            target_format_for_candidate=lambda _candidate, order: order[0],
+            apply_selected_candidate=lambda *_args, **_kwargs: True,
         )
         install(core, scan)
         self.assertLess(
