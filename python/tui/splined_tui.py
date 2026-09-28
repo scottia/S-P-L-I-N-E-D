@@ -1492,7 +1492,7 @@ def _control_lines(
             Line(
                 [
                     Span(
-                        f"{'›' if focused else ' '} • {label}{extra}",
+                        f"{'›' if focused else ' '} ● {label}{extra}",
                         _interactive_row_style(
                             theme,
                             semantic,
@@ -1525,6 +1525,7 @@ def _status_control_lines(
     suffix: Callable[[int], str] | None = None,
     *,
     hover_index: int = -1,
+    inner_width: int = 30,
 ) -> Text:
     lines: list[Line] = []
     for index, (label, _status) in enumerate(STATUS_CONTROLS):
@@ -1532,12 +1533,15 @@ def _status_control_lines(
         is_active = active(index)
         hovered = index == hover_index
         extra = suffix(index) if suffix is not None else ""
-        # Keep the count as a stable right-justified second column inside the
-        # Folder Status panel rather than letting label length move it around.
-        label_column = 22
+        # Count is anchored to the panel's right edge, independent of label
+        # length. Prefix occupies four cells: focus + space + bullet + spaces.
         if extra:
-            padding = " " * max(1, label_column - len(label))
-            extra = f"{padding}{extra.strip()}"
+            count_text = extra.strip()
+            padding = " " * max(
+                1,
+                inner_width - 4 - len(label) - len(count_text),
+            )
+            extra = f"{padding}{count_text}"
         state_semantic = _status_control_semantic(index)
         row_style = _interactive_row_style(
             theme,
@@ -1574,7 +1578,7 @@ def _selection_control_lines(
     lines = [
         Line(
             [
-                Span("• SELECTED [", style(theme, Semantic.ACTIVE, bold=True)),
+                Span("● SELECTED [", style(theme, Semantic.ACTIVE, bold=True)),
                 Span(str(selected_count), style(theme, Semantic.ACCEPTED, bold=True)),
                 Span("]", style(theme, Semantic.ACTIVE, bold=True)),
             ]
@@ -1689,6 +1693,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
                 theme,
                 status_suffix,
                 hover_index=status_hover,
+                inner_width=max(1, int(panels[0].width) - 2),
             )
         )
         .block(card(theme, "FOLDER STATUS", Semantic.ACTIVE)),
