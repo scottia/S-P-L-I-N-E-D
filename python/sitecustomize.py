@@ -5,8 +5,6 @@ from __future__ import annotations
 import sys
 from typing import Any
 
-from splined_status_cache import install
-
 
 def _requested_tui_theme() -> str:
     for index, argument in enumerate(sys.argv):
@@ -16,6 +14,27 @@ def _requested_tui_theme() -> str:
         if value == "--tui-theme" and index + 1 < len(sys.argv):
             return str(sys.argv[index + 1]).strip().upper()
     return "OLED"
+
+
+def _patch_pyratatui_line() -> None:
+    """Accept text-only blank lines across pyratatui binding versions."""
+    try:
+        import pyratatui
+    except ImportError:
+        return
+    original = pyratatui.Line
+    if getattr(original, "_splined_compatible", False):
+        return
+
+    def compatible_line(spans: Any = None, *args: Any, **kwargs: Any):
+        if spans is None:
+            spans = []
+        elif isinstance(spans, str):
+            spans = [pyratatui.Span(spans)]
+        return original(spans, *args, **kwargs)
+
+    compatible_line._splined_compatible = True  # type: ignore[attr-defined]
+    pyratatui.Line = compatible_line
 
 
 def _install_theme_aware_image_clear() -> None:
@@ -57,5 +76,5 @@ def _install_theme_aware_image_clear() -> None:
     native.clear_image_area = clear_image_area
 
 
+_patch_pyratatui_line()
 _install_theme_aware_image_clear()
-install()
