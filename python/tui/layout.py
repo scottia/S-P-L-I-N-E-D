@@ -154,6 +154,25 @@ def candidate_column_layout(
                     break
         if not changed:
             break
+
+    # Readable floors are preferences, not permission to overflow the frame.
+    # At the 48-column responsive boundary, the AI-enabled compact grid needs
+    # two additional cells beyond those floors. Continue shrinking toward one
+    # positive cell per column until the framed inner width is satisfied.
+    if excess:
+        soft_shrink_order = (*shrink_order, "url")
+        while excess:
+            changed = False
+            for column in soft_shrink_order:
+                if column in widths and widths[column] > 1:
+                    widths[column] -= 1
+                    excess -= 1
+                    changed = True
+                    if not excess:
+                        break
+            if not changed:
+                break
+
     available = max(0, inner - sum(widths.values()) - spacing * (len(columns) - 1))
     # Grow information-bearing columns first rather than leaving a large dead
     # area while source/range labels are truncated.
