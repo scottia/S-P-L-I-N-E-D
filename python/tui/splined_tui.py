@@ -307,6 +307,10 @@ class TuiState:
     remote_preview_height: int = 24
     remote_preview_rect: tuple[int, int, int, int] | None = None
     remote_drawn_rect: tuple[int, int, int, int] | None = None
+    local_cover_overlay: Any | None = None
+    local_cover_path: str = ""
+    local_cover_rect: tuple[int, int, int, int] | None = None
+    local_cover_drawn_rect: tuple[int, int, int, int] | None = None
     hover_target: str = ""
     hover_index: int = -1
     status_loading: bool = False
@@ -1537,10 +1541,8 @@ def _status_control_lines(
         # length. Prefix occupies four cells: focus + space + bullet + spaces.
         if extra:
             count_text = extra.strip()
-            padding = " " * max(
-                1,
-                inner_width - 4 - len(label) - len(count_text),
-            )
+            count_start = len("Artist Contains Bypass") + 5
+            padding = " " * max(1, count_start - len(label))
             extra = f"{padding}{count_text}"
         state_semantic = _status_control_semantic(index)
         row_style = _interactive_row_style(
