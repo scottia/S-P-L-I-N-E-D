@@ -1534,9 +1534,10 @@ def _status_control_lines(
         extra = suffix(index) if suffix is not None else ""
         # Keep the count as a stable right-justified second column inside the
         # Folder Status panel rather than letting label length move it around.
-        count_column = 24
+        label_column = 22
         if extra:
-            extra = f"{extra.strip():>{max(1, count_column - len(label))}}"
+            padding = " " * max(1, label_column - len(label))
+            extra = f"{padding}{extra.strip()}"
         state_semantic = _status_control_semantic(index)
         row_style = _interactive_row_style(
             theme,
@@ -1586,7 +1587,7 @@ def _selection_control_lines(
             Line(
                 [
                     Span(
-                        f"{'›' if focused else ' '} • {label}",
+                        f"{'›' if focused else ' '} ● {label}",
                         _interactive_row_style(
                             theme,
                             Semantic.ACTIVE if focused else Semantic.MUTED,
