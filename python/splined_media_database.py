@@ -197,8 +197,9 @@ def _insert_snapshot(
                 "INSERT INTO retired_album_paths"
                 "(album_key, album_path, reason, retired_at, splined_version) "
                 "VALUES(?, ?, ?, ?, ?) "
-                "ON CONFLICT(album_key, album_path) DO UPDATE SET "
-                "reason=excluded.reason, retired_at=excluded.retired_at, "
+                "ON CONFLICT(album_key) DO UPDATE SET "
+                "album_path=excluded.album_path, reason=excluded.reason, "
+                "retired_at=excluded.retired_at, "
                 "splined_version=excluded.splined_version",
                 (
                     album_key,
@@ -372,12 +373,8 @@ def build_index(
             "ON artists.artist_key=albums.artist_key"
         )
     )
-    existing = {
-        str(row["album_key"]): row for row in existing_rows
-    }
-    existing_by_path = {
-        str(row["path"]): row for row in existing_rows
-    }
+    existing = {str(row["album_key"]): row for row in existing_rows}
+    existing_by_path = {str(row["path"]): row for row in existing_rows}
     artist_rows: dict[str, dict[str, Any]] = {}
     album_rows: list[dict[str, Any]] = []
     reviews: list[dict[str, Any]] = []
