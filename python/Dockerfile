@@ -47,6 +47,7 @@ COPY splined.py /app/splined.py
 COPY splined_scan.py /app/splined_scan.py
 COPY splined_oauth_validation.py /app/splined_oauth_validation.py
 COPY tui /app/tui
+COPY test_candidate_ranking_policy.py /tmp/test_candidate_ranking_policy.py
 RUN python3 -m py_compile \
         /app/sitecustomize.py \
         /app/splined_status_cache.py \
@@ -56,6 +57,9 @@ RUN python3 -m py_compile \
         /app/splined_scan.py \
         /app/splined_oauth_validation.py \
     && python3 -m compileall -q /app/tui \
+    && cd /tmp \
+    && python3 -m unittest -v test_candidate_ranking_policy \
+    && rm -f /tmp/test_candidate_ranking_policy.py \
     && chmod 0555 \
         /app/sitecustomize.py \
         /app/splined_status_cache.py \
