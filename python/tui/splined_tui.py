@@ -2098,8 +2098,10 @@ def _prepare_local_cover_overlay(state: TuiState, area: Rect) -> None:
         state.local_cover_path = ""
         return
     width = max(8, int(area.width) - 4)
-    height = max(6, min(18, int(area.height) // 2))
-    state.local_cover_rect = (int(area.x) + 2, int(area.y) + 2, width, height)
+    inner_height = max(1, int(area.height) - 3)
+    height = min(inner_height, max(1, width // 2))
+    width = min(width, height * 2)
+    state.local_cover_rect = (int(area.x) + 2, int(area.y) + 1, width, height)
     if state.local_cover_path == cover_path and state.local_cover_overlay is not None:
         return
     try:
@@ -2115,6 +2117,8 @@ def _draw_local_cover_overlay(state: TuiState) -> None:
     overlay = state.local_cover_overlay
     rect = state.local_cover_rect
     if overlay is None or rect is None or state.workflow != "library":
+        return
+    if state.local_cover_drawn_rect == rect:
         return
     try:
         overlay.draw(rect[0], rect[1])
