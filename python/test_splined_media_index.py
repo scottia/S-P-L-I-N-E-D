@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from splined_media_database import _insert_snapshot, database_path, schema_path
-from splined_media_runtime import stats_from_row
+from splined_media_runtime import clean_transient_cache, stats_from_row
 from splined_media_tags import album_base_key, artist_key
 
 
@@ -18,6 +18,36 @@ class SplinedMediaIndexTests(unittest.TestCase):
             database_path(Path("/_cache")),
             Path("/_cache/splined.db"),
         )
+
+    def test_cache_cleanup_preserves_sqlite_database_family(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            preserved = {
+                "splined.db",
+                "splined.db-wal",
+                "splined.db-shm",
+                "splined.db-journal",
+                "splined.db.corrupt-20260928-120000",
+                "splined.db.schema-v2-20260928-120000",
+            }
+            for name in preserved:
+                (cache / name).write_bytes(b"persistent")
+
+            disposable_file = cache / "candidate.jpg"
+            disposable_file.write_bytes(b"temporary")
+            disposable_dir = cache / "samples"
+            disposable_dir.mkdir()
+            (disposable_dir / "sample.jpg").write_bytes(b"temporary")
+
+            core = type("Core", (), {"SplinedError": RuntimeError})
+            clean_transient_cache(core, cache)
+
+            self.assertEqual(
+                {path.name for path in cache.iterdir()},
+                preserved,
+            )
+            self.assertFalse(disposable_file.exists())
+            self.assertFalse(disposable_dir.exists())
 
     def test_tag_keys_do_not_depend_on_absolute_paths(self) -> None:
         artist = artist_key("Aaliyah", "artist-mbid")
