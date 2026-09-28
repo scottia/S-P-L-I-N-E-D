@@ -2195,7 +2195,11 @@ def _render_selected_album_stats(
         .block(card(theme, "MEDIA LIBRARY / SELECTED ALBUM ARTWORK", Semantic.SPECIAL)),
         area,
     )
-    prompt_y = int(area.y) + max(2, int(area.height) // 2 + 1)
+    prompt_y = int(area.y) + max(3, int(area.height) // 2 + 1)
+    frame.render_widget(
+        Paragraph(Text([Line([Span("USE", style(theme, Semantic.TEXT, bold=True))]).centered()])),
+        Rect(int(area.x) + 1, prompt_y - 1, max(1, int(area.width) - 2), 1),
+    )
     spectral = spectral_title(theme, title=SPLINED_TITLE)
     launch_line = Line(list(spectral.spans) + [Span(" LAUNCH", style(theme, Semantic.WARNING, bold=True))]).centered()
     frame.render_widget(
