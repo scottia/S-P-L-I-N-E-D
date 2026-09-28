@@ -2007,7 +2007,7 @@ def _selected_album_stat_lines(
             [
                 Span(f"{label:<16}", style(theme, Semantic.MUTED)),
                 Span(
-                    _truncate(str(value) if str(value) else "—", max(1, usable - 16)),
+                    str(value) if str(value) else "—",
                     style(theme, semantic),
                 ),
             ]
@@ -2092,7 +2092,9 @@ def _render_selected_album_stats(
         state.selected_stats_scroll : state.selected_stats_scroll + capacity
     ]
     frame.render_widget(
-        Paragraph(Text(shown)).block(
+        Paragraph(Text(shown))
+        .wrap(True, False)
+        .block(
             card(
                 theme,
                 "MEDIA LIBRARY / SELECTED ALBUM STATISTICS",
