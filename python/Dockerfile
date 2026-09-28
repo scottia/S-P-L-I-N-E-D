@@ -46,6 +46,7 @@ COPY splined_media_database.py /app/splined_media_database.py
 COPY splined_media_runtime.py /app/splined_media_runtime.py
 COPY splined_media_index.py /app/splined_media_index.py
 COPY splined_media_build_policy.py /app/splined_media_build_policy.py
+COPY splined_tui_progress_policy.py /app/splined_tui_progress_policy.py
 COPY splined_ranking_policy.py /app/splined_ranking_policy.py
 COPY splined_tui_overlay_policy.py /app/splined_tui_overlay_policy.py
 COPY splined_entry.py /app/splined_entry.py
@@ -63,6 +64,7 @@ RUN python3 -m py_compile \
         /app/splined_media_runtime.py \
         /app/splined_media_index.py \
         /app/splined_media_build_policy.py \
+        /app/splined_tui_progress_policy.py \
         /app/splined_ranking_policy.py \
         /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
@@ -87,6 +89,7 @@ RUN python3 -m py_compile \
         /app/splined_media_runtime.py \
         /app/splined_media_index.py \
         /app/splined_media_build_policy.py \
+        /app/splined_tui_progress_policy.py \
         /app/splined_ranking_policy.py \
         /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
