@@ -2087,6 +2087,42 @@ def _selected_album_stat_lines(
     return lines
 
 
+def _prepare_local_cover_overlay(state: TuiState, area: Rect) -> None:
+    state.local_cover_rect = None
+    if native_prepare_image_overlay is None or not state.selected_album_stats:
+        return
+    item = state.selected_album_stats[0]
+    cover_path = str(item.get("cover_path", "") or "")
+    if not cover_path:
+        state.local_cover_overlay = None
+        state.local_cover_path = ""
+        return
+    width = max(8, int(area.width) - 4)
+    height = max(6, min(18, int(area.height) // 2))
+    state.local_cover_rect = (int(area.x) + 2, int(area.y) + 2, width, height)
+    if state.local_cover_path == cover_path and state.local_cover_overlay is not None:
+        return
+    try:
+        body = Path(cover_path).read_bytes()
+        state.local_cover_overlay = native_prepare_image_overlay(body, width, height, 1000)
+        state.local_cover_path = cover_path
+    except Exception:
+        state.local_cover_overlay = None
+        state.local_cover_path = cover_path
+
+
+def _draw_local_cover_overlay(state: TuiState) -> None:
+    overlay = state.local_cover_overlay
+    rect = state.local_cover_rect
+    if overlay is None or rect is None or state.workflow != "library":
+        return
+    try:
+        overlay.draw(rect[0], rect[1])
+        state.local_cover_drawn_rect = rect
+    except Exception:
+        state.local_cover_drawn_rect = None
+
+
 def _render_selected_album_stats(
     frame: Any,
     area: Rect,
@@ -2094,6 +2130,7 @@ def _render_selected_album_stats(
     theme: Theme,
 ) -> None:
     lines = _selected_album_stat_lines(state, theme, int(area.width))
+    _prepare_local_cover_overlay(state, area)
     capacity = max(1, int(area.height) - 2)
     state.selected_stats_page_size = capacity
     maximum = max(0, len(lines) - capacity)
@@ -5136,6 +5173,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         ):
                             _start_preferred_preview(state, adapter)
                         _draw_remote_hover_overlay(state)
+                    _draw_local_cover_overlay(state)
                         writer = getattr(sys, "__stdout__", None)
                         if writer is not None:
                             write_terminal_links(state, writer)
