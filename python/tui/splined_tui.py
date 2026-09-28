@@ -2040,7 +2040,10 @@ def _selected_album_stat_lines(
             f"{name} ({int(artwork.get(name, 0) or 0)})"
             for name in ("JPEG", "PNG", "WEBP", "OTHER")
         )
-        lines.append(field("Artwork", artwork_text, Semantic.ACCEPTED))
+        if item.get("cover_names", []):
+            cover_names = ", ".join(str(v) for v in item.get("cover_names", []))
+            cover_resolution = str(item.get("cover_resolution", "") or "—")
+            lines.append(field("ARTWORK", f"{cover_names} · {cover_resolution}", Semantic.ACCEPTED))
         lines.append(Line([Span(separator, style(theme, Semantic.MUTED))]))
         lines.extend(
             [
