@@ -513,6 +513,8 @@ class TuiState:
                 if isinstance(raw_selected_stats, list)
                 else []
             )
+            if self.selected_album_stats and any(str(item.get("path", "")) == self.album_info_target for item in self.selected_album_stats):
+                self.album_info_loading = False
             _runtime_trace(
                 f"library_stats_async_apply selected_stats={len(self.selected_album_stats)} "
                 f"{_library_snapshot(self)}"
@@ -2130,6 +2132,14 @@ def _draw_local_cover_overlay(state: TuiState) -> None:
         state.local_cover_drawn_rect = None
 
 
+def _render_album_info_loading(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    width = min(max(28, len("LOADING ALBUM INFO") + 8), int(area.width))
+    height = min(3, int(area.height))
+    popup = Rect(int(area.x) + max(0, (int(area.width) - width) // 2), int(area.y) + max(0, (int(area.height) - height) // 2), width, height)
+    frame.render_widget(Clear(), popup)
+    frame.render_widget(Paragraph(Text([Line([Span("LOADING ALBUM INFO", style(theme, Semantic.FALLBACK, bold=True))]).centered()])).block(card(theme, "", Semantic.ACCEPTED)), popup)
+
+
 def _render_selected_album_stats(
     frame: Any,
     area: Rect,
@@ -2396,6 +2406,8 @@ def _render_library_side_panels(
     _render_selected_album_stats(frame, panels[0], state, theme)
     _render_selected_album_info(frame, panels[1], state, theme)
     _render_library_tools(frame, panels[2], state, theme)
+    if state.album_info_loading:
+        _render_album_info_loading(frame, Rect(int(panels[0].x), int(panels[0].y), int(panels[0].width), int(panels[0].height) + int(panels[1].height)), state, theme)
 
 
 
