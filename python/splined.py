@@ -1126,6 +1126,7 @@ def selected_album_statistics(
         "cover_files": 0,
         "cover_names": [],
         "cover_resolution": "",
+        "cover_path": "",
         "other_filenames": [],
         "webp_found": False,
         "webp_size_mb": 0.0,
@@ -1256,6 +1257,7 @@ def selected_album_statistics(
                 item.name.casefold(),
             ),
         )[0]
+        result["cover_path"] = str(cover)
         try:
             with Image.open(cover) as image:
                 result["cover_resolution"] = f"{int(image.width)}x{int(image.height)}"
