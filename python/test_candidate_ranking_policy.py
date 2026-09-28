@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 from splined_ranking_policy import (
@@ -172,6 +174,70 @@ class IntrinsicResolutionRankingTests(unittest.TestCase):
             operational_output_extension(core, remote, "jpeg"),
             "jpg",
         )
+
+    def test_installed_embedded_candidate_uses_configured_Cover_jpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_dir:
+            album = SimpleNamespace(path=Path(raw_dir))
+            embedded = SimpleNamespace(
+                source="embedded",
+                width=1200,
+                height=1200,
+                source_priority=-1,
+                ref=Ref("track-apic"),
+                format="jpeg",
+            )
+            core = SimpleNamespace(
+                project_candidate=lambda candidate, cfg, target: scale_projected(
+                    candidate,
+                    cfg,
+                    [target],
+                ),
+                target_format_for_candidate=lambda _candidate, order: order[0],
+                provider_label=lambda source: source,
+                candidate_key=lambda *_args: (999,),
+                EXTENSIONS={"jpeg": "jpg"},
+                section=lambda cfg, name: cfg.get(name, {}),
+                validate_file_name=lambda _name: None,
+                prepare_final=lambda *_args, **_kwargs: (
+                    b"embedded-jpeg",
+                    {"width": 1200, "height": 1200},
+                ),
+                atomic_write=lambda path, body: path.write_bytes(body),
+                remove_numbered_cover_variants=lambda *_args: [],
+                choose_destination=lambda canonical, content, _preserve: (
+                    canonical,
+                    canonical.exists() and canonical.read_bytes() == content,
+                ),
+            )
+            scan = SimpleNamespace(
+                project_candidate=scale_projected,
+                provider_label=lambda source: source,
+                candidate_key=lambda *_args: (999,),
+                fallback_sort_key=lambda *_args: (999,),
+                fallback_suggested=lambda *_args: None,
+                render_local_suggested_comparison=lambda *_args, **_kwargs: None,
+                preview_destination=lambda *_args, **_kwargs: None,
+                finalize=lambda *_args, **_kwargs: None,
+                apply_local_preflight=lambda *_args, **_kwargs: True,
+                target_format_for_candidate=lambda _candidate, _order: "jpeg",
+                apply_selected_candidate=lambda *_args, **_kwargs: True,
+            )
+            install(core, scan)
+            action, destination, _info, _existed = scan.finalize(
+                album,
+                embedded,
+                {
+                    "mode": "write",
+                    "output": {
+                        "file_name": "Cover",
+                        "preserve_file": False,
+                    },
+                },
+                ["jpeg"],
+            )
+            self.assertEqual(action, "INSTALLED")
+            self.assertEqual(destination.name, "Cover.jpeg")
+            self.assertEqual(destination.read_bytes(), b"embedded-jpeg")
 
     def test_core_and_operational_surfaces_install_one_policy(self) -> None:
         core = SimpleNamespace(
