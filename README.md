@@ -28,7 +28,7 @@ You can use it in **Read** mode to review what it would choose, or in **Write** 
 - 🧭 **Persistent scan history and bypass state** are stored separately from disposable cache data
 - ⚙️ **Config driven** — library, scan, cache, credential, and output locations remain configurable
 - 🐳 **Docker image** provides a Linux/server deployment path
-- 🐀 **Ratatui TUI** provides OLED and CHALK interactive Python scan views while preserving plain automation
+- 🐀 **Ratatui TUI** provides OLED and CHALK interactive Python scan views, JSON-first Select Media status, local `cover.*` preview/resolution, URL-backed candidate preview, and plain automation fallback
 - 📦 **Portable Windows, Linux, and macOS releases** keep application-owned files together
 
 ---
@@ -192,8 +192,7 @@ splined --scan-dir
 ```
 
 Interactive Python scans select the OLED Ratatui theme by default. Use
-`--tui-theme CHALK`, or use `--no-tui` to keep plain output in a terminal. See
-the [Python Ratatui TUI guide](docs/ratatui-tui.md).
+`--tui-theme CHALK`, or use `--no-tui` to keep plain output in a terminal. See the [Python Ratatui TUI guide](docs/ratatui-tui.md) and [Select Media status cache](docs/select-media-status-cache.md).
 
 A bare native invocation scans the caller's current directory recursively.
 
