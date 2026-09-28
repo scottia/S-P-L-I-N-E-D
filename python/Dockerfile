@@ -42,6 +42,7 @@ RUN pip install --disable-pip-version-check --no-cache-dir /wheels/*.whl \
 COPY sitecustomize.py /app/sitecustomize.py
 COPY splined_status_cache.py /app/splined_status_cache.py
 COPY splined_ranking_policy.py /app/splined_ranking_policy.py
+COPY splined_tui_overlay_policy.py /app/splined_tui_overlay_policy.py
 COPY splined_entry.py /app/splined_entry.py
 COPY splined.py /app/splined.py
 COPY splined_scan.py /app/splined_scan.py
@@ -52,6 +53,7 @@ RUN python3 -m py_compile \
         /app/sitecustomize.py \
         /app/splined_status_cache.py \
         /app/splined_ranking_policy.py \
+        /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
         /app/splined.py \
         /app/splined_scan.py \
@@ -64,6 +66,7 @@ RUN python3 -m py_compile \
         /app/sitecustomize.py \
         /app/splined_status_cache.py \
         /app/splined_ranking_policy.py \
+        /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
         /app/splined.py \
         /app/splined_scan.py \
