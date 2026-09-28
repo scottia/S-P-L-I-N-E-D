@@ -143,6 +143,27 @@ def install(core: Any, scan: Any | None = None) -> None:
         ignored = [str(value) for value in library.get("ignored_subs", [])]
         cover_name = str(output.get("file_name", "cover")).strip() or "cover"
         db = database_path(Path(cache))
+        fingerprint_paths = core.timeout_fingerprint_paths(
+            completion_history,
+            cfg,
+            sources,
+            timeout_hours,
+        )
+
+        def indexed_inventory(
+            inventory_root: Path,
+            ignored_subs: list[str],
+            configured_file_name: str = "cover",
+            **kwargs: Any,
+        ):
+            kwargs.setdefault("fingerprint_paths", fingerprint_paths)
+            return original_inventory(
+                inventory_root,
+                ignored_subs,
+                configured_file_name,
+                **kwargs,
+            )
+
         context = IndexContext(
             core=core,
             config_file=Path(config_file),
@@ -160,7 +181,7 @@ def install(core: Any, scan: Any | None = None) -> None:
                 bypassed_paths if bypassed_paths is not None else set()
             ),
             session=session,
-            original_inventory=original_inventory,
+            original_inventory=indexed_inventory,
         )
         connection = connect(db, str(core.display_version()))
         try:
