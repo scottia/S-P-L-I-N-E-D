@@ -113,12 +113,11 @@ CREATE TABLE IF NOT EXISTS picker_inventory (
 );
 
 CREATE TABLE IF NOT EXISTS retired_album_paths (
-    album_key TEXT NOT NULL COLLATE NOCASE,
+    album_key TEXT PRIMARY KEY COLLATE NOCASE,
     album_path TEXT NOT NULL,
     reason TEXT NOT NULL,
     retired_at TEXT NOT NULL,
-    splined_version TEXT NOT NULL,
-    PRIMARY KEY (album_key, album_path)
+    splined_version TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_artists_status
