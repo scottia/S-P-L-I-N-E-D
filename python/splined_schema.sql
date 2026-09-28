@@ -1,0 +1,164 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS artists (
+    artist_key TEXT PRIMARY KEY COLLATE NOCASE,
+    artist_name TEXT NOT NULL,
+    artist_sort TEXT,
+    musicbrainz_artistid TEXT,
+    primary_path TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unprocessed',
+    album_count INTEGER NOT NULL DEFAULT 0,
+    unprocessed_count INTEGER NOT NULL DEFAULT 0,
+    processed_count INTEGER NOT NULL DEFAULT 0,
+    bypassed_count INTEGER NOT NULL DEFAULT 0,
+    timeout_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS albums (
+    album_key TEXT PRIMARY KEY COLLATE NOCASE,
+    artist_key TEXT NOT NULL,
+    album_name TEXT NOT NULL,
+    album_sort TEXT,
+    musicbrainz_albumid TEXT,
+    musicbrainz_releasegroupid TEXT,
+    release_year TEXT,
+    compilation INTEGER NOT NULL DEFAULT 0,
+    path TEXT NOT NULL,
+    representative_file TEXT,
+    representative_size INTEGER,
+    representative_mtime_ns INTEGER,
+    tag_signature TEXT NOT NULL,
+    track_count INTEGER NOT NULL DEFAULT 0,
+    inventory_fingerprint TEXT,
+    status TEXT NOT NULL DEFAULT 'unprocessed',
+    cover_required INTEGER NOT NULL DEFAULT 1,
+    cover_found INTEGER NOT NULL DEFAULT 0,
+    cover_path TEXT,
+    cover_name TEXT,
+    cover_format TEXT,
+    cover_width INTEGER,
+    cover_height INTEGER,
+    artwork_jpeg INTEGER NOT NULL DEFAULT 0,
+    artwork_png INTEGER NOT NULL DEFAULT 0,
+    artwork_webp INTEGER NOT NULL DEFAULT 0,
+    artwork_other INTEGER NOT NULL DEFAULT 0,
+    root_files INTEGER NOT NULL DEFAULT 0,
+    cover_files INTEGER NOT NULL DEFAULT 0,
+    cover_names_json TEXT NOT NULL DEFAULT '[]',
+    local_art_json TEXT NOT NULL DEFAULT '[]',
+    other_filenames_json TEXT NOT NULL DEFAULT '[]',
+    webp_found INTEGER NOT NULL DEFAULT 0,
+    webp_size_mb REAL NOT NULL DEFAULT 0,
+    webp_resolution TEXT,
+    webp_conversion INTEGER NOT NULL DEFAULT 0,
+    processed_at TEXT,
+    bypassed INTEGER NOT NULL DEFAULT 0,
+    timeout_until TEXT,
+    selected_source TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL,
+    FOREIGN KEY (artist_key)
+        REFERENCES artists(artist_key)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS album_refresh_review_queue (
+    album_key TEXT PRIMARY KEY COLLATE NOCASE,
+    requested_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cache_entries (
+    cache_key TEXT PRIMARY KEY,
+    cache_type TEXT NOT NULL,
+    album_key TEXT,
+    payload_json TEXT NOT NULL,
+    splined_version TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cache_history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cache_key TEXT NOT NULL,
+    cache_type TEXT NOT NULL,
+    album_key TEXT,
+    action TEXT NOT NULL,
+    payload_json TEXT,
+    splined_version TEXT,
+    event_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS db_maintenance_state (
+    action_name TEXT PRIMARY KEY,
+    completed_at TEXT NOT NULL,
+    details_json TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS picker_inventory (
+    inventory_key TEXT PRIMARY KEY,
+    signature_json TEXT NOT NULL,
+    folders_json TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS retired_album_paths (
+    album_key TEXT NOT NULL COLLATE NOCASE,
+    album_path TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    retired_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL,
+    PRIMARY KEY (album_key, album_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_artists_status
+    ON artists(status, artist_name COLLATE NOCASE);
+
+CREATE INDEX IF NOT EXISTS idx_artists_mb_artistid
+    ON artists(musicbrainz_artistid)
+    WHERE musicbrainz_artistid IS NOT NULL
+      AND trim(musicbrainz_artistid) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_albums_artist
+    ON albums(artist_key, album_sort COLLATE NOCASE, album_name COLLATE NOCASE);
+
+CREATE INDEX IF NOT EXISTS idx_albums_artist_status
+    ON albums(artist_key, status);
+
+CREATE INDEX IF NOT EXISTS idx_albums_status
+    ON albums(status);
+
+CREATE INDEX IF NOT EXISTS idx_albums_mb_albumid
+    ON albums(musicbrainz_albumid)
+    WHERE musicbrainz_albumid IS NOT NULL
+      AND trim(musicbrainz_albumid) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_albums_release_group
+    ON albums(musicbrainz_releasegroupid)
+    WHERE musicbrainz_releasegroupid IS NOT NULL
+      AND trim(musicbrainz_releasegroupid) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_cache_entries_album
+    ON cache_entries(album_key);
+
+CREATE INDEX IF NOT EXISTS idx_cache_entries_album_cf
+    ON cache_entries(lower(album_key));
+
+CREATE INDEX IF NOT EXISTS idx_cache_entries_type
+    ON cache_entries(cache_type);
+
+CREATE INDEX IF NOT EXISTS idx_cache_history_key
+    ON cache_history(cache_key, event_at);
+
+CREATE INDEX IF NOT EXISTS idx_retired_album_paths_key
+    ON retired_album_paths(album_key, retired_at DESC);
