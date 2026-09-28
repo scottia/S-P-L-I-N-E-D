@@ -501,10 +501,11 @@ def clean_transient_cache(core: Any, cache: Path) -> None:
             raise core.SplinedError(
                 f"Refusing to clean unsafe SPLINED cache path: {cache}"
             )
+        preserved_prefixes = (DB_NAME + "-", DB_NAME + ".")
         for path in cache.iterdir():
             # Preserve the live DB, WAL/SHM/journal sidecars, and quarantined
             # recovery copies.  Everything else remains disposable run cache.
-            if path.name == DB_NAME or path.name.startswith(DB_NAME + ("-", ".")):
+            if path.name == DB_NAME or path.name.startswith(preserved_prefixes):
                 continue
             if path.is_symlink():
                 path.unlink()
