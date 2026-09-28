@@ -1532,6 +1532,11 @@ def _status_control_lines(
         is_active = active(index)
         hovered = index == hover_index
         extra = suffix(index) if suffix is not None else ""
+        # Keep the count as a stable right-justified second column inside the
+        # Folder Status panel rather than letting label length move it around.
+        count_column = 24
+        if extra:
+            extra = f"{extra.strip():>{max(1, count_column - len(label))}}"
         state_semantic = _status_control_semantic(index)
         row_style = _interactive_row_style(
             theme,
