@@ -6,9 +6,14 @@ from types import SimpleNamespace
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from splined_media_database import connect, utc_now
-from splined_media_warm_start_policy import populate_session_readonly
+import splined_media_runtime as runtime
+from splined_media_warm_start_policy import (
+    cached_stats_readthrough,
+    populate_session_readonly,
+)
 
 
 @dataclass
@@ -57,7 +62,14 @@ class DummySession:
 
 
 class WarmStartPolicyTests(unittest.TestCase):
-    def test_populate_session_reads_without_rewriting_active_rows(self) -> None:
+    def tearDown(self) -> None:
+        runtime._ACTIVE_DB_PATH = None
+        runtime._PATH_TO_ALBUM_KEY = {}
+        runtime._ARTIST_BY_ALBUM_KEY = {}
+        runtime._STATUS_BY_PATH = {}
+        runtime._STATS_BY_PATH = {}
+
+    def test_populate_session_uses_compact_rows_and_lazy_statistics(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database_path = root / "splined.db"
@@ -182,7 +194,11 @@ class WarmStartPolicyTests(unittest.TestCase):
 
             statements: list[str] = []
             connection.set_trace_callback(statements.append)
-            populate_session_readonly(context, connection)
+            with patch.dict(
+                "os.environ",
+                {"SPLINED_SQLITE_LOCAL_SNAPSHOT": "never"},
+            ):
+                populate_session_readonly(context, connection)
             connection.set_trace_callback(None)
 
             mutating = [
@@ -195,16 +211,23 @@ class WarmStartPolicyTests(unittest.TestCase):
             album_reads = [
                 statement
                 for statement in statements
-                if "FROM ALBUMS JOIN ARTISTS" in statement.upper()
+                if "FROM ALBUMS" in statement.upper()
             ]
             self.assertEqual(mutating, [])
             self.assertTrue(album_reads)
+            self.assertTrue(
+                all("JOIN ARTISTS" not in statement.upper() for statement in album_reads)
+            )
+            self.assertTrue(
+                all("ALBUMS.*" not in statement.upper() for statement in album_reads)
+            )
             self.assertTrue(
                 all("ORDER BY" not in statement.upper() for statement in album_reads)
             )
             self.assertTrue(session.ready)
             self.assertEqual(len(session.artists), 1)
             self.assertEqual(len(session.album_records), 1)
+            self.assertEqual(runtime._STATS_BY_PATH, {})
             self.assertEqual(
                 session.probed_artist_statuses[str(artist_path)],
                 "unprocessed",
@@ -225,6 +248,13 @@ class WarmStartPolicyTests(unittest.TestCase):
                     for event, payload in events
                 )
             )
+
+            runtime._ACTIVE_DB_PATH = database_path
+            stats = cached_stats_readthrough(album_path)
+            self.assertIsNotNone(stats)
+            self.assertEqual(stats["album"], "Album")
+            self.assertEqual(stats["tracks"], 10)
+            self.assertIn(str(album_path), runtime._STATS_BY_PATH)
             connection.close()
 
 
