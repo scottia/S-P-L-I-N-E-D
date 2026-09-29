@@ -412,6 +412,7 @@ class TuiState:
                     "Reading matching Artist folders",
                     "Refreshing Artist folder list",
                     "Input busy",
+                    "Returning to the retained Select Media session",
                 )
             ):
                 self.transient = ""
@@ -694,6 +695,10 @@ class TuiState:
                 self.remote_hover_loading = False
                 self.remote_hover_error = ""
                 self.remote_preview_rect = None
+                if self.transient.startswith(
+                    "Returning to the retained Select Media session"
+                ):
+                    self.transient = ""
                 self.workflow = "library"
             elif input_kind == "batch-summary":
                 self.remote_hover_token += 1
@@ -1691,6 +1696,9 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
     select_hover = state.hover_index if state.hover_target == "select-control" else -1
     scan_hover = state.hover_index if state.hover_target == "scan-control" else -1
 
+    # ALBUM STATUS is the primary library-status surface. Keep the whole frame
+    # yellow while embedding the spectral SPLINED wordmark directly into the
+    # frame title so the library screen no longer needs a separate header row.
     frame.render_widget(
         Paragraph(
             _status_control_lines(
@@ -1702,9 +1710,48 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
                 inner_width=max(1, int(panels[0].width) - 2),
             )
         )
-        .block(card(theme, "FOLDER STATUS", Semantic.ACTIVE)),
+        .block(card(theme, "", Semantic.WARNING)),
         panels[0],
     )
+    album_status_title = " ALBUM STATUS "
+    album_status_title_width = len(SPLINED_TITLE) + len(album_status_title)
+    title_x = int(panels[0].x) + 2
+    if int(panels[0].width) > album_status_title_width + 2:
+        frame.render_widget(
+            Paragraph(Text([spectral_title(theme, title=SPLINED_TITLE)])),
+            Rect(
+                title_x,
+                int(panels[0].y),
+                len(SPLINED_TITLE) + 1,
+                1,
+            ),
+        )
+        frame.render_widget(
+            Paragraph.from_string(album_status_title).style(
+                style(theme, Semantic.WARNING, bold=True)
+            ),
+            Rect(
+                title_x + len(SPLINED_TITLE),
+                int(panels[0].y),
+                len(album_status_title),
+                1,
+            ),
+        )
+    else:
+        frame.render_widget(
+            Paragraph.from_string(album_status_title).style(
+                style(theme, Semantic.WARNING, bold=True)
+            ),
+            Rect(
+                title_x,
+                int(panels[0].y),
+                min(
+                    len(album_status_title),
+                    max(1, int(panels[0].width) - 4),
+                ),
+                1,
+            ),
+        )
     frame.render_widget(
         Paragraph(
             _selection_control_lines(
@@ -3845,28 +3892,46 @@ def _render_batch_report(frame: Any, area: Rect, state: TuiState, theme: Theme) 
 
 
 def _footer_text(state: TuiState) -> str:
+    # Select Media already exposes P/E/R in its dedicated bottom-right panel,
+    # so the staging footer must not duplicate those controls. Other normal
+    # views retain the complete options bar. Ctrl+C is described once as Exit.
+    staging_footer = (
+        "↑/↓ move • Enter open Artist • Space select • / filter • "
+        "Ctrl+C [Exit] • ? help"
+    )
+    options_footer = (
+        "↑/↓ move • Enter open Artist • Space select • / filter • "
+        "P policy • E settings • R refresh folders • Ctrl+C [Exit] • ? help"
+    )
+
     if state.transient:
         return state.transient
     if state.input_request:
         kind = state.input_request.kind
         if kind == "batch-summary":
-            return "Enter / Esc return to Select Media · q exit SPLINED · Tab history/logs · Ctrl+C stop"
+            return (
+                "Enter / Esc return to Select Media • q Exit SPLINED • "
+                "Ctrl+C [Exit] • ? help"
+            )
         if kind == "library-selection":
             if state.workspace == "policy":
-                return "↑/↓ settings · PgUp/PgDn scroll · Mouse/touch enabled · Ctrl+S Save/Apply · Esc library · ? help"
-            return "↑/↓ move · Enter open Artist · Space select · / filter · P policy · E settings · R refresh folders · Ctrl+C stop"
+                return (
+                    "↑/↓ settings • PgUp/PgDn scroll • Mouse/touch enabled • "
+                    "Ctrl+S Save/Apply • Esc library • Ctrl+C [Exit] • ? help"
+                )
+            return staging_footer
         if kind in {"artist", "album", "text"}:
-            return f"{state.input_request.prompt}{state.input_buffer}   Enter confirm · Esc keep current"
+            return f"{state.input_request.prompt}{state.input_buffer}   Enter confirm • Esc keep current • Ctrl+C [Exit] • ? help"
         if kind == "local-comparison":
-            return "↑/↓ choose · Enter exact · S suggested · K keep local · U URL · M MusicBrainz · B bypass · ? help"
+            return "↑/↓ choose • Enter exact • S suggested • K keep local • U URL • M MusicBrainz • B bypass • Ctrl+C [Exit] • ? help"
         if kind == "musicbrainz":
-            return "↑/↓ choose release · Enter select · B/Esc back · ? help"
+            return "↑/↓ choose release • Enter select • B/Esc back • Ctrl+C [Exit] • ? help"
         if kind == "fallback-picker":
-            return "↑/↓ choose · Enter exact · S suggested · U URL · F edit · M MusicBrainz · B bypass · ? help"
-        return "↑/↓ choose · Enter exact · S suggested · U URL · B bypass · ? help"
+            return "↑/↓ choose • Enter exact • S suggested • U URL • F edit • M MusicBrainz • B bypass • Ctrl+C [Exit] • ? help"
+        return "↑/↓ choose • Enter exact • S suggested • U URL • B bypass • Ctrl+C [Exit] • ? help"
     if state.finished:
-        return "Enter / q close · Tab history/logs · ? help"
-    return "Tab views · Shift+Tab previous · ? help · Ctrl+C stop"
+        return "Enter / q Exit SPLINED • Ctrl+C [Exit] • ? help"
+    return options_footer
 
 
 def _render_help(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -4040,8 +4105,11 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         return
 
     library_header = state.workflow == "library"
+    # On Select Media the spectral SPLINED wordmark now lives inside the
+    # yellow ALBUM STATUS panel title. Reclaim the former one-line floating
+    # header instead of rendering a duplicate wordmark above the controls.
     header_height = (
-        1 if library_header else context_header_height(area.width, area.height)
+        0 if library_header else context_header_height(area.width, area.height)
     )
     rows = _split_vertical(
         area,
@@ -4051,13 +4119,14 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
             Constraint.length(1),
         ],
     )
-    _render_header(
-        frame,
-        rows[0],
-        state,
-        theme,
-        Breakpoint.COMPACT if library_header else spec.breakpoint,
-    )
+    if not library_header:
+        _render_header(
+            frame,
+            rows[0],
+            state,
+            theme,
+            spec.breakpoint,
+        )
     content = rows[1]
     if state.tab == "history":
         _render_history(frame, content, state, theme)
