@@ -142,7 +142,7 @@ class SplinedMediaIndexTests(unittest.TestCase):
         self.assertIn('"ON CONFLICT(album_key) DO UPDATE SET "', source)
         self.assertNotIn('"ON CONFLICT(album_key, album_path)', source)
 
-    def test_navtagger_style_maintenance_tables_are_present(self) -> None:
+    def test_persistent_maintenance_and_manual_cache_tables_are_present(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             connection = sqlite3.connect(Path(directory) / "splined.db")
             connection.executescript(schema_path().read_text(encoding="utf-8"))
@@ -161,6 +161,10 @@ class SplinedMediaIndexTests(unittest.TestCase):
                     "retired_album_paths",
                     "artists",
                     "albums",
+                    "tracks",
+                    "recording_release_lookups",
+                    "recording_release_candidates",
+                    "compilation_track_artwork",
                 }.issubset(names)
             )
             connection.close()
@@ -171,6 +175,8 @@ class SplinedMediaIndexTests(unittest.TestCase):
             "album_name": "One in a Million",
             "artist_name": "Aaliyah",
             "release_year": "1996",
+            "musicbrainz_albumid": "",
+            "compilation": 1,
             "track_count": 17,
             "artwork_jpeg": 1,
             "artwork_png": 0,
@@ -192,6 +198,9 @@ class SplinedMediaIndexTests(unittest.TestCase):
         self.assertEqual(stats["artist"], "Aaliyah")
         self.assertEqual(stats["cover_resolution"], "1800x1800")
         self.assertEqual(stats["cover_names"], ["Cover.jpeg"])
+        self.assertTrue(stats["album_mbid_missing"])
+        self.assertTrue(stats["compilation"])
+        self.assertTrue(stats["manual_compilation_eligible"])
 
 
 if __name__ == "__main__":

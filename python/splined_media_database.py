@@ -1,4 +1,4 @@
-"""Persistent Navtagger-style SQLite store for SPLINED Select Media."""
+"""Persistent SQLite media store for SPLINED Select Media."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from splined_media_tags import inspect_album, json_list, utc_now
 
 
 DB_NAME = "splined.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 INVENTORY_KEY = "splined-media-library"
 VALID_ALBUM_STATUSES = {"unprocessed", "processed", "bypassed", "timeout"}
 VALID_ARTIST_STATUSES = {

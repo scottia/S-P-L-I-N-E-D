@@ -1,122 +1,369 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
+import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import splined_compilation_authority_policy as policy
 
 
+RECORDING_ID = "59a0c68f-ec68-418d-a29a-fa54a7d9aea9"
+ARTIST_ID = "291dcfb8-b31c-496a-905b-9955509d75b6"
+OTHER_ARTIST_ID = "11111111-1111-4111-8111-111111111111"
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload: dict | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self) -> dict:
+        return self._payload
+
+
 class CompilationAuthorityPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
-        policy._RECORDING_RELEASE_CACHE.clear()
-        policy._REFERENCE_RELEASE_IDS.clear()
-        policy._REFERENCE_RELEASES.clear()
         policy._INSTALLED = False
 
-    def test_sql_represented_release_is_preferred(self) -> None:
-        core = SimpleNamespace(
-            same_text=lambda left, right: left.casefold() == right.casefold(),
-            normalize_text=lambda value: str(value).casefold(),
-        )
-        releases = [
-            {
-                "id": "release-other",
-                "title": "Compilation Edition",
-                "status": "Official",
-                "artist-credit": [{"name": "50 Cent"}],
-                "release-group": {
-                    "primary-type": "Album",
-                    "secondary-types": ["Compilation"],
-                },
-                "_recording_artist": "50 Cent",
-            },
-            {
-                "id": "release-sql",
-                "title": "Get Rich or Die Tryin'",
-                "status": "Official",
-                "artist-credit": [{"name": "50 Cent"}],
-                "release-group": {
-                    "primary-type": "Album",
-                    "secondary-types": [],
-                },
-                "_recording_artist": "50 Cent",
-            },
-        ]
-        with patch.object(
-            policy,
-            "_database_release_ids",
-            return_value={"release-sql"},
-        ):
-            chosen, in_sql = policy._choose_reference_release(
-                core,
-                Path("/config/config.toml"),
-                {},
-                releases,
-                track_artist="50 Cent",
-            )
-        self.assertIsNotNone(chosen)
-        self.assertEqual(chosen["id"], "release-sql")
-        self.assertTrue(in_sql)
-
-    def test_non_compilation_is_not_recovered(self) -> None:
-        track = SimpleNamespace(
-            compilation="0",
-            album_mbid=None,
-            recording_mbid="00000000-0000-0000-0000-000000000001",
-            artist="Artist",
-        )
-        core = SimpleNamespace()
-        self.assertIsNone(policy._recover_compilation_reference(core, [track]))
-
-    def test_install_injects_run_local_reference_and_uses_exact_discovery(self) -> None:
-        track = SimpleNamespace(
+    def test_album_and_track_eligibility_use_local_tags_only(self) -> None:
+        missing_album = SimpleNamespace(
             compilation="1",
             album_mbid=None,
-            recording_mbid="recording-id",
-            artist="50 Cent",
+            recording_mbid=RECORDING_ID,
+            artist_mbid=ARTIST_ID,
         )
-        album = SimpleNamespace(path=Path("/music/[Various Artists]/Compilation"))
-        release = SimpleNamespace(
-            mbid="release-sql",
-            artist_credit="50 Cent",
-            title="Get Rich or Die Tryin'",
+        normal = SimpleNamespace(
+            compilation="1",
+            album_mbid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            recording_mbid=RECORDING_ID,
+            artist_mbid=ARTIST_ID,
         )
-        calls: list[str] = []
+        self.assertTrue(policy.manual_album_eligible([missing_album]))
+        self.assertFalse(policy.manual_album_eligible([normal]))
+        self.assertEqual(policy.manual_track_eligible(missing_album), (True, ""))
+
+        missing_album.recording_mbid = None
+        eligible, reason = policy.manual_track_eligible(missing_album)
+        self.assertFalse(eligible)
+        self.assertIn("Recording ID", reason)
+
+    def test_credential_options_use_exact_json_names(self) -> None:
+        core = SimpleNamespace(
+            credential_file=lambda *_args: Path("musicbrainz.json"),
+            load_json=lambda *_args: {
+                "options": {
+                    "min_delay": 1.05,
+                    "recording_timeout": 7,
+                    "retry_max": 4,
+                }
+            },
+            SplinedError=ValueError,
+        )
+        result = policy.credential_options(core, Path("config.toml"), {})
+        self.assertEqual(result, policy.MusicBrainzOptions(4, 1.05, 7.0))
+
+        core.load_json = lambda *_args: {"options": {"retry_max": 4}}
+        with self.assertRaisesRegex(ValueError, "min_delay"):
+            policy.credential_options(core, Path("config.toml"), {})
+
+    def test_release_order_is_album_soundtrack_compilation(self) -> None:
+        def release(
+            release_id: str,
+            title: str,
+            primary: str,
+            secondary: list[str],
+            date: str,
+        ) -> dict:
+            return {
+                "id": release_id,
+                "title": title,
+                "date": date,
+                "status": "Official",
+                "artist-credit": [
+                    {"artist": {"id": ARTIST_ID, "name": "Artist"}}
+                ],
+                "release-group": {
+                    "id": "99999999-9999-4999-8999-999999999999",
+                    "primary-type": primary,
+                    "secondary-types": secondary,
+                },
+            }
+
+        payload = {
+            "releases": [
+                release("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "OST", "Album", ["Soundtrack"], "1970"),
+                release("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "Comp", "Album", ["Compilation"], "1980"),
+                release("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "Original", "Album", [], "1960"),
+                release("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "Single", "Single", [], "1959"),
+                release("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "Live", "Album", ["Live"], "1961"),
+            ]
+        }
+        result = policy._rank_releases(payload, RECORDING_ID, ARTIST_ID)
+        self.assertEqual(
+            [item.release_class for item in result],
+            ["album", "soundtrack", "compilation"],
+        )
+        self.assertEqual(result[0].release_title, "Original")
+
+    def test_retry_max_is_total_attempt_count(self) -> None:
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(return_value=FakeResponse(503)),
+        )
+        core = SimpleNamespace(
+            MB_BASE="https://musicbrainz.invalid/ws/2",
+            mb_headers=lambda *_args: ({"Authorization": "Bearer secret"}, "OAuthBearer"),
+        )
+        track = SimpleNamespace(
+            recording_mbid=RECORDING_ID,
+            artist_mbid=ARTIST_ID,
+        )
+        with (
+            patch.object(policy, "_cached_releases", return_value=()),
+            patch.object(policy.time, "sleep"),
+        ):
+            result = policy.resolve_release_candidates(
+                core,
+                http,
+                Path("config.toml"),
+                {},
+                track,
+                policy.MusicBrainzOptions(4, 1.05, 7.0),
+            )
+        self.assertEqual(http.get.call_count, 4)
+        self.assertEqual(result.source, "musicbrainz")
+        self.assertIn("503", result.error)
+        self.assertTrue(
+            all(call.kwargs["timeout"] == 7.0 for call in http.get.call_args_list)
+        )
+
+    def test_oauth_setup_failure_is_reported_without_http(self) -> None:
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(side_effect=AssertionError("HTTP must not run")),
+        )
+        core = SimpleNamespace(
+            MB_BASE="https://musicbrainz.invalid/ws/2",
+            mb_headers=Mock(side_effect=ValueError("private detail")),
+        )
+        track = SimpleNamespace(
+            recording_mbid=RECORDING_ID,
+            artist_mbid=ARTIST_ID,
+        )
+        with patch.object(policy, "_cached_releases", return_value=()):
+            result = policy.resolve_release_candidates(
+                core,
+                http,
+                Path("config.toml"),
+                {},
+                track,
+                policy.MusicBrainzOptions(4, 1.05, 7.0),
+            )
+        self.assertEqual(result.candidates, ())
+        self.assertEqual(result.source, "musicbrainz")
+        self.assertIn("authentication/refresh failed", result.error)
+        self.assertNotIn("private detail", result.error)
+        http.get.assert_not_called()
+
+    def test_positive_recording_release_cache_avoids_http(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            connection = sqlite3.connect(root / "splined.db")
+            connection.executescript(
+                "CREATE TABLE recording_release_lookups ("
+                "recording_mbid TEXT PRIMARY KEY, artist_mbids_key TEXT, "
+                "fetched_at TEXT, splined_version TEXT);"
+                "CREATE TABLE recording_release_candidates ("
+                "recording_mbid TEXT, release_mbid TEXT, "
+                "release_group_mbid TEXT, release_class TEXT, "
+                "class_rank INTEGER, candidate_rank INTEGER, "
+                "release_title TEXT, release_artist TEXT, "
+                "artist_mbids_key TEXT, release_date TEXT, "
+                "PRIMARY KEY(recording_mbid, release_mbid));"
+            )
+            connection.close()
+            core = SimpleNamespace(
+                runtime_cache_dir=lambda *_args: root,
+                display_version=lambda: "test",
+            )
+            candidate = policy.ReleaseCandidate(
+                RECORDING_ID,
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "99999999-9999-4999-8999-999999999999",
+                "album",
+                0,
+                0,
+                "Original",
+                "Artist",
+                ARTIST_ID,
+                "1960",
+            )
+            policy._cache_releases(
+                core,
+                root / "config.toml",
+                {},
+                (candidate,),
+            )
+            http = SimpleNamespace(
+                get=Mock(side_effect=AssertionError("HTTP must not run"))
+            )
+            result = policy.resolve_release_candidates(
+                core,
+                http,
+                root / "config.toml",
+                {},
+                SimpleNamespace(
+                    recording_mbid=RECORDING_ID,
+                    artist_mbid=ARTIST_ID,
+                ),
+                policy.MusicBrainzOptions(4, 1.05, 7.0),
+            )
+            self.assertEqual(result.source, "sql-cache")
+            self.assertEqual(result.candidates, (candidate,))
+            http.get.assert_not_called()
+
+    def test_embedded_artwork_is_capped_by_configured_ladder(self) -> None:
+        captured: dict = {}
+
+        def prepare(_candidate, cfg, target, **kwargs):
+            captured.update(cfg=cfg, target=target, kwargs=kwargs)
+            return b"image", {"width": 3600, "height": 3600}
 
         core = SimpleNamespace(
-            read_album_tracks=lambda _album: [track],
-            lookup_release=lambda _http, _config, _cfg, _mbid: release,
-            discover_fallback=lambda *_args, **_kwargs: ([], [("fallback", "used")]),
-            discover_all=lambda *_args, **_kwargs: (["exact"], []),
-            debug_log=lambda message: calls.append(message),
-            emit_ui=lambda *_args, **_kwargs: None,
+            section=lambda cfg, name: cfg[name],
+            formats=lambda _cfg: ["jpeg"],
+            prepare_final=prepare,
+            SplinedError=ValueError,
         )
+        cfg = {
+            "range": {"ideal": 1800, "ladder": 3600},
+            "output": {
+                "upscale_below_ideal": True,
+                "evaluate_final_image": False,
+            },
+        }
+        candidate = SimpleNamespace(format="jpeg")
+        policy.prepare_embedded_artwork(core, candidate, cfg)
+        self.assertEqual(captured["cfg"]["range"]["ideal"], 3600)
+        self.assertFalse(captured["cfg"]["output"]["upscale_below_ideal"])
+        self.assertTrue(captured["cfg"]["output"]["evaluate_final_image"])
+        self.assertEqual(cfg["range"]["ideal"], 1800)
 
-        with patch.object(
-            policy,
-            "_recover_compilation_reference",
-            return_value=("release-sql", track, True),
-        ):
-            policy.install(core)
-            tracks = core.read_album_tracks(album)
+    def test_manual_local_lookup_is_lazy_artist_scoped_and_cached(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "splined.db"
+            album_path = root / "Artist" / "Album"
+            other_path = root / "Other" / "Album"
+            album_path.mkdir(parents=True)
+            other_path.mkdir(parents=True)
+            track_path = album_path / "01.flac"
+            other_track = other_path / "01.flac"
+            track_path.write_bytes(b"track")
+            other_track.write_bytes(b"other")
+            cover_path = album_path / "cover.jpg"
+            other_cover = other_path / "cover.jpg"
+            cover_path.write_bytes(b"cover")
+            other_cover.write_bytes(b"cover")
 
-        self.assertEqual(tracks[0].album_mbid, "release-sql")
-        resolved = core.lookup_release(None, Path("/config/config.toml"), {}, "release-sql")
-        self.assertIs(resolved, release)
-        refs, diagnostics = core.discover_fallback(
-            None,
-            Path("/config/config.toml"),
-            {},
-            "Various Artists",
-            "Compilation",
-            ["itunes"],
-            release_mbid="release-sql",
-        )
-        self.assertEqual(refs, ["exact"])
-        self.assertEqual(diagnostics, [])
-        self.assertTrue(any("reference_recovered" in value for value in calls))
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY, "
+                "artist_name TEXT, musicbrainz_artistid TEXT);"
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY, "
+                "artist_key TEXT, album_name TEXT, musicbrainz_albumid TEXT, "
+                "musicbrainz_releasegroupid TEXT, release_year TEXT, "
+                "compilation INTEGER, path TEXT, cover_path TEXT, "
+                "cover_format TEXT, cover_width INTEGER, cover_height INTEGER, "
+                "cover_found INTEGER);"
+                "CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, "
+                "path TEXT, title TEXT, artist_name TEXT, "
+                "musicbrainz_recordingid TEXT, musicbrainz_artistid TEXT, "
+                "file_size INTEGER, file_mtime_ns INTEGER, updated_at TEXT, "
+                "splined_version TEXT);"
+            )
+            connection.executemany(
+                "INSERT INTO artists VALUES(?, ?, ?)",
+                [
+                    ("artist", "Artist", ARTIST_ID),
+                    ("other", "Other", OTHER_ARTIST_ID),
+                ],
+            )
+            connection.executemany(
+                "INSERT INTO albums VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    ("album", "artist", "Original", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "", "1960", 0, str(album_path), str(cover_path), "JPEG", 1000, 1000, 1),
+                    ("other-album", "other", "Other", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "", "1961", 0, str(other_path), str(other_cover), "JPEG", 1000, 1000, 1),
+                ],
+            )
+            connection.commit()
+            connection.close()
+
+            core = SimpleNamespace(
+                runtime_cache_dir=lambda *_args: root,
+                AUDIO_EXTENSIONS={".flac"},
+                display_version=lambda: "test",
+            )
+            source_track = SimpleNamespace(
+                recording_mbid=RECORDING_ID,
+                artist_mbid=ARTIST_ID,
+            )
+            stat = track_path.stat()
+            indexed_rows = [
+                {
+                    "track_key": str(track_path),
+                    "album_key": "album",
+                    "path": str(track_path),
+                    "title": "Song",
+                    "artist_name": "Artist",
+                    "musicbrainz_recordingid": RECORDING_ID,
+                    "musicbrainz_artistid": ARTIST_ID,
+                    "file_size": stat.st_size,
+                    "file_mtime_ns": stat.st_mtime_ns,
+                    "updated_at": "now",
+                }
+            ]
+            with patch.object(
+                policy,
+                "inspect_album_tracks",
+                return_value=(indexed_rows, 1, 0),
+            ) as inspect:
+                first = policy.local_artwork_rows(
+                    core,
+                    root / "config.toml",
+                    {},
+                    source_track,
+                    current_album_path=root / "Compilation",
+                )
+            self.assertEqual(len(first), 1)
+            self.assertEqual(first[0]["album_name"], "Original")
+            self.assertEqual(inspect.call_count, 1)
+            self.assertEqual(inspect.call_args.args[0].audio_files, [track_path])
+
+            with patch.object(
+                policy,
+                "inspect_album_tracks",
+                side_effect=AssertionError("SQL cache should satisfy lookup"),
+            ):
+                second = policy.local_artwork_rows(
+                    core,
+                    root / "config.toml",
+                    {},
+                    source_track,
+                    current_album_path=root / "Compilation",
+                )
+            self.assertEqual(len(second), 1)
+
+    def test_install_does_not_wrap_normal_track_reader(self) -> None:
+        reader = lambda _album: ["normal"]
+        core = SimpleNamespace(read_album_tracks=reader)
+        policy.install(core)
+        self.assertIs(core.read_album_tracks, reader)
+        self.assertTrue(callable(core.compilation_local_artwork_rows))
+        self.assertTrue(callable(core.compilation_resolve_releases))
 
 
 if __name__ == "__main__":

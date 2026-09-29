@@ -68,6 +68,59 @@ CREATE TABLE IF NOT EXISTS albums (
         ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS tracks (
+    track_key TEXT PRIMARY KEY COLLATE NOCASE,
+    album_key TEXT NOT NULL,
+    path TEXT NOT NULL,
+    title TEXT NOT NULL,
+    artist_name TEXT NOT NULL,
+    musicbrainz_recordingid TEXT,
+    musicbrainz_artistid TEXT,
+    file_size INTEGER NOT NULL,
+    file_mtime_ns INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS recording_release_lookups (
+    recording_mbid TEXT PRIMARY KEY COLLATE NOCASE,
+    artist_mbids_key TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS recording_release_candidates (
+    recording_mbid TEXT NOT NULL COLLATE NOCASE,
+    release_mbid TEXT NOT NULL COLLATE NOCASE,
+    release_group_mbid TEXT,
+    release_class TEXT NOT NULL CHECK (
+        release_class IN ('album', 'soundtrack', 'compilation')
+    ),
+    class_rank INTEGER NOT NULL,
+    candidate_rank INTEGER NOT NULL,
+    release_title TEXT NOT NULL,
+    release_artist TEXT NOT NULL,
+    artist_mbids_key TEXT NOT NULL,
+    release_date TEXT,
+    PRIMARY KEY(recording_mbid, release_mbid),
+    FOREIGN KEY (recording_mbid)
+        REFERENCES recording_release_lookups(recording_mbid)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS compilation_track_artwork (
+    track_path TEXT PRIMARY KEY COLLATE NOCASE,
+    recording_mbid TEXT NOT NULL COLLATE NOCASE,
+    artist_mbid TEXT NOT NULL COLLATE NOCASE,
+    source_kind TEXT NOT NULL,
+    source_locator TEXT NOT NULL,
+    release_mbid TEXT,
+    artwork_sha256 TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS album_refresh_review_queue (
     album_key TEXT PRIMARY KEY COLLATE NOCASE,
     requested_at TEXT NOT NULL,
@@ -146,6 +199,24 @@ CREATE INDEX IF NOT EXISTS idx_albums_release_group
     ON albums(musicbrainz_releasegroupid)
     WHERE musicbrainz_releasegroupid IS NOT NULL
       AND trim(musicbrainz_releasegroupid) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_tracks_recording_artist
+    ON tracks(musicbrainz_recordingid, musicbrainz_artistid)
+    WHERE musicbrainz_recordingid IS NOT NULL
+      AND trim(musicbrainz_recordingid) <> ''
+      AND musicbrainz_artistid IS NOT NULL
+      AND trim(musicbrainz_artistid) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_tracks_album
+    ON tracks(album_key);
+
+CREATE INDEX IF NOT EXISTS idx_recording_release_candidates_rank
+    ON recording_release_candidates(
+        recording_mbid,
+        artist_mbids_key,
+        class_rank,
+        candidate_rank
+    );
 
 CREATE INDEX IF NOT EXISTS idx_cache_entries_album
     ON cache_entries(album_key);

@@ -116,7 +116,7 @@ The Artist Picker groups Albums by the first physical directory below the
 library root. Album Artist/MusicBrainz tag identity remains artwork/search
 authority and may have a different count from visible physical Artist folders.
 
-Use the explicit Refresh action after external Picard, Beets, Navtagger, or
+Use the explicit Refresh action after external tagger or
 filesystem changes. Refresh commits the new model before changing the visible
 picker, so colors do not progressively change while the user is working.
 

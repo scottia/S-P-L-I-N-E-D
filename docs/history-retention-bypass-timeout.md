@@ -152,7 +152,7 @@ Colors change during a session only after:
 - timeout/history projection on a new launch;
 - an explicit media-index Refresh.
 
-External Picard, Beets, Navtagger, or filesystem changes are reconciled by the
+External tagger or filesystem changes are reconciled by the
 explicit Refresh. The Refresh progress screen completes before the new model is
 shown, preventing progressive Artist color changes while the user works.
 

@@ -140,8 +140,8 @@ or tagged Artist + ALBUM + release-group ID + year + compilation fallback
 ```
 
 Paths remain current locations used to process the Album folder. They are not
-SQL identity indexes. Picard, Beets, and Navtagger may maintain the tags, but
-SPLINED reads the media files directly and does not require their databases.
+SQL identity indexes. SPLINED reads standards-compliant media tags directly and
+does not require another application's database.
 
 The Artist Picker is not a list of authority rows. Every Album is assigned to
 the first physical directory below the configured library root:
@@ -220,7 +220,7 @@ The existing stable picker remains visible while Refresh runs. The TUI swaps to
 the refreshed model only after the transaction succeeds; Artist colors do not
 progressively mutate during the scan.
 
-Use Refresh after external changes made by Picard, Beets, Navtagger, a file
+Use Refresh after external changes made by a tagger, a file
 manager, or another media application. SPLINED's own LIVE WRITE and bypass
 operations update affected database rows immediately.
 
@@ -254,6 +254,16 @@ Auto Scan [ALL]
 Auto Scan [SELECTED]
 ```
 
+For a selected Album whose representative track has no Album/Release ID and
+has `compilation=1`, the panel also shows an orange, conditional row:
+
+```text
+Manual Scan [VA/OST Compilations]
+```
+
+This row is absent for normal Albums. Selecting it defines Manual Comp scope
+but performs no MusicBrainz or artwork work until Launch is selected.
+
 It does not silently choose READ. A Launch mode is mandatory:
 
 ```text
@@ -267,6 +277,11 @@ Album Scanning panel.
 READ can query and evaluate candidates but does not install `cover.*` or create
 durable processed state for an Album that still has no cover. LIVE WRITE uses
 the same decision pipeline and may write the selected artwork.
+
+Manual Comp READ previews per-track embedded-artwork replacements. Manual Comp
+LIVE WRITE replaces only an approved track's embedded front image. It never
+creates, changes, or removes folder-level `cover.*`, and unresolved tracks keep
+their existing artwork.
 
 ## Selected Album artwork and statistics
 

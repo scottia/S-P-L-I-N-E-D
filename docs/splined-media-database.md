@@ -28,10 +28,10 @@ then the host file is:
 This database is persistent. Candidate downloads and samples beside it remain
 disposable, but `splined.db` must not be removed by normal run-cache cleanup.
 
-## Design origin
+## Design
 
-The schema follows the attached Navtagger database conventions where they fit
-SPLINED:
+The schema uses persistent logical identities, resumable checkpoints, and
+explicit maintenance/audit surfaces:
 
 - logical text keys instead of path identities;
 - `cache_entries` and `cache_history` audit surfaces;
@@ -66,9 +66,9 @@ MusicBrainz Album / Release ID
 hash of tagged Artist identity + ALBUM + release-group ID + year + compilation
 ```
 
-Representative tags are read with Mutagen. Picard, Beets, Navtagger, or any
-other standards-compliant tag writer may supply those values; SPLINED does not
-require or query a Navidrome or Beets database.
+Representative tags are read with Mutagen. Any standards-compliant tag writer
+may supply those values; SPLINED does not require or query another
+application's database.
 
 The path columns remain necessary to open and process the current Album folder.
 If a MusicBrainz-identified Album moves to another directory, an explicit
@@ -138,6 +138,10 @@ SPLINED does not parse every track merely to populate the picker. Full
 track-level validation remains part of the actual READ or LIVE WRITE processing
 pipeline.
 
+This is a performance invariant: normal build and Refresh remain Album-oriented
+and retain one representative audio path per Album. They must not become a
+whole-library per-track tag-reading pass.
+
 If the first build is interrupted, matching completed checkpoints are reused on
 the next launch. A partially promoted snapshot is never advertised as ready:
 the `picker_inventory` marker is written only after all Artist/Album rows have
@@ -206,9 +210,27 @@ An explicit refresh:
 The previous stable picker remains visible while Refresh runs. Rows and colors
 do not progressively change as individual Artists are reached.
 
-External changes made by Beets, Picard, Navtagger, file managers, or another
-application become visible after this explicit Refresh. SPLINED's own LIVE
-WRITE and bypass/status actions update the affected database rows immediately.
+External changes made by taggers, file managers, or another application become
+visible after this explicit Refresh. SPLINED's own LIVE WRITE and bypass/status
+actions update the affected database rows immediately.
+
+## Manual compilation caches
+
+Manual Comp artwork recovery adds three persistent surfaces without changing
+normal index cost:
+
+- `tracks` stores exact local Recording-ID/Artist-ID relationships discovered
+  lazily during Manual Scan;
+- `recording_release_lookups` and `recording_release_candidates` cache positive,
+  bounded MusicBrainz Recording-ID results;
+- `compilation_track_artwork` records approved per-track artwork outcomes and a
+  content digest, but never stores credential values or image bytes.
+
+Manual Scan first queries the exact `tracks` cache. On a miss it uses the
+already-indexed Album Artist ID to restrict local inspection to that Artist's
+Albums, stopping at the first exact Recording-ID/Artist-ID match. Only a local
+miss can proceed to MusicBrainz. Stale track rows cannot become artwork
+authority: file size and modification time are checked before reuse.
 
 ## Album Status and physical folder aggregates
 

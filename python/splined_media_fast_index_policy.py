@@ -12,6 +12,11 @@ uses a dedicated index discovery pass that keeps only:
 Representative tag and cover inspection is then parallelized while logical
 Album-key collision handling and SQLite checkpoint commits remain deterministic
 and serialized.
+
+Performance invariant: normal index construction must remain Album-oriented.
+Do not enumerate or read every track tag here; per-track identity inspection is
+reserved for the explicitly selected Manual Comp workflow and is narrowed by
+the existing Artist MBID index before it runs.
 """
 
 from __future__ import annotations
@@ -180,7 +185,11 @@ def _discover_index_albums(
     workers: int = 8,
     cancelled: Callable[[], bool] | None = None,
 ) -> tuple[list[Any], list[Path]]:
-    """Discover Albums while retaining one representative track path only."""
+    """Discover Albums while retaining one representative track path only.
+
+    Keep this fast-index boundary in place: normal builds count tracks but do
+    not retain or tag-read every track path.
+    """
     root = Path(root)
     if not root.exists():
         raise core.SplinedError(f"SPLINED scan directory does not exist: {root}")

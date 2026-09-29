@@ -106,14 +106,25 @@ Credential files receive the filesystem protection described in
 
 | Option | Default | Meaning |
 | --- | ---: | --- |
-| `retry_max` | `4` | Maximum retry count for retryable requests |
+| `retry_max` | `4` | Manual Recording lookup's maximum total attempts |
 | `min_delay` | `1.05` | Minimum seconds between MusicBrainz requests |
-| `recording_timeout` | `7` | Recording-query timeout in seconds |
+| `recording_timeout` | `7` | Per-attempt Recording-query timeout in seconds |
 
 When `[source_policies.musicbrainz].source_override` is `false`, the standard
 defaults are active while saved custom options remain retained. When it is
 `true`, the saved `options` values become active. `enabled = false` disables
 MusicBrainz participation without deleting credentials.
+
+The explicit Manual Comp workflow is stricter: it reads these three exact keys
+from `musicbrainz.json` and does not use aliases or hard-coded fallbacks. It
+loads them only after the local SQL lookup misses. `retry_max = 4` means four
+total attempts, not one initial request plus four retries. A zero value disables
+the remote attempt.
+
+No access token, refresh token, authorization header, client secret, or other
+credential value is written to a runtime/debug log. Central log redaction is a
+final safety boundary; callers must still avoid constructing secret-bearing log
+messages.
 
 ## Recovery
 

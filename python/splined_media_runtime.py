@@ -54,12 +54,21 @@ _CURRENT_ALBUM_PATH = ""
 def stats_from_row(row: Any) -> dict[str, Any]:
     cover_width = row["cover_width"]
     cover_height = row["cover_height"]
+    compilation = bool(row["compilation"])
+    album_mbid_missing = not bool(
+        str(row["musicbrainz_albumid"] or "").strip()
+    )
     return {
         "path": str(row["path"]),
         "album": str(row["album_name"]),
         "artist": str(row["artist_name"]),
         "year": str(row["release_year"] or ""),
         "tracks": int(row["track_count"] or 0),
+        "compilation": compilation,
+        "album_mbid_missing": album_mbid_missing,
+        "manual_compilation_eligible": (
+            compilation and album_mbid_missing
+        ),
         "artwork": {
             "JPEG": int(row["artwork_jpeg"] or 0),
             "PNG": int(row["artwork_png"] or 0),

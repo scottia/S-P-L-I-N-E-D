@@ -143,7 +143,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
                 side_effect=AssertionError("SQLite picker cache opened"),
             ),
         ):
-            (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
+            (selected, _overrides, _timeouts, _sources, known, scan_mode), emitted = self._run(
                 [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
             )
 
@@ -153,6 +153,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
         )
         self.assertEqual(selected, [])
         self.assertEqual(known, [])
+        self.assertEqual(scan_mode, "auto-selected")
         payload = next(payload for event, payload in emitted if event == "library")
         self.assertEqual(
             [row["name"] for row in payload["artists"]],
@@ -212,7 +213,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             },
         ]
         with mock.patch.object(splined, "inventory", side_effect=inventory):
-            (selected, _overrides, _timeouts, _sources, known), emitted = self._run(
+            (selected, _overrides, _timeouts, _sources, known, scan_mode), emitted = self._run(
                 responses
             )
 
@@ -223,13 +224,14 @@ class DirectLazyInventoryTests(unittest.TestCase):
         self.assertEqual(calls.count(self.root / "Aerosmith"), 1)
         self.assertEqual([album.path for album in selected], [self.eden])
         self.assertEqual({album.path for album in known}, {self.love, self.eden})
+        self.assertEqual(scan_mode, "filtered-read")
         update = [payload for event, payload in emitted if event == "library_update"][-1]
         artist = next(row for row in update["artists"] if row["name"] == "10,000 Maniacs")
         self.assertTrue(artist["loaded"])
 
     def test_select_all_scopes_to_active_artist_and_excludes_processed(self) -> None:
         artist_path = str(self.root / "10,000 Maniacs")
-        (selected, _overrides, _timeouts, _sources, _known), _emitted = self._run(
+        (selected, _overrides, _timeouts, _sources, _known, _scan), _emitted = self._run(
             [
                 {
                     "action": "select-all",
@@ -245,7 +247,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
         self.assertEqual([album.path for album in selected], [self.eden])
 
     def test_select_filtered_is_library_wide_text_and_includes_processed(self) -> None:
-        (selected, _overrides, _timeouts, _sources, _known), _emitted = self._run(
+        (selected, _overrides, _timeouts, _sources, _known, _scan), _emitted = self._run(
             [
                 {
                     "action": "select-filtered",
@@ -267,7 +269,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             {self.love, self.eden},
         )
 
-        (selected, _overrides, _timeouts, _sources, _known), _emitted = self._run(
+        (selected, _overrides, _timeouts, _sources, _known, _scan), _emitted = self._run(
             [
                 {
                     "action": "select-filtered",
@@ -338,7 +340,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             return original_inventory(path, *args, **kwargs)
 
         with mock.patch.object(splined, "inventory", side_effect=inventory):
-            (selected, _overrides, _timeouts, _sources, known), _emitted = self._run(
+            (selected, _overrides, _timeouts, _sources, known, _scan), _emitted = self._run(
                 [
                     {"action": "select-all", "selected": []},
                     {
@@ -365,7 +367,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             return original_inventory(path, *args, **kwargs)
 
         with mock.patch.object(splined, "inventory", side_effect=inventory):
-            (selected, _overrides, _timeouts, _sources, known), _emitted = self._run(
+            (selected, _overrides, _timeouts, _sources, known, _scan), _emitted = self._run(
                 [{"action": "launch", "scan_mode": "auto-all", "selected": []}]
             )
 

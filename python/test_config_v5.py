@@ -17,6 +17,21 @@ def load_example(relative: str) -> dict:
 
 
 class ConfigV5ParityTests(unittest.TestCase):
+    def test_runtime_log_redaction_removes_credentials_and_bearer_values(self) -> None:
+        secret = "do-not-log-this-token"
+        samples = (
+            f'Authorization: Bearer {secret}',
+            f'{{"access_token": "{secret}"}}',
+            f"client_secret={secret}",
+            f"client_key={secret}",
+            f"oauth_token_secret={secret}",
+        )
+        for sample in samples:
+            with self.subTest(sample=sample.split(":", 1)[0]):
+                redacted = splined._redact_log_message(sample)
+                self.assertNotIn(secret, redacted)
+                self.assertIn("[REDACTED]", redacted)
+
     def test_all_public_examples_validate_as_v5(self) -> None:
         for relative in (
             "config.example.toml",

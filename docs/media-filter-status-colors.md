@@ -31,7 +31,7 @@ Warm startup is database-only for Select Media. Opening an Artist, typing a
 filter, scrolling, or changing focus does not scan the filesystem or change a
 row's status.
 
-External Picard, Beets, Navtagger, or filesystem changes are incorporated by
+External tagger or filesystem changes are incorporated by
 the explicit Refresh action. Refresh completes its inventory/tag transaction
 before replacing the visible model, so colors do not progressively change
 while the user is working.

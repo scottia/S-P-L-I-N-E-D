@@ -30,6 +30,7 @@ VERSION = core.VERSION
 def provider_label(source: str) -> str:
     mapping = {
         "local": "Local",
+        "local-library": "Local Library",
         "webpstill": "WebP",
         "embedded": "Embedded",
     }
@@ -44,7 +45,7 @@ def target_format_for_candidate(candidate: core.Candidate, format_order: list[st
     # same canonical JPEG rule when it becomes the installed album cover.
     if candidate.source == "embedded":
         return "jpeg"
-    if candidate.source == "local" and candidate.path.suffix.lower() == ".webp":
+    if candidate.source in {"local", "local-library"} and candidate.path.suffix.lower() == ".webp":
         return "jpeg"
     return core.target_format_for_candidate(candidate, format_order)
 
@@ -147,7 +148,7 @@ def candidate_browser_url(candidate: core.Candidate) -> str:
 
 
 def candidate_link(candidate: core.Candidate) -> str:
-    if candidate.source in {"local", "webpstill", "embedded"}:
+    if candidate.source in {"local", "local-library", "webpstill", "embedded"}:
         return core.bracketed_text("LOCAL", core.green)
     if candidate.source == "enhanced":
         return core.bracketed_text("Enhanced", core.magenta)
@@ -155,7 +156,7 @@ def candidate_link(candidate: core.Candidate) -> str:
 
 
 def candidate_provenance(candidate: core.Candidate) -> str:
-    if candidate.source in {"local", "webpstill", "embedded"}:
+    if candidate.source in {"local", "local-library", "webpstill", "embedded"}:
         return "[LOCAL]"
     if candidate.source == "enhanced":
         return "[Enhanced]"
@@ -175,7 +176,7 @@ def render_candidate_table(
         (
             item
             for item in candidates
-            if item.source in {"local", "webpstill", "embedded"}
+            if item.source in {"local", "local-library", "webpstill", "embedded"}
         ),
         None,
     )
@@ -847,6 +848,361 @@ def apply_selected_candidate(
     return True
 
 
+def _manual_unresolved(
+    track: Any,
+    reason: str,
+    unresolved_items: list[dict[str, str]],
+) -> None:
+    item = {
+        "path": str(track.path),
+        "artist": str(track.artist or ""),
+        "title": str(track.title or track.path.name),
+        "reason": str(reason),
+    }
+    unresolved_items.append(item)
+    core.debug_log(
+        "compilation.manual.unresolved "
+        f"file={str(track.path)!r} reason={str(reason)!r}"
+    )
+    print(
+        f"    {core.red('Unresolved:')} "
+        f"{core.white(item['artist'])} · {core.orange(item['title'])} · "
+        f"{core.yellow(item['reason'])}"
+    )
+
+
+def _manual_local_candidates(
+    rows: list[dict[str, Any]],
+) -> list[core.Candidate]:
+    candidates: list[core.Candidate] = []
+    seen: set[str] = set()
+    for row in rows:
+        path = Path(str(row.get("cover_path") or ""))
+        identity = str(path).casefold()
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        try:
+            candidate = inspect_candidate_file(path, "local-library", -3)
+        except Exception:
+            continue
+        candidate.ref.id = (
+            f"{str(row.get('album_artist') or '')} · "
+            f"{str(row.get('album_name') or path.parent.name)}"
+        )
+        candidates.append(candidate)
+    return candidates
+
+
+def _manual_remote_candidates(
+    http: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    release: core.Release,
+    sources: list[str],
+    cache: Path,
+    api_queried: set[str],
+    state: dict[str, Any],
+) -> tuple[list[core.Candidate], list[tuple[str, str]]]:
+    key = str(release.mbid).casefold()
+    cached = state.setdefault("release_candidates", {}).get(key)
+    if cached is not None:
+        return list(cached), []
+    refs, diagnostics = core.discover_all(
+        http,
+        config_file,
+        cfg,
+        release,
+        sources,
+        queried_sources=api_queried,
+    )
+    downloaded, download_diagnostics = core.download_candidates(
+        http, refs, sources, cache, cfg
+    )
+    diagnostics.extend(download_diagnostics)
+    state["release_candidates"][key] = list(downloaded)
+    return downloaded, diagnostics
+
+
+def _manual_choose_candidate(
+    candidates: list[core.Candidate],
+    cfg: dict[str, Any],
+    format_order: list[str],
+) -> core.Candidate | None:
+    top = fallback_top_candidates(candidates, cfg, format_order, 10)
+    suggested = fallback_suggested(top, cfg, format_order)
+    render_candidate_table(
+        top,
+        cfg,
+        format_order,
+        suggested=suggested,
+        manual_fallback=True,
+    )
+    while True:
+        menu = (
+            f"    {core.paint('PURPLE', '[s]')} suggested   "
+            f"{core.cyan('[#]')} choose number   "
+            f"{core.cyan('[b]')} leave unchanged"
+        )
+        print(menu)
+        answer = core.read_input(
+            "    Choice: ",
+            kind="fallback-picker",
+        ).strip().lower()
+        if answer == "__cancel__":
+            raise core.TuiSessionExit()
+        if answer == "b":
+            return None
+        if answer == "s" and suggested is not None:
+            return suggested
+        if answer.isdigit():
+            number = int(answer)
+            if 1 <= number <= len(top):
+                return top[number - 1]
+        print("    Choose s, a listed number, or b.")
+
+
+def run_manual_compilation_album(
+    album: core.AlbumDir,
+    tracks: list[Any],
+    *,
+    http: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    sources: list[str],
+    cache: Path,
+    format_order: list[str],
+    summary: core.Summary,
+    api_queried: set[str],
+    unresolved_items: list[dict[str, str]],
+    state: dict[str, Any],
+) -> None:
+    """Resolve and approve embedded artwork independently for every track."""
+    if not core.compilation_manual_album_eligible(tracks):
+        summary.unresolved += 1
+        reason = (
+            "Manual Scan requires a representative track with no Album MBID "
+            "and compilation=1"
+        )
+        for track in tracks[:1]:
+            _manual_unresolved(track, reason, unresolved_items)
+        return
+
+    print()
+    print(
+        f"  {core.cyan('Manual Scan:'):13} "
+        f"{core.orange('VA/OST compilation embedded artwork')}"
+    )
+    print(
+        f"  {core.cyan('Folder Art:'):13} "
+        f"{core.green('untouched')}"
+    )
+    mode = str(cfg.get("mode", "read")).strip().casefold()
+    resolved_tracks = 0
+
+    for track_number, track in enumerate(tracks, 1):
+        print()
+        print(
+            f"  {core.cyan(f'Track {track_number}:'):13} "
+            f"{core.white(str(track.artist or ''))} · "
+            f"{core.orange(str(track.title or track.path.name))}"
+        )
+        eligible, reason = core.compilation_manual_track_eligible(track)
+        if not eligible:
+            summary.unresolved += 1
+            _manual_unresolved(track, reason, unresolved_items)
+            continue
+
+        local_rows = core.compilation_local_artwork_rows(
+            config_file,
+            cfg,
+            track,
+            current_album_path=album.path,
+        )
+        local_candidates = _manual_local_candidates(local_rows)
+        release: core.Release | None = None
+        release_source = ""
+        if local_rows:
+            release = core.compilation_release_from_local(local_rows[0])
+            release_source = "local-library"
+        else:
+            options = state.get("mb_options")
+            if options is None and "mb_options_error" not in state:
+                try:
+                    options = core.compilation_credential_options(
+                        config_file, cfg
+                    )
+                    state["mb_options"] = options
+                    core.debug_log(
+                        "compilation.manual.mb_options "
+                        f"retry_max={options.retry_max} "
+                        f"min_delay={options.min_delay:g} "
+                        f"recording_timeout={options.recording_timeout:g}"
+                    )
+                except Exception as exc:
+                    state["mb_options_error"] = str(exc)
+            if options is None:
+                summary.unresolved += 1
+                _manual_unresolved(
+                    track,
+                    str(state.get("mb_options_error") or "Invalid MusicBrainz options"),
+                    unresolved_items,
+                )
+                continue
+            resolution = core.compilation_resolve_releases(
+                http,
+                config_file,
+                cfg,
+                track,
+                options,
+            )
+            if not resolution.candidates:
+                summary.unresolved += 1
+                _manual_unresolved(
+                    track,
+                    resolution.error or "No artwork release was resolved",
+                    unresolved_items,
+                )
+                continue
+            diagnostics: list[tuple[str, str]] = []
+            remote: list[core.Candidate] = []
+            for release_item in resolution.candidates:
+                attempted_release = core.compilation_release_from_candidate(
+                    release_item
+                )
+                attempted, attempted_diagnostics = _manual_remote_candidates(
+                    http,
+                    config_file,
+                    cfg,
+                    attempted_release,
+                    sources,
+                    cache,
+                    api_queried,
+                    state,
+                )
+                diagnostics.extend(attempted_diagnostics)
+                if attempted:
+                    release = attempted_release
+                    remote = attempted
+                    release_source = resolution.source
+                    break
+
+        if local_rows:
+            remote, diagnostics = _manual_remote_candidates(
+                http,
+                config_file,
+                cfg,
+                release,
+                sources,
+                cache,
+                api_queried,
+                state,
+            )
+        candidates = local_candidates + remote
+        if not candidates:
+            summary.unresolved += 1
+            _manual_unresolved(
+                track,
+                "No acceptable local or remote artwork candidate was returned",
+                unresolved_items,
+            )
+            continue
+
+        print(
+            f"    {core.cyan('Authority:'):11} "
+            f"{core.green(release_source)} · "
+            f"{core.white(release.artist_credit if release else '')} · "
+            f"{core.orange(release.title if release else '')}"
+        )
+        if diagnostics:
+            for source, message in diagnostics:
+                print(
+                    f"    {core.magenta(provider_label(source))}: "
+                    f"{core.yellow(message)}"
+                )
+        selected = _manual_choose_candidate(candidates, cfg, format_order)
+        if selected is None:
+            summary.unresolved += 1
+            _manual_unresolved(
+                track, "Operator left existing artwork unchanged", unresolved_items
+            )
+            continue
+        try:
+            artwork, info, image_format = core.compilation_prepare_embedded(
+                selected, cfg
+            )
+            if mode == "write":
+                core.compilation_replace_embedded(
+                    track.path, artwork, image_format, info
+                )
+                core.compilation_record_application(
+                    config_file,
+                    cfg,
+                    track,
+                    source_kind=selected.source,
+                    source_locator=(
+                        str(selected.path)
+                        if selected.source == "local-library"
+                        else str(
+                            selected.ref.browser_url
+                            or selected.ref.url
+                            or selected.ref.id
+                        )
+                    ),
+                    release_mbid=str(release.mbid if release else ""),
+                    artwork=artwork,
+                    outcome="embedded-replaced",
+                )
+                summary.installed += 1
+                action = "EMBEDDED ART REPLACED"
+                semantic = core.green
+            else:
+                summary.read_only += 1
+                action = "READ-ONLY (would replace embedded art)"
+                semantic = core.yellow
+        except Exception as exc:
+            summary.failed += 1
+            summary.unresolved += 1
+            _manual_unresolved(
+                track,
+                f"Embedded artwork preparation/write failed: {exc}",
+                unresolved_items,
+            )
+            continue
+
+        summary.selected += 1
+        summary.resolved += 1
+        resolved_tracks += 1
+        core.emit_ui(
+            "album_material_result",
+            outcome=action.title(),
+            destination=str(track.path),
+            file_action=("Replaced" if mode == "write" else "Preserved"),
+            source=provider_label(selected.source),
+            width=int(info.get("width", selected.width)),
+            height=int(info.get("height", selected.height)),
+            format=image_format,
+            range_type="Ladder",
+            distance=0,
+        )
+        core.debug_log(
+            "compilation.manual.track_done "
+            f"file={str(track.path)!r} source={selected.source!r} "
+            f"mode={mode!r}"
+        )
+        print(
+            f"    {core.cyan('Artwork:'):11} "
+            f"{semantic(action)} · {core.magenta(provider_label(selected.source))} "
+            f"{candidate_provenance(selected)}"
+        )
+
+    core.debug_log(
+        "compilation.manual.album_done "
+        f"album={str(album.path)!r} tracks={len(tracks)} "
+        f"resolved={resolved_tracks} unresolved={len(tracks) - resolved_tracks}"
+    )
+
+
 def _sample_release(record: dict[str, Any], album: core.AlbumDir) -> core.Release:
     release = record.get("release")
     if isinstance(release, core.Release):
@@ -1210,6 +1566,7 @@ def _run_scan_dir_batch(
 
     albums: list[core.AlbumDir] = []
     postponed_albums: list[tuple[core.AlbumDir, float]] = []
+    selected_scan_mode = "normal"
     if core.tui_active():
         bypassed_paths = (
             set()
@@ -1237,7 +1594,7 @@ def _run_scan_dir_batch(
                     path,
                 )
 
-        albums, bypass_overrides, timeout_paths, sources, discovered_albums = (
+        albums, bypass_overrides, timeout_paths, sources, discovered_albums, selected_scan_mode = (
             core.prepare_tui_library_selection(
                 config_file,
                 cfg,
@@ -1295,7 +1652,16 @@ def _run_scan_dir_batch(
                 albums.append(album)
 
     http = core.Http()
-    _, mbmode = core.mb_headers(config_file, cfg)
+    manual_compilation_mode = selected_scan_mode in {
+        "manual-compilation-read",
+        "manual-compilation-write",
+    }
+    if manual_compilation_mode:
+        # Keep Manual Comp local-first in fact as well as policy. Loading
+        # headers here could refresh OAuth before the lazy SQL lookup runs.
+        mbmode = "Deferred until local SQL miss"
+    else:
+        _, mbmode = core.mb_headers(config_file, cfg)
     summary = core.Summary(albums=len(discovered_albums), postponed=len(postponed_albums))
     history_path = core.source_history_path(history_dir)
     source_history = (
@@ -1384,7 +1750,13 @@ def _run_scan_dir_batch(
             record["missing"] = missing
             record["invalid"] = invalid
 
-            if len(valid) != 1:
+            if manual_compilation_mode:
+                record["fallback_reason"] = (
+                    "MANUAL COMPILATION"
+                    if core.compilation_manual_album_eligible(tracks)
+                    else "MANUAL NOT ELIGIBLE"
+                )
+            elif len(valid) != 1:
                 if len(valid) > 1:
                     record["fallback_reason"] = "MULTIPLE MBIDS"
                 elif invalid:
@@ -1416,6 +1788,8 @@ def _run_scan_dir_batch(
     fallback_records = [record for record in records if record.get("fallback_reason")]
     normal_records = [record for record in records if not record.get("fallback_reason")]
     ordered_records = fallback_records + normal_records
+    unresolved_items: list[dict[str, str]] = []
+    manual_state: dict[str, Any] = {}
 
     provider_list = [source for source in sources if source != "discogs"]
     output_list = [
@@ -1524,6 +1898,24 @@ def _run_scan_dir_batch(
                 detail=str(record["fatal_error"]),
             )
             print(f"  {core.red('ERROR: ' + str(record['fatal_error']))}\n")
+            continue
+
+        if manual_compilation_mode:
+            run_manual_compilation_album(
+                album,
+                list(record.get("tracks") or []),
+                http=http,
+                config_file=config_file,
+                cfg=cfg,
+                sources=sources,
+                cache=cache,
+                format_order=format_order,
+                summary=summary,
+                api_queried=api_queried,
+                unresolved_items=unresolved_items,
+                state=manual_state,
+            )
+            print()
             continue
 
         preflight_started = core.time.perf_counter()
@@ -2292,6 +2684,16 @@ def _run_scan_dir_batch(
     ]
     print("  ".join(sample_cells))
 
+    if unresolved_items:
+        print()
+        print(core.bold(core.red("UNRESOLVED")))
+        for item in unresolved_items:
+            print(
+                f"  - {core.white(item['artist'])} · "
+                f"{core.orange(item['title'])} · "
+                f"{core.yellow(item['reason'])}"
+            )
+
     queried_list = [source for source in sources if source in api_queried]
     skipped_list = [source for source in sources if source not in api_queried]
     print(
@@ -2307,6 +2709,8 @@ def _run_scan_dir_batch(
         api_queried=queried_list,
         api_skipped=skipped_list,
         mode=mode,
+        scan_mode=selected_scan_mode,
+        unresolved_items=unresolved_items,
         exit_code=0 if summary.failed == 0 else 1,
     )
     return 0 if summary.failed == 0 else 1

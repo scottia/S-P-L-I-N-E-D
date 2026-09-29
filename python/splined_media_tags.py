@@ -157,6 +157,123 @@ def read_album_tags(audio_path: Path) -> dict[str, Any]:
     }
 
 
+def read_track_identity_tags(audio_path: Path) -> dict[str, str]:
+    """Read only the local fields needed for authoritative track matching."""
+    easy = None
+    raw: Any = None
+    try:
+        easy = MutagenFile(audio_path, easy=True)
+    except Exception:
+        easy = None
+    tags = getattr(easy, "tags", None) if easy is not None else None
+
+    def value(*keys: str) -> str:
+        found = _first_value(tags, *keys)
+        if found:
+            return found
+        nonlocal raw
+        if raw is None:
+            try:
+                raw = MutagenFile(audio_path, easy=False)
+            except Exception:
+                raw = False
+        return _raw_alias_value(raw, *keys) if raw else ""
+
+    return {
+        "title": value("title"),
+        "artist": value("artist"),
+        "recording_mbid": value(
+            "musicbrainz_trackid",
+            "musicbrainz recording id",
+            "musicbrainz track id",
+        ),
+        "artist_mbid": value(
+            "musicbrainz_artistid",
+            "musicbrainz artist id",
+        ),
+    }
+
+
+def inspect_album_tracks(
+    album: Any,
+    album_key: str,
+    existing_by_path: Mapping[str, Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Build exact Recording/Artist relationships without remote inference."""
+    rows: list[dict[str, Any]] = []
+    reads = 0
+    reuses = 0
+    now = utc_now()
+    for raw_path in sorted(
+        (Path(value) for value in album.audio_files),
+        key=lambda value: str(value).casefold(),
+    ):
+        path = str(raw_path)
+        try:
+            stat = raw_path.stat()
+            size = int(stat.st_size)
+            modified = int(stat.st_mtime_ns)
+        except OSError:
+            size = 0
+            modified = 0
+
+        prior = existing_by_path.get(path)
+        if (
+            prior is not None
+            and int(prior["file_size"] or 0) == size
+            and int(prior["file_mtime_ns"] or 0) == modified
+        ):
+            tags = {
+                "title": str(prior["title"] or raw_path.stem),
+                "artist": str(prior["artist_name"] or ""),
+                "recording_mbid": str(
+                    prior["musicbrainz_recordingid"] or ""
+                ),
+                "artist_mbid": str(prior["musicbrainz_artistid"] or ""),
+            }
+            reuses += 1
+        else:
+            try:
+                tags = read_track_identity_tags(raw_path)
+            except Exception:
+                tags = {
+                    "title": raw_path.stem,
+                    "artist": "",
+                    "recording_mbid": "",
+                    "artist_mbid": "",
+                }
+            reads += 1
+
+        recording_mbid = str(tags["recording_mbid"]).strip().casefold()
+        artist_mbid = str(tags["artist_mbid"]).strip().casefold()
+        if not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            recording_mbid,
+        ):
+            recording_mbid = ""
+        if not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            artist_mbid,
+        ):
+            artist_mbid = ""
+
+        rows.append(
+            {
+                "track_key": path,
+                "album_key": album_key,
+                "path": path,
+                "title": str(tags["title"] or raw_path.stem),
+                "artist_name": str(tags["artist"] or ""),
+                "musicbrainz_recordingid": recording_mbid,
+                "musicbrainz_artistid": artist_mbid,
+                "file_size": size,
+                "file_mtime_ns": modified,
+                "updated_at": now,
+            }
+        )
+    return rows, reads, reuses
+
+
 def artist_key(artist_name: str, artist_mbid: str) -> str:
     mbid = artist_mbid.strip().casefold()
     return f"mbid:{mbid}" if mbid else f"tag:{normalize(artist_name) or 'unknown artist'}"

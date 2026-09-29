@@ -25,7 +25,9 @@ from tui.splined_tui import (
     _clear_stale_remote_overlay,
     _draw_remote_hover_overlay,
     _preferred_candidate_index,
+    _scan_controls,
     _status_control_semantic,
+    _submit_library,
     handle_key,
     handle_mouse,
     hit_test,
@@ -115,6 +117,48 @@ def _region(state: TuiState, target: str, index: int | None = None) -> HitRegion
 
 
 class RenderHitMapTests(unittest.TestCase):
+    def test_manual_compilation_scan_is_conditional_and_requires_launch(self) -> None:
+        state = _library_state(artists=1, albums_each=1)
+        assert state.library is not None
+        album = state.library.albums[0]
+        album.selected = True
+        self.assertEqual(len(_scan_controls(state)), 4)
+
+        state.selected_album_stats = [
+            {
+                "path": album.path,
+                "album_mbid_missing": True,
+                "compilation": True,
+                "manual_compilation_eligible": True,
+            }
+        ]
+        self.assertEqual(len(_scan_controls(state)), 5)
+
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        state.scan_index = 4
+        _submit_library(state, adapter)
+        self.assertEqual(state.scan_scope, "manual-compilation")
+        self.assertTrue(adapter.responses.empty())
+        self.assertIn("Manual Scan", state.transient)
+
+        state.scan_index = 0
+        _submit_library(state, adapter)
+        payload = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(payload["scan_mode"], "manual-compilation-read")
+        self.assertEqual(payload["selected"], [album.path])
+
+        stale = _library_state(artists=1, albums_each=1)
+        assert stale.library is not None
+        stale.library.albums[0].selected = True
+        stale.scan_scope = "manual-compilation"
+        stale.scan_index = 0
+        stale_adapter = TuiAdapter()
+        stale_adapter.waiting.set()
+        _submit_library(stale, stale_adapter)
+        self.assertTrue(stale_adapter.responses.empty())
+        self.assertEqual(stale.scan_scope, "")
+
     def test_library_hit_geometry_is_rebuilt_at_all_responsive_sizes(self) -> None:
         required = {
             "status-control",

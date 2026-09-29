@@ -278,17 +278,40 @@ and MusicBrainz Album/Release IDs. Track-level featured performers do not create
 extra Artist Picker copies; picker ownership remains the physical top-level
 library folder.
 
-A deliberately curated compilation can have `compilation=1`, valid per-track
-MusicBrainz Recording IDs, and no Album/Release ID. In that narrow case, the
-Python/Docker runtime may probe up to eight unique Recording IDs to recover an
-artwork-reference release. It prefers an exact release already represented in
-`splined.db`; otherwise it chooses an official Artist Album release
-deterministically and avoids compilation/soundtrack/remix references where a
-better original-Album authority exists.
+A deliberately curated compilation may have `compilation=1`, per-track
+MusicBrainz Recording and Artist IDs, and no Album/Release ID. Normal scanning
+does not infer an Album ID or invoke recovery. When the selected Album's
+representative track has no Album/Release ID and has `compilation=1`, Select
+Media exposes `Manual Scan [VA/OST Compilations]`.
 
-The recovered release is run-local artwork-reference authority only. SPLINED
-does not rewrite the compilation's tags, physical folder, SQL Album identity,
-or Artist Picker ownership.
+Manual Scan is explicit and per track:
+
+1. A track with an Album/Release ID remains in the normal workflow.
+2. A track without a valid local Recording ID or Artist ID is left unchanged
+   and reported in the final Unresolved section.
+3. SPLINED checks its persistent exact Recording-ID/Artist-ID cache.
+4. On a cache miss, SPLINED uses the indexed Artist ID to narrow local Albums,
+   lazily reads only those tracks, and caches the exact relationships. A
+   matching existing Album `cover.*` becomes a `[LOCAL]` candidate.
+5. Only after the bounded local lookup misses does SPLINED make a MusicBrainz
+   Recording-ID request. It considers the first suitable official release in
+   this order: Album, Soundtrack, Compilation. Single, EP, live, remix, DJ-mix,
+   and mixtape references are not selected.
+6. Normal source discovery and candidate quality policy evaluate artwork for
+   the recovered release. The configured `[range].ladder` caps the embedded
+   result and no upscaling is introduced.
+7. The operator previews and approves the candidate. LIVE WRITE replaces only
+   that track's embedded front cover; READ reports what would be replaced.
+
+The curated Album name is never used as MusicBrainz identity. SPLINED does not
+invent or write an Album/Release ID, change the compilation's Album/Artist
+tags, or create, alter, or remove folder-level `cover.*`. Different tracks in
+one curated compilation may therefore receive different approved artwork.
+
+Timeouts, MusicBrainz `429`/`503` responses, no match, no artwork, rejection,
+or a failed write leave the track artwork unchanged and appear in Unresolved.
+Positive Recording-to-release results and lazily inspected local identities
+are retained in `splined.db` so later Manual Scans avoid repeated work.
 
 ---
 

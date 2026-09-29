@@ -269,6 +269,7 @@ class TuiState:
     status_index: int = 0
     select_index: int = 1
     scan_index: int = -1
+    scan_scope: str = ""
     artist_index: int = 0
     album_index_cursor: int = 0
     group_scroll: int = 0
@@ -1442,7 +1443,28 @@ AUTO_SCAN_CONTROLS = (
     "Auto Scan [ALL]",
     "Auto Scan [SELECTED]",
 )
+MANUAL_COMPILATION_CONTROL = "Manual Scan [VA/OST Compilations]"
 SCAN_CONTROLS = LAUNCH_CONTROLS + AUTO_SCAN_CONTROLS
+
+
+def _manual_compilation_available(state: TuiState) -> bool:
+    if state.library is None:
+        return False
+    selected = {
+        item.path for item in state.library.albums if item.selected
+    }
+    return any(
+        str(item.get("path", "")) in selected
+        and bool(item.get("manual_compilation_eligible", False))
+        for item in state.selected_album_stats
+        if isinstance(item, dict)
+    )
+
+
+def _scan_controls(state: TuiState) -> tuple[str, ...]:
+    if _manual_compilation_available(state):
+        return SCAN_CONTROLS + (MANUAL_COMPILATION_CONTROL,)
+    return SCAN_CONTROLS
 
 
 def _album_status_semantic(status: AlbumStatus) -> Semantic:
@@ -1492,6 +1514,7 @@ def _control_lines(
     *,
     hover_index: int = -1,
     index_offset: int = 0,
+    semantic_for: Callable[[int], Semantic | None] | None = None,
 ) -> Text:
     lines: list[Line] = []
     for local_index, label in enumerate(labels):
@@ -1506,6 +1529,9 @@ def _control_lines(
             if is_active
             else Semantic.MUTED
         )
+        override = semantic_for(index) if semantic_for is not None else None
+        if override is not None:
+            semantic = override
         extra = suffix(index) if suffix is not None else ""
         lines.append(
             Line(
@@ -1771,26 +1797,39 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels[1],
     )
 
+    manual_available = _manual_compilation_available(state)
+    auto_scan_controls = (
+        AUTO_SCAN_CONTROLS + (MANUAL_COMPILATION_CONTROL,)
+        if manual_available
+        else AUTO_SCAN_CONTROLS
+    )
     scan_needs_launch = (
-        state.scan_index in {2, 3}
+        state.scan_index in {2, 3, 4}
         and state.transient.startswith("Select SPLINED LAUNCH")
     )
     frame.render_widget(
         Paragraph(
             _control_lines(
-                AUTO_SCAN_CONTROLS,
+                auto_scan_controls,
                 state.scan_index,
                 lambda i: i == state.scan_index,
                 theme,
                 hover_index=scan_hover,
                 index_offset=2,
+                semantic_for=lambda index: (
+                    Semantic.FALLBACK if index == 4 else None
+                ),
             )
         )
         .block(card(theme, "ALBUM SCANNING", Semantic.SPECIAL)),
         panels[2],
     )
-    if scan_needs_launch and int(panels[2].height) >= 4:
-        prompt = "Select LAUNCH [READ] or [LIVE WRITE]"
+    if (scan_needs_launch or manual_available) and int(panels[2].height) >= 4:
+        prompt = (
+            "Select LAUNCH [READ] or [LIVE WRITE]"
+            if scan_needs_launch
+            else "Missing Album MBID · select Manual Scan"
+        )
         frame.render_widget(
             Paragraph.from_string(_truncate(prompt, max(1, int(panels[2].width) - 4)))
             .style(style(theme, Semantic.WARNING, bold=True)),
@@ -1869,7 +1908,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
             index=index,
         )
     for local_index in range(
-        min(len(AUTO_SCAN_CONTROLS), max(0, int(panels[2].height) - 2))
+        min(len(auto_scan_controls), max(0, int(panels[2].height) - 2))
     ):
         _register_hit(
             state,
@@ -3878,6 +3917,48 @@ def _render_batch_report(frame: Any, area: Rect, state: TuiState, theme: Theme) 
                     )
                 )
         lines.append(Line([]))
+    raw_unresolved = state.summary.get("unresolved_items", [])
+    unresolved = (
+        [item for item in raw_unresolved if isinstance(item, dict)]
+        if isinstance(raw_unresolved, list)
+        else []
+    )
+    if unresolved:
+        lines.append(
+            Line(
+                [
+                    Span(
+                        f"UNRESOLVED · {len(unresolved):,} TRACK(S)",
+                        style(theme, Semantic.REJECTED, bold=True),
+                    )
+                ]
+            )
+        )
+        for item in unresolved:
+            identity = " · ".join(
+                value
+                for value in (
+                    str(item.get("artist", "")).strip(),
+                    str(item.get("title", "")).strip(),
+                )
+                if value
+            ) or "Unknown track"
+            reason = str(item.get("reason", "Unresolved")).strip()
+            lines.append(
+                Line(
+                    [
+                        Span("  • ", style(theme, Semantic.REJECTED)),
+                        Span(
+                            _truncate(
+                                f"{identity} · {reason}",
+                                max(1, int(area.width) - 8),
+                            ),
+                            style(theme, Semantic.WARNING),
+                        ),
+                    ]
+                )
+            )
+        lines.append(Line([]))
     lines.append(
         Line(
             [Span("Enter / Esc  Return to Select Media    q  Exit SPLINED", style(theme, Semantic.ACTIVE, bold=True))]
@@ -4185,15 +4266,38 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
         return
     # ALBUM SCANNING defines scope only. A READ/WRITE LAUNCH choice is
     # mandatory so Auto Scan can never silently default to READ.
-    if state.scan_index in {2, 3}:
+    if state.scan_index in {2, 3, 4}:
+        if state.scan_index == 4:
+            if not _manual_compilation_available(state):
+                state.scan_scope = ""
+                state.transient = (
+                    "Manual Scan requires a selected compilation with a missing Album MBID."
+                )
+                return
+            state.scan_scope = "manual-compilation"
+        else:
+            state.scan_scope = (
+                "auto-all" if state.scan_index == 2 else "auto-selected"
+            )
         state.transient = (
             "Select SPLINED LAUNCH [READ] or [LIVE WRITE] before Auto Scan."
+            if state.scan_index in {2, 3}
+            else "Select SPLINED LAUNCH [READ] or [LIVE WRITE] before Manual Scan."
         )
         return
     if state.scan_index not in {0, 1}:
         state.transient = "Select a SPLINED LAUNCH option."
         return
-    modes = ("filtered-read", "filtered-write")
+    if state.scan_scope == "manual-compilation":
+        if not _manual_compilation_available(state):
+            state.scan_scope = ""
+            state.transient = (
+                "Manual Scan is no longer available for the selected Album."
+            )
+            return
+        modes = ("manual-compilation-read", "manual-compilation-write")
+    else:
+        modes = ("filtered-read", "filtered-write")
     mode = modes[state.scan_index]
     payload = state.library.selection_payload(mode)
     selected = payload.get("selected", [])
@@ -4530,7 +4634,8 @@ def _handle_library_key(
         elif state.library_focus == 1:
             state.select_index = (state.select_index + delta) % len(SELECT_CONTROLS)
         elif state.library_focus == 2:
-            state.scan_index = (state.scan_index + delta) % len(SCAN_CONTROLS)
+            controls = _scan_controls(state)
+            state.scan_index = (state.scan_index + delta) % len(controls)
         return True
     if action in {Action.UP, Action.DOWN}:
         delta = -1 if action is Action.UP else 1
@@ -4562,7 +4667,8 @@ def _handle_library_key(
         elif state.library_focus == 1:
             state.select_index = (state.select_index + delta) % len(SELECT_CONTROLS)
         elif state.library_focus == 2:
-            state.scan_index = (state.scan_index + delta) % len(SCAN_CONTROLS)
+            controls = _scan_controls(state)
+            state.scan_index = (state.scan_index + delta) % len(controls)
         return True
     if action in {Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END}:
         if state.library_focus == 3:

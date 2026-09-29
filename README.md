@@ -131,10 +131,17 @@ each credited performer.
 
 Warm launches load the complete picker and stable Album Status from SQLite.
 There is no Artist-by-Artist background validation and no color change merely
-because an Artist was opened. External Picard/Beets/Navtagger/filesystem changes
+because an Artist was opened. External tagger/filesystem changes
 are reconciled after the explicit Refresh action.
 
 See [SPLINED media database](docs/splined-media-database.md).
+
+When a selected curated compilation is tagged `compilation=1` but its
+representative track has no MusicBrainz Album/Release ID, Select Media exposes
+the explicit `Manual Scan [VA/OST Compilations]` workflow. It searches the
+local SQL cache first, performs bounded Recording-ID recovery only after a
+local miss, and replaces only operator-approved embedded track artwork. See
+[Source policies and range types](docs/source-policies-range-types.md).
 
 ---
 

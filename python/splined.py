@@ -102,6 +102,7 @@ class Track:
     album_mbid: str | None
     recording_mbid: str | None
     compilation: str | None
+    artist_mbid: str | None = None
 
 
 @dataclass
@@ -1013,7 +1014,7 @@ def first(value: Any) -> str | None:
 
 def read_track(path: Path) -> Track:
     suffix = path.suffix.lower()
-    title = artist = album = album_artist = album_mbid = recording_mbid = compilation = None
+    title = artist = album = album_artist = album_mbid = recording_mbid = compilation = artist_mbid = None
     try:
         if suffix == ".mp3":
             tags = ID3(path)
@@ -1024,29 +1025,31 @@ def read_track(path: Path) -> Track:
                 val = first(getattr(f, "text", None))
                 if desc in {"musicbrainz album id", "musicbrainz_albumid"}: album_mbid = val
                 elif desc in {"musicbrainz recording id", "musicbrainz track id", "musicbrainz_trackid"}: recording_mbid = val
+                elif desc in {"musicbrainz artist id", "musicbrainz_artistid"}: artist_mbid = val
                 elif desc in {"compilation", "itunescompilation"}: compilation = val
         elif suffix == ".flac":
             f = FLAC(path)
             title = first(f.get("title")); artist = first(f.get("artist")); album = first(f.get("album")); album_artist = first(f.get("albumartist"))
-            album_mbid = first(f.get("musicbrainz_albumid")); recording_mbid = first(f.get("musicbrainz_trackid")); compilation = first(f.get("compilation"))
+            album_mbid = first(f.get("musicbrainz_albumid")); recording_mbid = first(f.get("musicbrainz_trackid")); artist_mbid = first(f.get("musicbrainz_artistid")); compilation = first(f.get("compilation"))
         elif suffix in {".m4a", ".mp4"}:
             tags = MP4(path).tags or {}
             title = first(tags.get("\xa9nam")); artist = first(tags.get("\xa9ART")); album = first(tags.get("\xa9alb")); album_artist = first(tags.get("aART"))
             album_mbid = first(tags.get("----:com.apple.iTunes:MusicBrainz Album Id")); recording_mbid = first(tags.get("----:com.apple.iTunes:MusicBrainz Track Id"))
+            artist_mbid = first(tags.get("----:com.apple.iTunes:MusicBrainz Artist Id"))
             cpil = tags.get("cpil"); compilation = "1" if cpil and bool(cpil[0]) else None
         else:
             f = MutagenFile(path, easy=True)
             tags = getattr(f, "tags", None) if f is not None else None
             if tags:
                 title = first(tags.get("title")); artist = first(tags.get("artist")); album = first(tags.get("album")); album_artist = first(tags.get("albumartist"))
-                album_mbid = first(tags.get("musicbrainz_albumid")); recording_mbid = first(tags.get("musicbrainz_trackid")); compilation = first(tags.get("compilation"))
+                album_mbid = first(tags.get("musicbrainz_albumid")); recording_mbid = first(tags.get("musicbrainz_trackid")); artist_mbid = first(tags.get("musicbrainz_artistid")); compilation = first(tags.get("compilation"))
     except Exception as exc:
         raise SplinedError(f"Unable to read SPLINED audio tags from {path}: {exc}") from exc
     if not title:
         raise SplinedError(f"SPLINED scan requires TITLE in actual file tags: {path}")
     if not artist:
         raise SplinedError(f"SPLINED scan requires ARTIST in actual file tags: {path}")
-    return Track(path, title, artist, album, album_artist, album_mbid, recording_mbid, compilation)
+    return Track(path, title, artist, album, album_artist, album_mbid, recording_mbid, compilation, artist_mbid)
 
 
 def read_album_tracks(album: AlbumDir) -> list[Track]:
@@ -1132,6 +1135,9 @@ def selected_album_statistics(
         "webp_size_mb": 0.0,
         "webp_resolution": "",
         "webp_conversion": False,
+        "compilation": False,
+        "album_mbid_missing": False,
+        "manual_compilation_eligible": False,
     }
     try:
         root_files = sorted(
@@ -1154,6 +1160,30 @@ def selected_album_statistics(
     # other supported audio files through the same Mutagen interface.
     tag_files = mp3_files if mp3_files else audio_files
     result["tracks"] = len(audio_files)
+
+    # Manual compilation recovery is exposed from the representative track
+    # only after an Album is explicitly selected.  Do not inspect every track
+    # and do not contact MusicBrainz while Select Media is open.
+    if tag_files:
+        try:
+            representative_track = read_track(
+                sorted(tag_files, key=lambda value: str(value).casefold())[0]
+            )
+            compilation = str(
+                representative_track.compilation or ""
+            ).strip().casefold() in {"1", "true", "yes", "y", "on"}
+            album_mbid_missing = not str(
+                representative_track.album_mbid or ""
+            ).strip()
+            result["compilation"] = compilation
+            result["album_mbid_missing"] = album_mbid_missing
+            result["manual_compilation_eligible"] = (
+                album_mbid_missing and compilation
+            )
+        except SplinedError:
+            # Scan launch performs the authoritative read and reports the
+            # specific failure. Selection statistics remain non-authoritative.
+            pass
 
     debug_log(
         "selected_stats.begin "
@@ -1310,7 +1340,14 @@ def prepare_tui_library_selection(
     bypass_update: Callable[[str, bool], None] | None = None,
     picker_session: PickerSessionState | None = None,
     initial_event: str = "library",
-) -> tuple[list[AlbumDir], set[str], set[str], list[str], list[AlbumDir]]:
+) -> tuple[
+    list[AlbumDir],
+    set[str],
+    set[str],
+    list[str],
+    list[AlbumDir],
+    str,
+]:
     """Run direct/lazy Select Media and return exact launched Albums.
 
     Normal startup reads only the immediate Artist folders under the configured
@@ -2438,9 +2475,14 @@ def prepare_tui_library_selection(
             )
 
         scan_mode = str(response.get("scan_mode", "auto-selected"))
-        if scan_mode in {"filtered-read", "auto-all", "auto-selected"}:
+        if scan_mode in {
+            "filtered-read",
+            "auto-all",
+            "auto-selected",
+            "manual-compilation-read",
+        }:
             cfg["mode"] = "read"
-        elif scan_mode == "filtered-write":
+        elif scan_mode in {"filtered-write", "manual-compilation-write"}:
             cfg["mode"] = "write"
         else:
             raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
@@ -2497,7 +2539,7 @@ def prepare_tui_library_selection(
         for selected_path in valid_selected_paths:
             session.selected_statistics.pop(selected_path, None)
         session.select_media_active = False
-        return selected, overrides, timeout_paths, sources, known
+        return selected, overrides, timeout_paths, sources, known, scan_mode
 
 
 def compact(paths: list[Path]) -> str:
@@ -2514,6 +2556,24 @@ _RUNTIME_LOG_LAST_FLUSH = 0.0
 _RUNTIME_VERBOSITY = "info"
 _DEBUG_ENABLED = False
 RUNTIME_LOG_MESSAGE_LIMIT = 2048
+_LOG_SECRET_ASSIGNMENT = re.compile(
+    r"""(?ix)
+    (
+        ["']?
+        (?:access_token|refresh_token|client_secret|client_id|client_key|
+           consumer_secret|consumer_key|shared_secret|api_key|session_key|
+           oauth_token_secret|oauth_token|authorization|password|token)
+        ["']?
+        \s*[:=]\s*
+    )
+    (["']?)
+    ([^\s,}\]"']+)
+    \2
+    """
+)
+_LOG_BEARER_VALUE = re.compile(
+    r"(?i)\b(Bearer|Discogs\s+token=)\s*[A-Za-z0-9._~+/=-]+"
+)
 
 LOG_LEVELS = {
     "debug": 10,
@@ -2523,9 +2583,17 @@ LOG_LEVELS = {
 }
 
 
+def _redact_log_message(message: Any) -> str:
+    """Remove credential material before it reaches UI or persistent logs."""
+    safe = str(message)
+    safe = _LOG_BEARER_VALUE.sub(r"\1 [REDACTED]", safe)
+    safe = _LOG_SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", safe)
+    return safe
+
+
 def _bounded_log_message(message: Any) -> str:
     """Keep every runtime record single-line and reasonably sized."""
-    safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
+    safe = _redact_log_message(message).replace("\r", "\\r").replace("\n", "\\n")
     marker = " … [truncated]"
     if len(safe) <= RUNTIME_LOG_MESSAGE_LIMIT:
         return safe
@@ -2671,7 +2739,7 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
         f"verbosity={_RUNTIME_VERBOSITY}\n"
         f"config={config_file}\n"
         f"pid={os.getpid()}\n"
-        f"argv={json.dumps(sys.argv, ensure_ascii=False)}\n"
+        f"argv={_redact_log_message(json.dumps(sys.argv, ensure_ascii=False))}\n"
         "========================================\n"
     )
     _RUNTIME_LOG_HANDLE.flush()
@@ -5287,7 +5355,7 @@ def _run_scan_dir_batch(
     discovered_albums: list[AlbumDir] = []
     ignored_dirs: list[Path] = []
     if tui_active():
-        albums, _, timeout_paths, sources, discovered_albums = prepare_tui_library_selection(
+        albums, _, timeout_paths, sources, discovered_albums, _scan_mode = prepare_tui_library_selection(
             config_file,
             cfg,
             sources,

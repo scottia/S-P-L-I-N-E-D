@@ -185,7 +185,7 @@ filenames do not belong in `config.toml`.
 ### MusicBrainz runtime options
 
 MusicBrainz authentication and runtime options share the credential document
-but are updated independently. Defaults when no options object exists:
+but are updated independently. The normal runtime defaults are:
 
 ```json
 {
@@ -199,6 +199,12 @@ but are updated independently. Defaults when no options object exists:
 
 SPLINED merges changed options, preserves authentication and unknown fields,
 and atomically replaces the credential file.
+
+`Manual Scan [VA/OST Compilations]` requires the exact `retry_max`,
+`min_delay`, and `recording_timeout` keys in the credential JSON. It does not
+hard-code or infer missing values. In that workflow `retry_max` is the maximum
+total attempt count, `min_delay` applies between requests, and
+`recording_timeout` applies to each Recording-ID request.
 
 See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
@@ -219,6 +225,10 @@ Every initialized invocation creates one current-run diagnostic file under:
 The next invocation clears that dedicated run directory before creating the new
 file. The filename contains verbosity, timestamp, uniqueness value, and process
 ID.
+
+Credentials, tokens, authorization headers, client secrets, and private
+credential values must never be logged. SPLINED applies central redaction to UI
+and persistent runtime-log messages as a final safety boundary.
 
 Python/Docker runtime and debug records are single-line and limited to 2,048
 characters. Embedded newlines are escaped and an oversized record ends with a
