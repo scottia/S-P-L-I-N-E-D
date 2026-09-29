@@ -12,6 +12,7 @@ from splined_media_build_policy import (
 )
 from splined_media_database import connect, signature, utc_now
 from splined_media_finalize_policy import (
+    _picker_folder_count,
     _promote_initial_snapshot,
     _stage_count,
     validate_snapshot,
@@ -19,6 +20,43 @@ from splined_media_finalize_policy import (
 
 
 class SplinedMediaFinalizePolicyTests(unittest.TestCase):
+    def test_picker_folder_count_collapses_shared_authority_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            connection = connect(Path(directory) / "splined.db", "test")
+            now = utc_now()
+            shared_path = str(Path(directory) / "music" / "Artist")
+            with connection:
+                connection.executemany(
+                    "INSERT INTO artists"
+                    "(artist_key, artist_name, artist_sort, "
+                    "musicbrainz_artistid, primary_path, status, album_count, "
+                    "unprocessed_count, processed_count, bypassed_count, "
+                    "timeout_count, created_at, updated_at, last_seen_at, "
+                    "splined_version) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            f"mbid:artist-{index}",
+                            f"Authority Artist {index}",
+                            f"Authority Artist {index}",
+                            f"artist-{index}",
+                            shared_path,
+                            "unprocessed",
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            now,
+                            now,
+                            now,
+                            "test",
+                        )
+                        for index in range(2)
+                    ],
+                )
+            self.assertEqual(_picker_folder_count(connection), 1)
+            connection.close()
+
     def test_marker_last_promotion_keeps_checkpoints_until_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

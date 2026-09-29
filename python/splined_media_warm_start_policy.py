@@ -398,7 +398,7 @@ def populate_session_readonly(
     )
 
     with _warm_read_connection(context, connection) as read_connection:
-        expected_artists, expected_albums = _expected_inventory_counts(
+        expected_authority_artists, expected_albums = _expected_inventory_counts(
             read_connection
         )
         core.emit_ui(
@@ -430,7 +430,7 @@ def populate_session_readonly(
             f"authority_artists={len(artist_rows)} "
             f"picker_artists={len(picker_artists)} "
             f"duplicate_paths={duplicate_artist_paths} "
-            f"expected_picker_artists={expected_artists} "
+            f"expected_authority_artists={expected_authority_artists} "
             f"elapsed_seconds={artist_query_seconds:.6f}"
         )
 

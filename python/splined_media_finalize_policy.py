@@ -89,6 +89,14 @@ def _stage_count(connection: sqlite3.Connection) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
+def _picker_folder_count(connection: sqlite3.Connection) -> int:
+    """Return physical Artist folders, not album-authority identities."""
+    row = connection.execute(
+        "SELECT COUNT(DISTINCT primary_path) FROM artists"
+    ).fetchone()
+    return int(row[0] or 0) if row is not None else 0
+
+
 def _picker_exists(connection: sqlite3.Connection) -> bool:
     return connection.execute(
         "SELECT 1 FROM picker_inventory WHERE inventory_key=?",
@@ -707,6 +715,7 @@ def install(core: Any) -> None:
                 expected_albums = int(folders.get("albums", 0) or 0)
             except (TypeError, ValueError):
                 pass
+        expected_picker_folders = _picker_folder_count(connection)
 
         core.emit_ui(
             "cache_progress",
@@ -722,12 +731,12 @@ def install(core: Any) -> None:
         )
         original_populate(context, connection)
 
-        actual_artists = len(context.session.artists)
+        actual_picker_folders = len(context.session.artists)
         actual_albums = len(context.session.album_records)
-        if expected_artists and actual_artists != expected_artists:
+        if actual_picker_folders != expected_picker_folders:
             raise RuntimeError(
-                f"Select Media Artist load mismatch: {actual_artists} != "
-                f"{expected_artists}"
+                "Select Media Artist folder load mismatch: "
+                f"{actual_picker_folders} != {expected_picker_folders}"
             )
         if expected_albums and actual_albums != expected_albums:
             raise RuntimeError(
@@ -742,13 +751,14 @@ def install(core: Any) -> None:
             build_policy._clear_stage(connection)
         core.debug_log(
             "splined.db.session_ready "
-            f"artists={actual_artists} albums={actual_albums}"
+            f"authority_artists={expected_artists} "
+            f"artist_folders={actual_picker_folders} albums={actual_albums}"
         )
         core.emit_ui(
             "cache_progress",
             phase="ready",
             status=(
-                f"Select Media ready · {actual_artists:,} Artists · "
+                f"Select Media ready · {actual_picker_folders:,} Artist folders · "
                 f"{actual_albums:,} Albums"
             ),
             processed=actual_albums,
