@@ -7,7 +7,11 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from mutagen.id3 import ID3, TALB, TCMP, TIT2, TPE1, TPE2, TXXX, UFID
+
+import splined
 import splined_compilation_authority_policy as policy
+import splined_media_tags
 
 
 RECORDING_ID = "59a0c68f-ec68-418d-a29a-fa54a7d9aea9"
@@ -45,10 +49,57 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertFalse(policy.manual_album_eligible([normal]))
         self.assertEqual(policy.manual_track_eligible(missing_album), (True, ""))
 
+        missing_album.artist_mbid = f"{ARTIST_ID}; {OTHER_ARTIST_ID}"
+        self.assertEqual(policy.manual_track_eligible(missing_album), (True, ""))
+
         missing_album.recording_mbid = None
         eligible, reason = policy.manual_track_eligible(missing_album)
         self.assertFalse(eligible)
         self.assertIn("Recording ID", reason)
+
+    def test_standard_musicbrainz_ufid_is_the_recording_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "track.mp3"
+            tags = ID3()
+            tags.add(TIT2(encoding=3, text=["Theme From A Summer Place"]))
+            tags.add(TPE1(encoding=3, text=["Percy Faith"]))
+            tags.add(TALB(encoding=3, text=["Curated Compilation"]))
+            tags.add(TPE2(encoding=3, text=["Various Artists"]))
+            tags.add(TCMP(encoding=3, text=["1"]))
+            tags.add(
+                TXXX(
+                    encoding=3,
+                    desc="MusicBrainz Artist Id",
+                    text=[f"{ARTIST_ID}; {OTHER_ARTIST_ID}"],
+                )
+            )
+            tags.add(
+                UFID(
+                    owner="http://musicbrainz.org",
+                    data=RECORDING_ID.encode("ascii"),
+                )
+            )
+            tags.save(path, v2_version=4)
+
+            runtime_track = splined.read_track(path)
+            self.assertEqual(runtime_track.recording_mbid, RECORDING_ID)
+            self.assertEqual(
+                policy._mbids(runtime_track.artist_mbid),
+                {ARTIST_ID, OTHER_ARTIST_ID},
+            )
+
+            parsed = SimpleNamespace(tags=ID3(path))
+            with patch.object(
+                splined_media_tags,
+                "MutagenFile",
+                return_value=parsed,
+            ):
+                identity = splined_media_tags.read_track_identity_tags(path)
+            self.assertEqual(identity["recording_mbid"], RECORDING_ID)
+            self.assertEqual(
+                policy._mbids(identity["artist_mbid"]),
+                {ARTIST_ID, OTHER_ARTIST_ID},
+            )
 
     def test_credential_options_use_exact_json_names(self) -> None:
         core = SimpleNamespace(
@@ -356,6 +407,76 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
                     current_album_path=root / "Compilation",
                 )
             self.assertEqual(len(second), 1)
+
+    def test_manual_local_cache_accepts_multi_artist_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "splined.db"
+            album_path = root / "Artist" / "Album"
+            album_path.mkdir(parents=True)
+            track_path = album_path / "01.flac"
+            cover_path = album_path / "cover.jpg"
+            track_path.write_bytes(b"track")
+            cover_path.write_bytes(b"cover")
+            stat = track_path.stat()
+            artist_key = policy._artist_key({ARTIST_ID, OTHER_ARTIST_ID})
+
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY, "
+                "artist_name TEXT, musicbrainz_artistid TEXT);"
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY, "
+                "artist_key TEXT, album_name TEXT, musicbrainz_albumid TEXT, "
+                "musicbrainz_releasegroupid TEXT, release_year TEXT, "
+                "compilation INTEGER, path TEXT, cover_path TEXT, "
+                "cover_format TEXT, cover_width INTEGER, cover_height INTEGER, "
+                "cover_found INTEGER);"
+                "CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, "
+                "path TEXT, title TEXT, artist_name TEXT, "
+                "musicbrainz_recordingid TEXT, musicbrainz_artistid TEXT, "
+                "file_size INTEGER, file_mtime_ns INTEGER, updated_at TEXT, "
+                "splined_version TEXT);"
+            )
+            connection.execute(
+                "INSERT INTO artists VALUES(?, ?, ?)",
+                ("artist", "Artist", ARTIST_ID),
+            )
+            connection.execute(
+                "INSERT INTO albums VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "album", "artist", "Original",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "", "1960", 0,
+                    str(album_path), str(cover_path), "JPEG", 1000, 1000, 1,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO tracks VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(track_path), "album", str(track_path), "Duet", "Artists",
+                    RECORDING_ID, artist_key, stat.st_size, stat.st_mtime_ns,
+                    "now", "test",
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            core = SimpleNamespace(
+                runtime_cache_dir=lambda *_args: root,
+                AUDIO_EXTENSIONS={".flac"},
+                display_version=lambda: "test",
+            )
+            rows = policy.local_artwork_rows(
+                core,
+                root / "config.toml",
+                {},
+                SimpleNamespace(
+                    recording_mbid=RECORDING_ID,
+                    artist_mbid=f"{ARTIST_ID}; {OTHER_ARTIST_ID}",
+                ),
+                current_album_path=root / "Compilation",
+            )
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["album_name"], "Original")
 
     def test_install_does_not_wrap_normal_track_reader(self) -> None:
         reader = lambda _album: ["normal"]

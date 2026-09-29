@@ -103,7 +103,7 @@ def manual_track_eligible(track: Any) -> tuple[bool, str]:
         return False, "Track is not tagged compilation=1"
     if len(_mbids(getattr(track, "recording_mbid", None))) != 1:
         return False, "Missing locally tagged MusicBrainz Recording ID"
-    if len(_mbids(getattr(track, "artist_mbid", None))) != 1:
+    if not _mbids(getattr(track, "artist_mbid", None)):
         return False, "Missing locally tagged MusicBrainz Artist ID"
     return True, ""
 
@@ -174,13 +174,15 @@ def local_artwork_rows(
     """
     recordings = _mbids(getattr(track, "recording_mbid", None))
     artists = _mbids(getattr(track, "artist_mbid", None))
-    if len(recordings) != 1 or len(artists) != 1:
+    if len(recordings) != 1 or not artists:
         return []
     database = _database_path(core, config_file, cfg)
     if not database.is_file():
         return []
     recording_mbid = next(iter(recordings))
-    artist_mbid = next(iter(artists))
+    artist_mbids = sorted(artists)
+    artist_mbids_key = _artist_key(artist_mbids)
+    artist_placeholders = ",".join("?" for _value in artist_mbids)
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(database, timeout=10.0)
@@ -197,7 +199,7 @@ def local_artwork_rows(
             "JOIN artists ar ON ar.artist_key=al.artist_key "
             "WHERE lower(t.musicbrainz_recordingid)=? "
             "AND lower(t.musicbrainz_artistid)=? "
-            "AND lower(ar.musicbrainz_artistid)=? "
+            f"AND lower(ar.musicbrainz_artistid) IN ({artist_placeholders}) "
             "AND trim(al.musicbrainz_albumid)<>'' "
             "AND al.cover_found=1 AND trim(al.cover_path)<>'' "
             "AND lower(al.path)<>lower(?) "
@@ -206,8 +208,8 @@ def local_artwork_rows(
         )
         params = (
             recording_mbid,
-            artist_mbid,
-            artist_mbid,
+            artist_mbids_key,
+            *artist_mbids,
             str(current_album_path),
         )
 
@@ -242,13 +244,13 @@ def local_artwork_rows(
                 "ar.artist_name AS album_artist "
                 "FROM albums al JOIN artists ar "
                 "ON ar.artist_key=al.artist_key "
-                "WHERE lower(ar.musicbrainz_artistid)=? "
+                f"WHERE lower(ar.musicbrainz_artistid) IN ({artist_placeholders}) "
                 "AND trim(al.musicbrainz_albumid)<>'' "
                 "AND al.cover_found=1 AND trim(al.cover_path)<>'' "
                 "AND lower(al.path)<>lower(?) "
                 "ORDER BY al.compilation ASC, al.release_year ASC, "
                 "al.album_name COLLATE NOCASE, al.path COLLATE NOCASE",
-                (artist_mbid, str(current_album_path)),
+                (*artist_mbids, str(current_album_path)),
             )
         )
         extensions = {
@@ -315,7 +317,7 @@ def local_artwork_rows(
                 row
                 for row in track_rows
                 if row["musicbrainz_recordingid"] == recording_mbid
-                and row["musicbrainz_artistid"] == artist_mbid
+                and row["musicbrainz_artistid"] == artist_mbids_key
             ]
             if matches:
                 result = dict(album_row)
@@ -551,7 +553,7 @@ def resolve_release_candidates(
 ) -> ReleaseResolution:
     recordings = _mbids(getattr(track, "recording_mbid", None))
     artists = _mbids(getattr(track, "artist_mbid", None))
-    if len(recordings) != 1 or len(artists) != 1:
+    if len(recordings) != 1 or not artists:
         return ReleaseResolution((), "none", "Missing authoritative local IDs")
     recording_mbid = next(iter(recordings))
     artist_mbids_key = _artist_key(artists)
@@ -851,7 +853,7 @@ def record_application(
     outcome: str,
 ) -> None:
     recording = next(iter(_mbids(getattr(track, "recording_mbid", None))), "")
-    artist = next(iter(_mbids(getattr(track, "artist_mbid", None))), "")
+    artist = _artist_key(_mbids(getattr(track, "artist_mbid", None)))
     if not recording or not artist:
         return
     connection = sqlite3.connect(

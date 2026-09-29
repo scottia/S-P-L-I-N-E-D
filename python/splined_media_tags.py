@@ -16,6 +16,10 @@ from PIL import Image
 
 
 VALID_ALBUM_STATUSES = {"unprocessed", "processed", "bypassed", "timeout"}
+_MBID_PATTERN = re.compile(
+    r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}\b"
+)
 
 
 def utc_now() -> str:
@@ -79,6 +83,18 @@ def _first_value(tags: Any, *keys: str) -> str:
     return ""
 
 
+def _all_text(value: Any) -> str:
+    text_values = getattr(value, "text", None)
+    if text_values is not None:
+        value = text_values
+    values = value if isinstance(value, (list, tuple)) else [value]
+    return "; ".join(
+        text
+        for text in (_tag_text(item) for item in values)
+        if text
+    )
+
+
 def _raw_alias_value(parsed: Any, *aliases: str) -> str:
     tags = getattr(parsed, "tags", None)
     if not tags:
@@ -104,6 +120,47 @@ def _raw_alias_value(parsed: Any, *aliases: str) -> str:
         if text:
             return text
     return ""
+
+
+def _raw_alias_values(parsed: Any, *aliases: str) -> str:
+    tags = getattr(parsed, "tags", None)
+    if not tags:
+        return ""
+    wanted = {
+        re.sub(r"[^a-z0-9]+", "", alias.casefold())
+        for alias in aliases
+    }
+    try:
+        items = tags.items()
+    except Exception:
+        return ""
+    for key, value in items:
+        key_text = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
+        if any(alias in key_text for alias in wanted):
+            return _all_text(value)
+    return ""
+
+
+def _musicbrainz_recording_ufid(parsed: Any) -> str:
+    tags = getattr(parsed, "tags", None)
+    getall = getattr(tags, "getall", None)
+    if not callable(getall):
+        return ""
+    for frame in getall("UFID"):
+        owner = str(getattr(frame, "owner", "") or "")
+        if owner.rstrip("/").casefold() != "http://musicbrainz.org":
+            continue
+        data = getattr(frame, "data", b"")
+        if isinstance(data, bytes):
+            return data.decode("ascii", "replace").strip()
+        return str(data or "").strip()
+    return ""
+
+
+def _mbids(value: Any) -> list[str]:
+    return sorted(
+        {match.group(0).casefold() for match in _MBID_PATTERN.finditer(str(value or ""))}
+    )
 
 
 def read_album_tags(audio_path: Path) -> dict[str, Any]:
@@ -179,15 +236,41 @@ def read_track_identity_tags(audio_path: Path) -> dict[str, str]:
                 raw = False
         return _raw_alias_value(raw, *keys) if raw else ""
 
+    def values(*keys: str) -> str:
+        if tags:
+            for key in keys:
+                try:
+                    found = _all_text(tags.get(key))
+                except Exception:
+                    found = ""
+                if found:
+                    return found
+        nonlocal raw
+        if raw is None:
+            try:
+                raw = MutagenFile(audio_path, easy=False)
+            except Exception:
+                raw = False
+        return _raw_alias_values(raw, *keys) if raw else ""
+
+    recording_mbid = value(
+        "musicbrainz_trackid",
+        "musicbrainz recording id",
+        "musicbrainz track id",
+    )
+    if not recording_mbid:
+        if raw is None:
+            try:
+                raw = MutagenFile(audio_path, easy=False)
+            except Exception:
+                raw = False
+        recording_mbid = _musicbrainz_recording_ufid(raw) if raw else ""
+
     return {
         "title": value("title"),
         "artist": value("artist"),
-        "recording_mbid": value(
-            "musicbrainz_trackid",
-            "musicbrainz recording id",
-            "musicbrainz track id",
-        ),
-        "artist_mbid": value(
+        "recording_mbid": recording_mbid,
+        "artist_mbid": values(
             "musicbrainz_artistid",
             "musicbrainz artist id",
         ),
@@ -244,18 +327,10 @@ def inspect_album_tracks(
                 }
             reads += 1
 
-        recording_mbid = str(tags["recording_mbid"]).strip().casefold()
-        artist_mbid = str(tags["artist_mbid"]).strip().casefold()
-        if not re.fullmatch(
-            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-            recording_mbid,
-        ):
-            recording_mbid = ""
-        if not re.fullmatch(
-            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-            artist_mbid,
-        ):
-            artist_mbid = ""
+        recording_ids = _mbids(tags["recording_mbid"])
+        artist_ids = _mbids(tags["artist_mbid"])
+        recording_mbid = recording_ids[0] if len(recording_ids) == 1 else ""
+        artist_mbid = ",".join(artist_ids)
 
         rows.append(
             {
