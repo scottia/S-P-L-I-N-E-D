@@ -82,6 +82,7 @@ from .widgets import card, panel_style, spectral_title, style, title_paragraph
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
+BATCH_RETURN_ACTIVATION_GUARD_SECONDS = 0.5
 
 
 class TuiInitializationError(RuntimeError):
@@ -326,6 +327,8 @@ class TuiState:
     bypass_dialog_enable: bool | None = None
     bypass_dialog_select_after: bool = False
     transient: str = ""
+    batch_return_pending: bool = False
+    library_activate_guard_until: float = 0.0
     help_open: bool = False
     dialog_open: bool = False
     finished: bool = False
@@ -405,6 +408,15 @@ class TuiState:
         elif event in {"library", "library_update"}:
             self.workflow = "library"
             self.workspace = "library"
+            if self.batch_return_pending:
+                self.batch_return_pending = False
+                self.library_activate_guard_until = (
+                    time.monotonic() + BATCH_RETURN_ACTIVATION_GUARD_SECONDS
+                )
+                _runtime_trace(
+                    "library_return_guard.armed "
+                    f"duration_ms={int(BATCH_RETURN_ACTIVATION_GUARD_SECONDS * 1000)}"
+                )
             if self.transient.startswith(
                 (
                     "Indexing Artist folder",
@@ -447,18 +459,6 @@ class TuiState:
                     ),
                     min(self.album_index_cursor, max(0, len(visible_albums) - 1)),
                 )
-            loaded_states = {
-                item.name: (item.status.value if item.status is not None else "")
-                for item in self.library.artists
-                if item.loaded
-            }
-            _runtime_trace(
-                f"library_apply event={event!r} payload_artists="
-                f"{len(payload.get('artists', [])) if isinstance(payload.get('artists'), list) else 'invalid'} "
-                f"payload_albums={len(payload.get('albums', [])) if isinstance(payload.get('albums'), list) else 'invalid'} "
-                f"loaded_artist_states={loaded_states!r} "
-                f"{_library_snapshot(self)}"
-            )
             raw_selected_stats = payload.get("selected_album_stats", [])
             self.selected_album_stats = (
                 [item for item in raw_selected_stats if isinstance(item, dict)]
@@ -468,7 +468,9 @@ class TuiState:
             if not self.selected_album_stats:
                 self.selected_stats_scroll = 0
             _runtime_trace(
-                f"library_stats_apply selected_stats={len(self.selected_album_stats)} "
+                f"library_apply event={event!r} payload_artists="
+                f"{len(payload.get('artists', [])) if isinstance(payload.get('artists'), list) else 'invalid'} "
+                f"payload_albums={len(payload.get('albums', [])) if isinstance(payload.get('albums'), list) else 'invalid'} "
                 f"{_library_snapshot(self)}"
             )
             config = payload.get("config", {})
@@ -882,11 +884,12 @@ def _library_snapshot(state: TuiState) -> str:
     model = state.library
     if model is None:
         return "library=none"
-    selected = [item.path for item in model.albums if item.selected]
+    selected = sum(1 for item in model.albums if item.selected)
+    loaded = sum(1 for item in model.artists if item.loaded)
     return (
         f"active_artist={model.active_artist!r} "
-        f"artists={len(model.artists)} albums={len(model.albums)} "
-        f"selected={len(selected)} selected_paths={selected!r} "
+        f"artists={len(model.artists)} loaded_artists={loaded} "
+        f"albums={len(model.albums)} selected={selected} "
         f"selected_stats={len(state.selected_album_stats)} "
         f"focus={state.library_focus}"
     )
@@ -4190,6 +4193,14 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
     modes = ("filtered-read", "filtered-write")
     mode = modes[state.scan_index]
     payload = state.library.selection_payload(mode)
+    selected = payload.get("selected", [])
+    if not isinstance(selected, list) or not selected:
+        state.transient = "Select at least one Album before launching a scan."
+        _runtime_trace(
+            f"library_launch.blocked reason='empty-selection' mode={mode!r} "
+            f"{_library_snapshot(state)}"
+        )
+        return
     _runtime_trace(
         f"library_launch.send mode={mode!r} {_library_snapshot(state)}"
     )
@@ -4353,6 +4364,18 @@ def _handle_library_key(
     if model is None or request is None or request.kind != "library-selection":
         return False
     code = str(event.code)
+    if action is Action.ACTIVATE and state.library_activate_guard_until:
+        now = time.monotonic()
+        if now < state.library_activate_guard_until:
+            remaining_ms = max(
+                0, int((state.library_activate_guard_until - now) * 1000)
+            )
+            _runtime_trace(
+                "key.suppressed reason='batch-return-activation-guard' "
+                f"code={code!r} remaining_ms={remaining_ms}"
+            )
+            return True
+        state.library_activate_guard_until = 0.0
     if action is Action.QUIT:
         _respond_library_action(state, adapter, "exit")
         state.exit_after_worker = True
@@ -5145,9 +5168,10 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
                 direction = -1 if action in {Action.UP, Action.PAGE_UP} else 1
                 state.report_scroll = max(0, state.report_scroll + direction * amount)
         elif action in {Action.ACTIVATE, Action.BACK}:
-            adapter.respond("continue")
-            state.input_request = None
-            state.transient = "Returning to the retained Select Media session…"
+            if adapter.respond("continue"):
+                state.batch_return_pending = True
+                state.input_request = None
+                state.transient = "Returning to the retained Select Media session…"
         elif action is Action.QUIT:
             adapter.respond("exit")
             state.input_request = None

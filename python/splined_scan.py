@@ -2346,7 +2346,7 @@ def run_scan_dir(
         if answer in {"exit", "__cancel__"}:
             picker_session.validation_cancel.set()
             return session_exit_code
-        core.debug_log("picker.batch.return")
+        core.debug_log("picker.batch.continue_to_library")
         library_event = "library_update"
 
 

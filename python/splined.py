@@ -2045,11 +2045,6 @@ def prepare_tui_library_selection(
         cover_name = str(output.get("file_name", "cover"))
         stat_paths = selected_stats_targets()
         selected_stats = cached_selected_stats(stat_paths)
-        loaded_artist_states = {
-            str(item.get("name", "")): str(item.get("status", ""))
-            for item in artist_rows
-            if bool(item.get("loaded", False))
-        }
         debug_log(
             "picker.library_emit "
             f"event={event} artists={len(artist_rows)} albums={len(rows)} "
@@ -2057,7 +2052,6 @@ def prepare_tui_library_selection(
             f"selected_stats_limit={SELECTED_STATS_LIMIT} "
             f"loaded_artists={len(session.loaded_artists)} "
             f"artist_status_counts={artist_status_counts!r} "
-            f"loaded_artist_states={loaded_artist_states!r} "
             f"preserve_selection={preserve_selection}"
         )
         emit_ui(
@@ -2085,7 +2079,7 @@ def prepare_tui_library_selection(
         and session.library_root == str(index_root)
     )
     if same_session:
-        debug_log("picker.batch.return")
+        debug_log("picker.library.reuse_session")
     else:
         artists = discover_root_artists()
         with session.lock:
@@ -2342,8 +2336,7 @@ def prepare_tui_library_selection(
             selection_started = time.perf_counter()
             debug_log(
                 "picker.selection_change.start "
-                f"selected={len(selected_paths)} "
-                f"paths={sorted(selected_paths, key=str.casefold)!r}"
+                f"selected={len(selected_paths)}"
             )
             session.selected_statistics = {
                 path: value
@@ -2482,11 +2475,13 @@ def prepare_tui_library_selection(
             for path in sorted(valid_selected_paths, key=str.casefold)
         ]
         known = [cached_album(record) for record in records]
+        launch_paths = sorted(valid_selected_paths, key=str.casefold)
         debug_log(
             "picker.launch "
             f"scan_mode={scan_mode!r} valid_selected={len(valid_selected_paths)} "
             f"known={len(records)} overrides={len(overrides)} "
-            f"paths={sorted(valid_selected_paths, key=str.casefold)!r}"
+            f"path_sample={launch_paths[:3]!r} "
+            f"paths_omitted={max(0, len(launch_paths) - 3)}"
         )
         emit_ui(
             "activity",
@@ -2518,6 +2513,7 @@ _RUNTIME_LOG_PENDING = 0
 _RUNTIME_LOG_LAST_FLUSH = 0.0
 _RUNTIME_VERBOSITY = "info"
 _DEBUG_ENABLED = False
+RUNTIME_LOG_MESSAGE_LIMIT = 2048
 
 LOG_LEVELS = {
     "debug": 10,
@@ -2525,6 +2521,15 @@ LOG_LEVELS = {
     "warning": 30,
     "error": 40,
 }
+
+
+def _bounded_log_message(message: Any) -> str:
+    """Keep every runtime record single-line and reasonably sized."""
+    safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
+    marker = " … [truncated]"
+    if len(safe) <= RUNTIME_LOG_MESSAGE_LIMIT:
+        return safe
+    return safe[: RUNTIME_LOG_MESSAGE_LIMIT - len(marker)] + marker
 
 
 def logging_verbosity(cfg: dict[str, Any]) -> str:
@@ -2571,7 +2576,7 @@ def runtime_log(level: str, message: str) -> None:
     if LOG_LEVELS[normalized] < LOG_LEVELS[_RUNTIME_VERBOSITY]:
         return
 
-    safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
+    safe = _bounded_log_message(message)
     now = time.monotonic()
     try:
         with _RUNTIME_LOG_LOCK:
@@ -2687,7 +2692,7 @@ atexit.register(_close_runtime_log)
 def debug_log(message: str) -> None:
     if not _DEBUG_ENABLED:
         return
-    safe = str(message).replace("\r", "\\r").replace("\n", "\\n")
+    safe = _bounded_log_message(message)
     emit_ui("log", level="DEBUG", message=safe)
     runtime_log("debug", safe)
 

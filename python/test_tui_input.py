@@ -704,10 +704,10 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.assertFalse(any(item.selected for item in none_model.albums))
         self.assertTrue(adapter.responses.empty())
 
-        for index, mode in enumerate(
-            ("filtered-read", "filtered-write", "auto-all", "auto-selected")
-        ):
+        for index, mode in enumerate(("filtered-read", "filtered-write")):
             state = _library_state()
+            assert state.library is not None
+            state.library.albums[0].selected = True
             adapter = TuiAdapter()
             adapter.waiting.set()
             render(_Frame(150, 44), state, select_theme("OLED"))
@@ -718,6 +718,44 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             )
             response = json.loads(adapter.responses.get_nowait())
             self.assertEqual(response["scan_mode"], mode)
+
+        for index in (2, 3):
+            state = _library_state()
+            adapter = TuiAdapter()
+            adapter.waiting.set()
+            render(_Frame(150, 44), state, select_theme("OLED"))
+            handle_mouse(
+                state,
+                adapter,
+                _center(_region(state, "scan-control", index)),
+            )
+            self.assertTrue(adapter.responses.empty())
+            self.assertIn("Select SPLINED LAUNCH", state.transient)
+
+    def test_empty_filtered_launch_is_blocked(self) -> None:
+        state = _library_state()
+        state.library_focus = 2
+        state.scan_index = 0
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+
+        handle_key(state, adapter, _Event("enter"))
+
+        self.assertTrue(adapter.responses.empty())
+        self.assertEqual(state.workflow, "library")
+        self.assertIn("Select at least one Album", state.transient)
+
+        assert state.library is not None
+        state.library.albums[0].selected = True
+        state.library_activate_guard_until = time.monotonic() + 1.0
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(
+            state,
+            adapter,
+            _center(_region(state, "scan-control", 0)),
+        )
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["scan_mode"], "filtered-read")
 
     def test_filtered_scan_mouse_launch_keeps_multiple_artist_row_scope(self) -> None:
         state = _library_state(artists=3, albums_each=2)

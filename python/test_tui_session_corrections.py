@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -317,6 +318,7 @@ class MultiBatchSessionTests(unittest.TestCase):
         adapter.waiting.set()
         handle_key(state, adapter, _Key("enter"))
         self.assertEqual(adapter.responses.get_nowait(), "continue")
+        self.assertTrue(state.batch_return_pending)
         state.apply("library_update", _library_payload("processed"))
         assert state.library is not None
         self.assertEqual(state.workflow, "library")
@@ -326,6 +328,47 @@ class MultiBatchSessionTests(unittest.TestCase):
         self.assertEqual(state.library.albums[0].status, AlbumStatus.PROCESSED)
         self.assertFalse(state.library.albums[0].selected)
         self.assertEqual(len(state.history), 1)
+        self.assertFalse(state.batch_return_pending)
+        self.assertGreater(state.library_activate_guard_until, monotonic())
+
+    def test_duplicate_enter_is_suppressed_when_report_returns_to_library(self) -> None:
+        state = TuiState()
+        state.apply("library", _library_payload())
+        state.apply("input", {"prompt": "", "context": {"kind": "batch-summary"}})
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+
+        handle_key(state, adapter, _Key("enter"))
+        self.assertEqual(adapter.responses.get_nowait(), "continue")
+        state.apply("library_update", _library_payload())
+        state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
+        state.library_focus = 2
+        state.scan_index = 0
+        adapter.waiting.set()
+
+        handle_key(state, adapter, _Key("enter"))
+        self.assertTrue(adapter.responses.empty())
+        self.assertEqual(state.workflow, "library")
+
+        state.library_activate_guard_until = 0.0
+        handle_key(state, adapter, _Key("enter"))
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["scan_mode"], "filtered-read")
+
+    def test_debug_records_are_bounded_and_library_snapshots_are_compact(self) -> None:
+        safe = splined._bounded_log_message("line\n" + ("x" * 10_000))
+        self.assertLessEqual(len(safe), splined.RUNTIME_LOG_MESSAGE_LIMIT)
+        self.assertNotIn("\n", safe)
+        self.assertTrue(safe.endswith("[truncated]"))
+
+        state = TuiState()
+        state.apply("library", _library_payload())
+        snapshot = tui_module._library_snapshot(state)
+        self.assertNotIn("selected_paths", snapshot)
+        self.assertIn("selected=1", snapshot)
 
     def test_report_preserves_processing_order_and_authoritative_detail_classes(self) -> None:
         state = TuiState()
