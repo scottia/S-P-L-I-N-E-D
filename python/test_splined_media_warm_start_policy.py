@@ -192,13 +192,28 @@ class WarmStartPolicyTests(unittest.TestCase):
                     ("UPDATE ", "INSERT ", "DELETE ", "REPLACE ")
                 )
             ]
+            album_reads = [
+                statement
+                for statement in statements
+                if "FROM ALBUMS JOIN ARTISTS" in statement.upper()
+            ]
             self.assertEqual(mutating, [])
+            self.assertTrue(album_reads)
+            self.assertTrue(
+                all("ORDER BY" not in statement.upper() for statement in album_reads)
+            )
             self.assertTrue(session.ready)
             self.assertEqual(len(session.artists), 1)
             self.assertEqual(len(session.album_records), 1)
             self.assertEqual(
                 session.probed_artist_statuses[str(artist_path)],
                 "unprocessed",
+            )
+            self.assertTrue(
+                any("warm_load.artist_rows" in message for message in logs)
+            )
+            self.assertTrue(
+                any("warm_load.album_rows" in message for message in logs)
             )
             self.assertTrue(
                 any("warm_load.done" in message for message in logs)
