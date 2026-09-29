@@ -1,10 +1,13 @@
-"""Restore the compact multicolor bar for SPLINED database builds.
+"""Render one compact multicolor bar for SPLINED database builds.
 
 During Album-folder discovery there is no honest denominator, so the banner
 uses a moving red→orange→yellow→green activity pulse and omits a misleading
-0.0% label. Once discovery completes, the same rail becomes a determinate
-multicolor bar; the existing ``Albums x / y`` line is the numeric progress
+percentage. Once discovery completes, the same rail becomes a determinate
+multicolor bar; the existing ``Albums x / y`` line remains the numeric progress
 indicator.
+
+The banner's checkpoint count is read from committed SQLite rows instead of
+assuming that every processed Album has already been durably saved.
 """
 
 from __future__ import annotations
@@ -21,25 +24,25 @@ _INSTALLED = False
 _STAGE_TYPE = "media-index-stage"
 
 
-def _saved_checkpoint_count(database_path: str) -> int:
-    """Return durable staged Album rows without blocking startup on failure."""
+def _saved_checkpoint_count(database_path: str) -> int | None:
+    """Return committed staged Album rows, or ``None`` when temporarily busy."""
     path = Path(str(database_path).strip())
     if not path.is_file():
         return 0
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(
-            f"file:{path}?mode=ro",
-            uri=True,
-            timeout=1.0,
-        )
+        # A normal connection participates in the live WAL/shm state. Setting
+        # query_only immediately afterwards keeps this presentation probe from
+        # mutating the database while still seeing committed WAL transactions.
+        connection = sqlite3.connect(path, timeout=0.25)
+        connection.execute("PRAGMA query_only = ON")
         row = connection.execute(
             "SELECT COUNT(*) FROM cache_entries WHERE cache_type=?",
             (_STAGE_TYPE,),
         ).fetchone()
         return int(row[0] or 0) if row is not None else 0
     except (OSError, sqlite3.Error, TypeError, ValueError):
-        return 0
+        return None
     finally:
         if connection is not None:
             connection.close()
@@ -58,21 +61,36 @@ def _patch_build_presentation(module: Any) -> None:
             saved = _saved_checkpoint_count(
                 str(payload.get("database", ""))
             )
-            state.cache_saved_before_inventory = saved
-            state.cache_staged = max(
-                int(getattr(state, "cache_staged", 0) or 0),
-                saved,
-            )
+            durable = int(saved or 0)
+            state.cache_saved_before_inventory = durable
+            state.cache_staged = durable
         elif event == "cache_progress":
-            saved = int(
-                getattr(state, "cache_saved_before_inventory", 0) or 0
+            database_path = str(
+                payload.get(
+                    "database",
+                    getattr(state, "cache_database", ""),
+                )
             )
-            # Discovery reports staged=0 because no new tag rows are created in
-            # that phase. Preserve checkpoints from the interrupted prior run.
-            state.cache_staged = max(
-                int(getattr(state, "cache_staged", 0) or 0),
-                saved,
-            )
+            durable = _saved_checkpoint_count(database_path)
+            if durable is not None:
+                state.cache_staged = durable
+                state.cache_saved_before_inventory = max(
+                    int(
+                        getattr(
+                            state,
+                            "cache_saved_before_inventory",
+                            0,
+                        )
+                        or 0
+                    ),
+                    durable,
+                )
+            elif str(payload.get("phase", "")) == "inventory":
+                # Discovery creates no stage rows. Preserve the last proven
+                # durable count if the short live-WAL probe was temporarily busy.
+                state.cache_staged = int(
+                    getattr(state, "cache_saved_before_inventory", 0) or 0
+                )
 
     def render_startup(frame: Any, state: Any, theme: Any) -> None:
         original_render(frame, state, theme)
@@ -104,15 +122,15 @@ def _patch_build_presentation(module: Any) -> None:
             max(1, int(panel.width) - 4),
             max(1, int(panel.height) - 2),
         )
-
-        # Preserve the database banner exactly. Replace only the three rows
-        # below the Album-count line, removing the redundant percentage row.
-        progress_area = module.Rect(
-            int(inner.x),
-            int(inner.y) + 3,
-            int(inner.width),
-            min(3, max(1, int(inner.height) - 3)),
+        sections = module._split_vertical(
+            inner,
+            [
+                module.Constraint.length(4),
+                module.Constraint.length(2),
+                module.Constraint.fill(1),
+            ],
         )
+        progress_area = sections[1]
 
         total = int(getattr(state, "cache_total", 0) or 0)
         percent = float(getattr(state, "cache_percent", 0.0) or 0.0)
@@ -181,15 +199,19 @@ def _patch_build_presentation(module: Any) -> None:
             module.Span("]", module.style(theme, module.Semantic.MUTED))
         )
 
-        progress = module.Text(
-            [
-                module.Line(bar_spans).centered(),
-                module.Line([]),
-                module.Line([]),
-            ]
-        )
+        # The base database renderer draws a two-row Gauge here. Clear that
+        # exact rectangle before painting the custom rail; otherwise empty
+        # overlay lines leave the old Gauge visible as a second progress bar.
+        frame.render_widget(module.Clear(), progress_area)
         frame.render_widget(
-            module.Paragraph(progress).style(module.panel_style(theme)),
+            module.Paragraph(
+                module.Text(
+                    [
+                        module.Line(bar_spans).centered(),
+                        module.Line([]),
+                    ]
+                )
+            ).style(module.panel_style(theme)),
             progress_area,
         )
 
