@@ -40,7 +40,7 @@ def _resident_session_usable(
     """Return whether Select Media is already resident for this library/DB.
 
     The authoritative picker loop intentionally passes the same
-    ``PickerSessionState`` back after an Album Run Report.  Reopening SQLite and
+    ``PickerSessionState`` back after an Album Run Report. Reopening SQLite and
     rebuilding 1,000+ Artist / 3,000+ Album objects at that boundary defeats the
     retained-session contract and leaves the report screen apparently stuck.
     """
@@ -52,6 +52,13 @@ def _resident_session_usable(
     )
 
 
+def _wal_bytes(database: Path) -> int:
+    try:
+        return int(Path(str(database) + "-wal").stat().st_size)
+    except OSError:
+        return 0
+
+
 def _checkpoint_wal(
     core: Any,
     connection: sqlite3.Connection,
@@ -61,7 +68,7 @@ def _checkpoint_wal(
     """Merge completed build/refresh WAL pages into ``splined.db``.
 
     ``splined.db-wal`` and ``splined.db-shm`` are normal SQLite sidecars, not
-    separate databases.  A final TRUNCATE checkpoint keeps their retained size
+    separate databases. A final TRUNCATE checkpoint keeps their retained size
     small after a large first build or explicit refresh and avoids carrying a
     large completed WAL into the next launch.
     """
@@ -78,7 +85,7 @@ def _checkpoint_wal(
             f"checkpointed={checkpointed}"
         )
     except sqlite3.Error as exc:
-        # The active snapshot is already committed.  A failed maintenance
+        # The active snapshot is already committed. A failed maintenance
         # checkpoint must not invalidate it or prevent Select Media startup.
         core.debug_log(
             "splined.db.wal_checkpoint_error "
@@ -272,9 +279,29 @@ def install(core: Any, scan: Any | None = None) -> None:
                     ignored,
                     cover_name,
                 )
-                if not index_is_usable(connection, expected):
+                usable = index_is_usable(connection, expected)
+                if not usable:
                     build_index(context, connection, "initial-build")
                     rebuilt = True
+                else:
+                    pending_wal = _wal_bytes(db)
+                    if pending_wal:
+                        core.emit_ui(
+                            "cache_progress",
+                            phase="load",
+                            status=(
+                                "Consolidating completed SQLite write log · "
+                                f"{pending_wal / 1_048_576:.1f} MiB"
+                            ),
+                            processed=0,
+                            total=0,
+                            percent=0.0,
+                            albums=0,
+                            staged=0,
+                            recovered=0,
+                            current_artist="",
+                        )
+                        _checkpoint_wal(core, connection, reason="warm-start")
                 populate_session(context, connection)
                 migrate_legacy_json(context)
                 if rebuilt:
