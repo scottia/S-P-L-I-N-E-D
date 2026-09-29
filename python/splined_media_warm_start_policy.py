@@ -1,11 +1,17 @@
 """Read-only warm-start hydration for the persistent SPLINED media index.
 
 An active ``picker_inventory`` already proves that the Artist/Album snapshot is
-complete.  Normal startup therefore must not rewrite thousands of Album and
-Artist rows before Select Media can paint.  This policy projects current
+complete. Normal startup therefore must not rewrite thousands of Album and
+Artist rows before Select Media can paint. This policy projects current
 history/bypass/timeout state in memory, hydrates the resident picker directly
 from SQLite, and leaves persistence to explicit SPLINED mutations and explicit
 library refreshes.
+
+The SQL read deliberately avoids sorting wide Album rows inside SQLite. The
+Album table contains several JSON/statistics columns; an SQL ``ORDER BY`` over
+the full joined row can spill a large temporary B-tree on slower mounted cache
+storage. Rows are streamed without SQL sorting, progress is published in
+batches, and the comparatively small Python row lists are sorted in memory.
 """
 
 from __future__ import annotations
@@ -25,6 +31,41 @@ from splined_media_tags import json_list
 
 _INSTALLED = False
 _PROGRESS_BATCH = 512
+
+
+def _casefold(value: Any) -> str:
+    return str(value or "").casefold()
+
+
+def _expected_inventory_counts(connection: Any) -> tuple[int, int]:
+    row = connection.execute(
+        "SELECT folders_json FROM picker_inventory WHERE inventory_key=?",
+        (database.INVENTORY_KEY,),
+    ).fetchone()
+    if row is None:
+        return 0, 0
+    try:
+        folders = json.loads(str(row["folders_json"]))
+    except (TypeError, ValueError):
+        return 0, 0
+    if not isinstance(folders, dict):
+        return 0, 0
+    return (
+        int(folders.get("artists", 0) or 0),
+        int(folders.get("albums", 0) or 0),
+    )
+
+
+def _database_family_sizes(path: Path) -> str:
+    values: list[str] = []
+    for suffix in ("", "-wal", "-shm"):
+        item = Path(str(path) + suffix)
+        try:
+            size = item.stat().st_size
+        except OSError:
+            continue
+        values.append(f"{item.name}={size}")
+    return " ".join(values) or "unavailable"
 
 
 def _project_statuses_in_memory(
@@ -140,49 +181,117 @@ def populate_session_readonly(
     """Hydrate the complete picker from the active snapshot with no SQL writes."""
     core = context.core
     started = time.perf_counter()
+    expected_artists, expected_albums = _expected_inventory_counts(connection)
 
-    core.debug_log("splined.db.warm_load.begin")
+    core.debug_log(
+        "splined.db.warm_load.begin "
+        f"expected_artists={expected_artists} expected_albums={expected_albums} "
+        f"files={_database_family_sizes(context.db_path)}"
+    )
     core.emit_ui(
         "cache_progress",
         phase="load",
-        status="Reading active SQLite Artist / Album rows",
+        status="Reading indexed Artist rows",
         processed=0,
-        total=0,
+        total=expected_albums,
         percent=0.0,
-        albums=0,
+        albums=expected_albums,
         staged=0,
         recovered=0,
         current_artist="",
     )
 
-    artist_rows = list(
-        connection.execute(
-            "SELECT * FROM artists "
-            "ORDER BY artist_sort COLLATE NOCASE, artist_name COLLATE NOCASE"
+    artist_started = time.perf_counter()
+    artist_rows = list(connection.execute("SELECT * FROM artists"))
+    artist_query_seconds = time.perf_counter() - artist_started
+    core.debug_log(
+        "splined.db.warm_load.artist_rows "
+        f"artists={len(artist_rows)} elapsed_seconds={artist_query_seconds:.6f}"
+    )
+
+    core.emit_ui(
+        "cache_progress",
+        phase="load",
+        status=(
+            f"Reading indexed Album rows · {len(artist_rows):,} Artists ready"
+        ),
+        processed=0,
+        total=expected_albums,
+        percent=0.0,
+        albums=expected_albums,
+        staged=0,
+        recovered=0,
+        current_artist="",
+    )
+
+    album_started = time.perf_counter()
+    album_rows: list[Any] = []
+    cursor = connection.execute(
+        "SELECT albums.*, artists.primary_path AS artist_path, "
+        "artists.artist_name AS artist_name, "
+        "artists.artist_sort AS artist_sort "
+        "FROM albums JOIN artists "
+        "ON artists.artist_key=albums.artist_key"
+    )
+    while True:
+        batch = cursor.fetchmany(_PROGRESS_BATCH)
+        if not batch:
+            break
+        album_rows.extend(batch)
+        processed = len(album_rows)
+        denominator = expected_albums or processed
+        core.emit_ui(
+            "cache_progress",
+            phase="load",
+            status=(
+                f"Reading indexed Album rows · {processed:,} loaded"
+            ),
+            processed=processed,
+            total=denominator,
+            percent=(processed / denominator * 100.0 if denominator else 0.0),
+            albums=expected_albums or processed,
+            staged=0,
+            recovered=0,
+            current_artist="",
+        )
+    album_query_seconds = time.perf_counter() - album_started
+    core.debug_log(
+        "splined.db.warm_load.album_rows "
+        f"albums={len(album_rows)} elapsed_seconds={album_query_seconds:.6f}"
+    )
+
+    sort_started = time.perf_counter()
+    artist_rows.sort(
+        key=lambda row: (
+            _casefold(row["artist_sort"] or row["artist_name"]),
+            _casefold(row["artist_name"]),
+            _casefold(row["primary_path"]),
         )
     )
-    album_rows = list(
-        connection.execute(
-            "SELECT albums.*, artists.primary_path AS artist_path, "
-            "artists.artist_name AS artist_name "
-            "FROM albums JOIN artists "
-            "ON artists.artist_key=albums.artist_key "
-            "ORDER BY artists.artist_sort COLLATE NOCASE, "
-            "albums.album_sort COLLATE NOCASE, "
-            "albums.album_name COLLATE NOCASE"
+    album_rows.sort(
+        key=lambda row: (
+            _casefold(row["artist_sort"] or row["artist_name"]),
+            _casefold(row["artist_name"]),
+            _casefold(row["album_sort"] or row["album_name"]),
+            _casefold(row["album_name"]),
+            _casefold(row["path"]),
         )
     )
+    sort_seconds = time.perf_counter() - sort_started
     total = len(album_rows)
 
     core.debug_log(
         "splined.db.warm_load.rows "
-        f"artists={len(artist_rows)} albums={total}"
+        f"artists={len(artist_rows)} albums={total} "
+        f"artist_query_seconds={artist_query_seconds:.6f} "
+        f"album_query_seconds={album_query_seconds:.6f} "
+        f"sort_seconds={sort_seconds:.6f}"
     )
     core.emit_ui(
         "cache_progress",
         phase="load",
         status=(
-            f"SQLite rows read · {len(artist_rows):,} Artists / "
+            f"SQLite rows ready · {len(artist_rows):,} Artists / "
             f"{total:,} Albums"
         ),
         processed=total,
@@ -208,7 +317,7 @@ def populate_session_readonly(
             str(row["album_key"]): str(row["artist_key"])
             for row in album_rows
         }
-        # This map represents the current projected UI authority.  It avoids a
+        # This map represents the current projected UI authority. It avoids a
         # whole-library write when the first library payload is emitted.
         runtime._STATUS_BY_PATH = dict(status_by_path)
         runtime._STATS_BY_PATH = {
