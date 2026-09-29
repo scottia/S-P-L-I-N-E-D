@@ -11,3 +11,5 @@ test_*.py
 !test_splined_media_finalize_policy.py
 !test_splined_media_load_policy.py
 !test_splined_media_warm_start_policy.py
+!test_splined_media_checkpoint_policy.py
+!test_splined_compilation_authority_policy.py
