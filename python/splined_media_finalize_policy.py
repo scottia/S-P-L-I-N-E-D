@@ -1,9 +1,9 @@
 """Validated SQLite promotion and Select Media handoff.
 
-The tag/checkpoint phase is not the end of a first database build.  A completed
+The tag/checkpoint phase is not the end of a first database build. A completed
 set of staged Album rows still has to be promoted into the active Artist/Album
 snapshot, verified, projected into Folder Status, and loaded into the retained
-Select Media session.  This policy makes those phases explicit and refuses to
+Select Media session. This policy makes those phases explicit and refuses to
 clear resumable checkpoints unless the promoted snapshot is internally valid.
 """
 
@@ -201,7 +201,7 @@ def install(core: Any) -> None:
             original_build(context, connection, reason)
         except Exception as exc:
             # If failure happened before promotion, the stage count identifies
-            # how much work is safe to resume.  If promotion itself failed, the
+            # how much work is safe to resume. If promotion itself failed, the
             # validated insert wrapper has already emitted the precise reason.
             staged = _stage_count(connection)
             core.debug_log(
@@ -267,7 +267,7 @@ def install(core: Any) -> None:
                 f"{actual_albums:,} Albums"
             ),
             processed=actual_albums,
-            total=actual_alums if False else actual_albums,
+            total=actual_albums,
             percent=100.0 if actual_albums else 0.0,
             albums=actual_albums,
             staged=0,
