@@ -14,6 +14,7 @@ from splined_media_build_policy import (
     _write_stage_batch,
 )
 from splined_media_database import connect, signature
+from splined_tui_progress_policy import _saved_checkpoint_count
 
 
 class SplinedMediaBuildPolicyTests(unittest.TestCase):
@@ -74,6 +75,12 @@ class SplinedMediaBuildPolicyTests(unittest.TestCase):
                     album,
                 )
             )
+            self.assertEqual(_saved_checkpoint_count(str(database)), 1)
+            self.assertEqual(
+                _saved_checkpoint_count(str(root / "missing.db")),
+                0,
+            )
+
             row = connection.execute(
                 "SELECT details_json FROM db_maintenance_state "
                 "WHERE action_name='media-index-build-progress'"
