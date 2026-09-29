@@ -62,7 +62,7 @@ def install(core: Any, scan: Any | None = None) -> None:
             set_current_album(str(payload.get("path", "")))
         elif event == "album_material_result":
             # READ evaluates a possible result but does not install cover.* or
-            # create durable processed authority.  The database remains a
+            # create durable processed authority. The database remains a
             # materialized view of actual local artwork and Write outcomes.
             outcome = str(payload.get("outcome", "")).casefold()
             if "read-only" not in outcome:
@@ -73,7 +73,12 @@ def install(core: Any, scan: Any | None = None) -> None:
                         "splined.db.material_sync_error "
                         f"error={type(exc).__name__}: {exc}"
                     )
-        elif event in {"library", "library_update"}:
+        elif event == "library_update":
+            # The first library payload must paint immediately. Warm-start
+            # projection already populated the in-memory status authority, so
+            # there is no reason to perform a whole-library SQLite write before
+            # Select Media becomes visible. Later explicit UI changes may sync
+            # only genuine status deltas.
             try:
                 sync_library_payload(payload)
             except Exception as exc:
