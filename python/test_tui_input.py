@@ -547,7 +547,10 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             column=scroll.x + 1,
             row=scroll.y + 1,
         )
-        handle_mouse(self.state, self.adapter, event)
+        with mock.patch("tui.splined_tui._runtime_trace") as trace:
+            handle_mouse(self.state, self.adapter, event)
+            handle_mouse(self.state, self.adapter, event)
+        self.assertEqual(trace.call_count, 1)
         self.assertGreater(self.state.artist_scroll, 0)
         self.assertEqual(model.active_artist, initial_artist)
         self.assertEqual([item.selected for item in model.albums], initial_selection)

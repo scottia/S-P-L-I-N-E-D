@@ -422,10 +422,15 @@ def populate_session_readonly(
                 "status FROM artists"
             )
         ]
+        picker_artists = runtime.project_picker_artists(core, artist_rows)
+        duplicate_artist_paths = len(artist_rows) - len(picker_artists)
         artist_query_seconds = time.perf_counter() - artist_started
         core.debug_log(
             "splined.db.warm_load.artist_rows "
-            f"artists={len(artist_rows)} "
+            f"authority_artists={len(artist_rows)} "
+            f"picker_artists={len(picker_artists)} "
+            f"duplicate_paths={duplicate_artist_paths} "
+            f"expected_picker_artists={expected_artists} "
             f"elapsed_seconds={artist_query_seconds:.6f}"
         )
 
@@ -437,7 +442,7 @@ def populate_session_readonly(
             phase="load",
             status=(
                 "Reading compact indexed Album rows · "
-                f"{len(artist_rows):,} Artists ready"
+                f"{len(picker_artists):,} Artist folders ready"
             ),
             processed=0,
             total=expected_albums,
@@ -519,7 +524,8 @@ def populate_session_readonly(
 
         core.debug_log(
             "splined.db.warm_load.rows "
-            f"artists={len(artist_rows)} albums={total} "
+            f"authority_artists={len(artist_rows)} "
+            f"picker_artists={len(picker_artists)} albums={total} "
             f"artist_query_seconds={artist_query_seconds:.6f} "
             f"album_query_seconds={album_query_seconds:.6f} "
             f"sort_seconds={sort_seconds:.6f}"
@@ -528,7 +534,7 @@ def populate_session_readonly(
             "cache_progress",
             phase="load",
             status=(
-                f"SQLite rows ready · {len(artist_rows):,} Artists / "
+                f"SQLite rows ready · {len(picker_artists):,} Artist folders / "
                 f"{total:,} Albums"
             ),
             processed=total,
@@ -579,15 +585,7 @@ def populate_session_readonly(
     }
 
     with session.lock:
-        session.artists = [
-            core.PickerArtist(
-                str(row["primary_path"]),
-                str(row["artist_name"]),
-                True,
-                time.time(),
-            )
-            for row in artist_rows
-        ]
+        session.artists = list(picker_artists)
         session.album_records = [
             core.PickerAlbum(
                 str(row["path"]),
@@ -598,9 +596,7 @@ def populate_session_readonly(
             )
             for row in album_rows
         ]
-        session.loaded_artists = {
-            str(row["primary_path"]) for row in artist_rows
-        }
+        session.loaded_artists = {artist.path for artist in picker_artists}
         session.probed_artist_statuses = {
             artist_path_by_key[artist_key]: status
             for artist_key, status in status_by_artist.items()
@@ -628,14 +624,18 @@ def populate_session_readonly(
     elapsed = time.perf_counter() - started
     core.debug_log(
         "splined.db.warm_load.done "
-        f"artists={len(artist_rows)} albums={len(album_rows)} "
+        f"authority_artists={len(artist_rows)} "
+        f"picker_artists={len(picker_artists)} "
+        f"duplicate_paths={duplicate_artist_paths} "
+        f"albums={len(album_rows)} "
         f"elapsed_seconds={elapsed:.6f}"
     )
     core.emit_ui(
         "cache_progress",
         phase="ready",
         status=(
-            f"Indexed Select Media model ready · {len(artist_rows):,} Artists · "
+            f"Indexed Select Media model ready · "
+            f"{len(picker_artists):,} Artist folders · "
             f"{len(album_rows):,} Albums"
         ),
         processed=len(album_rows),

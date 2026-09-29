@@ -83,6 +83,7 @@ from .widgets import card, panel_style, spectral_title, style, title_paragraph
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
 BATCH_RETURN_ACTIVATION_GUARD_SECONDS = 0.5
+MOUSE_SCROLL_TRACE_INTERVAL_SECONDS = 0.5
 
 
 class TuiInitializationError(RuntimeError):
@@ -285,6 +286,8 @@ class TuiState:
     album_info_loading: bool = False
     album_info_target: str = ""
     debug_library_geometry: str = ""
+    debug_scroll_trace_at: float = 0.0
+    debug_scroll_trace_signature: str = ""
     filter_edit: str = ""
     hit_regions: list[HitRegion] = field(default_factory=list)
     ai_enabled: bool = False
@@ -4934,10 +4937,19 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if code in {"scroll_up", "scroll_down"}:
         region = _scroll_hit_test(state, column, row)
         target = repr(region.target) if region is not None else "'none'"
-        _runtime_trace(
-            f"mouse.scroll code={code!r} x={column} y={row} "
-            f"target={target} workflow={state.workflow!r}"
-        )
+        now = time.monotonic()
+        signature = f"{code}:{target}:{state.workflow}"
+        if (
+            signature != state.debug_scroll_trace_signature
+            or now - state.debug_scroll_trace_at
+            >= MOUSE_SCROLL_TRACE_INTERVAL_SECONDS
+        ):
+            _runtime_trace(
+                f"mouse.scroll code={code!r} x={column} y={row} "
+                f"target={target} workflow={state.workflow!r}"
+            )
+            state.debug_scroll_trace_at = now
+            state.debug_scroll_trace_signature = signature
         if region is not None:
             _scroll_region(state, region, -1 if code == "scroll_up" else 1)
         return

@@ -2079,7 +2079,7 @@ def prepare_tui_library_selection(
         and session.library_root == str(index_root)
     )
     if same_session:
-        debug_log("picker.library.reuse_session")
+        debug_log("picker.library.resident_session_ready")
     else:
         artists = discover_root_artists()
         with session.lock:

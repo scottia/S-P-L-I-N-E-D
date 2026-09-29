@@ -13,7 +13,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from typing import Any
+from typing import Any, Iterable
 
 from PIL import Image
 
@@ -117,6 +117,27 @@ def cached_stats(path: Path) -> dict[str, Any] | None:
         return json.loads(json.dumps(value)) if value is not None else None
 
 
+def project_picker_artists(core: Any, artist_rows: Iterable[Any]) -> list[Any]:
+    """Project authority Artists into unique physical Artist folders."""
+    by_path: dict[str, Any] = {}
+    indexed_at = time.time()
+    for row in artist_rows:
+        raw_path = str(row["primary_path"] or "")
+        if not raw_path:
+            continue
+        path = raw_path
+        if path in by_path:
+            continue
+        folder_name = path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
+        if not folder_name:
+            folder_name = str(row["artist_name"] or path)
+        by_path[path] = core.PickerArtist(path, folder_name, True, indexed_at)
+    return sorted(
+        by_path.values(),
+        key=lambda artist: (artist.name.casefold(), artist.path.casefold()),
+    )
+
+
 def populate_session(
     context: IndexContext,
     connection: sqlite3.Connection,
@@ -129,6 +150,7 @@ def populate_session(
             "ORDER BY artist_sort COLLATE NOCASE, artist_name COLLATE NOCASE"
         )
     )
+    picker_artists = project_picker_artists(context.core, artist_rows)
     album_rows = list(
         connection.execute(
             "SELECT albums.*, artists.primary_path AS artist_path, "
@@ -169,15 +191,7 @@ def populate_session(
     }
 
     with session.lock:
-        session.artists = [
-            context.core.PickerArtist(
-                str(row["primary_path"]),
-                str(row["artist_name"]),
-                True,
-                time.time(),
-            )
-            for row in artist_rows
-        ]
+        session.artists = list(picker_artists)
         session.album_records = [
             context.core.PickerAlbum(
                 str(row["path"]),
@@ -188,9 +202,7 @@ def populate_session(
             )
             for row in album_rows
         ]
-        session.loaded_artists = {
-            str(row["primary_path"]) for row in artist_rows
-        }
+        session.loaded_artists = {artist.path for artist in picker_artists}
         session.probed_artist_statuses = {
             str(row["primary_path"]): str(row["status"])
             for row in artist_rows

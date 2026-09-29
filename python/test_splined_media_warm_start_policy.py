@@ -88,13 +88,38 @@ class WarmStartPolicyTests(unittest.TestCase):
                     "splined_version) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         "mbid:artist",
-                        "Artist",
-                        "Artist",
+                        "Authority Artist",
+                        "Authority Artist",
                         "artist",
                         str(artist_path),
                         "unprocessed",
                         1,
                         1,
+                        0,
+                        0,
+                        0,
+                        now,
+                        now,
+                        now,
+                        "test",
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO artists"
+                    "(artist_key, artist_name, artist_sort, "
+                    "musicbrainz_artistid, primary_path, status, album_count, "
+                    "unprocessed_count, processed_count, bypassed_count, "
+                    "timeout_count, created_at, updated_at, last_seen_at, "
+                    "splined_version) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "mbid:guest",
+                        "Guest Authority",
+                        "Guest Authority",
+                        "guest",
+                        str(artist_path),
+                        "unprocessed",
+                        0,
+                        0,
                         0,
                         0,
                         0,
@@ -226,6 +251,8 @@ class WarmStartPolicyTests(unittest.TestCase):
             )
             self.assertTrue(session.ready)
             self.assertEqual(len(session.artists), 1)
+            self.assertEqual(session.artists[0].name, "Artist")
+            self.assertEqual(session.loaded_artists, {str(artist_path)})
             self.assertEqual(len(session.album_records), 1)
             self.assertEqual(runtime._STATS_BY_PATH, {})
             self.assertEqual(
@@ -234,6 +261,14 @@ class WarmStartPolicyTests(unittest.TestCase):
             )
             self.assertTrue(
                 any("warm_load.artist_rows" in message for message in logs)
+            )
+            self.assertTrue(
+                any(
+                    "authority_artists=2" in message
+                    and "picker_artists=1" in message
+                    and "duplicate_paths=1" in message
+                    for message in logs
+                )
             )
             self.assertTrue(
                 any("warm_load.album_rows" in message for message in logs)
