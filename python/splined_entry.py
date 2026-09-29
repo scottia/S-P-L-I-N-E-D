@@ -18,6 +18,7 @@ from splined_ranking_policy import install as install_ranking_policy
 from splined_tui_overlay_policy import install as install_tui_overlay_policy
 from splined_tui_progress_policy import install as install_tui_progress_policy
 from tui.advanced_runtime_policy import install as install_advanced_runtime_policy
+from tui.library_chrome_policy import install as install_library_chrome_policy
 from tui.warm_banner_policy import install as install_warm_banner_policy
 
 
@@ -34,6 +35,7 @@ install_media_checkpoint_policy(splined_scan.core)
 install_media_index(splined_scan.core, splined_scan)
 install_advanced_runtime_policy(splined_scan.core, splined_scan)
 install_warm_banner_policy(splined_scan.core)
+install_library_chrome_policy()
 
 
 if __name__ == "__main__":
