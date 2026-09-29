@@ -1,13 +1,15 @@
 """Advanced-runtime corrections for preferred ranking and TUI lifecycle.
 
 This policy is deliberately installed after the shared ranking, SQLite, and TUI
-policies. It keeps four user-visible contracts together:
+policies. It keeps five user-visible contracts together:
 
 * ``(s) preferred`` is the candidate with the shortest projected distance from
   the configured Ideal; source-policy acceptance remains visible information
   and automatic non-interactive selection keeps its existing safeguards.
 * SQLite warm starts retain the compact ``LIBRARY CACHE`` panel but use the
   same spectral progress rail as the one-time database build.
+* native terminal polling never monopolizes the Python interpreter while the
+  SQLite worker hydrates the in-memory Artist/Album picker model.
 * the library status card is named ``ALBUM STATUS``;
 * terminal mouse/raw mode is restored defensively after every TUI operational
   run, and successful summaries containing ``Failed [0]`` are not mislabeled
@@ -93,6 +95,56 @@ def _spectral_bar(module: Any, theme: Any, width: int, ratio: float) -> list[Any
             )
     spans.append(module.Span("]", module.style(theme, module.Semantic.MUTED)))
     return spans
+
+
+def _install_cooperative_input_reader(module: Any) -> None:
+    """Prevent the native 80 ms terminal poll from starving Python workers.
+
+    The PyO3 ``poll_event`` method currently blocks inside Rust while still
+    attached to the Python interpreter. The TUI calls it every frame, which can
+    leave the SQLite hydration thread only tiny scheduling windows between
+    polls. A non-blocking native probe plus ``time.sleep`` preserves the same
+    input latency while releasing the interpreter for the worker thread.
+    """
+    if getattr(module, "_splined_cooperative_input_reader", False):
+        return
+    native_reader = getattr(module, "InputEventReader", None)
+    if native_reader is None:
+        return
+
+    class CooperativeInputEventReader:
+        def __init__(self) -> None:
+            self._reader = native_reader()
+
+        def __enter__(self) -> "CooperativeInputEventReader":
+            self._reader.__enter__()
+            return self
+
+        def __exit__(
+            self,
+            exc_type: Any,
+            exc_value: Any,
+            traceback: Any,
+        ) -> bool:
+            return bool(self._reader.__exit__(exc_type, exc_value, traceback))
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._reader, name)
+
+        def poll_event(self, timeout_ms: int = 0) -> Any:
+            # Probe the native queue without blocking while attached to Python.
+            event = self._reader.poll_event(0)
+            if event is not None or timeout_ms <= 0:
+                return event
+
+            # Python's sleep releases the interpreter so the SQLite/session
+            # worker can fetch and materialize all rows at native speed.
+            time.sleep(float(timeout_ms) / 1000.0)
+            return self._reader.poll_event(0)
+
+    CooperativeInputEventReader.__name__ = "CooperativeInputEventReader"
+    module.InputEventReader = CooperativeInputEventReader
+    module._splined_cooperative_input_reader = True
 
 
 def _patch_tui(module: Any) -> None:
@@ -237,6 +289,7 @@ def _patch_tui(module: Any) -> None:
             logger(level, clean)
         writer.adapter.emit("log", {"level": level, "message": clean})
 
+    _install_cooperative_input_reader(module)
     module.TuiState.apply = apply
     module.card = card
     module._render_startup = render_startup
