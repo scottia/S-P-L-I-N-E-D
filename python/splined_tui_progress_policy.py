@@ -1,25 +1,78 @@
-"""Restore the multicolor percent bar for SPLINED database builds.
+"""Restore the compact multicolor bar for SPLINED database builds.
 
-The resumable SQLite builder owns build semantics and text. This policy keeps
-that banner intact and replaces only its progress surface with the established
-red→orange→yellow→green bar, centered immediately below the Album count.
+During Album-folder discovery there is no honest denominator, so the banner
+uses a moving red→orange→yellow→green activity pulse and omits a misleading
+0.0% label. Once discovery completes, the same rail becomes a determinate
+multicolor bar; the existing ``Albums x / y`` line is the numeric progress
+indicator.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+import sqlite3
+import time
 from typing import Any
 
 import splined_media_build_policy as build_policy
 
 
 _INSTALLED = False
+_STAGE_TYPE = "media-index-stage"
+
+
+def _saved_checkpoint_count(database_path: str) -> int:
+    """Return durable staged Album rows without blocking startup on failure."""
+    path = Path(str(database_path).strip())
+    if not path.is_file():
+        return 0
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            f"file:{path}?mode=ro",
+            uri=True,
+            timeout=1.0,
+        )
+        row = connection.execute(
+            "SELECT COUNT(*) FROM cache_entries WHERE cache_type=?",
+            (_STAGE_TYPE,),
+        ).fetchone()
+        return int(row[0] or 0) if row is not None else 0
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return 0
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _patch_build_presentation(module: Any) -> None:
     if getattr(module, "_splined_database_gradient_progress", False):
         return
 
+    original_apply = module.TuiState.apply
     original_render = module._render_startup
+
+    def apply(state: Any, event: str, payload: dict[str, Any]) -> None:
+        original_apply(state, event, payload)
+        if event == "cache_build_start":
+            saved = _saved_checkpoint_count(
+                str(payload.get("database", ""))
+            )
+            state.cache_saved_before_inventory = saved
+            state.cache_staged = max(
+                int(getattr(state, "cache_staged", 0) or 0),
+                saved,
+            )
+        elif event == "cache_progress":
+            saved = int(
+                getattr(state, "cache_saved_before_inventory", 0) or 0
+            )
+            # Discovery reports staged=0 because no new tag rows are created in
+            # that phase. Preserve checkpoints from the interrupted prior run.
+            state.cache_staged = max(
+                int(getattr(state, "cache_staged", 0) or 0),
+                saved,
+            )
 
     def render_startup(frame: Any, state: Any, theme: Any) -> None:
         original_render(frame, state, theme)
@@ -52,9 +105,8 @@ def _patch_build_presentation(module: Any) -> None:
             max(1, int(panel.height) - 2),
         )
 
-        # The first three inner rows are the existing one-time/refresh line,
-        # build phase, and Album count. Place the color bar immediately below
-        # those rows and retain the original checkpoint/ETA footer beneath it.
+        # Preserve the database banner exactly. Replace only the three rows
+        # below the Album-count line, removing the redundant percentage row.
         progress_area = module.Rect(
             int(inner.x),
             int(inner.y) + 3,
@@ -65,58 +117,74 @@ def _patch_build_presentation(module: Any) -> None:
         total = int(getattr(state, "cache_total", 0) or 0)
         percent = float(getattr(state, "cache_percent", 0.0) or 0.0)
         ratio = max(0.0, min(1.0, percent / 100.0))
-        bar_width = max(8, int(progress_area.width) - 4)
-        filled = min(bar_width, round(bar_width * ratio))
+        bar_width = min(64, max(24, int(progress_area.width) - 10))
 
         bar_spans: list[Any] = [
             module.Span("[", module.style(theme, module.Semantic.MUTED))
         ]
-        for index in range(bar_width):
-            if total and index < filled:
-                red, green, blue = module._status_gradient_rgb(
-                    index / max(1, bar_width - 1)
-                )
-                bar_spans.append(
-                    module.Span(
-                        "█",
-                        module.Style().fg(
-                            module.Color.rgb(red, green, blue)
-                        ),
+        if total > 0:
+            filled = min(bar_width, round(bar_width * ratio))
+            for index in range(bar_width):
+                if index < filled:
+                    red, green, blue = module._status_gradient_rgb(
+                        index / max(1, bar_width - 1)
                     )
-                )
-            else:
-                bar_spans.append(
-                    module.Span(
-                        "░",
-                        module.style(theme, module.Semantic.MUTED),
+                    bar_spans.append(
+                        module.Span(
+                            "█",
+                            module.Style().fg(
+                                module.Color.rgb(red, green, blue)
+                            ),
+                        )
                     )
-                )
+                else:
+                    bar_spans.append(
+                        module.Span(
+                            "░",
+                            module.style(theme, module.Semantic.MUTED),
+                        )
+                    )
+        else:
+            # No total exists during topology discovery. Animate a compact
+            # spectral pulse instead of presenting a frozen zero-percent bar.
+            pulse_width = max(8, min(16, bar_width // 4))
+            elapsed = max(
+                0.0,
+                time.monotonic()
+                - float(getattr(state, "started_at", time.monotonic())),
+            )
+            head = (
+                int(elapsed * 12.0) % (bar_width + pulse_width)
+            ) - pulse_width
+            for index in range(bar_width):
+                offset = index - head
+                if 0 <= offset < pulse_width:
+                    red, green, blue = module._status_gradient_rgb(
+                        offset / max(1, pulse_width - 1)
+                    )
+                    bar_spans.append(
+                        module.Span(
+                            "█",
+                            module.Style().fg(
+                                module.Color.rgb(red, green, blue)
+                            ),
+                        )
+                    )
+                else:
+                    bar_spans.append(
+                        module.Span(
+                            "░",
+                            module.style(theme, module.Semantic.MUTED),
+                        )
+                    )
         bar_spans.append(
             module.Span("]", module.style(theme, module.Semantic.MUTED))
         )
 
-        # Discovery has no known denominator yet, so it honestly begins at
-        # 0.0%. Once Album discovery completes, the same line advances through
-        # the representative-tag/checkpoint phase to 100.0%.
-        label = f"{percent:.1f}%"
-        label_red, label_green, label_blue = module._status_gradient_rgb(ratio)
         progress = module.Text(
             [
                 module.Line(bar_spans).centered(),
-                module.Line(
-                    [
-                        module.Span(
-                            label,
-                            module.Style().fg(
-                                module.Color.rgb(
-                                    label_red,
-                                    label_green,
-                                    label_blue,
-                                )
-                            ),
-                        )
-                    ]
-                ).centered(),
+                module.Line([]),
                 module.Line([]),
             ]
         )
@@ -125,6 +193,7 @@ def _patch_build_presentation(module: Any) -> None:
             progress_area,
         )
 
+    module.TuiState.apply = apply
     module._render_startup = render_startup
     module._splined_database_gradient_progress = True
 
