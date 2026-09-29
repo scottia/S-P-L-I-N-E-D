@@ -30,6 +30,7 @@ import splined_media_build_policy as build_policy
 import splined_media_database as database
 import splined_media_fast_index_policy as fast_policy
 import splined_media_index as media_index
+import splined_media_runtime as runtime
 
 
 _INSTALLED = False
@@ -89,12 +90,20 @@ def _stage_count(connection: sqlite3.Connection) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
-def _picker_folder_count(connection: sqlite3.Connection) -> int:
-    """Return physical Artist folders, not album-authority identities."""
-    row = connection.execute(
-        "SELECT COUNT(DISTINCT primary_path) FROM artists"
-    ).fetchone()
-    return int(row[0] or 0) if row is not None else 0
+def _picker_folder_count(
+    connection: sqlite3.Connection,
+    library_root: Path | str,
+) -> int:
+    """Count unique physical roots represented by indexed Album paths."""
+    return len(
+        {
+            path
+            for row in connection.execute("SELECT path FROM albums")
+            if (
+                path := runtime.physical_artist_folder(library_root, row[0])
+            )
+        }
+    )
 
 
 def _picker_exists(connection: sqlite3.Connection) -> bool:
@@ -715,7 +724,10 @@ def install(core: Any) -> None:
                 expected_albums = int(folders.get("albums", 0) or 0)
             except (TypeError, ValueError):
                 pass
-        expected_picker_folders = _picker_folder_count(connection)
+        expected_picker_folders = _picker_folder_count(
+            connection,
+            context.library_root,
+        )
 
         core.emit_ui(
             "cache_progress",

@@ -20,42 +20,16 @@ from splined_media_finalize_policy import (
 
 
 class SplinedMediaFinalizePolicyTests(unittest.TestCase):
-    def test_picker_folder_count_collapses_shared_authority_path(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            connection = connect(Path(directory) / "splined.db", "test")
-            now = utc_now()
-            shared_path = str(Path(directory) / "music" / "Artist")
-            with connection:
-                connection.executemany(
-                    "INSERT INTO artists"
-                    "(artist_key, artist_name, artist_sort, "
-                    "musicbrainz_artistid, primary_path, status, album_count, "
-                    "unprocessed_count, processed_count, bypassed_count, "
-                    "timeout_count, created_at, updated_at, last_seen_at, "
-                    "splined_version) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        (
-                            f"mbid:artist-{index}",
-                            f"Authority Artist {index}",
-                            f"Authority Artist {index}",
-                            f"artist-{index}",
-                            shared_path,
-                            "unprocessed",
-                            0,
-                            0,
-                            0,
-                            0,
-                            0,
-                            now,
-                            now,
-                            now,
-                            "test",
-                        )
-                        for index in range(2)
-                    ],
-                )
-            self.assertEqual(_picker_folder_count(connection), 1)
-            connection.close()
+    def test_picker_folder_count_uses_album_physical_roots(self) -> None:
+        connection = SimpleNamespace(
+            execute=lambda _statement: [
+                ("/music/Christina Aguilera/AGUILERA",),
+                ("/music/[Soundtracks]/A Star Is Born",),
+                ("/music/[Soundtracks]/Barbie",),
+                ("/music/[Various Artists]/[Various Artists]/Pop/Album",),
+            ]
+        )
+        self.assertEqual(_picker_folder_count(connection, "/music"), 3)
 
     def test_marker_last_promotion_keeps_checkpoints_until_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

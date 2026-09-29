@@ -62,6 +62,43 @@ class DummySession:
 
 
 class WarmStartPolicyTests(unittest.TestCase):
+    def test_physical_artist_folder_uses_library_top_level(self) -> None:
+        self.assertEqual(
+            runtime.physical_artist_folder(
+                "/music",
+                "/music/Christina Aguilera/AGUILERA",
+            ),
+            "/music/Christina Aguilera",
+        )
+        self.assertEqual(
+            runtime.physical_artist_folder(
+                "/music",
+                "/music/[Soundtracks]/A Star Is Born",
+            ),
+            "/music/[Soundtracks]",
+        )
+        self.assertEqual(
+            runtime.physical_artist_folder(
+                "/music",
+                "/music/[Various Artists]/[Various Artists]/Pop/Album",
+            ),
+            "/music/[Various Artists]",
+        )
+
+    def test_picker_statuses_are_isolated_by_physical_folder(self) -> None:
+        rows = [
+            {"artist_path": "/music/Christina Aguilera", "status": "processed"},
+            {"artist_path": "/music/Christina Aguilera", "status": "unprocessed"},
+            {"artist_path": "/music/[Soundtracks]", "status": "processed"},
+        ]
+        self.assertEqual(
+            runtime.project_picker_folder_statuses(rows),
+            {
+                "/music/Christina Aguilera": "partial",
+                "/music/[Soundtracks]": "complete",
+            },
+        )
+
     def tearDown(self) -> None:
         runtime._ACTIVE_DB_PATH = None
         runtime._PATH_TO_ALBUM_KEY = {}
@@ -75,8 +112,9 @@ class WarmStartPolicyTests(unittest.TestCase):
             database_path = root / "splined.db"
             connection = connect(database_path, "test")
             now = utc_now()
-            artist_path = root / "music" / "Artist"
-            album_path = artist_path / "Album"
+            authority_path = root / "music" / "[Soundtracks]"
+            artist_path = root / "music" / "Christina Aguilera"
+            album_path = artist_path / "AGUILERA"
 
             with connection:
                 connection.execute(
@@ -91,7 +129,7 @@ class WarmStartPolicyTests(unittest.TestCase):
                         "Authority Artist",
                         "Authority Artist",
                         "artist",
-                        str(artist_path),
+                        str(authority_path),
                         "unprocessed",
                         1,
                         1,
@@ -116,7 +154,7 @@ class WarmStartPolicyTests(unittest.TestCase):
                         "Guest Authority",
                         "Guest Authority",
                         "guest",
-                        str(artist_path),
+                        str(authority_path),
                         "unprocessed",
                         0,
                         0,
@@ -251,9 +289,10 @@ class WarmStartPolicyTests(unittest.TestCase):
             )
             self.assertTrue(session.ready)
             self.assertEqual(len(session.artists), 1)
-            self.assertEqual(session.artists[0].name, "Artist")
+            self.assertEqual(session.artists[0].name, "Christina Aguilera")
             self.assertEqual(session.loaded_artists, {str(artist_path)})
             self.assertEqual(len(session.album_records), 1)
+            self.assertEqual(session.album_records[0].artist_path, str(artist_path))
             self.assertEqual(runtime._STATS_BY_PATH, {})
             self.assertEqual(
                 session.probed_artist_statuses[str(artist_path)],
@@ -265,8 +304,7 @@ class WarmStartPolicyTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     "authority_artists=2" in message
-                    and "picker_artists=1" in message
-                    and "duplicate_paths=1" in message
+                    and "picker_folders=1" in message
                     for message in logs
                 )
             )

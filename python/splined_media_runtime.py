@@ -22,6 +22,7 @@ from splined_media_database import (
     IndexContext,
     VALID_ALBUM_STATUSES,
     VALID_ARTIST_STATUSES,
+    aggregate_artist,
     connect,
     project_statuses,
     update_artist_aggregate,
@@ -117,25 +118,74 @@ def cached_stats(path: Path) -> dict[str, Any] | None:
         return json.loads(json.dumps(value)) if value is not None else None
 
 
-def project_picker_artists(core: Any, artist_rows: Iterable[Any]) -> list[Any]:
-    """Project authority Artists into unique physical Artist folders."""
+def physical_artist_folder(library_root: Path | str, album_path: Any) -> str:
+    """Return the first physical folder below the configured library root.
+
+    Indexed paths come from the deployment host and can therefore use a
+    different separator than the process reading them (for example, Linux
+    paths in a database inspected by Windows tests).  Normalize only for the
+    comparison and preserve the stored path style in the returned value.
+    """
+    root = str(library_root).rstrip("/\\")
+    album = str(album_path or "").rstrip("/\\")
+    if not root or not album:
+        return ""
+
+    normalized_root = root.replace("\\", "/")
+    normalized_album = album.replace("\\", "/")
+    prefix = f"{normalized_root}/"
+    windows_style = "\\" in root or (
+        len(normalized_root) >= 2 and normalized_root[1] == ":"
+    )
+    comparable_album = (
+        normalized_album.casefold() if windows_style else normalized_album
+    )
+    comparable_prefix = prefix.casefold() if windows_style else prefix
+    if not comparable_album.startswith(comparable_prefix):
+        return ""
+
+    relative = normalized_album[len(prefix) :]
+    folder_name = relative.split("/", 1)[0]
+    if not folder_name:
+        return ""
+    separator = "\\" if "\\" in root and "/" not in root else "/"
+    return f"{root}{separator}{folder_name}"
+
+
+def project_picker_artists(
+    core: Any,
+    library_root: Path | str,
+    album_rows: Iterable[Any],
+) -> list[Any]:
+    """Project indexed Albums into unique physical library-root folders."""
     by_path: dict[str, Any] = {}
     indexed_at = time.time()
-    for row in artist_rows:
-        raw_path = str(row["primary_path"] or "")
-        if not raw_path:
+    for row in album_rows:
+        path = physical_artist_folder(library_root, row["path"])
+        if not path:
             continue
-        path = raw_path
         if path in by_path:
             continue
         folder_name = path.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
-        if not folder_name:
-            folder_name = str(row["artist_name"] or path)
         by_path[path] = core.PickerArtist(path, folder_name, True, indexed_at)
     return sorted(
         by_path.values(),
         key=lambda artist: (artist.name.casefold(), artist.path.casefold()),
     )
+
+
+def project_picker_folder_statuses(album_rows: Iterable[Any]) -> dict[str, str]:
+    """Aggregate Album statuses independently for each physical folder."""
+    grouped: dict[str, list[str]] = {}
+    for row in album_rows:
+        path = str(row["artist_path"] or "")
+        status = str(row["status"] or "")
+        if path and status in VALID_ALBUM_STATUSES:
+            grouped.setdefault(path, []).append(status)
+    return {
+        path: aggregate_artist(statuses)
+        for path, statuses in grouped.items()
+    }
 
 
 def populate_session(
@@ -144,23 +194,32 @@ def populate_session(
 ) -> None:
     """Hydrate the complete resident picker from SQLite before first paint."""
     project_statuses(context, connection)
-    artist_rows = list(
-        connection.execute(
-            "SELECT * FROM artists "
-            "ORDER BY artist_sort COLLATE NOCASE, artist_name COLLATE NOCASE"
+    album_rows = [
+        dict(row)
+        for row in connection.execute(
+            "SELECT albums.*, artists.artist_name AS artist_name, "
+            "artists.artist_sort AS artist_sort "
+            "FROM albums JOIN artists "
+            "ON artists.artist_key=albums.artist_key"
+        )
+    ]
+    for row in album_rows:
+        row["artist_path"] = physical_artist_folder(
+            context.library_root,
+            row["path"],
+        )
+    album_rows.sort(
+        key=lambda row: (
+            str(row["artist_path"]).casefold(),
+            str(row["album_sort"] or row["album_name"]).casefold(),
+            str(row["album_name"]).casefold(),
+            str(row["path"]).casefold(),
         )
     )
-    picker_artists = project_picker_artists(context.core, artist_rows)
-    album_rows = list(
-        connection.execute(
-            "SELECT albums.*, artists.primary_path AS artist_path, "
-            "artists.artist_name AS artist_name "
-            "FROM albums JOIN artists "
-            "ON artists.artist_key=albums.artist_key "
-            "ORDER BY artists.artist_sort COLLATE NOCASE, "
-            "albums.album_sort COLLATE NOCASE, "
-            "albums.album_name COLLATE NOCASE"
-        )
+    picker_artists = project_picker_artists(
+        context.core,
+        context.library_root,
+        album_rows,
     )
 
     global _PATH_TO_ALBUM_KEY, _ARTIST_BY_ALBUM_KEY
@@ -203,11 +262,7 @@ def populate_session(
             for row in album_rows
         ]
         session.loaded_artists = {artist.path for artist in picker_artists}
-        session.probed_artist_statuses = {
-            str(row["primary_path"]): str(row["status"])
-            for row in artist_rows
-            if str(row["status"]) in VALID_ARTIST_STATUSES
-        }
+        session.probed_artist_statuses = project_picker_folder_statuses(album_rows)
         session.selected_paths.clear()
         session.selected_paths.update(selected)
         session.selected_statistics.clear()
