@@ -355,6 +355,12 @@ exact release and validates that it contains the selected Recording and Artist.
 refresh. These edits never write MBID tags; only approved embedded artwork is
 written.
 
+If an edited ID is valid UUID syntax but MusicBrainz rejects the authority or
+returns no artwork candidate, the candidate screen remains open with the
+failure reason and all three `[E]` controls. Enter cannot select an empty row;
+the operator can correct another ID, press `M`, leave that track unchanged
+with `B`, or leave the Manual Album with Escape.
+
 Candidates are grouped by source while sharing one terminal-cell grid. Depending
 on responsive width, the grid may include:
 

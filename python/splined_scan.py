@@ -1308,6 +1308,12 @@ def run_manual_compilation_album(
                         f"    {core.magenta(provider_label(source))}: "
                         f"{core.yellow(message)}"
                     )
+            visible_diagnostics = list(diagnostics)
+            if lookup_error:
+                visible_diagnostics.insert(
+                    0, ("musicbrainz", lookup_error)
+                )
+            core.emit_ui("diagnostics", items=visible_diagnostics)
             if not candidates and not interactive_retry:
                 summary.unresolved += 1
                 _manual_unresolved(

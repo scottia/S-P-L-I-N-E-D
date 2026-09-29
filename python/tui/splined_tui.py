@@ -783,6 +783,16 @@ class TuiState:
                 self.workflow = "batch-report"
             else:
                 self.workflow = "picker"
+                if (
+                    input_kind == "fallback-picker"
+                    and self.transient.startswith(
+                        (
+                            "Updating MusicBrainz authority",
+                            "Re-querying MusicBrainz authority",
+                        )
+                    )
+                ):
+                    self.transient = ""
             self.input_request = InputRequest(
                 str(payload.get("prompt", "")),
                 input_kind,
@@ -3842,7 +3852,26 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 semantic=semantic,
             )
     else:
-        frame.render_widget(Paragraph.from_string("No candidates returned.").block(card(theme, "SOURCE CANDIDATES", Semantic.WARNING)), groups_area)
+        messages = [
+            f"{source}: {message}" if source else message
+            for source, message in state.diagnostics
+        ]
+        messages.append(
+            "Click [E] to correct an ID · M re-query · "
+            "B leave track unchanged · Esc return to Album list"
+        )
+        frame.render_widget(
+            Paragraph.from_string("\n".join(messages))
+            .block(
+                card(
+                    theme,
+                    "NO ARTWORK CANDIDATES · MANUAL DECISION REQUIRED",
+                    Semantic.WARNING,
+                )
+            )
+            .wrap(True, True),
+            groups_area,
+        )
     _render_activity_region(frame, activity_area, state, theme)
     if preview_area is not None and state.candidates:
         state.remote_preview_width = max(1, int(preview_area.width) - 2)
@@ -4514,7 +4543,18 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_library(frame, content, state, theme)
     elif state.input_request and state.input_request.kind == "musicbrainz":
         _render_musicbrainz(frame, content, state, theme)
-    elif state.workflow in {"candidates", "picker"} and state.candidates:
+    elif (
+        state.workflow in {"candidates", "picker"}
+        and (
+            bool(state.candidates)
+            or (
+                state.input_request is not None
+                and state.input_request.kind == "fallback-picker"
+                and bool(state.fallback_artist_id)
+                and bool(state.fallback_track_id)
+            )
+        )
+    ):
         _render_candidates(frame, content, state, theme)
     elif state.workflow == "processing":
         _render_processing(frame, content, state, theme)
@@ -5739,6 +5779,14 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             else:
                 state.selected_index = index
         return
+    manual_fallback = bool(
+        request.kind == "fallback-picker"
+        and state.fallback_artist_id
+        and state.fallback_track_id
+    )
+    if action is Action.BYPASS and manual_fallback:
+        _submit(state, adapter, "b")
+        return
     if action is Action.BYPASS:
         current = (
             next(
@@ -5782,9 +5830,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if (
         action is Action.MUSICBRAINZ
-        and request.kind == "fallback-picker"
-        and state.fallback_artist_id
-        and state.fallback_track_id
+        and manual_fallback
     ):
         payload = {
             "action": "manual-authority-query",
@@ -5793,6 +5839,16 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         }
         state.transient = "Re-querying MusicBrainz authority and artwork candidates…"
         _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
+        return
+    if (
+        manual_fallback
+        and not state.candidates
+        and action in {Action.ACTIVATE, Action.SUGGESTED}
+    ):
+        state.transient = (
+            "No candidate is selectable · edit an [E] ID, press M to "
+            "re-query, B to leave unchanged, or Esc for the Album list."
+        )
         return
     response = picker_response(action, state.selected_index)
     if response is not None:

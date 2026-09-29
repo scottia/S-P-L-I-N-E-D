@@ -1130,6 +1130,59 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         )
 
+    def test_empty_manual_result_keeps_authority_edit_controls_visible(self) -> None:
+        state = self._candidate_state()
+        state.candidates = []
+        state.apply(
+            "fallback_authority",
+            {
+                "artist": "Jimmy Clanton",
+                "artist_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "album": "",
+                "album_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "track": "Go Jimmy Go",
+                "track_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            },
+        )
+        state.apply(
+            "diagnostics",
+            {
+                "items": [
+                    [
+                        "musicbrainz",
+                        "Release is not an official Album, Soundtrack, or Compilation",
+                    ]
+                ]
+            },
+        )
+        render(_Frame(220, 50), state, select_theme("OLED"))
+        edit_boxes = [
+            region
+            for region in state.hit_regions
+            if region.target == "fallback-id-edit"
+        ]
+        self.assertEqual([region.index for region in edit_boxes], [0, 1, 2])
+
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("Enter"))
+        self.assertTrue(adapter.responses.empty())
+        self.assertIn("No candidate is selectable", state.transient)
+
+        handle_key(state, adapter, _Event("b"))
+        self.assertEqual(adapter.responses.get_nowait(), "b")
+        self.assertFalse(state.dialog_open)
+
+    def test_manual_requery_input_clears_processing_transient(self) -> None:
+        state = self._candidate_state()
+        state.transient = "Updating MusicBrainz authority and artwork candidates…"
+        state.apply(
+            "input",
+            {"prompt": "Choice: ", "context": {"kind": "fallback-picker"}},
+        )
+        self.assertEqual(state.workflow, "picker")
+        self.assertEqual(state.transient, "")
+
     def test_dialog_yes_and_no_are_direct(self) -> None:
         for target, expected in (("dialog-yes", "b"), ("dialog-no", None)):
             state = self._candidate_state()
