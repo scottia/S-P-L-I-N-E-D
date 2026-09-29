@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from splined_media_database import _insert_snapshot, database_path, schema_path
+from splined_media_index import _resident_session_usable
 from splined_media_runtime import clean_transient_cache, stats_from_row
 from splined_media_tags import album_base_key, artist_key
 
@@ -17,6 +19,37 @@ class SplinedMediaIndexTests(unittest.TestCase):
         self.assertEqual(
             database_path(Path("/_cache")),
             Path("/_cache/splined.db"),
+        )
+
+    def test_retained_session_requires_same_ready_library_and_database(self) -> None:
+        session = SimpleNamespace(
+            ready=True,
+            library_root="/music",
+            picker_path="/_cache/splined.db",
+        )
+        self.assertTrue(
+            _resident_session_usable(
+                session,
+                library_root=Path("/music"),
+                database=Path("/_cache/splined.db"),
+            )
+        )
+        session.ready = False
+        self.assertFalse(
+            _resident_session_usable(
+                session,
+                library_root=Path("/music"),
+                database=Path("/_cache/splined.db"),
+            )
+        )
+        session.ready = True
+        session.picker_path = "/_cache/other.db"
+        self.assertFalse(
+            _resident_session_usable(
+                session,
+                library_root=Path("/music"),
+                database=Path("/_cache/splined.db"),
+            )
         )
 
     def test_cache_cleanup_preserves_sqlite_database_family(self) -> None:
