@@ -16,7 +16,7 @@ persistent history + actual local artwork + current timeout policy
                             ↓
                  splined.db Select Media view
                             ↓
-                      TUI Folder Status
+                      TUI Album Status
 ```
 
 ## Persistent history and cache data
@@ -81,7 +81,7 @@ A Red Album is not normally auto-selected. Processing requires deliberate
 removal of the saved bypass through the supported confirmation. Removing a
 bypass is distinct from a temporary command-line override.
 
-At Artist level, any bypassed child produces:
+At physical Artist-folder level, any bypassed child produces:
 
 ```text
 BLUE
@@ -113,9 +113,9 @@ crawl is required merely to update clock-based eligibility.
 
 Manual reprocessing can differ where an explicit supported action allows it.
 
-## Artist aggregate colors
+## Physical Artist-folder aggregate colors
 
-| Artist color | Meaning |
+| Artist-folder color | Meaning |
 | --- | --- |
 | White | All eligible Albums unprocessed, no bypass |
 | Purple | Mixed processed/unprocessed/timeout state, no bypass |
@@ -140,9 +140,10 @@ Artist row → partial aggregate
 
 ## Stable TUI presentation
 
-The Python/Docker TUI loads complete Artist/Album/status rows from `splined.db`
-before the first Select Media frame. Opening an Artist does not cause a folder
-scan or status-color transition.
+The Python/Docker TUI loads complete physical Artist-folder/Album/status rows
+from `splined.db` before the first Select Media frame. Tagged Artist authority
+rows may differ in number from visible physical folders. Opening an Artist
+folder does not cause a folder scan or status-color transition.
 
 Colors change during a session only after:
 
@@ -200,7 +201,7 @@ Stop SPLINED before a raw database copy if consistent WAL state is required.
 3. update Config v5 paths and Docker bind mounts;
 4. launch and verify the library root;
 5. run explicit Refresh if music paths changed;
-6. verify Folder Status before a LIVE WRITE batch.
+6. verify Album Status before a LIVE WRITE batch.
 
 Paths are mutable locations, not SQL identity. Albums with stable MusicBrainz or
 fallback tag identity can retain the same logical row after Refresh updates the
@@ -226,7 +227,8 @@ and history.
 
 ### Artist shows Blue
 
-At least one child Album is bypassed. Open the Artist and locate the Red row.
+At least one child Album in that physical folder is bypassed. Open the folder
+and locate the Red row.
 
 ### Status changes only after Refresh
 
@@ -244,8 +246,10 @@ History and database updates should be atomic and must not:
 - use absolute paths as Artist or Album identity;
 - advertise a partially refreshed picker as complete.
 
-The media-index refresh uses one SQLite transaction and the TUI displays the
-replacement model only after that transaction succeeds.
+An explicit Refresh of an established media index uses one replacement SQLite
+transaction, and the TUI displays the replacement model only after that
+transaction succeeds. The initial index build instead uses resumable Album
+checkpoints and publishes the active-snapshot marker only after validation.
 
 ## Related documentation
 

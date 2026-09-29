@@ -98,7 +98,7 @@ the database is stored on the host as:
 | `/music` | Music library |
 | `/config/config.toml` | Main configuration |
 | `/credentials` | Provider credential JSON files |
-| `/_cache/splined.db` | Persistent Select Media Artist/Album index |
+| `/_cache/splined.db` | Persistent authority-Artist/Album index and physical-folder picker model |
 | `/_cache` | Database plus disposable candidate/cache data |
 | `/_cache/samples` | Selected scan samples |
 | `/_logs` | Persistent runtime logs |
@@ -116,11 +116,31 @@ Write mode requires `/music` to be writable.
 
 The first interactive TUI launch builds `/_cache/splined.db` by inventorying
 Artist/Album folders, reading one representative file per Album with Mutagen,
-and materializing local `cover.*` information.
+and materializing local `cover.*` information. Per-Album checkpoints make the
+first build resumable; the visible picker is published only after the completed
+snapshot validates.
 
-Subsequent launches load Select Media from SQLite. They do not perform a
-background Artist-by-Artist folder-status validation. External library changes
-become visible after the explicit Refresh action in Select Media.
+Subsequent launches load Select Media read-only from SQLite. With the default
+`auto` policy, a WAL-free database on a NAS/bind mount is copied sequentially
+to temporary container-local storage, opened as an immutable snapshot, and
+deleted after hydration. If that is unsafe or unavailable, SPLINED reads the
+persistent database directly. No warm path performs background
+Artist-by-Artist Album Status validation. External library changes become
+visible after the explicit Refresh action in Select Media.
+
+The optional environment variable accepts `auto`, `always`, or `never`:
+
+```yaml
+    environment:
+      SPLINED_SQLITE_LOCAL_SNAPSHOT: auto
+```
+
+`auto` is the default. This setting controls only the temporary warm-read copy;
+it does not relocate or replace `/_cache/splined.db`.
+
+The visible Artist Picker is grouped by the first physical directory below
+`/music`. Tagged Album Artist/MusicBrainz identity remains artwork/search
+authority, so authority-row totals can differ from picker-folder totals.
 
 An old `/_logs/_history/select-media-status.json` is renamed
 `select-media-status.json.legacy` after the database is ready.

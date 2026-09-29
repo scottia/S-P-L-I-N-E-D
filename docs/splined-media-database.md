@@ -42,7 +42,7 @@ SPLINED:
 - `ANALYZE` and `PRAGMA optimize` after an index refresh.
 
 SPLINED adds first-class `artists` and `albums` tables containing the values
-required by Select Media, Folder Status, local cover preview, and selected
+required by Select Media, Album Status, local cover preview, and selected
 Album statistics.
 
 ## Identity and paths
@@ -84,7 +84,33 @@ The schema intentionally has no index on:
 - `retired_album_paths.album_path`.
 
 The primary lookup indexes are Artist key, Album key, MusicBrainz IDs, Artist
-membership, and Folder Status.
+membership, and Album Status.
+
+## Authority identities and physical picker folders
+
+The `artists` table stores tagged Album-Artist authority identities. It is not a
+one-row-per-directory table. One authority can legitimately occur in several
+physical folders, and several authority identities can occur beneath one
+collection folder.
+
+`artists.primary_path` is a current observed location for an authority row; it
+is not the Artist Picker grouping key and must not be used to count visible
+picker folders. Picker ownership is derived independently from each
+`albums.path` by taking the first directory beneath the configured library
+root:
+
+```text
+Album path                                      Artist Picker folder
+/music/Christina Aguilera/AGUILERA              /music/Christina Aguilera
+/music/[Soundtracks]/A Star Is Born Soundtrack  /music/[Soundtracks]
+/music/[Various Artists]/[Various Artists]/...  /music/[Various Artists]
+```
+
+This keeps a normal Artist folder visible even when the same tagged authority
+also appears on a soundtrack. It also prevents OST and Various Artists Albums
+from being duplicated beneath each credited performer. Album Artist and
+MusicBrainz Album Artist ID remain identity/artwork-search authority; physical
+folder ownership is a presentation and processing boundary.
 
 ## First build
 
@@ -99,7 +125,11 @@ read Album identity tags with Mutagen
         ↓
 inspect configured cover.* and materialized statistics
         ↓
-insert one transaction into splined.db
+save resumable per-Album SQLite checkpoints
+        ↓
+validate and promote the completed active snapshot in batches
+        ↓
+publish picker_inventory last, then consolidate the WAL
         ↓
 load Select Media from SQLite
 ```
@@ -108,26 +138,52 @@ SPLINED does not parse every track merely to populate the picker. Full
 track-level validation remains part of the actual READ or LIVE WRITE processing
 pipeline.
 
+If the first build is interrupted, matching completed checkpoints are reused on
+the next launch. A partially promoted snapshot is never advertised as ready:
+the `picker_inventory` marker is written only after all Artist/Album rows have
+been promoted and validated. An explicit Refresh of an already usable snapshot
+continues to replace that snapshot atomically.
+
 A corrupt or incompatible database is renamed with a timestamp and rebuilt.
 The build does not alter music-library files.
 
 ## Warm startup
 
-A normal warm launch is database-only for Select Media:
+A normal warm launch is read-only and database-only for Select Media:
 
 ```text
 open splined.db
         ↓
-project current history / bypass / timeout facts
+optionally stage one temporary local read snapshot
         ↓
-load all Artist and Album rows
+project current history / bypass / timeout facts in memory
         ↓
-render final Folder Status and picker colors
+load compact authority-Artist and Album rows
+        ↓
+derive physical Artist Picker folders from Album paths
+        ↓
+render final Album Status and picker colors
 ```
 
 There is no Artist-by-Artist background filesystem validation, no structural
 sentinel pass, and no color change merely because the user opens an Artist.
 Artist and Album rows are already resident before the first Select Media frame.
+Full right-side Album statistics are read lazily by indexed `album_key` when an
+Album is focused instead of loading every statistics column before first paint.
+
+When `splined.db` is on a different device from the container temporary
+directory and has no active WAL, the default `auto` policy copies it
+sequentially to a temporary immutable SQLite snapshot for warm hydration. The
+persistent database remains untouched. `SPLINED_SQLITE_LOCAL_SNAPSHOT` accepts
+`auto`, `always`, or `never`; unsafe/unavailable snapshot conditions fall back
+to direct read-only access.
+
+The startup title distinguishes these paths:
+
+```text
+BUILDING ALBUM STATUS INDEX  = first build or explicit Refresh
+LOADING ALBUM STATUS         = warm read of an existing usable database
+```
 
 The only normal color changes during a session are the result of visible
 SPLINED actions, such as processing an Album or adding/removing a bypass.
@@ -154,7 +210,7 @@ External changes made by Beets, Picard, Navtagger, file managers, or another
 application become visible after this explicit Refresh. SPLINED's own LIVE
 WRITE and bypass/status actions update the affected database rows immediately.
 
-## Folder Status
+## Album Status and physical folder aggregates
 
 The database materializes Album facts including:
 
@@ -173,7 +229,8 @@ bypassed
 timeout
 ```
 
-Artist status is aggregated from its Album rows:
+Visible Artist Picker status is aggregated from Album rows sharing the same
+physical top-level folder:
 
 ```text
 unprocessed
@@ -185,6 +242,9 @@ contains-bypass
 Completion history, bypass history, timeout policy, and actual local artwork
 remain operational authority. SQLite is the persistent, indexed Select Media
 read model for those facts; it is not a replacement provider/ranking engine.
+The authority-oriented `artists.status` value may cover Albums located in more
+than one physical folder; the TUI therefore recomputes its displayed
+folder-level aggregate from the projected Album rows.
 
 ## Selected Album artwork and statistics
 
@@ -197,9 +257,10 @@ The right-side Album panels read their initial data from SQLite, including:
 - WebP size, resolution, and conversion state.
 
 This removes the ordinary delay previously caused by reparsing tags and image
-statistics every time focus moved between already-indexed Albums. When LIVE
-WRITE changes an Album, SPLINED refreshes that one Album's materialized values
-and its parent Artist aggregate.
+statistics every time focus moved between already-indexed Albums. Warm startup
+loads full statistics only for an already-selected Album; later focus changes
+read the indexed row on demand. When LIVE WRITE changes an Album, SPLINED
+refreshes that one Album's materialized values and its authority/folder status.
 
 ## Legacy JSON migration
 
@@ -252,3 +313,18 @@ sqlite3 /_cache/splined.db \
 
 The runtime image does not require the `sqlite3` CLI; these commands are for
 hosts or diagnostic containers where it is installed.
+
+In debug logs, keep the count domains distinct:
+
+```text
+authority_artists = tagged identities in artists
+picker_folders / artist_folders = unique physical top-level folders represented by albums
+albums            = indexed physical Album paths
+```
+
+A difference between `authority_artists` and the physical-folder count is
+expected. Warm-load records use `picker_folders`; index validation records use
+`artist_folders` for the same physical count.
+Useful lifecycle records include `splined.db.index_check`,
+`splined.db.warm_load.*`, `splined.db.promotion_done`, and
+`splined.db.session_ready`.

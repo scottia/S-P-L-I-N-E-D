@@ -220,6 +220,13 @@ The next invocation clears that dedicated run directory before creating the new
 file. The filename contains verbosity, timestamp, uniqueness value, and process
 ID.
 
+Python/Docker runtime and debug records are single-line and limited to 2,048
+characters. Embedded newlines are escaped and an oversized record ends with a
+truncation marker. Repeated/high-cardinality picker state is summarized as
+counts; a launch records at most three sample paths plus the number omitted.
+This keeps a debug run readable without losing the event sequence needed to
+diagnose startup, selection, report return, or launch behavior.
+
 History supplies processed, timeout, chosen-source, and bypass authority. The
 Python/Docker `splined.db` materializes those facts for Select Media but does
 not replace the history files.

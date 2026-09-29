@@ -75,13 +75,18 @@ tag-identified Artist and Album rows
         ↓
 cover.* and Selected Album statistics
         ↓
-one SQLite transaction
+resumable per-Album SQLite checkpoints
+        ↓
+validated marker-last publication and WAL consolidation
         ↓
 Select Media
 ```
 
 The startup screen reports folder discovery and representative-tag progress.
-The application does not modify music-library files during this build.
+Its title is `BUILDING ALBUM STATUS INDEX`. The application does not modify
+music-library files during this build. If interrupted, the next matching build
+reuses completed checkpoints rather than discarding all representative-tag
+work.
 
 ### Warm launch
 
@@ -90,12 +95,21 @@ A warm launch is database-only for the Select Media read model:
 ```text
 open splined.db
         ↓
-project current completion / bypass / timeout facts
+optionally stage a temporary local read snapshot
         ↓
-load all Artist and Album rows
+project current completion / bypass / timeout facts in memory
         ↓
-paint stable Folder Status and pickers
+load compact authority and Album rows
+        ↓
+derive physical Artist Picker folders from Album paths
+        ↓
+paint stable Album Status and pickers
 ```
+
+The warm title is `LOADING ALBUM STATUS`; it is not presented as another first
+database build. Warm hydration does not rewrite SQL. On a NAS/bind mount, a
+WAL-free database may be copied to temporary container-local storage for the
+read and deleted immediately afterward.
 
 There is no background Artist-by-Artist structural validation and no color
 change merely because the user opens an Artist. Opening an Artist is an
@@ -106,7 +120,7 @@ usable database build and is no longer read or updated.
 
 See [SPLINED media database](splined-media-database.md).
 
-## Tag identity
+## Tag identity and Artist Picker ownership
 
 The picker is populated from Mutagen tag data rather than absolute path
 identity.
@@ -129,12 +143,25 @@ Paths remain current locations used to process the Album folder. They are not
 SQL identity indexes. Picard, Beets, and Navtagger may maintain the tags, but
 SPLINED reads the media files directly and does not require their databases.
 
+The Artist Picker is not a list of authority rows. Every Album is assigned to
+the first physical directory below the configured library root:
+
+```text
+/music/Christina Aguilera/AGUILERA              → Christina Aguilera
+/music/[Soundtracks]/A Star Is Born Soundtrack  → [Soundtracks]
+/music/[Various Artists]/[Various Artists]/...  → [Various Artists]
+```
+
+Thus Album Artist/MusicBrainz identity continues to drive artwork authority,
+while the filesystem layout controls where the Album appears and which folder
+selection processes it.
+
 ## Select Media geometry
 
 On wide layouts the top row uses four equal panels:
 
 ```text
-25% Folder Status
+25% S:P:L:I:N:E:D Album Status
 25% Album Selection
 25% Album Scanning
 25% S:P:L:I:N:E:D Launch
@@ -154,9 +181,10 @@ batch does not shift the workspace horizontally.
 Compact and minimum breakpoints stack or reduce lower-priority surfaces rather
 than allowing a table to cross its frame.
 
-## Folder Status
+## Album Status
 
-Folder Status presents the indexed Album facts and Artist aggregates:
+Album Status presents indexed Album facts and physical Artist-folder
+aggregates:
 
 | Album state | Color |
 | --- | --- |
@@ -341,6 +369,9 @@ geometry. Clicks are not inferred from painted strings. The region beneath the
 pointer receives scrolling.
 
 Keyboard operation remains fully supported.
+Mouse events are hit-tested actions; they are not converted into Enter
+keystrokes. A direct Album click performs its documented exclusive focus/select
+action, while a control click invokes that control.
 
 ## Processing and final report
 
@@ -352,6 +383,29 @@ generic media-library summary.
 After a batch, the per-Album final report remains until Enter or Esc returns to
 the same resident Select Media session. `q` exits. A cumulative failure exit
 state is retained across multiple batches in the same TUI process.
+
+The Enter/Esc used to leave the report is consumed by the report. A brief
+activation guard on return prevents that same physical Enter press from also
+opening the currently focused Artist or activating another Select Media
+control.
+
+## Debug diagnostics
+
+Debug records are single-line and bounded to 2,048 characters. High-cardinality
+state is summarized: selection changes log counts, launches include at most a
+three-path sample plus an omitted count, and library snapshots report counts
+rather than dumping every selected path or Artist state.
+
+For retained-session and startup diagnosis, the most useful records are:
+
+```text
+splined.db.index_check
+splined.db.warm_load.*
+picker.library.reuse_session
+picker.batch.continue_to_library
+library_return_guard.armed
+key.suppressed reason='batch-return-activation-guard'
+```
 
 ## AISPLINE boundary
 

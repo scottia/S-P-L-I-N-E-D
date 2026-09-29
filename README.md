@@ -30,7 +30,7 @@ the selected artwork into the Album folder.
 - ✍️ **Write mode** can install the selected artwork
 - 🧪 **Sample output** writes one selected image per Album for review
 - 🧭 **Persistent history and bypass state** remain separate from candidate cache
-- 🗃️ **Tag-identified Select Media database** provides stable Artist/Album status and fast warm startup in Python/Docker
+- 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and fast warm startup in Python/Docker
 - ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
 - 🐳 **Docker image** provides a Linux/server deployment path
 - 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, local `cover.*` preview/resolution, URL-backed candidate preview, and mouse/touch operation
@@ -117,11 +117,19 @@ Default Docker path:
 ```
 
 The first interactive launch inventories Artist/Album folders and reads one
-representative audio file per Album with Mutagen. Artist and Album identity is
-based on MusicBrainz/tag values; filesystem paths are stored only as current
-locations and are not SQL identity indexes.
+representative audio file per Album with Mutagen. The build saves resumable
+SQLite checkpoints and publishes the picker only after the completed snapshot
+validates.
 
-Warm launches load the complete picker and stable Folder Status from SQLite.
+Artist and Album SQL identity is based on MusicBrainz/tag values; filesystem
+paths are stored only as current locations and are not SQL identity indexes.
+The visible Artist Picker is intentionally folder-based: every Album is grouped
+under the first physical directory below the configured library root. Tagged
+Album Artist identity remains artwork/search authority, but it does not move a
+solo Album into `[Soundtracks]` or duplicate an OST/Various Artists Album under
+each credited performer.
+
+Warm launches load the complete picker and stable Album Status from SQLite.
 There is no Artist-by-Artist background validation and no color change merely
 because an Artist was opened. External Picard/Beets/Navtagger/filesystem changes
 are reconciled after the explicit Refresh action.
@@ -278,4 +286,4 @@ and `_cache/splined.db`. Other candidate/sample cache data remains disposable.
 
 SPLINED is licensed under the [GNU General Public License v3](LICENSE).
 
-Copyright 2010-2025
+Copyright 2010-2026

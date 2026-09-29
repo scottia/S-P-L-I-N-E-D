@@ -271,6 +271,27 @@ This optimization must not change normal SPLINED ranking semantics among candida
 
 ---
 
+# Album authority and curated compilations
+
+Normal Album identity and artwork lookup use tagged Album Artist/Album values
+and MusicBrainz Album/Release IDs. Track-level featured performers do not create
+extra Artist Picker copies; picker ownership remains the physical top-level
+library folder.
+
+A deliberately curated compilation can have `compilation=1`, valid per-track
+MusicBrainz Recording IDs, and no Album/Release ID. In that narrow case, the
+Python/Docker runtime may probe up to eight unique Recording IDs to recover an
+artwork-reference release. It prefers an exact release already represented in
+`splined.db`; otherwise it chooses an official Artist Album release
+deterministically and avoids compilation/soundtrack/remix references where a
+better original-Album authority exists.
+
+The recovered release is run-local artwork-reference authority only. SPLINED
+does not rewrite the compilation's tags, physical folder, SQL Album identity,
+or Artist Picker ownership.
+
+---
+
 # Final-image evaluation
 
 SPLINED should evaluate the image that would actually be written, not blindly trust provider-reported dimensions.

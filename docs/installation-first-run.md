@@ -103,11 +103,18 @@ The one-time build:
 2. reads one representative audio file per Album with Mutagen;
 3. identifies Artists and Albums from MusicBrainz/tag values;
 4. records local `cover.*` and selected Album statistics;
-5. commits the model to SQLite;
-6. opens Select Media with final stable Folder Status colors.
+5. saves resumable per-Album SQLite checkpoints;
+6. validates and publishes the completed snapshot marker-last;
+7. opens Select Media with final stable Album Status colors.
 
 The first build may take time on a large library. Warm launches load the picker
-from SQLite and do not repeat an Artist-by-Artist filesystem validation.
+read-only from SQLite and do not repeat an Artist-by-Artist filesystem
+validation. WAL-free databases on NAS/bind mounts may be staged temporarily on
+local container storage for faster compact reads.
+
+The Artist Picker groups Albums by the first physical directory below the
+library root. Album Artist/MusicBrainz tag identity remains artwork/search
+authority and may have a different count from visible physical Artist folders.
 
 Use the explicit Refresh action after external Picard, Beets, Navtagger, or
 filesystem changes. Refresh commits the new model before changing the visible

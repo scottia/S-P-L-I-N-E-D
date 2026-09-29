@@ -64,12 +64,17 @@ Default Docker path:
 
 The first interactive launch performs a complete Artist/Album index build. One
 representative audio file per Album is read with Mutagen to obtain Album Artist,
-Album, MusicBrainz identities, year, compilation, and sort metadata. The index
-also materializes configured `cover.*` state and the values required by the
-right-side Album artwork/statistics panels.
+Album, MusicBrainz identities, year, compilation, and sort metadata. Durable
+per-Album checkpoints make an interrupted first build resumable. The completed
+snapshot is validated and published only after every expected row is present.
+The index also materializes configured `cover.*` state and the values required
+by the right-side Album artwork/statistics panels.
 
-Warm startup opens SQLite, projects current history/bypass/timeout facts, and
-loads the complete Artist/Album picker before the first Select Media frame.
+Warm startup opens SQLite read-only, projects current history/bypass/timeout
+facts in memory, and loads the complete Artist/Album picker before the first
+Select Media frame. A WAL-free database on a NAS/bind mount may be copied to a
+temporary local read snapshot for compact sequential hydration; that copy is
+deleted after startup and never replaces the persistent database.
 There is no Artist-by-Artist background sentinel validation and no color change
 merely because the user opens an Artist.
 
@@ -83,13 +88,32 @@ Album:  MusicBrainz Album/Release ID, then normalized tagged fallback
 Filesystem paths remain mutable locations. They are stored but are not indexed
 as Artist or Album identity.
 
+SQL authority identity and visible picker ownership are separate:
+
+```text
+/music/Christina Aguilera/AGUILERA
+    → Artist Picker: Christina Aguilera
+
+/music/[Soundtracks]/A Star Is Born Soundtrack
+    → Artist Picker: [Soundtracks]
+
+/music/[Various Artists]/[Various Artists]/<group>/<album>
+    → Artist Picker: [Various Artists]
+```
+
+The first physical directory beneath the library root owns the picker row.
+`albumartist` / `musicbrainz_albumartistid` remains the normal tagged authority
+for Album identity and artwork lookup. Authority-artist counts can therefore
+differ from physical Artist Picker folder counts without indicating duplicate
+Album rows.
+
 External library changes are reconciled only after the explicit Refresh action.
 The stable old picker remains visible while Refresh inventories the library,
 reuses unchanged representative tags, reads new/changed tags, and commits the
 replacement model in one transaction.
 
 SPLINED's own LIVE WRITE, bypass, timeout, and completion actions update the
-affected rows and parent Artist aggregate immediately.
+affected rows and physical Artist-folder aggregate immediately.
 
 See [SPLINED media database](splined-media-database.md) for the schema,
 identity rules, migration behavior, backup requirements, and diagnostic
@@ -99,8 +123,8 @@ queries.
 
 The current TUI provides:
 
-- four equal top control panels: Folder Status, Album Selection, Album Scanning,
-  and S:P:L:I:N:E:D Launch;
+- four equal top control panels: S:P:L:I:N:E:D Album Status, Album Selection,
+  Album Scanning, and S:P:L:I:N:E:D Launch;
 - a 25% Artist Picker, 50% Album Picker, and 25% Album artwork/statistics column
   on wide layouts;
 - explicit READ or LIVE WRITE Launch authority;
@@ -111,7 +135,7 @@ The current TUI provides:
 - source-grouped candidate presentation on a shared terminal-cell grid;
 - URL-backed hover/focus candidate preview;
 - OLED and CHALK native-image cleanup parity;
-- a per-Album final run report and return to the same resident Select Media
+- a per-Album final run report and guarded return to the same resident Select Media
   session.
 
 Direct mouse/touch interaction is provided through the isolated

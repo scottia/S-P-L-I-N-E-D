@@ -1,6 +1,6 @@
 # Select Media and Status Colors
 
-Select Media is the operational library workspace. Text filters, Folder Status
+Select Media is the operational library workspace. Text filters, Album Status
 filters, selection controls, scan scope, and Launch all operate on one resident
 Artist/Album model. Filtering changes visibility only; it does not rewrite
 history, bypass, timeout, credentials, or source policy.
@@ -19,6 +19,13 @@ The Python/Docker TUI loads the complete Artist/Album read model from:
 The index is populated from Mutagen tags and local artwork inspection. Artist
 and Album identity uses MusicBrainz/tag keys; paths are current locations, not
 SQL identity indexes.
+
+The visible Artist Picker uses physical ownership, not authority-row count.
+Each Album belongs to the first directory beneath the configured library root.
+For example, `/music/Christina Aguilera/AGUILERA` appears under `Christina
+Aguilera`, while `/music/[Soundtracks]/A Star Is Born Soundtrack` appears once
+under `[Soundtracks]`. Nested Various Artists layouts collapse to their
+top-level `/music/[Various Artists]` folder.
 
 Warm startup is database-only for Select Media. Opening an Artist, typing a
 filter, scrolling, or changing focus does not scan the filesystem or change a
@@ -47,7 +54,7 @@ Symlink/reparse-style loops are not followed.
 ## Artist and Album text filters
 
 Artist and Album filters are case-insensitive and combine with each other and
-with Folder Status filters.
+with Album Status filters.
 
 Examples:
 
@@ -66,9 +73,9 @@ Love Among the Ruins
 Filtering is performed against the resident model. Keystrokes do not trigger
 filesystem, Mutagen, MusicBrainz, provider, image, or AI work.
 
-## Folder Status order
+## Album Status panel order
 
-The top-left Folder Status panel uses six consecutive rows:
+The top-left `S:P:L:I:N:E:D ALBUM STATUS` panel uses six consecutive rows:
 
 ```text
 Unprocessed
@@ -100,9 +107,9 @@ READ mode may evaluate a candidate, but a no-cover Album does not become
 durably processed merely because a possible image was found. LIVE WRITE updates
 the database after the actual Album result and local `cover.*` state are known.
 
-## Artist aggregate states
+## Physical Artist-folder aggregate states
 
-| Color | Artist meaning |
+| Color | Physical Artist-folder meaning |
 | --- | --- |
 | White | All eligible Albums unprocessed, no bypass |
 | Purple | Mixed processed/unprocessed/timeout state, no bypass |
@@ -129,7 +136,8 @@ Color should be accompanied by row context and status text where practical.
 
 ## Counts
 
-Folder Status counts are exact for the resident SQLite model:
+Album Status counts are exact for the resident SQLite model. Artist counts are
+physical top-level picker folders, not tagged authority identities:
 
 ```text
 Unprocessed            = White Albums / White Artists for shared context
@@ -163,7 +171,7 @@ Bulk actions are explicit:
 A row hidden by a filter remains in the underlying model and does not become
 processed, bypassed, or timeout-active merely because it is hidden.
 
-## Selecting an Artist
+## Selecting a physical Artist folder
 
 Selecting an Artist cascades only to eligible children:
 
@@ -281,10 +289,17 @@ Status should be communicated through more than color where practical:
 Run explicit Refresh. Warm startup does not crawl the filesystem for external
 changes.
 
+### Tagged Artist appears under the wrong collection
+
+Picker ownership follows the physical Album path, not track-level featured
+artists or the SQL authority row's observed path. Verify the Album is physically
+beneath the intended first-level library folder, then run Refresh if it was
+moved after the index was built.
+
 ### Artist changed color after processing
 
 Expected: SPLINED updated one or more child Album statuses and recomputed the
-parent aggregate.
+physical parent-folder aggregate.
 
 ### Artist changed color merely by opening it
 
