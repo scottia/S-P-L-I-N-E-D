@@ -17,6 +17,7 @@ from splined_media_warm_start_policy import install as install_media_warm_start_
 from splined_ranking_policy import install as install_ranking_policy
 from splined_tui_overlay_policy import install as install_tui_overlay_policy
 from splined_tui_progress_policy import install as install_tui_progress_policy
+from tui.advanced_runtime_policy import install as install_advanced_runtime_policy
 
 
 install_ranking_policy(splined_scan.core, splined_scan)
@@ -30,6 +31,7 @@ install_media_warm_start_policy()
 install_media_finalize_policy(splined_scan.core)
 install_media_checkpoint_policy(splined_scan.core)
 install_media_index(splined_scan.core, splined_scan)
+install_advanced_runtime_policy(splined_scan.core, splined_scan)
 
 
 if __name__ == "__main__":
