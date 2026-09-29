@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
 from typing import Any, Callable
 
 from splined_media_database import (
@@ -28,6 +29,61 @@ from splined_media_runtime import (
 
 _INSTALLED = False
 _ACTIVE_CONTEXT: IndexContext | None = None
+
+
+def _resident_session_usable(
+    session: Any | None,
+    *,
+    library_root: Path,
+    database: Path,
+) -> bool:
+    """Return whether Select Media is already resident for this library/DB.
+
+    The authoritative picker loop intentionally passes the same
+    ``PickerSessionState`` back after an Album Run Report.  Reopening SQLite and
+    rebuilding 1,000+ Artist / 3,000+ Album objects at that boundary defeats the
+    retained-session contract and leaves the report screen apparently stuck.
+    """
+    return bool(
+        session is not None
+        and bool(getattr(session, "ready", False))
+        and str(getattr(session, "library_root", "")) == str(library_root)
+        and str(getattr(session, "picker_path", "")) == str(database)
+    )
+
+
+def _checkpoint_wal(
+    core: Any,
+    connection: sqlite3.Connection,
+    *,
+    reason: str,
+) -> None:
+    """Merge completed build/refresh WAL pages into ``splined.db``.
+
+    ``splined.db-wal`` and ``splined.db-shm`` are normal SQLite sidecars, not
+    separate databases.  A final TRUNCATE checkpoint keeps their retained size
+    small after a large first build or explicit refresh and avoids carrying a
+    large completed WAL into the next launch.
+    """
+    try:
+        row = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        busy, log_pages, checkpointed = (
+            (int(row[0]), int(row[1]), int(row[2]))
+            if row is not None and len(row) >= 3
+            else (0, 0, 0)
+        )
+        core.debug_log(
+            "splined.db.wal_checkpoint "
+            f"reason={reason!r} busy={busy} log_pages={log_pages} "
+            f"checkpointed={checkpointed}"
+        )
+    except sqlite3.Error as exc:
+        # The active snapshot is already committed.  A failed maintenance
+        # checkpoint must not invalidate it or prevent Select Media startup.
+        core.debug_log(
+            "splined.db.wal_checkpoint_error "
+            f"reason={reason!r} error={type(exc).__name__}: {exc}"
+        )
 
 
 def install(core: Any, scan: Any | None = None) -> None:
@@ -114,6 +170,7 @@ def install(core: Any, scan: Any | None = None) -> None:
             build_index(context, connection, "explicit-refresh")
             populate_session(context, connection)
             migrate_legacy_json(context)
+            _checkpoint_wal(core, connection, reason="explicit-refresh")
         finally:
             connection.close()
         response["action"] = "selection-change"
@@ -193,26 +250,45 @@ def install(core: Any, scan: Any | None = None) -> None:
             session=session,
             original_inventory=indexed_inventory,
         )
-        connection = connect(db, str(core.display_version()))
-        try:
-            expected = signature(
-                actual_library_root,
-                ignored,
-                cover_name,
+
+        reused_resident = _resident_session_usable(
+            picker_session,
+            library_root=actual_library_root,
+            database=db,
+        )
+        if reused_resident:
+            core.debug_log(
+                "splined.db.retained_session_reuse "
+                f"artists={len(session.artists)} "
+                f"albums={len(session.album_records)} "
+                f"selected={len(session.selected_paths)}"
             )
-            if not index_is_usable(connection, expected):
-                build_index(context, connection, "initial-build")
-            populate_session(context, connection)
-            migrate_legacy_json(context)
-        finally:
-            connection.close()
+        else:
+            connection = connect(db, str(core.display_version()))
+            rebuilt = False
+            try:
+                expected = signature(
+                    actual_library_root,
+                    ignored,
+                    cover_name,
+                )
+                if not index_is_usable(connection, expected):
+                    build_index(context, connection, "initial-build")
+                    rebuilt = True
+                populate_session(context, connection)
+                migrate_legacy_json(context)
+                if rebuilt:
+                    _checkpoint_wal(core, connection, reason="initial-build")
+            finally:
+                connection.close()
 
         _ACTIVE_CONTEXT = context
         set_active_database(db, cover_name)
         core.debug_log(
             f"splined.db.ready path={str(db)!r} "
             f"artists={len(session.artists)} "
-            f"albums={len(session.album_records)}"
+            f"albums={len(session.album_records)} "
+            f"retained={reused_resident}"
         )
         try:
             return original_prepare_selection(
