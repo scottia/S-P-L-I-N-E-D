@@ -10,3 +10,4 @@ test_*.py
 !test_splined_media_fast_index_policy.py
 !test_splined_media_finalize_policy.py
 !test_splined_media_load_policy.py
+!test_splined_media_warm_start_policy.py
