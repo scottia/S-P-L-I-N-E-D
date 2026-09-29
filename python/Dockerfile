@@ -49,6 +49,7 @@ COPY splined_media_build_policy.py /app/splined_media_build_policy.py
 COPY splined_media_fast_index_policy.py /app/splined_media_fast_index_policy.py
 COPY splined_media_finalize_policy.py /app/splined_media_finalize_policy.py
 COPY splined_media_load_policy.py /app/splined_media_load_policy.py
+COPY splined_media_warm_start_policy.py /app/splined_media_warm_start_policy.py
 COPY splined_tui_progress_policy.py /app/splined_tui_progress_policy.py
 COPY splined_ranking_policy.py /app/splined_ranking_policy.py
 COPY splined_tui_overlay_policy.py /app/splined_tui_overlay_policy.py
@@ -63,6 +64,7 @@ COPY test_splined_media_build_policy.py /tmp/test_splined_media_build_policy.py
 COPY test_splined_media_fast_index_policy.py /tmp/test_splined_media_fast_index_policy.py
 COPY test_splined_media_finalize_policy.py /tmp/test_splined_media_finalize_policy.py
 COPY test_splined_media_load_policy.py /tmp/test_splined_media_load_policy.py
+COPY test_splined_media_warm_start_policy.py /tmp/test_splined_media_warm_start_policy.py
 RUN python3 -m py_compile \
         /app/sitecustomize.py \
         /app/splined_media_tags.py \
@@ -73,6 +75,7 @@ RUN python3 -m py_compile \
         /app/splined_media_fast_index_policy.py \
         /app/splined_media_finalize_policy.py \
         /app/splined_media_load_policy.py \
+        /app/splined_media_warm_start_policy.py \
         /app/splined_tui_progress_policy.py \
         /app/splined_ranking_policy.py \
         /app/splined_tui_overlay_policy.py \
@@ -89,6 +92,7 @@ RUN python3 -m py_compile \
         test_splined_media_fast_index_policy \
         test_splined_media_finalize_policy \
         test_splined_media_load_policy \
+        test_splined_media_warm_start_policy \
     && rm -f \
         /tmp/test_candidate_ranking_policy.py \
         /tmp/test_splined_media_index.py \
@@ -96,6 +100,7 @@ RUN python3 -m py_compile \
         /tmp/test_splined_media_fast_index_policy.py \
         /tmp/test_splined_media_finalize_policy.py \
         /tmp/test_splined_media_load_policy.py \
+        /tmp/test_splined_media_warm_start_policy.py \
     && chmod 0444 /app/splined_schema.sql \
     && chmod 0555 \
         /app/sitecustomize.py \
@@ -107,6 +112,7 @@ RUN python3 -m py_compile \
         /app/splined_media_fast_index_policy.py \
         /app/splined_media_finalize_policy.py \
         /app/splined_media_load_policy.py \
+        /app/splined_media_warm_start_policy.py \
         /app/splined_tui_progress_policy.py \
         /app/splined_ranking_policy.py \
         /app/splined_tui_overlay_policy.py \
