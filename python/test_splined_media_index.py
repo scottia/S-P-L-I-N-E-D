@@ -7,14 +7,91 @@ import sqlite3
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
-from splined_media_database import _insert_snapshot, database_path, schema_path
+from splined_media_database import _insert_snapshot, connect, database_path, schema_path
 from splined_media_index import _resident_session_usable
+import splined_media_runtime as runtime
 from splined_media_runtime import clean_transient_cache, stats_from_row
 from splined_media_tags import album_base_key, artist_key
 
 
 class SplinedMediaIndexTests(unittest.TestCase):
+    def test_manual_material_result_updates_progress_status_without_folder_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "splined.db"
+            connection = connect(database, "test")
+            with connection:
+                connection.execute(
+                    "INSERT INTO artists"
+                    "(artist_key, artist_name, primary_path, created_at, "
+                    "updated_at, last_seen_at, splined_version) "
+                    "VALUES('artist', 'Various Artists', '/music/VA', "
+                    "'now', 'now', 'now', 'test')"
+                )
+                connection.execute(
+                    "INSERT INTO albums"
+                    "(album_key, artist_key, album_name, compilation, path, "
+                    "tag_signature, track_count, created_at, updated_at, "
+                    "last_seen_at, splined_version) "
+                    "VALUES('album', 'artist', 'Compilation', 1, "
+                    "'/music/VA/Compilation', 'tag', 100, 'now', 'now', "
+                    "'now', 'test')"
+                )
+            connection.close()
+
+            with (
+                mock.patch.object(runtime, "_ACTIVE_DB_PATH", database),
+                mock.patch.object(
+                    runtime, "_CURRENT_ALBUM_PATH", "/music/VA/Compilation"
+                ),
+                mock.patch.object(
+                    runtime,
+                    "_PATH_TO_ALBUM_KEY",
+                    {"/music/VA/Compilation": "album"},
+                ),
+                mock.patch.object(
+                    runtime,
+                    "_ARTIST_BY_ALBUM_KEY",
+                    {"album": "artist"},
+                ),
+                mock.patch.object(
+                    runtime,
+                    "_STATUS_BY_PATH",
+                    {"/music/VA/Compilation": "unprocessed"},
+                ),
+                mock.patch.object(
+                    runtime,
+                    "_folder_statistics",
+                    side_effect=AssertionError("manual progress must stay lazy"),
+                ),
+            ):
+                runtime.sync_material_result(
+                    {
+                        "outcome": "Embedded Art Replaced",
+                        "manual_compilation": True,
+                        "progress_completed": 1,
+                        "progress_total": 100,
+                        "progress_status": "incomplete",
+                        "source": "Cover Art Archive",
+                    }
+                )
+                self.assertEqual(
+                    runtime._STATUS_BY_PATH["/music/VA/Compilation"],
+                    "incomplete",
+                )
+
+            connection = sqlite3.connect(database)
+            row = connection.execute(
+                "SELECT status, processed_at, selected_source FROM albums "
+                "WHERE album_key='album'"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(
+                row,
+                ("incomplete", None, "Cover Art Archive"),
+            )
+
     def test_database_path_uses_configured_cache_directory(self) -> None:
         self.assertEqual(
             database_path(Path("/_cache")),
@@ -165,6 +242,7 @@ class SplinedMediaIndexTests(unittest.TestCase):
                     "recording_release_lookups",
                     "recording_release_candidates",
                     "compilation_track_artwork",
+                    "compilation_album_progress",
                 }.issubset(names)
             )
             connection.close()

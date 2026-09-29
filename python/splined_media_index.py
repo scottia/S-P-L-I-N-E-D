@@ -16,6 +16,7 @@ from splined_media_database import (
     signature,
 )
 from splined_media_runtime import (
+    cached_status,
     cached_stats,
     clean_transient_cache,
     migrate_legacy_json,
@@ -44,11 +45,16 @@ def _resident_session_usable(
     rebuilding 1,000+ Artist / 3,000+ Album objects at that boundary defeats the
     retained-session contract and leaves the report screen apparently stuck.
     """
+    def comparable(value: Any) -> str:
+        return str(value).replace("\\", "/").rstrip("/")
+
     return bool(
         session is not None
         and bool(getattr(session, "ready", False))
-        and str(getattr(session, "library_root", "")) == str(library_root)
-        and str(getattr(session, "picker_path", "")) == str(database)
+        and comparable(getattr(session, "library_root", ""))
+        == comparable(library_root)
+        and comparable(getattr(session, "picker_path", ""))
+        == comparable(database)
     )
 
 
@@ -336,6 +342,7 @@ def install(core: Any, scan: Any | None = None) -> None:
             _ACTIVE_CONTEXT = None
 
     core.prepare_run_cache = prepare_run_cache
+    core.indexed_album_status = cached_status
     core.prepare_tui_library_selection = prepare_tui_library_selection
     core.read_input = read_input
     core.emit_ui = emit_ui

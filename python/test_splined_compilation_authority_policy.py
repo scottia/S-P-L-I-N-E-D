@@ -11,6 +11,7 @@ from mutagen.id3 import ID3, TALB, TCMP, TIT2, TPE1, TPE2, TXXX, UFID
 
 import splined
 import splined_compilation_authority_policy as policy
+from splined_media_database import schema_path
 import splined_media_tags
 
 
@@ -56,6 +57,75 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         eligible, reason = policy.manual_track_eligible(missing_album)
         self.assertFalse(eligible)
         self.assertIn("Recording ID", reason)
+
+    def test_completed_track_ledger_resumes_and_finishes_album(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "splined.db"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                schema_path().read_text(encoding="utf-8")
+            )
+            connection.close()
+            first = SimpleNamespace(
+                path=root / "01.flac",
+                recording_mbid=RECORDING_ID,
+                artist_mbid=ARTIST_ID,
+            )
+            second = SimpleNamespace(
+                path=root / "02.flac",
+                recording_mbid="22222222-2222-4222-8222-222222222222",
+                artist_mbid=ARTIST_ID,
+            )
+            core = SimpleNamespace(
+                runtime_cache_dir=lambda *_args: root,
+                display_version=lambda: "test",
+            )
+
+            policy.record_application(
+                core,
+                root / "config.toml",
+                {},
+                first,
+                source_kind="local-library",
+                source_locator=str(root / "cover.jpg"),
+                release_mbid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                artwork=b"first",
+                outcome="embedded-replaced",
+                album_path=str(root / "Compilation"),
+                total_tracks=2,
+                completed_tracks=1,
+            )
+            completed = policy.completed_track_paths(
+                core,
+                root / "config.toml",
+                {},
+                str(root / "Compilation"),
+                [first, second],
+            )
+            self.assertEqual(completed, {str(first.path)})
+
+            policy.record_application(
+                core,
+                root / "config.toml",
+                {},
+                second,
+                source_kind="coverartarchive",
+                source_locator="https://example.test/cover.jpg",
+                release_mbid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                artwork=b"second",
+                outcome="embedded-replaced",
+                album_path=str(root / "Compilation"),
+                total_tracks=2,
+                completed_tracks=2,
+            )
+            connection = sqlite3.connect(database)
+            row = connection.execute(
+                "SELECT total_tracks, completed_tracks, status "
+                "FROM compilation_album_progress"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(row, (2, 2, "complete"))
 
     def test_standard_musicbrainz_ufid_is_the_recording_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

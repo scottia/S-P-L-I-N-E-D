@@ -66,6 +66,8 @@ class ReleaseResolution:
     candidates: tuple[ReleaseCandidate, ...]
     source: str
     error: str = ""
+    recording_title: str = ""
+    recording_artist: str = ""
 
 
 def _truthy(value: Any) -> bool:
@@ -649,7 +651,12 @@ def resolve_release_candidates(
             # A busy or unavailable cache must not discard an otherwise valid
             # bounded lookup. The next Manual Scan may perform it again.
             pass
-        return ReleaseResolution(candidates, "musicbrainz")
+        return ReleaseResolution(
+            candidates,
+            "musicbrainz",
+            recording_title=str(payload.get("title") or "").strip(),
+            recording_artist=_credit_text(payload.get("artist-credit")),
+        )
     return ReleaseResolution(
         (),
         "musicbrainz",
@@ -851,6 +858,9 @@ def record_application(
     release_mbid: str,
     artwork: bytes,
     outcome: str,
+    album_path: str = "",
+    total_tracks: int = 0,
+    completed_tracks: int = 0,
 ) -> None:
     recording = next(iter(_mbids(getattr(track, "recording_mbid", None))), "")
     artist = _artist_key(_mbids(getattr(track, "artist_mbid", None)))
@@ -861,6 +871,7 @@ def record_application(
     )
     try:
         with connection:
+            _ensure_progress_table(connection)
             connection.execute(
                 "INSERT INTO compilation_track_artwork"
                 "(track_path, recording_mbid, artist_mbid, source_kind, "
@@ -890,6 +901,125 @@ def record_application(
                     str(core.display_version()),
                 ),
             )
+            if album_path and total_tracks > 0 and completed_tracks > 0:
+                _write_progress(
+                    connection,
+                    album_path,
+                    total_tracks,
+                    completed_tracks,
+                    str(core.display_version()),
+                )
+    finally:
+        connection.close()
+
+
+def _ensure_progress_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS compilation_album_progress ("
+        "album_path TEXT PRIMARY KEY COLLATE NOCASE, "
+        "total_tracks INTEGER NOT NULL, "
+        "completed_tracks INTEGER NOT NULL, "
+        "status TEXT NOT NULL CHECK(status IN ('incomplete', 'complete')), "
+        "updated_at TEXT NOT NULL, "
+        "splined_version TEXT NOT NULL)"
+    )
+
+
+def _write_progress(
+    connection: sqlite3.Connection,
+    album_path: str,
+    total_tracks: int,
+    completed_tracks: int,
+    version: str,
+) -> None:
+    total = max(0, int(total_tracks))
+    completed = min(total, max(0, int(completed_tracks)))
+    if not album_path or total <= 0 or completed <= 0:
+        return
+    status = "complete" if completed >= total else "incomplete"
+    connection.execute(
+        "INSERT INTO compilation_album_progress"
+        "(album_path, total_tracks, completed_tracks, status, updated_at, "
+        "splined_version) VALUES(?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(album_path) DO UPDATE SET "
+        "total_tracks=excluded.total_tracks, "
+        "completed_tracks=excluded.completed_tracks, "
+        "status=excluded.status, updated_at=excluded.updated_at, "
+        "splined_version=excluded.splined_version",
+        (
+            album_path,
+            total,
+            completed,
+            status,
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            version,
+        ),
+    )
+
+
+def completed_track_paths(
+    core: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    album_path: str,
+    tracks: list[Any],
+) -> set[str]:
+    """Return only prior successful writes whose authoritative IDs still match.
+
+    Manual compilation resume is deliberately lazy. It reads the small write
+    ledger only when Manual Scan starts; normal album indexing remains one
+    representative-track inspection per album.
+    """
+    database = _database_path(core, config_file, cfg)
+    if not database.exists() or not tracks:
+        return set()
+    connection = sqlite3.connect(database, timeout=10.0)
+    connection.row_factory = sqlite3.Row
+    try:
+        _ensure_progress_table(connection)
+        saved = {
+            str(row["track_path"]): row
+            for row in connection.execute(
+                "SELECT track_path, recording_mbid, artist_mbid, outcome "
+                "FROM compilation_track_artwork "
+                "WHERE outcome='embedded-replaced'"
+            )
+        }
+        completed: set[str] = set()
+        for track in tracks:
+            path = str(track.path)
+            row = saved.get(path)
+            if row is None:
+                continue
+            recording = next(
+                iter(_mbids(getattr(track, "recording_mbid", None))), ""
+            )
+            artists = _artist_key(
+                _mbids(getattr(track, "artist_mbid", None))
+            )
+            if (
+                recording
+                and artists
+                and str(row["recording_mbid"]).casefold() == recording
+                and str(row["artist_mbid"]).casefold() == artists
+            ):
+                completed.add(path)
+        with connection:
+            if completed:
+                _write_progress(
+                    connection,
+                    album_path,
+                    len(tracks),
+                    len(completed),
+                    str(core.display_version()),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM compilation_album_progress "
+                    "WHERE album_path=?",
+                    (album_path,),
+                )
+        return completed
     finally:
         connection.close()
 
@@ -920,4 +1050,8 @@ def install(core: Any) -> None:
     )
     core.compilation_replace_embedded = replace_embedded_artwork
     core.compilation_record_application = partial(record_application, core)
+    core.compilation_completed_track_paths = partial(
+        completed_track_paths, core
+    )
+    core.compilation_mbids = _mbids
     core._splined_compilation_authority_policy_installed = True

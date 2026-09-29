@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 class AlbumStatus(str, Enum):
     UNPROCESSED = "unprocessed"
+    INCOMPLETE = "incomplete"
     PROCESSED = "processed"
     BYPASSED = "bypassed"
     TIMEOUT = "timeout"
@@ -28,6 +29,7 @@ class ArtistStatus(str, Enum):
 
 STATUS_LABELS = {
     AlbumStatus.UNPROCESSED: "Unprocessed",
+    AlbumStatus.INCOMPLETE: "Incomplete",
     AlbumStatus.PROCESSED: "Processed",
     AlbumStatus.BYPASSED: "Bypass",
     AlbumStatus.TIMEOUT: "Timeout active",
@@ -70,6 +72,8 @@ def artist_status(albums: Iterable[AlbumItem]) -> ArtistStatus:
     items = list(albums)
     if any(item.status is AlbumStatus.BYPASSED for item in items):
         return ArtistStatus.CONTAINS_BYPASS
+    if any(item.status is AlbumStatus.INCOMPLETE for item in items):
+        return ArtistStatus.PARTIAL
     protected = {AlbumStatus.PROCESSED, AlbumStatus.TIMEOUT}
     # Match Windows LibraryInventory.Load: timeout-active albums are retained,
     # protected history entries, so an artist with no remaining unprocessed

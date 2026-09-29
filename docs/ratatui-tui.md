@@ -281,7 +281,10 @@ the same decision pipeline and may write the selected artwork.
 Manual Comp READ previews per-track embedded-artwork replacements. Manual Comp
 LIVE WRITE replaces only an approved track's embedded front image. It never
 creates, changes, or removes folder-level `cover.*`, and unresolved tracks keep
-their existing artwork.
+their existing artwork. Each successful track is committed immediately. If the
+operator leaves before every track is complete, the Album name becomes blue
+`Incomplete`; selecting Manual Scan later resumes after the verified completed
+tracks rather than querying them again.
 
 ## Selected Album artwork and statistics
 
@@ -332,6 +335,15 @@ no-cover transitions, resize, and processing launch.
 
 ## Candidate decision screen
 
+During Manual Comp review, `CURRENT ALBUM` divides into the curated Album
+identity on the left and a yellow-framed, cyan-titled
+`FALLBACK ARTIST / ALBUM INFO` panel on the right. Its three rows show the
+friendly MusicBrainz Artist, recovered release, and matched recording names,
+each followed by the exact Artist/Release/Recording ID. The magenta IDs carry
+OSC-8 links to their corresponding MusicBrainz pages so the operator can
+validate fallback authority before approval. Normal Album-ID scans do not show
+this fallback panel.
+
 Candidates are grouped by source while sharing one terminal-cell grid. Depending
 on responsive width, the grid may include:
 
@@ -363,8 +375,8 @@ exact remote resource on hover, arrow movement, or numeric selection. This
 preview is memory-only and does not install the image. The chosen candidate is
 processed and written only when required by the final action.
 
-Remote URLs use OSC-8 hyperlink metadata and a copyable raw URL. SPLINED does
-not launch a browser inside the Docker/SSH host.
+Remote URLs and fallback MusicBrainz IDs use OSC-8 hyperlink metadata. SPLINED
+does not launch a browser inside the Docker/SSH host.
 
 Repeated identical provider diagnostics are collapsed in the final report with
 a count rather than printed once per rejected reference.

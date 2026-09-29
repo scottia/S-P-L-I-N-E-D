@@ -59,6 +59,13 @@ def project_statuses_delta(
             "processed_count, bypassed_count, timeout_count FROM artists"
         )
     }
+    progress_by_path = {
+        str(row["album_path"]): row
+        for row in connection.execute(
+            "SELECT album_path, total_tracks, completed_tracks, status "
+            "FROM compilation_album_progress"
+        )
+    }
 
     total = len(album_rows)
     core.emit_ui(
@@ -132,6 +139,18 @@ def project_statuses_delta(
             status = "timeout" if active else "processed"
             if not active:
                 timeout_until = ""
+        elif path in progress_by_path:
+            progress = progress_by_path[path]
+            completed = int(progress["completed_tracks"] or 0)
+            total_tracks = int(progress["total_tracks"] or 0)
+            status = (
+                "processed"
+                if total_tracks > 0 and completed >= total_tracks
+                else "incomplete"
+                if completed > 0
+                else "unprocessed"
+            )
+            timeout_until = ""
         elif (
             current_status == "processed"
             or bool(row["cover_found"])
@@ -183,7 +202,7 @@ def project_statuses_delta(
         desired = (
             aggregate,
             len(statuses),
-            counts["unprocessed"],
+            counts["unprocessed"] + counts["incomplete"],
             counts["processed"],
             counts["bypassed"],
             counts["timeout"],

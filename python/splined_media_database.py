@@ -16,7 +16,13 @@ from splined_media_tags import inspect_album, json_list, utc_now
 DB_NAME = "splined.db"
 SCHEMA_VERSION = 2
 INVENTORY_KEY = "splined-media-library"
-VALID_ALBUM_STATUSES = {"unprocessed", "processed", "bypassed", "timeout"}
+VALID_ALBUM_STATUSES = {
+    "unprocessed",
+    "incomplete",
+    "processed",
+    "bypassed",
+    "timeout",
+}
 VALID_ARTIST_STATUSES = {
     "unprocessed",
     "partial",
@@ -164,6 +170,8 @@ def index_is_usable(
 def aggregate_artist(statuses: list[str]) -> str:
     if "bypassed" in statuses:
         return "contains-bypass"
+    if "incomplete" in statuses:
+        return "partial"
     if statuses and all(
         status in {"processed", "timeout"} for status in statuses
     ):
@@ -463,6 +471,13 @@ def project_statuses(
     now_epoch = time.time()
     updates: list[tuple[str, int, str, str, str]] = []
     by_artist: dict[str, list[str]] = {}
+    progress_by_path = {
+        str(row["album_path"]): row
+        for row in connection.execute(
+            "SELECT album_path, total_tracks, completed_tracks, status "
+            "FROM compilation_album_progress"
+        )
+    }
     rows = connection.execute(
         "SELECT album_key, artist_key, path, local_art_json, "
         "inventory_fingerprint, status, bypassed, cover_found, "
@@ -520,6 +535,18 @@ def project_statuses(
             status = "timeout" if active else "processed"
             if not active:
                 timeout_until = ""
+        elif path in progress_by_path:
+            progress = progress_by_path[path]
+            completed = int(progress["completed_tracks"] or 0)
+            total = int(progress["total_tracks"] or 0)
+            status = (
+                "processed"
+                if total > 0 and completed >= total
+                else "incomplete"
+                if completed > 0
+                else "unprocessed"
+            )
+            timeout_until = ""
         elif (
             current == "processed"
             or bool(row["cover_found"])
@@ -570,7 +597,7 @@ def update_artist_aggregate(
         (
             aggregate_artist(statuses),
             len(statuses),
-            counts["unprocessed"],
+            counts["unprocessed"] + counts["incomplete"],
             counts["processed"],
             counts["bypassed"],
             counts["timeout"],

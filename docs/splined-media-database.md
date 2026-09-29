@@ -216,7 +216,7 @@ actions update the affected database rows immediately.
 
 ## Manual compilation caches
 
-Manual Comp artwork recovery adds three persistent surfaces without changing
+Manual Comp artwork recovery adds four persistent surfaces without changing
 normal index cost:
 
 - `tracks` stores exact local Recording-ID/Artist-ID relationships discovered
@@ -224,13 +224,19 @@ normal index cost:
 - `recording_release_lookups` and `recording_release_candidates` cache positive,
   bounded MusicBrainz Recording-ID results;
 - `compilation_track_artwork` records approved per-track artwork outcomes and a
-  content digest, but never stores credential values or image bytes.
+  content digest, but never stores credential values or image bytes;
+- `compilation_album_progress` stores only Album path, total/completed counts,
+  `incomplete`/`complete`, update time, and SPLINED version.
 
 Manual Scan first queries the exact `tracks` cache. On a miss it uses the
 already-indexed Album Artist ID to restrict local inspection to that Artist's
 Albums, stopping at the first exact Recording-ID/Artist-ID match. Only a local
 miss can proceed to MusicBrainz. Stale track rows cannot become artwork
 authority: file size and modification time are checked before reuse.
+The progress and track-artwork tables are read only when Manual Scan starts.
+Normal discovery continues to inspect one representative track per Album.
+Resume accepts a prior completion only when the current local Recording and
+Artist IDs still match the ledger row.
 
 ## Album Status and physical folder aggregates
 
@@ -246,6 +252,7 @@ Album status values are:
 
 ```text
 unprocessed
+incomplete
 processed
 bypassed
 timeout
@@ -267,6 +274,11 @@ read model for those facts; it is not a replacement provider/ranking engine.
 The authority-oriented `artists.status` value may cover Albums located in more
 than one physical folder; the TUI therefore recomputes its displayed
 folder-level aggregate from the projected Album rows.
+
+`incomplete` is specific to a partially written Manual Comp Album. It does not
+claim folder-level `cover.*` authority. The runtime updates only the progress
+status after each embedded-track write; it does not rescan or materialize
+folder cover statistics for that event.
 
 ## Selected Album artwork and statistics
 

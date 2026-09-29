@@ -999,6 +999,27 @@ def run_manual_compilation_album(
     )
     mode = str(cfg.get("mode", "read")).strip().casefold()
     resolved_tracks = 0
+    completed_paths = (
+        core.compilation_completed_track_paths(
+            config_file,
+            cfg,
+            str(album.path),
+            tracks,
+        )
+        if mode == "write"
+        else set()
+    )
+    if completed_paths:
+        print(
+            f"  {core.cyan('Resume:'):13} "
+            f"{core.green(str(len(completed_paths)))} / "
+            f"{core.white(str(len(tracks)))} tracks already complete"
+        )
+        core.debug_log(
+            "compilation.manual.resume "
+            f"album={str(album.path)!r} "
+            f"completed={len(completed_paths)} total={len(tracks)}"
+        )
 
     for track_number, track in enumerate(tracks, 1):
         print()
@@ -1007,6 +1028,12 @@ def run_manual_compilation_album(
             f"{core.white(str(track.artist or ''))} · "
             f"{core.orange(str(track.title or track.path.name))}"
         )
+        if str(track.path) in completed_paths:
+            print(
+                f"    {core.cyan('Progress:'):11} "
+                f"{core.green('already complete')} · skipped"
+            )
+            continue
         eligible, reason = core.compilation_manual_track_eligible(track)
         if not eligible:
             summary.unresolved += 1
@@ -1022,6 +1049,7 @@ def run_manual_compilation_album(
         local_candidates = _manual_local_candidates(local_rows)
         release: core.Release | None = None
         release_source = ""
+        resolution = None
         if local_rows:
             release = core.compilation_release_from_local(local_rows[0])
             release_source = "local-library"
@@ -1114,6 +1142,31 @@ def run_manual_compilation_album(
             f"{core.white(release.artist_credit if release else '')} · "
             f"{core.orange(release.title if release else '')}"
         )
+        local_match = local_rows[0] if local_rows else {}
+        artist_ids = sorted(
+            core.compilation_mbids(getattr(track, "artist_mbid", None))
+        )
+        recording_ids = sorted(
+            core.compilation_mbids(getattr(track, "recording_mbid", None))
+        )
+        core.emit_ui(
+            "fallback_authority",
+            artist=(
+                str(getattr(resolution, "recording_artist", "") or "")
+                or str(local_match.get("track_artist") or "")
+                or str(track.artist or "")
+                or str(release.artist_credit if release else "")
+            ),
+            artist_id=(artist_ids[0] if artist_ids else ""),
+            album=str(release.title if release else ""),
+            album_id=str(release.mbid if release else ""),
+            track=(
+                str(getattr(resolution, "recording_title", "") or "")
+                or str(local_match.get("track_title") or "")
+                or str(track.title or track.path.name)
+            ),
+            track_id=(recording_ids[0] if recording_ids else ""),
+        )
         if diagnostics:
             for source, message in diagnostics:
                 print(
@@ -1135,6 +1188,8 @@ def run_manual_compilation_album(
                 core.compilation_replace_embedded(
                     track.path, artwork, image_format, info
                 )
+                next_completed = set(completed_paths)
+                next_completed.add(str(track.path))
                 core.compilation_record_application(
                     config_file,
                     cfg,
@@ -1152,7 +1207,11 @@ def run_manual_compilation_album(
                     release_mbid=str(release.mbid if release else ""),
                     artwork=artwork,
                     outcome="embedded-replaced",
+                    album_path=str(album.path),
+                    total_tracks=len(tracks),
+                    completed_tracks=len(next_completed),
                 )
+                completed_paths = next_completed
                 summary.installed += 1
                 action = "EMBEDDED ART REPLACED"
                 semantic = core.green
@@ -1184,6 +1243,14 @@ def run_manual_compilation_album(
             format=image_format,
             range_type="Ladder",
             distance=0,
+            manual_compilation=(mode == "write"),
+            progress_completed=len(completed_paths),
+            progress_total=len(tracks),
+            progress_status=(
+                "complete"
+                if len(completed_paths) >= len(tracks)
+                else "incomplete"
+            ),
         )
         core.debug_log(
             "compilation.manual.track_done "
@@ -1199,7 +1266,9 @@ def run_manual_compilation_album(
     core.debug_log(
         "compilation.manual.album_done "
         f"album={str(album.path)!r} tracks={len(tracks)} "
-        f"resolved={resolved_tracks} unresolved={len(tracks) - resolved_tracks}"
+        f"resolved_this_run={resolved_tracks} "
+        f"completed={len(completed_paths)} "
+        f"unresolved={len(tracks) - len(completed_paths)}"
     )
 
 

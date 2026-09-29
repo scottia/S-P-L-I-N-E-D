@@ -302,6 +302,9 @@ Manual Scan is explicit and per track:
    result and no upscaling is introduced.
 7. The operator previews and approves the candidate. LIVE WRITE replaces only
    that track's embedded front cover; READ reports what would be replaced.
+8. Each successful LIVE WRITE is committed to the per-track ledger
+   immediately. A later Manual Scan validates the saved Recording/Artist IDs
+   and skips that track instead of repeating local or remote discovery.
 
 The curated Album name is never used as MusicBrainz identity. SPLINED does not
 invent or write an Album/Release ID, change the compilation's Album/Artist
@@ -312,6 +315,10 @@ Timeouts, MusicBrainz `429`/`503` responses, no match, no artwork, rejection,
 or a failed write leave the track artwork unchanged and appear in Unresolved.
 Positive Recording-to-release results and lazily inspected local identities
 are retained in `splined.db` so later Manual Scans avoid repeated work.
+When at least one but not every track has been written, the Album is persisted
+as `incomplete` and its picker name is blue. It becomes `processed` only when
+the verified ledger reaches the Album's full track count. Retagging a completed
+track to different Recording/Artist IDs invalidates that track's resume entry.
 
 ---
 

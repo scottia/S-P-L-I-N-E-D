@@ -127,6 +127,12 @@ def cached_stats(path: Path) -> dict[str, Any] | None:
         return json.loads(json.dumps(value)) if value is not None else None
 
 
+def cached_status(path: Path | str) -> str | None:
+    """Return the indexed Album status without touching the filesystem."""
+    with _LOCK:
+        return _STATUS_BY_PATH.get(str(path))
+
+
 def physical_artist_folder(library_root: Path | str, album_path: Any) -> str:
     """Return the first physical folder below the configured library root.
 
@@ -489,6 +495,45 @@ def sync_material_result(payload: dict[str, Any]) -> None:
 
     outcome = str(payload.get("outcome", "")).casefold()
     if any(value in outcome for value in ("failed", "skipped", "bypass")):
+        return
+
+    if bool(payload.get("manual_compilation", False)):
+        progress_status = str(payload.get("progress_status", "")).casefold()
+        status = "processed" if progress_status == "complete" else "incomplete"
+        source = str(payload.get("source", ""))
+        now = utc_now()
+        connection = connect(db_path, "runtime")
+        try:
+            with connection:
+                connection.execute(
+                    "UPDATE albums SET status=?, processed_at=?, "
+                    "selected_source=?, updated_at=? WHERE album_key=?",
+                    (
+                        status,
+                        now if status == "processed" else None,
+                        source,
+                        now,
+                        album_key,
+                    ),
+                )
+                update_artist_aggregate(connection, artist_key)
+                connection.execute(
+                    "INSERT INTO cache_history"
+                    "(cache_key, cache_type, album_key, action, payload_json, "
+                    "splined_version, event_at) "
+                    "VALUES(?, 'album_status', ?, ?, ?, 'runtime', ?)",
+                    (
+                        album_key,
+                        album_key,
+                        status,
+                        json.dumps(payload, default=str, separators=(",", ":")),
+                        now,
+                    ),
+                )
+        finally:
+            connection.close()
+        with _LOCK:
+            _STATUS_BY_PATH[path] = status
         return
 
     album_path = Path(path)

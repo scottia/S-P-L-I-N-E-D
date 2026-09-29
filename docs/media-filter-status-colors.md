@@ -75,10 +75,11 @@ filesystem, Mutagen, MusicBrainz, provider, image, or AI work.
 
 ## Album Status panel order
 
-The top-left `S:P:L:I:N:E:D ALBUM STATUS` panel uses six consecutive rows:
+The top-left `S:P:L:I:N:E:D ALBUM STATUS` panel uses seven consecutive rows:
 
 ```text
 Unprocessed
+Incomplete
 Processed
 Bypassed
 Partial / Timeout
@@ -95,13 +96,15 @@ underlying status color.
 | Color | Album meaning | Normal automatic selection |
 | --- | --- | --- |
 | White | Unprocessed / no current processed authority | Yes |
+| Blue | Manual Comp LIVE WRITE completed some, but not all, tracks | No |
 | Orange | Processed/history or recognized canonical local cover | No |
 | Red | Persistent bypass | No |
 | Purple | Timeout active | No |
 
-Orange Albums may be deliberately selected for reprocessing. Red Albums require
-intentional saved-bypass removal. Purple Albums remain protected while timeout
-is active.
+Blue Incomplete Albums may be selected explicitly to resume Manual Scan; they
+are excluded from normal automatic selection. Orange Albums may be deliberately
+selected for reprocessing. Red Albums require intentional saved-bypass removal.
+Purple Albums remain protected while timeout is active.
 
 READ mode may evaluate a candidate, but a no-cover Album does not become
 durably processed merely because a possible image was found. LIVE WRITE updates
@@ -132,6 +135,13 @@ Album row  → timeout active
 Artist row → partial aggregate
 ```
 
+Blue is also context-sensitive:
+
+```text
+Album row  → incomplete Manual Comp progress
+Artist row → contains one or more bypassed child Albums
+```
+
 Color should be accompanied by row context and status text where practical.
 
 ## Counts
@@ -141,6 +151,7 @@ physical top-level picker folders, not tagged authority identities:
 
 ```text
 Unprocessed            = White Albums / White Artists for shared context
+Incomplete             = Blue Albums with partial Manual Comp progress
 Processed              = Orange Albums
 Bypassed               = Red Albums
 Partial / Timeout      = Purple Albums + Purple Artists

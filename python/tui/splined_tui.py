@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from pyratatui import (
     Block,
+    BorderType,
     Cell,
     Clear,
     Color,
@@ -247,6 +248,12 @@ class TuiState:
     compilation: str = ""
     mbid: str = ""
     tag_state: str = ""
+    fallback_artist: str = ""
+    fallback_artist_id: str = ""
+    fallback_album: str = ""
+    fallback_album_id: str = ""
+    fallback_track: str = ""
+    fallback_track_id: str = ""
     candidates: list[CandidateView] = field(default_factory=list)
     release_options: list[dict[str, str]] = field(default_factory=list)
     selected_index: int = 0
@@ -592,11 +599,24 @@ class TuiState:
             self.compilation = str(payload.get("compilation", ""))
             self.mbid = str(payload.get("mbid", ""))
             self.tag_state = str(payload.get("tag_state", ""))
+            self.fallback_artist = ""
+            self.fallback_artist_id = ""
+            self.fallback_album = ""
+            self.fallback_album_id = ""
+            self.fallback_track = ""
+            self.fallback_track_id = ""
             self.phase = str(payload.get("phase", "processing"))
             self.candidates.clear()
             self.release_options.clear()
             self.diagnostics.clear()
             self.activity.clear()
+        elif event == "fallback_authority":
+            self.fallback_artist = str(payload.get("artist", ""))
+            self.fallback_artist_id = str(payload.get("artist_id", ""))
+            self.fallback_album = str(payload.get("album", ""))
+            self.fallback_album_id = str(payload.get("album_id", ""))
+            self.fallback_track = str(payload.get("track", ""))
+            self.fallback_track_id = str(payload.get("track_id", ""))
         elif event == "candidates":
             self.workflow = "candidates"
             self.remote_hover_token += 1
@@ -761,8 +781,41 @@ class TuiState:
                     self.active_report.outcome = "Completed"
                 self.active_report.finish()
         elif event == "album_material_result":
+            manual_progress = bool(payload.get("manual_compilation", False))
+            progress_completed = int(payload.get("progress_completed", 0) or 0)
+            progress_total = int(payload.get("progress_total", 0) or 0)
+            progress_status = str(payload.get("progress_status", ""))
+            if manual_progress and self.library is not None:
+                next_status = (
+                    AlbumStatus.PROCESSED
+                    if progress_status == "complete"
+                    else AlbumStatus.INCOMPLETE
+                )
+                item = next(
+                    (
+                        album
+                        for album in self.library.albums
+                        if album.path == self.album_path
+                    ),
+                    None,
+                )
+                if item is not None and item.status is not next_status:
+                    previous = item.status
+                    item.status = next_status
+                    if self.library.known_status_counts:
+                        self.library.known_status_counts[previous] = max(
+                            0,
+                            self.library.known_status_counts.get(previous, 0) - 1,
+                        )
+                        self.library.known_status_counts[next_status] = (
+                            self.library.known_status_counts.get(next_status, 0) + 1
+                        )
             if self.active_report is not None:
-                self.active_report.outcome = str(payload.get("outcome", "Completed"))
+                self.active_report.outcome = (
+                    f"Incomplete ({progress_completed}/{progress_total})"
+                    if manual_progress and progress_status == "incomplete"
+                    else str(payload.get("outcome", "Completed"))
+                )
                 self.active_report.destination = str(payload.get("destination", ""))
                 self.active_report.file_action = str(payload.get("file_action", ""))
                 self.active_report.selected_source = str(
@@ -1428,6 +1481,7 @@ def _render_header(
 
 STATUS_CONTROLS: tuple[tuple[str, AlbumStatus | ArtistStatus], ...] = (
     ("Unprocessed", AlbumStatus.UNPROCESSED),
+    ("Incomplete", AlbumStatus.INCOMPLETE),
     ("Processed", AlbumStatus.PROCESSED),
     ("Bypassed", AlbumStatus.BYPASSED),
     ("Partial / Timeout", AlbumStatus.TIMEOUT),
@@ -1470,6 +1524,7 @@ def _scan_controls(state: TuiState) -> tuple[str, ...]:
 def _album_status_semantic(status: AlbumStatus) -> Semantic:
     return {
         AlbumStatus.UNPROCESSED: Semantic.UNPROCESSED,
+        AlbumStatus.INCOMPLETE: Semantic.DEBUG,
         AlbumStatus.PROCESSED: Semantic.FALLBACK,
         AlbumStatus.BYPASSED: Semantic.REJECTED,
         AlbumStatus.TIMEOUT: Semantic.HISTORY,
@@ -1555,6 +1610,7 @@ def _control_lines(
 def _status_control_semantic(index: int) -> Semantic:
     return (
         Semantic.UNPROCESSED,
+        Semantic.DEBUG,
         Semantic.FALLBACK,
         Semantic.REJECTED,
         Semantic.HISTORY,
@@ -1659,7 +1715,7 @@ def _folder_status_count(
             album_counts[AlbumStatus.UNPROCESSED]
             + artist_counts[ArtistStatus.UNPROCESSED]
         )
-    if index == 3:
+    if STATUS_CONTROLS[index][1] is AlbumStatus.TIMEOUT:
         return (
             album_counts[AlbumStatus.TIMEOUT]
             + artist_counts[ArtistStatus.PARTIAL]
@@ -1681,7 +1737,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels = _split_vertical(
             area,
             [
-                Constraint.length(8),
+                Constraint.length(9),
                 Constraint.length(6),
                 Constraint.length(5),
                 Constraint.length(5),
@@ -1705,7 +1761,7 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
                 AlbumStatus.UNPROCESSED in model.status_filters
                 and ArtistStatus.UNPROCESSED in model.artist_status_filters
             )
-        if index == 3:
+        if STATUS_CONTROLS[index][1] is AlbumStatus.TIMEOUT:
             return (
                 AlbumStatus.TIMEOUT in model.status_filters
                 and ArtistStatus.PARTIAL in model.artist_status_filters
@@ -1999,7 +2055,11 @@ def _render_artist_picker(frame: Any, area: Rect, state: TuiState, theme: Theme)
         Paragraph(Text(lines)).block(card(theme, f"ARTIST PICKER · {len(rows)} VISIBLE", Semantic.SPECIAL if state.library_focus == 3 else Semantic.FALLBACK)),
         body,
     )
-    _register_hit(state, "artist-scroll", body)
+    _register_hit(
+        state,
+        "artist-scroll",
+        body if int(body.height) > 0 else _row_rect(body, 0),
+    )
     for offset, artist in enumerate(visible):
         index = start + offset
         _register_hit(
@@ -2066,7 +2126,11 @@ def _render_album_picker(frame: Any, area: Rect, state: TuiState, theme: Theme) 
         Paragraph(Text(lines)).block(card(theme, f"ALBUM PICKER · {len(rows)} VISIBLE", Semantic.SPECIAL if state.library_focus == 5 else Semantic.ACTIVE)),
         body,
     )
-    _register_hit(state, "album-scroll", body)
+    _register_hit(
+        state,
+        "album-scroll",
+        body if int(body.height) > 0 else _row_rect(body, 0),
+    )
     for offset, album in enumerate(visible):
         index = start + offset
         _register_hit(
@@ -2426,6 +2490,11 @@ def _render_library_tools(
         ("[E] Edit", "settings-edit"),
         ("[R] Refresh", "library-refresh"),
     )
+    tiny = (
+        ("[P]", "source-policy-open"),
+        ("[E]", "settings-edit"),
+        ("[R]", "library-refresh"),
+    )
     inner_width = max(1, int(area.width) - 2)
     separator = "  •  "
 
@@ -2440,6 +2509,8 @@ def _render_library_tools(
         else medium
         if total_width(medium) <= inner_width
         else compact
+        if total_width(compact) <= inner_width
+        else tiny
     )
     spans: list[Span] = []
     semantics = (Semantic.SPECIAL, Semantic.ACTIVE, Semantic.ACCEPTED)
@@ -2536,7 +2607,7 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
         _render_album_picker(frame, album, state, theme)
         _render_library_side_panels(frame, side, state, theme)
     else:
-        top, bottom = _split_vertical(area, [Constraint.length(8), Constraint.fill(1)])
+        top, bottom = _split_vertical(area, [Constraint.length(9), Constraint.fill(1)])
         _render_library_controls(frame, top, state, theme)
         columns = _split_horizontal(
             bottom,
@@ -2549,7 +2620,7 @@ def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> No
 
 def _render_library_embedded(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     """Keep the Select Media workspace visible above active processing."""
-    top, bottom = _split_vertical(area, [Constraint.length(8), Constraint.fill(1)])
+    top, bottom = _split_vertical(area, [Constraint.length(9), Constraint.fill(1)])
     _render_library_controls(frame, top, state, theme)
     columns = _split_horizontal(
         bottom,
@@ -2615,7 +2686,7 @@ def _render_processing(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     spec = layout_spec(area.width, area.height)
     if state.library is not None and spec.breakpoint is Breakpoint.WIDE and area.height >= 30:
         library_area, area = _split_vertical(
-            area, [Constraint.length(16), Constraint.fill(1)]
+            area, [Constraint.length(17), Constraint.fill(1)]
         )
         _render_library_embedded(frame, library_area, state, theme)
     rows = _split_vertical(area, [Constraint.length(4), Constraint.fill(1)])
@@ -3390,11 +3461,142 @@ def _render_activity_region(frame: Any, area: Rect, state: TuiState, theme: Them
         _render_activity(frame, area, state, theme)
 
 
+def _render_current_album_authority(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    label = " • ".join(
+        part for part in (state.artist, state.album) if part
+    ) or state.album_path
+    details = (
+        f"Tracks {state.track_count or '—'} · "
+        f"Compilation {state.compilation or '—'} · "
+        f"Authority {state.authority or '—'} · "
+        f"Tagged {state.tag_state or '—'}"
+    )
+    has_fallback = bool(
+        state.fallback_artist_id
+        or state.fallback_album_id
+        or state.fallback_track_id
+    )
+    if not has_fallback:
+        current_text = (
+            _truncate(label, max(1, int(area.width) - 5))
+            + "\n"
+            + _truncate(details, max(1, int(area.width) - 5))
+        )
+        frame.render_widget(
+            Paragraph.from_string(current_text).block(
+                card(theme, "CURRENT ALBUM", Semantic.ACTIVE)
+            ),
+            area,
+        )
+        return
+
+    if int(area.width) < 120:
+        current, authority = _split_vertical(
+            area,
+            [Constraint.length(4), Constraint.fill(1)],
+        )
+    else:
+        current, authority = _split_horizontal(
+            area,
+            [Constraint.percentage(40), Constraint.fill(1)],
+        )
+    current_text = (
+        _truncate(label, max(1, int(current.width) - 5))
+        + "\n"
+        + _truncate(details, max(1, int(current.width) - 5))
+    )
+    frame.render_widget(
+        Paragraph.from_string(current_text).block(
+            card(theme, "CURRENT ALBUM", Semantic.ACTIVE)
+        ),
+        current,
+    )
+
+    fields = (
+        (
+            "MusicBrainz Artist / Artist ID: ",
+            state.fallback_artist,
+            state.fallback_artist_id,
+            "artist",
+        ),
+        (
+            "MusicBrainz Album / Album ID: ",
+            state.fallback_album,
+            state.fallback_album_id,
+            "release",
+        ),
+        (
+            "MusicBrainz Matched Track / Track ID: ",
+            state.fallback_track,
+            state.fallback_track_id,
+            "recording",
+        ),
+    )
+    inner_width = max(1, int(authority.width) - 4)
+    lines: list[Line] = []
+    links: list[tuple[int, int, str, str]] = []
+    for row, (field_label, friendly, mbid, entity) in enumerate(fields):
+        suffix_width = len(mbid) + 3 if mbid else 0
+        name_width = max(0, inner_width - len(field_label) - suffix_width)
+        visible_name = _truncate(friendly or "—", name_width)
+        spans = [
+            Span(field_label, style(theme, Semantic.ACTIVE)),
+            Span(visible_name, style(theme, Semantic.ACTIVE)),
+        ]
+        if mbid:
+            spans.extend(
+                [
+                    Span(" [", style(theme, Semantic.ACTIVE)),
+                    Span(mbid, style(theme, Semantic.SPECIAL)),
+                    Span("]", style(theme, Semantic.ACTIVE)),
+                ]
+            )
+            mbid_offset = len(field_label) + len(visible_name) + 2
+            if mbid_offset + len(mbid) <= inner_width:
+                links.append(
+                    (
+                        row,
+                        mbid_offset,
+                        mbid,
+                        f"https://musicbrainz.org/{entity}/{mbid}",
+                    )
+                )
+        lines.append(Line(spans))
+    authority_block = (
+        Block()
+        .bordered()
+        .border_type(BorderType.Rounded)
+        .title(" FALLBACK ARTIST / ALBUM INFO ")
+        .border_style(style(theme, Semantic.WARNING))
+        .title_style(style(theme, Semantic.ACTIVE, bold=True))
+        .style(panel_style(theme))
+        .padding(left=1, right=1)
+    )
+    frame.render_widget(Paragraph(Text(lines)).block(authority_block), authority)
+    for row, offset, mbid, url in links:
+        _register_hit(
+            state,
+            "musicbrainz-link",
+            Rect(
+                int(authority.x) + 2 + offset,
+                int(authority.y) + 1 + row,
+                len(mbid),
+                1,
+            ),
+            value=url,
+        )
+
+
 def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     spec = layout_spec(area.width, area.height)
     if state.library is not None and spec.breakpoint is Breakpoint.WIDE and area.height >= 36:
         library_area, area = _split_vertical(
-            area, [Constraint.length(16), Constraint.fill(1)]
+            area, [Constraint.length(17), Constraint.fill(1)]
         )
         _render_library_embedded(frame, library_area, state, theme)
     preview_enabled = (
@@ -3435,25 +3637,31 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             comparison = f"{target.source} {toward:+d}px toward Ideal · Shape {'equal' if local.square == target.square else 'changed'} · Crop risk {target.crop_risk}"
 
     preferred_height = 4
+    authority_visible = bool(
+        state.fallback_artist_id
+        or state.fallback_album_id
+        or state.fallback_track_id
+    )
+    current_height = (
+        9
+        if authority_visible and int(area.width) < 120
+        else 5
+        if authority_visible
+        else 4
+    )
     if spec.stack_cards:
-        top = _split_vertical(area, [Constraint.length(3), Constraint.length(3), Constraint.length(3), Constraint.length(4), Constraint.length(preferred_height), Constraint.fill(1), Constraint.length(5)])
+        top = _split_vertical(area, [Constraint.length(3), Constraint.length(3), Constraint.length(3), Constraint.length(current_height), Constraint.length(preferred_height), Constraint.fill(1), Constraint.length(5)])
         summary_areas = [top[0], top[1], top[2]]
         current, preferred, groups_area, activity_area = top[3], top[4], top[5], top[6]
-        label = " • ".join(part for part in (state.artist, state.album) if part) or state.album_path
-        details = f"Tracks {state.track_count or '—'} · Compilation {state.compilation or '—'} · Authority {state.authority or '—'} · Tagged {state.tag_state or '—'}"
-        current_text = _truncate(label, max(1, area.width - 5)) + "\n" + _truncate(details, max(1, area.width - 5))
-        frame.render_widget(Paragraph.from_string(current_text).block(card(theme, "CURRENT ALBUM", Semantic.ACTIVE)), current)
+        _render_current_album_authority(frame, current, state, theme)
         preferred_semantic = Semantic.ACCEPTED if target and target.range_type == "Ideal" else Semantic.FALLBACK
     else:
         top, current, preferred, groups_area, activity_area = _split_vertical(
             area,
-            [Constraint.length(4), Constraint.length(4), Constraint.length(preferred_height), Constraint.fill(1), Constraint.length(6)],
+            [Constraint.length(4), Constraint.length(current_height), Constraint.length(preferred_height), Constraint.fill(1), Constraint.length(6)],
         )
         summary_areas = _split_horizontal(top, [Constraint.percentage(27), Constraint.percentage(46), Constraint.fill(1)])
-        label = " • ".join(part for part in (state.artist, state.album) if part) or state.album_path
-        details = f"Tracks {state.track_count or '—'} · Compilation {state.compilation or '—'} · Authority {state.authority or '—'} · Tagged {state.tag_state or '—'}"
-        current_text = _truncate(label, max(1, area.width - 5)) + "\n" + _truncate(details, max(1, area.width - 5))
-        frame.render_widget(Paragraph.from_string(current_text).block(card(theme, "CURRENT ALBUM", Semantic.ACTIVE)), current)
+        _render_current_album_authority(frame, current, state, theme)
         preferred_semantic = Semantic.ACCEPTED if target and target.range_type == "Ideal" else Semantic.FALLBACK
 
     if target is None:
@@ -4712,7 +4920,7 @@ def _handle_library_key(
             if state.status_index == 0:
                 model.toggle_status(AlbumStatus.UNPROCESSED)
                 model.toggle_artist_status(ArtistStatus.UNPROCESSED)
-            elif state.status_index == 3:
+            elif STATUS_CONTROLS[state.status_index][1] is AlbumStatus.TIMEOUT:
                 model.toggle_status(AlbumStatus.TIMEOUT)
                 model.toggle_artist_status(ArtistStatus.PARTIAL)
             else:
@@ -4901,19 +5109,28 @@ def osc8_link(label: str, url: str) -> str:
 
 
 def write_terminal_links(state: TuiState, writer: Any) -> None:
-    """Attach terminal-owned OSC-8 metadata only to visible ``[URL]`` cells."""
+    """Attach terminal-owned OSC-8 metadata to visible remote identifiers."""
     targets = [
         region
         for region in state.hit_regions
-        if region.target == "candidate-url" and region.value
+        if region.target in {"candidate-url", "musicbrainz-link"}
+        and region.value
     ]
     if not targets:
         return
     writer.write("\x1b7")
     for region in targets:
+        label = (
+            region.value.rsplit("/", 1)[-1]
+            if region.target == "musicbrainz-link"
+            else "URL"
+        )
+        column = region.x + (
+            1 if region.target == "musicbrainz-link" else 2
+        )
         writer.write(
-            f"\x1b[{region.y + 1};{region.x + 2}H"
-            f"{osc8_link('URL', region.value)}"
+            f"\x1b[{region.y + 1};{column}H"
+            f"{osc8_link(label, region.value)}"
         )
     writer.write("\x1b8")
     writer.flush()
@@ -5088,7 +5305,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         if region.index == 0:
             model.toggle_status(AlbumStatus.UNPROCESSED)
             model.toggle_artist_status(ArtistStatus.UNPROCESSED)
-        elif region.index == 3:
+        elif STATUS_CONTROLS[region.index][1] is AlbumStatus.TIMEOUT:
             model.toggle_status(AlbumStatus.TIMEOUT)
             model.toggle_artist_status(ArtistStatus.PARTIAL)
         else:

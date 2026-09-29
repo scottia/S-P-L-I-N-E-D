@@ -199,6 +199,36 @@ class RenderHitMapTests(unittest.TestCase):
 
 
 class ReportAndStatusAuthorityTests(unittest.TestCase):
+    def test_manual_progress_marks_and_completes_album(self) -> None:
+        state = _library_state(artists=1, albums_each=1)
+        assert state.library is not None
+        album = state.library.albums[0]
+        state.album_path = album.path
+
+        state.apply(
+            "album_material_result",
+            {
+                "outcome": "Embedded Art Replaced",
+                "manual_compilation": True,
+                "progress_completed": 1,
+                "progress_total": 100,
+                "progress_status": "incomplete",
+            },
+        )
+        self.assertIs(album.status, AlbumStatus.INCOMPLETE)
+
+        state.apply(
+            "album_material_result",
+            {
+                "outcome": "Embedded Art Replaced",
+                "manual_compilation": True,
+                "progress_completed": 100,
+                "progress_total": 100,
+                "progress_status": "complete",
+            },
+        )
+        self.assertIs(album.status, AlbumStatus.PROCESSED)
+
     def test_final_album_result_is_not_overwritten_by_late_error_log(self) -> None:
         state = TuiState(started_at=time.monotonic() - 10)
         state.active_report = AlbumRunReport(
@@ -248,6 +278,7 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
             [label for label, _status in STATUS_CONTROLS],
             [
                 "Unprocessed",
+                "Incomplete",
                 "Processed",
                 "Bypassed",
                 "Partial / Timeout",
@@ -256,9 +287,10 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            [_status_control_semantic(index) for index in range(6)],
+            [_status_control_semantic(index) for index in range(7)],
             [
                 Semantic.UNPROCESSED,
+                Semantic.DEBUG,
                 Semantic.FALLBACK,
                 Semantic.REJECTED,
                 Semantic.HISTORY,
@@ -268,6 +300,7 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
         )
         album_counts = {
             AlbumStatus.UNPROCESSED: 11,
+            AlbumStatus.INCOMPLETE: 4,
             AlbumStatus.PROCESSED: 7,
             AlbumStatus.BYPASSED: 2,
             AlbumStatus.TIMEOUT: 3,
@@ -279,8 +312,8 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
             ArtistStatus.CONTAINS_BYPASS: 1,
         }
         self.assertEqual(
-            [_folder_status_count(i, album_counts, artist_counts) for i in range(6)],
-            [16, 7, 2, 7, 6, 1],
+            [_folder_status_count(i, album_counts, artist_counts) for i in range(7)],
+            [16, 4, 7, 2, 7, 6, 1],
         )
 
 
@@ -698,7 +731,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
     def test_status_select_and_scan_controls_are_direct_actions(self) -> None:
         model = self.state.library
         assert model is not None
-        for index in range(6):
+        for index in range(7):
             region = _region(self.state, "status-control", index)
             handle_mouse(self.state, self.adapter, _center(region))
             self.assertEqual(self.state.status_index, index)
@@ -709,7 +742,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
                 self.assertNotIn(
                     ArtistStatus.UNPROCESSED, model.artist_status_filters
                 )
-            if index == 3:
+            if index == 4:
                 self.assertNotIn(AlbumStatus.TIMEOUT, model.status_filters)
                 self.assertNotIn(
                     ArtistStatus.PARTIAL, model.artist_status_filters
@@ -719,6 +752,9 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         # the engine. Select NONE remains an in-memory operation.
         for index, expected_action in ((0, "select-all"), (2, "select-filtered")):
             state = _library_state()
+            if index == 2:
+                assert state.library is not None
+                state.library.artist_filter = "artist"
             adapter = TuiAdapter()
             adapter.waiting.set()
             render(_Frame(150, 44), state, select_theme("OLED"))
@@ -741,6 +777,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         for item in none_model.albums:
             item.selected = True
         adapter = TuiAdapter()
+        adapter.waiting.set()
         render(_Frame(150, 44), state, select_theme("OLED"))
         handle_mouse(
             state,
@@ -749,7 +786,9 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         )
         self.assertEqual(state.select_index, 1)
         self.assertFalse(any(item.selected for item in none_model.albums))
-        self.assertTrue(adapter.responses.empty())
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["action"], "selection-change")
+        self.assertEqual(response["selected"], [])
 
         for index, mode in enumerate(("filtered-read", "filtered-write")):
             state = _library_state()
@@ -816,6 +855,13 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
                 adapter,
                 _center(_region(state, "artist-row", index)),
             )
+            response = json.loads(adapter.responses.get_nowait())
+            self.assertEqual(response["action"], "selection-change")
+            state.apply(
+                "input",
+                {"prompt": "", "context": {"kind": "library-selection"}},
+            )
+            adapter.waiting.set()
             render(_Frame(150, 44), state, select_theme("OLED"))
 
         handle_mouse(
@@ -969,6 +1015,33 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         handle_mouse(state, adapter, _center(ai))
         self.assertEqual(state.ai_selection.selected_key, "local")
         self.assertTrue(state.ai_selection.disabled("remote"))
+
+    def test_fallback_authority_ids_are_visible_terminal_links(self) -> None:
+        state = self._candidate_state()
+        state.apply(
+            "fallback_authority",
+            {
+                "artist": "Percy Faith",
+                "artist_id": "291dcfb8-b31c-496a-905b-9955509d75b6",
+                "album": "A Summer Place",
+                "album_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "track": "Theme From A Summer Place",
+                "track_id": "59a0c68f-ec68-418d-a29a-fa54a7d9aea9",
+            },
+        )
+        render(_Frame(220, 50), state, select_theme("OLED"))
+        links = [
+            region
+            for region in state.hit_regions
+            if region.target == "musicbrainz-link"
+        ]
+        self.assertEqual(len(links), 3)
+        stream = io.StringIO()
+        write_terminal_links(state, stream)
+        encoded = stream.getvalue()
+        for region in links:
+            mbid = region.value.rsplit("/", 1)[-1]
+            self.assertIn(osc8_link(mbid, region.value), encoded)
 
     def test_dialog_yes_and_no_are_direct(self) -> None:
         for target, expected in (("dialog-yes", "b"), ("dialog-no", None)):

@@ -1605,11 +1605,19 @@ def prepare_tui_library_selection(
                 now=time.time(),
                 policy_fingerprint=policy_fingerprint,
             )
+            indexed_lookup = globals().get("indexed_album_status")
+            indexed_status = (
+                str(indexed_lookup(record.path) or "")
+                if callable(indexed_lookup)
+                else ""
+            )
             if record.path in bypassed or "bypass" in history_outcome.casefold():
                 status = "bypassed"
             elif postponed:
                 status = "timeout"
                 timeout_paths.add(record.path)
+            elif indexed_status in {"incomplete", "processed"}:
+                status = indexed_status
             elif isinstance(history_entry, dict) or album.local_art_files:
                 status = "processed"
             else:
@@ -1679,10 +1687,18 @@ def prepare_tui_library_selection(
             now=time.time(),
             policy_fingerprint=policy_fingerprint,
         )
+        indexed_lookup = globals().get("indexed_album_status")
+        indexed_status = (
+            str(indexed_lookup(album.path) or "")
+            if callable(indexed_lookup)
+            else ""
+        )
         if str(album.path) in bypassed or "bypass" in history_outcome.casefold():
             return "bypassed"
         if postponed:
             return "timeout"
+        if indexed_status in {"incomplete", "processed"}:
+            return indexed_status
         if isinstance(history_entry, dict) or album.local_art_files:
             return "processed"
         return "unprocessed"
@@ -1690,6 +1706,8 @@ def prepare_tui_library_selection(
     def aggregate_artist_states(statuses: list[str]) -> str:
         if "bypassed" in statuses:
             return "contains-bypass"
+        if "incomplete" in statuses:
+            return "partial"
         if statuses and all(
             status in {"processed", "timeout"} for status in statuses
         ):
@@ -1710,6 +1728,7 @@ def prepare_tui_library_selection(
         """
         album_counts = {
             "unprocessed": 0,
+            "incomplete": 0,
             "processed": 0,
             "bypassed": 0,
             "timeout": 0,

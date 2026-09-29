@@ -15,7 +15,13 @@ from mutagen import File as MutagenFile
 from PIL import Image
 
 
-VALID_ALBUM_STATUSES = {"unprocessed", "processed", "bypassed", "timeout"}
+VALID_ALBUM_STATUSES = {
+    "unprocessed",
+    "incomplete",
+    "processed",
+    "bypassed",
+    "timeout",
+}
 _MBID_PATTERN = re.compile(
     r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}\b"

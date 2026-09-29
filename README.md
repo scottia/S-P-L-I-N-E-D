@@ -140,7 +140,10 @@ When a selected curated compilation is tagged `compilation=1` but its
 representative track has no MusicBrainz Album/Release ID, Select Media exposes
 the explicit `Manual Scan [VA/OST Compilations]` workflow. It searches the
 local SQL cache first, performs bounded Recording-ID recovery only after a
-local miss, and replaces only operator-approved embedded track artwork. See
+local miss, and replaces only operator-approved embedded track artwork. LIVE
+WRITE progress is durable per track: an interrupted compilation is blue
+`Incomplete` in the picker and the next Manual Scan skips already verified
+writes. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
 ---

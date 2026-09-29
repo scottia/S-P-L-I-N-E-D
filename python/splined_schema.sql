@@ -121,6 +121,15 @@ CREATE TABLE IF NOT EXISTS compilation_track_artwork (
     splined_version TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS compilation_album_progress (
+    album_path TEXT PRIMARY KEY COLLATE NOCASE,
+    total_tracks INTEGER NOT NULL,
+    completed_tracks INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('incomplete', 'complete')),
+    updated_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS album_refresh_review_queue (
     album_key TEXT PRIMARY KEY COLLATE NOCASE,
     requested_at TEXT NOT NULL,
