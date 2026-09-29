@@ -903,10 +903,12 @@ def _manual_remote_candidates(
     cache: Path,
     api_queried: set[str],
     state: dict[str, Any],
+    *,
+    force_refresh: bool = False,
 ) -> tuple[list[core.Candidate], list[tuple[str, str]]]:
     key = str(release.mbid).casefold()
     cached = state.setdefault("release_candidates", {}).get(key)
-    if cached is not None:
+    if cached is not None and not force_refresh:
         return list(cached), []
     refs, diagnostics = core.discover_all(
         http,
@@ -928,7 +930,7 @@ def _manual_choose_candidate(
     candidates: list[core.Candidate],
     cfg: dict[str, Any],
     format_order: list[str],
-) -> core.Candidate | None:
+) -> tuple[str, core.Candidate | None, dict[str, str]]:
     top = fallback_top_candidates(candidates, cfg, format_order, 10)
     suggested = fallback_suggested(top, cfg, format_order)
     render_candidate_table(
@@ -942,6 +944,7 @@ def _manual_choose_candidate(
         menu = (
             f"    {core.paint('PURPLE', '[s]')} suggested   "
             f"{core.cyan('[#]')} choose number   "
+            f"{core.cyan('[m]')} MusicBrainz re-query   "
             f"{core.cyan('[b]')} leave unchanged"
         )
         print(menu)
@@ -949,17 +952,106 @@ def _manual_choose_candidate(
             "    Choice: ",
             kind="fallback-picker",
         ).strip().lower()
-        if answer == "__cancel__":
-            raise core.TuiSessionExit()
+        if answer in {"__cancel__", "__manual_album_exit__"}:
+            return "exit-album", None, {}
+        try:
+            payload = core.json.loads(answer)
+        except (TypeError, ValueError):
+            payload = None
+        if (
+            isinstance(payload, dict)
+            and payload.get("action") == "manual-authority-query"
+        ):
+            fields = {
+                key: str(payload.get(key) or "").strip().casefold()
+                for key in ("artist_id", "release_id", "recording_id", "edited")
+            }
+            return "requery", None, fields
+        if answer == "m":
+            return "requery", None, {}
         if answer == "b":
-            return None
+            return "unchanged", None, {}
         if answer == "s" and suggested is not None:
-            return suggested
+            return "selected", suggested, {}
         if answer.isdigit():
             number = int(answer)
             if 1 <= number <= len(top):
-                return top[number - 1]
-        print("    Choose s, a listed number, or b.")
+                return "selected", top[number - 1], {}
+        print("    Choose s, a listed number, m, or b.")
+
+
+def _manual_track_authority(
+    track: Any,
+    *,
+    artist_id: str,
+    recording_id: str,
+) -> core.Track:
+    """Build a session-only authority view; never alter the file's tags."""
+    return core.Track(
+        track.path,
+        str(track.title or ""),
+        str(track.artist or ""),
+        getattr(track, "album", None),
+        getattr(track, "album_artist", None),
+        getattr(track, "album_mbid", None),
+        recording_id,
+        getattr(track, "compilation", None),
+        artist_id,
+    )
+
+
+def _manual_musicbrainz_options(
+    config_file: Path,
+    cfg: dict[str, Any],
+    state: dict[str, Any],
+) -> Any | None:
+    options = state.get("mb_options")
+    if options is None and "mb_options_error" not in state:
+        try:
+            options = core.compilation_credential_options(config_file, cfg)
+            state["mb_options"] = options
+            core.debug_log(
+                "compilation.manual.mb_options "
+                f"retry_max={options.retry_max} "
+                f"min_delay={options.min_delay:g} "
+                f"recording_timeout={options.recording_timeout:g}"
+            )
+        except Exception as exc:
+            state["mb_options_error"] = str(exc)
+    return options
+
+
+def _manual_progress(
+    album: core.AlbumDir,
+    tracks: list[Any],
+    completed_paths: set[str],
+    *,
+    config_file: Path,
+    cfg: dict[str, Any],
+) -> None:
+    completed = len(completed_paths)
+    total = len(tracks)
+    status = "complete" if total > 0 and completed >= total else "incomplete"
+    try:
+        core.compilation_record_progress(
+            config_file,
+            cfg,
+            str(album.path),
+            total,
+            completed,
+        )
+    except Exception as exc:
+        core.debug_log(
+            "compilation.manual.progress_write_failed "
+            f"album={str(album.path)!r} error={type(exc).__name__!r}"
+        )
+    core.emit_ui(
+        "album_progress",
+        path=str(album.path),
+        completed=completed,
+        total=total,
+        status=status,
+    )
 
 
 def run_manual_compilation_album(
@@ -976,7 +1068,7 @@ def run_manual_compilation_album(
     api_queried: set[str],
     unresolved_items: list[dict[str, str]],
     state: dict[str, Any],
-) -> None:
+) -> bool:
     """Resolve and approve embedded artwork independently for every track."""
     if not core.compilation_manual_album_eligible(tracks):
         summary.unresolved += 1
@@ -986,7 +1078,7 @@ def run_manual_compilation_album(
         )
         for track in tracks[:1]:
             _manual_unresolved(track, reason, unresolved_items)
-        return
+        return True
 
     print()
     print(
@@ -1020,6 +1112,14 @@ def run_manual_compilation_album(
             f"album={str(album.path)!r} "
             f"completed={len(completed_paths)} total={len(tracks)}"
         )
+    if mode == "write":
+        _manual_progress(
+            album,
+            tracks,
+            completed_paths,
+            config_file=config_file,
+            cfg=cfg,
+        )
 
     for track_number, track in enumerate(tracks, 1):
         print()
@@ -1039,146 +1139,255 @@ def run_manual_compilation_album(
             summary.unresolved += 1
             _manual_unresolved(track, reason, unresolved_items)
             continue
-
-        local_rows = core.compilation_local_artwork_rows(
-            config_file,
-            cfg,
-            track,
-            current_album_path=album.path,
-        )
-        local_candidates = _manual_local_candidates(local_rows)
-        release: core.Release | None = None
-        release_source = ""
-        resolution = None
-        if local_rows:
-            release = core.compilation_release_from_local(local_rows[0])
-            release_source = "local-library"
-        else:
-            options = state.get("mb_options")
-            if options is None and "mb_options_error" not in state:
-                try:
-                    options = core.compilation_credential_options(
-                        config_file, cfg
-                    )
-                    state["mb_options"] = options
-                    core.debug_log(
-                        "compilation.manual.mb_options "
-                        f"retry_max={options.retry_max} "
-                        f"min_delay={options.min_delay:g} "
-                        f"recording_timeout={options.recording_timeout:g}"
-                    )
-                except Exception as exc:
-                    state["mb_options_error"] = str(exc)
-            if options is None:
-                summary.unresolved += 1
-                _manual_unresolved(
-                    track,
-                    str(state.get("mb_options_error") or "Invalid MusicBrainz options"),
-                    unresolved_items,
-                )
-                continue
-            resolution = core.compilation_resolve_releases(
-                http,
-                config_file,
-                cfg,
-                track,
-                options,
-            )
-            if not resolution.candidates:
-                summary.unresolved += 1
-                _manual_unresolved(
-                    track,
-                    resolution.error or "No artwork release was resolved",
-                    unresolved_items,
-                )
-                continue
-            diagnostics: list[tuple[str, str]] = []
-            remote: list[core.Candidate] = []
-            for release_item in resolution.candidates:
-                attempted_release = core.compilation_release_from_candidate(
-                    release_item
-                )
-                attempted, attempted_diagnostics = _manual_remote_candidates(
-                    http,
-                    config_file,
-                    cfg,
-                    attempted_release,
-                    sources,
-                    cache,
-                    api_queried,
-                    state,
-                )
-                diagnostics.extend(attempted_diagnostics)
-                if attempted:
-                    release = attempted_release
-                    remote = attempted
-                    release_source = resolution.source
-                    break
-
-        if local_rows:
-            remote, diagnostics = _manual_remote_candidates(
-                http,
-                config_file,
-                cfg,
-                release,
-                sources,
-                cache,
-                api_queried,
-                state,
-            )
-        candidates = local_candidates + remote
-        if not candidates:
-            summary.unresolved += 1
-            _manual_unresolved(
-                track,
-                "No acceptable local or remote artwork candidate was returned",
-                unresolved_items,
-            )
-            continue
-
-        print(
-            f"    {core.cyan('Authority:'):11} "
-            f"{core.green(release_source)} · "
-            f"{core.white(release.artist_credit if release else '')} · "
-            f"{core.orange(release.title if release else '')}"
-        )
-        local_match = local_rows[0] if local_rows else {}
         artist_ids = sorted(
             core.compilation_mbids(getattr(track, "artist_mbid", None))
         )
         recording_ids = sorted(
             core.compilation_mbids(getattr(track, "recording_mbid", None))
         )
-        core.emit_ui(
-            "fallback_authority",
-            artist=(
-                str(getattr(resolution, "recording_artist", "") or "")
-                or str(local_match.get("track_artist") or "")
-                or str(track.artist or "")
-                or str(release.artist_credit if release else "")
-            ),
-            artist_id=(artist_ids[0] if artist_ids else ""),
-            album=str(release.title if release else ""),
-            album_id=str(release.mbid if release else ""),
-            track=(
-                str(getattr(resolution, "recording_title", "") or "")
-                or str(local_match.get("track_title") or "")
-                or str(track.title or track.path.name)
-            ),
-            track_id=(recording_ids[0] if recording_ids else ""),
-        )
-        if diagnostics:
-            for source, message in diagnostics:
-                print(
-                    f"    {core.magenta(provider_label(source))}: "
-                    f"{core.yellow(message)}"
-                )
-        selected = _manual_choose_candidate(candidates, cfg, format_order)
-        if selected is None:
-            summary.unresolved += 1
-            _manual_unresolved(
-                track, "Operator left existing artwork unchanged", unresolved_items
+        authority = {
+            "artist_id": artist_ids[0] if artist_ids else "",
+            "release_id": "",
+            "recording_id": recording_ids[0] if recording_ids else "",
+        }
+        friendly = {
+            "artist": str(track.artist or ""),
+            "album": "",
+            "track": str(track.title or track.path.name),
+        }
+        force_musicbrainz = False
+        force_sources = False
+        interactive_retry = False
+        selected: core.Candidate | None = None
+        release: core.Release | None = None
+
+        while True:
+            authority_track = _manual_track_authority(
+                track,
+                artist_id=authority["artist_id"],
+                recording_id=authority["recording_id"],
             )
+            exact_release = authority["release_id"] if force_musicbrainz else ""
+            local_rows = core.compilation_local_artwork_rows(
+                config_file,
+                cfg,
+                authority_track,
+                current_album_path=album.path,
+                release_mbid=exact_release,
+            )
+            local_match = local_rows[0] if local_rows else {}
+            local_candidates: list[core.Candidate] = []
+            remote: list[core.Candidate] = []
+            diagnostics: list[tuple[str, str]] = []
+            release = None
+            release_source = ""
+            resolution = None
+            lookup_error = ""
+
+            if local_rows and not force_musicbrainz:
+                release = core.compilation_release_from_local(local_rows[0])
+                release_source = "local-library"
+                local_candidates = _manual_local_candidates(local_rows)
+            else:
+                options = _manual_musicbrainz_options(
+                    config_file, cfg, state
+                )
+                if options is None:
+                    lookup_error = str(
+                        state.get("mb_options_error")
+                        or "Invalid MusicBrainz options"
+                    )
+                elif exact_release:
+                    resolution = core.compilation_resolve_release_id(
+                        http,
+                        config_file,
+                        cfg,
+                        authority_track,
+                        exact_release,
+                        options,
+                    )
+                else:
+                    resolution = core.compilation_resolve_releases(
+                        http,
+                        config_file,
+                        cfg,
+                        authority_track,
+                        options,
+                        force_refresh=force_musicbrainz,
+                    )
+                if resolution is not None and not resolution.candidates:
+                    lookup_error = (
+                        resolution.error or "No artwork release was resolved"
+                    )
+                if resolution is not None:
+                    for release_item in resolution.candidates:
+                        attempted_release = (
+                            core.compilation_release_from_candidate(release_item)
+                        )
+                        attempted, attempted_diagnostics = (
+                            _manual_remote_candidates(
+                                http,
+                                config_file,
+                                cfg,
+                                attempted_release,
+                                sources,
+                                cache,
+                                api_queried,
+                                state,
+                                force_refresh=force_sources,
+                            )
+                        )
+                        diagnostics.extend(attempted_diagnostics)
+                        if attempted:
+                            release = attempted_release
+                            remote = attempted
+                            release_source = resolution.source
+                            break
+                    if release is None and resolution.candidates and not lookup_error:
+                        lookup_error = (
+                            "No acceptable local or remote artwork candidate "
+                            "was returned"
+                        )
+                if exact_release and local_rows and release is not None:
+                    local_candidates = _manual_local_candidates(local_rows)
+
+            if release is not None and not remote:
+                remote, remote_diagnostics = _manual_remote_candidates(
+                    http,
+                    config_file,
+                    cfg,
+                    release,
+                    sources,
+                    cache,
+                    api_queried,
+                    state,
+                    force_refresh=force_sources,
+                )
+                diagnostics.extend(remote_diagnostics)
+
+            candidates = local_candidates + remote
+            if release is not None:
+                authority["release_id"] = str(release.mbid or "").casefold()
+                friendly["album"] = str(release.title or "")
+                print(
+                    f"    {core.cyan('Authority:'):11} "
+                    f"{core.green(release_source)} · "
+                    f"{core.white(release.artist_credit or '')} · "
+                    f"{core.orange(release.title or '')}"
+                )
+            if resolution is not None:
+                friendly["artist"] = (
+                    str(getattr(resolution, "recording_artist", "") or "")
+                    or friendly["artist"]
+                )
+                friendly["track"] = (
+                    str(getattr(resolution, "recording_title", "") or "")
+                    or friendly["track"]
+                )
+            if local_match:
+                friendly["artist"] = (
+                    str(local_match.get("track_artist") or "")
+                    or friendly["artist"]
+                )
+                friendly["track"] = (
+                    str(local_match.get("track_title") or "")
+                    or friendly["track"]
+                )
+            core.emit_ui(
+                "fallback_authority",
+                artist=friendly["artist"],
+                artist_id=authority["artist_id"],
+                album=friendly["album"],
+                album_id=authority["release_id"],
+                track=friendly["track"],
+                track_id=authority["recording_id"],
+            )
+            if diagnostics:
+                for source, message in diagnostics:
+                    print(
+                        f"    {core.magenta(provider_label(source))}: "
+                        f"{core.yellow(message)}"
+                    )
+            if not candidates and not interactive_retry:
+                summary.unresolved += 1
+                _manual_unresolved(
+                    track,
+                    lookup_error
+                    or "No acceptable local or remote artwork candidate was returned",
+                    unresolved_items,
+                )
+                break
+            if lookup_error:
+                print(
+                    f"    {core.red('Authority lookup:')} "
+                    f"{core.yellow(lookup_error)}"
+                )
+
+            decision, chosen, changes = _manual_choose_candidate(
+                candidates, cfg, format_order
+            )
+            if decision == "exit-album":
+                if mode == "write":
+                    _manual_progress(
+                        album,
+                        tracks,
+                        completed_paths,
+                        config_file=config_file,
+                        cfg=cfg,
+                    )
+                core.debug_log(
+                    "compilation.manual.album_exit "
+                    f"album={str(album.path)!r} "
+                    f"completed={len(completed_paths)} total={len(tracks)}"
+                )
+                return False
+            if decision == "requery":
+                edited = changes.get("edited", "")
+                if changes:
+                    new_values = {
+                        key: changes.get(key, authority[key])
+                        for key in ("artist_id", "release_id", "recording_id")
+                    }
+                    if any(
+                        len(core.compilation_mbids(value)) != 1
+                        for value in (
+                            new_values["artist_id"],
+                            new_values["recording_id"],
+                        )
+                    ) or (
+                        new_values["release_id"]
+                        and len(
+                            core.compilation_mbids(new_values["release_id"])
+                        ) != 1
+                    ):
+                        print(
+                            f"    {core.yellow('Each edited ID must be a valid MusicBrainz UUID.')}"
+                        )
+                        continue
+                    authority.update(new_values)
+                    if edited in {"artist", "recording"}:
+                        authority["release_id"] = ""
+                        friendly["album"] = ""
+                force_musicbrainz = True
+                force_sources = True
+                interactive_retry = True
+                core.debug_log(
+                    "compilation.manual.authority_requery "
+                    f"file={str(track.path)!r} edited={edited or 'retry'!r}"
+                )
+                continue
+            if decision == "unchanged":
+                summary.unresolved += 1
+                _manual_unresolved(
+                    track,
+                    "Operator left existing artwork unchanged",
+                    unresolved_items,
+                )
+                break
+            selected = chosen
+            break
+
+        if selected is None:
             continue
         try:
             artwork, info, image_format = core.compilation_prepare_embedded(
@@ -1270,6 +1479,15 @@ def run_manual_compilation_album(
         f"completed={len(completed_paths)} "
         f"unresolved={len(tracks) - len(completed_paths)}"
     )
+    if mode == "write":
+        _manual_progress(
+            album,
+            tracks,
+            completed_paths,
+            config_file=config_file,
+            cfg=cfg,
+        )
+    return True
 
 
 def _sample_release(record: dict[str, Any], album: core.AlbumDir) -> core.Release:
@@ -1970,7 +2188,7 @@ def _run_scan_dir_batch(
             continue
 
         if manual_compilation_mode:
-            run_manual_compilation_album(
+            manual_completed = run_manual_compilation_album(
                 album,
                 list(record.get("tracks") or []),
                 http=http,
@@ -1985,6 +2203,8 @@ def _run_scan_dir_batch(
                 state=manual_state,
             )
             print()
+            if not manual_completed:
+                break
             continue
 
         preflight_started = core.time.perf_counter()

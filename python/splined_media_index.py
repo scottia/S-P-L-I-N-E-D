@@ -142,6 +142,26 @@ def install(core: Any, scan: Any | None = None) -> None:
                         "splined.db.material_sync_error "
                         f"error={type(exc).__name__}: {exc}"
                     )
+        elif event == "album_progress":
+            # A resumed/aborted Manual Scan may not produce a new artwork
+            # write. Project its progress into the retained status cache so
+            # the next library_update cannot overwrite the incomplete color.
+            try:
+                sync_material_result(
+                    {
+                        "outcome": "Manual compilation progress",
+                        "manual_compilation": True,
+                        "progress_status": str(
+                            payload.get("status", "incomplete")
+                        ),
+                        "source": "Manual Scan",
+                    }
+                )
+            except Exception as exc:
+                core.debug_log(
+                    "splined.db.progress_sync_error "
+                    f"error={type(exc).__name__}: {exc}"
+                )
         elif event == "library_update":
             # The first library payload must paint immediately. Warm-start
             # projection already populated the in-memory status authority, so

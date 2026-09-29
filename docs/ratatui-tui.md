@@ -284,7 +284,9 @@ creates, changes, or removes folder-level `cover.*`, and unresolved tracks keep
 their existing artwork. Each successful track is committed immediately. If the
 operator leaves before every track is complete, the Album name becomes blue
 `Incomplete`; selecting Manual Scan later resumes after the verified completed
-tracks rather than querying them again.
+tracks rather than querying them again. This includes 0/N when the operator
+leaves before the first approval. Escape leaves the current Manual Album for
+the Album Run Report; Enter or Escape there returns to retained Select Media.
 
 ## Selected Album artwork and statistics
 
@@ -343,6 +345,15 @@ each followed by the exact Artist/Release/Recording ID. The magenta IDs carry
 OSC-8 links to their corresponding MusicBrainz pages so the operator can
 validate fallback authority before approval. Normal Album-ID scans do not show
 this fallback panel.
+
+Each row begins with a clickable `[E]` box. The editor accepts a canonical
+MusicBrainz UUID; Enter updates the displayed session authority and immediately
+re-queries MusicBrainz and artwork sources. Artist or Recording edits discard
+the previously derived Release before lookup. A Release edit requests that
+exact release and validates that it contains the selected Recording and Artist.
+`M` repeats the currently displayed authority query with a real cache-bypassing
+refresh. These edits never write MBID tags; only approved embedded artwork is
+written.
 
 Candidates are grouped by source while sharing one terminal-cell grid. Depending
 on responsive width, the grid may include:

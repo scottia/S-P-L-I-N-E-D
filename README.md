@@ -142,8 +142,8 @@ the explicit `Manual Scan [VA/OST Compilations]` workflow. It searches the
 local SQL cache first, performs bounded Recording-ID recovery only after a
 local miss, and replaces only operator-approved embedded track artwork. LIVE
 WRITE progress is durable per track: an interrupted compilation is blue
-`Incomplete` in the picker and the next Manual Scan skips already verified
-writes. See
+`Incomplete` in the picker even if the operator leaves before the first
+approval, and the next Manual Scan skips already verified writes. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
 ---

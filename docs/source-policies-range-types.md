@@ -305,9 +305,16 @@ Manual Scan is explicit and per track:
 8. Each successful LIVE WRITE is committed to the per-track ledger
    immediately. A later Manual Scan validates the saved Recording/Artist IDs
    and skips that track instead of repeating local or remote discovery.
+9. The three `[E]` controls in `FALLBACK ARTIST / ALBUM INFO` accept
+   session-only Artist, Release, and Recording MBID corrections. Enter validates
+   the UUID and performs a fresh authority/artwork query. Editing Artist or
+   Recording invalidates the previously derived Release; editing Release
+   performs an exact lookup that must contain the selected Recording and Artist.
+   `M` repeats the current MusicBrainz query and bypasses the positive lookup
+   and artwork-candidate caches for that retry.
 
 The curated Album name is never used as MusicBrainz identity. SPLINED does not
-invent or write an Album/Release ID, change the compilation's Album/Artist
+invent or write an Album/Release ID, write an operator-edited MBID, change the compilation's Album/Artist
 tags, or create, alter, or remove folder-level `cover.*`. Different tracks in
 one curated compilation may therefore receive different approved artwork.
 
@@ -315,10 +322,13 @@ Timeouts, MusicBrainz `429`/`503` responses, no match, no artwork, rejection,
 or a failed write leave the track artwork unchanged and appear in Unresolved.
 Positive Recording-to-release results and lazily inspected local identities
 are retained in `splined.db` so later Manual Scans avoid repeated work.
-When at least one but not every track has been written, the Album is persisted
-as `incomplete` and its picker name is blue. It becomes `processed` only when
-the verified ledger reaches the Album's full track count. Retagging a completed
-track to different Recording/Artist IDs invalidates that track's resume entry.
+Starting LIVE WRITE persists the Album as `incomplete`, including 0/N when
+the operator leaves before the first approval, and its picker name is blue.
+Escape leaves the current Manual Album, shows the run report, and returns to
+the retained Album list; it does not exit SPLINED. The Album becomes
+`processed` only when the verified ledger reaches the full track count.
+Retagging a completed track to different Recording/Artist IDs invalidates that
+track's resume entry.
 
 ---
 

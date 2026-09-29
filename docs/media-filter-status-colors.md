@@ -151,7 +151,7 @@ physical top-level picker folders, not tagged authority identities:
 
 ```text
 Unprocessed            = White Albums / White Artists for shared context
-Incomplete             = Blue Albums with partial Manual Comp progress
+Incomplete             = Blue Albums with started, unfinished Manual Comp progress
 Processed              = Orange Albums
 Bypassed               = Red Albums
 Partial / Timeout      = Purple Albums + Purple Artists

@@ -83,6 +83,10 @@ from .widgets import card, panel_style, spectral_title, style, title_paragraph
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
+MBID_RE = re.compile(
+    r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 BATCH_RETURN_ACTIVATION_GUARD_SECONDS = 0.5
 MOUSE_SCROLL_TRACE_INTERVAL_SECONDS = 0.5
 
@@ -254,6 +258,8 @@ class TuiState:
     fallback_album_id: str = ""
     fallback_track: str = ""
     fallback_track_id: str = ""
+    fallback_edit_index: int = -1
+    fallback_edit_buffer: str = ""
     candidates: list[CandidateView] = field(default_factory=list)
     release_options: list[dict[str, str]] = field(default_factory=list)
     selected_index: int = 0
@@ -605,6 +611,8 @@ class TuiState:
             self.fallback_album_id = ""
             self.fallback_track = ""
             self.fallback_track_id = ""
+            self.fallback_edit_index = -1
+            self.fallback_edit_buffer = ""
             self.phase = str(payload.get("phase", "processing"))
             self.candidates.clear()
             self.release_options.clear()
@@ -617,6 +625,44 @@ class TuiState:
             self.fallback_album_id = str(payload.get("album_id", ""))
             self.fallback_track = str(payload.get("track", ""))
             self.fallback_track_id = str(payload.get("track_id", ""))
+            self.fallback_edit_index = -1
+            self.fallback_edit_buffer = ""
+        elif event == "album_progress":
+            progress_completed = int(payload.get("completed", 0) or 0)
+            progress_total = int(payload.get("total", 0) or 0)
+            progress_status = str(payload.get("status", "incomplete"))
+            progress_path = str(payload.get("path", self.album_path))
+            if self.library is not None:
+                next_status = (
+                    AlbumStatus.PROCESSED
+                    if progress_status == "complete"
+                    else AlbumStatus.INCOMPLETE
+                )
+                item = next(
+                    (
+                        album
+                        for album in self.library.albums
+                        if album.path == progress_path
+                    ),
+                    None,
+                )
+                if item is not None and item.status is not next_status:
+                    previous = item.status
+                    item.status = next_status
+                    if self.library.known_status_counts:
+                        self.library.known_status_counts[previous] = max(
+                            0,
+                            self.library.known_status_counts.get(previous, 0) - 1,
+                        )
+                        self.library.known_status_counts[next_status] = (
+                            self.library.known_status_counts.get(next_status, 0) + 1
+                        )
+            if self.active_report is not None:
+                self.active_report.outcome = (
+                    "Completed"
+                    if progress_status == "complete"
+                    else f"Incomplete ({progress_completed}/{progress_total})"
+                )
         elif event == "candidates":
             self.workflow = "candidates"
             self.remote_hover_token += 1
@@ -3540,32 +3586,53 @@ def _render_current_album_authority(
     inner_width = max(1, int(authority.width) - 4)
     lines: list[Line] = []
     links: list[tuple[int, int, str, str]] = []
+    edit_boxes: list[tuple[int, int]] = []
     for row, (field_label, friendly, mbid, entity) in enumerate(fields):
-        suffix_width = len(mbid) + 3 if mbid else 0
-        name_width = max(0, inner_width - len(field_label) - suffix_width)
+        editing = state.fallback_edit_index == row
+        shown_mbid = state.fallback_edit_buffer if editing else mbid
+        prefix = "[*] " if editing else "[E] "
+        suffix_width = len(shown_mbid) + 3 if shown_mbid else 0
+        name_width = max(
+            0,
+            inner_width - len(prefix) - len(field_label) - suffix_width,
+        )
         visible_name = _truncate(friendly or "—", name_width)
         spans = [
+            Span(
+                prefix,
+                style(
+                    theme,
+                    Semantic.SPECIAL if editing else Semantic.ACTIVE,
+                    bold=True,
+                ),
+            ),
             Span(field_label, style(theme, Semantic.ACTIVE)),
             Span(visible_name, style(theme, Semantic.ACTIVE)),
         ]
-        if mbid:
+        if shown_mbid:
             spans.extend(
                 [
                     Span(" [", style(theme, Semantic.ACTIVE)),
-                    Span(mbid, style(theme, Semantic.SPECIAL)),
+                    Span(shown_mbid, style(theme, Semantic.SPECIAL)),
                     Span("]", style(theme, Semantic.ACTIVE)),
                 ]
             )
-            mbid_offset = len(field_label) + len(visible_name) + 2
-            if mbid_offset + len(mbid) <= inner_width:
+            mbid_offset = (
+                len(prefix) + len(field_label) + len(visible_name) + 2
+            )
+            if (
+                not editing
+                and mbid_offset + len(shown_mbid) <= inner_width
+            ):
                 links.append(
                     (
                         row,
                         mbid_offset,
-                        mbid,
-                        f"https://musicbrainz.org/{entity}/{mbid}",
+                        shown_mbid,
+                        f"https://musicbrainz.org/{entity}/{shown_mbid}",
                     )
                 )
+        edit_boxes.append((row, len(prefix) - 1))
         lines.append(Line(spans))
     authority_block = (
         Block()
@@ -3578,6 +3645,18 @@ def _render_current_album_authority(
         .padding(left=1, right=1)
     )
     frame.render_widget(Paragraph(Text(lines)).block(authority_block), authority)
+    for row, width in edit_boxes:
+        _register_hit(
+            state,
+            "fallback-id-edit",
+            Rect(
+                int(authority.x) + 2,
+                int(authority.y) + 1 + row,
+                width,
+                1,
+            ),
+            index=row,
+        )
     for row, offset, mbid, url in links:
         _register_hit(
             state,
@@ -4222,7 +4301,7 @@ def _footer_text(state: TuiState) -> str:
         if kind == "musicbrainz":
             return "↑/↓ choose release • Enter select • B/Esc back • Ctrl+C [Exit] • ? help"
         if kind == "fallback-picker":
-            return "↑/↓ choose • Enter exact • S suggested • U URL • F edit • M MusicBrainz • B bypass • Ctrl+C [Exit] • ? help"
+            return "↑/↓ choose • Enter exact • S suggested • Click [E] edit MBID • M re-query • B leave • Esc album list • Ctrl+C [Exit]"
         return "↑/↓ choose • Enter exact • S suggested • U URL • B bypass • Ctrl+C [Exit] • ? help"
     if state.finished:
         return "Enter / q Exit SPLINED • Ctrl+C [Exit] • ? help"
@@ -4467,6 +4546,69 @@ def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> bool:
     state.dialog_open = False
     state.workflow = "processing"
     return True
+
+
+def _fallback_authority_ids(state: TuiState) -> dict[str, str]:
+    return {
+        "artist_id": state.fallback_artist_id,
+        "release_id": state.fallback_album_id,
+        "recording_id": state.fallback_track_id,
+    }
+
+
+def _begin_fallback_id_edit(
+    state: TuiState,
+    adapter: TuiAdapter,
+    index: int,
+) -> None:
+    if (
+        not adapter.waiting.is_set()
+        or state.input_request is None
+        or state.input_request.kind != "fallback-picker"
+        or index not in {0, 1, 2}
+    ):
+        state.transient = "MusicBrainz IDs can be edited during a Manual candidate decision."
+        return
+    state.fallback_edit_index = index
+    state.fallback_edit_buffer = ""
+    labels = ("Artist", "Album/Release", "Matched Track/Recording")
+    state.transient = (
+        f"Editing {labels[index]} MBID · paste/type 36-character UUID · "
+        "Enter re-query · Esc cancel"
+    )
+
+
+def _commit_fallback_id_edit(
+    state: TuiState,
+    adapter: TuiAdapter,
+) -> None:
+    value = state.fallback_edit_buffer.strip().casefold()
+    if MBID_RE.fullmatch(value) is None:
+        state.transient = (
+            "Invalid MusicBrainz ID · enter one canonical 36-character UUID."
+        )
+        return
+    index = state.fallback_edit_index
+    edited = ("artist", "release", "recording")[index]
+    if index == 0:
+        state.fallback_artist_id = value
+        state.fallback_album_id = ""
+        state.fallback_album = ""
+    elif index == 1:
+        state.fallback_album_id = value
+    else:
+        state.fallback_track_id = value
+        state.fallback_album_id = ""
+        state.fallback_album = ""
+    payload = {
+        "action": "manual-authority-query",
+        **_fallback_authority_ids(state),
+        "edited": edited,
+    }
+    state.fallback_edit_index = -1
+    state.fallback_edit_buffer = ""
+    state.transient = "Updating MusicBrainz authority and artwork candidates…"
+    _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
 
 
 def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
@@ -5428,6 +5570,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.status_index = region.index
     elif region.target in {"candidate-row", "preferred-candidate"}:
         state.selected_index = region.index
+    elif region.target == "fallback-id-edit":
+        _begin_fallback_id_edit(state, adapter, region.index)
     elif region.target == "candidate-url":
         _focus_candidate_url(state, region.index)
     elif region.target == "preview-modal-close":
@@ -5465,6 +5609,26 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         f"workflow={state.workflow!r} workspace={state.workspace!r} "
         f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
     )
+    if state.fallback_edit_index >= 0:
+        lowered = code.casefold()
+        if action is Action.BACK:
+            state.fallback_edit_index = -1
+            state.fallback_edit_buffer = ""
+            state.transient = "MusicBrainz ID edit cancelled."
+        elif action is Action.ACTIVATE:
+            _commit_fallback_id_edit(state, adapter)
+        elif lowered == "backspace":
+            state.fallback_edit_buffer = state.fallback_edit_buffer[:-1]
+        elif lowered == "delete":
+            state.fallback_edit_buffer = ""
+        elif (
+            not bool(getattr(event, "ctrl", False))
+            and re.fullmatch(r"[0-9a-fA-F-]+", code)
+        ):
+            state.fallback_edit_buffer = (
+                state.fallback_edit_buffer + code
+            )[:36]
+        return
     if state.help_open:
         if action in {Action.HELP, Action.BACK}:
             state.help_open = False
@@ -5598,6 +5762,12 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if action is Action.BACK:
         if request.kind == "musicbrainz":
             _submit(state, adapter, "b")
+        elif (
+            request.kind == "fallback-picker"
+            and state.fallback_artist_id
+            and state.fallback_track_id
+        ):
+            _submit(state, adapter, "__manual_album_exit__")
         else:
             _submit(state, adapter, "__cancel__")
         return
@@ -5609,6 +5779,20 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if action is Action.QUIT:
         state.transient = "q is disabled during a decision; choose an engine action or Ctrl+C."
+        return
+    if (
+        action is Action.MUSICBRAINZ
+        and request.kind == "fallback-picker"
+        and state.fallback_artist_id
+        and state.fallback_track_id
+    ):
+        payload = {
+            "action": "manual-authority-query",
+            **_fallback_authority_ids(state),
+            "edited": "retry",
+        }
+        state.transient = "Re-querying MusicBrainz authority and artwork candidates…"
+        _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
         return
     response = picker_response(action, state.selected_index)
     if response is not None:

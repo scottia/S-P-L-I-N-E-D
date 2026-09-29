@@ -229,6 +229,30 @@ class ReportAndStatusAuthorityTests(unittest.TestCase):
         )
         self.assertIs(album.status, AlbumStatus.PROCESSED)
 
+    def test_resumed_manual_progress_marks_album_incomplete_without_new_write(self) -> None:
+        state = _library_state(artists=1, albums_each=1)
+        assert state.library is not None
+        album = state.library.albums[0]
+        state.active_report = AlbumRunReport(
+            1,
+            1,
+            "Various Artists",
+            "Billboard Hot 100 Singles of 1960",
+            album.path,
+            time.monotonic(),
+        )
+        state.apply(
+            "album_progress",
+            {
+                "path": album.path,
+                "completed": 19,
+                "total": 100,
+                "status": "incomplete",
+            },
+        )
+        self.assertIs(album.status, AlbumStatus.INCOMPLETE)
+        self.assertEqual(state.active_report.outcome, "Incomplete (19/100)")
+
     def test_final_album_result_is_not_overwritten_by_late_error_log(self) -> None:
         state = TuiState(started_at=time.monotonic() - 10)
         state.active_report = AlbumRunReport(
@@ -336,6 +360,19 @@ class CancelAndBypassSafetyTests(unittest.TestCase):
         adapter.waiting.set()
         handle_key(state, adapter, _Event("Esc"))
         self.assertEqual(adapter.responses.get_nowait(), "__cancel__")
+
+    def test_manual_escape_aborts_album_without_cancelling_session(self) -> None:
+        state = TuiState(started_at=time.monotonic() - 10, workflow="picker")
+        state.input_request = InputRequest("Choice: ", "fallback-picker", {})
+        state.fallback_artist_id = "291dcfb8-b31c-496a-905b-9955509d75b6"
+        state.fallback_track_id = "59a0c68f-ec68-418d-a29a-fa54a7d9aea9"
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("Esc"))
+        self.assertEqual(
+            adapter.responses.get_nowait(),
+            "__manual_album_exit__",
+        )
 
     def test_ctrl_c_cancel_token_is_not_bypass(self) -> None:
         adapter = TuiAdapter()
@@ -1036,12 +1073,62 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
             if region.target == "musicbrainz-link"
         ]
         self.assertEqual(len(links), 3)
+        edit_boxes = [
+            region
+            for region in state.hit_regions
+            if region.target == "fallback-id-edit"
+        ]
+        self.assertEqual([region.index for region in edit_boxes], [0, 1, 2])
         stream = io.StringIO()
         write_terminal_links(state, stream)
         encoded = stream.getvalue()
         for region in links:
             mbid = region.value.rsplit("/", 1)[-1]
             self.assertIn(osc8_link(mbid, region.value), encoded)
+
+    def test_click_edit_recording_id_requeries_and_invalidates_release(self) -> None:
+        state = self._candidate_state()
+        state.apply(
+            "fallback_authority",
+            {
+                "artist": "Percy Faith",
+                "artist_id": "291dcfb8-b31c-496a-905b-9955509d75b6",
+                "album": "A Summer Place",
+                "album_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "track": "Theme From A Summer Place",
+                "track_id": "59a0c68f-ec68-418d-a29a-fa54a7d9aea9",
+            },
+        )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(220, 50), state, select_theme("OLED"))
+        edit = _region(state, "fallback-id-edit", 2)
+        handle_mouse(state, adapter, _center(edit))
+        self.assertEqual(state.fallback_edit_index, 2)
+        replacement = "11111111-2222-4333-8444-555555555555"
+        handle_key(state, adapter, _Event(replacement))
+        handle_key(state, adapter, _Event("Enter"))
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["action"], "manual-authority-query")
+        self.assertEqual(response["edited"], "recording")
+        self.assertEqual(response["recording_id"], replacement)
+        self.assertEqual(response["release_id"], "")
+
+    def test_manual_m_sends_explicit_authority_requery(self) -> None:
+        state = self._candidate_state()
+        state.fallback_artist_id = "291dcfb8-b31c-496a-905b-9955509d75b6"
+        state.fallback_album_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        state.fallback_track_id = "59a0c68f-ec68-418d-a29a-fa54a7d9aea9"
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("m"))
+        response = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(response["action"], "manual-authority-query")
+        self.assertEqual(response["edited"], "retry")
+        self.assertEqual(
+            response["release_id"],
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        )
 
     def test_dialog_yes_and_no_are_direct(self) -> None:
         for target, expected in (("dialog-yes", "b"), ("dialog-no", None)):

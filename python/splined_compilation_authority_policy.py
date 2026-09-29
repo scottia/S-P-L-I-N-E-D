@@ -167,6 +167,7 @@ def local_artwork_rows(
     track: Any,
     *,
     current_album_path: Path,
+    release_mbid: str = "",
 ) -> list[dict[str, Any]]:
     """Resolve exact local IDs lazily, only inside explicit Manual Comp mode.
 
@@ -184,11 +185,18 @@ def local_artwork_rows(
     recording_mbid = next(iter(recordings))
     artist_mbids = sorted(artists)
     artist_mbids_key = _artist_key(artist_mbids)
+    release_ids = _mbids(release_mbid)
+    exact_release_mbid = next(iter(release_ids), "")
     artist_placeholders = ",".join("?" for _value in artist_mbids)
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(database, timeout=10.0)
         connection.row_factory = sqlite3.Row
+        release_clause = (
+            "AND lower(al.musicbrainz_albumid)=? "
+            if exact_release_mbid
+            else ""
+        )
         base_select = (
             "SELECT t.path AS track_path, t.title AS track_title, "
             "t.artist_name AS track_artist, al.album_key, al.album_name, "
@@ -203,6 +211,7 @@ def local_artwork_rows(
             "AND lower(t.musicbrainz_artistid)=? "
             f"AND lower(ar.musicbrainz_artistid) IN ({artist_placeholders}) "
             "AND trim(al.musicbrainz_albumid)<>'' "
+            f"{release_clause}"
             "AND al.cover_found=1 AND trim(al.cover_path)<>'' "
             "AND lower(al.path)<>lower(?) "
             "ORDER BY al.compilation ASC, al.release_year ASC, "
@@ -212,6 +221,7 @@ def local_artwork_rows(
             recording_mbid,
             artist_mbids_key,
             *artist_mbids,
+            *((exact_release_mbid,) if exact_release_mbid else ()),
             str(current_album_path),
         )
 
@@ -248,11 +258,16 @@ def local_artwork_rows(
                 "ON ar.artist_key=al.artist_key "
                 f"WHERE lower(ar.musicbrainz_artistid) IN ({artist_placeholders}) "
                 "AND trim(al.musicbrainz_albumid)<>'' "
+                f"{release_clause}"
                 "AND al.cover_found=1 AND trim(al.cover_path)<>'' "
                 "AND lower(al.path)<>lower(?) "
                 "ORDER BY al.compilation ASC, al.release_year ASC, "
                 "al.album_name COLLATE NOCASE, al.path COLLATE NOCASE",
-                (*artist_mbids, str(current_album_path)),
+                (
+                    *artist_mbids,
+                    *((exact_release_mbid,) if exact_release_mbid else ()),
+                    str(current_album_path),
+                ),
             )
         )
         extensions = {
@@ -552,6 +567,8 @@ def resolve_release_candidates(
     cfg: dict[str, Any],
     track: Any,
     options: MusicBrainzOptions,
+    *,
+    force_refresh: bool = False,
 ) -> ReleaseResolution:
     recordings = _mbids(getattr(track, "recording_mbid", None))
     artists = _mbids(getattr(track, "artist_mbid", None))
@@ -559,11 +576,12 @@ def resolve_release_candidates(
         return ReleaseResolution((), "none", "Missing authoritative local IDs")
     recording_mbid = next(iter(recordings))
     artist_mbids_key = _artist_key(artists)
-    cached = _cached_releases(
-        core, config_file, cfg, recording_mbid, artist_mbids_key
-    )
-    if cached:
-        return ReleaseResolution(cached, "sql-cache")
+    if not force_refresh:
+        cached = _cached_releases(
+            core, config_file, cfg, recording_mbid, artist_mbids_key
+        )
+        if cached:
+            return ReleaseResolution(cached, "sql-cache")
     if options.retry_max == 0:
         return ReleaseResolution(
             (), "musicbrainz", "MusicBrainz attempt budget is zero"
@@ -656,6 +674,159 @@ def resolve_release_candidates(
             "musicbrainz",
             recording_title=str(payload.get("title") or "").strip(),
             recording_artist=_credit_text(payload.get("artist-credit")),
+        )
+    return ReleaseResolution(
+        (),
+        "musicbrainz",
+        last_error or "MusicBrainz attempt budget exhausted",
+    )
+
+
+def resolve_release_by_id(
+    core: Any,
+    http: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    track: Any,
+    release_mbid: str,
+    options: MusicBrainzOptions,
+) -> ReleaseResolution:
+    """Resolve one operator-supplied Release MBID without changing tags."""
+    releases = _mbids(release_mbid)
+    recordings = _mbids(getattr(track, "recording_mbid", None))
+    artists = _mbids(getattr(track, "artist_mbid", None))
+    if len(releases) != 1 or len(recordings) != 1 or not artists:
+        return ReleaseResolution((), "none", "Missing authoritative Manual Scan IDs")
+    if options.retry_max == 0:
+        return ReleaseResolution(
+            (), "musicbrainz", "MusicBrainz attempt budget is zero"
+        )
+    release_id = next(iter(releases))
+    recording_id = next(iter(recordings))
+    artist_mbids_key = _artist_key(artists)
+    try:
+        headers, _mode = core.mb_headers(config_file, cfg)
+    except Exception as exc:
+        return ReleaseResolution(
+            (),
+            "musicbrainz",
+            "MusicBrainz authentication/refresh failed: "
+            f"{type(exc).__name__}",
+        )
+    url = f"{core.MB_BASE}/release/{release_id}"
+    last_error = ""
+    for attempt in range(options.retry_max):
+        last_request = getattr(http, "last_mb_request", None)
+        if last_request is not None:
+            wait = options.min_delay - (time.monotonic() - float(last_request))
+            if wait > 0:
+                time.sleep(wait)
+        try:
+            http.last_mb_request = time.monotonic()
+            response = http.get(
+                url,
+                params={
+                    "inc": "artist-credits+recordings+release-groups",
+                    "fmt": "json",
+                },
+                headers=headers,
+                timeout=options.recording_timeout,
+            )
+        except requests.RequestException as exc:
+            last_error = f"MusicBrainz transport failure: {type(exc).__name__}"
+            if attempt + 1 < options.retry_max:
+                continue
+            break
+        status = int(response.status_code)
+        if status == 404:
+            return ReleaseResolution(
+                (), "musicbrainz", "MusicBrainz Release ID was not found"
+            )
+        if status in {401, 403}:
+            return ReleaseResolution(
+                (), "musicbrainz", "MusicBrainz authentication was rejected"
+            )
+        if status == 429 or 500 <= status <= 599:
+            last_error = f"MusicBrainz returned HTTP {status}"
+            if attempt + 1 < options.retry_max:
+                continue
+            break
+        if status != 200:
+            return ReleaseResolution(
+                (), "musicbrainz", f"MusicBrainz returned HTTP {status}"
+            )
+        try:
+            payload = response.json()
+        except ValueError:
+            return ReleaseResolution(
+                (), "musicbrainz", "MusicBrainz returned invalid JSON"
+            )
+        if not isinstance(payload, dict):
+            return ReleaseResolution(
+                (), "musicbrainz", "MusicBrainz returned invalid Release data"
+            )
+        classification = _release_class(payload)
+        if (
+            classification is None
+            or str(payload.get("status") or "").strip().casefold() != "official"
+        ):
+            return ReleaseResolution(
+                (),
+                "musicbrainz",
+                "Release is not an official Album, Soundtrack, or Compilation",
+            )
+        matched_recording: dict[str, Any] | None = None
+        for medium in payload.get("media", []):
+            if not isinstance(medium, dict):
+                continue
+            for item in medium.get("tracks", []):
+                if not isinstance(item, dict):
+                    continue
+                recording = item.get("recording")
+                if (
+                    isinstance(recording, dict)
+                    and recording_id in _mbids(recording.get("id"))
+                ):
+                    matched_recording = recording
+                    break
+            if matched_recording is not None:
+                break
+        if matched_recording is None:
+            return ReleaseResolution(
+                (),
+                "musicbrainz",
+                "Release does not contain the selected Recording ID",
+            )
+        if not artists.issubset(
+            _credit_mbids(matched_recording.get("artist-credit"))
+        ):
+            return ReleaseResolution(
+                (),
+                "musicbrainz",
+                "Release recording Artist ID does not match the selected Artist ID",
+            )
+        release_class, class_rank = classification
+        group = payload.get("release-group")
+        group = group if isinstance(group, dict) else {}
+        candidate = ReleaseCandidate(
+            recording_id,
+            release_id,
+            next(iter(_mbids(group.get("id"))), ""),
+            release_class,
+            class_rank,
+            0,
+            str(payload.get("title") or "").strip(),
+            _credit_text(payload.get("artist-credit")),
+            artist_mbids_key,
+            str(payload.get("date") or ""),
+        )
+        return ReleaseResolution(
+            (candidate,),
+            "musicbrainz-manual-release",
+            recording_title=str(matched_recording.get("title") or "").strip(),
+            recording_artist=_credit_text(
+                matched_recording.get("artist-credit")
+            ),
         )
     return ReleaseResolution(
         (),
@@ -934,7 +1105,7 @@ def _write_progress(
 ) -> None:
     total = max(0, int(total_tracks))
     completed = min(total, max(0, int(completed_tracks)))
-    if not album_path or total <= 0 or completed <= 0:
+    if not album_path or total <= 0:
         return
     status = "complete" if completed >= total else "incomplete"
     connection.execute(
@@ -955,6 +1126,32 @@ def _write_progress(
             version,
         ),
     )
+
+
+def record_progress(
+    core: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    album_path: str,
+    total_tracks: int,
+    completed_tracks: int,
+) -> None:
+    """Persist Manual Scan progress independently of an artwork write."""
+    connection = sqlite3.connect(
+        _database_path(core, config_file, cfg), timeout=10.0
+    )
+    try:
+        with connection:
+            _ensure_progress_table(connection)
+            _write_progress(
+                connection,
+                album_path,
+                total_tracks,
+                completed_tracks,
+                str(core.display_version()),
+            )
+    finally:
+        connection.close()
 
 
 def completed_track_paths(
@@ -1039,6 +1236,9 @@ def install(core: Any) -> None:
     core.compilation_resolve_releases = partial(
         resolve_release_candidates, core
     )
+    core.compilation_resolve_release_id = partial(
+        resolve_release_by_id, core
+    )
     core.compilation_release_from_local = partial(
         release_from_local_row, core
     )
@@ -1050,6 +1250,7 @@ def install(core: Any) -> None:
     )
     core.compilation_replace_embedded = replace_embedded_artwork
     core.compilation_record_application = partial(record_application, core)
+    core.compilation_record_progress = partial(record_progress, core)
     core.compilation_completed_track_paths = partial(
         completed_track_paths, core
     )

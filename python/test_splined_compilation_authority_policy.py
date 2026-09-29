@@ -18,6 +18,7 @@ import splined_media_tags
 RECORDING_ID = "59a0c68f-ec68-418d-a29a-fa54a7d9aea9"
 ARTIST_ID = "291dcfb8-b31c-496a-905b-9955509d75b6"
 OTHER_ARTIST_ID = "11111111-1111-4111-8111-111111111111"
+RELEASE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 
 class FakeResponse:
@@ -126,6 +127,34 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
             ).fetchone()
             connection.close()
             self.assertEqual(row, (2, 2, "complete"))
+
+    def test_zero_completed_progress_is_persisted_as_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            connection = sqlite3.connect(root / "splined.db")
+            connection.executescript(
+                schema_path().read_text(encoding="utf-8")
+            )
+            connection.close()
+            core = SimpleNamespace(
+                runtime_cache_dir=lambda *_args: root,
+                display_version=lambda: "test",
+            )
+            policy.record_progress(
+                core,
+                root / "config.toml",
+                {},
+                str(root / "Compilation"),
+                100,
+                0,
+            )
+            connection = sqlite3.connect(root / "splined.db")
+            row = connection.execute(
+                "SELECT total_tracks, completed_tracks, status "
+                "FROM compilation_album_progress"
+            ).fetchone()
+            connection.close()
+            self.assertEqual(row, (100, 0, "incomplete"))
 
     def test_standard_musicbrainz_ufid_is_the_recording_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -346,6 +375,130 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
             self.assertEqual(result.candidates, (candidate,))
             http.get.assert_not_called()
 
+    def test_force_refresh_bypasses_positive_release_cache(self) -> None:
+        cached = policy.ReleaseCandidate(
+            RECORDING_ID,
+            RELEASE_ID,
+            "",
+            "album",
+            0,
+            0,
+            "Cached",
+            "Percy Faith",
+            ARTIST_ID,
+            "1960",
+        )
+        payload = {
+            "id": RECORDING_ID,
+            "title": "Theme From A Summer Place",
+            "artist-credit": [
+                {"artist": {"id": ARTIST_ID, "name": "Percy Faith"}}
+            ],
+            "releases": [
+                {
+                    "id": RELEASE_ID,
+                    "title": "A Summer Place",
+                    "status": "Official",
+                    "date": "1960",
+                    "artist-credit": [
+                        {"artist": {"id": ARTIST_ID, "name": "Percy Faith"}}
+                    ],
+                    "release-group": {
+                        "id": "99999999-9999-4999-8999-999999999999",
+                        "primary-type": "Album",
+                        "secondary-types": [],
+                    },
+                }
+            ],
+        }
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(return_value=FakeResponse(200, payload)),
+        )
+        core = SimpleNamespace(
+            MB_BASE="https://musicbrainz.invalid/ws/2",
+            mb_headers=lambda *_args: ({}, "OAuthBearer"),
+        )
+        with (
+            patch.object(policy, "_cached_releases", return_value=(cached,)),
+            patch.object(policy, "_cache_releases"),
+        ):
+            result = policy.resolve_release_candidates(
+                core,
+                http,
+                Path("config.toml"),
+                {},
+                SimpleNamespace(
+                    recording_mbid=RECORDING_ID,
+                    artist_mbid=ARTIST_ID,
+                ),
+                policy.MusicBrainzOptions(1, 1.05, 7.0),
+                force_refresh=True,
+            )
+        self.assertEqual(result.source, "musicbrainz")
+        self.assertEqual(result.candidates[0].release_title, "A Summer Place")
+        http.get.assert_called_once()
+
+    def test_exact_release_override_validates_recording_and_artist(self) -> None:
+        payload = {
+            "id": RELEASE_ID,
+            "title": "A Summer Place",
+            "status": "Official",
+            "date": "1960",
+            "artist-credit": [
+                {"artist": {"id": ARTIST_ID, "name": "Percy Faith"}}
+            ],
+            "release-group": {
+                "id": "99999999-9999-4999-8999-999999999999",
+                "primary-type": "Album",
+                "secondary-types": [],
+            },
+            "media": [
+                {
+                    "tracks": [
+                        {
+                            "recording": {
+                                "id": RECORDING_ID,
+                                "title": "Theme From A Summer Place",
+                                "artist-credit": [
+                                    {
+                                        "artist": {
+                                            "id": ARTIST_ID,
+                                            "name": "Percy Faith",
+                                        }
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ],
+        }
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(return_value=FakeResponse(200, payload)),
+        )
+        core = SimpleNamespace(
+            MB_BASE="https://musicbrainz.invalid/ws/2",
+            mb_headers=lambda *_args: ({}, "OAuthBearer"),
+        )
+        result = policy.resolve_release_by_id(
+            core,
+            http,
+            Path("config.toml"),
+            {},
+            SimpleNamespace(
+                recording_mbid=RECORDING_ID,
+                artist_mbid=ARTIST_ID,
+            ),
+            RELEASE_ID,
+            policy.MusicBrainzOptions(1, 1.05, 7.0),
+        )
+        self.assertEqual(result.source, "musicbrainz-manual-release")
+        self.assertEqual(result.candidates[0].release_mbid, RELEASE_ID)
+        self.assertEqual(result.recording_artist, "Percy Faith")
+        self.assertIn(f"/release/{RELEASE_ID}", http.get.call_args.args[0])
+
     def test_embedded_artwork_is_capped_by_configured_ladder(self) -> None:
         captured: dict = {}
 
@@ -555,6 +708,8 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertIs(core.read_album_tracks, reader)
         self.assertTrue(callable(core.compilation_local_artwork_rows))
         self.assertTrue(callable(core.compilation_resolve_releases))
+        self.assertTrue(callable(core.compilation_resolve_release_id))
+        self.assertTrue(callable(core.compilation_record_progress))
 
 
 if __name__ == "__main__":

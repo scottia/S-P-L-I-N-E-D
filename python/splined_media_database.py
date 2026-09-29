@@ -541,10 +541,11 @@ def project_statuses(
             total = int(progress["total_tracks"] or 0)
             status = (
                 "processed"
-                if total > 0 and completed >= total
+                if (
+                    str(progress["status"] or "").casefold() == "complete"
+                    or (total > 0 and completed >= total)
+                )
                 else "incomplete"
-                if completed > 0
-                else "unprocessed"
             )
             timeout_until = ""
         elif (

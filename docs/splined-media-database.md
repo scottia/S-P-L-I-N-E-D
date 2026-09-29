@@ -238,6 +238,15 @@ Normal discovery continues to inspect one representative track per Album.
 Resume accepts a prior completion only when the current local Recording and
 Artist IDs still match the ledger row.
 
+LIVE WRITE creates or refreshes the progress row when Manual Scan starts, so
+an operator exit before the first approval is represented as `0/N incomplete`.
+Progress-only events also update the retained in-memory Album status; the next
+`library_update` therefore cannot overwrite the blue incomplete state.
+Operator MBID edits remain session-only and are not stored in these tables as
+tag authority. A deliberate `M` retry bypasses positive authority/artwork
+caches for that request while preserving the configured MusicBrainz delay,
+timeout, and attempt budget.
+
 ## Album Status and physical folder aggregates
 
 The database materializes Album facts including:
@@ -275,7 +284,7 @@ The authority-oriented `artists.status` value may cover Albums located in more
 than one physical folder; the TUI therefore recomputes its displayed
 folder-level aggregate from the projected Album rows.
 
-`incomplete` is specific to a partially written Manual Comp Album. It does not
+`incomplete` is specific to a started but unfinished Manual Comp Album. It does not
 claim folder-level `cover.*` authority. The runtime updates only the progress
 status after each embedded-track write; it does not rescan or materialize
 folder cover statistics for that event.
