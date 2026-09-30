@@ -55,6 +55,14 @@ class AlbumItem:
     def auto_eligible(self) -> bool:
         return self.status is AlbumStatus.UNPROCESSED
 
+    @property
+    def artist_selectable(self) -> bool:
+        """Allow Artist selection to include unfinished, non-protected work."""
+        return self.status in {
+            AlbumStatus.UNPROCESSED,
+            AlbumStatus.INCOMPLETE,
+        }
+
 
 @dataclass(frozen=True)
 class ArtistItem:
@@ -426,11 +434,20 @@ class LibraryModel:
 
     def toggle_artist(self, name: str) -> None:
         eligible = [
-            item for item in self.albums if item.artist == name and item.auto_eligible
+            item
+            for item in self.albums
+            if item.artist == name and item.artist_selectable
         ]
         select = any(not item.selected for item in eligible)
         for item in eligible:
             item.selected = select
+
+    def select_artist(self, name: str) -> None:
+        """Replace selection with one Artist's unfinished, non-protected Albums."""
+        self.select_none()
+        for item in self.albums:
+            if item.artist == name and item.artist_selectable:
+                item.selected = True
 
     def artist(self, name: str) -> ArtistItem | None:
         return next((item for item in self.artists if item.name == name), None)

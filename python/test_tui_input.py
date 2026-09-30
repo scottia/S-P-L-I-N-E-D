@@ -437,7 +437,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.adapter.waiting.set()
         render(_Frame(150, 44), self.state, select_theme("OLED"))
 
-    def test_artist_and_album_rows_select_directly(self) -> None:
+    def test_plain_artist_and_album_clicks_replace_selection(self) -> None:
         model = self.state.library
         assert model is not None
 
@@ -452,7 +452,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             )
         )
 
-        # Clicking the same Artist row again is the same selection toggle.
+        # A repeated plain Artist click remains a replacement selection.
         self.state.apply(
             "input",
             {"prompt": "", "context": {"kind": "library-selection"}},
@@ -461,7 +461,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         render(_Frame(150, 44), self.state, select_theme("OLED"))
         artist_one = _region(self.state, "artist-row", 1)
         handle_mouse(self.state, self.adapter, _center(artist_one))
-        self.assertFalse(
+        self.assertTrue(
             any(
                 item.selected
                 for item in model.albums
@@ -477,10 +477,121 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         render(_Frame(150, 44), self.state, select_theme("OLED"))
         album_row = _region(self.state, "album-row", 1)
         albums = model.visible_albums(active_artist_only=True)
-        before = albums[1].selected
         handle_mouse(self.state, self.adapter, _center(album_row))
         self.assertEqual(self.state.album_index_cursor, 1)
-        self.assertNotEqual(albums[1].selected, before)
+        self.assertTrue(albums[1].selected)
+        self.assertEqual(sum(item.selected for item in model.albums), 1)
+
+    def test_ctrl_click_toggles_multiple_albums(self) -> None:
+        state = _library_state(artists=1, albums_each=4)
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        model = state.library
+        assert model is not None
+
+        handle_mouse(state, adapter, _center(_region(state, "album-row", 0)))
+        adapter.responses.get_nowait()
+        state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+
+        second = _center(_region(state, "album-row", 1))
+        second.ctrl = True
+        handle_mouse(state, adapter, second)
+        self.assertEqual(
+            [item.title for item in model.albums if item.selected],
+            ["Love Among the Ruins", "Album 01"],
+        )
+
+        adapter.responses.get_nowait()
+        state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        first = _center(_region(state, "album-row", 0))
+        first.ctrl = True
+        handle_mouse(state, adapter, first)
+        self.assertEqual(
+            [item.title for item in model.albums if item.selected],
+            ["Album 01"],
+        )
+
+    def test_ctrl_click_adds_artists_and_selects_non_orange_albums(self) -> None:
+        payload = _payload(artists=2, albums_each=5)
+        albums = payload["albums"]
+        assert isinstance(albums, list)
+        for item, status in zip(
+            albums[:5],
+            ("unprocessed", "incomplete", "processed", "bypassed", "timeout"),
+            strict=True,
+        ):
+            assert isinstance(item, dict)
+            item["status"] = status
+
+        state = TuiState(started_at=time.monotonic() - 10)
+        state.apply("library", payload)
+        state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        model = state.library
+        assert model is not None
+
+        first_artist = model.visible_artists()[0].name
+        handle_mouse(state, adapter, _center(_region(state, "artist-row", 0)))
+        self.assertEqual(
+            [
+                item.status
+                for item in model.albums
+                if item.artist == first_artist and item.selected
+            ],
+            [AlbumStatus.UNPROCESSED, AlbumStatus.INCOMPLETE],
+        )
+
+        adapter.responses.get_nowait()
+        state.apply(
+            "input",
+            {"prompt": "", "context": {"kind": "library-selection"}},
+        )
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        second_artist = model.visible_artists()[1].name
+        second = _center(_region(state, "artist-row", 1))
+        second.ctrl = True
+        handle_mouse(state, adapter, second)
+
+        self.assertTrue(
+            any(item.selected for item in model.albums if item.artist == first_artist)
+        )
+        self.assertTrue(
+            all(
+                item.selected
+                for item in model.albums
+                if item.artist == second_artist and item.artist_selectable
+            )
+        )
+        self.assertFalse(
+            any(
+                item.selected
+                for item in model.albums
+                if item.artist == first_artist
+                and item.status
+                in {
+                    AlbumStatus.PROCESSED,
+                    AlbumStatus.BYPASSED,
+                    AlbumStatus.TIMEOUT,
+                }
+            )
+        )
 
     def test_engine_artist_status_is_not_reinterpreted_by_tui(self) -> None:
         payload = _payload(0, 0)
@@ -716,6 +827,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.assertEqual(request["action"], "load-artist")
         self.assertEqual(request["artist_path"], "/music/10,000 Maniacs")
         self.assertTrue(request["select_after_load"])
+        self.assertTrue(request["replace_selection"])
 
         state.apply("input", {"prompt": "", "context": {"kind": "library-selection"}})
         adapter.waiting.set()
@@ -724,8 +836,9 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         keyboard_request = json.loads(adapter.responses.get_nowait())
         self.assertEqual(keyboard_request["action"], "load-artist")
         self.assertFalse(keyboard_request["select_after_load"])
+        self.assertFalse(keyboard_request["replace_selection"])
 
-    def test_unindexed_artist_row_requests_load_and_select(self) -> None:
+    def test_ctrl_click_unindexed_artist_requests_additive_load_and_select(self) -> None:
         payload = _payload(0, 0)
         payload["artists"] = [
             {
@@ -745,14 +858,17 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         adapter = TuiAdapter()
         adapter.waiting.set()
         render(_Frame(150, 44), state, select_theme("OLED"))
+        event = _center(_region(state, "artist-row", 0))
+        event.ctrl = True
         handle_mouse(
             state,
             adapter,
-            _center(_region(state, "artist-row", 0)),
+            event,
         )
         request = json.loads(adapter.responses.get_nowait())
         self.assertEqual(request["action"], "load-artist")
         self.assertTrue(request["select_after_load"])
+        self.assertFalse(request["replace_selection"])
 
     def test_refresh_is_explicit_and_filter_text_r_never_triggers_it(self) -> None:
         model = self.state.library
@@ -887,10 +1003,12 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         render(_Frame(150, 44), state, select_theme("OLED"))
 
         for index in (0, 1):
+            event = _center(_region(state, "artist-row", index))
+            event.ctrl = index > 0
             handle_mouse(
                 state,
                 adapter,
-                _center(_region(state, "artist-row", index)),
+                event,
             )
             response = json.loads(adapter.responses.get_nowait())
             self.assertEqual(response["action"], "selection-change")

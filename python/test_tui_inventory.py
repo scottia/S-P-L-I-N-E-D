@@ -229,6 +229,55 @@ class DirectLazyInventoryTests(unittest.TestCase):
         artist = next(row for row in update["artists"] if row["name"] == "10,000 Maniacs")
         self.assertTrue(artist["loaded"])
 
+    def test_lazy_artist_selection_can_add_or_replace_existing_artists(self) -> None:
+        maniacs = str(self.root / "10,000 Maniacs")
+        aerosmith = str(self.root / "Aerosmith")
+
+        (selected, *_ignored), _emitted = self._run(
+            [
+                {
+                    "action": "load-artist",
+                    "artist_path": maniacs,
+                    "selected": [],
+                    "select_after_load": True,
+                    "replace_selection": False,
+                },
+                {
+                    "action": "load-artist",
+                    "artist_path": aerosmith,
+                    "selected": [str(self.eden)],
+                    "select_after_load": True,
+                    "replace_selection": False,
+                },
+                {"action": "launch", "scan_mode": "auto-selected"},
+            ]
+        )
+        self.assertEqual(
+            {album.path for album in selected},
+            {self.eden, self.toys},
+        )
+
+        (selected, *_ignored), _emitted = self._run(
+            [
+                {
+                    "action": "load-artist",
+                    "artist_path": aerosmith,
+                    "selected": [],
+                    "select_after_load": True,
+                    "replace_selection": False,
+                },
+                {
+                    "action": "load-artist",
+                    "artist_path": maniacs,
+                    "selected": [str(self.toys)],
+                    "select_after_load": True,
+                    "replace_selection": True,
+                },
+                {"action": "launch", "scan_mode": "auto-selected"},
+            ]
+        )
+        self.assertEqual([album.path for album in selected], [self.eden])
+
     def test_select_all_scopes_to_active_artist_and_excludes_processed(self) -> None:
         artist_path = str(self.root / "10,000 Maniacs")
         (selected, _overrides, _timeouts, _sources, _known, _scan), _emitted = self._run(

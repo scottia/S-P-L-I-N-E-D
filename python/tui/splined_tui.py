@@ -4352,11 +4352,11 @@ def _render_help(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
         "Tab / Shift+Tab move workflow region\n"
         "/              focus current Artist/Album filter\n"
         "Type           live filtering when a filter is focused\n"
-        "Enter / Space  select checkbox / activate\n"
+        "Enter / Space  select / activate\n"
         "Esc            close / back\n"
         "PgUp / PgDn    page-scroll focused list\n"
         "Home / End     first / last row\n"
-        "Mouse / touch  rows, checkboxes, filters, links, dialogs, scrolling\n"
+        "Mouse / touch  rows, controls, filters, links, dialogs, scrolling\n"
         "P / Ctrl+S     source policy / explicit Save & Apply\n"
         "E              edit Config v5 in micro; reload current scan on save\n"
         "R              refresh immediate Artist folder list\n"
@@ -4817,12 +4817,14 @@ def _open_artist(
     artist_name: str,
     *,
     select_after_load: bool = False,
+    replace_selection: bool = False,
 ) -> None:
     model = state.library
     if model is None:
         return
     _runtime_trace(
         f"artist.open requested={artist_name!r} select_after_load={select_after_load} "
+        f"replace_selection={replace_selection} "
         f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
     )
     artist = model.artist(artist_name)
@@ -4835,7 +4837,10 @@ def _open_artist(
         if select_after_load:
             if not _library_input_ready(state, adapter):
                 return
-            model.toggle_artist(artist_name)
+            if replace_selection:
+                model.select_artist(artist_name)
+            else:
+                model.toggle_artist(artist_name)
             _sync_library_selection(state, adapter)
         return
     if not _library_input_ready(state, adapter):
@@ -4850,6 +4855,7 @@ def _open_artist(
         "load-artist",
         artist_path=artist.path,
         select_after_load=select_after_load,
+        replace_selection=replace_selection,
     )
 
 
@@ -5419,6 +5425,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     code = str(getattr(event, "code", "")).lower()
     column = int(getattr(event, "column", -1))
     row = int(getattr(event, "row", -1))
+    ctrl = bool(getattr(event, "ctrl", False))
     if state.status_loading:
         return
     if code == "moved":
@@ -5523,13 +5530,15 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "artist-row" and model is not None:
         state.library_focus = 3
         state.artist_index = region.index
-        # Touch/click on an Artist row is the selection action. Keyboard
-        # Enter remains the open-only navigation path.
+        # A plain click replaces the current selection with this Artist's
+        # unfinished Albums. Ctrl+Click toggles the Artist additively.
+        # Keyboard Enter remains the open-only navigation path.
         _open_artist(
             state,
             adapter,
             region.value,
             select_after_load=True,
+            replace_selection=not ctrl,
         )
     elif region.target == "album-row" and model is not None:
         if not _library_input_ready(state, adapter):
@@ -5552,13 +5561,20 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             state.local_cover_overlay = None
             state.local_cover_rect = None
             state.local_cover_path = ""
-            if not album.selected or sum(item.selected for item in model.albums) != 1:
+            if not ctrl and (
+                not album.selected
+                or sum(item.selected for item in model.albums) != 1
+            ):
                 model.select_none()
-            result = model.toggle_album(album) if not album.selected else "selected"
+            result = (
+                model.toggle_album(album)
+                if ctrl or not album.selected
+                else "selected"
+            )
             _runtime_trace(
                 "mouse.album_row_select "
                 f"path={album.path!r} before={before} after={album.selected} "
-                f"result={result!r} {_library_snapshot(state)}"
+                f"ctrl={ctrl} result={result!r} {_library_snapshot(state)}"
             )
             if result == "bypass-removal-required":
                 state.dialog_kind = "library-bypass-remove"

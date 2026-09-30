@@ -70,6 +70,26 @@ class LibraryWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.model.toggle_album(self.model.albums[2]), "bypass-confirmation-required")
         self.assertEqual(self.model.toggle_album(self.model.albums[3]), "timeout-active")
 
+    def test_artist_selection_includes_incomplete_but_skips_protected(self) -> None:
+        model = LibraryModel(
+            "/music",
+            [
+                AlbumItem("/A/U", "Artist", "U", AlbumStatus.UNPROCESSED),
+                AlbumItem("/A/I", "Artist", "I", AlbumStatus.INCOMPLETE),
+                AlbumItem("/A/P", "Artist", "P", AlbumStatus.PROCESSED),
+                AlbumItem("/A/B", "Artist", "B", AlbumStatus.BYPASSED),
+                AlbumItem("/A/T", "Artist", "T", AlbumStatus.TIMEOUT),
+            ],
+        )
+        model.select_artist("Artist")
+        self.assertEqual(
+            [item.title for item in model.albums if item.selected],
+            ["U", "I"],
+        )
+
+        model.toggle_artist("Artist")
+        self.assertFalse(any(item.selected for item in model.albums))
+
     def test_filtered_selection_preserves_hidden_rows(self) -> None:
         self.model.set_filters(artist="maniacs", album="ruins")
         self.model.select_all(filtered=True)

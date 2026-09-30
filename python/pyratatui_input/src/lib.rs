@@ -580,14 +580,18 @@ mod tests {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 42,
             row: 7,
-            modifiers: KeyModifiers::ALT,
+            modifiers: KeyModifiers::CONTROL
+                | KeyModifiers::ALT
+                | KeyModifiers::SHIFT,
         });
         let converted = convert_event(event).expect("mouse event");
         assert_eq!(converted.kind, "mouse");
         assert_eq!(converted.code, "down");
         assert_eq!(converted.button, "left");
         assert_eq!((converted.column, converted.row), (42, 7));
+        assert!(converted.ctrl);
         assert!(converted.alt);
+        assert!(converted.shift);
     }
 
     #[test]

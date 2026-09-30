@@ -2330,10 +2330,13 @@ def prepare_tui_library_selection(
             artist_path = str(response.get("artist_path", ""))
             load_artist(artist_path)
             if bool(response.get("select_after_load", False)):
+                if bool(response.get("replace_selection", False)):
+                    selected_paths.clear()
+                    overrides.clear()
                 for row in model_payload()[1]:
                     if (
                         row["artist_path"] == artist_path
-                        and row["status"] == "unprocessed"
+                        and row["status"] in {"unprocessed", "incomplete"}
                     ):
                         selected_paths.add(str(row["path"]))
             emit_library(event)
@@ -2433,9 +2436,9 @@ def prepare_tui_library_selection(
                 for path, value in session.selected_statistics.items()
                 if path in selected_paths
             }
-            # selected_paths above came from the exact TUI checkbox payload.
+            # selected_paths above came from the exact TUI selection payload.
             # Send that authoritative state back instead of overlaying an older
-            # in-memory checkbox snapshot during merge.
+            # in-memory selection snapshot during merge.
             emit_library(event)
             debug_log(
                 "picker.selection_change.done "

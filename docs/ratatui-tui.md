@@ -234,7 +234,15 @@ Select [NONE]
 
 A direct Album-row click is an exclusive single selection and artwork/info
 focus. Clicking another Album keeps the selected count at one and moves the
-focus to that Album.
+focus to that Album. `Ctrl+Click` toggles an Album while preserving all other
+selections, allowing an arbitrary multi-Album set.
+
+A direct Artist-row click replaces the current selection with that Artist's
+White Unprocessed and Blue Incomplete Albums. `Ctrl+Click` toggles another
+Artist additively, auto-selecting the same non-orange Albums for every selected
+Artist. Orange Processed Albums are not auto-selected; Red Bypassed and Purple
+Timeout Albums retain their protected behavior. Picker rows use status color
+and selection emphasis without checkbox or checkmark glyphs.
 
 Bulk selection is explicit:
 
@@ -417,7 +425,9 @@ pointer receives scrolling.
 Keyboard operation remains fully supported.
 Mouse events are hit-tested actions; they are not converted into Enter
 keystrokes. A direct Album click performs its documented exclusive focus/select
-action, while a control click invokes that control.
+action, `Ctrl+Click` preserves and toggles multi-selection, and a control click
+invokes that control. The native crossterm bridge carries modifier state with
+the mouse event; no additional widget framework is required.
 
 ## Processing and final report
 

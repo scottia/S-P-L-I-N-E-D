@@ -172,6 +172,8 @@ Select [NONE]
 
 A direct Album-row click is exclusive: focus moves to that Album, the selected
 count stays at one, and the right-side artwork/statistics follow that Album.
+`Ctrl+Click` toggles the clicked Album without clearing other selected Albums.
+Picker rows do not display checkbox or checkmark glyphs.
 
 Bulk actions are explicit:
 
@@ -184,10 +186,13 @@ processed, bypassed, or timeout-active merely because it is hidden.
 
 ## Selecting a physical Artist folder
 
-Selecting an Artist cascades only to eligible children:
+Plain-clicking an Artist replaces the current selection with its eligible
+children. `Ctrl+Click` toggles an Artist additively so multiple physical Artist
+folders can remain selected:
 
 ```text
 White Album  → selectable
+Blue Album   → selectable when Manual Comp progress is incomplete
 Orange Album → skipped by automatic selection; manually reprocessable
 Purple Album → protected while timeout active
 Red Album    → saved bypass removal required
