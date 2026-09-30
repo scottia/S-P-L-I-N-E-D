@@ -67,7 +67,7 @@ class LibraryWorkspaceTests(unittest.TestCase):
         self.model.toggle_artist("10,000 Maniacs")
         self.assertTrue(self.model.albums[0].selected)
         self.assertFalse(self.model.albums[1].selected)
-        self.assertEqual(self.model.toggle_album(self.model.albums[2]), "bypass-confirmation-required")
+        self.assertEqual(self.model.toggle_album(self.model.albums[2]), "bypass-removal-required")
         self.assertEqual(self.model.toggle_album(self.model.albums[3]), "timeout-active")
 
     def test_artist_selection_includes_incomplete_but_skips_protected(self) -> None:
