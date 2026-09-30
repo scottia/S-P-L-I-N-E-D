@@ -4960,6 +4960,7 @@ def musicbrainz_search_releases(
                 "country": str(item.get("country") or "").strip(),
                 "status": str(item.get("status") or "").strip(),
                 "release_class": release_class,
+                "release_group_id": str(release_group.get("id") or "").strip(),
             })
             year = out[-1]["date"][:4]
             decade = (
@@ -5029,8 +5030,11 @@ def decorate_musicbrainz_results(
             else ""
         )
         item["resolution"] = inspected.get(release_id, "")
+        release_group_id = item.get("release_group_id", "").strip().casefold()
         item["artwork_url"] = (
-            f"https://coverartarchive.org/release/{release_id}/front"
+            f"https://coverartarchive.org/release-group/{release_group_id}/front"
+            if release_group_id
+            else f"https://coverartarchive.org/release/{release_id}/front"
             if release_id
             else ""
         )
@@ -5120,6 +5124,9 @@ def musicbrainz_picker(
                 "country": "",
                 "status": "",
                 "release_class": "Album",
+                "release_group_id": str(
+                    current_release.release_group_id or ""
+                ),
             }
         )
 

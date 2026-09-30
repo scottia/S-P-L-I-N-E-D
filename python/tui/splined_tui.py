@@ -2863,6 +2863,7 @@ def _musicbrainz_grouped_rows(
 
     rows: list[tuple[str, int, str]] = []
     for decade in decades:
+        rows.append(("blank", -1, ""))
         rows.append(("decade", -1, decade))
         present_types = []
         for option in options:
@@ -2879,7 +2880,11 @@ def _musicbrainz_grouped_rows(
             ),
             key=str.casefold,
         )
-        release_types = list(MUSICBRAINZ_BASE_RELEASE_TYPES) + extra_types
+        release_types = [
+            value
+            for value in MUSICBRAINZ_BASE_RELEASE_TYPES
+            if value in present_types
+        ] + extra_types
         header_added = False
         for release_type in release_types:
             rows.append(("type", -1, release_type))
@@ -2897,7 +2902,13 @@ def _musicbrainz_grouped_rows(
     return rows
 
 
-def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+def _render_musicbrainz(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+    grid: CandidateColumnLayout,
+) -> None:
     columns = ("#", "artist", "country", "date", "resolution", "release", "url")
     column_labels = {
         "#": "[#]",
@@ -2909,11 +2920,16 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
         "url": "URL",
     }
     spacing = len(columns) - 1
-    available = max(1, int(area.width) - 2 - spacing)
+    url_start = (
+        grid.start("url")
+        if "url" in grid.columns
+        else max(1, int(area.width) - 8)
+    )
     numeric_widths = [5, 28, 8, 11, 13, 18, 5]
     floors = [3, 12, 4, 7, 7, 10, 5]
     shrink_order = (1, 4, 3, 2, 5, 0)
-    excess = max(0, sum(numeric_widths) - available)
+    prefix_width = max(1, url_start - spacing)
+    excess = max(0, sum(numeric_widths[:-1]) - prefix_width)
     while excess:
         changed = False
         for index in shrink_order:
@@ -2925,8 +2941,10 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
                     break
         if not changed:
             break
-    numeric_widths[5] += max(0, available - sum(numeric_widths))
-    widths = [Constraint.length(value) for value in numeric_widths]
+    numeric_widths[5] += max(
+        0,
+        prefix_width - sum(numeric_widths[:-1]),
+    )
     display_rows = _musicbrainz_grouped_rows(state.release_options)
     selected_option = max(
         0,
@@ -2944,17 +2962,36 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
     start = max(0, min(selected_display - page_size // 2, len(display_rows) - page_size))
     visible_rows = display_rows[start : start + page_size]
 
-    rendered: list[Row] = []
+    rendered: list[Line] = []
     for kind, option_index, label in visible_rows:
+        if kind == "blank":
+            rendered.append(Line([Span("")]))
+            continue
         if kind == "decade":
-            cells = ["", f"[{label}] DECADE GROUP", "", "", "", "", ""]
-            semantic = Semantic.SPECIAL
-            bold = True
-        elif kind == "type":
-            cells = ["", f"RELEASE TYPE [{label.upper()}]", "", "", "", "", ""]
-            semantic = Semantic.FALLBACK
-            bold = True
-        elif kind == "header":
+            rendered.append(
+                Line(
+                    [
+                        Span(
+                            f"[{label}] DECADE GROUP",
+                            style(theme, Semantic.SPECIAL, bold=True),
+                        )
+                    ]
+                )
+            )
+            continue
+        if kind == "type":
+            rendered.append(
+                Line(
+                    [
+                        Span(
+                            f"RELEASE TYPE [{label.upper()}]",
+                            style(theme, Semantic.FALLBACK, bold=True),
+                        )
+                    ]
+                )
+            )
+            continue
+        if kind == "header":
             cells = [column_labels[column] for column in columns]
             semantic = Semantic.ACTIVE
             bold = True
@@ -2991,34 +3028,26 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
                 else Semantic.TEXT
             )
             bold = bool(selection_state)
-        rendered.append(
-            Row(
-                [
-                    Cell(_truncate(value, numeric_widths[index]), style(theme, semantic, bold=bold))
-                    for index, value in enumerate(cells)
-                ]
-            )
-        )
+        spans: list[Span] = []
+        for index, value in enumerate(cells):
+            cell = _truncate(value, numeric_widths[index])
+            if index < len(cells) - 1:
+                cell = cell.ljust(numeric_widths[index])
+            spans.append(Span(cell, style(theme, semantic, bold=bold)))
+            if index < len(cells) - 1:
+                spans.append(Span(" "))
+        rendered.append(Line(spans))
 
-    table = (
-        Table(rendered, widths)
-        .block(
-            card(
-                theme,
-                "MUSICBRAINZ MATCHES · DECADE / RELEASE TYPE",
-                Semantic.SPECIAL,
-            )
+    paragraph = Paragraph(Text(rendered)).block(
+        card(
+            theme,
+            "MUSICBRAINZ MATCHES · DECADE / RELEASE TYPE",
+            Semantic.SPECIAL,
         )
-        .column_spacing(1)
     )
-    frame.render_widget(table, area)
+    frame.render_widget(paragraph, area)
 
-    url_x = (
-        int(area.x)
-        + 1
-        + sum(numeric_widths[:-1])
-        + spacing
-    )
+    url_x = int(area.x) + 1 + url_start
     for visible_index, (kind, option_index, _label) in enumerate(visible_rows):
         if kind != "result":
             continue
@@ -3991,7 +4020,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     )
     groups = _candidate_groups(state)
     if manual_musicbrainz:
-        _render_musicbrainz(frame, groups_area, state, theme)
+        _render_musicbrainz(frame, groups_area, state, theme, grid)
     elif groups:
         state.group_scroll = max(0, min(state.group_scroll, len(groups) - 1))
         visible_groups: list[tuple[int, str, list[CandidateView], Semantic]] = []

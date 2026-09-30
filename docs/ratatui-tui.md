@@ -371,13 +371,18 @@ embedded artwork is written.
 
 When local IDs are absent, ID lookup fails, or `M` is pressed, the lower
 Candidate Decision area becomes `MUSICBRAINZ MATCHES`. Decades are ordered
-newest to oldest with `UNKNOWN` last. Every decade contains release-type
-sections for Album, Single, EP, Compilation, and Soundtrack, followed by any
-additional MusicBrainz types. One heading per decade labels the number, Artist,
-Country, Date, known Resolution, Release, and URL columns. A direct Cover Art
-Archive front-image `[URL]` can be hovered or clicked to preview that row in
-Artwork before selecting it; the resolution remains blank until SPLINED has
-inspected the release's source results.
+newest to oldest with `UNKNOWN` last and a blank row before each decade. Only
+release types containing matches are shown, ordered Album, Single, EP,
+Compilation, Soundtrack, then any additional MusicBrainz types. Decade and
+release-type labels begin at the left edge. One heading per decade labels the
+number, Artist, Country, Date, known Resolution, Release, and URL columns; its
+URL aligns with the source-candidate URL column above. A direct Cover Art
+Archive release-group front-image `[URL]` can be hovered or clicked to preview
+that row in Artwork before selecting it. SPLINED falls back to the exact-release
+front endpoint when no release-group MBID is available. A valid endpoint may
+still return no preview when Cover Art Archive has no community-selected front
+image. Resolution remains blank until SPLINED has inspected the release's
+source results.
 
 Enter on a keyboard choice—or Enter after clicking a row—uses that release as
 session authority and runs the normal source candidate search. The release

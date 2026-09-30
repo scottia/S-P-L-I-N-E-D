@@ -976,6 +976,7 @@ def _manual_discovery_options(
                 "date": str(item.release_date),
                 "country": str(item.country),
                 "release_class": str(item.release_class).title(),
+                "release_group_id": str(item.release_group_mbid),
                 "group": (
                     f"{item.recording_artist} · {decade} · "
                     f"{str(item.release_class).title()}"

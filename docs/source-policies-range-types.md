@@ -309,11 +309,12 @@ The compilation branch is explicit and per track:
    and skips that track instead of repeating local or remote discovery.
 9. If the ID-first path returns no useful authority, or the operator presses
    `M`, Candidate Decision shows numbered MusicBrainz matches by newest-to-oldest
-   decade (`Unknown` last), then Album, Single, EP, Compilation, Soundtrack,
-   and any additional release types. Each row exposes a direct Cover Art
-   Archive front-image URL for Artwork preview. Selecting a match makes its
-   Recording/Artist/Release IDs session authority and performs the normal
-   local/provider artwork search. The current source-result release is green;
+   decade (`Unknown` last), then populated Album, Single, EP, Compilation,
+   Soundtrack, and additional release types. Each row exposes the Cover Art
+   Archive release-group front-image URL for Artwork preview, falling back to
+   the exact-release endpoint when no group MBID is available. Selecting a
+   match makes its Recording/Artist/Release IDs session authority and performs
+   the normal local/provider artwork search. The current source-result release is green;
    previously inspected releases are blue. Re-selecting either restores its
    candidates and diagnostics without repeating provider discovery or image
    downloads. Escape from artwork sources returns to the same cached match

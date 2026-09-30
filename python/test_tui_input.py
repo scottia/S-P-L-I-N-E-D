@@ -1269,7 +1269,6 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
 
     def test_manual_musicbrainz_results_render_inside_candidate_decision_and_click(self) -> None:
         state = self._candidate_state()
-        state.candidates = []
         state.apply(
             "input",
             {
@@ -1310,7 +1309,9 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         render(_Frame(220, 50), state, select_theme("OLED"))
         second = _region(state, "musicbrainz-result-row", 1)
         artwork_url = _region(state, "musicbrainz-artwork-url", 1)
+        preferred_url = _region(state, "candidate-url")
         self.assertTrue(artwork_url.value.endswith("/front"))
+        self.assertEqual(artwork_url.x, preferred_url.x + 1)
         stream = io.StringIO()
         write_terminal_links(state, stream)
         self.assertIn(osc8_link("URL", artwork_url.value), stream.getvalue())
@@ -1340,17 +1341,17 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         )
         decades = [label for kind, _index, label in rows if kind == "decade"]
         self.assertEqual(decades, ["2010s", "2000s", "Unknown"])
-        first_decade_end = next(
-            index
-            for index, row in enumerate(rows[1:], 1)
-            if row[0] == "decade"
-        )
+        decade_positions = [
+            index for index, row in enumerate(rows) if row[0] == "decade"
+        ]
+        first_decade_end = decade_positions[1]
         first_types = [
             label for kind, _index, label in rows[:first_decade_end] if kind == "type"
         ]
+        self.assertEqual(first_types, ["Album"])
         self.assertEqual(
-            first_types,
-            ["Album", "Single", "EP", "Compilation", "Soundtrack"],
+            sum(1 for kind, _index, _label in rows if kind == "blank"),
+            3,
         )
 
     def test_empty_manual_result_keeps_authority_edit_controls_visible(self) -> None:

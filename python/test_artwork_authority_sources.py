@@ -130,6 +130,7 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
                 },
                 {
                     "id": current,
+                    "release_group_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
                     "artist": "Carly Pearce",
                     "title": "Every Little Thing",
                     "date": "2017-10-13",
@@ -146,7 +147,12 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
         self.assertEqual(options[0]["resolution"], "3000x3000")
         self.assertEqual(
             options[0]["artwork_url"],
-            f"https://coverartarchive.org/release/{current}/front",
+            "https://coverartarchive.org/release-group/"
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc/front",
+        )
+        self.assertEqual(
+            options[1]["artwork_url"],
+            f"https://coverartarchive.org/release/{visited}/front",
         )
 
     def test_musicbrainz_picker_keeps_current_release_as_green_cached_row(self) -> None:
