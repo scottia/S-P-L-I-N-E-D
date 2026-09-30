@@ -214,13 +214,13 @@ External changes made by taggers, file managers, or another application become
 visible after this explicit Refresh. SPLINED's own LIVE WRITE and bypass/status
 actions update the affected database rows immediately.
 
-## Manual compilation caches
+## Compilation track-art caches
 
-Manual Comp artwork recovery adds four persistent surfaces without changing
+Compilation artwork recovery adds four persistent surfaces without changing
 normal index cost:
 
 - `tracks` stores exact local Recording-ID/Artist-ID relationships discovered
-  lazily during Manual Scan;
+  lazily during the compilation branch;
 - `recording_release_lookups` and `recording_release_candidates` cache positive,
   bounded MusicBrainz Recording-ID results;
 - `compilation_track_artwork` records approved per-track artwork outcomes and a
@@ -228,23 +228,23 @@ normal index cost:
 - `compilation_album_progress` stores only Album path, total/completed counts,
   `incomplete`/`complete`, update time, and SPLINED version.
 
-Manual Scan first queries the exact `tracks` cache. On a miss it uses the
+The compilation branch first queries the exact `tracks` cache. On a miss it uses the
 already-indexed Album Artist ID to restrict local inspection to that Artist's
 Albums, stopping at the first exact Recording-ID/Artist-ID match. Only a local
 miss can proceed to MusicBrainz. Stale track rows cannot become artwork
 authority: file size and modification time are checked before reuse.
-The progress and track-artwork tables are read only when Manual Scan starts.
+The progress and track-artwork tables are read only when an eligible compilation starts.
 Normal discovery continues to inspect one representative track per Album.
 Resume accepts a prior completion only when the current local Recording and
 Artist IDs still match the ledger row.
 
-LIVE WRITE creates or refreshes the progress row when Manual Scan starts, so
+LIVE WRITE creates or refreshes the progress row when compilation work starts, so
 an operator exit before the first approval is represented as `0/N incomplete`.
 Progress-only events also update the retained in-memory Album status; the next
 `library_update` therefore cannot overwrite the blue incomplete state.
 Operator MBID edits and text-discovery selections remain session-only and are
 not stored in these tables as tag authority. MusicBrainz Artist/Track search
-results are cached only in the active Manual run so source-candidate Escape can
+results are cached only in the active run so source-candidate Escape can
 return to the same list without another request. A deliberate `M` search
 refreshes that per-run list while preserving the configured MusicBrainz delay,
 timeout, and attempt budget.
@@ -286,7 +286,7 @@ The authority-oriented `artists.status` value may cover Albums located in more
 than one physical folder; the TUI therefore recomputes its displayed
 folder-level aggregate from the projected Album rows.
 
-`incomplete` is specific to a started but unfinished Manual Comp Album. It does not
+`incomplete` is specific to a started but unfinished compilation Album. It does not
 claim folder-level `cover.*` authority. The runtime updates only the progress
 status after each embedded-track write; it does not rescan or materialize
 folder cover statistics for that event.

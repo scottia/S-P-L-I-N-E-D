@@ -15,7 +15,7 @@ and serialized.
 
 Performance invariant: normal index construction must remain Album-oriented.
 Do not enumerate or read every track tag here; per-track identity inspection is
-reserved for the explicitly selected Manual Comp workflow and is narrowed by
+reserved for automatically routed compilation track art and is narrowed by
 the existing Artist MBID index before it runs.
 """
 

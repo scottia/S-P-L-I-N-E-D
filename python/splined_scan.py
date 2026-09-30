@@ -967,7 +967,7 @@ def _manual_choose_release(items: list[Any]) -> tuple[str, Any | None]:
     while True:
         answer = core.read_input(
             "    MusicBrainz release #: ",
-            kind="manual-musicbrainz",
+            kind="musicbrainz-results",
             options=options,
         ).strip().lower()
         if answer in {"__cancel__", "__manual_album_exit__", "b"}:
@@ -1130,8 +1130,8 @@ def run_manual_compilation_album(
     if not core.compilation_manual_album_eligible(tracks):
         summary.unresolved += 1
         reason = (
-            "Manual Scan requires a representative track with no Album MBID "
-            "and compilation=1"
+            "Embedded compilation artwork requires a representative track "
+            "with no Album MBID and compilation=1"
         )
         for track in tracks[:1]:
             _manual_unresolved(track, reason, unresolved_items)
@@ -1139,7 +1139,7 @@ def run_manual_compilation_album(
 
     print()
     print(
-        f"  {core.cyan('Manual Scan:'):13} "
+        f"  {core.cyan('Track Artwork:'):13} "
         f"{core.orange('VA/OST compilation embedded artwork')}"
     )
     print(
@@ -2122,16 +2122,10 @@ def _run_scan_dir_batch(
                 albums.append(album)
 
     http = core.Http()
-    manual_compilation_mode = selected_scan_mode in {
-        "manual-compilation-read",
-        "manual-compilation-write",
-    }
-    if manual_compilation_mode:
-        # Keep Manual Comp local-first in fact as well as policy. Loading
-        # headers here could refresh OAuth before the lazy SQL lookup runs.
-        mbmode = "Deferred until local SQL miss"
-    else:
-        _, mbmode = core.mb_headers(config_file, cfg)
+    # Keep the unified workflow lazy: constructing the scan never refreshes
+    # OAuth. Exact lookup or an operator's M action loads credentials only at
+    # the point where MusicBrainz is actually needed.
+    mbmode = "Deferred until MusicBrainz request"
     summary = core.Summary(albums=len(discovered_albums), postponed=len(postponed_albums))
     history_path = core.source_history_path(history_dir)
     source_history = (
@@ -2179,6 +2173,7 @@ def _run_scan_dir_batch(
             "mbid": None,
             "release": None,
             "fallback_reason": None,
+            "embedded_compilation": False,
         }
         try:
             if not album.audio_files:
@@ -2220,11 +2215,10 @@ def _run_scan_dir_batch(
             record["missing"] = missing
             record["invalid"] = invalid
 
-            if manual_compilation_mode:
+            if core.compilation_manual_album_eligible(tracks):
+                record["embedded_compilation"] = True
                 record["fallback_reason"] = (
-                    "MANUAL COMPILATION"
-                    if core.compilation_manual_album_eligible(tracks)
-                    else "MANUAL NOT ELIGIBLE"
+                    "COMPILATION · EMBEDDED TRACK ARTWORK"
                 )
             elif len(valid) != 1:
                 if len(valid) > 1:
@@ -2370,7 +2364,7 @@ def _run_scan_dir_batch(
             print(f"  {core.red('ERROR: ' + str(record['fatal_error']))}\n")
             continue
 
-        if manual_compilation_mode:
+        if bool(record.get("embedded_compilation")):
             manual_completed = run_manual_compilation_album(
                 album,
                 list(record.get("tracks") or []),
@@ -2508,11 +2502,23 @@ def _run_scan_dir_batch(
                 f"{core.color_range_type(projected['range_type'])} {candidate_link(candidate)}"
             )
 
-        if fallback_reason:
-            print(f"  {core.cyan('Tracks:'):13} {core.bracketed_text(str(file_count), core.red)}")
+        # One candidate workflow serves exact and fallback authority. Exact
+        # releases seed it immediately; M may replace that seed from the same
+        # integrated MusicBrainz result list used by compilation track art.
+        if fallback_reason or release is not None:
+            track_color = core.red if fallback_reason else core.green
+            print(
+                f"  {core.cyan('Tracks:'):13} "
+                f"{core.bracketed_text(str(file_count), track_color)}"
+            )
             print(f"  {core.cyan('Compilation:'):13} {core.white(compilation)}")
             print()
-            print(f"  {core.cyan('Authority:'):13} {core.paint('PURPLE', 'N/A · FALLBACK MODE')}")
+            authority_label = (
+                core.paint('PURPLE', 'FALLBACK')
+                if fallback_reason
+                else core.green('ExactAlbumId')
+            )
+            print(f"  {core.cyan('Authority:'):13} {authority_label}")
             if release is not None:
                 mb_count_text = "?" if release.track_count is None else str(release.track_count)
                 count_fmt = core.green if release.track_count == file_count else core.red
@@ -2524,10 +2530,13 @@ def _run_scan_dir_batch(
 
             reason_text = str(fallback_reason)
             mbid_display = core.magenta(mbid) if mbid else core.gray("N/A")
+            tag_state = 'UNMATCHED' if fallback_reason else 'MATCHED'
+            tag_color = core.red if fallback_reason else core.green
             print(
                 f"  {core.cyan('Tagged Album:'):13} "
-                f"{core.orange(tag_album)} {core.bracketed_text('UNMATCHED', core.red)} / "
-                f"{mbid_display} {core.paint('PURPLE', '· ' + reason_text)}"
+                f"{core.orange(tag_album)} {core.bracketed_text(tag_state, tag_color)} / "
+                f"{mbid_display} "
+                f"{core.paint('PURPLE', '· ' + reason_text) if reason_text else ''}"
             )
 
             if len(valid) != 1 or missing or invalid:
@@ -2555,10 +2564,13 @@ def _run_scan_dir_batch(
 
             search_artist = tag_artist
             search_album = tag_album
-            recovered_release: core.Release | None = None
+            recovered_release: core.Release | None = release
+            operator_release_selected = False
             diagnostics: list[tuple[str, str]] = []
             completion_outcome: str | None = None
-            mb_retry_available = bool(record.get("mb_error"))
+            mb_retry_available = bool(
+                core.source_policy(cfg, "musicbrainz").get("enabled", True)
+            )
 
             while True:
                 if recovered_release is not None:
@@ -2612,13 +2624,13 @@ def _run_scan_dir_batch(
                         continue
 
                     if comparison_action == "mb-retry":
-                        recovered = core.musicbrainz_picker(http, config_file, cfg, search_artist, search_album, exact_mbid=mbid if mbid and release is None else None)
+                        recovered = core.musicbrainz_picker(
+                            http, config_file, cfg, search_artist, search_album
+                        )
                         if recovered is not None:
                             recovered_release = recovered
+                            operator_release_selected = True
                             mbid = recovered.mbid
-                            search_artist = recovered.artist_credit or search_artist
-                            search_album = recovered.title or search_album
-                            mb_retry_available = False
                         continue
 
                     if comparison_action == "bypass":
@@ -2655,9 +2667,15 @@ def _run_scan_dir_batch(
                         break
 
                 normal_best = select_best(candidates, cfg, format_order)
-                if normal_best is not None:
+                if normal_best is not None and not operator_release_selected:
                     print()
-                    authority_text = "ExactAlbumId · RECOVERED" if recovered_release else "ArtistAlbumFallback · AUTO"
+                    authority_text = (
+                        "ExactAlbumId · OPERATOR SELECTED"
+                        if operator_release_selected
+                        else "ExactAlbumId · AUTO"
+                        if recovered_release is not None
+                        else "ArtistAlbumFallback · AUTO"
+                    )
                     print(f"  {core.cyan('Authority:'):13} {core.green(authority_text)}")
                     preview_dest, _ = preview_destination(album, normal_best, cfg, format_order)
                     print(
@@ -2722,6 +2740,8 @@ def _run_scan_dir_batch(
                 answer = core.read_input(
                     "  Choice: ",
                     kind="fallback-picker",
+                    musicbrainz=mb_retry_available,
+                    musicbrainz_back=operator_release_selected,
                 ).strip().lower()
 
                 if answer == "__cancel__":
@@ -2814,14 +2834,11 @@ def _run_scan_dir_batch(
                         cfg,
                         search_artist,
                         search_album,
-                        exact_mbid=mbid if mbid and release is None else None,
                     )
                     if recovered is not None:
                         recovered_release = recovered
+                        operator_release_selected = True
                         mbid = recovered.mbid
-                        search_artist = recovered.artist_credit or search_artist
-                        search_album = recovered.title or search_album
-                        mb_retry_available = False
                     continue
 
                 choices = "s, a listed number, f, m, or b" if mb_retry_available else "s, a listed number, f, or b"
@@ -3289,7 +3306,10 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     core.help_row("      [k]", "Keep the existing local cover during Local & Suggested artwork comparison")
     core.help_row("      WEBP still", "Preserve cover.webp; generate a safe still, then compare the still against provider artwork")
     core.help_row("      [b]", "Persistently bypass the unresolved album and continue the scan")
-    core.help_row("      [m] picker", "Shown only when the album entered fallback because a MusicBrainz lookup actually failed")
+    core.help_row(
+        "      [m] picker",
+        "Opens the shared MusicBrainz release list from any Candidate Decision",
+    )
     core.help_row("      Manual picks", "Explicit s/number selections may be outside the normal range; aspect-ratio/resize/output safety still applies")
 
 

@@ -14,10 +14,11 @@ Docker normally uses `/credentials`. Standard filenames are fixed beneath that d
 | Fanart.tv | `fanarttv.json` | API key required |
 | Last.fm | `lastfm.json` | API key required; account session optional |
 | Discogs | `discogs.json` | Personal access token required |
-| MusicBrainz | `musicbrainz.json` | Anonymous metadata supported; OAuth optional |
+| MusicBrainz / Cover Art Archive | `musicbrainz.json` | Anonymous release authority and artwork; OAuth optional |
 | iTunes / Apple | none | Anonymous |
 | Cover Art Archive | none | Anonymous |
 | Deezer | none | Anonymous |
+| Amazon Store | none | Anonymous, opt-in best-effort search |
 
 Credential JSON is sensitive. Never commit it, attach it to an issue, or copy secrets into `config.toml`.
 
@@ -97,7 +98,10 @@ The Windows saved-credential test validates the token with the Discogs API v2 `/
 
 ## MusicBrainz
 
-MusicBrainz is metadata authority, not an artwork provider. Anonymous metadata requests remain available when OAuth is disabled. The standard `musicbrainz.json` can contain:
+MusicBrainz is release authority and does not host image bytes. Its Artwork
+Source Priority entry resolves Cover Art Archive images from MusicBrainz
+release identity; anonymous requests remain available when OAuth is disabled.
+The standard `musicbrainz.json` can contain:
 
 ```json
 {

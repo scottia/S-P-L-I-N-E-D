@@ -273,20 +273,20 @@ This optimization must not change normal SPLINED ranking semantics among candida
 
 # Album authority and curated compilations
 
-Normal Album identity and artwork lookup use tagged Album Artist/Album values
+Album identity and artwork lookup use tagged Album Artist/Album values
 and MusicBrainz Album/Release IDs. Track-level featured performers do not create
 extra Artist Picker copies; picker ownership remains the physical top-level
 library folder.
 
 A deliberately curated compilation may have `compilation=1`, per-track
-MusicBrainz Recording and Artist IDs, and no Album/Release ID. Normal scanning
-does not infer an Album ID or invoke recovery. When the selected Album's
-representative track has no Album/Release ID and has `compilation=1`, Select
-Media exposes `Manual Scan [VA/OST Compilations]`.
+MusicBrainz Recording and Artist IDs, and no Album/Release ID. When the selected
+Album's representative track has no Album/Release ID and has `compilation=1`,
+the unified scan automatically selects the embedded per-track artwork target.
+Select Media keeps the yellow warning; there is no separate scan mode.
 
-Manual Scan is explicit and per track:
+The compilation branch is explicit and per track:
 
-1. A track with an Album/Release ID remains in the normal workflow.
+1. A track with an Album/Release ID remains in the folder-art branch.
 2. Valid local Recording and Artist IDs remain the preferred authority. A
    track with missing or unreliable IDs can enter the explicit MusicBrainz
    discovery pane, which searches only its local Artist and Title. The curated
@@ -305,7 +305,7 @@ Manual Scan is explicit and per track:
 7. The operator previews and approves the candidate. LIVE WRITE replaces only
    that track's embedded front cover; READ reports what would be replaced.
 8. Each successful LIVE WRITE is committed to the per-track ledger
-   immediately. A later Manual Scan validates the saved Recording/Artist IDs
+   immediately. A later scan validates the saved Recording/Artist IDs
    and skips that track instead of repeating local or remote discovery.
 9. If the ID-first path returns no useful authority, or the operator presses
    `M`, Candidate Decision shows numbered MusicBrainz matches grouped by
@@ -334,16 +334,31 @@ one curated compilation may therefore receive different approved artwork.
 Timeouts, MusicBrainz `429`/`503` responses, no match, no artwork, rejection,
 or a failed write leave the track artwork unchanged and appear in Unresolved.
 Positive ID-based Recording-to-release results and lazily inspected local
-identities are retained in `splined.db` so later Manual Scans avoid repeated
+identities are retained in `splined.db` so later scans avoid repeated
 work. Text-discovery choices are cached only for the active run and contain no
 credentials or tokens.
 Starting LIVE WRITE persists the Album as `incomplete`, including 0/N when
 the operator leaves before the first approval, and its picker name is blue.
-Escape leaves the current Manual Album, shows the run report, and returns to
+Escape leaves the current compilation, shows the run report, and returns to
 the retained Album list; it does not exit SPLINED. The Album becomes
 `processed` only when the verified ledger reaches the full track count.
 Retagging a completed track to different Recording/Artist IDs invalidates that
 track's resume entry.
+
+Every other Album uses the same Candidate Decision concept with a folder-art
+output target. `M` opens the integrated MusicBrainz release list even when the
+original Album ID was valid. Selecting a different release reruns source
+discovery; Escape from those artwork results returns to the cached release list.
+The automatic acceptable-candidate fast path remains unchanged when no operator
+decision is required.
+
+`musicbrainz` is an artwork-policy entry even though MusicBrainz does not host
+the bytes: MusicBrainz supplies release authority and Cover Art Archive supplies
+the direct image URL. It has independent Minimum Range Type and fallback
+settings from exact-release `coverartarchive` discovery. `amazon` searches the
+Amazon Store, accepts only primary `m.media-amazon.com/images/I/` artwork, and
+removes between-dots resize transforms before preview and evaluation. Amazon is
+opt-in because public Store HTML may throttle requests or change markup.
 
 ---
 

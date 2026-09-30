@@ -8,22 +8,25 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const CURRENT_CONFIG_VERSION: u32 = 5;
-pub const SUPPORTED_COVER_SOURCES: [&str; 6] = [
+pub const SUPPORTED_COVER_SOURCES: [&str; 8] = [
     "deezer",
     "itunes",
     "fanarttv",
     "lastfm",
-    "coverartarchive",
-    "discogs",
-];
-pub const SUPPORTED_SOURCE_POLICIES: [&str; 7] = [
-    "deezer",
-    "itunes",
-    "fanarttv",
-    "lastfm",
-    "coverartarchive",
-    "discogs",
     "musicbrainz",
+    "coverartarchive",
+    "discogs",
+    "amazon",
+];
+pub const SUPPORTED_SOURCE_POLICIES: [&str; 8] = [
+    "deezer",
+    "itunes",
+    "fanarttv",
+    "lastfm",
+    "musicbrainz",
+    "coverartarchive",
+    "discogs",
+    "amazon",
 ];
 
 // Public portable defaults are deliberately neutral. User library locations,
@@ -420,6 +423,15 @@ impl Default for Config {
             ..MusicBrainzConfig::default()
         };
 
+        let mut source_policies = BTreeMap::new();
+        source_policies.insert(
+            "amazon".to_string(),
+            SourcePolicyConfig {
+                enabled: false,
+                ..SourcePolicyConfig::default()
+            },
+        );
+
         Self {
             config_version: CURRENT_CONFIG_VERSION,
             mode: Mode::Read,
@@ -436,7 +448,7 @@ impl Default for Config {
             output: OutputConfig::default(),
             range: RangeConfig::default(),
             sources: SourcesConfig::default(),
-            source_policies: BTreeMap::new(),
+            source_policies,
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
         }
@@ -772,7 +784,8 @@ mod tests {
         );
         assert!(config.output.preserve_file);
         assert!(config.sources.exclude_cover_sources.is_empty());
-        assert!(config.source_policies.is_empty());
+        assert_eq!(config.source_policies.len(), 1);
+        assert!(!config.source_policies["amazon"].enabled);
         assert_eq!(
             config.sources.cover_sources.len(),
             SUPPORTED_COVER_SOURCES.len()
@@ -879,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn musicbrainz_source_policy_controls_metadata_runtime_without_becoming_cover_source() {
+    fn musicbrainz_source_policy_controls_metadata_and_artwork_runtime() {
         let mut config = Config::default();
         config.source_policies.insert(
             "musicbrainz".to_string(),
@@ -894,7 +907,7 @@ mod tests {
         assert!(!parsed.musicbrainz.enabled);
         assert!(parsed.musicbrainz.source_override);
         assert!(
-            !parsed
+            parsed
                 .sources
                 .cover_sources
                 .iter()

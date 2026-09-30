@@ -1,9 +1,11 @@
 # MusicBrainz OAuth
 
 All supported Config v5 runtimes use `musicbrainz.json` beneath the configured
-`credential_dir`. MusicBrainz supplies release and recording metadata; it is
-not an artwork provider and its policy does not use artwork range or dimension
-controls.
+`credential_dir`. MusicBrainz supplies release and recording authority while
+Cover Art Archive supplies image bytes. The `musicbrainz` Artwork Source
+Priority entry therefore uses the normal Minimum Range Type, adjacent fallback,
+dimension, and primary-image policy controls. The separate request timing and
+retry options remain in the credential JSON.
 
 Anonymous metadata requests remain available while OAuth is disabled. Never
 put OAuth tokens, client secrets, or authorization codes in `config.toml`,
@@ -106,7 +108,7 @@ Credential files receive the filesystem protection described in
 
 | Option | Default | Meaning |
 | --- | ---: | --- |
-| `retry_max` | `4` | Manual Recording lookup's maximum total attempts |
+| `retry_max` | `4` | Recording lookup's maximum total attempts |
 | `min_delay` | `1.05` | Minimum seconds between MusicBrainz requests |
 | `recording_timeout` | `7` | Per-attempt Recording-query timeout in seconds |
 
@@ -115,7 +117,7 @@ defaults are active while saved custom options remain retained. When it is
 `true`, the saved `options` values become active. `enabled = false` disables
 MusicBrainz participation without deleting credentials.
 
-The explicit Manual Comp workflow is stricter: it reads these three exact keys
+The compilation track-art branch is stricter: it reads these three exact keys
 from `musicbrainz.json` and does not use aliases or hard-coded fallbacks. It
 loads them only after the local SQL lookup misses. `retry_max = 4` means four
 total attempts, not one initial request plus four retries. A zero value disables

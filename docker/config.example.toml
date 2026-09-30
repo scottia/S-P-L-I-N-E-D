@@ -40,7 +40,7 @@ max = 2400
 ladder = 3600
 
 [sources]
-cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs"]
+cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon"]
 exclude_cover_sources = []
 
 # Source Override activates the source-specific artwork policy. With it off,
@@ -87,11 +87,22 @@ minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
 primary_image_only = true
 
-# MusicBrainz is metadata authority, not an artwork source. Source Override
-# activates the runtime options stored non-destructively in its credential JSON.
+# MusicBrainz selects the release; Cover Art Archive supplies the image bytes.
+# This priority is independent from exact-release Cover Art Archive discovery.
 [source_policies.musicbrainz]
 enabled = true
 source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+[source_policies.amazon]
+# Amazon Store search is credential-free, best effort, and opt-in.
+enabled = false
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
 
 [samples]
 sample_write = true

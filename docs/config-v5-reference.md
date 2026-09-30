@@ -135,16 +135,26 @@ min < ideal <= max < ladder
 ## `[sources]`
 
 `cover_sources` stores artwork-source priority. Supported sources are Deezer,
-iTunes, Fanart.tv, Last.fm, Cover Art Archive, and Discogs.
+iTunes, Fanart.tv, Last.fm, MusicBrainz / Cover Art Archive, Cover Art Archive,
+Discogs, and Amazon Store.
 `exclude_cover_sources` disables listed sources without changing saved order.
 
-MusicBrainz is metadata authority and is not an artwork source.
+The `musicbrainz` priority uses MusicBrainz as release authority and Cover Art
+Archive as the image host. It prefers the release-group representative;
+`coverartarchive` remains the independent exact-release source. Both expose
+direct image URLs to Candidate Decision.
+
+`amazon` performs a credential-free, best-effort Amazon Store search and accepts
+only primary `https://m.media-amazon.com/images/I/` URLs. It removes Amazon's
+between-dots image transform (for example `._AC_UY218_`) before download so the
+candidate URL points to the original image. Amazon is disabled by default;
+blocking or markup changes appear as provider diagnostics.
 
 ## `[source_policies.<provider>]`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | derived/enabled | Whether the source may be used |
+| `enabled` | `true` (`false` for Amazon) | Whether the source may be used |
 | `source_override` | `false` | Activates saved provider-specific policy |
 | `minimum_range_type` | `"LowerRange"` | Minimum normal artwork range |
 | `allow_below_minimum_fallback` | `false` | Allows the adjacent lower range as fallback |
@@ -154,9 +164,10 @@ MusicBrainz is metadata authority and is not an artwork source.
 | `minimum_height` | absent | Optional explicit height minimum |
 | `primary_image_only` | `true` | Uses primary/front metadata where available |
 
-MusicBrainz policy contains only `enabled` and `source_override`. When Source
-Override is off, the provider uses the global range while retaining saved
-custom values.
+MusicBrainz and Amazon use the same Minimum Range Type, adjacent fallback,
+dimension, and primary-image controls as other artwork sources. When Source
+Override is off, a provider uses the global range while retaining saved custom
+values.
 
 See [Source policies and Range Types](source-policies-range-types.md).
 
@@ -200,7 +211,7 @@ but are updated independently. The normal runtime defaults are:
 SPLINED merges changed options, preserves authentication and unknown fields,
 and atomically replaces the credential file.
 
-`Manual Scan [VA/OST Compilations]` requires the exact `retry_max`,
+Compilation track-art recovery requires the exact `retry_max`,
 `min_delay`, and `recording_timeout` keys in the credential JSON. It does not
 hard-code or infer missing values. In that workflow `retry_max` is the maximum
 total attempt count, `min_delay` applies between requests, and

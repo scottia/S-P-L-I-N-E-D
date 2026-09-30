@@ -96,12 +96,12 @@ underlying status color.
 | Color | Album meaning | Normal automatic selection |
 | --- | --- | --- |
 | White | Unprocessed / no current processed authority | Yes |
-| Blue | Manual Comp LIVE WRITE completed some, but not all, tracks | No |
+| Blue | Compilation LIVE WRITE has unfinished per-track progress | No |
 | Orange | Processed/history or recognized canonical local cover | No |
 | Red | Persistent bypass | No |
 | Purple | Timeout active | No |
 
-Blue Incomplete Albums may be selected explicitly to resume Manual Scan; they
+Blue Incomplete Albums may be selected explicitly to resume compilation work; they
 are excluded from normal automatic selection. Orange Albums may be deliberately
 selected for reprocessing. Red Albums require intentional saved-bypass removal.
 Purple Albums remain protected while timeout is active.
@@ -138,7 +138,7 @@ Artist row → partial aggregate
 Blue is also context-sensitive:
 
 ```text
-Album row  → incomplete Manual Comp progress
+Album row  → incomplete compilation track-art progress
 Artist row → contains one or more bypassed child Albums
 ```
 
@@ -151,7 +151,7 @@ physical top-level picker folders, not tagged authority identities:
 
 ```text
 Unprocessed            = White Albums / White Artists for shared context
-Incomplete             = Blue Albums with started, unfinished Manual Comp progress
+Incomplete             = Blue Albums with started, unfinished compilation progress
 Processed              = Orange Albums
 Bypassed               = Red Albums
 Partial / Timeout      = Purple Albums + Purple Artists
@@ -192,7 +192,7 @@ folders can remain selected:
 
 ```text
 White Album  → selectable
-Blue Album   → selectable when Manual Comp progress is incomplete
+Blue Album   → selectable when compilation progress is incomplete
 Orange Album → skipped by automatic selection; manually reprocessable
 Purple Album → protected while timeout active
 Red Album    → saved bypass removal required

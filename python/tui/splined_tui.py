@@ -798,7 +798,7 @@ class TuiState:
                 input_kind,
                 context,
             )
-            if self.input_request.kind in {"musicbrainz", "manual-musicbrainz"}:
+            if self.input_request.kind in {"musicbrainz", "musicbrainz-results"}:
                 self.release_options = [
                     {str(key): str(value) for key, value in item.items()}
                     for item in context.get("options", [])
@@ -1553,11 +1553,10 @@ AUTO_SCAN_CONTROLS = (
     "Auto Scan [ALL]",
     "Auto Scan [SELECTED]",
 )
-MANUAL_COMPILATION_CONTROL = "Manual Scan [VA/OST Compilations]"
 SCAN_CONTROLS = LAUNCH_CONTROLS + AUTO_SCAN_CONTROLS
 
 
-def _manual_compilation_available(state: TuiState) -> bool:
+def _embedded_compilation_selected(state: TuiState) -> bool:
     if state.library is None:
         return False
     selected = {
@@ -1572,8 +1571,6 @@ def _manual_compilation_available(state: TuiState) -> bool:
 
 
 def _scan_controls(state: TuiState) -> tuple[str, ...]:
-    if _manual_compilation_available(state):
-        return SCAN_CONTROLS + (MANUAL_COMPILATION_CONTROL,)
     return SCAN_CONTROLS
 
 
@@ -1909,14 +1906,10 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
         panels[1],
     )
 
-    manual_available = _manual_compilation_available(state)
-    auto_scan_controls = (
-        AUTO_SCAN_CONTROLS + (MANUAL_COMPILATION_CONTROL,)
-        if manual_available
-        else AUTO_SCAN_CONTROLS
-    )
+    embedded_compilation = _embedded_compilation_selected(state)
+    auto_scan_controls = AUTO_SCAN_CONTROLS
     scan_needs_launch = (
-        state.scan_index in {2, 3, 4}
+        state.scan_index in {2, 3}
         and state.transient.startswith("Select SPLINED LAUNCH")
     )
     frame.render_widget(
@@ -1928,19 +1921,16 @@ def _render_library_controls(frame: Any, area: Rect, state: TuiState, theme: The
                 theme,
                 hover_index=scan_hover,
                 index_offset=2,
-                semantic_for=lambda index: (
-                    Semantic.FALLBACK if index == 4 else None
-                ),
             )
         )
         .block(card(theme, "ALBUM SCANNING", Semantic.SPECIAL)),
         panels[2],
     )
-    if (scan_needs_launch or manual_available) and int(panels[2].height) >= 4:
+    if (scan_needs_launch or embedded_compilation) and int(panels[2].height) >= 4:
         prompt = (
             "Select LAUNCH [READ] or [LIVE WRITE]"
             if scan_needs_launch
-            else "Missing Album MBID · select Manual Scan"
+            else "Missing Album MBID · per-track embedded artwork"
         )
         frame.render_widget(
             Paragraph.from_string(_truncate(prompt, max(1, int(panels[2].width) - 4)))
@@ -2843,7 +2833,7 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
     spec = layout_spec(area.width, area.height)
     manual = bool(
         state.input_request
-        and state.input_request.kind == "manual-musicbrainz"
+        and state.input_request.kind == "musicbrainz-results"
     )
     columns = ["#", "artist", "release"]
     widths = [Constraint.length(4), Constraint.percentage(28), Constraint.fill(1)]
@@ -3769,7 +3759,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         or state.fallback_track_id
         or (
             state.input_request is not None
-            and state.input_request.kind == "manual-musicbrainz"
+            and state.input_request.kind == "musicbrainz-results"
         )
     )
     current_height = (
@@ -3835,7 +3825,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
 
     manual_musicbrainz = bool(
         state.input_request is not None
-        and state.input_request.kind == "manual-musicbrainz"
+        and state.input_request.kind == "musicbrainz-results"
     )
     groups = _candidate_groups(state)
     if manual_musicbrainz:
@@ -4386,8 +4376,13 @@ def _footer_text(state: TuiState) -> str:
             return "↑/↓ choose • Enter exact • S suggested • K keep local • U URL • M MusicBrainz • B bypass • Ctrl+C [Exit] • ? help"
         if kind == "musicbrainz":
             return "↑/↓ choose release • Enter select • B/Esc back • Ctrl+C [Exit] • ? help"
-        if kind == "manual-musicbrainz":
-            return "↑/↓ or click choose MB match • Enter search artwork • Esc album list • Ctrl+C [Exit]"
+        if kind == "musicbrainz-results":
+            back = (
+                "source results"
+                if state.input_request.context.get("back_action") == "source-results"
+                else "album list"
+            )
+            return f"↑/↓ or click choose MB match • Enter search artwork • Esc {back} • Ctrl+C [Exit]"
         if kind == "fallback-picker":
             back = (
                 "MB results"
@@ -4613,7 +4608,7 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
             bool(state.candidates)
             or (
                 state.input_request is not None
-                and state.input_request.kind == "manual-musicbrainz"
+                and state.input_request.kind == "musicbrainz-results"
             )
             or (
                 state.input_request is not None
@@ -4675,7 +4670,7 @@ def _begin_fallback_id_edit(
         or state.input_request.kind != "fallback-picker"
         or index not in {0, 1, 2}
     ):
-        state.transient = "MusicBrainz IDs can be edited during a Manual candidate decision."
+        state.transient = "MusicBrainz IDs can be edited during a compilation track decision."
         return
     state.fallback_edit_index = index
     state.fallback_edit_buffer = ""
@@ -4724,38 +4719,18 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
         return
     # ALBUM SCANNING defines scope only. A READ/WRITE LAUNCH choice is
     # mandatory so Auto Scan can never silently default to READ.
-    if state.scan_index in {2, 3, 4}:
-        if state.scan_index == 4:
-            if not _manual_compilation_available(state):
-                state.scan_scope = ""
-                state.transient = (
-                    "Manual Scan requires a selected compilation with a missing Album MBID."
-                )
-                return
-            state.scan_scope = "manual-compilation"
-        else:
-            state.scan_scope = (
-                "auto-all" if state.scan_index == 2 else "auto-selected"
-            )
+    if state.scan_index in {2, 3}:
+        state.scan_scope = (
+            "auto-all" if state.scan_index == 2 else "auto-selected"
+        )
         state.transient = (
             "Select SPLINED LAUNCH [READ] or [LIVE WRITE] before Auto Scan."
-            if state.scan_index in {2, 3}
-            else "Select SPLINED LAUNCH [READ] or [LIVE WRITE] before Manual Scan."
         )
         return
     if state.scan_index not in {0, 1}:
         state.transient = "Select a SPLINED LAUNCH option."
         return
-    if state.scan_scope == "manual-compilation":
-        if not _manual_compilation_available(state):
-            state.scan_scope = ""
-            state.transient = (
-                "Manual Scan is no longer available for the selected Album."
-            )
-            return
-        modes = ("manual-compilation-read", "manual-compilation-write")
-    else:
-        modes = ("filtered-read", "filtered-write")
+    modes = ("filtered-read", "filtered-write")
     mode = modes[state.scan_index]
     payload = state.library.selection_payload(mode)
     selected = payload.get("selected", [])
@@ -5818,12 +5793,12 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
 
     selection_count = (
         len(state.release_options)
-        if request.kind in {"musicbrainz", "manual-musicbrainz"}
+        if request.kind in {"musicbrainz", "musicbrainz-results"}
         else len(state.candidates)
     )
     if action is Action.UP and selection_count:
         index = (state.selected_index - 1) % selection_count
-        if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
+        if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
             state.selected_index = index
@@ -5831,7 +5806,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if action is Action.DOWN and selection_count:
         index = (state.selected_index + 1) % selection_count
-        if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
+        if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
             state.selected_index = index
@@ -5844,7 +5819,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             index = selection_count - 1
         else:
             index = state.selected_index + (-10 if action is Action.PAGE_UP else 10)
-        if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
+        if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
             state.selected_index = max(0, min(index, selection_count - 1))
@@ -5861,7 +5836,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             state.input_buffer = code
             index = int(code) - 1
         if index is not None:
-            if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
+            if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
                 _focus_candidate(state, index, adapter)
             else:
                 state.selected_index = index
@@ -5873,7 +5848,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             or (state.fallback_artist_id and state.fallback_track_id)
         )
     )
-    if action is Action.BYPASS and request.kind == "manual-musicbrainz":
+    if action is Action.BYPASS and request.kind == "musicbrainz-results":
         _submit(state, adapter, "b")
         return
     if action is Action.BYPASS and manual_fallback:
@@ -5902,8 +5877,16 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if action is Action.BACK:
         if request.kind == "musicbrainz":
             _submit(state, adapter, "b")
-        elif request.kind == "manual-musicbrainz":
-            _submit(state, adapter, "__manual_album_exit__")
+        elif request.kind == "musicbrainz-results":
+            _submit(
+                state,
+                adapter,
+                (
+                    "b"
+                    if request.context.get("back_action") == "source-results"
+                    else "__manual_album_exit__"
+                ),
+            )
         elif (
             request.kind == "fallback-picker"
             and manual_fallback
@@ -5917,6 +5900,11 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
                     else "__manual_album_exit__"
                 ),
             )
+        elif (
+            request.kind == "fallback-picker"
+            and request.context.get("musicbrainz_back")
+        ):
+            _submit(state, adapter, "m")
         else:
             _submit(state, adapter, "__cancel__")
         return
@@ -5931,9 +5919,13 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if (
         action is Action.MUSICBRAINZ
-        and manual_fallback
+        and request.kind == "fallback-picker"
+        and (
+            manual_fallback
+            or request.context.get("musicbrainz")
+        )
     ):
-        state.transient = "Searching MusicBrainz by local Artist and Track title…"
+        state.transient = "Searching MusicBrainz…"
         _submit(state, adapter, "m")
         return
     if (

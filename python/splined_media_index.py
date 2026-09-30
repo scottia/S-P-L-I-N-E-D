@@ -143,18 +143,18 @@ def install(core: Any, scan: Any | None = None) -> None:
                         f"error={type(exc).__name__}: {exc}"
                     )
         elif event == "album_progress":
-            # A resumed/aborted Manual Scan may not produce a new artwork
+            # A resumed/aborted compilation may not produce a new artwork
             # write. Project its progress into the retained status cache so
             # the next library_update cannot overwrite the incomplete color.
             try:
                 sync_material_result(
                     {
-                        "outcome": "Manual compilation progress",
+                        "outcome": "Compilation track-art progress",
                         "manual_compilation": True,
                         "progress_status": str(
                             payload.get("status", "incomplete")
                         ),
-                        "source": "Manual Scan",
+                        "source": "Compilation Track Art",
                     }
                 )
             except Exception as exc:

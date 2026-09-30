@@ -137,18 +137,26 @@ are reconciled after the explicit Refresh action.
 See [SPLINED media database](docs/splined-media-database.md).
 
 When a selected curated compilation is tagged `compilation=1` but its
-representative track has no MusicBrainz Album/Release ID, Select Media exposes
-the explicit `Manual Scan [VA/OST Compilations]` workflow. It searches the
-local SQL cache first, performs bounded Recording-ID recovery only after a
-local miss, and offers an operator-reviewed Artist/Track MusicBrainz search
-when IDs are missing or the recovered release is unsuitable. A chosen release
-then enters the normal artwork-source preview and approval path; Escape returns
-to the cached MusicBrainz choices without another request. Manual Scan replaces
-only operator-approved embedded track artwork. LIVE
+representative track has no MusicBrainz Album/Release ID, the ordinary scan
+automatically routes that Album to per-track embedded-artwork decisions. The
+yellow warning remains visible before launch. SPLINED searches the local SQL
+cache first, performs bounded Recording-ID recovery only after a local miss,
+and offers an operator-reviewed Artist/Track MusicBrainz list when IDs are
+missing or the recovered release is unsuitable. A chosen release enters the
+same artwork-source preview and approval path used by every Album; Escape
+returns to the cached MusicBrainz choices without another request. This path
+replaces only operator-approved embedded track artwork. LIVE
 WRITE progress is durable per track: an interrupted compilation is blue
 `Incomplete` in the picker even if the operator leaves before the first
-approval, and the next Manual Scan skips already verified writes. See
+approval, and the next scan skips already verified writes. No folder-level
+`cover.*` is created, changed, or removed for this compilation path. See
 [Source policies and range types](docs/source-policies-range-types.md).
+
+MusicBrainz is available in Artwork Source Priority as release authority backed
+by Cover Art Archive image bytes. Amazon Store artwork is also available as an
+opt-in, credential-free source; SPLINED normalizes accepted
+`m.media-amazon.com/images/I/` primary-image URLs to the untransformed original
+before download and preview.
 
 ---
 
@@ -177,9 +185,11 @@ Current provider support includes:
 - 🍎 iTunes / Apple artwork
 - 🎨 Fanart.tv
 - 🎧 Last.fm
+- 🧠 MusicBrainz / Cover Art Archive release-group artwork
 - 💿 Cover Art Archive
 - 🔵 Deezer
 - 🟠 Discogs
+- 🛒 Amazon Store original primary images (opt-in)
 
 Sources can be reordered, enabled, or excluded. Source priority breaks otherwise
 equal scoring decisions.

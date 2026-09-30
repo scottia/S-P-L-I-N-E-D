@@ -24,6 +24,7 @@ from tui.splined_tui import (
     TuiState,
     _clear_stale_remote_overlay,
     _draw_remote_hover_overlay,
+    _embedded_compilation_selected,
     _preferred_candidate_index,
     _scan_controls,
     _status_control_semantic,
@@ -117,7 +118,7 @@ def _region(state: TuiState, target: str, index: int | None = None) -> HitRegion
 
 
 class RenderHitMapTests(unittest.TestCase):
-    def test_manual_compilation_scan_is_conditional_and_requires_launch(self) -> None:
+    def test_compilation_artwork_routes_automatically_and_requires_launch(self) -> None:
         state = _library_state(artists=1, albums_each=1)
         assert state.library is not None
         album = state.library.albums[0]
@@ -132,32 +133,22 @@ class RenderHitMapTests(unittest.TestCase):
                 "manual_compilation_eligible": True,
             }
         ]
-        self.assertEqual(len(_scan_controls(state)), 5)
+        self.assertEqual(len(_scan_controls(state)), 4)
+        self.assertTrue(_embedded_compilation_selected(state))
 
         adapter = TuiAdapter()
         adapter.waiting.set()
-        state.scan_index = 4
+        state.scan_index = 3
         _submit_library(state, adapter)
-        self.assertEqual(state.scan_scope, "manual-compilation")
+        self.assertEqual(state.scan_scope, "auto-selected")
         self.assertTrue(adapter.responses.empty())
-        self.assertIn("Manual Scan", state.transient)
+        self.assertIn("LAUNCH", state.transient)
 
         state.scan_index = 0
         _submit_library(state, adapter)
         payload = json.loads(adapter.responses.get_nowait())
-        self.assertEqual(payload["scan_mode"], "manual-compilation-read")
+        self.assertEqual(payload["scan_mode"], "filtered-read")
         self.assertEqual(payload["selected"], [album.path])
-
-        stale = _library_state(artists=1, albums_each=1)
-        assert stale.library is not None
-        stale.library.albums[0].selected = True
-        stale.scan_scope = "manual-compilation"
-        stale.scan_index = 0
-        stale_adapter = TuiAdapter()
-        stale_adapter.waiting.set()
-        _submit_library(stale, stale_adapter)
-        self.assertTrue(stale_adapter.responses.empty())
-        self.assertEqual(stale.scan_scope, "")
 
     def test_library_hit_geometry_is_rebuilt_at_all_responsive_sizes(self) -> None:
         required = {
@@ -1254,6 +1245,27 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         handle_key(state, adapter, _Event("Esc"))
         self.assertEqual(adapter.responses.get_nowait(), "__manual_mb_results__")
 
+    def test_folder_art_decision_uses_same_musicbrainz_picker_and_back_path(self) -> None:
+        state = self._candidate_state()
+        state.input_request = InputRequest(
+            "Choice: ",
+            "fallback-picker",
+            {"musicbrainz": True},
+        )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("m"))
+        self.assertEqual(adapter.responses.get_nowait(), "m")
+
+        state.input_request = InputRequest(
+            "MusicBrainz release #: ",
+            "musicbrainz-results",
+            {"options": [], "back_action": "source-results"},
+        )
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("Esc"))
+        self.assertEqual(adapter.responses.get_nowait(), "b")
+
     def test_manual_musicbrainz_results_render_inside_candidate_decision_and_click(self) -> None:
         state = self._candidate_state()
         state.candidates = []
@@ -1262,7 +1274,7 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
             {
                 "prompt": "MusicBrainz release #: ",
                 "context": {
-                    "kind": "manual-musicbrainz",
+                    "kind": "musicbrainz-results",
                     "options": [
                         {
                             "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

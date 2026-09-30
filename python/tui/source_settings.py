@@ -23,8 +23,10 @@ SOURCE_NAMES = (
     "itunes",
     "fanarttv",
     "lastfm",
+    "musicbrainz",
     "coverartarchive",
     "discogs",
+    "amazon",
 )
 RANGE_TYPES = (
     "BelowMinimum",
@@ -42,7 +44,9 @@ OPTIONAL_DIMENSIONS = (
 )
 # Only these providers expose a differentiated front/primary flag in current
 # Python discovery. Other providers return one logical album-cover class.
-PRIMARY_METADATA_SOURCES = frozenset({"coverartarchive", "discogs"})
+PRIMARY_METADATA_SOURCES = frozenset(
+    {"musicbrainz", "coverartarchive", "discogs", "amazon"}
+)
 
 
 def _section(cfg: dict[str, Any], name: str) -> dict[str, Any]:
@@ -50,9 +54,12 @@ def _section(cfg: dict[str, Any], name: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _policy_defaults(raw: dict[str, Any]) -> dict[str, Any]:
+def _policy_defaults(raw: dict[str, Any], source: str = "") -> dict[str, Any]:
     return {
-        "enabled": bool(raw.get("enabled", True)),
+        # Amazon Store HTML discovery is deliberately opt-in. Existing Config
+        # v5 files predate this provider, so saving Source Priority must not
+        # silently add Store traffic to every album scan.
+        "enabled": bool(raw.get("enabled", source != "amazon")),
         "source_override": bool(raw.get("source_override", False)),
         "minimum_range_type": str(raw.get("minimum_range_type", "LowerRange")),
         "allow_below_minimum_fallback": bool(
@@ -90,7 +97,8 @@ class PolicyDraft:
             source: _policy_defaults(
                 raw_policies.get(source, {})
                 if isinstance(raw_policies.get(source, {}), dict)
-                else {}
+                else {},
+                source,
             )
             for source in SOURCE_NAMES
         }

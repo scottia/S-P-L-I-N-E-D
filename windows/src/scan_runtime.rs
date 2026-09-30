@@ -576,6 +576,9 @@ pub async fn run_scan_library_read_report(
             .iter()
             .filter(|source| {
                 source.as_str() != "fanarttv"
+                    && (source.as_str() != "musicbrainz"
+                        || context.release_group_mbid.is_some()
+                        || !query.release_mbid.trim().is_empty())
                     && (source.as_str() != "coverartarchive"
                         || !query.release_mbid.trim().is_empty())
             })

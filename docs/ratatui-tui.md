@@ -263,14 +263,8 @@ Auto Scan [SELECTED]
 ```
 
 For a selected Album whose representative track has no Album/Release ID and
-has `compilation=1`, the panel also shows an orange, conditional row:
-
-```text
-Manual Scan [VA/OST Compilations]
-```
-
-This row is absent for normal Albums. Selecting it defines Manual Comp scope
-but performs no MusicBrainz or artwork work until Launch is selected.
+has `compilation=1`, the panel keeps a yellow warning that the unified scan will
+use per-track embedded artwork. There is no separate Manual Scan selector.
 
 It does not silently choose READ. A Launch mode is mandatory:
 
@@ -286,15 +280,22 @@ READ can query and evaluate candidates but does not install `cover.*` or create
 durable processed state for an Album that still has no cover. LIVE WRITE uses
 the same decision pipeline and may write the selected artwork.
 
-Manual Comp READ previews per-track embedded-artwork replacements. Manual Comp
+Compilation READ previews per-track embedded-artwork replacements. Compilation
 LIVE WRITE replaces only an approved track's embedded front image. It never
 creates, changes, or removes folder-level `cover.*`, and unresolved tracks keep
 their existing artwork. Each successful track is committed immediately. If the
 operator leaves before every track is complete, the Album name becomes blue
-`Incomplete`; selecting Manual Scan later resumes after the verified completed
+`Incomplete`; selecting the Album later resumes after the verified completed
 tracks rather than querying them again. This includes 0/N when the operator
-leaves before the first approval. Escape leaves the current Manual Album for
+leaves before the first approval. Escape leaves the current compilation for
 the Album Run Report; Enter or Escape there returns to retained Select Media.
+
+Every Candidate Decision uses one MusicBrainz interaction: `M` opens the
+integrated release list, Enter searches artwork for that release, and Escape
+from source results returns to the cached list. Regular Albums write approved
+folder-level `cover.*`; the compilation restriction above writes embedded art.
+All remote candidates expose the successfully downloaded direct image URL for
+mouse/`U` preview before approval.
 
 ## Selected Album artwork and statistics
 
@@ -345,7 +346,7 @@ no-cover transitions, resize, and processing launch.
 
 ## Candidate decision screen
 
-During Manual Comp review, `CURRENT ALBUM` divides into the curated Album
+During compilation review, `CURRENT ALBUM` divides into the curated Album
 identity on the left and a yellow-framed, cyan-titled
 `FALLBACK ARTIST / ALBUM INFO` panel on the right. Its three rows show the
 friendly MusicBrainz Artist, recovered release, and matched recording names,

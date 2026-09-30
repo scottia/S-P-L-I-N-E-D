@@ -7,6 +7,7 @@ import base64
 import concurrent.futures
 from collections import deque
 import getpass
+import html as html_lib
 import hashlib
 import importlib.util
 import io
@@ -22,7 +23,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -61,8 +62,17 @@ PROVIDER_DISCOVERY_WORKERS = 4
 CANDIDATE_DOWNLOAD_WORKERS = 4
 SELECTED_STATS_LIMIT = 10
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
-SUPPORTED_SOURCES = ("deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs")
-SUPPORTED_SOURCE_POLICIES = (*SUPPORTED_SOURCES, "musicbrainz")
+SUPPORTED_SOURCES = (
+    "deezer",
+    "itunes",
+    "fanarttv",
+    "lastfm",
+    "musicbrainz",
+    "coverartarchive",
+    "discogs",
+    "amazon",
+)
+SUPPORTED_SOURCE_POLICIES = SUPPORTED_SOURCES
 FIXED_CREDENTIAL_FILES = {
     "fanarttv": "fanarttv.json",
     "lastfm": "lastfm.json",
@@ -365,7 +375,10 @@ def source_policy(cfg: dict[str, Any], source: str) -> dict[str, Any]:
         )
 
     policy = {
-        "enabled": _bool_value(raw.get("enabled", True), f"[source_policies.{source_key}].enabled"),
+        "enabled": _bool_value(
+            raw.get("enabled", source_key != "amazon"),
+            f"[source_policies.{source_key}].enabled",
+        ),
         "source_override": _bool_value(
             raw.get("source_override", False),
             f"[source_policies.{source_key}].source_override",
@@ -1195,7 +1208,7 @@ def selected_album_statistics(
     tag_files = mp3_files if mp3_files else audio_files
     result["tracks"] = len(audio_files)
 
-    # Manual compilation recovery is exposed from the representative track
+    # Compilation track-art recovery is exposed from the representative track
     # only after an Album is explicitly selected.  Do not inspect every track
     # and do not contact MusicBrainz while Select Media is open.
     if tag_files:
@@ -2535,10 +2548,9 @@ def prepare_tui_library_selection(
             "filtered-read",
             "auto-all",
             "auto-selected",
-            "manual-compilation-read",
         }:
             cfg["mode"] = "read"
-        elif scan_mode in {"filtered-write", "manual-compilation-write"}:
+        elif scan_mode == "filtered-write":
             cfg["mode"] = "write"
         else:
             raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
@@ -2910,6 +2922,7 @@ def authentication_statuses(
         ("MusicBrainz", musicbrainz_mode),
         ("iTunes", "Anonymous"),
         ("CoverArt", "Anonymous"),
+        ("Amazon", "Anonymous / opt-in"),
     )
 
 
@@ -3804,6 +3817,153 @@ def discover_caa(http: Http, rel: Release) -> list[Ref]:
     if r.status_code != 200: raise SplinedError(f"Cover Art Archive returned HTTP {r.status_code}")
     return [Ref("coverartarchive", str(x.get("id") or ""), str(x.get("image") or ""), bool(x.get("front", False)), bool(x.get("approved", False)), [str(v) for v in x.get("types", [])]) for x in r.json().get("images", [])]
 
+
+def discover_musicbrainz_artwork(http: Http, rel: Release) -> list[Ref]:
+    """Return MusicBrainz-selected Cover Art Archive artwork.
+
+    MusicBrainz is the release authority; Cover Art Archive hosts the bytes.
+    Prefer the release-group representative so this priority entry remains
+    distinct from the exact-release ``coverartarchive`` provider.
+    """
+    if rel.release_group_id:
+        entity = "release-group"
+        identity = rel.release_group_id
+    elif rel.mbid:
+        entity = "release"
+        identity = rel.mbid
+    else:
+        return []
+    response = http.get(
+        f"https://coverartarchive.org/{entity}/{identity}/",
+        headers={"Accept": "application/json"},
+    )
+    if response.status_code == 404:
+        return []
+    if response.status_code != 200:
+        raise SplinedError(
+            f"MusicBrainz / Cover Art Archive returned HTTP {response.status_code}"
+        )
+    payload = response.json()
+    images = payload.get("images", []) if isinstance(payload, dict) else []
+    return [
+        Ref(
+            "musicbrainz",
+            str(item.get("id") or ""),
+            str(item.get("image") or ""),
+            bool(item.get("front", False)),
+            bool(item.get("approved", False)),
+            [str(value) for value in item.get("types", [])],
+        )
+        for item in images
+        if isinstance(item, dict) and str(item.get("image") or "").strip()
+    ]
+
+
+def amazon_original_image_url(value: str) -> str | None:
+    """Normalize an Amazon primary-image URL to its untransformed asset."""
+    raw = html_lib.unescape(str(value or "").strip()).replace("\\/", "/")
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if parsed.scheme != "https" or parsed.hostname != "m.media-amazon.com":
+        return None
+    match = re.fullmatch(
+        r"/images/I/(?P<asset>[^./?#]+?)(?:\._[^/?#]+_)?\."
+        r"(?P<extension>jpe?g|png)",
+        parsed.path,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    extension = match.group("extension").lower()
+    return (
+        "https://m.media-amazon.com/images/I/"
+        f"{match.group('asset')}.{extension}"
+    )
+
+
+def _plain_html_text(value: str) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        html_lib.unescape(re.sub(r"<[^>]+>", " ", value)),
+    ).strip()
+
+
+def discover_amazon(http: Http, rel: Release) -> list[Ref]:
+    """Search Amazon Store HTML and expose original primary product images.
+
+    This intentionally follows the operator-visible Store workflow rather
+    than the Amazon Music player or its small artwork. Markup changes and
+    automated-request blocking are surfaced as ordinary provider diagnostics.
+    """
+    query = " ".join(
+        value
+        for value in (rel.artist_credit, rel.release_group_title or rel.title)
+        if str(value or "").strip()
+    )
+    if not query:
+        return []
+    response = http.get(
+        "https://www.amazon.com/s",
+        params={"k": query, "i": "popular"},
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.8",
+        },
+    )
+    if response.status_code != 200:
+        raise SplinedError(f"Amazon Store search returned HTTP {response.status_code}")
+    body = str(response.text or "")
+    if "validateCaptcha" in body or "api-services-support@amazon.com" in body:
+        raise SplinedError("Amazon Store blocked the public search request")
+
+    block_pattern = re.compile(
+        r"(?is)<div\b[^>]*data-component-type=[\"']s-search-result[\"']"
+        r"[^>]*>.*?(?=<div\b[^>]*data-component-type=[\"']s-search-result[\"']|\Z)"
+    )
+    image_pattern = re.compile(
+        r"(?is)<img\b[^>]*class=[\"'][^\"']*\bs-image\b[^\"']*[\"'][^>]*>"
+    )
+    src_pattern = re.compile(r"(?is)\bsrc=[\"']([^\"']+)[\"']")
+    title_pattern = re.compile(r"(?is)<h2\b[^>]*>(.*?)</h2>")
+    asin_pattern = re.compile(r"(?is)\bdata-asin=[\"']([A-Z0-9]{10})[\"']")
+    expected_title = rel.release_group_title or rel.title
+    refs: list[Ref] = []
+    seen: set[str] = set()
+    for block in block_pattern.findall(body):
+        image_tag = image_pattern.search(block)
+        source_match = src_pattern.search(image_tag.group(0)) if image_tag else None
+        original = amazon_original_image_url(
+            source_match.group(1) if source_match else ""
+        )
+        if not original or original in seen:
+            continue
+        title_match_value = title_pattern.search(block)
+        product_title = _plain_html_text(
+            title_match_value.group(1) if title_match_value else ""
+        )
+        if product_title and expected_title and not title_match(
+            product_title, expected_title
+        ):
+            continue
+        asin_match = asin_pattern.search(block)
+        asin = asin_match.group(1) if asin_match else ""
+        seen.add(original)
+        refs.append(
+            Ref(
+                "amazon",
+                " · ".join(value for value in (asin, product_title) if value),
+                original,
+                front=True,
+                approved=True,
+                types=["Front"],
+            )
+        )
+        if len(refs) >= 6:
+            break
+    return refs
+
 def discover_fanart(http: Http, config_file: Path, cfg: dict[str, Any], rel: Release) -> list[Ref]:
     if not rel.release_group_id: return []
     path = credential_file(config_file, cfg, "fanarttv"); cred = load_json(path, "Fanart.tv"); key = str(cred.get("api_key") or "").strip()
@@ -3990,6 +4150,7 @@ def discover_fallback(
         for source in sources
         if source != "fanarttv"
         and (source != "coverartarchive" or bool(release_mbid))
+        and (source != "musicbrainz" or bool(release_mbid))
     ]
 
     def work(source: str) -> tuple[list[Ref], str | None]:
@@ -4012,6 +4173,10 @@ def discover_fallback(
                 found = discover_discogs(http, config_file, cfg, artist, album)
             elif source == "coverartarchive":
                 found = discover_caa(http, synthetic)
+            elif source == "musicbrainz":
+                found = discover_musicbrainz_artwork(http, synthetic)
+            elif source == "amazon":
+                found = discover_amazon(http, synthetic)
             else:
                 found = []
             elapsed = time.perf_counter() - started
@@ -4087,10 +4252,14 @@ def discover_all(
                 found = discover_lastfm(http, config_file, cfg, rel)
             elif source == "coverartarchive":
                 found = discover_caa(http, rel)
+            elif source == "musicbrainz":
+                found = discover_musicbrainz_artwork(http, rel)
             elif source == "discogs":
                 found = discover_discogs(
                     http, config_file, cfg, rel.artist_credit, rel.title
                 )
+            elif source == "amazon":
+                found = discover_amazon(http, rel)
             else:
                 found = []
             elapsed = time.perf_counter() - started
@@ -4772,7 +4941,29 @@ def musicbrainz_search_releases(
                 "date": str(item.get("date") or "").strip(),
                 "country": str(item.get("country") or "").strip(),
                 "status": str(item.get("status") or "").strip(),
+                "release_class": str(
+                    (item.get("release-group") or {}).get("primary-type")
+                    or next(
+                        iter(
+                            (item.get("release-group") or {}).get(
+                                "secondary-types", []
+                            )
+                        ),
+                        "Release",
+                    )
+                ).strip(),
             })
+            year = out[-1]["date"][:4]
+            decade = (
+                f"{year[:3]}0s"
+                if len(year) == 4 and year.isdigit()
+                else "Unknown"
+            )
+            out[-1]["track"] = ""
+            out[-1]["group"] = (
+                f"{out[-1]['artist']} · {decade} · "
+                f"{out[-1]['release_class'].title()}"
+            )
         return out
 
     return []
@@ -4794,11 +4985,22 @@ def musicbrainz_picker(
             print(f"  {red('MusicBrainz retry failed: ' + str(exc))}")
             return None
 
-    try:
-        results = musicbrainz_search_releases(http, config_file, cfg, artist, album)
-    except Exception as exc:
-        print(f"  {red('MusicBrainz search failed: ' + str(exc))}")
-        return None
+    cache_key = (normalize_text(artist), normalize_text(album))
+    search_cache = getattr(http, "_splined_mb_release_search_cache", None)
+    if not isinstance(search_cache, dict):
+        search_cache = {}
+        setattr(http, "_splined_mb_release_search_cache", search_cache)
+    if cache_key in search_cache:
+        results = list(search_cache[cache_key])
+    else:
+        try:
+            results = musicbrainz_search_releases(
+                http, config_file, cfg, artist, album
+            )
+        except Exception as exc:
+            print(f"  {red('MusicBrainz search failed: ' + str(exc))}")
+            return None
+        search_cache[cache_key] = list(results)
 
     if not results:
         print(f"  {yellow('MusicBrainz search returned no releases.')}")
@@ -4830,8 +5032,9 @@ def musicbrainz_picker(
     while True:
         answer = read_input(
             "MusicBrainz choice [#] or [b] back: ",
-            kind="musicbrainz",
+            kind="musicbrainz-results",
             options=results,
+            back_action="source-results",
         ).strip().lower()
         if answer == "__cancel__":
             raise TuiSessionExit()
@@ -4840,8 +5043,21 @@ def musicbrainz_picker(
         if answer.isdigit():
             index = int(answer)
             if 1 <= index <= len(results):
+                release_id = results[index - 1]["id"]
+                release_cache = getattr(
+                    http, "_splined_mb_release_lookup_cache", None
+                )
+                if not isinstance(release_cache, dict):
+                    release_cache = {}
+                    setattr(http, "_splined_mb_release_lookup_cache", release_cache)
+                if release_id in release_cache:
+                    return release_cache[release_id]
                 try:
-                    return lookup_release(http, config_file, cfg, results[index - 1]["id"])
+                    selected = lookup_release(
+                        http, config_file, cfg, release_id
+                    )
+                    release_cache[release_id] = selected
+                    return selected
                 except Exception as exc:
                     print(f"  {red('MusicBrainz release lookup failed: ' + str(exc))}")
                     return None
@@ -6691,6 +6907,8 @@ def provider_label(source: str) -> str:
         "lastfm": "LastFM",
         "coverartarchive": "CoverArt",
         "discogs": "Discogs",
+        "musicbrainz": "MB / CAA",
+        "amazon": "Amazon",
     }
     value = mapping.get(source.lower(), source.title())
     return value[:8]

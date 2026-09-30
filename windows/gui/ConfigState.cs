@@ -156,8 +156,8 @@ namespace Splined.WindowsGui
         // Keep the native GUI default in the same priority order as the
         // authoritative Python help/config. Existing Config v5 files retain
         // their explicitly saved order.
-        public static readonly string[] ArtworkSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs" };
-        public static readonly string[] KnownSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs", "musicbrainz" };
+        public static readonly string[] ArtworkSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon" };
+        public static readonly string[] KnownSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon" };
         public string ConfigPath;
         public string Mode = "read";
         public string Verbosity = "info";
@@ -310,8 +310,8 @@ namespace Splined.WindowsGui
             {
                 string section = "source_policies." + source;
                 SourcePolicyState policy = new SourcePolicyState();
-                bool defaultEnabled = source.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase)
-                    || (state.Sources.Contains(source, StringComparer.OrdinalIgnoreCase)
+                bool defaultEnabled = !source.Equals("amazon", StringComparison.OrdinalIgnoreCase)
+                    && (state.Sources.Contains(source, StringComparer.OrdinalIgnoreCase)
                         && !state.ExcludedSources.Contains(source, StringComparer.OrdinalIgnoreCase));
                 policy.Enabled = ReadBool(text, section, "enabled", defaultEnabled);
                 policy.SourceOverride = ReadBool(text, section, "source_override", false);
@@ -372,6 +372,7 @@ namespace Splined.WindowsGui
             state.LogDir = Path.Combine(AppRoot, "_logs");
             state.HistoryDir = Path.Combine(AppRoot, "_logs", "_history");
             state.CredentialDir = Path.Combine(AppRoot, "credentials");
+            state.SourcePolicies["amazon"] = new SourcePolicyState { Enabled = false };
             return state;
         }
 
@@ -618,11 +619,6 @@ namespace Splined.WindowsGui
                 text.AppendLine("[source_policies." + source + "]");
                 text.AppendLine("enabled = " + Bool(policy.Enabled));
                 text.AppendLine("source_override = " + Bool(policy.SourceOverride));
-                if (source.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase))
-                {
-                    text.AppendLine();
-                    continue;
-                }
                 text.AppendLine("minimum_range_type = " + Quote(policy.MinimumRangeType));
                 text.AppendLine("allow_below_minimum_fallback = " + Bool(policy.AllowBelowMinimumFallback));
                 if (policy.MinimumShortSide.HasValue) text.AppendLine("minimum_short_side = " + policy.MinimumShortSide.Value);

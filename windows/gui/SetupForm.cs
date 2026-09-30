@@ -939,8 +939,6 @@ namespace Splined.WindowsGui
                 musicBrainzOptions.RetryMax = (int)musicBrainzRetryMax.Value;
                 musicBrainzOptions.MinDelay = (double)musicBrainzMinDelay.Value;
                 musicBrainzOptions.RecordingTimeout = (int)musicBrainzRecordingTimeout.Value;
-                sourcePolicyValidation.Text = "";
-                return true;
             }
             int? minimumShort;
             int? maximumShort;
@@ -982,21 +980,21 @@ namespace Splined.WindowsGui
         {
             bool active = sourceOverride != null && sourceOverride.SelectedIndex == 0;
             bool musicBrainz = "musicbrainz".Equals(currentSourceKey, StringComparison.OrdinalIgnoreCase);
-            if (advancedSourceGroup != null) advancedSourceGroup.Text = musicBrainz ? "Advanced Source Settings" : "Advanced Source Constraints";
-            if (sourcePolicyValidation != null) sourcePolicyValidation.Visible = !musicBrainz;
-            SetRowsVisible(sourceSettingsTable, new[] { 3, 4 }, !musicBrainz);
-            SetRowsVisible(advancedSourceTable, Enumerable.Range(0, 7), !musicBrainz);
+            if (advancedSourceGroup != null) advancedSourceGroup.Text = musicBrainz ? "Artwork Constraints / MusicBrainz Request Options" : "Advanced Source Constraints";
+            if (sourcePolicyValidation != null) sourcePolicyValidation.Visible = true;
+            SetRowsVisible(sourceSettingsTable, new[] { 3, 4 }, true);
+            SetRowsVisible(advancedSourceTable, Enumerable.Range(0, 7), true);
             if (musicBrainzOptionsGroup != null) musicBrainzOptionsGroup.Visible = musicBrainz;
-            if (artworkResolutionRangeGroup != null) artworkResolutionRangeGroup.Visible = !musicBrainz;
+            if (artworkResolutionRangeGroup != null) artworkResolutionRangeGroup.Visible = true;
             foreach (Control control in sourceOverrideControls)
-                control.Enabled = active && !musicBrainz;
+                control.Enabled = active;
             foreach (NumericUpDown control in new[] { musicBrainzRetryMax, musicBrainzMinDelay, musicBrainzRecordingTimeout })
                 if (control != null) control.Enabled = active && musicBrainz;
             if (sourceBelowFallback != null)
-                sourceBelowFallback.Enabled = active && !musicBrainz && sourceBelowFallback.Items.Count > 1;
-            if (sourceDerivedMinimum != null) sourceDerivedMinimum.Enabled = active && !musicBrainz;
+                sourceBelowFallback.Enabled = active && sourceBelowFallback.Items.Count > 1;
+            if (sourceDerivedMinimum != null) sourceDerivedMinimum.Enabled = active;
             if (sourcePrimaryOnly != null)
-                sourcePrimaryOnly.Enabled = active && !musicBrainz && SupportsPrimaryImageMetadata(currentSourceKey);
+                sourcePrimaryOnly.Enabled = active && SupportsPrimaryImageMetadata(currentSourceKey);
         }
 
         private static void SetRowsVisible(TableLayoutPanel table, IEnumerable<int> rows, bool visible)
@@ -1010,11 +1008,6 @@ namespace Splined.WindowsGui
         private void UpdateDerivedMinimumLabel()
         {
             if (sourceDerivedMinimum == null || sourceMinimumRange == null) return;
-            if ("musicbrainz".Equals(currentSourceKey, StringComparison.OrdinalIgnoreCase))
-            {
-                sourceDerivedMinimum.Text = "Artwork resolution ranges do not apply to MusicBrainz metadata queries.";
-                return;
-            }
             SyncPreviewRange();
             string rangeType = Convert.ToString(sourceMinimumRange.SelectedItem);
             if (String.IsNullOrWhiteSpace(rangeType)) rangeType = "LowerRange";
@@ -1033,45 +1026,13 @@ namespace Splined.WindowsGui
             bool enabled;
             if (!sourceEnabledStates.TryGetValue(currentSourceKey, out enabled)) enabled = false;
             string sourceName = SourceDisplayName(currentSourceKey);
-            bool musicBrainz = currentSourceKey.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase);
             sourcePolicySummary.Text = sourceName + "  •  " + (enabled ? "Enabled" : "Disabled")
-                + (musicBrainz
-                    ? (policy.SourceOverride ? "  •  Custom runtime options" : "  •  Default runtime options")
-                    : (policy.SourceOverride ? "  •  Custom minimum: " + policy.MinimumRangeType : "  •  Global policy"));
+                + (policy.SourceOverride ? "  •  Custom minimum: " + policy.MinimumRangeType : "  •  Global policy");
 
             sourceRangePreview.SuspendLayout();
             sourceRangePreview.Controls.Clear();
             sourceRangePreview.RowStyles.Clear();
             sourceRangePreview.RowCount = 1;
-            if (musicBrainz)
-            {
-                AddPreviewHeader(0, "Runtime option", "Saved value", "Effective value");
-                string[] names = { "retry_max", "min_delay", "recording_timeout" };
-                string[] saved = {
-                    musicBrainzOptions.RetryMax.ToString(),
-                    musicBrainzOptions.MinDelay.ToString("0.##") + " s",
-                    musicBrainzOptions.RecordingTimeout + " s"
-                };
-                string[] defaults = { "4", "1.05 s", "7 s" };
-                for (int index = 0; index < names.Length; index++)
-                {
-                    int optionRow = index + 1;
-                    sourceRangePreview.RowCount++;
-                    sourceRangePreview.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-                    sourceRangePreview.Controls.Add(PreviewCell(names[index], FontStyle.Regular), 0, optionRow);
-                    sourceRangePreview.Controls.Add(PreviewCell(saved[index], FontStyle.Regular), 1, optionRow);
-                    Label effective = PreviewCell(policy.SourceOverride ? saved[index] : defaults[index], FontStyle.Bold);
-                    effective.ForeColor = enabled ? PolicyColor("ACCEPT") : PolicyColor("INACTIVE");
-                    sourceRangePreview.Controls.Add(effective, 2, optionRow);
-                }
-                sourceRangePreview.ResumeLayout();
-                sourceConstraintSummary.Text = !enabled
-                    ? "MusicBrainz metadata queries are disabled; authentication and saved options remain unchanged."
-                    : policy.SourceOverride
-                        ? "Custom options from credentials\\musicbrainz.json are active. Artwork range and image filters do not apply."
-                        : "Built-in defaults are active; saved custom options remain preserved. Artwork range and image filters do not apply.";
-                return;
-            }
             AddPreviewHeader(0, "Range Type", "Short side", "Effective status");
             List<PolicyRangeSegment> segments = BuildPolicyRangeSegments(policy, enabled);
             int row = 1;
@@ -1234,7 +1195,10 @@ namespace Splined.WindowsGui
 
         private static bool SupportsPrimaryImageMetadata(string source)
         {
-            return "coverartarchive".Equals(source, StringComparison.OrdinalIgnoreCase);
+            return "musicbrainz".Equals(source, StringComparison.OrdinalIgnoreCase)
+                || "coverartarchive".Equals(source, StringComparison.OrdinalIgnoreCase)
+                || "discogs".Equals(source, StringComparison.OrdinalIgnoreCase)
+                || "amazon".Equals(source, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string SourceDisplayName(string source)
@@ -1247,7 +1211,8 @@ namespace Splined.WindowsGui
                 case "fanarttv": return "Fanart.tv";
                 case "coverartarchive": return "Cover Art Archive";
                 case "deezer": return "Deezer";
-                case "musicbrainz": return "MusicBrainz";
+                case "musicbrainz": return "MusicBrainz / CAA";
+                case "amazon": return "Amazon Store";
                 default: return source;
             }
         }

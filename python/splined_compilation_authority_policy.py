@@ -1,7 +1,7 @@
 """Manual, local-first artwork recovery for curated compilation tracks.
 
 The policy is inert during normal scans. A caller must explicitly select
-Manual Scan after the representative track has no Album MBID and is tagged as
+Compilation track-art recovery after the representative track has no Album MBID and is tagged as
 a compilation. Curated Album identity is never inferred or changed; only an
 approved embedded front image may be replaced.
 """
@@ -189,7 +189,7 @@ def local_artwork_rows(
     current_album_path: Path,
     release_mbid: str = "",
 ) -> list[dict[str, Any]]:
-    """Resolve exact local IDs lazily, only inside explicit Manual Comp mode.
+    """Resolve exact local IDs lazily, only inside compilation track-art work.
 
     The normal media index must remain representative-track based. This helper
     first checks its persistent SQL cache, then limits tag reads to albums
@@ -687,7 +687,7 @@ def resolve_release_candidates(
             _cache_releases(core, config_file, cfg, candidates)
         except sqlite3.Error:
             # A busy or unavailable cache must not discard an otherwise valid
-            # bounded lookup. The next Manual Scan may perform it again.
+            # bounded lookup. The next compilation scan may perform it again.
             pass
         return ReleaseResolution(
             candidates,
@@ -875,7 +875,7 @@ def resolve_release_by_id(
     recordings = _mbids(getattr(track, "recording_mbid", None))
     artists = _mbids(getattr(track, "artist_mbid", None))
     if len(releases) != 1 or len(recordings) != 1 or not artists:
-        return ReleaseResolution((), "none", "Missing authoritative Manual Scan IDs")
+        return ReleaseResolution((), "none", "Missing authoritative compilation IDs")
     if options.retry_max == 0:
         return ReleaseResolution(
             (), "musicbrainz", "MusicBrainz attempt budget is zero"
@@ -1051,7 +1051,7 @@ def prepare_embedded_artwork(
     range_cfg = core.section(cfg, "range")
     if "ladder" not in range_cfg:
         raise core.SplinedError(
-            "Config v5 [range].ladder is required for Manual Scan."
+            "Config v5 [range].ladder is required for compilation track art."
         )
     try:
         ladder = int(range_cfg["ladder"])
@@ -1321,7 +1321,7 @@ def record_progress(
     total_tracks: int,
     completed_tracks: int,
 ) -> None:
-    """Persist Manual Scan progress independently of an artwork write."""
+    """Persist compilation progress independently of an artwork write."""
     connection = sqlite3.connect(
         _database_path(core, config_file, cfg), timeout=10.0
     )
@@ -1348,8 +1348,8 @@ def completed_track_paths(
 ) -> set[str]:
     """Return only prior successful writes whose authoritative IDs still match.
 
-    Manual compilation resume is deliberately lazy. It reads the small write
-    ledger only when Manual Scan starts; normal album indexing remains one
+    Compilation resume is deliberately lazy. It reads the small write
+    ledger only when compilation work starts; the fast Album index remains one
     representative-track inspection per album.
     """
     database = _database_path(core, config_file, cfg)
@@ -1407,7 +1407,7 @@ def completed_track_paths(
 
 
 def install(core: Any) -> None:
-    """Expose Manual Scan APIs without wrapping normal scan functions."""
+    """Expose compilation track-art APIs without wrapping Album scan functions."""
     global _INSTALLED
     if _INSTALLED or getattr(
         core, "_splined_compilation_authority_policy_installed", False
