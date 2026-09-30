@@ -350,7 +350,9 @@ Each row begins with a clickable `[E]` box. The editor accepts a canonical
 MusicBrainz UUID; Enter updates the displayed session authority and immediately
 re-queries MusicBrainz and artwork sources. Artist or Recording edits discard
 the previously derived Release before lookup. A Release edit requests that
-exact release and validates that it contains the selected Recording and Artist.
+exact release and validates that it is Official and contains the selected
+Recording and Artist. Unlike automatic discovery, an exact operator-selected
+release may be any MusicBrainz release type, including a Single or EP.
 `M` repeats the currently displayed authority query with a real cache-bypassing
 refresh. These edits never write MBID tags; only approved embedded artwork is
 written.

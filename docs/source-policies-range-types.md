@@ -309,7 +309,10 @@ Manual Scan is explicit and per track:
    session-only Artist, Release, and Recording MBID corrections. Enter validates
    the UUID and performs a fresh authority/artwork query. Editing Artist or
    Recording invalidates the previously derived Release; editing Release
-   performs an exact lookup that must contain the selected Recording and Artist.
+   performs an exact lookup that must be Official and contain the selected
+   Recording and Artist. An exact operator-selected release may be any
+   MusicBrainz release type, including a Single or EP; the automatic
+   Album, Soundtrack, Compilation restriction in step 5 does not apply.
    `M` repeats the current MusicBrainz query and bypasses the positive lookup
    and artwork-candidate caches for that retry.
 

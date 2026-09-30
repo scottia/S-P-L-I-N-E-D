@@ -439,10 +439,10 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertEqual(result.candidates[0].release_title, "A Summer Place")
         http.get.assert_called_once()
 
-    def test_exact_release_override_validates_recording_and_artist(self) -> None:
+    def test_exact_single_release_override_validates_recording_and_artist(self) -> None:
         payload = {
             "id": RELEASE_ID,
-            "title": "A Summer Place",
+            "title": "Go, Jimmy, Go",
             "status": "Official",
             "date": "1960",
             "artist-credit": [
@@ -450,7 +450,7 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
             ],
             "release-group": {
                 "id": "99999999-9999-4999-8999-999999999999",
-                "primary-type": "Album",
+                "primary-type": "Single",
                 "secondary-types": [],
             },
             "media": [
@@ -496,8 +496,44 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         )
         self.assertEqual(result.source, "musicbrainz-manual-release")
         self.assertEqual(result.candidates[0].release_mbid, RELEASE_ID)
+        self.assertEqual(result.candidates[0].release_class, "single")
         self.assertEqual(result.recording_artist, "Percy Faith")
         self.assertIn(f"/release/{RELEASE_ID}", http.get.call_args.args[0])
+
+    def test_exact_release_override_rejects_non_official_release(self) -> None:
+        payload = {
+            "id": RELEASE_ID,
+            "title": "Unofficial release",
+            "status": "Bootleg",
+            "release-group": {
+                "id": "99999999-9999-4999-8999-999999999999",
+                "primary-type": "Album",
+                "secondary-types": [],
+            },
+        }
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(return_value=FakeResponse(200, payload)),
+        )
+        core = SimpleNamespace(
+            MB_BASE="https://musicbrainz.invalid/ws/2",
+            mb_headers=lambda *_args: ({}, "OAuthBearer"),
+        )
+        result = policy.resolve_release_by_id(
+            core,
+            http,
+            Path("config.toml"),
+            {},
+            SimpleNamespace(
+                recording_mbid=RECORDING_ID,
+                artist_mbid=ARTIST_ID,
+            ),
+            RELEASE_ID,
+            policy.MusicBrainzOptions(1, 1.05, 7.0),
+        )
+        self.assertEqual(result.candidates, ())
+        self.assertEqual(result.source, "musicbrainz")
+        self.assertEqual(result.error, "Release is not Official")
 
     def test_embedded_artwork_is_capped_by_configured_ladder(self) -> None:
         captured: dict = {}

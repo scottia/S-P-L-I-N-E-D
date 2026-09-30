@@ -765,15 +765,11 @@ def resolve_release_by_id(
             return ReleaseResolution(
                 (), "musicbrainz", "MusicBrainz returned invalid Release data"
             )
-        classification = _release_class(payload)
-        if (
-            classification is None
-            or str(payload.get("status") or "").strip().casefold() != "official"
-        ):
+        if str(payload.get("status") or "").strip().casefold() != "official":
             return ReleaseResolution(
                 (),
                 "musicbrainz",
-                "Release is not an official Album, Soundtrack, or Compilation",
+                "Release is not Official",
             )
         matched_recording: dict[str, Any] | None = None
         for medium in payload.get("media", []):
@@ -805,9 +801,19 @@ def resolve_release_by_id(
                 "musicbrainz",
                 "Release recording Artist ID does not match the selected Artist ID",
             )
-        release_class, class_rank = classification
         group = payload.get("release-group")
         group = group if isinstance(group, dict) else {}
+        classification = _release_class(payload)
+        if classification is not None:
+            release_class, class_rank = classification
+        else:
+            primary_type = (
+                str(group.get("primary-type") or "release")
+                .strip()
+                .casefold()
+            )
+            release_class = primary_type or "release"
+            class_rank = 3
         candidate = ReleaseCandidate(
             recording_id,
             release_id,
