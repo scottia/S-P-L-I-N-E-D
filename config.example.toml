@@ -4,6 +4,7 @@
 
 config_version = 5
 mode = "read"
+# Runtime log threshold: debug | info | warning | error
 verbosity = "info"
 
 [library]
@@ -16,6 +17,7 @@ scan_mode = true
 library_scan = false
 scan_mode_timeout = 24
 cache_dir = "_cache"
+# Current-run log is created under log_dir/run and replaced next invocation.
 log_dir = "_logs"
 history_dir = "_logs/_history"
 
@@ -36,7 +38,7 @@ max = 2400
 ladder = 3600
 
 [sources]
-cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs"]
+cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon"]
 exclude_cover_sources = []
 
 # Source Override activates the source-specific artwork policy. With it off,
@@ -83,11 +85,23 @@ minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
 primary_image_only = true
 
-# MusicBrainz is metadata authority, not an artwork source. Source Override
-# activates the runtime options stored non-destructively in its credential JSON.
+# MusicBrainz selects the release; Cover Art Archive supplies the image bytes.
+# This priority is independent from exact-release Cover Art Archive discovery.
 [source_policies.musicbrainz]
 enabled = true
 source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+# Amazon Store search is credential-free and best effort. It is opt-in so a
+# Config upgrade cannot add Store traffic or latency to existing scans.
+[source_policies.amazon]
+enabled = false
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
 
 [samples]
 sample_write = true
@@ -102,7 +116,9 @@ retention_days = 14
 enabled = true
 retention_days = 0 # 0 keeps history forever
 
-# Reserved placeholder retained by Config v5; no AI processing is enabled.
-[splineai]
+# Reserved A:I:S:P:L:I:N:E:D companion boundary; no AI processing is enabled.
+[aisplined]
 enabled = false
 endpoint = ""
+minimum_short_side = 600
+allow_below_minimum_override = false

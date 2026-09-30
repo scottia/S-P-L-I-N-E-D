@@ -17,6 +17,21 @@ def load_example(relative: str) -> dict:
 
 
 class ConfigV5ParityTests(unittest.TestCase):
+    def test_runtime_log_redaction_removes_credentials_and_bearer_values(self) -> None:
+        secret = "do-not-log-this-token"
+        samples = (
+            f'Authorization: Bearer {secret}',
+            f'{{"access_token": "{secret}"}}',
+            f"client_secret={secret}",
+            f"client_key={secret}",
+            f"oauth_token_secret={secret}",
+        )
+        for sample in samples:
+            with self.subTest(sample=sample.split(":", 1)[0]):
+                redacted = splined._redact_log_message(sample)
+                self.assertNotIn(secret, redacted)
+                self.assertIn("[REDACTED]", redacted)
+
     def test_all_public_examples_validate_as_v5(self) -> None:
         for relative in (
             "config.example.toml",
@@ -116,6 +131,71 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertIn("source_policies", migrated)
         self.assertIn("logging", migrated)
         self.assertIn("history", migrated)
+        self.assertEqual(
+            migrated["aisplined"],
+            {
+                "enabled": False,
+                "endpoint": "",
+                "minimum_short_side": 600,
+                "allow_below_minimum_override": False,
+            },
+        )
+
+    def test_aisplined_is_canonical_and_disabled(self) -> None:
+        config = load_example("docker/config.example.toml")
+        self.assertIn("aisplined", config)
+        self.assertNotIn("splineai", config)
+        self.assertEqual(
+            splined.aisplined_settings(config),
+            {
+                "enabled": False,
+                "endpoint": "",
+                "minimum_short_side": 600,
+                "allow_below_minimum_override": False,
+            },
+        )
+
+    def test_legacy_splineai_alias_remains_compatible(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["splineai"] = config.pop("aisplined")
+        splined.validate_config_v5(config)
+        self.assertEqual(
+            splined.aisplined_settings(config),
+            {
+                "enabled": False,
+                "endpoint": "",
+                "minimum_short_side": 600,
+                "allow_below_minimum_override": False,
+            },
+        )
+
+    def test_matching_canonical_and_legacy_tables_are_not_merged(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["splineai"] = dict(config["aisplined"])
+        splined.validate_config_v5(config)
+        self.assertEqual(splined.aisplined_settings(config), config["aisplined"])
+
+    def test_conflicting_canonical_and_legacy_tables_fail_clearly(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["splineai"] = {"enabled": True, "endpoint": ""}
+        with self.assertRaisesRegex(splined.SplinedError, "disagree"):
+            splined.validate_config_v5(config)
+
+    def test_aisplined_types_are_validated_without_activating_ai(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["aisplined"]["endpoint"] = 7
+        with self.assertRaisesRegex(splined.SplinedError, "endpoint must be a string"):
+            splined.validate_config_v5(config)
+
+    def test_aisplined_floor_and_override_are_validated(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["aisplined"]["minimum_short_side"] = 0
+        with self.assertRaisesRegex(splined.SplinedError, "greater than zero"):
+            splined.validate_config_v5(config)
+        config["aisplined"]["minimum_short_side"] = 600
+        config["aisplined"]["allow_below_minimum_override"] = "yes"
+        with self.assertRaisesRegex(splined.SplinedError, "true or false"):
+            splined.validate_config_v5(config)
 
     def test_musicbrainz_options_and_unknown_fields_survive_atomic_update(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

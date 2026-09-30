@@ -340,7 +340,8 @@ ladder = 3600
         assert_eq!(parsed.logging.retention_days, 14);
         assert!(parsed.history.enabled);
         assert_eq!(parsed.history.retention_days, 0);
-        assert!(migrated.contains("[source_policies]"));
+        assert!(migrated.contains("[source_policies.amazon]"));
+        assert!(!parsed.source_policies["amazon"].enabled);
         assert!(!migrated.contains("credential_file"));
         assert!(!migrated.contains("token_file"));
     }

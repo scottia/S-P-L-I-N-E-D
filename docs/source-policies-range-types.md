@@ -1,6 +1,6 @@
 # Source Policies and Range Types
 
-This page explains how S:P:L:I:N:E:D evaluates artwork size, how global Resolution Range policy works, and how per-source overrides refine that policy.
+This page explains how S:P:L:I:N:E:D evaluates artwork size, how global Resolution Range policy works, how per-source overrides refine that policy, and how AISPLINE remediation remains separate from provider acceptance.
 
 > **Windows target:** v3.0.0 Stable with Config v5.
 
@@ -135,6 +135,8 @@ Where supported, a source may have custom values for:
 
 Not every source exposes metadata needed for every control. Unsupported controls should be disabled or explained rather than pretending to enforce data the provider does not expose.
 
+Python/TUI should expose the same practical Config v5 source controls as Windows where supported. The goal is to eliminate candidates that policy already knows are irrelevant before they consume unnecessary download, AI-review, ranking, and screen space.
+
 ---
 
 # Minimum Range Type
@@ -221,7 +223,7 @@ then:
 | `1500–1799` | Accept |
 | `1800+` | Accept unless another rule rejects it |
 
-The GUI should make it clear when a value is derived from Range Type versus explicitly entered by the user.
+The UI should make it clear when a value is derived from Range Type versus explicitly entered by the user.
 
 ---
 
@@ -241,36 +243,135 @@ Avoid adding unnecessary advanced constraints if the normal Range Type model alr
 
 `Primary image only` relies on **provider metadata**.
 
-It does not mean SPLINED visually analyzes artwork to decide whether an image is:
+It does not mean SPLINED visually analyzes artwork to decide whether an image is front cover, back cover, booklet, disc, jewel case, or promotional image.
 
-- front cover;
-- back cover;
-- booklet;
-- disc;
-- jewel case;
-- promotional image.
-
-If the provider exposes a reliable primary/front indicator, the option may use it.
-
-If the provider does not expose suitable metadata, the control should be disabled with an explanatory tooltip.
-
-Semantic image recognition is not part of Config v5 source policy.
+If the provider exposes a reliable primary/front indicator, the option may use it. If the provider does not expose suitable metadata, the control should be disabled with an explanation.
 
 ---
 
-# Global output formats
+# Early filtering and performance
 
-Output formats are global output policy, not source policy.
+Source policy should be applied as early as the available metadata permits.
 
-Supported static formats currently include:
+Preferred sequence:
 
 ```text
-JPEG
-PNG
-WebP
+provider discovery
+-> provider/source policy
+-> geometry/metadata rejection where possible
+-> candidate download as required
+-> normal SPLINED evaluation/ranking
+-> optional AISPLINE review of relevant candidates
+-> TUI/source summary
 ```
 
-A provider override should not silently become a per-provider output-format selector.
+Avoid an architecture that downloads and AI-reviews every returned variant only to hide most of them later.
+
+This optimization must not change normal SPLINED ranking semantics among candidates that remain eligible.
+
+---
+
+# Album authority and curated compilations
+
+Album identity and artwork lookup use tagged Album Artist/Album values
+and MusicBrainz Album/Release IDs. Track-level featured performers do not create
+extra Artist Picker copies; picker ownership remains the physical top-level
+library folder.
+
+A deliberately curated compilation may have `compilation=1`, per-track
+MusicBrainz Recording and Artist IDs, and no Album/Release ID. When the selected
+Album's representative track has no Album/Release ID and has `compilation=1`,
+the unified scan automatically selects the embedded per-track artwork target.
+Select Media keeps the yellow warning; there is no separate scan mode.
+
+The compilation branch is explicit and per track:
+
+1. A track with an Album/Release ID remains in the folder-art branch.
+2. Valid local Recording and Artist IDs remain the preferred authority. A
+   track with missing or unreliable IDs can enter the explicit MusicBrainz
+   discovery pane, which searches only its local Artist and Title. The curated
+   compilation Album name is never sent as search identity.
+3. SPLINED checks its persistent exact Recording-ID/Artist-ID cache.
+4. On a cache miss, SPLINED uses the indexed Artist ID to narrow local Albums,
+   lazily reads only those tracks, and caches the exact relationships. A
+   matching existing Album `cover.*` becomes a `[LOCAL]` candidate.
+5. Only after the bounded local lookup misses does SPLINED make a MusicBrainz
+   Recording-ID request. It considers the first suitable official release in
+   this order: Album, Soundtrack, Compilation. Single, EP, live, remix, DJ-mix,
+   and mixtape references are not selected.
+6. Normal source discovery and candidate quality policy evaluate artwork for
+   the recovered release. The configured `[range].ladder` caps the embedded
+   result and no upscaling is introduced.
+7. The operator previews and approves the candidate. LIVE WRITE replaces only
+   that track's embedded front cover; READ reports what would be replaced.
+8. Each successful LIVE WRITE is committed to the per-track ledger
+   immediately. A later scan validates the saved Recording/Artist IDs
+   and skips that track instead of repeating local or remote discovery.
+9. If the ID-first path returns no useful authority, or the operator presses
+   `M`, Candidate Decision shows numbered MusicBrainz matches by newest-to-oldest
+   decade (`Unknown` last), then populated Album, Single, EP, Compilation,
+   Soundtrack, and additional release types. Each row exposes the Cover Art
+   Archive release-group front-image URL for Artwork preview, falling back to
+   the exact-release endpoint when no group MBID is available. Selecting a
+   match makes its Recording/Artist/Release IDs session authority and performs
+   the normal local/provider artwork search. The current source-result release is green;
+   previously inspected releases are blue. Re-selecting either restores its
+   candidates and diagnostics without repeating provider discovery or image
+   downloads. Escape from artwork sources returns to the same cached match
+   list. Resolution is populated only after that release has been inspected.
+   Preview and Resolution deliberately describe different evidence: preview
+   uses release-group authority, while Resolution is cached against the exact
+   Release MBID and summarizes the best inspected result from all enabled
+   artwork sources. Multiple editions may therefore share a preview but retain
+   different resolution/source results. Higher resolution is useful comparison
+   evidence, not a replacement for normal range, source-priority, shape,
+   approval, and fallback policy.
+10. The three `[E]` controls in `FALLBACK ARTIST / ALBUM INFO` accept
+   session-only Artist, Release, and Recording MBID corrections. Enter validates
+   the UUID and performs a fresh authority/artwork query. Editing Artist or
+   Recording invalidates the previously derived Release; editing Release
+   performs an exact lookup that must be Official and contain the selected
+   Recording and Artist. An exact operator-selected release may be any
+   MusicBrainz release type, including a Single or EP; the automatic
+   Album, Soundtrack, Compilation restriction in step 5 does not apply.
+   `M` reopens the active Artist/Title result list. The initial bounded search
+   is reused for the active run unless the authority/search identity changes.
+
+The curated Album name is never used as MusicBrainz identity. SPLINED does not
+invent or write an Album/Release ID, write an operator-edited MBID, change the compilation's Album/Artist
+tags, or create, alter, or remove folder-level `cover.*`. Different tracks in
+one curated compilation may therefore receive different approved artwork.
+
+Timeouts, MusicBrainz `429`/`503` responses, no match, no artwork, rejection,
+or a failed write leave the track artwork unchanged and appear in Unresolved.
+Positive ID-based Recording-to-release results and lazily inspected local
+identities are retained in `splined.db` so later scans avoid repeated
+work. Text-discovery choices are cached only for the active run and contain no
+credentials or tokens.
+Starting LIVE WRITE persists the Album as `incomplete`, including 0/N when
+the operator leaves before the first approval, and its picker name is blue.
+Escape leaves the current compilation, shows the run report, and returns to
+the retained Album list; it does not exit SPLINED. The Album becomes
+`processed` only when the verified ledger reaches the full track count.
+Retagging a completed track to different Recording/Artist IDs invalidates that
+track's resume entry.
+
+Every other Album uses the same Candidate Decision concept with a folder-art
+output target. `M` opens the integrated MusicBrainz release list even when the
+original Album ID was valid. Selecting an unseen release runs source discovery;
+selecting a green current or blue inspected release restores the per-Album
+cached source results. Escape from artwork results returns to the cached release
+list without rerunning providers.
+The automatic acceptable-candidate fast path remains unchanged when no operator
+decision is required.
+
+`musicbrainz` is an artwork-policy entry even though MusicBrainz does not host
+the bytes: MusicBrainz supplies release authority and Cover Art Archive supplies
+the direct image URL. It has independent Minimum Range Type and fallback
+settings from exact-release `coverartarchive` discovery. `amazon` searches the
+Amazon Store, accepts only primary `m.media-amazon.com/images/I/` artwork, and
+removes between-dots resize transforms before preview and evaluation. Amazon is
+opt-in because public Store HTML may throttle requests or change markup.
 
 ---
 
@@ -278,45 +379,11 @@ A provider override should not silently become a per-provider output-format sele
 
 SPLINED should evaluate the image that would actually be written, not blindly trust provider-reported dimensions.
 
-Important reasons:
-
-- provider metadata may be inaccurate;
-- downloaded content may differ from the advertised size;
-- square/crop processing may change final geometry;
-- output conversion may affect the final file;
-- a candidate should not win based on dimensions that disappear after output policy is applied.
+Important reasons include inaccurate provider metadata, output crop/square transforms, output conversion, and downloaded dimensions that differ from advertised dimensions.
 
 Policy principle:
 
 > Candidate ranking should reflect the final image SPLINED would write.
-
----
-
-# Square/crop behavior
-
-Square/output behavior is separate from provider source selection.
-
-Config v5 can control concepts including:
-
-- square enforcement;
-- crop mode;
-- square rounding;
-- whether upscaling below Ideal is allowed;
-- whether final-image evaluation is enabled.
-
-Source policy determines candidate eligibility. Output policy determines how an eligible candidate is prepared for installation.
-
----
-
-# Source order vs source acceptance
-
-Source order and source policy are related but different.
-
-Source order determines discovery/query behavior.
-
-Policy determines whether a returned candidate is eligible.
-
-A source queried first does not automatically win if its candidate violates effective policy or is farther from the preferred target than another eligible candidate.
 
 ---
 
@@ -326,73 +393,116 @@ Existing local artwork is evaluated before unnecessary replacement.
 
 A valid local image may be retained if it already satisfies the effective policy and is otherwise authoritative for the current album.
 
-Source override rules are primarily about remote/provider candidates and should not be interpreted as permission to replace good local artwork automatically.
+Local artwork is also a first-class potential AISPLINE input when AI integration is enabled. A user should not need to select and install a remote candidate merely to create an image that AISPLINE can review or enhance.
+
+---
+
+# AISPLINE remediation policy
+
+A:I:S:P:L:I:N:E:D is not a retrieval provider.
+
+Normal SPLINED source policies determine whether provider artwork may participate in candidate selection.
+
+When AISPLINE integration is enabled, an already-obtained local or remote candidate may subsequently be evaluated under AISPLINE remediation policy.
+
+Typical baseline relationship:
+
+```text
+BelowMinimum 600–1199
+    -> high-value remediation candidate
+
+LowerRange 1200–1799
+    -> remediation candidate
+
+Ideal 1800
+    -> target met
+```
+
+AISPLINE does not change the meaning of SPLINED Range Types. It operates after an image candidate exists.
+
+## User floor vs hard lock
+
+The baseline AISPLINE user floor is:
+
+```text
+minimum short side = 600 px
+```
+
+This is a practical default for normal use, not an absolute quality law. Low-resolution images may be the only available artwork, and some can remain usable despite their dimensions/compression.
+
+Therefore policy may allow deliberate experimentation below the floor. Such attempts must be explicit, user-controlled, and documented as higher-risk/lower-confidence processing. They must never silently weaken the configured floor.
+
+Config v5 may express the baseline as:
+
+```toml
+[aisplined]
+enabled = true
+endpoint = ""
+minimum_short_side = 600
+allow_below_minimum_override = false
+```
+
+No Config v5 version bump is required simply because AISPLINE-specific policy is added inside the existing `[aisplined]` section.
+
+## AISPLINE source-summary semantics
+
+When AI is enabled, AISPLINE review may occur before the candidate summary is presented.
+
+```text
+AI SPLINED
+    = yes/no result of completed AISPLINE review
+
+AI ENHANCED
+    = optional user enhancement action
+    = checkbox + required enhancement delta
+    = examples: ☐ +300 EH, ☐ +1200 EH, N/A
+```
+
+The review result does not mean the image has already been enhanced.
+
+At most one candidate per album may be selected for enhancement. Selecting one `AI ENHANCED` option disables/grays the other enhancement choices for the same album until the selection changes.
+
+A suggested remote candidate can be handed directly to AISPLINE without first being installed into the album directory.
+
+## Previously Enhanced provenance
+
+A previously successful AISPLINE result known through retained history may be presented as an Enhanced candidate only when the corresponding file still exists and validates.
+
+User-facing provenance markers are:
+
+```text
+[LOCAL]
+[URL]
+[Enhanced]
+```
+
+`[Enhanced]` is prior-result provenance. It is not the same thing as the current `AI ENHANCED` checkbox.
+
+## `upscale_below_ideal` runtime override
+
+If the user chooses AISPLINE enhancement while ordinary SPLINED output policy has:
+
+```toml
+[output]
+upscale_below_ideal = false
+```
+
+interactive mode should warn clearly and offer a runtime-only override for that one album/candidate/attempt.
+
+The override must not rewrite Config v5, affect later albums, or silently enable ordinary SPLINED upscaling.
 
 ---
 
 # Candidate status language
 
-The GUI may show candidate results such as:
+The GUI/TUI may show candidate results such as:
 
 ```text
 lower-range - Acceptable
 below-minimum - Fallback
 ```
 
-These labels describe the candidate's effective range/policy result.
-
-They should not be confused with Select Media/tree status colors, which represent album/artist execution state rather than image quality.
-
----
-
-# Example policies
-
-## Conservative provider
-
-```text
-Enabled: Yes
-Source Override: Yes
-Minimum Range Type: Ideal
-Allow BelowMinimum fallback: No
-```
-
-Only Ideal-or-higher candidates are normally accepted from that source, subject to any upper/advanced constraints.
-
-## Flexible provider
-
-```text
-Enabled: Yes
-Source Override: Yes
-Minimum Range Type: LowerRange
-Allow BelowMinimum fallback: Yes
-```
-
-LowerRange and above are normally accepted; BelowMinimum may remain available only as fallback.
-
-## Global/default behavior
-
-```text
-Enabled: Yes
-Source Override: No
-```
-
-The provider follows the global SPLINED policy, even if custom override values are still stored for possible future use.
-
----
-
-# Provider capability differences
-
-Provider APIs differ in:
-
-- available resolution;
-- number of image variants;
-- primary/front metadata;
-- rate limits;
-- authentication requirements;
-- response quality;
-- image URL stability.
-
-SPLINED should expose only controls it can enforce with the metadata actually returned by that source.
+These labels describe the candidate's effective range/policy result. They should not be confused with Select Media/tree status colors, which represent album/artist execution state rather than image quality.
 
 ---
 
@@ -403,24 +513,22 @@ If a candidate you expected to see is missing:
 1. confirm the source is Enabled;
 2. confirm Source Override state;
 3. check Minimum Range Type;
-4. check BelowMinimum fallback;
+4. check adjacent-lower fallback;
 5. inspect advanced short-side/width/height limits;
 6. check Primary image only if supported;
 7. review the scan log for policy-filtered candidate counts;
 8. verify the provider actually returned the candidate;
 9. verify the downloaded image dimensions.
 
-If the scan log reports candidates hidden by active source policy, discovery succeeded but the effective policy filtered those candidates from the review set.
+If the scan log reports candidates hidden by active source policy, discovery succeeded but effective policy filtered those candidates from the review set.
 
 ---
 
 # Relationship to Config v5
 
-For the broader Windows configuration model, see [Config v5 reference](config-v5-reference.md).
+For the broader configuration model, see [Config v5 reference](config-v5-reference.md).
 
-Exact serialized Config v5 keys and defaults are listed in the
-[Config v5 reference](config-v5-reference.md) and
-[`config.example.toml`](../config.example.toml).
+Exact serialized Config v5 keys/defaults are listed in the Config v5 reference and examples.
 
 ---
 
@@ -429,3 +537,4 @@ Exact serialized Config v5 keys and defaults are listed in the
 - [Config v5 reference](config-v5-reference.md)
 - [Credentials and provider setup](credentials-providers.md)
 - [Select Media and status colors](media-filter-status-colors.md)
+- [Python Ratatui TUI](ratatui-tui.md)

@@ -233,11 +233,24 @@ pub struct FanartTvConfig {
     pub credential_file: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SplineAiConfig {
+pub struct AiSplinedConfig {
     pub enabled: bool,
     pub endpoint: String,
+    pub minimum_short_side: u32,
+    pub allow_below_minimum_override: bool,
+}
+
+impl Default for AiSplinedConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            minimum_short_side: 600,
+            allow_below_minimum_override: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -264,8 +277,8 @@ pub struct Config {
     pub lastfm: LastFmConfig,
     #[serde(default, skip_serializing)]
     pub musicbrainz: MusicBrainzConfig,
-    #[serde(default)]
-    pub splineai: SplineAiConfig,
+    #[serde(default, alias = "splineai")]
+    pub aisplined: AiSplinedConfig,
     #[serde(default)]
     pub output: OutputConfig,
     pub range: RangeConfig,
@@ -419,7 +432,7 @@ impl Default for Config {
             fanarttv: FanartTvConfig::default(),
             lastfm: LastFmConfig::default(),
             musicbrainz,
-            splineai: SplineAiConfig::default(),
+            aisplined: AiSplinedConfig::default(),
             output: OutputConfig::default(),
             range: RangeConfig::default(),
             sources: SourcesConfig::default(),
@@ -498,7 +511,10 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
         "credentials.credential_dir",
     )?;
     config.library.ignored_subs = normalize_ignored_subs(&config.library.ignored_subs);
-    config.splineai.endpoint = config.splineai.endpoint.trim().to_string();
+    config.aisplined.endpoint = config.aisplined.endpoint.trim().to_string();
+    if config.aisplined.minimum_short_side == 0 {
+        return Err("SPLINED aisplined.minimum_short_side must be greater than zero.".to_string());
+    }
 
     config.sources.cover_sources = normalize_source_list(
         &config.sources.cover_sources,
@@ -746,8 +762,10 @@ mod tests {
         assert!(config.library.ignored_subs.is_empty());
         assert!(config.samples.sample_write);
         assert_eq!(config.credentials.credential_dir, "credentials");
-        assert!(!config.splineai.enabled);
-        assert!(config.splineai.endpoint.is_empty());
+        assert!(!config.aisplined.enabled);
+        assert!(config.aisplined.endpoint.is_empty());
+        assert_eq!(config.aisplined.minimum_short_side, 600);
+        assert!(!config.aisplined.allow_below_minimum_override);
         assert_eq!(
             config.output.file_formats,
             vec!["jpeg".to_string(), "png".to_string(), "webp".to_string()]
@@ -772,11 +790,13 @@ mod tests {
         assert!(!text.contains("[musicbrainz]"));
         assert!(!text.contains("credential_file"));
         assert!(!text.contains("token_file"));
-        assert!(text.contains("[splineai]"));
+        assert!(text.contains("[aisplined]"));
         assert_eq!(parsed.scan.cache_dir, "_cache");
         assert_eq!(parsed.credentials.credential_dir, "credentials");
-        assert!(!parsed.splineai.enabled);
-        assert!(parsed.splineai.endpoint.is_empty());
+        assert!(!parsed.aisplined.enabled);
+        assert!(parsed.aisplined.endpoint.is_empty());
+        assert_eq!(parsed.aisplined.minimum_short_side, 600);
+        assert!(!parsed.aisplined.allow_below_minimum_override);
         assert!(parsed.scan.scan_library_dir.is_empty());
         assert!(parsed.library.music_library.is_empty());
         assert!(parsed.library.ignored_subs.is_empty());

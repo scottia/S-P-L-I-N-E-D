@@ -381,12 +381,18 @@ jobs:
           cargo fmt --all -- --check
           cargo test --locked
           cargo clippy --locked -- -D warnings
+          cargo fmt --manifest-path python/pyratatui_input/Cargo.toml -- --check
+          cargo test --locked --manifest-path python/pyratatui_input/Cargo.toml
+          cargo clippy --locked --manifest-path python/pyratatui_input/Cargo.toml --all-targets -- -D warnings
           python3 -m py_compile \
             python/splined.py \
             python/splined_scan.py \
             python/splined_oauth_validation.py
+          python3 -m compileall -q python/tui
+          python3 -m compileall -q python/pyratatui_input/python
 
           docker build --pull \
+            --build-arg SPLINED_BUILD_CHANNEL=release \
             --tag splined-release-candidate:${RELEASE_VERSION} \
             ./python
 
@@ -991,6 +997,8 @@ jobs:
             python/splined.py \
             python/splined_scan.py \
             python/splined_oauth_validation.py
+          python3 -m compileall -q python/tui
+          python3 -m compileall -q python/pyratatui_input/python
 
           echo "PASS: Python compilation"
 
@@ -1003,6 +1011,7 @@ jobs:
           VERSION_TAG="v${RELEASE_VERSION}"
 
           docker build --pull \
+            --build-arg SPLINED_BUILD_CHANNEL=release \
             --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
             --label "org.opencontainers.image.version=$RELEASE_VERSION" \
             --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \

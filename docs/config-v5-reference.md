@@ -1,8 +1,8 @@
 # Config v5 Reference
 
-This page documents the common Config v5 contract. The complete, secret-free
-native/Windows example is [`config.example.toml`](../config.example.toml), and
-the Docker example uses the same schema with container paths.
+This page documents the common Config v5 contract. The complete secret-free
+native/Windows example is [`config.example.toml`](../config.example.toml). The
+Docker example uses the same schema with container paths.
 
 Application release and configuration schema versions are separate:
 
@@ -29,9 +29,8 @@ SPLINED/
 ```
 
 Relative runtime paths are resolved from the SPLINED application directory.
-External, NAS, and UNC paths remain absolute. An optional `config.location`
-file stores the configured config path without moving credential data into the
-main config.
+External, NAS, and UNC paths remain absolute. Docker paths are normally absolute
+container paths supplied by bind mounts.
 
 ## General settings
 
@@ -39,14 +38,14 @@ main config.
 | --- | --- | --- |
 | `config_version` | `5` | Operational schema version |
 | `mode` | `"read"` | `read` evaluates; `write` may install artwork |
-| `verbosity` | `"info"` | Runtime logging verbosity |
+| `verbosity` | `"info"` | Runtime-log threshold: `debug`, `info`, `warning`, or `error` |
 
 ## `[library]`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `music_library` | empty | Main media-library root |
-| `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans |
+| `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans and index refresh |
 
 ## `[scan]`
 
@@ -55,10 +54,37 @@ main config.
 | `scan_library_dir` | empty | Configured scan target |
 | `scan_mode` | `true` | Enables configured scan-directory behavior |
 | `library_scan` | `false` | Enables full-library scanning |
-| `scan_mode_timeout` | `24` | Hours before completed albums are eligible again; `0` disables timeout |
-| `cache_dir` | `"_cache"` | Disposable candidate/sample cache |
+| `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
+| `cache_dir` | `"_cache"` | Candidate/sample cache and, for Python/Docker, persistent `splined.db` |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 | `history_dir` | `"_logs/_history"` | Completion, chosen-source, bypass, and timeout authority |
+
+### Python/Docker `cache_dir`
+
+The Python/Docker TUI stores its persistent Select Media read model at:
+
+```text
+<scan.cache_dir>/splined.db
+```
+
+Normal run-cache cleanup preserves that file and its SQLite sidecars. Candidate
+downloads, samples, and other cache content remain disposable.
+
+The database location follows `cache_dir`; no additional Config v5 key is
+required. With the Docker example:
+
+```toml
+[scan]
+cache_dir = "/_cache"
+```
+
+SPLINED uses:
+
+```text
+/_cache/splined.db
+```
+
+See [SPLINED media database](splined-media-database.md).
 
 ## `[output]`
 
@@ -70,13 +96,15 @@ main config.
 | `square` | `true` | Enable square output policy |
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
-| `upscale_below_ideal` | `false` | Permit enlargement below Ideal |
+| `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement below Ideal |
 | `evaluate_final_image` | `true` | Rank the image SPLINED would actually write |
 
-WebP source artwork is preserved by the local-artwork policy. When better
-static artwork replaces a matching JPEG/PNG cover, SPLINED avoids accumulating
-numbered copies and removes the matching obsolete static cover according to the
-active replacement rules.
+WebP source artwork is preserved by local-art policy. When better static artwork
+replaces a matching JPEG/PNG cover, SPLINED avoids accumulating numbered copies
+according to active replacement rules.
+
+Embedded JPEG artwork selected as preferred source is materialized using the
+configured filename stem and canonical JPEG output policy.
 
 ## `[range]`
 
@@ -98,60 +126,77 @@ Artwork is classified by its short side.
 | `Ladder` | 2401–3600 |
 | `AboveLadder` | above 3600 |
 
-The required ordering is `min < ideal <= max < ladder`.
+Required ordering:
+
+```text
+min < ideal <= max < ladder
+```
 
 ## `[sources]`
 
-`cover_sources` stores artwork-source priority. Supported artwork sources are
-Deezer, iTunes, Fanart.tv, Last.fm, Cover Art Archive, and Discogs.
-`exclude_cover_sources` disables listed artwork sources without changing
-their saved priority.
+`cover_sources` stores artwork-source priority. Supported sources are Deezer,
+iTunes, Fanart.tv, Last.fm, MusicBrainz / Cover Art Archive, Cover Art Archive,
+Discogs, and Amazon Store.
+`exclude_cover_sources` disables listed sources without changing saved order.
 
-MusicBrainz is metadata authority and is not added to `cover_sources`.
+The `musicbrainz` priority uses MusicBrainz as release authority and Cover Art
+Archive as the image host. It prefers the release-group representative;
+`coverartarchive` remains the independent exact-release source. Both expose
+direct image URLs to Candidate Decision.
+
+`amazon` performs a credential-free, best-effort Amazon Store search and accepts
+only primary `https://m.media-amazon.com/images/I/` URLs. It removes Amazon's
+between-dots image transform (for example `._AC_UY218_`) before download so the
+candidate URL points to the original image. Amazon is disabled by default;
+blocking or markup changes appear as provider diagnostics.
 
 ## `[source_policies.<provider>]`
 
-Config v5 supports source policies for every artwork provider and MusicBrainz.
-
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | derived/enabled | Whether the source may be used |
+| `enabled` | `true` (`false` for Amazon) | Whether the source may be used |
 | `source_override` | `false` | Activates saved provider-specific policy |
 | `minimum_range_type` | `"LowerRange"` | Minimum normal artwork range |
-| `allow_below_minimum_fallback` | `false` | Allows only the adjacent lower range as fallback |
+| `allow_below_minimum_fallback` | `false` | Allows the adjacent lower range as fallback |
 | `minimum_short_side` | absent | Optional explicit short-side minimum |
 | `maximum_short_side` | absent | Optional explicit short-side maximum |
 | `minimum_width` | absent | Optional explicit width minimum |
 | `minimum_height` | absent | Optional explicit height minimum |
-| `primary_image_only` | `true` | Uses provider primary/front metadata where available |
+| `primary_image_only` | `true` | Uses primary/front metadata where available |
 
-Artwork-specific fields are not written for MusicBrainz. Its policy contains
-only `enabled` and `source_override`.
-
-When Source Override is off, the source uses the global range. Saved custom
-policy values remain available and are not erased. When fallback is on, only
-the single range immediately below the configured minimum becomes a fallback;
-it does not become a normally accepted range.
+MusicBrainz and Amazon use the same Minimum Range Type, adjacent fallback,
+dimension, and primary-image controls as other artwork sources. When Source
+Override is off, a provider uses the global range while retaining saved custom
+values.
 
 See [Source policies and Range Types](source-policies-range-types.md).
 
 ## `[samples]`
 
-`sample_write = true` writes review samples beneath the configured cache.
+```toml
+[samples]
+sample_write = true
+```
+
+When enabled, review samples are written beneath the configured cache directory.
+Samples are disposable even though `splined.db` in the same parent directory is
+persistent.
 
 ## `[credentials]`
 
-`credential_dir = "credentials"` is the only normal credential setting in
-Config v5. Standard provider JSON names are resolved internally beneath that
-directory.
+```toml
+[credentials]
+credential_dir = "credentials"
+```
 
-Authentication values, API keys, OAuth tokens, shared secrets, and provider
-filenames are not written to `config.toml`.
+This is the only normal credential setting. Standard provider JSON filenames
+are resolved internally. API keys, OAuth tokens, shared secrets, and provider
+filenames do not belong in `config.toml`.
 
 ### MusicBrainz runtime options
 
 MusicBrainz authentication and runtime options share the credential document
-but are updated independently. Defaults used when no options object exists:
+but are updated independently. The normal runtime defaults are:
 
 ```json
 {
@@ -163,9 +208,14 @@ but are updated independently. Defaults used when no options object exists:
 }
 ```
 
-SPLINED reads the existing JSON, merges changed options, preserves
-authentication and unknown fields, and atomically replaces the file. Changing
-source policy does not rewrite the credential.
+SPLINED merges changed options, preserves authentication and unknown fields,
+and atomically replaces the credential file.
+
+Compilation track-art recovery requires the exact `retry_max`,
+`min_delay`, and `recording_timeout` keys in the credential JSON. It does not
+hard-code or infer missing values. In that workflow `retry_max` is the maximum
+total attempt count, `min_delay` applies between requests, and
+`recording_timeout` applies to each Recording-ID request.
 
 See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
@@ -173,36 +223,80 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `logging.retention_days` | `14` | Diagnostic-log retention |
-| `history.enabled` | `true` | Enables persistent status authority |
+| `logging.retention_days` | `14` | Retention for ordinary diagnostic files |
+| `history.enabled` | `true` | Enables persistent completion/status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
 
-History supplies processed, timeout, chosen-source, and bypass state. Shortening
-or disabling it can remove the authority needed for status colors. `_cache/`
-is disposable and is not the history authority.
+Every initialized invocation creates one current-run diagnostic file under:
 
-## `[splineai]`
+```text
+<scan.log_dir>/run/
+```
 
-Config v5 retains `enabled = false` and an empty `endpoint` as an internal
-placeholder. Windows v3.0.0 Stable does not enable AI image processing.
+The next invocation clears that dedicated run directory before creating the new
+file. The filename contains verbosity, timestamp, uniqueness value, and process
+ID.
+
+Credentials, tokens, authorization headers, client secrets, and private
+credential values must never be logged. SPLINED applies central redaction to UI
+and persistent runtime-log messages as a final safety boundary.
+
+Python/Docker runtime and debug records are single-line and limited to 2,048
+characters. Embedded newlines are escaped and an oversized record ends with a
+truncation marker. Repeated/high-cardinality picker state is summarized as
+counts; a launch records at most three sample paths plus the number omitted.
+This keeps a debug run readable without losing the event sequence needed to
+diagnose startup, selection, report return, or launch behavior.
+
+History supplies processed, timeout, chosen-source, and bypass authority. The
+Python/Docker `splined.db` materializes those facts for Select Media but does
+not replace the history files.
+
+Back up:
+
+```text
+config/
+credentials/
+<scan.history_dir>/
+<scan.cache_dir>/splined.db   # Python/Docker
+```
+
+## `[aisplined]`
+
+`[aisplined]` is the reserved canonical boundary for the separate companion
+product:
+
+```toml
+[aisplined]
+enabled = false
+endpoint = ""
+minimum_short_side = 600
+allow_below_minimum_override = false
+```
+
+| Key | Baseline | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Whether a future AISPLINE integration is enabled |
+| `endpoint` | empty | Future runtime/interface endpoint |
+| `minimum_short_side` | `600` | Default user floor for normal enhancement consideration |
+| `allow_below_minimum_override` | `false` | Whether explicit below-floor experiments may be allowed |
+
+AISPLINE processing has not begun. When disabled, no AI review, enhancement,
+activity, or backend work occurs. Placeholder configuration or columns do not
+constitute a finalized companion-product requirement.
+
+Legacy `[splineai]` remains a compatibility concern for existing installations;
+`[aisplined]` is the canonical public name.
 
 ## GUI-only `ui.toml`
 
-`config/ui.toml` is deliberately separate from operational Config v5. It
-stores presentation and transient GUI state, including:
-
-- System/Light/Dark theme;
-- status/confirmation and hover preferences;
-- Select Media expansion, filters, and transient selected paths;
-- filtered Read/Write mode;
-- main, Settings, Compare, and Preview sizes/positions;
-- splitter distances and Settings tab positions.
-
-Editing `ui.toml` does not change source policy, credentials, history, or
-artwork-writing rules.
+`config/ui.toml` is separate from operational Config v5. It stores presentation
+and transient GUI state such as theme, window placement, filters, splitter
+positions, and current UI selections. Editing it does not change source policy,
+credentials, history, the media database, or artwork-writing rules.
 
 ## Validation
 
-The Windows Settings **Validate Saved Config** action and **Save and Continue**
-use Config v5 validation before execution. Root native and Python/Docker also
-validate Config v5; use the Docker example for its container-specific paths.
+Windows Settings **Validate Saved Config** and **Save and Continue** validate
+Config v5 before execution. Native and Python/Docker implementations also
+validate Config v5; use the Docker example for container-specific paths.

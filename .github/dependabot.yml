@@ -22,6 +22,15 @@ updates:
       windows-rust-development:
         dependency-type: development
 
+  - package-ecosystem: cargo
+    directory: /python/pyratatui_input
+    target-branch: dev
+    schedule:
+      interval: weekly
+    groups:
+      pyratatui-input-rust:
+        patterns: ["*"]
+
   - package-ecosystem: pip
     directory: /python
     target-branch: dev

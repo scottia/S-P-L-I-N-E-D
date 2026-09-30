@@ -10,13 +10,15 @@ use std::path::{Path, PathBuf};
 
 pub const SOURCE_HISTORY_VERSION: u32 = 1;
 pub const SOURCE_HISTORY_FILE: &str = "chosen-source-history.json";
-const SUPPORTED_SOURCES: [&str; 6] = [
+const SUPPORTED_SOURCES: [&str; 8] = [
     "deezer",
     "itunes",
     "fanarttv",
     "lastfm",
+    "musicbrainz",
     "coverartarchive",
     "discogs",
+    "amazon",
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

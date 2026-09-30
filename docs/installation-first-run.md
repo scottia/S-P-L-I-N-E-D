@@ -1,7 +1,7 @@
 # Installation and First Run
 
 Choose the runtime that matches your system. All supported implementations use
-Config v5; their application release identities remain independent.
+Config v5; application release identities remain independent.
 
 ## Windows portable
 
@@ -14,7 +14,7 @@ Config v5; their application release identities remain independent.
 5. Configure provider credentials through **Credentials / Status** as needed.
 6. Start in Read mode against a small selection.
 
-SPLINED creates and uses its application-owned layout as required:
+SPLINED creates its application-owned layout as required:
 
 ```text
 SPLINED/
@@ -24,7 +24,6 @@ SPLINED/
 │   └── ui.toml
 ├── credentials/
 ├── _cache/
-│   └── samples/
 └── _logs/
     └── _history/
 ```
@@ -36,19 +35,16 @@ No executable rename or setup launcher is required.
 1. Close SPLINED.
 2. Back up `config/`, `credentials/`, and `_logs/`.
 3. Extract the new application files into the existing directory, replacing
-   the program files.
-4. Preserve the application-owned data directories.
+   program files.
+4. Preserve application-owned data directories.
 5. Run `splined.exe` and verify Settings and credential status.
-
-`_cache/` is disposable and can be recreated. SPLINED does not automatically
-discover or import another portable installation.
 
 See [Windows portable instructions](../release/README-WINDOWS.txt).
 
 ## Linux portable
 
-Extract the Linux archive into its final directory, restore executable
-permission if needed, then run:
+Extract the archive into its final directory, restore executable permission if
+needed, then run:
 
 ```bash
 chmod +x ./splined
@@ -59,8 +55,8 @@ See [Linux portable instructions](../release/README-LINUX.txt).
 
 ## macOS portable
 
-Extract the macOS archive into its final directory, restore executable
-permission if needed, then run:
+Extract the archive into its final directory, restore executable permission if
+needed, then run:
 
 ```bash
 chmod +x ./splined
@@ -73,7 +69,7 @@ See [macOS portable instructions](../release/README-MACOS.txt).
 
 ## Docker
 
-Use the published container image:
+Use the published image:
 
 ```text
 ghcr.io/scottia/splined:latest
@@ -84,29 +80,76 @@ Config v5 with Docker-specific container paths.
 
 See [Docker installation](../docker/README.md) for mounts and commands.
 
+Interactive Python/Docker operational scans use the Ratatui TUI when stdin and
+stdout are terminals. Scripted or redirected execution remains plain.
+
+## Python/Docker first media-index build
+
+The first interactive launch creates:
+
+```text
+<scan.cache_dir>/splined.db
+```
+
+Default Docker path:
+
+```text
+/_cache/splined.db
+```
+
+The one-time build:
+
+1. inventories Artist and Album folders;
+2. reads one representative audio file per Album with Mutagen;
+3. identifies Artists and Albums from MusicBrainz/tag values;
+4. records local `cover.*` and selected Album statistics;
+5. saves resumable per-Album SQLite checkpoints;
+6. validates and publishes the completed snapshot marker-last;
+7. opens Select Media with final stable Album Status colors.
+
+The first build may take time on a large library. Warm launches load the picker
+read-only from SQLite and do not repeat an Artist-by-Artist filesystem
+validation. WAL-free databases on NAS/bind mounts may be staged temporarily on
+local container storage for faster compact reads.
+
+The Artist Picker groups Albums by the first physical directory below the
+library root. Album Artist/MusicBrainz tag identity remains artwork/search
+authority and may have a different count from visible physical Artist folders.
+
+Use the explicit Refresh action after external tagger or
+filesystem changes. Refresh commits the new model before changing the visible
+picker, so colors do not progressively change while the user is working.
+
+See [SPLINED media database](splined-media-database.md).
+
 ## Persistent and disposable data
 
-Back up:
+Back up for all runtimes:
 
 - `config/`;
 - `credentials/`;
 - `_logs/` and the configured history directory.
 
-Disposable:
+For Python/Docker, also back up:
 
-- `_cache/`.
+```text
+<scan.cache_dir>/splined.db
+```
+
+Other candidate, sample, and transient cache files remain disposable.
 
 Credential files may contain API keys and OAuth tokens. Never commit or share
 them.
 
 ## First safe scan
 
-1. Confirm the library and scan paths.
-2. Validate Config v5 in Settings on Windows.
-3. Use **Select Media** to choose a small artist or album set.
-4. Use Read mode first.
-5. Review provider candidates and local-artwork decisions.
-6. Enable Write mode only after confirming output and replacement policy.
+1. Confirm library and scan paths.
+2. Validate Config v5 where the runtime exposes validation.
+3. Allow the Python/Docker media index to complete on first TUI launch.
+4. Use **Select Media** to choose a small Artist or Album set.
+5. Use Read first.
+6. Review provider candidates and local/embedded artwork decisions.
+7. Enable Write only after confirming output and replacement policy.
 
-Write mode changes album folders. Use a backup, snapshot, copy, or staging
-library for initial validation.
+Write changes Album folders. Use a backup, snapshot, copy, or staging library
+for initial validation.

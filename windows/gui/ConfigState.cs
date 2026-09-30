@@ -156,8 +156,8 @@ namespace Splined.WindowsGui
         // Keep the native GUI default in the same priority order as the
         // authoritative Python help/config. Existing Config v5 files retain
         // their explicitly saved order.
-        public static readonly string[] ArtworkSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs" };
-        public static readonly string[] KnownSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "coverartarchive", "discogs", "musicbrainz" };
+        public static readonly string[] ArtworkSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon" };
+        public static readonly string[] KnownSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon" };
         public string ConfigPath;
         public string Mode = "read";
         public string Verbosity = "info";
@@ -191,10 +191,12 @@ namespace Splined.WindowsGui
         public int RangeMax = 2400;
         public int RangeLadder = 3600;
 
-        // Config v5 reserves SPLINEAI internally. It is deliberately not shown
+        // Config v5 reserves AISPLINE internally. It is deliberately not shown
         // by the Windows GUI, but these values are retained during every save.
-        public bool SplineAiEnabled;
-        public string SplineAiEndpoint = "";
+        public bool AiSplinedEnabled;
+        public string AiSplinedEndpoint = "";
+        public int AiSplinedMinimumShortSide = 600;
+        public bool AiSplinedAllowBelowMinimumOverride;
 
         public ConfigState Clone()
         {
@@ -308,8 +310,8 @@ namespace Splined.WindowsGui
             {
                 string section = "source_policies." + source;
                 SourcePolicyState policy = new SourcePolicyState();
-                bool defaultEnabled = source.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase)
-                    || (state.Sources.Contains(source, StringComparer.OrdinalIgnoreCase)
+                bool defaultEnabled = !source.Equals("amazon", StringComparison.OrdinalIgnoreCase)
+                    && (state.Sources.Contains(source, StringComparer.OrdinalIgnoreCase)
                         && !state.ExcludedSources.Contains(source, StringComparer.OrdinalIgnoreCase));
                 policy.Enabled = ReadBool(text, section, "enabled", defaultEnabled);
                 policy.SourceOverride = ReadBool(text, section, "source_override", false);
@@ -339,8 +341,26 @@ namespace Splined.WindowsGui
             state.RangeIdeal = ReadInt(text, "range", "ideal", 1800);
             state.RangeMax = ReadInt(text, "range", "max", 2400);
             state.RangeLadder = ReadInt(text, "range", "ladder", 3600);
-            state.SplineAiEnabled = ReadBool(text, "splineai", "enabled", false);
-            state.SplineAiEndpoint = ReadString(text, "splineai", "endpoint", "");
+            bool hasAiSplined = HasSection(text, "aisplined");
+            bool hasLegacySplineAi = HasSection(text, "splineai");
+            bool canonicalEnabled = ReadBool(text, "aisplined", "enabled", false);
+            string canonicalEndpoint = ReadString(text, "aisplined", "endpoint", "");
+            int canonicalMinimumShortSide = ReadInt(text, "aisplined", "minimum_short_side", 600);
+            bool canonicalAllowBelowMinimumOverride = ReadBool(text, "aisplined", "allow_below_minimum_override", false);
+            bool legacyEnabled = ReadBool(text, "splineai", "enabled", false);
+            string legacyEndpoint = ReadString(text, "splineai", "endpoint", "");
+            int legacyMinimumShortSide = ReadInt(text, "splineai", "minimum_short_side", 600);
+            bool legacyAllowBelowMinimumOverride = ReadBool(text, "splineai", "allow_below_minimum_override", false);
+            if (hasAiSplined && hasLegacySplineAi
+                && (canonicalEnabled != legacyEnabled
+                    || !String.Equals(canonicalEndpoint, legacyEndpoint, StringComparison.Ordinal)
+                    || canonicalMinimumShortSide != legacyMinimumShortSide
+                    || canonicalAllowBelowMinimumOverride != legacyAllowBelowMinimumOverride))
+                throw new InvalidDataException("[aisplined] and legacy [splineai] disagree.");
+            state.AiSplinedEnabled = hasAiSplined ? canonicalEnabled : legacyEnabled;
+            state.AiSplinedEndpoint = hasAiSplined ? canonicalEndpoint : legacyEndpoint;
+            state.AiSplinedMinimumShortSide = hasAiSplined ? canonicalMinimumShortSide : legacyMinimumShortSide;
+            state.AiSplinedAllowBelowMinimumOverride = hasAiSplined ? canonicalAllowBelowMinimumOverride : legacyAllowBelowMinimumOverride;
             return state;
         }
 
@@ -352,6 +372,7 @@ namespace Splined.WindowsGui
             state.LogDir = Path.Combine(AppRoot, "_logs");
             state.HistoryDir = Path.Combine(AppRoot, "_logs", "_history");
             state.CredentialDir = Path.Combine(AppRoot, "credentials");
+            state.SourcePolicies["amazon"] = new SourcePolicyState { Enabled = false };
             return state;
         }
 
@@ -386,6 +407,8 @@ namespace Splined.WindowsGui
                 throw new InvalidOperationException("Output file name must be a filename stem without an extension or directory.");
             if (state.ScanModeTimeout < 0)
                 throw new InvalidOperationException("Scan timeout cannot be negative.");
+            if (state.AiSplinedMinimumShortSide <= 0)
+                throw new InvalidOperationException("AISPLINE minimum short side must be greater than zero.");
             foreach (KeyValuePair<string, SourcePolicyState> pair in state.SourcePolicies)
             {
                 SourcePolicyState policy = pair.Value;
@@ -596,11 +619,6 @@ namespace Splined.WindowsGui
                 text.AppendLine("[source_policies." + source + "]");
                 text.AppendLine("enabled = " + Bool(policy.Enabled));
                 text.AppendLine("source_override = " + Bool(policy.SourceOverride));
-                if (source.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase))
-                {
-                    text.AppendLine();
-                    continue;
-                }
                 text.AppendLine("minimum_range_type = " + Quote(policy.MinimumRangeType));
                 text.AppendLine("allow_below_minimum_fallback = " + Bool(policy.AllowBelowMinimumFallback));
                 if (policy.MinimumShortSide.HasValue) text.AppendLine("minimum_short_side = " + policy.MinimumShortSide.Value);
@@ -623,9 +641,11 @@ namespace Splined.WindowsGui
             text.AppendLine("enabled = " + Bool(state.HistoryEnabled));
             text.AppendLine("retention_days = " + state.HistoryRetentionDays);
             text.AppendLine();
-            text.AppendLine("[splineai]");
-            text.AppendLine("enabled = " + Bool(state.SplineAiEnabled));
-            text.AppendLine("endpoint = " + Quote(state.SplineAiEndpoint));
+            text.AppendLine("[aisplined]");
+            text.AppendLine("enabled = " + Bool(state.AiSplinedEnabled));
+            text.AppendLine("endpoint = " + Quote(state.AiSplinedEndpoint));
+            text.AppendLine("minimum_short_side = " + state.AiSplinedMinimumShortSide);
+            text.AppendLine("allow_below_minimum_override = " + Bool(state.AiSplinedAllowBelowMinimumOverride));
             return text.ToString();
         }
 
@@ -635,6 +655,14 @@ namespace Splined.WindowsGui
                 return Regex.Replace(text, @"(?ms)^\s*\[[^\]]+\].*$", "");
             Match match = Regex.Match(text, @"(?ms)^\s*\[" + Regex.Escape(section) + @"\]\s*(.*?)(?=^\s*\[|\z)");
             return match.Success ? match.Groups[1].Value : "";
+        }
+
+        private static bool HasSection(string text, string section)
+        {
+            return Regex.IsMatch(
+                text,
+                @"(?m)^\s*\[" + Regex.Escape(section) + @"\]\s*(?:#.*)?$"
+            );
         }
 
         private static string ReadString(string text, string section, string key, string fallback)

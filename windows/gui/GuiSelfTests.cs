@@ -41,8 +41,10 @@ namespace Splined.WindowsGui
                 state.IgnoredSubs.AddRange(excludedFolders);
                 state.Mode = "write";
                 state.ScanModeTimeout = 0;
-                state.SplineAiEnabled = true;
-                state.SplineAiEndpoint = "internal-placeholder";
+                state.AiSplinedEnabled = true;
+                state.AiSplinedEndpoint = "internal-placeholder";
+                state.AiSplinedMinimumShortSide = 640;
+                state.AiSplinedAllowBelowMinimumOverride = true;
                 state.SourcePolicies["discogs"] = new SourcePolicyState
                 {
                     SourceOverride = true,
@@ -70,7 +72,10 @@ namespace Splined.WindowsGui
                     && CredentialStore.PathFor(loaded, "lastfm") == Path.Combine(loaded.CredentialDir, "lastfm.json")
                     && CredentialStore.PathFor(loaded, "musicbrainz") == Path.Combine(loaded.CredentialDir, "musicbrainz.json"),
                     "Provider credential files were not derived from the credential directory.");
-                Assert(loaded.SplineAiEnabled && loaded.SplineAiEndpoint == "internal-placeholder", "Hidden SPLINEAI values were not preserved.");
+                Assert(loaded.AiSplinedEnabled && loaded.AiSplinedEndpoint == "internal-placeholder"
+                    && loaded.AiSplinedMinimumShortSide == 640
+                    && loaded.AiSplinedAllowBelowMinimumOverride,
+                    "Hidden AISPLINE values were not preserved.");
                 SourcePolicyState discogsPolicy = loaded.SourcePolicies["discogs"];
                 Assert(discogsPolicy.SourceOverride && discogsPolicy.MinimumRangeType == "LowerRange"
                     && discogsPolicy.AllowBelowMinimumFallback && discogsPolicy.MinimumShortSide == 1500
@@ -375,15 +380,15 @@ namespace Splined.WindowsGui
                         if (advanced.TabPages[index].Text == "Sources & Matching") advanced.SelectedIndex = index;
                     ComboBox selector = (ComboBox)typeof(SetupForm).GetField("sourceSelector", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(musicBrainzSetup);
                     for (int index = 0; index < selector.Items.Count; index++)
-                        if (Convert.ToString(selector.Items[index]) == "MusicBrainz") selector.SelectedIndex = index;
+                        if (Convert.ToString(selector.Items[index]) == "MusicBrainz / CAA") selector.SelectedIndex = index;
                     Application.DoEvents();
                     Assert((int)musicBrainzSetup.Controls.Find("musicBrainzRetryMax", true).OfType<NumericUpDown>().Single().Value == 8
                         && Math.Abs((double)musicBrainzSetup.Controls.Find("musicBrainzMinDelay", true).OfType<NumericUpDown>().Single().Value - 1.25) < 0.001
                         && (int)musicBrainzSetup.Controls.Find("musicBrainzRecordingTimeout", true).OfType<NumericUpDown>().Single().Value == 11,
                         "Reopened Settings did not repopulate all MusicBrainz runtime options.");
                     Assert(musicBrainzSetup.Controls.Find("musicBrainzOptionsGroup", true).Single().Visible
-                        && !musicBrainzSetup.Controls.Find("artworkResolutionGroup", true).Single().Visible,
-                        "MusicBrainz did not suppress inapplicable artwork-only controls.");
+                        && musicBrainzSetup.Controls.Find("artworkResolutionGroup", true).Single().Visible,
+                        "MusicBrainz did not expose both request options and artwork policy controls.");
                 }
                 int fanartCovers;
                 Assert(ProviderCredentialValidator.IsFanartV32AlbumResponse(

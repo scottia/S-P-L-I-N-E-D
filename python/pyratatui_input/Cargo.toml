@@ -1,0 +1,25 @@
+[package]
+name = "splined-pyratatui-input"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Minimal crossterm input extension for SPLINED's pyratatui UI"
+license = "MIT"
+publish = false
+
+[lib]
+name = "splined_pyratatui_input"
+crate-type = ["cdylib"]
+
+[dependencies]
+crossterm = "0.29"
+image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png", "webp"] }
+pyo3 = { version = "0.28", features = ["abi3-py310", "generate-import-lib"] }
+ratatui = { version = "=0.30.1", default-features = false, features = ["crossterm"] }
+ratatui-image = { version = "=11.1.0", default-features = false, features = ["crossterm"] }
+
+[profile.release]
+strip = true
+lto = true
+opt-level = 3
+codegen-units = 1

@@ -8,22 +8,25 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const CURRENT_CONFIG_VERSION: u32 = 5;
-pub const SUPPORTED_COVER_SOURCES: [&str; 6] = [
+pub const SUPPORTED_COVER_SOURCES: [&str; 8] = [
     "deezer",
     "itunes",
     "fanarttv",
     "lastfm",
-    "coverartarchive",
-    "discogs",
-];
-pub const SUPPORTED_SOURCE_POLICIES: [&str; 7] = [
-    "deezer",
-    "itunes",
-    "fanarttv",
-    "lastfm",
-    "coverartarchive",
-    "discogs",
     "musicbrainz",
+    "coverartarchive",
+    "discogs",
+    "amazon",
+];
+pub const SUPPORTED_SOURCE_POLICIES: [&str; 8] = [
+    "deezer",
+    "itunes",
+    "fanarttv",
+    "lastfm",
+    "musicbrainz",
+    "coverartarchive",
+    "discogs",
+    "amazon",
 ];
 
 // Public portable defaults are deliberately neutral. User library locations,
@@ -233,11 +236,24 @@ pub struct FanartTvConfig {
     pub credential_file: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SplineAiConfig {
+pub struct AiSplinedConfig {
     pub enabled: bool,
     pub endpoint: String,
+    pub minimum_short_side: u32,
+    pub allow_below_minimum_override: bool,
+}
+
+impl Default for AiSplinedConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: String::new(),
+            minimum_short_side: 600,
+            allow_below_minimum_override: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -264,8 +280,8 @@ pub struct Config {
     pub lastfm: LastFmConfig,
     #[serde(default, skip_serializing)]
     pub musicbrainz: MusicBrainzConfig,
-    #[serde(default)]
-    pub splineai: SplineAiConfig,
+    #[serde(default, alias = "splineai")]
+    pub aisplined: AiSplinedConfig,
     #[serde(default)]
     pub output: OutputConfig,
     pub range: RangeConfig,
@@ -407,6 +423,15 @@ impl Default for Config {
             ..MusicBrainzConfig::default()
         };
 
+        let mut source_policies = BTreeMap::new();
+        source_policies.insert(
+            "amazon".to_string(),
+            SourcePolicyConfig {
+                enabled: false,
+                ..SourcePolicyConfig::default()
+            },
+        );
+
         Self {
             config_version: CURRENT_CONFIG_VERSION,
             mode: Mode::Read,
@@ -419,11 +444,11 @@ impl Default for Config {
             fanarttv: FanartTvConfig::default(),
             lastfm: LastFmConfig::default(),
             musicbrainz,
-            splineai: SplineAiConfig::default(),
+            aisplined: AiSplinedConfig::default(),
             output: OutputConfig::default(),
             range: RangeConfig::default(),
             sources: SourcesConfig::default(),
-            source_policies: BTreeMap::new(),
+            source_policies,
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
         }
@@ -498,7 +523,10 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
         "credentials.credential_dir",
     )?;
     config.library.ignored_subs = normalize_ignored_subs(&config.library.ignored_subs);
-    config.splineai.endpoint = config.splineai.endpoint.trim().to_string();
+    config.aisplined.endpoint = config.aisplined.endpoint.trim().to_string();
+    if config.aisplined.minimum_short_side == 0 {
+        return Err("SPLINED aisplined.minimum_short_side must be greater than zero.".to_string());
+    }
 
     config.sources.cover_sources = normalize_source_list(
         &config.sources.cover_sources,
@@ -746,15 +774,18 @@ mod tests {
         assert!(config.library.ignored_subs.is_empty());
         assert!(config.samples.sample_write);
         assert_eq!(config.credentials.credential_dir, "credentials");
-        assert!(!config.splineai.enabled);
-        assert!(config.splineai.endpoint.is_empty());
+        assert!(!config.aisplined.enabled);
+        assert!(config.aisplined.endpoint.is_empty());
+        assert_eq!(config.aisplined.minimum_short_side, 600);
+        assert!(!config.aisplined.allow_below_minimum_override);
         assert_eq!(
             config.output.file_formats,
             vec!["jpeg".to_string(), "png".to_string(), "webp".to_string()]
         );
         assert!(config.output.preserve_file);
         assert!(config.sources.exclude_cover_sources.is_empty());
-        assert!(config.source_policies.is_empty());
+        assert_eq!(config.source_policies.len(), 1);
+        assert!(!config.source_policies["amazon"].enabled);
         assert_eq!(
             config.sources.cover_sources.len(),
             SUPPORTED_COVER_SOURCES.len()
@@ -772,11 +803,13 @@ mod tests {
         assert!(!text.contains("[musicbrainz]"));
         assert!(!text.contains("credential_file"));
         assert!(!text.contains("token_file"));
-        assert!(text.contains("[splineai]"));
+        assert!(text.contains("[aisplined]"));
         assert_eq!(parsed.scan.cache_dir, "_cache");
         assert_eq!(parsed.credentials.credential_dir, "credentials");
-        assert!(!parsed.splineai.enabled);
-        assert!(parsed.splineai.endpoint.is_empty());
+        assert!(!parsed.aisplined.enabled);
+        assert!(parsed.aisplined.endpoint.is_empty());
+        assert_eq!(parsed.aisplined.minimum_short_side, 600);
+        assert!(!parsed.aisplined.allow_below_minimum_override);
         assert!(parsed.scan.scan_library_dir.is_empty());
         assert!(parsed.library.music_library.is_empty());
         assert!(parsed.library.ignored_subs.is_empty());
@@ -859,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn musicbrainz_source_policy_controls_metadata_runtime_without_becoming_cover_source() {
+    fn musicbrainz_source_policy_controls_metadata_and_artwork_runtime() {
         let mut config = Config::default();
         config.source_policies.insert(
             "musicbrainz".to_string(),
@@ -874,7 +907,7 @@ mod tests {
         assert!(!parsed.musicbrainz.enabled);
         assert!(parsed.musicbrainz.source_override);
         assert!(
-            !parsed
+            parsed
                 .sources
                 .cover_sources
                 .iter()

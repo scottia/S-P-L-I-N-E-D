@@ -155,7 +155,7 @@ namespace Splined.WindowsGui
 
         public static string Status(ConfigState state, string provider)
         {
-            if (provider == "itunes" || provider == "coverartarchive" || provider == "deezer") return "READY";
+            if (provider == "itunes" || provider == "coverartarchive" || provider == "deezer" || provider == "amazon") return "READY";
             Dictionary<string, object> values = Load(state, provider);
             if (provider == "discogs") return Has(values, "token") ? (WasValidated(values) ? "TESTED" : "SAVED") : "PENDING";
             if (provider == "fanarttv")
@@ -979,14 +979,14 @@ namespace Splined.WindowsGui
             Size = new Size(700, 590);
             MinimumSize = new Size(620, 520);
             Font = ThemeManager.UiFont(ThemeFontRole.Body);
-            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 4, RowCount = 11 };
+            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 4, RowCount = 12 };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 31));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));
-            for (int i = 2; i < 9; i++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+            for (int i = 2; i < 10; i++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
             Controls.Add(root);
@@ -994,7 +994,7 @@ namespace Splined.WindowsGui
             root.Controls.Add(title, 0, 0); root.SetColumnSpan(title, 4);
             Label summary = new Label { Text = "READY needs no credential. SAVED only means local data exists; TESTED means the provider accepted a live request.", Dock = DockStyle.Fill };
             root.Controls.Add(summary, 0, 1); root.SetColumnSpan(summary, 4);
-            string[,] providers = { { "iTunes", "itunes" }, { "Discogs", "discogs" }, { "Last.fm", "lastfm" }, { "Fanart.tv", "fanarttv" }, { "Cover Art Archive", "coverartarchive" }, { "Deezer", "deezer" }, { "MusicBrainz OAuth", "musicbrainz" } };
+            string[,] providers = { { "iTunes", "itunes" }, { "Discogs", "discogs" }, { "Last.fm", "lastfm" }, { "Fanart.tv", "fanarttv" }, { "MusicBrainz / CAA", "musicbrainz" }, { "Cover Art Archive", "coverartarchive" }, { "Deezer", "deezer" }, { "Amazon Store", "amazon" } };
             for (int index = 0; index < providers.GetLength(0); index++)
             {
                 string key = providers[index, 1];
@@ -1034,10 +1034,10 @@ namespace Splined.WindowsGui
                 }
             }
             hideOnLaunch = new FluentCheckBox { Text = "Do not show Status on launch", Dock = DockStyle.Fill, Checked = !ConfigStore.LoadUi().ShowStatusOnLaunch };
-            root.Controls.Add(hideOnLaunch, 0, 10); root.SetColumnSpan(hideOnLaunch, 3);
+            root.Controls.Add(hideOnLaunch, 0, 11); root.SetColumnSpan(hideOnLaunch, 3);
             Button close = new FluentButton { Text = "Close", Dock = DockStyle.Fill, Margin = new Padding(18, 6, 18, 6) };
             close.Click += CloseClicked;
-            root.Controls.Add(close, 3, 10);
+            root.Controls.Add(close, 3, 11);
             ThemeManager.Apply(this, ThemeManager.CurrentTheme);
             foreach (Label label in Controls.Find("providerStatusLabel", true).OfType<Label>())
                 label.ForeColor = CredentialStore.StatusColor(Convert.ToString(label.Tag));

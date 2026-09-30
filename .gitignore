@@ -1,4 +1,6 @@
 /target
+/python/pyratatui_input/target/
+/python/pyratatui_input/dist/
 /.security-tools/
 /.venv/
 **/__pycache__/

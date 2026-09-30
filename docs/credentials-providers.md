@@ -14,10 +14,11 @@ Docker normally uses `/credentials`. Standard filenames are fixed beneath that d
 | Fanart.tv | `fanarttv.json` | API key required |
 | Last.fm | `lastfm.json` | API key required; account session optional |
 | Discogs | `discogs.json` | Personal access token required |
-| MusicBrainz | `musicbrainz.json` | Anonymous metadata supported; OAuth optional |
+| MusicBrainz / Cover Art Archive | `musicbrainz.json` | Anonymous release authority and artwork; OAuth optional |
 | iTunes / Apple | none | Anonymous |
 | Cover Art Archive | none | Anonymous |
 | Deezer | none | Anonymous |
+| Amazon Store | none | Anonymous, opt-in best-effort search |
 
 Credential JSON is sensitive. Never commit it, attach it to an issue, or copy secrets into `config.toml`.
 
@@ -49,6 +50,10 @@ Fanart.tv uses the v3.2 album endpoint. The credential contract is:
 `api_version` must be `v3.2` for the canonical saved credential format. `client_key` is optional. The Windows credential editor always saves the v3.2 marker and validates against the v3.2 album endpoint.
 
 Python/Docker `splined --oauth-validation` is intentionally tolerant of legacy or manually created Fanart.tv files whose `api_version` marker is missing or stale. It prints `WARN`, then tests the saved API key and optional client key against the live v3.2 release-group album endpoint. A missing or stale marker alone is not treated as an authentication failure; the live request determines credential `PASS` or `FAIL`. New or rewritten credential files should still use `"api_version": "v3.2"`.
+
+Operational provider discovery also always uses the v3.2 release-group album
+endpoint and its `albums` response shape. A credential-file marker never
+downgrades the runtime request to v3.
 
 ## Last.fm
 
@@ -93,7 +98,10 @@ The Windows saved-credential test validates the token with the Discogs API v2 `/
 
 ## MusicBrainz
 
-MusicBrainz is metadata authority, not an artwork provider. Anonymous metadata requests remain available when OAuth is disabled. The standard `musicbrainz.json` can contain:
+MusicBrainz is release authority and does not host image bytes. Its Artwork
+Source Priority entry resolves Cover Art Archive images from MusicBrainz
+release identity; anonymous requests remain available when OAuth is disabled.
+The standard `musicbrainz.json` can contain:
 
 ```json
 {
