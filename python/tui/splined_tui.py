@@ -347,6 +347,7 @@ class TuiState:
     batch_return_pending: bool = False
     library_activate_guard_until: float = 0.0
     help_open: bool = False
+    help_topic: str = "keys"
     dialog_open: bool = False
     finished: bool = False
     exit_requested: bool = False
@@ -1173,6 +1174,26 @@ def _register_hit(
                 value,
             )
         )
+
+
+def _render_panel_help_marker(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+    topic: str,
+) -> None:
+    """Paint and register a reusable contextual-help control on a panel."""
+    if int(area.width) < 8 or int(area.height) < 2:
+        return
+    marker = Rect(int(area.x) + int(area.width) - 5, int(area.y), 3, 1)
+    frame.render_widget(
+        Paragraph.from_string("[?]").style(
+            style(theme, Semantic.SPECIAL, bold=True)
+        ),
+        marker,
+    )
+    _register_hit(state, "panel-help", marker, value=topic)
 
 
 def _row_rect(area: Rect, row: int, *, left: int = 1, right: int = 1) -> Rect:
@@ -3046,8 +3067,18 @@ def _render_musicbrainz(
         )
     )
     frame.render_widget(paragraph, area)
+    _render_panel_help_marker(
+        frame,
+        area,
+        state,
+        theme,
+        "musicbrainz-matches",
+    )
 
-    url_x = int(area.x) + 1 + url_start
+    # ``card`` contributes one border cell plus one left-padding cell.
+    # Hit geometry must identify the painted ``[URL]`` itself so the OSC-8
+    # metadata repaint lands on URL rather than leaving doubled characters.
+    url_x = int(area.x) + 2 + url_start
     for visible_index, (kind, option_index, _label) in enumerate(visible_rows):
         if kind != "result":
             continue
@@ -3238,7 +3269,8 @@ def _register_candidate_hits(
             value=candidate.ai_key,
         )
     if "url" in grid.columns:
-        url_x = int(area.x) + grid.start("url")
+        # Table content starts after the card border and left padding.
+        url_x = int(area.x) + 2 + grid.start("url")
         if candidate.provenance == "[URL]" and candidate.url:
             _register_hit(
                 state,
@@ -3294,6 +3326,13 @@ def _render_candidate_table_group(
         .column_spacing(grid.spacing)
     )
     frame.render_widget(table, area)
+    _render_panel_help_marker(
+        frame,
+        area,
+        state,
+        theme,
+        "source-candidates",
+    )
     for row, candidate in enumerate(candidates):
         _register_candidate_hits(
             state,
@@ -3873,6 +3912,13 @@ def _render_current_album_authority(
         .padding(left=1, right=1)
     )
     frame.render_widget(Paragraph(Text(lines)).block(authority_block), authority)
+    _render_panel_help_marker(
+        frame,
+        authority,
+        state,
+        theme,
+        "fallback-authority",
+    )
     for row, width in edit_boxes:
         _register_hit(
             state,
@@ -3981,6 +4027,13 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
                 card(theme, "PREFERRED SOURCE CANDIDATE", preferred_semantic)
             ),
             preferred,
+        )
+        _render_panel_help_marker(
+            frame,
+            preferred,
+            state,
+            theme,
+            "source-candidates",
         )
     else:
         _render_candidate_table_group(
@@ -4362,6 +4415,13 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         index=source_index,
         value=source,
     )
+    _render_panel_help_marker(
+        frame,
+        panels[0],
+        state,
+        theme,
+        "source-policy",
+    )
 
     labels = {
         "enabled": "Source Enabled",
@@ -4402,6 +4462,13 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         Line([Span("Delete clears optional · Ctrl+S Save/Apply · Esc back", style(theme, Semantic.DEBUG))]),
     ])
     frame.render_widget(Paragraph(Text(global_lines)).wrap(True, True).block(card(theme, "RANGE EFFECT / POLICY PREVIEW", Semantic.SPECIAL if draft.dirty else Semantic.ACCEPTED)), panels[2])
+    _render_panel_help_marker(
+        frame,
+        panels[2],
+        state,
+        theme,
+        "source-policy",
+    )
     for index, key in enumerate(GLOBAL_POLICY_FIELDS):
         _register_hit(state, "policy-global-field", _row_rect(panels[2], index + 1), index=index, value=key)
 
@@ -4628,61 +4695,133 @@ def _footer_text(state: TuiState) -> str:
                 if state.input_request.context.get("back_action") == "source-results"
                 else "album list"
             )
-            return f"↑/↓ or click choose MB match • Enter search artwork • Esc {back} • Ctrl+C [Exit]"
+            return f"↑/↓ or click choose MB match • Enter search artwork • Esc {back} • Ctrl+C [Exit] • ? help"
         if kind == "fallback-picker":
             back = (
                 "MB results"
                 if state.input_request.context.get("musicbrainz_back")
                 else "album list"
             )
-            return f"↑/↓ choose • Enter exact • S suggested • Click [E] edit MBID • M MB search • B leave • Esc {back} • Ctrl+C [Exit]"
+            return f"↑/↓ choose • Enter exact • S suggested • Click [E] edit MBID • M MB search • B leave • Esc {back} • Ctrl+C [Exit] • ? help"
         return "↑/↓ choose • Enter exact • S suggested • U URL • B bypass • Ctrl+C [Exit] • ? help"
     if state.finished:
         return "Enter / q Exit SPLINED • Ctrl+C [Exit] • ? help"
     return options_footer
 
 
+def _context_help_topic(state: TuiState) -> str:
+    request_kind = state.input_request.kind if state.input_request else ""
+    if state.workflow == "library" and state.workspace == "policy":
+        return "source-policy"
+    if request_kind == "musicbrainz-results":
+        return "musicbrainz-matches"
+    if request_kind == "fallback-picker":
+        return "source-candidates"
+    return "keys"
+
+
+def _help_content(topic: str) -> tuple[str, str]:
+    topics = {
+        "fallback-authority": (
+            "FALLBACK ARTIST / ALBUM INFO",
+            "These are the MusicBrainz identities used for the current fallback search.\n\n"
+            "Artist ID      constrains the credited Artist authority.\n"
+            "Album ID       is the exact Release edition currently inspected.\n"
+            "Matched Track  is the Recording identity that led to the release list.\n\n"
+            "Click an MBID to follow its terminal hyperlink. Click [E] to make a "
+            "session-only correction; Enter validates and re-queries. SPLINED does "
+            "not write these fallback authority IDs into curated compilation tags.",
+        ),
+        "musicbrainz-matches": (
+            "MUSICBRAINZ MATCHES",
+            "Each numbered row is an exact MusicBrainz Release edition. Country, "
+            "date, type, Artist, and title are matching evidence.\n\n"
+            "[URL] is a quick Cover Art Archive preview. It normally uses the "
+            "Release Group, so several editions can share one preview. A missing "
+            "front image does not invalidate the MusicBrainz Release.\n\n"
+            "Resolution belongs to the exact Release row and appears after enabled "
+            "artwork sources are inspected. Green is the current source result; blue "
+            "is previously inspected and cached. M returns to this unchanged list.\n\n"
+            "Use resolution as evidence, then approve from Source Candidates where "
+            "normal range, priority, shape, and fallback policy still apply.",
+        ),
+        "source-candidates": (
+            "SOURCE CANDIDATES",
+            "These are artwork bytes returned by enabled sources for the current "
+            "Release authority. The preferred row is SPLINED's policy projection, "
+            "not an automatic write.\n\n"
+            "Resolution, Range Type, Distance, Square, Acceptable, and Approved are "
+            "evaluated together with Artwork Source Priority. Hover or click [URL] "
+            "to preview the exact remote image in memory.\n\n"
+            "Enter chooses the highlighted row; S chooses the suggested row. M "
+            "returns to MusicBrainz Matches so another Release can be inspected. "
+            "Only final approval writes artwork.",
+        ),
+        "source-policy": (
+            "ARTWORK SOURCE POLICY",
+            "Sources run in the displayed priority order when enabled. Per-source "
+            "Minimum Range Type and Fallback Range decide which results remain "
+            "eligible; source override and primary-image policy add provider-specific "
+            "constraints.\n\n"
+            "MusicBrainz supplies release authority and Cover Art Archive candidates. "
+            "Amazon supplies normalized Store image candidates. Both obey the same "
+            "configured range ladder and fallback rules as other sources.\n\n"
+            "The preview shows the effective result for the focused source. Ctrl+S "
+            "is the explicit Save & Apply action; Esc leaves unapplied edits behind.",
+        ),
+        "keys": (
+            "KEY HINTS",
+            "↑ / ↓          navigate\n"
+            "← / →          change context\n"
+            "Tab / Shift+Tab move workflow region\n"
+            "/              focus current Artist/Album filter\n"
+            "Type           live filtering when a filter is focused\n"
+            "Enter / Space  select / activate\n"
+            "Esc            close / back\n"
+            "PgUp / PgDn    page-scroll focused list\n"
+            "Home / End     first / last row\n"
+            "Mouse / touch  rows, controls, filters, links, dialogs, scrolling\n"
+            "P / Ctrl+S     source policy / explicit Save & Apply\n"
+            "E              edit Config v5 in micro; reload scan on save\n"
+            "R              refresh immediate Artist folder list\n"
+            "S              use suggested candidate\n"
+            "K              keep local artwork\n"
+            "F              edit fallback artist/album\n"
+            "M              MusicBrainz retry/search/pick\n"
+            "B              confirm bypass\n"
+            "0-9            exact candidate selection\n"
+            "U              identify highlighted [URL]\n"
+            "[?] / ?        contextual help / close help\n"
+            "Ctrl+C         stop and restore terminal",
+        ),
+    }
+    return topics.get(topic, topics["keys"])
+
+
 def _render_help(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
-    width = min(max(44, area.width - 8), 82)
-    height = min(max(12, area.height - 4), 25)
+    title, text = _help_content(state.help_topic)
+    width = min(min(max(52, int(area.width) - 12), 104), int(area.width))
+    text_width = max(1, width - 4)
+    wrapped_lines = sum(
+        max(1, (len(line) + text_width - 1) // text_width)
+        for line in text.splitlines()
+    )
+    desired_height = max(12, wrapped_lines + 4)
+    height = min(desired_height, 34, max(1, int(area.height) - 2))
     popup = Rect(
         area.x + max(0, (area.width - width) // 2),
         area.y + max(0, (area.height - height) // 2),
-        min(width, area.width),
+        width,
         min(height, area.height),
-    )
-    text = (
-        "↑ / ↓          navigate\n"
-        "← / →          change context\n"
-        "Tab / Shift+Tab move workflow region\n"
-        "/              focus current Artist/Album filter\n"
-        "Type           live filtering when a filter is focused\n"
-        "Enter / Space  select / activate\n"
-        "Esc            close / back\n"
-        "PgUp / PgDn    page-scroll focused list\n"
-        "Home / End     first / last row\n"
-        "Mouse / touch  rows, controls, filters, links, dialogs, scrolling\n"
-        "P / Ctrl+S     source policy / explicit Save & Apply\n"
-        "E              edit Config v5 in micro; reload current scan on save\n"
-        "R              refresh immediate Artist folder list\n"
-        "S              use suggested candidate\n"
-        "K              keep local artwork\n"
-        "F              edit fallback artist/album\n"
-        "M              MusicBrainz retry/search/pick\n"
-        "B              confirm bypass\n"
-        "0-9            exact candidate selection\n"
-        "U              identify highlighted [URL] (browser navigation is terminal-owned)\n"
-        "AI ENHANCED    one candidate per album when real runtime is available\n"
-        "?              close this help\n"
-        "Ctrl+C         stop and restore terminal"
     )
     frame.render_widget(Clear(), popup)
     frame.render_widget(
         Paragraph.from_string(text)
-        .block(card(theme, "HELP / KEY HINTS", Semantic.ACTIVE))
+        .block(card(theme, f"HELP · {title} · Enter/Esc CLOSE", Semantic.ACTIVE))
         .wrap(True, True),
         popup,
     )
+    _register_hit(state, "help-close", popup, value=state.help_topic)
 
 
 def _render_dialog(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -5606,12 +5745,9 @@ def write_terminal_links(state: TuiState, writer: Any) -> None:
             if region.target == "musicbrainz-link"
             else "URL"
         )
-        column = region.x + (
-            1
-            if region.target
-            in {"musicbrainz-link", "musicbrainz-artwork-url"}
-            else 2
-        )
+        # ANSI cursor columns are one-based. URL regions include their opening
+        # bracket, so the linked label begins one additional cell to the right.
+        column = region.x + (1 if region.target == "musicbrainz-link" else 2)
         writer.write(
             f"\x1b[{region.y + 1};{column}H"
             f"{osc8_link(label, region.value)}"
@@ -5785,6 +5921,14 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         f"workflow={state.workflow!r} workspace={state.workspace!r} "
         f"waiting={adapter.waiting.is_set()} {_library_snapshot(state)}"
     )
+    if state.help_open:
+        if region.target == "help-close":
+            state.help_open = False
+        return
+    if region.target == "panel-help":
+        state.help_topic = region.value or "keys"
+        state.help_open = True
+        return
     if state.dialog_open:
         if region.target == "dialog-yes":
             _apply_dialog_decision(state, adapter, True)
@@ -6004,10 +6148,11 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             )[:36]
         return
     if state.help_open:
-        if action in {Action.HELP, Action.BACK}:
+        if action in {Action.HELP, Action.BACK, Action.ACTIVATE, Action.TOGGLE}:
             state.help_open = False
         return
     if action is Action.HELP:
+        state.help_topic = _context_help_topic(state)
         state.help_open = True
         return
     if state.finished and action in {Action.ACTIVATE, Action.QUIT, Action.BACK}:

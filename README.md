@@ -155,6 +155,11 @@ approval, and the next scan skips already verified writes. No folder-level
 `cover.*` is created, changed, or removed for this compilation path. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
+The MusicBrainz list uses release-group artwork only as a quick visual preview;
+its Resolution field is separate, Release-MBID-specific evidence from the best
+candidate returned by enabled SPLINED sources. See
+[Ratatui TUI: Reading MusicBrainz match evidence](docs/ratatui-tui.md#reading-musicbrainz-match-evidence).
+
 MusicBrainz is available in Artwork Source Priority as release authority backed
 by Cover Art Archive image bytes. Amazon Store artwork is also available as an
 opt-in, credential-free source; SPLINED normalizes accepted

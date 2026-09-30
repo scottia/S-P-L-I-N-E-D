@@ -1149,6 +1149,11 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         write_terminal_links(state, stream)
         encoded = stream.getvalue()
         self.assertIn(osc8_link("URL", url.value), encoded)
+        self.assertIn(
+            f"\x1b[{url.y + 1};{url.x + 2}H"
+            f"{osc8_link('URL', url.value)}",
+            encoded,
+        )
         self.assertNotIn("OPEN IN DEFAULT BROWSER", encoded)
         self.assertNotIn("\x1b[4m", encoded)
 
@@ -1311,10 +1316,16 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         artwork_url = _region(state, "musicbrainz-artwork-url", 1)
         preferred_url = _region(state, "candidate-url")
         self.assertTrue(artwork_url.value.endswith("/front"))
-        self.assertEqual(artwork_url.x, preferred_url.x + 1)
+        self.assertEqual(artwork_url.x, preferred_url.x)
         stream = io.StringIO()
         write_terminal_links(state, stream)
-        self.assertIn(osc8_link("URL", artwork_url.value), stream.getvalue())
+        encoded = stream.getvalue()
+        self.assertIn(osc8_link("URL", artwork_url.value), encoded)
+        self.assertIn(
+            f"\x1b[{artwork_url.y + 1};{artwork_url.x + 2}H"
+            f"{osc8_link('URL', artwork_url.value)}",
+            encoded,
+        )
         with mock.patch(
             "tui.splined_tui._start_remote_url_preview"
         ) as preview:
@@ -1330,6 +1341,51 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         self.assertEqual(state.selected_index, 1)
         handle_key(state, adapter, _Event("Enter"))
         self.assertEqual(adapter.responses.get_nowait(), "2")
+
+    def test_panel_help_opens_the_selected_context_and_consumes_close(self) -> None:
+        state = self._candidate_state()
+        state.apply(
+            "input",
+            {
+                "prompt": "MusicBrainz release #: ",
+                "context": {
+                    "kind": "musicbrainz-results",
+                    "options": [
+                        {
+                            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                            "artist": "Percy Faith",
+                            "title": "A Summer Place",
+                            "decade": "1960s",
+                            "release_class": "Album",
+                            "artwork_url": "https://coverartarchive.org/release-group/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/front",
+                        }
+                    ],
+                },
+            },
+        )
+        adapter = TuiAdapter()
+        render(_Frame(220, 50), state, select_theme("OLED"))
+        marker = next(
+            region
+            for region in state.hit_regions
+            if region.target == "panel-help"
+            and region.value == "musicbrainz-matches"
+        )
+        handle_mouse(state, adapter, _center(marker))
+        self.assertTrue(state.help_open)
+        self.assertEqual(state.help_topic, "musicbrainz-matches")
+
+        render(_Frame(220, 50), state, select_theme("OLED"))
+        handle_mouse(state, adapter, _center(_region(state, "help-close")))
+        self.assertFalse(state.help_open)
+        self.assertTrue(adapter.responses.empty())
+
+        handle_key(state, adapter, _Event("?"))
+        self.assertTrue(state.help_open)
+        self.assertEqual(state.help_topic, "musicbrainz-matches")
+        handle_key(state, adapter, _Event("Enter"))
+        self.assertFalse(state.help_open)
+        self.assertTrue(adapter.responses.empty())
 
     def test_musicbrainz_rows_group_newest_decade_and_base_release_types(self) -> None:
         rows = _musicbrainz_grouped_rows(

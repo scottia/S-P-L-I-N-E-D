@@ -319,6 +319,13 @@ The compilation branch is explicit and per track:
    candidates and diagnostics without repeating provider discovery or image
    downloads. Escape from artwork sources returns to the same cached match
    list. Resolution is populated only after that release has been inspected.
+   Preview and Resolution deliberately describe different evidence: preview
+   uses release-group authority, while Resolution is cached against the exact
+   Release MBID and summarizes the best inspected result from all enabled
+   artwork sources. Multiple editions may therefore share a preview but retain
+   different resolution/source results. Higher resolution is useful comparison
+   evidence, not a replacement for normal range, source-priority, shape,
+   approval, and fallback policy.
 10. The three `[E]` controls in `FALLBACK ARTIST / ALBUM INFO` accept
    session-only Artist, Release, and Recording MBID corrections. Enter validates
    the UUID and performs a fresh authority/artwork query. Editing Artist or

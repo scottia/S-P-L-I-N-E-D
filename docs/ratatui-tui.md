@@ -393,6 +393,73 @@ restores its candidates and diagnostics without repeating MusicBrainz search,
 artwork-provider discovery, or candidate downloads. Escape from the
 MusicBrainz list leaves the Manual Album and returns to Select Media.
 
+### Reading MusicBrainz match evidence
+
+The match list intentionally keeps four related identities separate:
+
+| Evidence | Meaning | Scope |
+| --- | --- | --- |
+| Artist and matched Track | Recording-search evidence used to find plausible releases | Current track/search |
+| Release MBID | Exact edition selected for source discovery and cache identity | One MusicBrainz release |
+| Release-group MBID | Album-family authority used for the lightweight CAA preview | Related releases/editions |
+| Resolution | Best inspected candidate returned by the currently active SPLINED sources | Exact selected Release MBID |
+
+Consequences and assumptions:
+
+- Several country/date editions may share one release-group preview URL. This
+  is expected; they remain separate Release MBIDs with separate source-result
+  caches and may acquire different resolution evidence.
+- `[URL]` in `MUSICBRAINZ MATCHES` is a quick Cover Art Archive preview of the
+  release group, not proof that the exact edition is correct and not the final
+  source candidate. If no group MBID exists, it previews the exact release.
+- A valid CAA endpoint can return no image because no community-selected front
+  image exists. That does not invalidate the MusicBrainz match.
+- A blank Resolution means the row has not been inspected during the active
+  Album decision. It does not mean that no provider has artwork.
+- A populated Resolution is attached to the Release MBID and comes from the
+  best candidate SPLINED observed after running the enabled sources. It is not
+  the dimensions of the release-group preview.
+- A larger resolution is useful evidence that the selected Release MBID led to
+  stronger available source material, but resolution alone does not determine
+  the preferred candidate. Range policy, source priority, image shape,
+  approval state, and configured fallback rules still apply.
+- Green means the source results presently on screen. Blue means inspected and
+  cached during this Album decision. An uncolored row has not yet run source
+  discovery. Exactly one listed row is green when the current release is in
+  the result set.
+
+Recommended review loop:
+
+1. Compare Artist, Country, Date, Release type, and title.
+2. Hover or click `[URL]` for a quick album-family artwork check.
+3. Select the most plausible Release MBID and inspect its enabled-source
+   candidates and Resolution.
+4. Press `M` to return to the unchanged list. Compare another uncolored row if
+   the artwork, resolution, or edition is unsuitable.
+5. Re-select a green or blue row freely; cached source results are restored
+   without another provider query or download.
+6. Approve only from Source Candidates. The MusicBrainz match preview itself
+   never writes artwork or metadata.
+
+### Contextual `[?]` help
+
+Panels with additional policy or matching guidance display a `[?]` control on
+their upper-right border. Click `[?]` to open a bordered help widget for that
+panel. Press Enter, Escape, `?`, or click the help widget to close it without
+changing the underlying selection. The global `?` key opens the topic for the
+active workflow; outside a contextual workflow it opens the key reference.
+
+Initial contextual topics cover `MUSICBRAINZ MATCHES`, `FALLBACK ARTIST / ALBUM
+INFO`, source-candidate evaluation, and Artwork Source Priority/range policy.
+The marker and topic mapping are reusable so later panels can add focused help
+without enlarging the normal layout.
+
+This is the terminal equivalent of a Windows GUI information button, not a
+native Windows `ToolTip` window. Keeping it inside Ratatui makes the same help
+available in Windows Terminal, Linux terminals, Docker, and SSH sessions; it
+also avoids a hover-only interaction that keyboard and touch users could not
+reach.
+
 If an edited ID is valid UUID syntax but MusicBrainz rejects the authority or
 returns no artwork candidate, the candidate screen remains open with the
 failure reason and all three `[E]` controls. Enter cannot select an empty row;
