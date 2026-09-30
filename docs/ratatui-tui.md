@@ -292,7 +292,10 @@ the Album Run Report; Enter or Escape there returns to retained Select Media.
 
 Every Candidate Decision uses one MusicBrainz interaction: `M` opens the
 integrated release list, Enter searches artwork for that release, and Escape
-from source results returns to the cached list. Regular Albums write approved
+from source results returns to the cached list. The release whose source
+results are currently loaded is green; previously inspected releases are blue.
+Selecting either color restores its downloaded candidates and diagnostics
+without querying the artwork providers again. Regular Albums write approved
 folder-level `cover.*`; the compilation restriction above writes embedded art.
 All remote candidates expose the successfully downloaded direct image URL for
 mouse/`U` preview before approval.
@@ -367,14 +370,22 @@ title. These edits and search selections never write MBID tags; only approved
 embedded artwork is written.
 
 When local IDs are absent, ID lookup fails, or `M` is pressed, the lower
-Candidate Decision area becomes `MUSICBRAINZ MATCHES`. Numbered rows are sorted
-and labeled by recording Artist, release decade, and release type (Album,
-Soundtrack, or Compilation), followed by the matched Track and release title.
-The Artwork panel intentionally remains empty until a row is selected. Enter
-on a keyboard choice—or Enter after clicking a row—uses that release as
-session authority and runs the normal source candidate search. Escape from the
-source candidates restores the same in-memory result list, without repeating
-the MusicBrainz request, so another release can be tested. Escape from the
+Candidate Decision area becomes `MUSICBRAINZ MATCHES`. Decades are ordered
+newest to oldest with `UNKNOWN` last. Every decade contains release-type
+sections for Album, Single, EP, Compilation, and Soundtrack, followed by any
+additional MusicBrainz types. One heading per decade labels the number, Artist,
+Country, Date, known Resolution, Release, and URL columns. A direct Cover Art
+Archive front-image `[URL]` can be hovered or clicked to preview that row in
+Artwork before selecting it; the resolution remains blank until SPLINED has
+inspected the release's source results.
+
+Enter on a keyboard choice—or Enter after clicking a row—uses that release as
+session authority and runs the normal source candidate search. The release
+whose candidates are currently loaded is the single green row. Releases
+inspected earlier in the active Album are blue. Escape from source candidates
+restores the same in-memory result list. Re-selecting a green or blue row
+restores its candidates and diagnostics without repeating MusicBrainz search,
+artwork-provider discovery, or candidate downloads. Escape from the
 MusicBrainz list leaves the Manual Album and returns to Select Media.
 
 If an edited ID is valid UUID syntax but MusicBrainz rejects the authority or

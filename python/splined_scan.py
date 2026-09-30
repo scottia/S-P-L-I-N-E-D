@@ -142,6 +142,17 @@ def fallback_suggested(
     return min(candidates, key=key)
 
 
+def _candidate_resolution_label(
+    candidates: list[core.Candidate],
+    cfg: dict[str, Any],
+    format_order: list[str],
+) -> str:
+    candidate = select_best(candidates, cfg, format_order) or fallback_suggested(
+        candidates, cfg, format_order
+    )
+    return f"{candidate.width}x{candidate.height}" if candidate is not None else ""
+
+
 def candidate_browser_url(candidate: core.Candidate) -> str:
     """Return the successful remote resource without changing fetch identity."""
     return str(candidate.ref.browser_url or candidate.ref.url).strip()
@@ -907,9 +918,15 @@ def _manual_remote_candidates(
     force_refresh: bool = False,
 ) -> tuple[list[core.Candidate], list[tuple[str, str]]]:
     key = str(release.mbid).casefold()
-    cached = state.setdefault("release_candidates", {}).get(key)
+    release_cache = state.setdefault("release_candidates", {})
+    diagnostic_cache = state.setdefault("release_diagnostics", {})
+    cached = release_cache.get(key)
     if cached is not None and not force_refresh:
-        return list(cached), []
+        core.debug_log(
+            "compilation.release_results.cache_hit "
+            f"mbid={key!r} candidates={len(cached)}"
+        )
+        return list(cached), list(diagnostic_cache.get(key, []))
     refs, diagnostics = core.discover_all(
         http,
         config_file,
@@ -919,14 +936,32 @@ def _manual_remote_candidates(
         queried_sources=api_queried,
     )
     downloaded, download_diagnostics = core.download_candidates(
-        http, refs, sources, cache, cfg
+        http,
+        refs,
+        sources,
+        cache,
+        cfg,
+        # Keep inspected releases available throughout the active compilation
+        # so green/blue MusicBrainz rows never repeat provider work.
+        clean_first=not bool(release_cache),
     )
     diagnostics.extend(download_diagnostics)
-    state["release_candidates"][key] = list(downloaded)
+    release_cache[key] = list(downloaded)
+    diagnostic_cache[key] = list(diagnostics)
+    state.setdefault("release_resolutions", {})[key] = _candidate_resolution_label(
+        downloaded,
+        cfg,
+        core.formats(cfg),
+    )
     return downloaded, diagnostics
 
 
-def _manual_discovery_options(items: list[Any]) -> list[dict[str, str]]:
+def _manual_discovery_options(
+    items: list[Any],
+    *,
+    current_release_id: str = "",
+    inspected_resolutions: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
     for item in items:
         year = str(item.release_date or "")[:4]
@@ -948,11 +983,24 @@ def _manual_discovery_options(items: list[Any]) -> list[dict[str, str]]:
                 "score": str(item.score),
             }
         )
-    return options
+    return core.decorate_musicbrainz_results(
+        options,
+        current_release_id=current_release_id,
+        inspected_resolutions=inspected_resolutions,
+    )
 
 
-def _manual_choose_release(items: list[Any]) -> tuple[str, Any | None]:
-    options = _manual_discovery_options(items)
+def _manual_choose_release(
+    items: list[Any],
+    *,
+    current_release_id: str = "",
+    inspected_resolutions: dict[str, str] | None = None,
+) -> tuple[str, Any | None]:
+    options = _manual_discovery_options(
+        items,
+        current_release_id=current_release_id,
+        inspected_resolutions=inspected_resolutions,
+    )
     print()
     print(f"  {core.cyan('MusicBrainz matches')}")
     for number, option in enumerate(options, 1):
@@ -973,7 +1021,17 @@ def _manual_choose_release(items: list[Any]) -> tuple[str, Any | None]:
         if answer in {"__cancel__", "__manual_album_exit__", "b"}:
             return "exit-album", None
         if answer.isdigit() and 1 <= int(answer) <= len(items):
-            return "selected", items[int(answer) - 1]
+            selected_id = options[int(answer) - 1].get("id", "")
+            selected = next(
+                (
+                    item
+                    for item in items
+                    if str(item.release_mbid).casefold() == selected_id.casefold()
+                ),
+                None,
+            )
+            if selected is not None:
+                return "selected", selected
         print("    Choose a listed MusicBrainz release number or Esc.")
 
 
@@ -1025,7 +1083,11 @@ def _manual_choose_candidate(
             }
             return "requery", None, fields
         if answer == "m":
-            return "discover", None, {}
+            return (
+                "mb-results" if has_musicbrainz_results else "discover",
+                None,
+                {},
+            )
         if answer == "b":
             return "unchanged", None, {}
         if answer == "s" and suggested is not None:
@@ -1275,7 +1337,11 @@ def run_manual_compilation_album(
                 )
                 if discovery_results:
                     decision, discovered_item = _manual_choose_release(
-                        discovery_results
+                        discovery_results,
+                        current_release_id=authority["release_id"],
+                        inspected_resolutions=state.setdefault(
+                            "release_resolutions", {}
+                        ),
                     )
                     if decision == "exit-album":
                         if mode == "write":
@@ -2568,33 +2634,24 @@ def _run_scan_dir_batch(
             operator_release_selected = False
             diagnostics: list[tuple[str, str]] = []
             completion_outcome: str | None = None
+            release_result_cache: dict[
+                str,
+                tuple[
+                    list[core.Candidate],
+                    list[tuple[str, str]],
+                    core.Release,
+                ],
+            ] = {}
+            release_resolutions: dict[str, str] = {}
             mb_retry_available = bool(
                 core.source_policy(cfg, "musicbrainz").get("enabled", True)
             )
 
             while True:
-                if recovered_release is not None:
-                    refs, diagnostics = core.discover_all(
-                        http,
-                        config_file,
-                        cfg,
-                        recovered_release,
-                        sources,
-                        queried_sources=api_queried,
-                    )
-                    sample_release = recovered_release
-                else:
-                    refs, diagnostics = core.discover_fallback(
-                        http,
-                        config_file,
-                        cfg,
-                        search_artist,
-                        search_album,
-                        sources,
-                        release_mbid=mbid,
-                        queried_sources=api_queried,
-                    )
-                    sample_release = core.Release(
+                sample_release = (
+                    recovered_release
+                    if recovered_release is not None
+                    else core.Release(
                         mbid=mbid or "",
                         title=search_album,
                         artist_credit=search_artist,
@@ -2602,9 +2659,64 @@ def _run_scan_dir_batch(
                         release_group_title=None,
                         track_count=None,
                     )
+                )
+                cache_identity = (
+                    f"release:{sample_release.mbid.casefold()}"
+                    if sample_release.mbid
+                    else (
+                        f"fallback:{search_artist.strip().casefold()}\0"
+                        f"{search_album.strip().casefold()}"
+                    )
+                )
+                cached_result = release_result_cache.get(cache_identity)
+                if cached_result is not None:
+                    remote = list(cached_result[0])
+                    diagnostics = list(cached_result[1])
+                    sample_release = cached_result[2]
+                    core.debug_log(
+                        "release.results.cache_hit "
+                        f"mbid={sample_release.mbid!r} candidates={len(remote)}"
+                    )
+                else:
+                    if recovered_release is not None:
+                        refs, diagnostics = core.discover_all(
+                            http,
+                            config_file,
+                            cfg,
+                            recovered_release,
+                            sources,
+                            queried_sources=api_queried,
+                        )
+                    else:
+                        refs, diagnostics = core.discover_fallback(
+                            http,
+                            config_file,
+                            cfg,
+                            search_artist,
+                            search_album,
+                            sources,
+                            release_mbid=mbid,
+                            queried_sources=api_queried,
+                        )
+                    remote, download_diag = core.download_candidates(
+                        http,
+                        refs,
+                        sources,
+                        cache,
+                        cfg,
+                        clean_first=not bool(release_result_cache),
+                    )
+                    diagnostics += download_diag
+                    release_result_cache[cache_identity] = (
+                        list(remote),
+                        list(diagnostics),
+                        sample_release,
+                    )
+                    if sample_release.mbid:
+                        release_resolutions[sample_release.mbid.casefold()] = (
+                            _candidate_resolution_label(remote, cfg, format_order)
+                        )
 
-                remote, download_diag = core.download_candidates(http, refs, sources, cache, cfg)
-                diagnostics += download_diag
                 core.emit_ui("diagnostics", items=diagnostics)
                 candidates = local_fallback + enhanced_candidates + remote
 
@@ -2625,7 +2737,18 @@ def _run_scan_dir_batch(
 
                     if comparison_action == "mb-retry":
                         recovered = core.musicbrainz_picker(
-                            http, config_file, cfg, search_artist, search_album
+                            http,
+                            config_file,
+                            cfg,
+                            search_artist,
+                            search_album,
+                            current_release_id=(
+                                recovered_release.mbid
+                                if recovered_release is not None
+                                else ""
+                            ),
+                            current_release=recovered_release,
+                            inspected_resolutions=release_resolutions,
                         )
                         if recovered is not None:
                             recovered_release = recovered
@@ -2834,6 +2957,13 @@ def _run_scan_dir_batch(
                         cfg,
                         search_artist,
                         search_album,
+                        current_release_id=(
+                            recovered_release.mbid
+                            if recovered_release is not None
+                            else ""
+                        ),
+                        current_release=recovered_release,
+                        inspected_resolutions=release_resolutions,
                     )
                     if recovered is not None:
                         recovered_release = recovered

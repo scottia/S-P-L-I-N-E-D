@@ -144,7 +144,10 @@ cache first, performs bounded Recording-ID recovery only after a local miss,
 and offers an operator-reviewed Artist/Track MusicBrainz list when IDs are
 missing or the recovered release is unsuitable. A chosen release enters the
 same artwork-source preview and approval path used by every Album; Escape
-returns to the cached MusicBrainz choices without another request. This path
+returns to the cached MusicBrainz choices without another request. The current
+release is green, inspected alternatives are blue, and reselecting either
+restores cached source results without rerunning artwork providers. Each match
+also exposes a direct Cover Art Archive URL for Artwork-pane preview. This path
 replaces only operator-approved embedded track artwork. LIVE
 WRITE progress is durable per track: an interrupted compilation is blue
 `Incomplete` in the picker even if the operator leaves before the first

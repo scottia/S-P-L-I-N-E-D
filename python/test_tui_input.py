@@ -21,6 +21,7 @@ from tui.splined_tui import (
     STATUS_CONTROLS,
     TuiAdapter,
     _folder_status_count,
+    _musicbrainz_grouped_rows,
     TuiState,
     _clear_stale_remote_overlay,
     _draw_remote_hover_overlay,
@@ -1282,6 +1283,11 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
                             "track": "Theme From A Summer Place",
                             "title": "A Summer Place",
                             "group": "Percy Faith · 1960s · Album",
+                            "decade": "1960s",
+                            "release_class": "Album",
+                            "selection_state": "current",
+                            "resolution": "3000x3000",
+                            "artwork_url": "https://coverartarchive.org/release/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/front",
                         },
                         {
                             "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -1289,6 +1295,11 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
                             "track": "Theme From A Summer Place",
                             "title": "Greatest Hits",
                             "group": "Percy Faith · 1980s · Compilation",
+                            "decade": "1980s",
+                            "release_class": "Compilation",
+                            "selection_state": "visited",
+                            "resolution": "1200x1200",
+                            "artwork_url": "https://coverartarchive.org/release/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/front",
                         },
                     ],
                 },
@@ -1298,10 +1309,49 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         adapter.waiting.set()
         render(_Frame(220, 50), state, select_theme("OLED"))
         second = _region(state, "musicbrainz-result-row", 1)
+        artwork_url = _region(state, "musicbrainz-artwork-url", 1)
+        self.assertTrue(artwork_url.value.endswith("/front"))
+        stream = io.StringIO()
+        write_terminal_links(state, stream)
+        self.assertIn(osc8_link("URL", artwork_url.value), stream.getvalue())
+        with mock.patch(
+            "tui.splined_tui._start_remote_url_preview"
+        ) as preview:
+            handle_mouse(state, adapter, _center(artwork_url))
+        preview.assert_called_once_with(
+            state,
+            adapter,
+            artwork_url.index,
+            artwork_url.value,
+            hover_active=True,
+        )
         handle_mouse(state, adapter, _center(second))
         self.assertEqual(state.selected_index, 1)
         handle_key(state, adapter, _Event("Enter"))
         self.assertEqual(adapter.responses.get_nowait(), "2")
+
+    def test_musicbrainz_rows_group_newest_decade_and_base_release_types(self) -> None:
+        rows = _musicbrainz_grouped_rows(
+            [
+                {"decade": "2000s", "release_class": "EP"},
+                {"decade": "2010s", "release_class": "Album"},
+                {"decade": "Unknown", "release_class": "Compilation"},
+            ]
+        )
+        decades = [label for kind, _index, label in rows if kind == "decade"]
+        self.assertEqual(decades, ["2010s", "2000s", "Unknown"])
+        first_decade_end = next(
+            index
+            for index, row in enumerate(rows[1:], 1)
+            if row[0] == "decade"
+        )
+        first_types = [
+            label for kind, _index, label in rows[:first_decade_end] if kind == "type"
+        ]
+        self.assertEqual(
+            first_types,
+            ["Album", "Single", "EP", "Compilation", "Soundtrack"],
+        )
 
     def test_empty_manual_result_keeps_authority_edit_controls_visible(self) -> None:
         state = self._candidate_state()

@@ -308,13 +308,16 @@ The compilation branch is explicit and per track:
    immediately. A later scan validates the saved Recording/Artist IDs
    and skips that track instead of repeating local or remote discovery.
 9. If the ID-first path returns no useful authority, or the operator presses
-   `M`, Candidate Decision shows numbered MusicBrainz matches grouped by
-   recording Artist, release decade, and release type (Album, Soundtrack, or
-   Compilation). Selecting a match makes its Recording/Artist/Release IDs
-   session authority and performs the normal local/provider artwork search.
-   Escape from artwork sources returns to the cached match list, allowing a
-   different release to be tried without another MusicBrainz request. The
-   Artwork panel remains empty until a release has been selected.
+   `M`, Candidate Decision shows numbered MusicBrainz matches by newest-to-oldest
+   decade (`Unknown` last), then Album, Single, EP, Compilation, Soundtrack,
+   and any additional release types. Each row exposes a direct Cover Art
+   Archive front-image URL for Artwork preview. Selecting a match makes its
+   Recording/Artist/Release IDs session authority and performs the normal
+   local/provider artwork search. The current source-result release is green;
+   previously inspected releases are blue. Re-selecting either restores its
+   candidates and diagnostics without repeating provider discovery or image
+   downloads. Escape from artwork sources returns to the same cached match
+   list. Resolution is populated only after that release has been inspected.
 10. The three `[E]` controls in `FALLBACK ARTIST / ALBUM INFO` accept
    session-only Artist, Release, and Recording MBID corrections. Enter validates
    the UUID and performs a fresh authority/artwork query. Editing Artist or
@@ -323,8 +326,8 @@ The compilation branch is explicit and per track:
    Recording and Artist. An exact operator-selected release may be any
    MusicBrainz release type, including a Single or EP; the automatic
    Album, Soundtrack, Compilation restriction in step 5 does not apply.
-   `M` opens a fresh Artist/Title discovery search; it does not reuse the
-   per-run result list.
+   `M` reopens the active Artist/Title result list. The initial bounded search
+   is reused for the active run unless the authority/search identity changes.
 
 The curated Album name is never used as MusicBrainz identity. SPLINED does not
 invent or write an Album/Release ID, write an operator-edited MBID, change the compilation's Album/Artist
@@ -347,8 +350,10 @@ track's resume entry.
 
 Every other Album uses the same Candidate Decision concept with a folder-art
 output target. `M` opens the integrated MusicBrainz release list even when the
-original Album ID was valid. Selecting a different release reruns source
-discovery; Escape from those artwork results returns to the cached release list.
+original Album ID was valid. Selecting an unseen release runs source discovery;
+selecting a green current or blue inspected release restores the per-Album
+cached source results. Escape from artwork results returns to the cached release
+list without rerunning providers.
 The automatic acceptable-candidate fast path remains unchanged when no operator
 decision is required.
 

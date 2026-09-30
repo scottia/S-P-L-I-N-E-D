@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import splined
 from tui.source_settings import PolicyDraft
@@ -112,6 +114,73 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
             draft.policies["musicbrainz"]["minimum_range_type"],
             "LowerRange",
         )
+
+    def test_musicbrainz_matches_sort_and_mark_cached_release_state(self) -> None:
+        current = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        visited = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        options = splined.decorate_musicbrainz_results(
+            [
+                {
+                    "id": visited,
+                    "artist": "Carly Pearce",
+                    "title": "Early EP",
+                    "date": "2009-01-01",
+                    "country": "US",
+                    "release_class": "EP",
+                },
+                {
+                    "id": current,
+                    "artist": "Carly Pearce",
+                    "title": "Every Little Thing",
+                    "date": "2017-10-13",
+                    "country": "US",
+                    "release_class": "Album",
+                },
+            ],
+            current_release_id=current,
+            inspected_resolutions={current: "3000x3000", visited: "1200x1200"},
+        )
+        self.assertEqual([item["decade"] for item in options], ["2010s", "2000s"])
+        self.assertEqual(options[0]["selection_state"], "current")
+        self.assertEqual(options[1]["selection_state"], "visited")
+        self.assertEqual(options[0]["resolution"], "3000x3000")
+        self.assertEqual(
+            options[0]["artwork_url"],
+            f"https://coverartarchive.org/release/{current}/front",
+        )
+
+    def test_musicbrainz_picker_keeps_current_release_as_green_cached_row(self) -> None:
+        current = _release()
+        with (
+            mock.patch.object(
+                splined,
+                "musicbrainz_search_releases",
+                return_value=[],
+            ),
+            mock.patch.object(
+                splined,
+                "read_input",
+                return_value="1",
+            ) as read_input,
+            mock.patch.object(splined, "lookup_release") as lookup,
+        ):
+            selected = splined.musicbrainz_picker(
+                mock.Mock(),
+                Path("config.toml"),
+                {},
+                current.artist_credit,
+                current.title,
+                current_release_id=current.mbid,
+                current_release=current,
+                inspected_resolutions={current.mbid: "1200x1200"},
+            )
+
+        self.assertIs(selected, current)
+        lookup.assert_not_called()
+        options = read_input.call_args.kwargs["options"]
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["selection_state"], "current")
+        self.assertEqual(options[0]["resolution"], "1200x1200")
 
 
 if __name__ == "__main__":

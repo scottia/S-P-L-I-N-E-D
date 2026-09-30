@@ -799,6 +799,13 @@ class TuiState:
                 context,
             )
             if self.input_request.kind in {"musicbrainz", "musicbrainz-results"}:
+                self.remote_hover_token += 1
+                self.remote_hover_index = -1
+                self.remote_hover_url = ""
+                self.remote_hover_overlay = None
+                self.remote_hover_loading = False
+                self.remote_hover_error = ""
+                self.remote_hover_active = False
                 self.release_options = [
                     {str(key): str(value) for key, value in item.items()}
                     for item in context.get("options", [])
@@ -2829,84 +2836,213 @@ def _render_candidate_table(frame: Any, area: Rect, state: TuiState, theme: Them
     frame.render_stateful_table(table, area, table_state)
 
 
-def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
-    spec = layout_spec(area.width, area.height)
-    manual = bool(
-        state.input_request
-        and state.input_request.kind == "musicbrainz-results"
-    )
-    columns = ["#", "artist", "release"]
-    widths = [Constraint.length(4), Constraint.percentage(28), Constraint.fill(1)]
-    if manual:
-        columns = ["#", "group", "date", "track", "release"]
-        widths = [
-            Constraint.length(4),
-            Constraint.percentage(27),
-            Constraint.length(11),
-            Constraint.percentage(22),
-            Constraint.fill(1),
-        ]
-    elif spec.breakpoint in {Breakpoint.NORMAL, Breakpoint.WIDE}:
-        columns.extend(["date", "country", "mbid"])
-        widths = [
-            Constraint.length(4),
-            Constraint.percentage(20),
-            Constraint.percentage(25),
-            Constraint.length(11),
-            Constraint.length(9),
-            Constraint.fill(1),
-        ]
-    header = Row(
-        [Cell(value.upper(), style(theme, Semantic.ACTIVE, bold=True)) for value in columns]
-    )
-    rows: list[Row] = []
-    for index, option in enumerate(state.release_options, 1):
-        values = {
-            "#": str(index),
-            "artist": option.get("artist", ""),
-            "group": option.get("group", ""),
-            "track": option.get("track", ""),
-            "release": option.get("title", ""),
-            "date": option.get("date", ""),
-            "country": option.get("country", ""),
-            "mbid": option.get("id", ""),
-        }
-        rows.append(
-            Row([Cell(values[column], style(theme, Semantic.TEXT)) for column in columns])
+MUSICBRAINZ_BASE_RELEASE_TYPES = (
+    "Album",
+    "Single",
+    "EP",
+    "Compilation",
+    "Soundtrack",
+)
+
+
+def _musicbrainz_grouped_rows(
+    options: list[dict[str, str]],
+) -> list[tuple[str, int, str]]:
+    """Build non-selectable decade/type/header rows around selectable results."""
+    decades: list[str] = []
+    for option in options:
+        decade = option.get("decade", "Unknown") or "Unknown"
+        if decade not in decades:
+            decades.append(decade)
+    decades.sort(
+        key=lambda value: (
+            1 if value == "Unknown" else 0,
+            -int(value[:4]) if value[:4].isdigit() else 0,
         )
+    )
+
+    rows: list[tuple[str, int, str]] = []
+    for decade in decades:
+        rows.append(("decade", -1, decade))
+        present_types = []
+        for option in options:
+            if (option.get("decade", "Unknown") or "Unknown") != decade:
+                continue
+            release_type = option.get("release_class", "Release") or "Release"
+            if release_type not in present_types:
+                present_types.append(release_type)
+        extra_types = sorted(
+            (
+                value
+                for value in present_types
+                if value not in MUSICBRAINZ_BASE_RELEASE_TYPES
+            ),
+            key=str.casefold,
+        )
+        release_types = list(MUSICBRAINZ_BASE_RELEASE_TYPES) + extra_types
+        header_added = False
+        for release_type in release_types:
+            rows.append(("type", -1, release_type))
+            if not header_added:
+                rows.append(("header", -1, ""))
+                rows.append(("separator", -1, ""))
+                header_added = True
+            for option_index, option in enumerate(options):
+                if (
+                    (option.get("decade", "Unknown") or "Unknown") == decade
+                    and (option.get("release_class", "Release") or "Release")
+                    == release_type
+                ):
+                    rows.append(("result", option_index, ""))
+    return rows
+
+
+def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    columns = ("#", "artist", "country", "date", "resolution", "release", "url")
+    column_labels = {
+        "#": "[#]",
+        "artist": "ARTIST",
+        "country": "COUNTRY",
+        "date": "DATE",
+        "resolution": "RESOLUTION",
+        "release": "RELEASE",
+        "url": "URL",
+    }
+    spacing = len(columns) - 1
+    available = max(1, int(area.width) - 2 - spacing)
+    numeric_widths = [5, 28, 8, 11, 13, 18, 5]
+    floors = [3, 12, 4, 7, 7, 10, 5]
+    shrink_order = (1, 4, 3, 2, 5, 0)
+    excess = max(0, sum(numeric_widths) - available)
+    while excess:
+        changed = False
+        for index in shrink_order:
+            if numeric_widths[index] > floors[index]:
+                numeric_widths[index] -= 1
+                excess -= 1
+                changed = True
+                if not excess:
+                    break
+        if not changed:
+            break
+    numeric_widths[5] += max(0, available - sum(numeric_widths))
+    widths = [Constraint.length(value) for value in numeric_widths]
+    display_rows = _musicbrainz_grouped_rows(state.release_options)
+    selected_option = max(
+        0,
+        min(state.selected_index, max(0, len(state.release_options) - 1)),
+    )
+    selected_display = next(
+        (
+            index
+            for index, (kind, option_index, _label) in enumerate(display_rows)
+            if kind == "result" and option_index == selected_option
+        ),
+        0,
+    )
+    page_size = max(1, int(area.height) - 2)
+    start = max(0, min(selected_display - page_size // 2, len(display_rows) - page_size))
+    visible_rows = display_rows[start : start + page_size]
+
+    rendered: list[Row] = []
+    for kind, option_index, label in visible_rows:
+        if kind == "decade":
+            cells = ["", f"[{label}] DECADE GROUP", "", "", "", "", ""]
+            semantic = Semantic.SPECIAL
+            bold = True
+        elif kind == "type":
+            cells = ["", f"RELEASE TYPE [{label.upper()}]", "", "", "", "", ""]
+            semantic = Semantic.FALLBACK
+            bold = True
+        elif kind == "header":
+            cells = [column_labels[column] for column in columns]
+            semantic = Semantic.ACTIVE
+            bold = True
+        elif kind == "separator":
+            cells = [
+                "-" * numeric_widths[0],
+                "-" * numeric_widths[1],
+                "-" * numeric_widths[2],
+                "-" * numeric_widths[3],
+                "-" * numeric_widths[4],
+                "-" * min(32, numeric_widths[5]),
+                "-" * numeric_widths[6],
+            ]
+            semantic = Semantic.MUTED
+            bold = False
+        else:
+            option = state.release_options[option_index]
+            marker = "›" if option_index == selected_option else " "
+            cells = [
+                f"{marker}[{option_index + 1}]",
+                option.get("artist", ""),
+                option.get("country", ""),
+                option.get("date", ""),
+                option.get("resolution", ""),
+                option.get("title", ""),
+                "[URL]" if option.get("artwork_url", "") else "",
+            ]
+            selection_state = option.get("selection_state", "")
+            semantic = (
+                Semantic.ACCEPTED
+                if selection_state == "current"
+                else Semantic.DEBUG
+                if selection_state == "visited"
+                else Semantic.TEXT
+            )
+            bold = bool(selection_state)
+        rendered.append(
+            Row(
+                [
+                    Cell(_truncate(value, numeric_widths[index]), style(theme, semantic, bold=bold))
+                    for index, value in enumerate(cells)
+                ]
+            )
+        )
+
     table = (
-        Table(rows, widths, header)
+        Table(rendered, widths)
         .block(
             card(
                 theme,
-                (
-                    "MUSICBRAINZ MATCHES · ARTIST / DECADE / RELEASE TYPE"
-                    if manual
-                    else "MUSICBRAINZ RELEASE SEARCH"
-                ),
+                "MUSICBRAINZ MATCHES · DECADE / RELEASE TYPE",
                 Semantic.SPECIAL,
             )
         )
         .column_spacing(1)
-        .highlight_symbol("› ")
-        .highlight_style(style(theme, Semantic.SPECIAL, bold=True))
     )
-    table_state = TableState()
-    if rows:
-        table_state.select(max(0, min(state.selected_index, len(rows) - 1)))
-    frame.render_stateful_table(table, area, table_state)
-    for index in range(min(len(rows), max(0, int(area.height) - 3))):
+    frame.render_widget(table, area)
+
+    url_x = (
+        int(area.x)
+        + 1
+        + sum(numeric_widths[:-1])
+        + spacing
+    )
+    for visible_index, (kind, option_index, _label) in enumerate(visible_rows):
+        if kind != "result":
+            continue
+        row_y = int(area.y) + 1 + visible_index
         _register_hit(
             state,
             "musicbrainz-result-row",
             Rect(
                 int(area.x) + 1,
-                int(area.y) + 2 + index,
+                row_y,
                 max(1, int(area.width) - 2),
                 1,
             ),
-            index=index,
+            index=option_index,
         )
+        artwork_url = state.release_options[option_index].get("artwork_url", "")
+        if artwork_url:
+            _register_hit(
+                state,
+                "musicbrainz-artwork-url",
+                Rect(url_x, row_y, numeric_widths[-1], 1),
+                index=option_index,
+                value=artwork_url,
+            )
 
 
 CANDIDATE_HEADERS = {
@@ -3196,18 +3332,39 @@ def _start_remote_source_preview(
     candidate = state.candidates[candidate_index]
     if candidate.provenance != "[URL]" or not candidate.url:
         return
-    if native_prepare_image_overlay is None:
-        state.remote_hover_error = "ratatui-image renderer is unavailable"
-        return
+    _start_remote_url_preview(
+        state,
+        adapter,
+        candidate_index,
+        candidate.url,
+        hover_active=hover_active,
+    )
 
+
+def _start_remote_url_preview(
+    state: TuiState,
+    adapter: TuiAdapter,
+    identity_index: int,
+    url: str,
+    *,
+    hover_active: bool,
+) -> None:
+    """Load one direct image URL for either a candidate or MB match row."""
+    if not url:
+        return
     state.remote_hover_token += 1
     token = state.remote_hover_token
-    state.remote_hover_index = candidate_index
-    state.remote_hover_url = candidate.url
+    state.remote_hover_index = identity_index
+    state.remote_hover_url = url
     state.remote_hover_active = hover_active
     state.remote_hover_error = ""
+    if native_prepare_image_overlay is None:
+        state.remote_hover_error = "ratatui-image renderer is unavailable"
+        state.remote_hover_loading = False
+        state.remote_hover_overlay = None
+        return
 
-    cached = state.remote_overlay_cache.get(candidate.url)
+    cached = state.remote_overlay_cache.get(url)
     if cached is not None:
         state.remote_hover_overlay = cached
         state.remote_hover_loading = False
@@ -3217,8 +3374,6 @@ def _start_remote_source_preview(
     state.remote_hover_loading = True
     width = max(1, state.remote_preview_width)
     height = max(1, state.remote_preview_height)
-    url = candidate.url
-
     def worker() -> None:
         error = ""
         overlay: Any | None = None
@@ -3254,7 +3409,7 @@ def _start_remote_source_preview(
             "remote_hover_preview",
             {
                 "token": token,
-                "index": candidate_index,
+                "index": identity_index,
                 "url": url,
                 "overlay": overlay,
                 "error": error,
@@ -3313,7 +3468,14 @@ def _clear_remote_hover_preview(
     state: TuiState,
     adapter: TuiAdapter | None = None,
 ) -> None:
-    if adapter is not None and state.candidates:
+    if (
+        adapter is not None
+        and state.candidates
+        and not (
+            state.input_request is not None
+            and state.input_request.kind == "musicbrainz-results"
+        )
+    ):
         state.remote_hover_active = False
         preferred = _preferred_candidate_index(state)
         if 0 <= preferred < len(state.candidates):
@@ -3911,15 +4073,70 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         )
     _render_activity_region(frame, activity_area, state, theme)
     if preview_area is not None and manual_musicbrainz:
-        frame.render_widget(
-            Paragraph.from_string(
-                "Select a MusicBrainz release to search and preview its artwork sources."
-            )
-            .centered()
-            .block(card(theme, "ARTWORK · NO RELEASE SELECTED", Semantic.MUTED))
-            .wrap(True, True),
-            preview_area,
+        state.remote_preview_width = max(1, int(preview_area.width) - 2)
+        state.remote_preview_height = max(1, int(preview_area.height) - 2)
+        state.remote_preview_rect = (
+            int(preview_area.x) + 1,
+            int(preview_area.y) + 1,
+            state.remote_preview_width,
+            state.remote_preview_height,
         )
+        if state.remote_hover_url:
+            if state.remote_hover_overlay is not None:
+                frame.render_widget(
+                    Paragraph.from_string("").block(
+                        card(
+                            theme,
+                            "ARTWORK / MUSICBRAINZ MATCH URL",
+                            Semantic.ACTIVE,
+                        )
+                    ),
+                    preview_area,
+                )
+            elif state.remote_hover_loading:
+                frame.render_widget(
+                    Paragraph.from_string(
+                        "Loading artwork directly from the match URL…"
+                    )
+                    .centered()
+                    .block(
+                        card(
+                            theme,
+                            "ARTWORK / MUSICBRAINZ MATCH URL",
+                            Semantic.ACTIVE,
+                        )
+                    ),
+                    preview_area,
+                )
+            else:
+                frame.render_widget(
+                    Paragraph.from_string(
+                        _truncate(
+                            state.remote_hover_error
+                            or "Artwork preview unavailable for this release.",
+                            max(1, int(preview_area.width) - 4),
+                        )
+                    )
+                    .centered()
+                    .block(
+                        card(
+                            theme,
+                            "ARTWORK / MUSICBRAINZ MATCH URL",
+                            Semantic.WARNING,
+                        )
+                    ),
+                    preview_area,
+                )
+        else:
+            frame.render_widget(
+                Paragraph.from_string(
+                    "Hover or click a [URL] to preview that release artwork."
+                )
+                .centered()
+                .block(card(theme, "ARTWORK · MATCH PREVIEW", Semantic.MUTED))
+                .wrap(True, True),
+                preview_area,
+            )
     elif preview_area is not None and state.candidates:
         state.remote_preview_width = max(1, int(preview_area.width) - 2)
         state.remote_preview_height = max(1, int(preview_area.height) - 2)
@@ -5344,7 +5561,11 @@ def write_terminal_links(state: TuiState, writer: Any) -> None:
     targets = [
         region
         for region in state.hit_regions
-        if region.target in {"candidate-url", "musicbrainz-link"}
+        if region.target in {
+            "candidate-url",
+            "musicbrainz-link",
+            "musicbrainz-artwork-url",
+        }
         and region.value
     ]
     if not targets:
@@ -5357,7 +5578,10 @@ def write_terminal_links(state: TuiState, writer: Any) -> None:
             else "URL"
         )
         column = region.x + (
-            1 if region.target == "musicbrainz-link" else 2
+            1
+            if region.target
+            in {"musicbrainz-link", "musicbrainz-artwork-url"}
+            else 2
         )
         writer.write(
             f"\x1b[{region.y + 1};{column}H"
@@ -5477,7 +5701,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.hover_index = region.index if region is not None else -1
         if (
             region is not None
-            and region.target == "candidate-url"
+            and region.target in {"candidate-url", "musicbrainz-artwork-url"}
             and region.value
         ):
             if (
@@ -5485,7 +5709,16 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
                 or state.remote_hover_url != region.value
                 or not state.remote_hover_active
             ):
-                _start_remote_hover_preview(state, adapter, region.index)
+                if region.target == "candidate-url":
+                    _start_remote_hover_preview(state, adapter, region.index)
+                else:
+                    _start_remote_url_preview(
+                        state,
+                        adapter,
+                        region.index,
+                        region.value,
+                        hover_active=True,
+                    )
         elif state.remote_hover_active:
             _clear_remote_hover_preview(state, adapter)
         return
@@ -5672,6 +5905,16 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     elif region.target == "musicbrainz-result-row":
         state.selected_index = region.index
         state.input_buffer = str(region.index + 1)
+    elif region.target == "musicbrainz-artwork-url":
+        state.selected_index = region.index
+        state.input_buffer = str(region.index + 1)
+        _start_remote_url_preview(
+            state,
+            adapter,
+            region.index,
+            region.value,
+            hover_active=True,
+        )
     elif region.target == "fallback-id-edit":
         _begin_fallback_id_edit(state, adapter, region.index)
     elif region.target == "candidate-url":
@@ -6021,6 +6264,11 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                             state.tab == "main"
                             and state.workflow in {"candidates", "picker"}
                             and state.candidates
+                            and not (
+                                state.input_request is not None
+                                and state.input_request.kind
+                                == "musicbrainz-results"
+                            )
                             and state.remote_hover_index < 0
                             and not state.remote_hover_loading
                         ):

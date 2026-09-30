@@ -49,20 +49,81 @@ class ManualCompilationDecisionTests(unittest.TestCase):
         self.assertEqual(changes["recording_id"], payload["recording_id"])
 
     def test_m_opens_text_discovery_and_escape_can_restore_cached_results(self) -> None:
-        for response, expected in (
-            ("m", "discover"),
-            ("__manual_mb_results__", "mb-results"),
+        for response, has_results, expected in (
+            ("m", False, "discover"),
+            ("m", True, "mb-results"),
+            ("__manual_mb_results__", True, "mb-results"),
         ):
             with (
                 mock.patch.object(scan, "render_candidate_table"),
                 mock.patch.object(scan.core, "read_input", return_value=response),
             ):
                 decision, candidate, changes = scan._manual_choose_candidate(
-                    [], {}, ["jpeg"], has_musicbrainz_results=True
+                    [], {}, ["jpeg"], has_musicbrainz_results=has_results
                 )
             self.assertEqual(decision, expected)
             self.assertIsNone(candidate)
             self.assertEqual(changes, {})
+
+    def test_revisited_release_restores_candidates_without_provider_work(self) -> None:
+        release = scan.core.Release(
+            "5d05694f-2b0f-427e-9df8-78dbc0983681",
+            "Greatest Hits 19...",
+            "Jimmy Clanton",
+            None,
+            None,
+        )
+        candidate = mock.Mock(width=1200, height=1200)
+        state: dict[str, object] = {}
+        diagnostics = [("amazon", "temporary diagnostic")]
+        with (
+            mock.patch.object(
+                scan.core,
+                "discover_all",
+                return_value=([mock.Mock()], list(diagnostics)),
+            ) as discover,
+            mock.patch.object(
+                scan.core,
+                "download_candidates",
+                return_value=([candidate], []),
+            ) as download,
+            mock.patch.object(
+                scan,
+                "_candidate_resolution_label",
+                return_value="1200x1200",
+            ),
+            mock.patch.object(scan.core, "formats", return_value=["jpeg"]),
+        ):
+            first = scan._manual_remote_candidates(
+                mock.Mock(),
+                mock.Mock(),
+                {},
+                release,
+                ["amazon"],
+                mock.Mock(),
+                set(),
+                state,
+            )
+            second = scan._manual_remote_candidates(
+                mock.Mock(),
+                mock.Mock(),
+                {},
+                release,
+                ["amazon"],
+                mock.Mock(),
+                set(),
+                state,
+            )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first, ([candidate], diagnostics))
+        discover.assert_called_once()
+        download.assert_called_once()
+        self.assertTrue(download.call_args.kwargs["clean_first"])
+        self.assertEqual(
+            state["release_resolutions"][release.mbid],
+            "1200x1200",
+        )
 
 
 if __name__ == "__main__":

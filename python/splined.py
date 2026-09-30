@@ -4906,7 +4906,9 @@ def musicbrainz_search_releases(
             http.last_mb_request = time.monotonic()
             response = http.get(
                 f"{MB_BASE}/release/",
-                params={"query": query, "fmt": "json", "limit": 10},
+                # One bounded request can return enough rows for useful decade
+                # and release-type grouping without paging the MusicBrainz API.
+                params={"query": query, "fmt": "json", "limit": 99},
                 headers=headers,
                 timeout=timeout,
             )
@@ -4934,6 +4936,22 @@ def musicbrainz_search_releases(
                 elif isinstance(credit, dict):
                     artist_parts.append(str(credit.get("name") or (credit.get("artist") or {}).get("name") or ""))
                     artist_parts.append(str(credit.get("joinphrase") or ""))
+            release_group = item.get("release-group") or {}
+            secondary_types = [
+                str(value).strip()
+                for value in release_group.get("secondary-types", []) or []
+                if str(value).strip()
+            ]
+            secondary_lookup = {value.casefold(): value for value in secondary_types}
+            release_class = next(
+                (
+                    secondary_lookup[key]
+                    for key in ("compilation", "soundtrack")
+                    if key in secondary_lookup
+                ),
+                str(release_group.get("primary-type") or "").strip()
+                or next(iter(secondary_types), "Release"),
+            )
             out.append({
                 "id": mbid,
                 "title": str(item.get("title") or "").strip(),
@@ -4941,17 +4959,7 @@ def musicbrainz_search_releases(
                 "date": str(item.get("date") or "").strip(),
                 "country": str(item.get("country") or "").strip(),
                 "status": str(item.get("status") or "").strip(),
-                "release_class": str(
-                    (item.get("release-group") or {}).get("primary-type")
-                    or next(
-                        iter(
-                            (item.get("release-group") or {}).get(
-                                "secondary-types", []
-                            )
-                        ),
-                        "Release",
-                    )
-                ).strip(),
+                "release_class": release_class,
             })
             year = out[-1]["date"][:4]
             decade = (
@@ -4969,6 +4977,92 @@ def musicbrainz_search_releases(
     return []
 
 
+MUSICBRAINZ_RELEASE_TYPE_ORDER = (
+    "Album",
+    "Single",
+    "EP",
+    "Compilation",
+    "Soundtrack",
+)
+
+
+def musicbrainz_result_decade(item: dict[str, Any]) -> str:
+    year = str(item.get("date") or "")[:4]
+    return f"{year[:3]}0s" if len(year) == 4 and year.isdigit() else "Unknown"
+
+
+def musicbrainz_result_type(item: dict[str, Any]) -> str:
+    raw = str(item.get("release_class") or "Release").strip()
+    aliases = {
+        "album": "Album",
+        "single": "Single",
+        "ep": "EP",
+        "compilation": "Compilation",
+        "soundtrack": "Soundtrack",
+    }
+    return aliases.get(raw.casefold(), raw.title() or "Release")
+
+
+def decorate_musicbrainz_results(
+    results: list[dict[str, str]],
+    *,
+    current_release_id: str = "",
+    inspected_resolutions: dict[str, str] | None = None,
+) -> list[dict[str, str]]:
+    """Add stable display/cache state without performing artwork requests."""
+    current = str(current_release_id or "").strip().casefold()
+    inspected = {
+        str(key).strip().casefold(): str(value or "")
+        for key, value in (inspected_resolutions or {}).items()
+    }
+    decorated: list[dict[str, str]] = []
+    for original_index, raw in enumerate(results):
+        item = {str(key): str(value) for key, value in raw.items()}
+        release_id = item.get("id", "").strip().casefold()
+        item["decade"] = musicbrainz_result_decade(item)
+        item["release_class"] = musicbrainz_result_type(item)
+        item["selection_state"] = (
+            "current"
+            if release_id and release_id == current
+            else "visited"
+            if release_id in inspected
+            else ""
+        )
+        item["resolution"] = inspected.get(release_id, "")
+        item["artwork_url"] = (
+            f"https://coverartarchive.org/release/{release_id}/front"
+            if release_id
+            else ""
+        )
+        item["musicbrainz_url"] = (
+            f"https://musicbrainz.org/release/{release_id}"
+            if release_id
+            else ""
+        )
+        item["original_index"] = str(original_index)
+        decorated.append(item)
+
+    type_order = {
+        value.casefold(): index
+        for index, value in enumerate(MUSICBRAINZ_RELEASE_TYPE_ORDER)
+    }
+
+    def sort_key(item: dict[str, str]) -> tuple[Any, ...]:
+        decade = item.get("decade", "Unknown")
+        decade_rank = -int(decade[:4]) if decade[:4].isdigit() else 1
+        release_type = item.get("release_class", "Release")
+        return (
+            decade_rank,
+            type_order.get(release_type.casefold(), len(type_order)),
+            release_type.casefold(),
+            item.get("artist", "").casefold(),
+            item.get("date", ""),
+            int(item.get("original_index", "0") or 0),
+        )
+
+    return sorted(decorated, key=sort_key)
+
+
 def musicbrainz_picker(
     http: Http,
     config_file: Path,
@@ -4976,6 +5070,10 @@ def musicbrainz_picker(
     artist: str,
     album: str,
     exact_mbid: str | None = None,
+    *,
+    current_release_id: str = "",
+    current_release: Release | None = None,
+    inspected_resolutions: dict[str, str] | None = None,
 ) -> Release | None:
     if exact_mbid:
         print(f"  {cyan('MusicBrainz:'):13} {magenta('retrying exact release')} {magenta(exact_mbid)}")
@@ -4991,7 +5089,7 @@ def musicbrainz_picker(
         search_cache = {}
         setattr(http, "_splined_mb_release_search_cache", search_cache)
     if cache_key in search_cache:
-        results = list(search_cache[cache_key])
+        results = [dict(item) for item in search_cache[cache_key]]
     else:
         try:
             results = musicbrainz_search_releases(
@@ -5000,33 +5098,82 @@ def musicbrainz_picker(
         except Exception as exc:
             print(f"  {red('MusicBrainz search failed: ' + str(exc))}")
             return None
-        search_cache[cache_key] = list(results)
+        search_cache[cache_key] = [dict(item) for item in results]
+
+    current_id = str(current_release_id or "").strip().casefold()
+    if (
+        current_release is not None
+        and current_id
+        and all(
+            str(result.get("id") or "").strip().casefold() != current_id
+            for result in results
+        )
+    ):
+        # Preserve exactly one green row even when the bounded MusicBrainz
+        # search does not return the release whose candidates are on screen.
+        results.append(
+            {
+                "id": current_id,
+                "title": str(current_release.title or ""),
+                "artist": str(current_release.artist_credit or ""),
+                "date": "",
+                "country": "",
+                "status": "",
+                "release_class": "Album",
+            }
+        )
 
     if not results:
         print(f"  {yellow('MusicBrainz search returned no releases.')}")
         return None
 
+    results = decorate_musicbrainz_results(
+        results,
+        current_release_id=current_release_id,
+        inspected_resolutions=inspected_resolutions,
+    )
+
     print()
     print(f"  {cyan('MusicBrainz release search')}")
-    print(
-        "  "
-        + ljust_color(cyan("[#]"), 5) + " "
-        + ljust_color(cyan("Artist"), 24) + " "
-        + ljust_color(cyan("Release"), 34) + " "
-        + ljust_color(cyan("Date"), 10) + " "
-        + ljust_color(cyan("Country"), 9) + " "
-        + cyan("MBID")
-    )
-    print("  " + gray("-" * 126))
+    previous_decade = ""
+    previous_type = ""
     for index, result in enumerate(results, 1):
+        decade = result["decade"]
+        release_type = result["release_class"]
+        if decade != previous_decade:
+            print(f"  {cyan('[' + decade + '] DECADE GROUP')}")
+            previous_decade = decade
+            previous_type = ""
+        if release_type != previous_type:
+            print(f"  {orange('RELEASE TYPE [' + release_type.upper() + ']')}")
+            print(
+                "  "
+                + ljust_color(cyan("[#]"), 5) + " "
+                + ljust_color(cyan("Artist"), 24) + " "
+                + ljust_color(cyan("Country"), 8) + " "
+                + ljust_color(cyan("Date"), 10) + " "
+                + ljust_color(cyan("Resolution"), 12) + " "
+                + ljust_color(cyan("Release"), 34) + " "
+                + cyan("URL")
+            )
+            print("  " + gray("-" * 112))
+            previous_type = release_type
+        state_color = (
+            green
+            if result.get("selection_state") == "current"
+            else blue
+            if result.get("selection_state") == "visited"
+            else white
+        )
         print(
             "  "
-            + ljust_color(white(f"[{index}]"), 5) + " "
-            + ljust_color(magenta(result["artist"][:24]), 24) + " "
-            + ljust_color(orange(result["title"][:34]), 34) + " "
-            + ljust_color(white(result["date"][:10]), 10) + " "
-            + ljust_color(white(result["country"][:9]), 9) + " "
-            + magenta(result["id"])
+            + ljust_color(state_color(f"[{index}]"), 5) + " "
+            + ljust_color(state_color(result["artist"][:24]), 24) + " "
+            + ljust_color(state_color(result["country"][:8]), 8) + " "
+            + ljust_color(state_color(result["date"][:10]), 10) + " "
+            + ljust_color(state_color(result["resolution"][:12]), 12) + " "
+            + ljust_color(state_color(result["title"][:34]), 34) + " "
+            + magenta("[URL]")
         )
 
     while True:
@@ -5044,6 +5191,11 @@ def musicbrainz_picker(
             index = int(answer)
             if 1 <= index <= len(results):
                 release_id = results[index - 1]["id"]
+                if (
+                    current_release is not None
+                    and release_id.casefold() == current_id
+                ):
+                    return current_release
                 release_cache = getattr(
                     http, "_splined_mb_release_lookup_cache", None
                 )
