@@ -70,6 +70,25 @@ class ReleaseResolution:
     recording_artist: str = ""
 
 
+@dataclass(frozen=True)
+class DiscoveryCandidate:
+    """One operator-reviewable Recording search result and its release."""
+
+    recording_mbid: str
+    recording_title: str
+    recording_artist: str
+    artist_mbids_key: str
+    release_mbid: str
+    release_group_mbid: str
+    release_class: str
+    class_rank: int
+    release_title: str
+    release_artist: str
+    release_date: str
+    country: str
+    score: int
+
+
 def _truthy(value: Any) -> bool:
     return str(value or "").strip().casefold() in {
         "1", "true", "yes", "y", "on"
@@ -103,11 +122,12 @@ def manual_track_eligible(track: Any) -> tuple[bool, str]:
         return False, "Track has an Album MBID and belongs in normal scan mode"
     if not _truthy(getattr(track, "compilation", None)):
         return False, "Track is not tagged compilation=1"
-    if len(_mbids(getattr(track, "recording_mbid", None))) != 1:
-        return False, "Missing locally tagged MusicBrainz Recording ID"
-    if not _mbids(getattr(track, "artist_mbid", None)):
-        return False, "Missing locally tagged MusicBrainz Artist ID"
     return True, ""
+
+
+def _lucene_phrase(value: Any) -> str:
+    """Quote local text for a MusicBrainz/Lucene phrase query."""
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"').strip()
 
 
 def credential_options(
@@ -682,6 +702,165 @@ def resolve_release_candidates(
     )
 
 
+def discover_recording_releases(
+    core: Any,
+    http: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    track: Any,
+    options: MusicBrainzOptions,
+) -> tuple[tuple[DiscoveryCandidate, ...], str]:
+    """Search by local Artist/Title for an explicit Manual-mode decision.
+
+    The curated compilation Album is deliberately excluded from the query.
+    MusicBrainz's default result limit keeps this single request bounded; the
+    caller caches the returned choices for back-navigation within the run.
+    """
+    artist = _lucene_phrase(getattr(track, "artist", ""))
+    title = _lucene_phrase(getattr(track, "title", ""))
+    if not artist or not title:
+        return (), "Manual MusicBrainz search requires local Artist and Title"
+    if options.retry_max == 0:
+        return (), "MusicBrainz attempt budget is zero"
+    try:
+        headers, _mode = core.mb_headers(config_file, cfg)
+    except Exception as exc:
+        return (), (
+            "MusicBrainz authentication/refresh failed: "
+            f"{type(exc).__name__}"
+        )
+
+    query = f'recording:"{title}" AND artist:"{artist}" AND status:official'
+    url = f"{core.MB_BASE}/recording/"
+    last_error = ""
+    for attempt in range(options.retry_max):
+        last_request = getattr(http, "last_mb_request", None)
+        if last_request is not None:
+            wait = options.min_delay - (time.monotonic() - float(last_request))
+            if wait > 0:
+                time.sleep(wait)
+        try:
+            http.last_mb_request = time.monotonic()
+            response = http.get(
+                url,
+                params={"query": query, "fmt": "json"},
+                headers=headers,
+                timeout=options.recording_timeout,
+            )
+        except requests.RequestException as exc:
+            last_error = f"MusicBrainz transport failure: {type(exc).__name__}"
+            if attempt + 1 < options.retry_max:
+                continue
+            break
+        status = int(response.status_code)
+        if status in {401, 403}:
+            return (), "MusicBrainz authentication was rejected"
+        if status == 429 or 500 <= status <= 599:
+            last_error = f"MusicBrainz returned HTTP {status}"
+            if attempt + 1 < options.retry_max:
+                continue
+            break
+        if status != 200:
+            return (), f"MusicBrainz returned HTTP {status}"
+        try:
+            payload = response.json()
+        except ValueError:
+            return (), "MusicBrainz returned invalid JSON"
+        if not isinstance(payload, dict):
+            return (), "MusicBrainz returned invalid Recording search data"
+
+        found: list[DiscoveryCandidate] = []
+        seen: set[tuple[str, str]] = set()
+        for recording in payload.get("recordings", []):
+            if not isinstance(recording, dict):
+                continue
+            recording_ids = _mbids(recording.get("id"))
+            artist_ids = _credit_mbids(recording.get("artist-credit"))
+            if len(recording_ids) != 1 or not artist_ids:
+                continue
+            recording_id = next(iter(recording_ids))
+            recording_artist = _credit_text(recording.get("artist-credit"))
+            artist_key = _artist_key(artist_ids)
+            try:
+                score = int(recording.get("score") or 0)
+            except (TypeError, ValueError):
+                score = 0
+            for release in recording.get("releases", []):
+                if not isinstance(release, dict):
+                    continue
+                release_ids = _mbids(release.get("id"))
+                classification = _release_class(release)
+                if (
+                    len(release_ids) != 1
+                    or classification is None
+                    or str(release.get("status") or "").strip().casefold()
+                    != "official"
+                ):
+                    continue
+                release_id = next(iter(release_ids))
+                identity = (recording_id, release_id)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                release_class, class_rank = classification
+                group = release.get("release-group")
+                group = group if isinstance(group, dict) else {}
+                release_artist = _credit_text(release.get("artist-credit"))
+                found.append(
+                    DiscoveryCandidate(
+                        recording_id,
+                        str(recording.get("title") or "").strip(),
+                        recording_artist,
+                        artist_key,
+                        release_id,
+                        next(iter(_mbids(group.get("id"))), ""),
+                        release_class,
+                        class_rank,
+                        str(release.get("title") or "").strip(),
+                        release_artist or recording_artist,
+                        str(release.get("date") or "").strip(),
+                        str(release.get("country") or "").strip(),
+                        score,
+                    )
+                )
+        found.sort(
+            key=lambda item: (
+                item.recording_artist.casefold(),
+                (item.release_date[:3] + "0s")
+                if len(item.release_date) >= 4 and item.release_date[:4].isdigit()
+                else "Unknown",
+                item.class_rank,
+                item.release_date or "9999-99-99",
+                -item.score,
+                item.release_title.casefold(),
+                item.release_mbid,
+            )
+        )
+        if not found:
+            return (), (
+                "No Official Album, Soundtrack, or Compilation match was found"
+            )
+        return tuple(found), ""
+    return (), last_error or "MusicBrainz attempt budget exhausted"
+
+
+def release_candidate_from_discovery(
+    item: DiscoveryCandidate,
+) -> ReleaseCandidate:
+    return ReleaseCandidate(
+        item.recording_mbid,
+        item.release_mbid,
+        item.release_group_mbid,
+        item.release_class,
+        item.class_rank,
+        0,
+        item.release_title,
+        item.release_artist,
+        item.artist_mbids_key,
+        item.release_date,
+    )
+
+
 def resolve_release_by_id(
     core: Any,
     http: Any,
@@ -1244,6 +1423,12 @@ def install(core: Any) -> None:
     )
     core.compilation_resolve_release_id = partial(
         resolve_release_by_id, core
+    )
+    core.compilation_discover_releases = partial(
+        discover_recording_releases, core
+    )
+    core.compilation_release_candidate_from_discovery = (
+        release_candidate_from_discovery
     )
     core.compilation_release_from_local = partial(
         release_from_local_row, core

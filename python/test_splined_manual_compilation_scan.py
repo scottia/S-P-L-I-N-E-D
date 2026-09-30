@@ -48,6 +48,22 @@ class ManualCompilationDecisionTests(unittest.TestCase):
         self.assertEqual(changes["edited"], "recording")
         self.assertEqual(changes["recording_id"], payload["recording_id"])
 
+    def test_m_opens_text_discovery_and_escape_can_restore_cached_results(self) -> None:
+        for response, expected in (
+            ("m", "discover"),
+            ("__manual_mb_results__", "mb-results"),
+        ):
+            with (
+                mock.patch.object(scan, "render_candidate_table"),
+                mock.patch.object(scan.core, "read_input", return_value=response),
+            ):
+                decision, candidate, changes = scan._manual_choose_candidate(
+                    [], {}, ["jpeg"], has_musicbrainz_results=True
+                )
+            self.assertEqual(decision, expected)
+            self.assertIsNone(candidate)
+            self.assertEqual(changes, {})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1232,7 +1232,7 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         self.assertEqual(response["recording_id"], replacement)
         self.assertEqual(response["release_id"], "")
 
-    def test_manual_m_sends_explicit_authority_requery(self) -> None:
+    def test_manual_m_opens_artist_track_discovery(self) -> None:
         state = self._candidate_state()
         state.fallback_artist_id = "291dcfb8-b31c-496a-905b-9955509d75b6"
         state.fallback_album_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -1240,13 +1240,56 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         adapter = TuiAdapter()
         adapter.waiting.set()
         handle_key(state, adapter, _Event("m"))
-        response = json.loads(adapter.responses.get_nowait())
-        self.assertEqual(response["action"], "manual-authority-query")
-        self.assertEqual(response["edited"], "retry")
-        self.assertEqual(
-            response["release_id"],
-            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        self.assertEqual(adapter.responses.get_nowait(), "m")
+
+    def test_manual_source_escape_returns_to_cached_musicbrainz_results(self) -> None:
+        state = self._candidate_state()
+        state.input_request = InputRequest(
+            "Choice: ",
+            "fallback-picker",
+            {"manual_fallback": True, "musicbrainz_back": True},
         )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        handle_key(state, adapter, _Event("Esc"))
+        self.assertEqual(adapter.responses.get_nowait(), "__manual_mb_results__")
+
+    def test_manual_musicbrainz_results_render_inside_candidate_decision_and_click(self) -> None:
+        state = self._candidate_state()
+        state.candidates = []
+        state.apply(
+            "input",
+            {
+                "prompt": "MusicBrainz release #: ",
+                "context": {
+                    "kind": "manual-musicbrainz",
+                    "options": [
+                        {
+                            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                            "artist": "Percy Faith",
+                            "track": "Theme From A Summer Place",
+                            "title": "A Summer Place",
+                            "group": "Percy Faith · 1960s · Album",
+                        },
+                        {
+                            "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                            "artist": "Percy Faith",
+                            "track": "Theme From A Summer Place",
+                            "title": "Greatest Hits",
+                            "group": "Percy Faith · 1980s · Compilation",
+                        },
+                    ],
+                },
+            },
+        )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(220, 50), state, select_theme("OLED"))
+        second = _region(state, "musicbrainz-result-row", 1)
+        handle_mouse(state, adapter, _center(second))
+        self.assertEqual(state.selected_index, 1)
+        handle_key(state, adapter, _Event("Enter"))
+        self.assertEqual(adapter.responses.get_nowait(), "2")
 
     def test_empty_manual_result_keeps_authority_edit_controls_visible(self) -> None:
         state = self._candidate_state()

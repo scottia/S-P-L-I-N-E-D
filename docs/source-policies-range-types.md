@@ -287,8 +287,10 @@ Media exposes `Manual Scan [VA/OST Compilations]`.
 Manual Scan is explicit and per track:
 
 1. A track with an Album/Release ID remains in the normal workflow.
-2. A track without a valid local Recording ID or Artist ID is left unchanged
-   and reported in the final Unresolved section.
+2. Valid local Recording and Artist IDs remain the preferred authority. A
+   track with missing or unreliable IDs can enter the explicit MusicBrainz
+   discovery pane, which searches only its local Artist and Title. The curated
+   compilation Album name is never sent as search identity.
 3. SPLINED checks its persistent exact Recording-ID/Artist-ID cache.
 4. On a cache miss, SPLINED uses the indexed Artist ID to narrow local Albums,
    lazily reads only those tracks, and caches the exact relationships. A
@@ -305,7 +307,15 @@ Manual Scan is explicit and per track:
 8. Each successful LIVE WRITE is committed to the per-track ledger
    immediately. A later Manual Scan validates the saved Recording/Artist IDs
    and skips that track instead of repeating local or remote discovery.
-9. The three `[E]` controls in `FALLBACK ARTIST / ALBUM INFO` accept
+9. If the ID-first path returns no useful authority, or the operator presses
+   `M`, Candidate Decision shows numbered MusicBrainz matches grouped by
+   recording Artist, release decade, and release type (Album, Soundtrack, or
+   Compilation). Selecting a match makes its Recording/Artist/Release IDs
+   session authority and performs the normal local/provider artwork search.
+   Escape from artwork sources returns to the cached match list, allowing a
+   different release to be tried without another MusicBrainz request. The
+   Artwork panel remains empty until a release has been selected.
+10. The three `[E]` controls in `FALLBACK ARTIST / ALBUM INFO` accept
    session-only Artist, Release, and Recording MBID corrections. Enter validates
    the UUID and performs a fresh authority/artwork query. Editing Artist or
    Recording invalidates the previously derived Release; editing Release
@@ -313,8 +323,8 @@ Manual Scan is explicit and per track:
    Recording and Artist. An exact operator-selected release may be any
    MusicBrainz release type, including a Single or EP; the automatic
    Album, Soundtrack, Compilation restriction in step 5 does not apply.
-   `M` repeats the current MusicBrainz query and bypasses the positive lookup
-   and artwork-candidate caches for that retry.
+   `M` opens a fresh Artist/Title discovery search; it does not reuse the
+   per-run result list.
 
 The curated Album name is never used as MusicBrainz identity. SPLINED does not
 invent or write an Album/Release ID, write an operator-edited MBID, change the compilation's Album/Artist
@@ -323,8 +333,10 @@ one curated compilation may therefore receive different approved artwork.
 
 Timeouts, MusicBrainz `429`/`503` responses, no match, no artwork, rejection,
 or a failed write leave the track artwork unchanged and appear in Unresolved.
-Positive Recording-to-release results and lazily inspected local identities
-are retained in `splined.db` so later Manual Scans avoid repeated work.
+Positive ID-based Recording-to-release results and lazily inspected local
+identities are retained in `splined.db` so later Manual Scans avoid repeated
+work. Text-discovery choices are cached only for the active run and contain no
+credentials or tokens.
 Starting LIVE WRITE persists the Album as `incomplete`, including 0/N when
 the operator leaves before the first approval, and its picker name is blue.
 Escape leaves the current Manual Album, shows the run report, and returns to

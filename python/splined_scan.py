@@ -926,10 +926,63 @@ def _manual_remote_candidates(
     return downloaded, diagnostics
 
 
+def _manual_discovery_options(items: list[Any]) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    for item in items:
+        year = str(item.release_date or "")[:4]
+        decade = f"{year[:3]}0s" if len(year) == 4 and year.isdigit() else "Unknown"
+        options.append(
+            {
+                "id": str(item.release_mbid),
+                "recording_id": str(item.recording_mbid),
+                "artist": str(item.recording_artist),
+                "track": str(item.recording_title),
+                "title": str(item.release_title),
+                "date": str(item.release_date),
+                "country": str(item.country),
+                "release_class": str(item.release_class).title(),
+                "group": (
+                    f"{item.recording_artist} · {decade} · "
+                    f"{str(item.release_class).title()}"
+                ),
+                "score": str(item.score),
+            }
+        )
+    return options
+
+
+def _manual_choose_release(items: list[Any]) -> tuple[str, Any | None]:
+    options = _manual_discovery_options(items)
+    print()
+    print(f"  {core.cyan('MusicBrainz matches')}")
+    for number, option in enumerate(options, 1):
+        print(
+            f"    {core.magenta(str(number).rjust(2))}  "
+            f"{core.white(option['artist'])} · "
+            f"{core.orange(option['track'])} · "
+            f"{core.cyan(option['release_class'])} · "
+            f"{core.white(option['date'] or 'Unknown year')} · "
+            f"{core.orange(option['title'])}"
+        )
+    while True:
+        answer = core.read_input(
+            "    MusicBrainz release #: ",
+            kind="manual-musicbrainz",
+            options=options,
+        ).strip().lower()
+        if answer in {"__cancel__", "__manual_album_exit__", "b"}:
+            return "exit-album", None
+        if answer.isdigit() and 1 <= int(answer) <= len(items):
+            return "selected", items[int(answer) - 1]
+        print("    Choose a listed MusicBrainz release number or Esc.")
+
+
 def _manual_choose_candidate(
     candidates: list[core.Candidate],
     cfg: dict[str, Any],
     format_order: list[str],
+    *,
+    has_musicbrainz_results: bool = False,
 ) -> tuple[str, core.Candidate | None, dict[str, str]]:
     top = fallback_top_candidates(candidates, cfg, format_order, 10)
     suggested = fallback_suggested(top, cfg, format_order)
@@ -944,14 +997,18 @@ def _manual_choose_candidate(
         menu = (
             f"    {core.paint('PURPLE', '[s]')} suggested   "
             f"{core.cyan('[#]')} choose number   "
-            f"{core.cyan('[m]')} MusicBrainz re-query   "
+            f"{core.cyan('[m]')} MusicBrainz Artist/Track search   "
             f"{core.cyan('[b]')} leave unchanged"
         )
         print(menu)
         answer = core.read_input(
             "    Choice: ",
             kind="fallback-picker",
+            manual_fallback=True,
+            musicbrainz_back=has_musicbrainz_results,
         ).strip().lower()
+        if answer == "__manual_mb_results__" and has_musicbrainz_results:
+            return "mb-results", None, {}
         if answer in {"__cancel__", "__manual_album_exit__"}:
             return "exit-album", None, {}
         try:
@@ -968,7 +1025,7 @@ def _manual_choose_candidate(
             }
             return "requery", None, fields
         if answer == "m":
-            return "requery", None, {}
+            return "discover", None, {}
         if answer == "b":
             return "unchanged", None, {}
         if answer == "s" and suggested is not None:
@@ -1158,16 +1215,116 @@ def run_manual_compilation_album(
         force_musicbrainz = False
         force_sources = False
         interactive_retry = False
+        show_discovery = not authority["artist_id"] or not authority["recording_id"]
+        discovery_results: list[Any] = []
+        selected_release_item: Any | None = None
         selected: core.Candidate | None = None
         release: core.Release | None = None
 
         while True:
+            if show_discovery:
+                options = _manual_musicbrainz_options(config_file, cfg, state)
+                search_error = ""
+                cache_key = (
+                    str(track.artist or "").strip().casefold(),
+                    str(track.title or "").strip().casefold(),
+                )
+                discovery_cache = state.setdefault("mb_discovery_results", {})
+                used_discovery_cache = False
+                if not discovery_results and cache_key in discovery_cache:
+                    discovery_results = list(discovery_cache[cache_key])
+                    used_discovery_cache = True
+                if not discovery_results and options is not None:
+                    discovered, search_error = core.compilation_discover_releases(
+                        http,
+                        config_file,
+                        cfg,
+                        track,
+                        options,
+                    )
+                    discovery_results = list(discovered)
+                    if discovery_results:
+                        discovery_cache[cache_key] = list(discovery_results)
+                    core.debug_log(
+                        "compilation.manual.discovery "
+                        f"file={str(track.path)!r} results={len(discovery_results)} "
+                        f"cached={used_discovery_cache}"
+                    )
+                elif options is None:
+                    search_error = str(
+                        state.get("mb_options_error")
+                        or "Invalid MusicBrainz options"
+                    )
+                core.emit_ui("candidates", items=[])
+                core.emit_ui(
+                    "fallback_authority",
+                    artist=friendly["artist"],
+                    artist_id=authority["artist_id"],
+                    album=friendly["album"],
+                    album_id=authority["release_id"],
+                    track=friendly["track"],
+                    track_id=authority["recording_id"],
+                )
+                core.emit_ui(
+                    "diagnostics",
+                    items=(
+                        [("musicbrainz", search_error)]
+                        if search_error
+                        else []
+                    ),
+                )
+                if discovery_results:
+                    decision, discovered_item = _manual_choose_release(
+                        discovery_results
+                    )
+                    if decision == "exit-album":
+                        if mode == "write":
+                            _manual_progress(
+                                album,
+                                tracks,
+                                completed_paths,
+                                config_file=config_file,
+                                cfg=cfg,
+                            )
+                        return False
+                    selected_release_item = (
+                        core.compilation_release_candidate_from_discovery(
+                            discovered_item
+                        )
+                    )
+                    artist_ids = sorted(
+                        core.compilation_mbids(
+                            discovered_item.artist_mbids_key
+                        )
+                    )
+                    authority.update(
+                        artist_id=artist_ids[0] if artist_ids else "",
+                        recording_id=discovered_item.recording_mbid,
+                        release_id=discovered_item.release_mbid,
+                    )
+                    friendly.update(
+                        artist=discovered_item.recording_artist,
+                        track=discovered_item.recording_title,
+                        album=discovered_item.release_title,
+                    )
+                    show_discovery = False
+                    force_musicbrainz = False
+                    force_sources = False
+                    interactive_retry = True
+                    continue
+                show_discovery = False
+                interactive_retry = True
+
             authority_track = _manual_track_authority(
                 track,
                 artist_id=authority["artist_id"],
                 recording_id=authority["recording_id"],
             )
-            exact_release = authority["release_id"] if force_musicbrainz else ""
+            exact_release = (
+                authority["release_id"]
+                if force_musicbrainz or selected_release_item is not None
+                else ""
+            )
             local_rows = core.compilation_local_artwork_rows(
                 config_file,
                 cfg,
@@ -1188,6 +1345,11 @@ def run_manual_compilation_album(
                 release = core.compilation_release_from_local(local_rows[0])
                 release_source = "local-library"
                 local_candidates = _manual_local_candidates(local_rows)
+            elif selected_release_item is not None and not force_musicbrainz:
+                release = core.compilation_release_from_candidate(
+                    selected_release_item
+                )
+                release_source = "musicbrainz-search"
             else:
                 options = _manual_musicbrainz_options(
                     config_file, cfg, state
@@ -1315,14 +1477,9 @@ def run_manual_compilation_album(
                 )
             core.emit_ui("diagnostics", items=visible_diagnostics)
             if not candidates and not interactive_retry:
-                summary.unresolved += 1
-                _manual_unresolved(
-                    track,
-                    lookup_error
-                    or "No acceptable local or remote artwork candidate was returned",
-                    unresolved_items,
-                )
-                break
+                show_discovery = True
+                interactive_retry = True
+                continue
             if lookup_error:
                 print(
                     f"    {core.red('Authority lookup:')} "
@@ -1330,7 +1487,10 @@ def run_manual_compilation_album(
                 )
 
             decision, chosen, changes = _manual_choose_candidate(
-                candidates, cfg, format_order
+                candidates,
+                cfg,
+                format_order,
+                has_musicbrainz_results=bool(discovery_results),
             )
             if decision == "exit-album":
                 if mode == "write":
@@ -1347,6 +1507,22 @@ def run_manual_compilation_album(
                     f"completed={len(completed_paths)} total={len(tracks)}"
                 )
                 return False
+            if decision in {"discover", "mb-results"}:
+                show_discovery = True
+                if decision == "discover":
+                    discovery_results = []
+                    state.setdefault("mb_discovery_results", {}).pop(
+                        (
+                            str(track.artist or "").strip().casefold(),
+                            str(track.title or "").strip().casefold(),
+                        ),
+                        None,
+                    )
+                core.debug_log(
+                    "compilation.manual.discovery_open "
+                    f"file={str(track.path)!r} refresh={decision == 'discover'}"
+                )
+                continue
             if decision == "requery":
                 edited = changes.get("edited", "")
                 if changes:
@@ -1371,6 +1547,7 @@ def run_manual_compilation_album(
                         )
                         continue
                     authority.update(new_values)
+                    selected_release_item = None
                     if edited in {"artist", "recording"}:
                         authority["release_id"] = ""
                         friendly["album"] = ""

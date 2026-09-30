@@ -56,8 +56,65 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
 
         missing_album.recording_mbid = None
         eligible, reason = policy.manual_track_eligible(missing_album)
-        self.assertFalse(eligible)
-        self.assertIn("Recording ID", reason)
+        self.assertTrue(eligible)
+        self.assertEqual(reason, "")
+
+    def test_manual_text_discovery_uses_artist_and_track_but_never_album(self) -> None:
+        response = FakeResponse(
+            200,
+            {
+                "recordings": [
+                    {
+                        "id": RECORDING_ID,
+                        "score": 98,
+                        "title": "Theme From A Summer Place",
+                        "artist-credit": [
+                            {"artist": {"id": ARTIST_ID, "name": "Percy Faith"}}
+                        ],
+                        "releases": [
+                            {
+                                "id": RELEASE_ID,
+                                "title": "A Summer Place",
+                                "status": "Official",
+                                "date": "1960-01-01",
+                                "country": "US",
+                                "release-group": {
+                                    "id": "99999999-9999-4999-8999-999999999999",
+                                    "primary-type": "Album",
+                                    "secondary-types": [],
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        http = SimpleNamespace(last_mb_request=None, get=Mock(return_value=response))
+        core = SimpleNamespace(
+            mb_headers=lambda *_args: ({"User-Agent": "test"}, "oauth"),
+            MB_BASE="https://musicbrainz.test/ws/2",
+        )
+        track = SimpleNamespace(
+            artist="Percy Faith",
+            title="Theme From A Summer Place",
+            album="Billboard Hot 100 Singles of 1960",
+        )
+        results, error = policy.discover_recording_releases(
+            core,
+            http,
+            Path("config.toml"),
+            {},
+            track,
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+        self.assertEqual(error, "")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].release_class, "album")
+        params = http.get.call_args.kwargs["params"]
+        self.assertIn('recording:"Theme From A Summer Place"', params["query"])
+        self.assertIn('artist:"Percy Faith"', params["query"])
+        self.assertNotIn("Billboard Hot 100", params["query"])
+        self.assertNotIn("limit", params)
 
     def test_completed_track_ledger_resumes_and_finishes_album(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -798,7 +798,7 @@ class TuiState:
                 input_kind,
                 context,
             )
-            if self.input_request.kind == "musicbrainz":
+            if self.input_request.kind in {"musicbrainz", "manual-musicbrainz"}:
                 self.release_options = [
                     {str(key): str(value) for key, value in item.items()}
                     for item in context.get("options", [])
@@ -2841,9 +2841,22 @@ def _render_candidate_table(frame: Any, area: Rect, state: TuiState, theme: Them
 
 def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     spec = layout_spec(area.width, area.height)
+    manual = bool(
+        state.input_request
+        and state.input_request.kind == "manual-musicbrainz"
+    )
     columns = ["#", "artist", "release"]
     widths = [Constraint.length(4), Constraint.percentage(28), Constraint.fill(1)]
-    if spec.breakpoint in {Breakpoint.NORMAL, Breakpoint.WIDE}:
+    if manual:
+        columns = ["#", "group", "date", "track", "release"]
+        widths = [
+            Constraint.length(4),
+            Constraint.percentage(27),
+            Constraint.length(11),
+            Constraint.percentage(22),
+            Constraint.fill(1),
+        ]
+    elif spec.breakpoint in {Breakpoint.NORMAL, Breakpoint.WIDE}:
         columns.extend(["date", "country", "mbid"])
         widths = [
             Constraint.length(4),
@@ -2861,6 +2874,8 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
         values = {
             "#": str(index),
             "artist": option.get("artist", ""),
+            "group": option.get("group", ""),
+            "track": option.get("track", ""),
             "release": option.get("title", ""),
             "date": option.get("date", ""),
             "country": option.get("country", ""),
@@ -2871,7 +2886,17 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
         )
     table = (
         Table(rows, widths, header)
-        .block(card(theme, "MUSICBRAINZ RELEASE SEARCH", Semantic.SPECIAL))
+        .block(
+            card(
+                theme,
+                (
+                    "MUSICBRAINZ MATCHES · ARTIST / DECADE / RELEASE TYPE"
+                    if manual
+                    else "MUSICBRAINZ RELEASE SEARCH"
+                ),
+                Semantic.SPECIAL,
+            )
+        )
         .column_spacing(1)
         .highlight_symbol("› ")
         .highlight_style(style(theme, Semantic.SPECIAL, bold=True))
@@ -2880,6 +2905,18 @@ def _render_musicbrainz(frame: Any, area: Rect, state: TuiState, theme: Theme) -
     if rows:
         table_state.select(max(0, min(state.selected_index, len(rows) - 1)))
     frame.render_stateful_table(table, area, table_state)
+    for index in range(min(len(rows), max(0, int(area.height) - 3))):
+        _register_hit(
+            state,
+            "musicbrainz-result-row",
+            Rect(
+                int(area.x) + 1,
+                int(area.y) + 2 + index,
+                max(1, int(area.width) - 2),
+                1,
+            ),
+            index=index,
+        )
 
 
 CANDIDATE_HEADERS = {
@@ -3730,6 +3767,10 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
         state.fallback_artist_id
         or state.fallback_album_id
         or state.fallback_track_id
+        or (
+            state.input_request is not None
+            and state.input_request.kind == "manual-musicbrainz"
+        )
     )
     current_height = (
         9
@@ -3792,8 +3833,14 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
     target_text = "Ideal target" if target is None else f"Ideal · distance {target.distance} · {target.width}×{target.height}"
     frame.render_widget(Paragraph.from_string(target_text).block(card(theme, "TARGET", Semantic.ACCEPTED)), summary_areas[2])
 
+    manual_musicbrainz = bool(
+        state.input_request is not None
+        and state.input_request.kind == "manual-musicbrainz"
+    )
     groups = _candidate_groups(state)
-    if groups:
+    if manual_musicbrainz:
+        _render_musicbrainz(frame, groups_area, state, theme)
+    elif groups:
         state.group_scroll = max(0, min(state.group_scroll, len(groups) - 1))
         visible_groups: list[tuple[int, str, list[CandidateView], Semantic]] = []
         heights: list[int] = []
@@ -3873,7 +3920,17 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
             groups_area,
         )
     _render_activity_region(frame, activity_area, state, theme)
-    if preview_area is not None and state.candidates:
+    if preview_area is not None and manual_musicbrainz:
+        frame.render_widget(
+            Paragraph.from_string(
+                "Select a MusicBrainz release to search and preview its artwork sources."
+            )
+            .centered()
+            .block(card(theme, "ARTWORK · NO RELEASE SELECTED", Semantic.MUTED))
+            .wrap(True, True),
+            preview_area,
+        )
+    elif preview_area is not None and state.candidates:
         state.remote_preview_width = max(1, int(preview_area.width) - 2)
         state.remote_preview_height = max(1, int(preview_area.height) - 2)
         state.remote_preview_rect = (
@@ -4329,8 +4386,15 @@ def _footer_text(state: TuiState) -> str:
             return "↑/↓ choose • Enter exact • S suggested • K keep local • U URL • M MusicBrainz • B bypass • Ctrl+C [Exit] • ? help"
         if kind == "musicbrainz":
             return "↑/↓ choose release • Enter select • B/Esc back • Ctrl+C [Exit] • ? help"
+        if kind == "manual-musicbrainz":
+            return "↑/↓ or click choose MB match • Enter search artwork • Esc album list • Ctrl+C [Exit]"
         if kind == "fallback-picker":
-            return "↑/↓ choose • Enter exact • S suggested • Click [E] edit MBID • M re-query • B leave • Esc album list • Ctrl+C [Exit]"
+            back = (
+                "MB results"
+                if state.input_request.context.get("musicbrainz_back")
+                else "album list"
+            )
+            return f"↑/↓ choose • Enter exact • S suggested • Click [E] edit MBID • M MB search • B leave • Esc {back} • Ctrl+C [Exit]"
         return "↑/↓ choose • Enter exact • S suggested • U URL • B bypass • Ctrl+C [Exit] • ? help"
     if state.finished:
         return "Enter / q Exit SPLINED • Ctrl+C [Exit] • ? help"
@@ -4547,6 +4611,10 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         state.workflow in {"candidates", "picker"}
         and (
             bool(state.candidates)
+            or (
+                state.input_request is not None
+                and state.input_request.kind == "manual-musicbrainz"
+            )
             or (
                 state.input_request is not None
                 and state.input_request.kind == "fallback-picker"
@@ -5626,6 +5694,9 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.status_index = region.index
     elif region.target in {"candidate-row", "preferred-candidate"}:
         state.selected_index = region.index
+    elif region.target == "musicbrainz-result-row":
+        state.selected_index = region.index
+        state.input_buffer = str(region.index + 1)
     elif region.target == "fallback-id-edit":
         _begin_fallback_id_edit(state, adapter, region.index)
     elif region.target == "candidate-url":
@@ -5747,12 +5818,12 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
 
     selection_count = (
         len(state.release_options)
-        if request.kind == "musicbrainz"
+        if request.kind in {"musicbrainz", "manual-musicbrainz"}
         else len(state.candidates)
     )
     if action is Action.UP and selection_count:
         index = (state.selected_index - 1) % selection_count
-        if state.candidates:
+        if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
             state.selected_index = index
@@ -5760,7 +5831,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if action is Action.DOWN and selection_count:
         index = (state.selected_index + 1) % selection_count
-        if state.candidates:
+        if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
             state.selected_index = index
@@ -5773,7 +5844,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             index = selection_count - 1
         else:
             index = state.selected_index + (-10 if action is Action.PAGE_UP else 10)
-        if state.candidates:
+        if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
             state.selected_index = max(0, min(index, selection_count - 1))
@@ -5790,16 +5861,21 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             state.input_buffer = code
             index = int(code) - 1
         if index is not None:
-            if state.candidates:
+            if request.kind not in {"musicbrainz", "manual-musicbrainz"} and state.candidates:
                 _focus_candidate(state, index, adapter)
             else:
                 state.selected_index = index
         return
     manual_fallback = bool(
         request.kind == "fallback-picker"
-        and state.fallback_artist_id
-        and state.fallback_track_id
+        and (
+            request.context.get("manual_fallback")
+            or (state.fallback_artist_id and state.fallback_track_id)
+        )
     )
+    if action is Action.BYPASS and request.kind == "manual-musicbrainz":
+        _submit(state, adapter, "b")
+        return
     if action is Action.BYPASS and manual_fallback:
         _submit(state, adapter, "b")
         return
@@ -5826,12 +5902,21 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     if action is Action.BACK:
         if request.kind == "musicbrainz":
             _submit(state, adapter, "b")
+        elif request.kind == "manual-musicbrainz":
+            _submit(state, adapter, "__manual_album_exit__")
         elif (
             request.kind == "fallback-picker"
-            and state.fallback_artist_id
-            and state.fallback_track_id
+            and manual_fallback
         ):
-            _submit(state, adapter, "__manual_album_exit__")
+            _submit(
+                state,
+                adapter,
+                (
+                    "__manual_mb_results__"
+                    if request.context.get("musicbrainz_back")
+                    else "__manual_album_exit__"
+                ),
+            )
         else:
             _submit(state, adapter, "__cancel__")
         return
@@ -5848,13 +5933,8 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         action is Action.MUSICBRAINZ
         and manual_fallback
     ):
-        payload = {
-            "action": "manual-authority-query",
-            **_fallback_authority_ids(state),
-            "edited": "retry",
-        }
-        state.transient = "Re-querying MusicBrainz authority and artwork candidates…"
-        _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
+        state.transient = "Searching MusicBrainz by local Artist and Track title…"
+        _submit(state, adapter, "m")
         return
     if (
         manual_fallback

@@ -361,14 +361,25 @@ the previously derived Release before lookup. A Release edit requests that
 exact release and validates that it is Official and contains the selected
 Recording and Artist. Unlike automatic discovery, an exact operator-selected
 release may be any MusicBrainz release type, including a Single or EP.
-`M` repeats the currently displayed authority query with a real cache-bypassing
-refresh. These edits never write MBID tags; only approved embedded artwork is
-written.
+`M` opens a fresh MusicBrainz Recording search using the local Artist and Track
+title. These edits and search selections never write MBID tags; only approved
+embedded artwork is written.
+
+When local IDs are absent, ID lookup fails, or `M` is pressed, the lower
+Candidate Decision area becomes `MUSICBRAINZ MATCHES`. Numbered rows are sorted
+and labeled by recording Artist, release decade, and release type (Album,
+Soundtrack, or Compilation), followed by the matched Track and release title.
+The Artwork panel intentionally remains empty until a row is selected. Enter
+on a keyboard choice—or Enter after clicking a row—uses that release as
+session authority and runs the normal source candidate search. Escape from the
+source candidates restores the same in-memory result list, without repeating
+the MusicBrainz request, so another release can be tested. Escape from the
+MusicBrainz list leaves the Manual Album and returns to Select Media.
 
 If an edited ID is valid UUID syntax but MusicBrainz rejects the authority or
 returns no artwork candidate, the candidate screen remains open with the
 failure reason and all three `[E]` controls. Enter cannot select an empty row;
-the operator can correct another ID, press `M`, leave that track unchanged
+the operator can correct another ID, press `M` for Artist/Track discovery, leave that track unchanged
 with `B`, or leave the Manual Album with Escape.
 
 Candidates are grouped by source while sharing one terminal-cell grid. Depending

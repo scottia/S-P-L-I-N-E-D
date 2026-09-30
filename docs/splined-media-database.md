@@ -242,9 +242,11 @@ LIVE WRITE creates or refreshes the progress row when Manual Scan starts, so
 an operator exit before the first approval is represented as `0/N incomplete`.
 Progress-only events also update the retained in-memory Album status; the next
 `library_update` therefore cannot overwrite the blue incomplete state.
-Operator MBID edits remain session-only and are not stored in these tables as
-tag authority. A deliberate `M` retry bypasses positive authority/artwork
-caches for that request while preserving the configured MusicBrainz delay,
+Operator MBID edits and text-discovery selections remain session-only and are
+not stored in these tables as tag authority. MusicBrainz Artist/Track search
+results are cached only in the active Manual run so source-candidate Escape can
+return to the same list without another request. A deliberate `M` search
+refreshes that per-run list while preserving the configured MusicBrainz delay,
 timeout, and attempt budget.
 
 ## Album Status and physical folder aggregates
