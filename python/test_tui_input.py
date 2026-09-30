@@ -1139,19 +1139,26 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
     def test_candidate_url_is_a_direct_terminal_link_and_ai_controls_stay_direct(self) -> None:
         state = self._candidate_state()
         adapter = TuiAdapter()
-        render(_Frame(160, 44), state, select_theme("OLED"))
+        theme = select_theme("OLED")
+        render(_Frame(160, 44), state, theme)
         candidate = _region(state, "candidate-row")
         handle_mouse(state, adapter, _center(candidate))
         self.assertEqual(state.selected_index, candidate.index)
 
         url = _region(state, "candidate-url")
         stream = io.StringIO()
-        write_terminal_links(state, stream)
+        write_terminal_links(state, stream, theme)
         encoded = stream.getvalue()
         self.assertIn(osc8_link("URL", url.value), encoded)
+        foreground = theme.color("debug")
+        background = theme.color("background")
+        color_prefix = (
+            f"\x1b[1;38;2;{foreground[0]};{foreground[1]};{foreground[2]};"
+            f"48;2;{background[0]};{background[1]};{background[2]}m"
+        )
         self.assertIn(
             f"\x1b[{url.y + 1};{url.x + 2}H"
-            f"{osc8_link('URL', url.value)}",
+            f"{color_prefix}{osc8_link('URL', url.value)}\x1b[0m",
             encoded,
         )
         self.assertNotIn("OPEN IN DEFAULT BROWSER", encoded)
@@ -1316,7 +1323,9 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         artwork_url = _region(state, "musicbrainz-artwork-url", 1)
         preferred_url = _region(state, "candidate-url")
         self.assertTrue(artwork_url.value.endswith("/front"))
-        self.assertEqual(artwork_url.x, preferred_url.x)
+        # Paragraph and Table renderers have different content origins even
+        # though their painted URL columns align on screen.
+        self.assertEqual(artwork_url.x, preferred_url.x + 2)
         stream = io.StringIO()
         write_terminal_links(state, stream)
         encoded = stream.getvalue()

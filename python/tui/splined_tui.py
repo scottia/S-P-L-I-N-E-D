@@ -3269,8 +3269,10 @@ def _register_candidate_hits(
             value=candidate.ai_key,
         )
     if "url" in grid.columns:
-        # Table content starts after the card border and left padding.
-        url_x = int(area.x) + 2 + grid.start("url")
+        # Ratatui Table columns use the shared grid origin directly. Unlike
+        # Paragraph content, applying the card padding again shifts the OSC-8
+        # repaint into the closing bracket and leaves a doubled white URL.
+        url_x = int(area.x) + grid.start("url")
         if candidate.provenance == "[URL]" and candidate.url:
             _register_hit(
                 state,
@@ -5724,7 +5726,11 @@ def osc8_link(label: str, url: str) -> str:
     return f"\x1b]8;;{safe_url}\x1b\\{safe_label}\x1b]8;;\x1b\\"
 
 
-def write_terminal_links(state: TuiState, writer: Any) -> None:
+def write_terminal_links(
+    state: TuiState,
+    writer: Any,
+    theme: Theme | None = None,
+) -> None:
     """Attach terminal-owned OSC-8 metadata to visible remote identifiers."""
     targets = [
         region
@@ -5748,9 +5754,37 @@ def write_terminal_links(state: TuiState, writer: Any) -> None:
         # ANSI cursor columns are one-based. URL regions include their opening
         # bracket, so the linked label begins one additional cell to the right.
         column = region.x + (1 if region.target == "musicbrainz-link" else 2)
+        linked_label = osc8_link(label, region.value)
+        if theme is not None:
+            semantic = Semantic.SPECIAL
+            if region.target == "candidate-url":
+                semantic = Semantic.DEBUG
+            elif region.target == "musicbrainz-artwork-url":
+                selection_state = (
+                    state.release_options[region.index].get(
+                        "selection_state",
+                        "",
+                    )
+                    if 0 <= region.index < len(state.release_options)
+                    else ""
+                )
+                semantic = (
+                    Semantic.ACCEPTED
+                    if selection_state == "current"
+                    else Semantic.DEBUG
+                    if selection_state == "visited"
+                    else Semantic.TEXT
+                )
+            foreground = theme.color(semantic.value)
+            background = theme.color("background")
+            linked_label = (
+                f"\x1b[1;38;2;{foreground[0]};{foreground[1]};{foreground[2]};"
+                f"48;2;{background[0]};{background[1]};{background[2]}m"
+                f"{linked_label}\x1b[0m"
+            )
         writer.write(
             f"\x1b[{region.y + 1};{column}H"
-            f"{osc8_link(label, region.value)}"
+            f"{linked_label}"
         )
     writer.write("\x1b8")
     writer.flush()
@@ -6451,7 +6485,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         _draw_local_cover_overlay(state)
                         writer = getattr(sys, "__stdout__", None)
                         if writer is not None:
-                            write_terminal_links(state, writer)
+                            write_terminal_links(state, writer, theme)
                         dirty = False
                     event = input_reader.poll_event(timeout_ms=80)
                     if event is not None:
