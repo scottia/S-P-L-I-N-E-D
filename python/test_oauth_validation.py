@@ -126,6 +126,7 @@ class OAuthValidationTests(unittest.TestCase):
                 ("MusicBrainz", "OAuth Bearer"),
                 ("iTunes", "Anonymous"),
                 ("CoverArt", "Anonymous"),
+                ("Amazon", "Anonymous / opt-in"),
             ),
         )
         rendered = repr(statuses)
