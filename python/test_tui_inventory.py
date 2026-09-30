@@ -123,34 +123,16 @@ class DirectLazyInventoryTests(unittest.TestCase):
             )
         return result, emitted
 
-    def test_initial_startup_resolves_status_without_loading_picker_albums(self) -> None:
-        inventory_calls: list[Path] = []
-        original_inventory = splined.inventory
-
-        def recording_inventory(path: Path, *args, **kwargs):
-            inventory_calls.append(Path(path))
-            return original_inventory(path, *args, **kwargs)
-
-        with (
-            mock.patch.object(
-                splined,
-                "inventory",
-                side_effect=recording_inventory,
-            ),
-            mock.patch.object(
-                PickerIndex,
-                "open",
-                side_effect=AssertionError("SQLite picker cache opened"),
-            ),
+    def test_initial_startup_renders_without_loading_picker_albums(self) -> None:
+        with mock.patch.object(
+            PickerIndex,
+            "open",
+            side_effect=AssertionError("SQLite picker cache opened"),
         ):
             (selected, _overrides, _timeouts, _sources, known, scan_mode), emitted = self._run(
                 [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
             )
 
-        self.assertEqual(
-            set(inventory_calls),
-            {self.root / "10,000 Maniacs", self.root / "Aerosmith"},
-        )
         self.assertEqual(selected, [])
         self.assertEqual(known, [])
         self.assertEqual(scan_mode, "auto-selected")
@@ -159,11 +141,13 @@ class DirectLazyInventoryTests(unittest.TestCase):
             [row["name"] for row in payload["artists"]],
             ["10,000 Maniacs", "Aerosmith"],
         )
-        # Status-only probing must not populate resident Album picker topology.
+        # JSON-first startup paints immediately. Album topology remains lazy
+        # until an Artist is opened or an explicit traversal is requested.
         self.assertEqual(payload["albums"], [])
         self.assertTrue(all(not row["loaded"] for row in payload["artists"]))
+        self.assertEqual(payload["inventory_mode"], "lazy-direct")
         statuses = {row["name"]: row["status"] for row in payload["artists"]}
-        self.assertEqual(statuses["10,000 Maniacs"], "partial")
+        self.assertEqual(statuses["10,000 Maniacs"], "unprocessed")
         self.assertEqual(statuses["Aerosmith"], "unprocessed")
         self.assertFalse(
             any(event in {"cache_build_start", "cache_progress"} for event, _ in emitted)
@@ -380,32 +364,26 @@ class DirectLazyInventoryTests(unittest.TestCase):
             {"Love Among the Ruins", "Our Time in Eden"},
         )
 
-    def test_select_all_explicitly_reads_every_artist(self) -> None:
-        calls: list[Path] = []
-        original_inventory = splined.inventory
-
-        def inventory(path: Path, *args, **kwargs):
-            calls.append(path)
-            return original_inventory(path, *args, **kwargs)
-
-        with mock.patch.object(splined, "inventory", side_effect=inventory):
-            (selected, _overrides, _timeouts, _sources, known, _scan), _emitted = self._run(
-                [
-                    {"action": "select-all", "selected": []},
-                    {
-                        "action": "launch",
-                        "scan_mode": "auto-selected",
-                        "selected": [str(self.eden), str(self.toys)],
-                    },
-                ]
-            )
-
-        self.assertEqual(
-            set(calls),
-            {self.root / "10,000 Maniacs", self.root / "Aerosmith"},
+    def test_select_all_explicitly_targets_current_artist(self) -> None:
+        artist_path = self.root / "10,000 Maniacs"
+        (selected, _overrides, _timeouts, _sources, known, _scan), _emitted = self._run(
+            [
+                {
+                    "action": "select-all",
+                    "artist_path": str(artist_path),
+                    "selected": [],
+                },
+                {
+                    "action": "launch",
+                    "scan_mode": "auto-selected",
+                },
+            ]
         )
-        self.assertEqual({album.path for album in known}, {self.love, self.eden, self.toys})
-        self.assertEqual({album.path for album in selected}, {self.eden, self.toys})
+
+        # Select [ALL] is intentionally scoped to the active Artist. The
+        # processed Album is protected; only the unprocessed child is selected.
+        self.assertEqual({album.path for album in known}, {self.love, self.eden})
+        self.assertEqual({album.path for album in selected}, {self.eden})
 
     def test_auto_all_is_an_explicit_whole_library_traversal(self) -> None:
         calls: list[Path] = []
