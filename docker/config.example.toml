@@ -22,9 +22,8 @@ cache_dir = "/_cache"
 # Set true only when this exact splined.db is also opened through another OS/share.
 # Shared mode uses a rollback journal plus a busy timeout instead of WAL.
 sqlite_shared = false
-# Current-run log is created under log_dir/run and replaced next invocation.
+# Per-run diagnostic logs are created under log_dir/run and pruned by retention.
 log_dir = "/_logs"
-history_dir = "/_logs/_history"
 
 [output]
 file_name = "cover"

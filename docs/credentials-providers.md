@@ -147,7 +147,8 @@ The root native and Python/Docker commands expose the corresponding `--mb-oauth-
 
 Changing `credential_dir` does not move existing JSON files. Close SPLINED, move the four standard files deliberately, update Config v5, verify filesystem permissions, then test provider status before deleting the old copy.
 
-Back up `credentials/`, `config/`, and the configured history location separately. `_cache/` is disposable.
+Back up `credentials/`, `config/`, and `<scan.cache_dir>/splined.db`. Other
+candidate and sample cache files are disposable.
 
 ## Related documentation
 

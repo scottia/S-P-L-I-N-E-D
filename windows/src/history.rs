@@ -1,15 +1,13 @@
 use crate::config::{Config, Mode};
-use crate::safe_write::replace_text_file;
 use crate::scan::AlbumDirectory;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const COMPLETION_HISTORY_VERSION: u32 = 1;
-pub const COMPLETION_HISTORY_FILE: &str = "scan-completed-history.json";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletionEntry {
@@ -77,43 +75,17 @@ impl Default for AlbumHistoryStatus {
     }
 }
 
-pub fn completion_history_path(config: &Config) -> PathBuf {
-    Path::new(&config.scan.history_dir).join(COMPLETION_HISTORY_FILE)
+pub fn load_completion_history(_config: &Config) -> CompletionHistory {
+    // Durable Album state is loaded directly from splined.db by the media
+    // picker. This in-memory structure remains only for one scan invocation.
+    CompletionHistory::default()
 }
 
-pub fn load_completion_history(config: &Config) -> CompletionHistory {
-    if !config.history.enabled {
-        return CompletionHistory::default();
-    }
-
-    let path = completion_history_path(config);
-    let Ok(text) = fs::read_to_string(path) else {
-        return CompletionHistory::default();
-    };
-    let Ok(mut history) = serde_json::from_str::<CompletionHistory>(&text) else {
-        return CompletionHistory::default();
-    };
-    history.version = COMPLETION_HISTORY_VERSION;
-    prune_expired_entries(&mut history, config, unix_now());
-    history
-}
-
-pub fn save_completion_history(config: &Config, history: &CompletionHistory) -> Result<(), String> {
-    if !config.history.enabled {
-        return Ok(());
-    }
-    let path = completion_history_path(config);
-    let mut persisted = history.clone();
-    persisted.version = COMPLETION_HISTORY_VERSION;
-    prune_expired_entries(&mut persisted, config, unix_now());
-    let body = serde_json::to_string_pretty(&persisted)
-        .map_err(|error| format!("Unable to serialize SPLINED completion history: {error}"))?
-        + "\n";
-    replace_text_file(&path, &body, "scan completion history", |staged| {
-        serde_json::from_str::<CompletionHistory>(staged)
-            .map(|_| ())
-            .map_err(|error| format!("Invalid staged SPLINED completion history: {error}"))
-    })
+pub fn save_completion_history(
+    _config: &Config,
+    _history: &CompletionHistory,
+) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn record_scan_completion(
@@ -341,7 +313,6 @@ mod tests {
         let album = fixture_album(temp.path());
         let mut config = Config::default();
         config.mode = Mode::Read;
-        config.scan.history_dir = temp.path().join("history").to_string_lossy().into_owned();
         let mut history = CompletionHistory::default();
 
         record_scan_completion(
@@ -354,6 +325,6 @@ mod tests {
         .unwrap();
 
         assert!(history.albums.is_empty());
-        assert!(!completion_history_path(&config).exists());
+        assert!(history.albums.is_empty());
     }
 }

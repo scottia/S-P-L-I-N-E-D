@@ -13,6 +13,7 @@ pub mod musicbrainz;
 pub mod pipeline;
 pub mod portable;
 pub mod range;
+pub mod runtime_state;
 pub mod safe_write;
 pub mod scan;
 pub mod scan_musicbrainz;

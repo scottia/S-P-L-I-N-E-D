@@ -24,10 +24,10 @@ Stable Windows release
   authoritative library is reloaded before the report is shown.
 - The collapsed Select control and bottom candidate-action row include explicit
   bottom breathing room so their Fluent outlines are no longer clipped.
-- Each attempted launch album is now consumed from the checked selection when
-  its core process ends, including STOP/error exits. Equivalent UNC paths with
-  trailing separators are matched correctly. Unattempted queued albums remain
-  checked for resume, so an old first album cannot lead a newly selected artist.
+- Each successfully completed or operator-stopped launch album is consumed from
+  the checked selection. Failed and unattempted albums remain checked for resume.
+  Equivalent UNC paths with trailing separators are matched correctly, so an old
+  first album cannot lead a newly selected artist.
 - The top navigation no longer repeats the Media Library path. Appearance now
   lives under View > Appearance, with System as the default theme preference.
 - Panel guidance was moved into information tooltips beside Media Library

@@ -153,6 +153,7 @@ namespace Splined.WindowsGui
         internal MainForm(ConfigState state, UiState initialUiState)
         {
             this.state = state;
+            RuntimeLog.Initialize(state);
             uiState = initialUiState ?? ConfigStore.LoadUi();
             ThemeManager.EnsureInitialized(uiState.Theme);
             ThemeManager.PrepareForm(this);
@@ -176,7 +177,11 @@ namespace Splined.WindowsGui
                     using (StatusForm form = new StatusForm(this.state)) form.ShowDialog(this);
             };
             FormClosing += MainFormClosing;
-            FormClosed += delegate { if (treeToolTip != null) treeToolTip.Dispose(); };
+            FormClosed += delegate
+            {
+                RuntimeLog.Write("info", "windows.gui.closed");
+                if (treeToolTip != null) treeToolTip.Dispose();
+            };
         }
 
         private void BuildLayout()
@@ -1197,6 +1202,7 @@ namespace Splined.WindowsGui
                 AppendActivity("WRITE MODE — SELECTED ARTWORK CAN CHANGE ALBUM FILES\r\n", ActivityTone.Warning);
             AppendActivity("Selected albums: " + selected.Count + "\r\n\r\n", ActivityTone.Muted);
 
+            bool runFailed = false;
             for (int index = 0; index < selected.Count && !stopRequested; index++)
             {
                 AlbumInfo album = selected[index];
@@ -1210,11 +1216,20 @@ namespace Splined.WindowsGui
                 BeginAlbumRunStatistics(album);
                 AppendAlbumActivityHeader(index + 1, selected.Count, album.Artist, album.Title);
                 AppendActivity("  1. Reading local album and tag evidence...\r\n");
-                await RunCoreAlbum(core, album, runConfigPath);
-                // A launch queue is a snapshot. Once this album's process has
-                // ended, consume its check even after STOP/error so it cannot
-                // lead the next independently selected artist's run. Albums not
-                // yet attempted remain checked and resumable.
+                bool albumSucceeded = await RunCoreAlbum(core, album, runConfigPath);
+                if (!albumSucceeded && !stopRequested)
+                {
+                    FinishActiveAlbumStatistics("Failed");
+                    activeLaunchAlbum = null;
+                    runFailed = true;
+                    AppendActivity("  Processing core failed. This album remains selected; later albums were not started.\r\n", ActivityTone.Error);
+                    RuntimeLog.Write("error", "batch.stopped_on_album_error album=" + album.Path);
+                    break;
+                }
+                // A launch queue is a snapshot. Consume this album after a
+                // successful or operator-stopped run so it cannot lead the next
+                // independently selected artist's run. Failed and not-yet-run
+                // albums remain checked and resumable.
                 ConsumeLaunchAlbumSelection(album);
                 FinishActiveAlbumStatistics(stopRequested ? "Stopped" : "Incomplete");
                 activeLaunchAlbum = null;
@@ -1237,15 +1252,17 @@ namespace Splined.WindowsGui
             candidateContext.Text = "";
             progress.Value = 100;
             progress.Visible = false;
-            SetStatus(stopRequested ? "Stopped by user." : "Run complete. LAUNCH is ready for another selected run.");
+            SetStatus(stopRequested ? "Stopped by user."
+                : runFailed ? "Run stopped after an error. The failed and remaining albums are still selected."
+                : "Run complete. LAUNCH is ready for another selected run.");
             launch.Text = "LAUNCH";
             ApplyModeActivityAppearance();
             await ReloadLibraryAsync(true);
-            if (!stopRequested && runAlbumStatistics.Count > 0)
+            if (!stopRequested && !runFailed && runAlbumStatistics.Count > 0)
                 ShowAlbumRunReport(completedRunMode, selected.Count);
         }
 
-        private async Task RunCoreAlbum(string core, AlbumInfo album, string runConfigPath)
+        private async Task<bool> RunCoreAlbum(string core, AlbumInfo album, string runConfigPath)
         {
             string retryArtist = null;
             string retryAlbum = null;
@@ -1253,7 +1270,8 @@ namespace Splined.WindowsGui
             {
                 fallbackRetryRequested = false;
                 musicBrainzRetryRequested = false;
-                await RunCoreAlbumOnce(core, album, retryArtist, retryAlbum, runConfigPath);
+                bool succeeded = await RunCoreAlbumOnce(core, album, retryArtist, retryAlbum, runConfigPath);
+                if (!succeeded) return false;
                 if (musicBrainzRetryRequested && !stopRequested)
                 {
                     retryArtist = null;
@@ -1268,9 +1286,10 @@ namespace Splined.WindowsGui
                 }
             }
             while ((fallbackRetryRequested || musicBrainzRetryRequested) && !stopRequested);
+            return !stopRequested;
         }
 
-        private Task RunCoreAlbumOnce(string core, AlbumInfo album, string retryArtist, string retryAlbum, string runConfigPath)
+        private Task<bool> RunCoreAlbumOnce(string core, AlbumInfo album, string retryArtist, string retryAlbum, string runConfigPath)
         {
             TaskCompletionSource<bool> completion = new TaskCompletionSource<bool>();
             ProcessStartInfo start = new ProcessStartInfo();
@@ -1296,11 +1315,17 @@ namespace Splined.WindowsGui
             process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args) { if (args.Data != null) HandleCoreLine(args.Data, true); };
             process.Exited += delegate
             {
-                completion.TrySetResult(true);
+                int exitCode = -1;
+                try { exitCode = process.ExitCode; }
+                catch { }
+                RuntimeLog.Write(exitCode == 0 ? "debug" : "error",
+                    "album.core.exit code=" + exitCode + " album=" + album.Path);
+                completion.TrySetResult(exitCode == 0);
                 process.Dispose();
             };
             try
             {
+                RuntimeLog.Write("debug", "album.core.start album=" + album.Path);
                 currentProcess = process;
                 process.Start();
                 process.BeginOutputReadLine();
@@ -1308,6 +1333,7 @@ namespace Splined.WindowsGui
             }
             catch (Exception error)
             {
+                RuntimeLog.Write("error", "album.core.start_failed album=" + album.Path + " error=" + error.Message);
                 AppendActivitySafe("  ERROR: " + error.Message + "\r\n", ActivityTone.Error);
                 completion.TrySetResult(false);
             }
@@ -1316,6 +1342,7 @@ namespace Splined.WindowsGui
 
         private void HandleCoreLine(string line, bool error)
         {
+            RuntimeLog.Write(error ? "error" : "debug", "core " + line);
             if (line.StartsWith(EventPrefix, StringComparison.Ordinal))
             {
                 string body = line.Substring(EventPrefix.Length);
@@ -1786,8 +1813,27 @@ namespace Splined.WindowsGui
             SetStatus("Stopping current processing...");
             ClearCandidates();
             candidateContext.Text = "Processing stopped. Candidate results cleared.";
-            try { if (currentProcess != null && !currentProcess.HasExited) currentProcess.Kill(); }
+            Process stopping = currentProcess;
+            if (stopping == null) return;
+            RuntimeLog.Write("warning", "batch.stop_requested");
+            try
+            {
+                if (!stopping.HasExited) stopping.StandardInput.Close();
+            }
             catch { }
+            Task.Run(async delegate
+            {
+                await Task.Delay(5000);
+                try
+                {
+                    if (!stopping.HasExited)
+                    {
+                        RuntimeLog.Write("warning", "batch.stop_force_kill_after_grace");
+                        stopping.Kill();
+                    }
+                }
+                catch { }
+            });
         }
 
         private async void OpenSettings(object sender, EventArgs e)

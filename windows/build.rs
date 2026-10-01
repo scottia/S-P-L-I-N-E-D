@@ -11,6 +11,7 @@ const GUI_SOURCES: &[&str] = &[
     "AppIcon.cs",
     "EmbeddedAssets.cs",
     "ConfigState.cs",
+    "RuntimeLog.cs",
     "ThemeManager.cs",
     "SetupForm.cs",
     "SupportWindows.cs",

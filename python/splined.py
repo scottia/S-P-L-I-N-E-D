@@ -17,6 +17,7 @@ import secrets
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -240,7 +241,6 @@ def resolve_path(config_file: Path, raw: str) -> Path:
 
 DEFAULT_CACHE_DIR = Path("/_cache")
 DEFAULT_LOG_DIR = Path("/_logs")
-DEFAULT_HISTORY_DIR = Path("/_logs/_history")
 DEFAULT_CREDENTIAL_DIR = Path("/credentials")
 
 
@@ -268,28 +268,17 @@ def runtime_log_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
     return DEFAULT_LOG_DIR
 
 
-def runtime_history_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
-    env = os.environ.get("SPLINED_HISTORY_DIR", "").strip()
-    if env:
-        return Path(env)
-    configured = str(section(cfg, "scan").get("history_dir", "")).strip()
-    if configured:
-        return resolve_path(config_file, configured)
-    return DEFAULT_HISTORY_DIR
-
-
 def ensure_runtime_directories(
     config_file: Path,
     cfg: dict[str, Any],
     cache: Path,
-) -> tuple[Path, Path]:
+) -> Path:
     logs = runtime_log_dir(config_file, cfg)
-    history = runtime_history_dir(config_file, cfg)
-    for path in (cache, logs, history):
+    for path in (cache, logs):
         if path.exists() and (path.is_symlink() or not path.is_dir()):
             raise SplinedError(f"Unsafe SPLINED runtime directory: {path}")
         path.mkdir(parents=True, exist_ok=True)
-    return logs, history
+    return logs
 
 
 def normalize_sources(values: Any, label: str, allow_empty: bool) -> list[str]:
@@ -465,11 +454,68 @@ def reference_allowed(cfg: dict[str, Any], source: str, front: bool) -> bool:
 
 
 SOURCE_HISTORY_VERSION = 1
-SOURCE_HISTORY_FILE = "chosen-source-history.json"
+SOURCE_HISTORY_CACHE_KEY = "source-selection-stats"
 
 
-def source_history_path(history_dir: Path) -> Path:
-    return history_dir / SOURCE_HISTORY_FILE
+def source_history_path(cache_dir: Path) -> Path:
+    return Path(cache_dir) / "splined.db"
+
+
+def _load_cache_state(database: Path, key: str) -> dict[str, Any] | None:
+    if not database.exists():
+        return None
+    try:
+        connection = sqlite3.connect(database, timeout=30.0)
+        row = connection.execute(
+            "SELECT payload_json FROM cache_entries WHERE cache_key=?",
+            (key,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        if "connection" in locals():
+            connection.close()
+    if row is None:
+        return None
+    try:
+        value = json.loads(str(row[0]))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _save_cache_state(
+    database: Path,
+    key: str,
+    cache_type: str,
+    value: dict[str, Any],
+) -> None:
+    if not database.exists():
+        raise SplinedError(f"SPLINED database is missing: {database}")
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    body = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    try:
+        connection = sqlite3.connect(database, timeout=30.0)
+        with connection:
+            connection.execute(
+                "INSERT INTO cache_entries"
+                "(cache_key, cache_type, album_key, payload_json, "
+                "splined_version, created_at, updated_at) "
+                "VALUES(?, ?, NULL, ?, ?, ?, ?) "
+                "ON CONFLICT(cache_key) DO UPDATE SET "
+                "cache_type=excluded.cache_type, "
+                "payload_json=excluded.payload_json, "
+                "splined_version=excluded.splined_version, "
+                "updated_at=excluded.updated_at",
+                (key, cache_type, body, display_version(), now, now),
+            )
+    except sqlite3.Error as exc:
+        raise SplinedError(
+            f"Unable to persist SPLINED SQLite runtime state: {exc}"
+        ) from exc
+    finally:
+        if "connection" in locals():
+            connection.close()
 
 
 def empty_source_history() -> dict[str, Any]:
@@ -489,13 +535,8 @@ def empty_source_history() -> dict[str, Any]:
 
 def load_source_history(path: Path) -> dict[str, Any]:
     history = empty_source_history()
-    if not path.exists():
-        return history
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        # History is advisory optimization data. A damaged history file must
-        # never block artwork discovery.
+    raw = _load_cache_state(path, SOURCE_HISTORY_CACHE_KEY)
+    if raw is None:
         return history
     if not isinstance(raw, dict):
         return history
@@ -522,13 +563,7 @@ def load_source_history(path: Path) -> dict[str, Any]:
 
 
 def save_source_history(path: Path, history: dict[str, Any]) -> None:
-    # Best effort by design: history must never make a scan fail.
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        body = (json.dumps(history, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        atomic_write(path, body)
-    except (OSError, TypeError, ValueError) as exc:
-        debug_log(f"source_history.save_failed error={type(exc).__name__}")
+    _save_cache_state(path, SOURCE_HISTORY_CACHE_KEY, "source_history", history)
 
 
 def source_selected_count(history: dict[str, Any], source: str) -> int:
@@ -588,11 +623,11 @@ def record_source_selection(
 
 
 SCAN_COMPLETION_HISTORY_VERSION = 1
-SCAN_COMPLETION_HISTORY_FILE = "scan-completed-history.json"
+SCAN_COMPLETION_CACHE_KEY = "album-completion-state"
 
 
-def scan_completion_history_path(history_dir: Path) -> Path:
-    return history_dir / SCAN_COMPLETION_HISTORY_FILE
+def scan_completion_history_path(cache_dir: Path) -> Path:
+    return Path(cache_dir) / "splined.db"
 
 
 def empty_scan_completion_history() -> dict[str, Any]:
@@ -609,11 +644,8 @@ def load_scan_completion_history(
     history = empty_scan_completion_history()
     if cfg is not None and not bool(section(cfg, "history").get("enabled", True)):
         return history
-    if not path.exists():
-        return history
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    raw = _load_cache_state(path, SCAN_COMPLETION_CACHE_KEY)
+    if raw is None:
         return history
     if not isinstance(raw, dict):
         return history
@@ -648,14 +680,8 @@ def _history_entry_timestamp(entry: dict[str, Any]) -> float:
 
 
 def save_scan_completion_history(path: Path, history: dict[str, Any]) -> None:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        history["version"] = SCAN_COMPLETION_HISTORY_VERSION
-        body = (json.dumps(history, indent=2, sort_keys=True) + "\n").encode("utf-8")
-        atomic_write(path, body)
-    except (OSError, TypeError, ValueError) as exc:
-        # Scan timeout state is an optimization. It must never make a scan fail.
-        debug_log(f"scan_completion_history.save_failed error={type(exc).__name__}")
+    history["version"] = SCAN_COMPLETION_HISTORY_VERSION
+    _save_cache_state(path, SCAN_COMPLETION_CACHE_KEY, "album_history", history)
 
 
 
@@ -835,10 +861,17 @@ def record_scan_completion(
     # Presentation receives the same authoritative completion outcome even in
     # read mode, where persistent completion history intentionally remains
     # untouched.
-    emit_ui("history", album=str(album.path), outcome=str(outcome))
-    if not bool(section(cfg, "history").get("enabled", True)):
-        return
-    if str(cfg.get("mode", "read")).strip().lower() == "read":
+    persistent = (
+        bool(section(cfg, "history").get("enabled", True))
+        and str(cfg.get("mode", "read")).strip().lower() != "read"
+    )
+    emit_ui(
+        "history",
+        album=str(album.path),
+        outcome=str(outcome),
+        persistent=persistent,
+    )
+    if not persistent:
         return
     albums = history.setdefault("albums", {})
     prior = albums.get(str(album.path), {})
@@ -5755,13 +5788,12 @@ def _run_scan_dir_batch(
     samples_enabled = bool(samples_cfg.get("sample_write", True))
 
     output_settings(cfg)
-    _, history_dir = ensure_runtime_directories(config_file, cfg, cache)
+    ensure_runtime_directories(config_file, cfg, cache)
     prepare_run_cache(cache)
     sample_dir = prepare_samples(cache)
     timeout_hours = scan_timeout_hours(cfg)
-    completion_path = scan_completion_history_path(history_dir)
+    completion_path = scan_completion_history_path(cache)
     completion_history = load_scan_completion_history(completion_path, cfg)
-    completion_path.parent.mkdir(parents=True, exist_ok=True)
     fingerprint_paths = timeout_fingerprint_paths(
         completion_history,
         cfg,
@@ -5845,14 +5877,12 @@ def _run_scan_dir_batch(
         albums=len(discovered_albums),
         postponed=len(postponed_albums),
     )
-    history_path = source_history_path(history_dir)
+    history_path = source_history_path(cache)
     source_history = (
         load_source_history(history_path)
         if bool(section(cfg, "history").get("enabled", True))
         else empty_source_history()
     )
-    # Ensure persistent history folders exist before the first write.
-    history_path.parent.mkdir(parents=True, exist_ok=True)
     api_queried: set[str] = set()
 
     emit_ui(
@@ -5956,7 +5986,7 @@ def _run_scan_dir_batch(
     print(f"  {cyan('Samples:'):14} {green('enabled') if samples_enabled else red('disabled')}")
     print(f"  {cyan('Cache:'):14} {white(str(cache))}")
     print(f"  {cyan('Sample Dir:'):14} {white(str(sample_dir))}")
-    print(f"  {cyan('History:'):14} {white(str(history_dir))}")
+    print(f"  {cyan('State DB:'):14} {white(str(completion_path))}")
     if _DEBUG_ENABLED and _DEBUG_PATH is not None:
         print(f"  {cyan('Debug Log:'):14} {white(str(_DEBUG_PATH))}")
     print()
@@ -6649,10 +6679,10 @@ def run_scan_preview(
         str(library.get("music_library", "")),
     )
     ignored = [str(x) for x in library.get("ignored_subs", [])]
-    history_dir = runtime_history_dir(config_file, cfg)
+    cache = runtime_cache_dir(config_file, cfg)
     timeout_hours = scan_timeout_hours(cfg)
     completion_history = load_scan_completion_history(
-        scan_completion_history_path(history_dir),
+        scan_completion_history_path(cache),
         cfg,
     )
     completion_now = time.time()
@@ -6669,8 +6699,6 @@ def run_scan_preview(
             now=completion_now,
         ),
     )
-
-    cache = runtime_cache_dir(config_file, cfg)
 
     eligible = 0
     postponed = 0
@@ -7131,7 +7159,6 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
 
     cache = runtime_cache_dir(path, cfg)
     logs = runtime_log_dir(path, cfg)
-    history_dir = runtime_history_dir(path, cfg)
     cdir = runtime_credential_dir(path, cfg)
     ignored = library.get("ignored_subs", [])
     ignored = ignored if isinstance(ignored, list) else []
@@ -7142,7 +7169,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     excluded = excluded if isinstance(excluded, list) else []
     fmts = formats(cfg)
 
-    history = load_source_history(source_history_path(history_dir))
+    history = load_source_history(source_history_path(cache))
 
     print("SPLINED artwork discovery and evaluation engine\n")
     print("Usage: splined [OPTIONS]\n")
@@ -7163,7 +7190,6 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      Cache Directory", green(f"[{cache}]"))
     help_row("      Log Directory", green(f"[{logs}]"))
     help_row("      Runtime Run Logs", green(f"[{logs / 'run'}]"))
-    help_row("      History Directory", green(f"[{history_dir}]"))
     print()
 
     def help_config_value(value: Any) -> str:
@@ -7189,7 +7215,6 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     config_row("scan.cache_dir", cache)
     config_row("scan.sqlite_shared", bool(scan.get("sqlite_shared", False)))
     config_row("scan.log_dir", logs)
-    config_row("scan.history_dir", history_dir)
     config_row("samples.sample_write", bool(section(cfg, "samples").get("sample_write", True)))
     config_row("credentials.credential_dir", cdir)
     config_row("output.preserve_file", bool(output.get("preserve_file", True)))
@@ -7408,7 +7433,6 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
 def print_config(path: Path, cfg: dict[str, Any]) -> None:
     scan=section(cfg,"scan"); lib=section(cfg,"library"); creds=section(cfg,"credentials"); out=section(cfg,"output")
     logs = runtime_log_dir(path, cfg)
-    history_dir = runtime_history_dir(path, cfg)
     print(
         f"Config file: {path}\n"
         f"Config version: {cfg.get('config_version')}\n"
@@ -7419,7 +7443,7 @@ def print_config(path: Path, cfg: dict[str, Any]) -> None:
         f"Scan mode timeout: {format_timeout_hours(scan_timeout_hours(cfg))} hours\n"
         f"Cache directory: {runtime_cache_dir(path, cfg)}\n"
         f"Log directory: {logs}\n"
-        f"History directory: {history_dir}\n"
+        f"State database: {runtime_cache_dir(path, cfg) / 'splined.db'}\n"
         f"Credential directory: {runtime_credential_dir(path, cfg)}\n"
         f"Square output: {out.get('square', False)}\n"
         f"Square mode: {out.get('square_mode', 'crop' if out.get('square', False) else 'off')}\n"

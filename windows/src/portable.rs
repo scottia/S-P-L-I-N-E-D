@@ -13,7 +13,6 @@ pub struct AppLayout {
     pub cache_dir: PathBuf,
     pub samples_dir: PathBuf,
     pub logs_dir: PathBuf,
-    pub history_dir: PathBuf,
     pub credentials_dir: PathBuf,
     pub docker_builds_dir: PathBuf,
 }
@@ -29,7 +28,6 @@ impl AppLayout {
         Self {
             config_file: config_dir.join("config.toml"),
             samples_dir: cache_dir.join("samples"),
-            history_dir: logs_dir.join("_history"),
             root,
             config_dir,
             cache_dir,
@@ -275,7 +273,6 @@ fn create_owned_directories(layout: &AppLayout) -> Result<(), String> {
         &layout.cache_dir,
         &layout.samples_dir,
         &layout.logs_dir,
-        &layout.history_dir,
         &layout.credentials_dir,
         &layout.docker_builds_dir,
     ] {
@@ -353,7 +350,6 @@ mod tests {
         assert_eq!(layout.cache_dir, root.join("_cache"));
         assert_eq!(layout.samples_dir, root.join("_cache").join("samples"));
         assert_eq!(layout.logs_dir, root.join("_logs"));
-        assert_eq!(layout.history_dir, root.join("_logs").join("_history"));
         assert_eq!(layout.credentials_dir, root.join("credentials"));
         assert_eq!(layout.docker_builds_dir, root.join("docker_builds"));
     }
@@ -381,7 +377,6 @@ mod tests {
         );
         assert!(layout.samples_dir.is_dir());
         assert!(layout.logs_dir.is_dir());
-        assert!(layout.history_dir.is_dir());
         assert!(layout.credentials_dir.is_dir());
         assert!(layout.docker_builds_dir.is_dir());
         assert_eq!(fs::read_dir(&layout.credentials_dir).unwrap().count(), 0);
@@ -440,11 +435,6 @@ mod tests {
             b"existing credential",
         )
         .unwrap();
-        fs::write(
-            layout.history_dir.join("scan-completed-history.json"),
-            b"existing history",
-        )
-        .unwrap();
 
         let result = install_final_executable_from(&setup)
             .unwrap()
@@ -459,10 +449,6 @@ mod tests {
         assert_eq!(
             fs::read(layout.credentials_dir.join("lastfm.json")).unwrap(),
             b"existing credential"
-        );
-        assert_eq!(
-            fs::read(layout.history_dir.join("scan-completed-history.json")).unwrap(),
-            b"existing history"
         );
         assert!(setup.is_file());
     }

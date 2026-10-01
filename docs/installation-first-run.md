@@ -24,8 +24,9 @@ SPLINED/
 │   └── ui.toml
 ├── credentials/
 ├── _cache/
+│   └── splined.db
 └── _logs/
-    └── _history/
+    └── run/
 ```
 
 No executable rename or setup launcher is required.
@@ -33,7 +34,7 @@ No executable rename or setup launcher is required.
 ### Windows upgrade
 
 1. Close SPLINED.
-2. Back up `config/`, `credentials/`, and `_logs/`.
+2. Back up `config/`, `credentials/`, and `<scan.cache_dir>/splined.db`.
 3. Extract the new application files into the existing directory, replacing
    program files.
 4. Preserve application-owned data directories.
@@ -128,15 +129,14 @@ Back up for all runtimes:
 
 - `config/`;
 - `credentials/`;
-- `_logs/` and the configured history directory.
-
-For Python/Docker, also back up:
+- the authoritative runtime database:
 
 ```text
 <scan.cache_dir>/splined.db
 ```
 
-Other candidate, sample, and transient cache files remain disposable.
+Run logs and other candidate, sample, and transient cache files remain
+disposable.
 
 Credential files may contain API keys and OAuth tokens. Never commit or share
 them.

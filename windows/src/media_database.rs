@@ -8,7 +8,9 @@ use crate::history::{AlbumHistoryState, album_history_status, load_completion_hi
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags};
 use image::ImageFormat;
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, named_params, params};
+use rusqlite::{
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, named_params, params,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -473,11 +475,14 @@ pub fn record_album_outcome(
     let db_path = database_path(&config.scan.cache_dir);
     let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
     if !database_access.path().exists() {
-        return Ok(());
+        return Err(format!(
+            "SPLINED database is missing: {}",
+            db_path.display()
+        ));
     }
-    let connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
+    let mut connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
     let Some(signature) = read_signature(&connection)? else {
-        return Ok(());
+        return Err("SPLINED database has no published media inventory.".to_string());
     };
     validate_signature(config, Some(&signature))?;
     let canonical_root = signature
@@ -487,18 +492,6 @@ pub fn record_album_outcome(
     let mapper = PathMapper::new(canonical_root, &config.library.music_library)?;
     let canonical_album = mapper.to_canonical(&local_album_path.to_string_lossy())?;
     let bypassed = outcome.to_ascii_lowercase().contains("bypass");
-    let timeout_until = (!bypassed && config.scan.scan_mode_timeout.0 > 0.0).then(|| {
-        (unix_now() + config.scan.scan_mode_timeout.0 * 3600.0)
-            .round()
-            .to_string()
-    });
-    let status = if bypassed {
-        "bypassed"
-    } else if timeout_until.is_some() {
-        "timeout"
-    } else {
-        "processed"
-    };
     // Runtime writes stay Album-oriented. Reinspect only this Album directory;
     // never turn a normal Select Media refresh into a per-track tag scan.
     let material = inventory_album_directories(local_album_path, &[])?
@@ -507,9 +500,33 @@ pub fn record_album_outcome(
         .find(|album| album.path == local_album_path)
         .map(|album| inspect_cover(&album, &config.output.file_name, &mapper))
         .transpose()?;
-    let now = sqlite_now(&connection)?;
+    let transaction = connection
+        .transaction()
+        .map_err(db_error("begin Album outcome transaction"))?;
+    let now = sqlite_now(&transaction)?;
+    let timeout_until = if !bypassed && config.scan.scan_mode_timeout.0 > 0.0 {
+        let eligible = unix_now() + config.scan.scan_mode_timeout.0 * 3600.0;
+        Some(
+            transaction
+                .query_row(
+                    "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', ?, 'unixepoch')",
+                    [eligible],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(db_error("calculate Album timeout"))?,
+        )
+    } else {
+        None
+    };
+    let status = if bypassed {
+        "bypassed"
+    } else if timeout_until.is_some() {
+        "timeout"
+    } else {
+        "processed"
+    };
     let changed = if let Some(cover) = material {
-        connection.execute(
+        transaction.execute(
             "UPDATE albums SET status=?, processed_at=?, bypassed=?, timeout_until=?, \
              selected_source=COALESCE(?, selected_source), cover_found=?, cover_path=?, \
              cover_name=?, cover_format=?, cover_width=?, cover_height=?, artwork_jpeg=?, \
@@ -548,7 +565,7 @@ pub fn record_album_outcome(
             ],
         )
     } else {
-        connection.execute(
+        transaction.execute(
             "UPDATE albums SET status=?, processed_at=?, bypassed=?, timeout_until=?, \
              selected_source=COALESCE(?, selected_source), updated_at=?, last_seen_at=? \
              WHERE path=? COLLATE NOCASE",
@@ -566,16 +583,75 @@ pub fn record_album_outcome(
     }
     .map_err(db_error("update Album outcome"))?;
     if changed == 0 {
-        return Ok(());
+        return Err(format!(
+            "Album outcome has no matching shared inventory row: {canonical_album}"
+        ));
     }
-    refresh_artist_aggregates(&connection)?;
-    connection
+    refresh_artist_aggregates(&transaction)?;
+    transaction
         .execute(
             "INSERT INTO cache_history(cache_key, cache_type, album_key, action, payload_json, splined_version, event_at) \
              SELECT ?, 'windows-runtime', album_key, ?, ?, ?, ? FROM albums WHERE path=? COLLATE NOCASE",
             params![canonical_album, outcome, json!({"source": selected_source}).to_string(), env!("CARGO_PKG_VERSION"), now, canonical_album],
         )
         .map_err(db_error("write Album audit"))?;
+    transaction
+        .commit()
+        .map_err(db_error("commit Album outcome transaction"))?;
+    Ok(())
+}
+
+pub fn read_runtime_cache_payload(
+    config: &Config,
+    cache_key: &str,
+) -> Result<Option<String>, String> {
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    if !database_access.path().exists() {
+        return Ok(None);
+    }
+    let (connection, current) = open_database_read_only(database_access.path())?;
+    if current != SCHEMA_VERSION {
+        return Err(incompatible_schema(current));
+    }
+    connection
+        .query_row(
+            "SELECT payload_json FROM cache_entries WHERE cache_key=?",
+            [cache_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_error("read SQLite runtime state"))
+}
+
+pub fn write_runtime_cache_payload(
+    config: &Config,
+    cache_key: &str,
+    cache_type: &str,
+    payload_json: &str,
+) -> Result<(), String> {
+    if config.mode == crate::config::Mode::Read {
+        return Ok(());
+    }
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    if !database_access.path().exists() {
+        return Err(format!(
+            "SPLINED database is missing: {}",
+            db_path.display()
+        ));
+    }
+    let connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
+    let now = sqlite_now(&connection)?;
+    connection
+        .execute(
+            "INSERT INTO cache_entries(cache_key, cache_type, album_key, payload_json, splined_version, created_at, updated_at) \
+             VALUES(?, ?, NULL, ?, ?, ?, ?) \
+             ON CONFLICT(cache_key) DO UPDATE SET cache_type=excluded.cache_type, payload_json=excluded.payload_json, \
+             splined_version=excluded.splined_version, updated_at=excluded.updated_at",
+            params![cache_key, cache_type, payload_json, env!("CARGO_PKG_VERSION"), now, now],
+        )
+        .map_err(db_error("write SQLite runtime state"))?;
     Ok(())
 }
 
@@ -638,20 +714,66 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
 }
 
 fn open_database_read_only(path: &Path) -> Result<(Connection, i64), String> {
+    let connection = open_read_only_connection(path)?;
+    connection
+        .busy_timeout(Duration::from_secs(30))
+        .map_err(db_error("configure SQLite read timeout"))?;
+    let current = match connection.pragma_query_value(None, "user_version", |row| row.get(0)) {
+        Ok(current) => current,
+        Err(error) if sqlite_read_only_error(&error) => {
+            // A process stopped during a rollback-journal transaction can
+            // leave a hot journal. SQLite must briefly open read/write to
+            // roll that transaction back before normal read-only hydration.
+            drop(connection);
+            recover_interrupted_transaction(path)?;
+            let recovered = open_read_only_connection(path)?;
+            recovered
+                .busy_timeout(Duration::from_secs(30))
+                .map_err(db_error("configure recovered SQLite read timeout"))?;
+            let current = recovered
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .map_err(db_error("read recovered SQLite schema version"))?;
+            return Ok((recovered, current));
+        }
+        Err(error) => return Err(db_error("read SQLite schema version")(error)),
+    };
+    Ok((connection, current))
+}
+
+fn open_read_only_connection(path: &Path) -> Result<Connection, String> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+        format!(
+            "Unable to open existing SPLINED database read-only {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn sqlite_read_only_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(details, _) if details.code == ErrorCode::ReadOnly
+    )
+}
+
+fn recover_interrupted_transaction(path: &Path) -> Result<(), String> {
     let connection =
-        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|error| {
             format!(
-                "Unable to open existing SPLINED database read-only {}: {error}",
+                "Unable to recover interrupted SPLINED database transaction {}: {error}",
                 path.display()
             )
         })?;
     connection
         .busy_timeout(Duration::from_secs(30))
-        .map_err(db_error("configure SQLite read timeout"))?;
-    let current = connection
+        .map_err(db_error("configure SQLite recovery timeout"))?;
+    let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(db_error("read SQLite schema version"))?;
-    Ok((connection, current))
+        .map_err(db_error("recover interrupted SQLite transaction"))?;
+    if current != SCHEMA_VERSION {
+        return Err(incompatible_schema(current));
+    }
+    Ok(())
 }
 
 fn incompatible_schema(current: i64) -> String {
@@ -1687,6 +1809,29 @@ mod tests {
     }
 
     #[test]
+    fn runtime_auxiliary_state_round_trips_through_sqlite() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.mode = crate::config::Mode::Write;
+        config.scan.cache_dir = temp.path().to_string_lossy().into_owned();
+        drop(open_database(&database_path(temp.path()), false).unwrap());
+
+        write_runtime_cache_payload(
+            &config,
+            "source-selection-stats",
+            "source_history",
+            r#"{"sources":{"itunes":{"selected":2}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_runtime_cache_payload(&config, "source-selection-stats").unwrap(),
+            Some(r#"{"sources":{"itunes":{"selected":2}}}"#.to_string())
+        );
+        assert!(!temp.path().join("_history").exists());
+    }
+
+    #[test]
     fn independent_database_builds_once_then_warm_loads() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
@@ -1696,7 +1841,6 @@ mod tests {
         let mut config = Config::default();
         config.library.music_library = library.to_string_lossy().into_owned();
         config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
-        config.scan.history_dir = temp.path().join("history").to_string_lossy().into_owned();
 
         let initial = media_snapshot(&config, false).unwrap();
         let warm = media_snapshot(&config, false).unwrap();

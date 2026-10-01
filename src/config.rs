@@ -8,15 +8,17 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const CURRENT_CONFIG_VERSION: u32 = 5;
-pub const SUPPORTED_COVER_SOURCES: [&str; 6] = [
+pub const SUPPORTED_COVER_SOURCES: [&str; 8] = [
     "deezer",
     "itunes",
     "fanarttv",
     "lastfm",
+    "musicbrainz",
     "coverartarchive",
     "discogs",
+    "amazon",
 ];
-pub const SUPPORTED_SOURCE_POLICIES: [&str; 7] = [
+pub const SUPPORTED_SOURCE_POLICIES: [&str; 8] = [
     "deezer",
     "itunes",
     "fanarttv",
@@ -24,6 +26,7 @@ pub const SUPPORTED_SOURCE_POLICIES: [&str; 7] = [
     "coverartarchive",
     "discogs",
     "musicbrainz",
+    "amazon",
 ];
 
 // Public portable defaults are deliberately neutral. User library locations,
@@ -68,10 +71,11 @@ pub struct ScanConfig {
     #[serde(default)]
     pub scan_mode_timeout: ScanTimeout,
     pub cache_dir: String,
+    /// Use rollback journaling for an intentionally shared/network SQLite file.
+    #[serde(default)]
+    pub sqlite_shared: bool,
     #[serde(default = "default_log_dir")]
     pub log_dir: String,
-    #[serde(default = "default_history_dir")]
-    pub history_dir: String,
     pub scan_library_dir: String,
 }
 
@@ -314,8 +318,8 @@ impl Default for ScanConfig {
             library_scan: false,
             scan_mode_timeout: ScanTimeout::default(),
             cache_dir: DEFAULT_CACHE_DIR.to_string(),
+            sqlite_shared: false,
             log_dir: default_log_dir(),
-            history_dir: default_history_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
         }
     }
@@ -323,10 +327,6 @@ impl Default for ScanConfig {
 
 fn default_log_dir() -> String {
     "_logs".to_string()
-}
-
-fn default_history_dir() -> String {
-    "_logs/_history".to_string()
 }
 
 impl Default for LibraryConfig {
@@ -504,8 +504,6 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     config.scan.scan_library_dir = normalize_optional_directory(&config.scan.scan_library_dir);
     config.scan.cache_dir = normalize_required_directory(&config.scan.cache_dir, "scan.cache_dir")?;
     config.scan.log_dir = normalize_required_directory(&config.scan.log_dir, "scan.log_dir")?;
-    config.scan.history_dir =
-        normalize_required_directory(&config.scan.history_dir, "scan.history_dir")?;
     config.credentials.credential_dir = normalize_required_directory(
         &config.credentials.credential_dir,
         "credentials.credential_dir",
@@ -646,7 +644,6 @@ fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.scan.scan_library_dir = resolve_runtime_directory(root, &config.scan.scan_library_dir);
     config.scan.cache_dir = resolve_runtime_directory(root, &config.scan.cache_dir);
     config.scan.log_dir = resolve_runtime_directory(root, &config.scan.log_dir);
-    config.scan.history_dir = resolve_runtime_directory(root, &config.scan.history_dir);
     config.credentials.credential_dir =
         resolve_runtime_directory(root, &config.credentials.credential_dir);
     config.fanarttv.credential_file =
@@ -879,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn musicbrainz_source_policy_controls_metadata_runtime_without_becoming_cover_source() {
+    fn musicbrainz_source_policy_controls_metadata_and_artwork_runtime() {
         let mut config = Config::default();
         config.source_policies.insert(
             "musicbrainz".to_string(),
@@ -894,7 +891,7 @@ mod tests {
         assert!(!parsed.musicbrainz.enabled);
         assert!(parsed.musicbrainz.source_override);
         assert!(
-            !parsed
+            parsed
                 .sources
                 .cover_sources
                 .iter()

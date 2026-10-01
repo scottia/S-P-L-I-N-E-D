@@ -24,9 +24,10 @@ FRESH INSTALL
       config.toml
    credentials/
    _cache/
+      splined.db
       samples/
    _logs/
-      _history/
+      run/
 
 The native portable runtime may also create docker_builds/ for local container
 build artifacts. It is not required for normal scanning.
@@ -43,9 +44,7 @@ UPGRADE AN EXISTING PORTABLE INSTALL
 
    config/
    credentials/
-   _logs/
-
-   If history has been configured elsewhere, back up that location too.
+   _cache/splined.db
 
 3. Extract the new application files into the existing directory, replacing
    the program files while preserving the persistent locations above.
@@ -55,7 +54,8 @@ UPGRADE AN EXISTING PORTABLE INSTALL
    chmod +x ./splined
    ./splined --help
 
-_cache/ is disposable and is recreated as needed.
+Other files under _cache/ are disposable and are recreated as needed.
+Diagnostic files under _logs/ are not runtime-state authority.
 
 SPLINED does not automatically discover, import, or move another portable
 installation. Copy persistent data deliberately when changing directories.

@@ -1756,21 +1756,18 @@ def _sample_release(record: dict[str, Any], album: core.AlbumDir) -> core.Releas
 
 
 BYPASS_HISTORY_VERSION = 1
-BYPASS_HISTORY_FILE = "bypass-source-history.json"
+BYPASS_HISTORY_CACHE_KEY = "album-bypass-state"
 _BYPASS_OVERRIDE = False
 
 
-def bypass_history_path(history_dir: Path) -> Path:
-    return history_dir / BYPASS_HISTORY_FILE
+def bypass_history_path(cache_dir: Path) -> Path:
+    return Path(cache_dir) / "splined.db"
 
 
 def load_bypass_history(path: Path) -> dict[str, Any]:
     empty = {"version": BYPASS_HISTORY_VERSION, "albums": {}}
-    if not path.exists():
-        return empty
-    try:
-        raw = core.json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, core.json.JSONDecodeError):
+    raw = core._load_cache_state(path, BYPASS_HISTORY_CACHE_KEY)
+    if raw is None:
         return empty
     if not isinstance(raw, dict) or not isinstance(raw.get("albums"), dict):
         return empty
@@ -1778,10 +1775,13 @@ def load_bypass_history(path: Path) -> dict[str, Any]:
 
 
 def save_bypass_history(path: Path, history: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     history["version"] = BYPASS_HISTORY_VERSION
-    body = (core.json.dumps(history, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    core.atomic_write(path, body)
+    core._save_cache_state(
+        path,
+        BYPASS_HISTORY_CACHE_KEY,
+        "bypass_history",
+        history,
+    )
 
 
 def album_bypass_key(album: core.AlbumDir) -> str:
@@ -2046,10 +2046,10 @@ def _run_scan_dir_batch(
     samples_enabled = bool(samples_cfg.get("sample_write", True))
 
     core.output_settings(cfg)
-    _, history_dir = core.ensure_runtime_directories(config_file, cfg, cache)
+    core.ensure_runtime_directories(config_file, cfg, cache)
     core.prepare_run_cache(cache)
     timeout_hours = core.scan_timeout_hours(cfg)
-    completion_path = core.scan_completion_history_path(history_dir)
+    completion_path = core.scan_completion_history_path(cache)
     completion_history = core.load_scan_completion_history(completion_path, cfg)
     completion_path.parent.mkdir(parents=True, exist_ok=True)
     fingerprint_paths = core.timeout_fingerprint_paths(
@@ -2097,7 +2097,7 @@ def _run_scan_dir_batch(
 
     sample_dir = core.prepare_samples(cache)
 
-    bypass_path = bypass_history_path(history_dir)
+    bypass_path = bypass_history_path(cache)
     bypass_history = load_bypass_history(bypass_path)
     bypass_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2194,7 +2194,7 @@ def _run_scan_dir_batch(
     # the point where MusicBrainz is actually needed.
     mbmode = "Deferred until MusicBrainz request"
     summary = core.Summary(albums=len(discovered_albums), postponed=len(postponed_albums))
-    history_path = core.source_history_path(history_dir)
+    history_path = core.source_history_path(cache)
     source_history = (
         core.load_source_history(history_path)
         if bool(core.section(cfg, "history").get("enabled", True))
@@ -2339,7 +2339,7 @@ def _run_scan_dir_batch(
     print(f"  {core.cyan('Samples:'):14} {core.green('enabled') if samples_enabled else core.red('disabled')}")
     print(f"  {core.cyan('Cache:'):14} {core.white(str(cache))}")
     print(f"  {core.cyan('Sample Dir:'):14} {core.white(str(sample_dir))}")
-    print(f"  {core.cyan('History:'):14} {core.white(str(history_dir))}")
+    print(f"  {core.cyan('State DB:'):14} {core.white(str(completion_path))}")
     runtime_log = core.runtime_log_path()
     if runtime_log is not None:
         print(f"  {core.cyan('Runtime Log:'):14} {core.white(str(runtime_log))}")

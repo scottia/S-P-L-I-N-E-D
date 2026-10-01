@@ -201,6 +201,7 @@ namespace Splined.WindowsGui
             string output;
             string error;
             int exitCode;
+            RuntimeLog.Write("debug", "media_snapshot.start refresh=" + refresh);
             using (Process process = Process.Start(start))
             {
                 output = process.StandardOutput.ReadToEnd();
@@ -208,6 +209,9 @@ namespace Splined.WindowsGui
                 process.WaitForExit();
                 exitCode = process.ExitCode;
             }
+            RuntimeLog.Write(exitCode == 0 ? "debug" : "error",
+                "media_snapshot.exit code=" + exitCode
+                + " stderr=" + (String.IsNullOrWhiteSpace(error) ? "none" : error.Trim()));
             if (exitCode != 0)
                 throw new InvalidOperationException(String.IsNullOrWhiteSpace(error) ? "SPLINED SQLite media snapshot failed." : error.Trim());
             return FromSnapshotJson(output);

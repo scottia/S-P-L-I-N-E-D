@@ -8,6 +8,7 @@ picker interaction stay database-only.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import sqlite3
@@ -49,6 +50,7 @@ _ARTIST_BY_ALBUM_KEY: dict[str, str] = {}
 _STATUS_BY_PATH: dict[str, str] = {}
 _STATS_BY_PATH: dict[str, dict[str, Any]] = {}
 _CURRENT_ALBUM_PATH = ""
+_ACTIVE_TIMEOUT_HOURS = 0.0
 
 
 def stats_from_row(row: Any) -> dict[str, Any]:
@@ -299,29 +301,15 @@ def populate_session(
         session.initialized_paths.update(existing_paths)
 
 
-def migrate_legacy_json(context: IndexContext) -> None:
-    """Retire the v2 JSON only after a usable SQLite index exists."""
-    try:
-        history_dir = context.core.runtime_history_dir(
-            context.config_file,
-            context.cfg,
-        )
-    except Exception:
-        return
-    legacy = Path(history_dir) / "select-media-status.json"
-    target = legacy.with_name(legacy.name + ".legacy")
-    if not legacy.exists() or target.exists():
-        return
-    try:
-        legacy.replace(target)
-    except OSError:
-        pass
-
-
-def set_active_database(path: Path | None, cover_name: str = "cover") -> None:
-    global _ACTIVE_DB_PATH, _ACTIVE_COVER_NAME
+def set_active_database(
+    path: Path | None,
+    cover_name: str = "cover",
+    timeout_hours: float = 0.0,
+) -> None:
+    global _ACTIVE_DB_PATH, _ACTIVE_COVER_NAME, _ACTIVE_TIMEOUT_HOURS
     _ACTIVE_DB_PATH = path
     _ACTIVE_COVER_NAME = str(cover_name).strip() or "cover"
+    _ACTIVE_TIMEOUT_HOURS = max(0.0, float(timeout_hours))
 
 
 def set_current_album(path: str) -> None:
@@ -378,9 +366,73 @@ def sync_library_payload(payload: dict[str, Any]) -> None:
                 update_artist_aggregate(connection, artist_key)
     finally:
         connection.close()
-
     with _LOCK:
         _STATUS_BY_PATH.update(changed_paths)
+
+
+def sync_history_outcome(payload: dict[str, Any]) -> None:
+    """Commit one authoritative completion/bypass outcome to SQLite."""
+    if not bool(payload.get("persistent", False)):
+        return
+    db_path = _ACTIVE_DB_PATH
+    path = str(payload.get("album", ""))
+    if db_path is None or not path:
+        return
+    with _LOCK:
+        album_key = _PATH_TO_ALBUM_KEY.get(path)
+        artist_key = _ARTIST_BY_ALBUM_KEY.get(album_key or "")
+    if album_key is None or artist_key is None:
+        raise RuntimeError(f"No SQLite Album row matches completed path: {path}")
+
+    outcome = str(payload.get("outcome", ""))
+    bypassed = "bypass" in outcome.casefold()
+    now = utc_now()
+    timeout_until = None
+    if not bypassed and _ACTIVE_TIMEOUT_HOURS > 0:
+        timeout_until = datetime.fromtimestamp(
+            time.time() + _ACTIVE_TIMEOUT_HOURS * 3600.0,
+            timezone.utc,
+        ).isoformat()
+    status = "bypassed" if bypassed else (
+        "timeout" if timeout_until else "processed"
+    )
+    connection = connect(db_path, "runtime")
+    try:
+        with connection:
+            changed = connection.execute(
+                "UPDATE albums SET status=?, processed_at=?, bypassed=?, "
+                "timeout_until=?, updated_at=? WHERE album_key=?",
+                (
+                    status,
+                    now,
+                    int(bypassed),
+                    timeout_until,
+                    now,
+                    album_key,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError(
+                    f"SQLite Album completion update changed {changed} rows"
+                )
+            update_artist_aggregate(connection, artist_key)
+            connection.execute(
+                "INSERT INTO cache_history"
+                "(cache_key, cache_type, album_key, action, payload_json, "
+                "splined_version, event_at) "
+                "VALUES(?, 'album_status', ?, ?, ?, 'runtime', ?)",
+                (
+                    album_key,
+                    album_key,
+                    status,
+                    json.dumps(payload, default=str, separators=(",", ":")),
+                    now,
+                ),
+            )
+    finally:
+        connection.close()
+    with _LOCK:
+        _STATUS_BY_PATH[path] = status
 
 
 def _folder_statistics(album_path: Path, cover_name: str) -> dict[str, Any]:
