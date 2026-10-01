@@ -1351,6 +1351,56 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         handle_key(state, adapter, _Event("Enter"))
         self.assertEqual(adapter.responses.get_nowait(), "2")
 
+    def test_musicbrainz_scroll_clamps_at_result_boundaries_without_exiting(self) -> None:
+        state = self._candidate_state()
+        options = [
+            {
+                "id": f"{index:08x}-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "artist": "Boundary Artist",
+                "title": f"Release {index + 1}",
+                "decade": f"{2020 - (index // 10) * 10}s",
+                "release_class": "Album",
+                "artwork_url": (
+                    "https://coverartarchive.org/release/"
+                    f"{index:08x}-aaaa-4aaa-8aaa-aaaaaaaaaaaa/front"
+                ),
+            }
+            for index in range(60)
+        ]
+        state.apply(
+            "input",
+            {
+                "prompt": "MusicBrainz release #: ",
+                "context": {
+                    "kind": "musicbrainz-results",
+                    "options": options,
+                },
+            },
+        )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(220, 50), state, select_theme("OLED"))
+        scroll = _region(state, "musicbrainz-scroll")
+        event = _Event(
+            "scroll_down",
+            kind="mouse",
+            column=scroll.x + 1,
+            row=scroll.y + 1,
+        )
+        for _ in range(100):
+            handle_mouse(state, adapter, event)
+
+        self.assertEqual(state.selected_index, len(options) - 1)
+        self.assertEqual(state.input_buffer, str(len(options)))
+        self.assertFalse(state.exit_requested)
+        self.assertTrue(adapter.responses.empty())
+        render(_Frame(220, 50), state, select_theme("OLED"))
+
+        handle_key(state, adapter, _Event("Down"))
+        self.assertEqual(state.selected_index, len(options) - 1)
+        handle_key(state, adapter, _Event("End"))
+        self.assertEqual(state.selected_index, len(options) - 1)
+
     def test_panel_help_opens_the_selected_context_and_consumes_close(self) -> None:
         state = self._candidate_state()
         state.apply(

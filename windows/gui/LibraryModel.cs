@@ -201,6 +201,7 @@ namespace Splined.WindowsGui
             string output;
             string error;
             int exitCode;
+            Stopwatch timing = Stopwatch.StartNew();
             RuntimeLog.Write("debug", "media_snapshot.start refresh=" + refresh);
             using (Process process = Process.Start(start))
             {
@@ -214,7 +215,12 @@ namespace Splined.WindowsGui
                 + " stderr=" + (String.IsNullOrWhiteSpace(error) ? "none" : error.Trim()));
             if (exitCode != 0)
                 throw new InvalidOperationException(String.IsNullOrWhiteSpace(error) ? "SPLINED SQLite media snapshot failed." : error.Trim());
-            return FromSnapshotJson(output);
+            List<AlbumInfo> albums = FromSnapshotJson(output);
+            timing.Stop();
+            RuntimeLog.Write("debug", "media_snapshot.timing refresh=" + refresh
+                + " elapsed_ms=" + timing.ElapsedMilliseconds
+                + " albums=" + albums.Count);
+            return albums;
         }
 
         internal static List<AlbumInfo> FromSnapshotJson(string text)

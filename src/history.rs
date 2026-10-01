@@ -332,8 +332,10 @@ mod tests {
     fn read_mode_never_changes_completion_history() {
         let temp = tempfile::tempdir().unwrap();
         let album = fixture_album(temp.path());
-        let mut config = Config::default();
-        config.mode = Mode::Read;
+        let config = Config {
+            mode: Mode::Read,
+            ..Config::default()
+        };
         let mut history = CompletionHistory::default();
 
         record_scan_completion(

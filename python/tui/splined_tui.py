@@ -2930,6 +2930,7 @@ def _render_musicbrainz(
     theme: Theme,
     grid: CandidateColumnLayout,
 ) -> None:
+    _register_hit(state, "musicbrainz-scroll", area)
     columns = ("#", "artist", "country", "date", "resolution", "release", "url")
     column_labels = {
         "#": "[#]",
@@ -5845,7 +5846,16 @@ def _focus_candidate(state: TuiState, index: int, adapter: TuiAdapter | None = N
 
 def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
     model = state.library
-    if region.target == "artist-scroll" and model is not None:
+    if region.target == "musicbrainz-scroll":
+        count = len(state.release_options)
+        if count:
+            state.selected_index = max(
+                0,
+                min(state.selected_index + delta * 3, count - 1),
+            )
+            state.input_buffer = str(state.selected_index + 1)
+            _clear_remote_hover_preview(state)
+    elif region.target == "artist-scroll" and model is not None:
         count = len(model.visible_artists())
         state.artist_scroll = max(0, min(state.artist_scroll + delta * 3, max(0, count - 1)))
     elif region.target == "album-scroll" and model is not None:
@@ -6248,7 +6258,11 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         else len(state.candidates)
     )
     if action is Action.UP and selection_count:
-        index = (state.selected_index - 1) % selection_count
+        index = (
+            max(0, state.selected_index - 1)
+            if request.kind in {"musicbrainz", "musicbrainz-results"}
+            else (state.selected_index - 1) % selection_count
+        )
         if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
@@ -6256,7 +6270,11 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             state.input_buffer = str(index + 1)
         return
     if action is Action.DOWN and selection_count:
-        index = (state.selected_index + 1) % selection_count
+        index = (
+            min(selection_count - 1, state.selected_index + 1)
+            if request.kind in {"musicbrainz", "musicbrainz-results"}
+            else (state.selected_index + 1) % selection_count
+        )
         if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
             _focus_candidate(state, index, adapter)
         else:
@@ -6426,10 +6444,12 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
         daemon=True,
     )
     terminated = False
+    termination_signal = 0
     previous_sigterm: Any = None
 
     def on_sigterm(signum: int, frame: Any) -> None:
-        nonlocal terminated
+        nonlocal terminated, termination_signal
+        termination_signal = signum
         terminated = True
         adapter.cancel_wait()
 
@@ -6537,6 +6557,9 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
             signal.signal(signal.SIGTERM, previous_sigterm)
 
     if terminated:
+        _runtime_trace(
+            f"signal.received signum={termination_signal} action='terminate'"
+        )
         return 143
     if state.exception is not None:
         raise state.exception

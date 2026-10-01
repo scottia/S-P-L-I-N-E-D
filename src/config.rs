@@ -740,6 +740,22 @@ fn normalize_source_list(
     Ok(normalized)
 }
 
+/// Load a GUI-selected configuration without changing the process-wide
+/// portable root. Relative runtime paths retain the same application-root
+/// semantics used by the normal CLI.
+pub fn load_config_from(path: &Path) -> Result<Config, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Unable to read SPLINED configuration {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut config = parse_config(&text)?;
+    let root = app_root()?;
+    resolve_runtime_paths(&mut config, &root);
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -928,20 +944,4 @@ mod tests {
         assert!(config.library.music_library.is_empty());
         assert!(config.scan.scan_library_dir.is_empty());
     }
-}
-
-/// Load a GUI-selected configuration without changing the process-wide
-/// portable root. Relative runtime paths retain the same application-root
-/// semantics used by the normal CLI.
-pub fn load_config_from(path: &Path) -> Result<Config, String> {
-    let text = std::fs::read_to_string(path).map_err(|error| {
-        format!(
-            "Unable to read SPLINED configuration {}: {error}",
-            path.display()
-        )
-    })?;
-    let mut config = parse_config(&text)?;
-    let root = app_root()?;
-    resolve_runtime_paths(&mut config, &root);
-    Ok(config)
 }
