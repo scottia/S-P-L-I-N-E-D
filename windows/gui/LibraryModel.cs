@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Diagnostics;
+using System.Text;
 using System.Web.Script.Serialization;
 
 namespace Splined.WindowsGui
@@ -196,7 +197,9 @@ namespace Splined.WindowsGui
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
                 RedirectStandardOutput = true,
-                RedirectStandardError = true
+                RedirectStandardError = true,
+                StandardOutputEncoding = new UTF8Encoding(false),
+                StandardErrorEncoding = new UTF8Encoding(false)
             };
             string output;
             string error;

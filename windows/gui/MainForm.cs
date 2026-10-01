@@ -1302,6 +1302,11 @@ namespace Splined.WindowsGui
             start.RedirectStandardOutput = true;
             start.RedirectStandardError = true;
             start.RedirectStandardInput = true;
+            // The Rust core always emits UTF-8. Relying on the Windows ANSI
+            // code page corrupts non-ASCII album paths in GUI events and can
+            // turn a valid destination into a missing preview/SQLite path.
+            start.StandardOutputEncoding = new UTF8Encoding(false);
+            start.StandardErrorEncoding = new UTF8Encoding(false);
             start.EnvironmentVariables["SPLINED_GUI_EVENTS"] = "1";
             start.EnvironmentVariables["SPLINED_GUI_REVIEW"] = "1";
             start.EnvironmentVariables["NO_COLOR"] = "1";
