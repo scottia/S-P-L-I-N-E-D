@@ -5,10 +5,7 @@ use crate::final_artwork::{
     install_prepared_artwork, prepare_configured_artwork, project_configured_artwork,
 };
 use crate::gui_events;
-use crate::history::{
-    AlbumHistoryState, CompletionHistory, album_history_status, load_completion_history,
-    record_scan_completion, unix_now,
-};
+use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
 use crate::inspect::inspect_image;
 use crate::local_artwork::{
     LocalPreflightAction, cleanup_competing_static, cleanup_replaced_static_covers,
@@ -108,7 +105,7 @@ pub async fn run_scan_library_read_report(
         ladder: config.range.ladder,
     };
     let format_order = configured_output_formats(&config.output.file_formats)?;
-    let mut completion_history = load_completion_history(config);
+    let completion_history = load_completion_history(config);
     let mut source_history = load_source_history(config);
 
     let ignored_count = inventory.ignored_directories.len();
@@ -393,14 +390,7 @@ pub async fn run_scan_library_read_report(
                     } else {
                         "embedded-ideal"
                     };
-                    let _ = record_runtime_completion(
-                        config,
-                        &mut completion_history,
-                        album,
-                        resolved_sources,
-                        action,
-                        Some("local"),
-                    );
+                    record_runtime_completion(config, album, action, Some("local"))?;
                     gui_events::emit(json!({
                         "event": "local_preflight",
                         "album_path": album.path,
@@ -833,14 +823,7 @@ pub async fn run_scan_library_read_report(
                     } else {
                         "normal-out-of-range-bypassed"
                     };
-                    let _ = record_runtime_completion(
-                        config,
-                        &mut completion_history,
-                        album,
-                        resolved_sources,
-                        outcome,
-                        None,
-                    );
+                    record_runtime_completion(config, album, outcome, None)?;
                     gui_events::emit(json!({
                         "event": "album_completed",
                         "album_path": album.path,
@@ -1012,6 +995,7 @@ pub async fn run_scan_library_read_report(
 
                 if matches!(candidate.source.as_str(), "local" | "webpstill") {
                     summary.unchanged += 1;
+                    record_runtime_completion(config, album, "local-kept", Some("local"))?;
                     gui_events::emit(json!({
                         "event": "album_completed",
                         "album_path": album.path,
@@ -1019,14 +1003,6 @@ pub async fn run_scan_library_read_report(
                         "action": "KeptLocal",
                         "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
                     }));
-                    let _ = record_runtime_completion(
-                        config,
-                        &mut completion_history,
-                        album,
-                        resolved_sources,
-                        "local-kept",
-                        Some("local"),
-                    );
                     println!("  Artwork:     {}", "KEPT LOCAL".cyan().bold());
                     println!();
                     continue;
@@ -1135,13 +1111,6 @@ pub async fn run_scan_library_read_report(
                                 println!("  Artwork:     {}", "skipped".yellow().bold());
                             }
                         }
-                        gui_events::emit(json!({
-                            "event": "album_completed",
-                            "album_path": album.path,
-                            "destination": destination,
-                            "action": format!("{:?}", final_result.action),
-                            "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
-                        }));
                         if final_result.action != FinalArtworkAction::NoSelection {
                             let outcome = if fallback_reason.is_some() {
                                 if manually_selected
@@ -1156,14 +1125,12 @@ pub async fn run_scan_library_read_report(
                             } else {
                                 format!("{:?}", final_result.action).to_ascii_lowercase()
                             };
-                            let _ = record_runtime_completion(
+                            record_runtime_completion(
                                 config,
-                                &mut completion_history,
                                 album,
-                                resolved_sources,
                                 &outcome,
                                 Some(&candidate.source),
-                            );
+                            )?;
                             // Python's chosen-source history is count-only and
                             // intentionally excludes every fallback choice.
                             if fallback_reason.is_none() {
@@ -1177,6 +1144,13 @@ pub async fn run_scan_library_read_report(
                                 );
                             }
                         }
+                        gui_events::emit(json!({
+                            "event": "album_completed",
+                            "album_path": album.path,
+                            "destination": destination,
+                            "action": format!("{:?}", final_result.action),
+                            "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
+                        }));
                     }
                     Err(error) => {
                         summary.failed += 1;
@@ -1885,13 +1859,10 @@ fn fallback_reason_from_error(error: &str) -> String {
 
 fn record_runtime_completion(
     config: &Config,
-    history: &mut CompletionHistory,
     album: &AlbumDirectory,
-    sources: &[String],
     outcome: &str,
     selected_source: Option<&str>,
 ) -> Result<(), String> {
-    record_scan_completion(config, history, album, sources, outcome)?;
     record_album_outcome(config, &album.path, outcome, selected_source)
 }
 

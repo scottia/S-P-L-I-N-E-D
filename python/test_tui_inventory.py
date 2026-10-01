@@ -27,7 +27,6 @@ def _config(root: Path) -> dict[str, object]:
             "library_scan": False,
             "cache_dir": "_cache",
             "log_dir": "_logs",
-            "history_dir": "_logs/_history",
             "scan_library_dir": str(root),
         },
         "history": {"enabled": True, "retention_days": 0},

@@ -389,29 +389,13 @@ loads full statistics only for an already-selected Album; later focus changes
 read the indexed row on demand. When LIVE WRITE changes an Album, SPLINED
 refreshes that one Album's materialized values and its authority/folder status.
 
-## Legacy JSON migration
+## Runtime state
 
-After a usable database is built, the retired v2 file:
-
-```text
-/_logs/_history/select-media-status.json
-```
-
-is renamed to:
-
-```text
-/_logs/_history/select-media-status.json.legacy
-```
-
-It is no longer loaded or updated. Completion, source, bypass, and timeout
-history JSON files remain authoritative and are not migrated into the picker
-database.
-
-The former Windows C# recursive filesystem inventory and JSON history
-projection are also retired from GUI startup. Operational completion, source,
-bypass, and timeout history remains in the Rust processing engine and is
-projected into SQLite during index builds and runtime actions; those history
-files were not deleted.
+The former JSON status and history surfaces are retired. SPLINED neither reads
+nor writes them. Completion, source selection, bypass, timeout, and incomplete
+compilation progress are committed to SQLite. The Windows GUI also reads the
+published SQLite inventory instead of performing a separate C# filesystem
+inventory.
 
 ## Backup and deletion
 
@@ -420,16 +404,15 @@ For Python/Docker installations, back up:
 ```text
 /config
 /credentials
-/_logs/_history
 /_cache/splined.db
 ```
 
 The WAL/SHM sidecars may exist while SPLINED is running. Stop SPLINED before
 copying the database if a consistent filesystem-level backup is required.
 
-Deleting `splined.db` is safe for music files and persistent history, but the
-next interactive launch performs the complete one-time Mutagen/index build
-again.
+Deleting `splined.db` is safe for music files, but also removes the durable
+index and runtime state. The next Python interactive launch performs the
+complete one-time Mutagen/index build again.
 
 ## Inspection
 

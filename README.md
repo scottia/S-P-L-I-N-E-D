@@ -29,7 +29,7 @@ the selected artwork into the Album folder.
 - 👀 **Read mode** evaluates without modifying Album folders
 - ✍️ **Write mode** can install the selected artwork
 - 🧪 **Sample output** writes one selected image per Album for review
-- 🧭 **Persistent history and bypass state** remain separate from candidate cache
+- 🧭 **Persistent history and bypass state** live in the authoritative SQLite database
 - 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and fast warm startup in Python/Docker
 - ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
 - 🐳 **Docker image** provides a Linux/server deployment path
@@ -320,8 +320,9 @@ are implemented.
 Write mode changes files in Album directories. Test against a copy, staging
 library, backup, or snapshot first.
 
-For Python/Docker backups, preserve `config/`, `credentials/`, `_logs/_history/`,
-and `_cache/splined.db`. Other candidate/sample cache data remains disposable.
+For backups, preserve `config/`, `credentials/`, and `_cache/splined.db`. The
+database contains durable completion, bypass, timeout, and source-selection
+state. Diagnostic logs and other candidate/sample cache data remain disposable.
 
 ---
 

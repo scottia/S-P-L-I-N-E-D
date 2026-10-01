@@ -76,8 +76,6 @@ pub struct ScanConfig {
     pub sqlite_shared: bool,
     #[serde(default = "default_log_dir")]
     pub log_dir: String,
-    #[serde(default = "default_history_dir")]
-    pub history_dir: String,
     pub scan_library_dir: String,
 }
 
@@ -322,7 +320,6 @@ impl Default for ScanConfig {
             cache_dir: DEFAULT_CACHE_DIR.to_string(),
             sqlite_shared: false,
             log_dir: default_log_dir(),
-            history_dir: default_history_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
         }
     }
@@ -330,10 +327,6 @@ impl Default for ScanConfig {
 
 fn default_log_dir() -> String {
     "_logs".to_string()
-}
-
-fn default_history_dir() -> String {
-    "_logs/_history".to_string()
 }
 
 impl Default for LibraryConfig {
@@ -520,8 +513,6 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     config.scan.scan_library_dir = normalize_optional_directory(&config.scan.scan_library_dir);
     config.scan.cache_dir = normalize_required_directory(&config.scan.cache_dir, "scan.cache_dir")?;
     config.scan.log_dir = normalize_required_directory(&config.scan.log_dir, "scan.log_dir")?;
-    config.scan.history_dir =
-        normalize_required_directory(&config.scan.history_dir, "scan.history_dir")?;
     config.credentials.credential_dir = normalize_required_directory(
         &config.credentials.credential_dir,
         "credentials.credential_dir",
@@ -662,7 +653,6 @@ fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.scan.scan_library_dir = resolve_runtime_directory(root, &config.scan.scan_library_dir);
     config.scan.cache_dir = resolve_runtime_directory(root, &config.scan.cache_dir);
     config.scan.log_dir = resolve_runtime_directory(root, &config.scan.log_dir);
-    config.scan.history_dir = resolve_runtime_directory(root, &config.scan.history_dir);
     config.credentials.credential_dir =
         resolve_runtime_directory(root, &config.credentials.credential_dir);
     config.fanarttv.credential_file =

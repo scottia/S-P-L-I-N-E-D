@@ -55,8 +55,10 @@ fn load_example(path: &str, expected_credential_dir: &str) -> toml::Value {
         "itunes",
         "fanarttv",
         "lastfm",
+        "musicbrainz",
         "coverartarchive",
         "discogs",
+        "amazon",
     ] {
         let policy = value["source_policies"][provider]
             .as_table()
@@ -68,13 +70,6 @@ fn load_example(path: &str, expected_credential_dir: &str) -> toml::Value {
             );
         }
     }
-    let musicbrainz = value["source_policies"]["musicbrainz"]
-        .as_table()
-        .expect("MusicBrainz policy should exist");
-    assert_eq!(musicbrainz.len(), 2, "MusicBrainz is metadata-only");
-    assert!(musicbrainz.contains_key("enabled"));
-    assert!(musicbrainz.contains_key("source_override"));
-
     for forbidden in [
         "credential_file =",
         "token_file =",
@@ -121,9 +116,9 @@ fn windows_identity_and_release_domains_stay_separate() {
 
     let workflow =
         fs::read_to_string(".github/workflows/release-next-patch.yml").expect("release workflow");
-    assert!(workflow.contains("git diff --exit-code -- windows/Cargo.toml windows/Cargo.lock"));
+    assert!(workflow.contains("expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\")"));
     assert!(!workflow.contains("cargo set-version --manifest-path windows/Cargo.toml"));
-    assert!(workflow.contains("ref: ${{ needs.prepare-release.outputs.commit }}"));
+    assert!(workflow.contains("ref: refs/tags/${{ needs.prepare-release.outputs.version }}"));
     assert!(workflow.contains("packages: write"));
 
     let ghcr_job = workflow
@@ -133,8 +128,10 @@ fn windows_identity_and_release_domains_stay_separate() {
         .split("  release-summary:")
         .next()
         .expect("publish-ghcr job body");
-    assert!(ghcr_job.contains("always() &&"));
     assert!(ghcr_job.contains("needs.publish-release.result == 'success'"));
+    assert!(workflow.contains(
+        "always() && needs.publish-release.result == 'success' && needs.publish-ghcr.result == 'success'"
+    ));
 
     for platform in ["Windows", "Ubuntu", "macOS", "All"] {
         assert!(workflow.contains(&format!("- \"{platform}\"")));

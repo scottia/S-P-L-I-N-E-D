@@ -22,9 +22,10 @@ FRESH INSTALL
       ui.toml
    credentials\
    _cache\
+      splined.db
       samples\
    _logs\
-      _history\
+      run\
 
 4. Begin in Read mode with a small media selection. Confirm artwork choices
    and output policy before enabling Write mode.
@@ -43,9 +44,7 @@ UPGRADE AN EXISTING PORTABLE INSTALL
 
    config\
    credentials\
-   _logs\
-
-   If history has been configured elsewhere, back up that location too.
+   _cache\splined.db
 
 3. Extract the new application files into the existing SPLINED folder,
    replacing the program files while preserving the persistent locations
@@ -54,7 +53,8 @@ UPGRADE AN EXISTING PORTABLE INSTALL
 4. Run splined.exe and verify Settings, Config v5 validation, and credential
    status before a production scan.
 
-_cache\ is disposable and is recreated as needed.
+Other files under _cache\ are disposable and are recreated as needed.
+Diagnostic files under _logs\ are not runtime-state authority.
 
 SPLINED does not automatically discover, import, or move another portable
 installation. Copy persistent data deliberately when changing directories.

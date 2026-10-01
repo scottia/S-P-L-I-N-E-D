@@ -1,19 +1,23 @@
 use std::future::Future;
 use std::pin::Pin;
 
+pub mod amazon;
 pub mod coverartarchive;
 pub mod deezer;
 pub mod discogs;
 pub mod fanarttv;
 pub mod itunes;
 pub mod lastfm;
+pub mod musicbrainz_artwork;
 
+use amazon::AmazonStore;
 use coverartarchive::CoverArtArchive;
 use deezer::Deezer;
 use discogs::Discogs;
 use fanarttv::FanartTv;
 use itunes::ITunes;
 use lastfm::LastFm;
+use musicbrainz_artwork::MusicBrainzArtwork;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtworkQuery {
@@ -82,8 +86,10 @@ impl ProviderRegistry {
                 "itunes" => providers.push(Box::new(ITunes::new()?)),
                 "fanarttv" => providers.push(Box::new(FanartTv::new(fanarttv_credential_file)?)),
                 "lastfm" => providers.push(Box::new(LastFm::new(lastfm_credential_file)?)),
+                "musicbrainz" => providers.push(Box::new(MusicBrainzArtwork::new()?)),
                 "coverartarchive" => providers.push(Box::new(CoverArtArchive::new()?)),
                 "discogs" => providers.push(Box::new(Discogs::new(discogs_credential_file)?)),
+                "amazon" => providers.push(Box::new(AmazonStore::new()?)),
                 _ => {
                     return Err(format!(
                         "Unsupported SPLINED cover source in provider registry: {source}"
@@ -131,8 +137,10 @@ mod tests {
             "deezer".to_string(),
             "itunes".to_string(),
             "lastfm".to_string(),
+            "musicbrainz".to_string(),
             "coverartarchive".to_string(),
             "discogs".to_string(),
+            "amazon".to_string(),
         ];
         let registry = ProviderRegistry::from_source_order_with_credentials(
             &source_order,
@@ -143,7 +151,15 @@ mod tests {
         .unwrap();
         assert_eq!(
             registry.names(),
-            vec!["deezer", "itunes", "lastfm", "coverartarchive", "discogs"]
+            vec![
+                "deezer",
+                "itunes",
+                "lastfm",
+                "musicbrainz",
+                "coverartarchive",
+                "discogs",
+                "amazon"
+            ]
         );
     }
 

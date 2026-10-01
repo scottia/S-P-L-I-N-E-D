@@ -115,8 +115,8 @@ There is no background Artist-by-Artist structural validation and no color
 change merely because the user opens an Artist. Opening an Artist is an
 in-memory database view change, not a filesystem scan.
 
-The retired `select-media-status.json` file is renamed `.legacy` after the first
-usable database build and is no longer read or updated.
+SQLite is the only runtime-state authority after the first usable database
+build. Legacy JSON status files are neither read nor updated.
 
 See [SPLINED media database](splined-media-database.md).
 

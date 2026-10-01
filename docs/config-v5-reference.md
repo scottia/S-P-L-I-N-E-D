@@ -24,8 +24,9 @@ SPLINED/
 │   └── ui.toml
 ├── credentials/
 ├── _cache/
+│   └── splined.db
 └── _logs/
-    └── _history/
+    └── run/
 ```
 
 Relative runtime paths are resolved from the SPLINED application directory.
@@ -58,7 +59,6 @@ container paths supplied by bind mounts.
 | `cache_dir` | `"_cache"` | Candidate/sample cache and persistent `<cache_dir>/splined.db` |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; Python owns shared inventory, while rollback journaling and a 30-second busy timeout protect shared writes |
 | `log_dir` | `"_logs"` | Diagnostic log location |
-| `history_dir` | `"_logs/_history"` | Completion, chosen-source, bypass, and timeout authority |
 
 ### SQLite `cache_dir`
 
@@ -268,14 +268,13 @@ diagnose startup, selection, report return, or launch behavior.
 
 History supplies processed, timeout, chosen-source, and bypass authority. The
 Python/Docker `splined.db` materializes those facts for Select Media but does
-not replace the history files.
+and stores completion, bypass, timeout, and source-selection state in that same database.
 
 Back up:
 
 ```text
 config/
 credentials/
-<scan.history_dir>/
 <scan.cache_dir>/splined.db   # Python/Docker and Windows
 ```
 
@@ -308,10 +307,12 @@ Legacy `[splineai]` remains a compatibility concern for existing installations;
 
 ## GUI-only `ui.toml`
 
-`config/ui.toml` is separate from operational Config v5. It stores presentation
-and transient GUI state such as theme, window placement, filters, splitter
-positions, and current UI selections. Editing it does not change source policy,
-credentials, history, the media database, or artwork-writing rules.
+`ui.toml` is separate from operational Config v5 and is stored beside the active
+`config.toml`. This also applies when Windows uses a relocated or UNC-hosted
+configuration. It stores presentation and transient GUI state such as theme,
+window placement, filters, splitter positions, and current UI selections.
+Editing it does not change source policy, credentials, the media database, or
+artwork-writing rules.
 
 ## Validation
 

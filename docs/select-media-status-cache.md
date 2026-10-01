@@ -1,33 +1,14 @@
-# Retired Select Media JSON status cache
+# Select Media status authority
 
-The version-2 file:
+Select Media state is stored in `<scan.cache_dir>/splined.db`.
 
-```text
-/_logs/_history/select-media-status.json
-```
+The `albums` and `artists` tables provide the current picker projection. Album
+completion, bypass, timeout, incomplete compilation progress, and selected
+source are updated transactionally with the matching Album row. `cache_history`
+provides the audit trail, while durable auxiliary state such as source-ranking
+counts uses `cache_entries`.
 
-is retired in the Python/Docker Ratatui implementation.
-
-It previously stored path-based Album inventory, structural directory
-sentinels, and live status values. Warm launches still had to perform
-Artist-by-Artist filesystem reconciliation, which caused long load times and
-made Artist colors change while the user was already working in Select Media.
-
-SPLINED now uses the tag-identified SQLite read model documented in
-[SPLINED media database](splined-media-database.md):
-
-```text
-/_cache/splined.db
-```
-
-After the first usable database build, an existing JSON file is renamed to:
-
-```text
-/_logs/_history/select-media-status.json.legacy
-```
-
-It is no longer read or updated. The legacy file may be removed after the new
-SQLite index has been verified.
-
-This retirement does not affect the separate completion, chosen-source,
-bypass, or timeout history files under `/_logs/_history`.
+SPLINED does not create, read, migrate, or update JSON status/history files.
+Removing diagnostic logs does not change Album status. Removing `splined.db`
+removes the index and all durable runtime state and therefore requires a fresh
+Python library index before a shared Windows client can load it.

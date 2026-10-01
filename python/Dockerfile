@@ -28,7 +28,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SPLINED_BUILD_CHANNEL=${SPLINED_BUILD_CHANNEL} \
     SPLINED_CONFIG=/config/config.toml \
     SPLINED_LOG_DIR=/_logs \
-    SPLINED_HISTORY_DIR=/_logs/_history \
     SPLINED_SQLITE_LOCAL_SNAPSHOT=always \
     SPLINED_COLOR=always
 
@@ -136,7 +135,7 @@ RUN python3 -m py_compile \
     && find /app/tui -type f -name '*.py' -exec chmod 0555 {} + \
     && ln -s /app/splined_entry.py /usr/local/bin/splined
 
-# Persistent media index is /_cache/splined.db; history remains /_logs/_history.
+# Persistent media index and all durable runtime state live in /_cache/splined.db.
 VOLUME ["/config", "/music", "/_cache", "/_logs", "/credentials"]
 
 ENTRYPOINT ["python3", "/app/splined_entry.py"]

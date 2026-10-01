@@ -19,11 +19,11 @@ from splined_media_runtime import (
     cached_status,
     cached_stats,
     clean_transient_cache,
-    migrate_legacy_json,
     populate_session,
     set_active_database,
     set_current_album,
     sync_library_payload,
+    sync_history_outcome,
     sync_material_result,
 )
 
@@ -175,6 +175,8 @@ def install(core: Any, scan: Any | None = None) -> None:
                     "splined.db.status_sync_error "
                     f"error={type(exc).__name__}: {exc}"
                 )
+        elif event == "history":
+            sync_history_outcome(payload)
         original_emit_ui(event, **payload)
 
     def read_input(prompt: str, **context_payload: Any) -> str:
@@ -202,7 +204,6 @@ def install(core: Any, scan: Any | None = None) -> None:
         try:
             build_index(context, connection, "explicit-refresh")
             populate_session(context, connection)
-            migrate_legacy_json(context)
             _checkpoint_wal(core, connection, reason="explicit-refresh")
         finally:
             connection.close()
@@ -329,14 +330,13 @@ def install(core: Any, scan: Any | None = None) -> None:
                         )
                         _checkpoint_wal(core, connection, reason="warm-start")
                 populate_session(context, connection)
-                migrate_legacy_json(context)
                 if rebuilt:
                     _checkpoint_wal(core, connection, reason="initial-build")
             finally:
                 connection.close()
 
         _ACTIVE_CONTEXT = context
-        set_active_database(db, cover_name)
+        set_active_database(db, cover_name, timeout_hours)
         core.debug_log(
             f"splined.db.ready path={str(db)!r} "
             f"artists={len(session.artists)} "

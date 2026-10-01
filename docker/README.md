@@ -59,11 +59,7 @@ are used. A typical host layout is:
 │   ├── splined.db
 │   └── samples/
 └── _logs/
-    ├── run/
-    └── _history/
-        ├── chosen-source-history.json
-        ├── scan-completed-history.json
-        └── bypass-source-history.json
+    └── run/
 ```
 
 `_cache` now contains two classes of data:
@@ -102,7 +98,7 @@ the database is stored on the host as:
 | `/_cache` | Database plus disposable candidate/cache data |
 | `/_cache/samples` | Selected scan samples |
 | `/_logs` | Persistent runtime logs |
-| `/_logs/_history` | Persistent completion, source, bypass, and timeout history |
+| `/_cache/splined.db` | Media index plus completion, source, bypass, and timeout authority |
 
 For Read mode, `/music` may be mounted read-only:
 
@@ -142,8 +138,7 @@ The visible Artist Picker is grouped by the first physical directory below
 `/music`. Tagged Album Artist/MusicBrainz identity remains artwork/search
 authority, so authority-row totals can differ from picker-folder totals.
 
-An old `/_logs/_history/select-media-status.json` is renamed
-`select-media-status.json.legacy` after the database is ready.
+Legacy JSON status/history files are not read or written.
 
 See [SPLINED media database](../docs/splined-media-database.md).
 
@@ -208,7 +203,6 @@ For Python/Docker, back up:
 ```text
 /config
 /credentials
-/_logs/_history
 /_cache/splined.db
 ```
 
@@ -216,19 +210,13 @@ Stop SPLINED before copying the SQLite database when a consistent raw
 filesystem backup is required. The `-wal` and `-shm` sidecars may exist while
 SPLINED is running.
 
-Deleting `splined.db` does not delete music or operational history, but it
-forces the complete one-time Mutagen/index build on the next TUI launch.
+Deleting `splined.db` does not delete music, but it removes the index and
+durable runtime state and forces the complete one-time Mutagen/index build on
+the next TUI launch.
 
 ## Advanced mounts
 
-The Quick Start uses one persistent mount for all logs and history:
-
-```text
-/_logs
-└── _history
-```
-
-A separate history mount is not required. Advanced deployments may split any
+The Quick Start uses one persistent mount for diagnostic logs. Advanced deployments may split any
 documented path into its own bind mount when different storage, backup, or
 permission policies are required.
 

@@ -170,7 +170,6 @@ namespace Splined.WindowsGui
         public string CacheDir;
         public bool SqliteShared;
         public string LogDir;
-        public string HistoryDir;
         public string CredentialDir;
         public List<string> Formats = new List<string>(new[] { "jpeg", "png", "webp" });
         public List<string> Sources = new List<string>(ArtworkSources);
@@ -253,7 +252,15 @@ namespace Splined.WindowsGui
         public static readonly string AppRoot = ResolveAppRoot();
         public static readonly string DefaultConfigPath = Path.Combine(AppRoot, "config", "config.toml");
         public static readonly string LocatorPath = Path.Combine(AppRoot, "config.location");
-        public static readonly string UiPath = Path.Combine(AppRoot, "config", "ui.toml");
+        public static string UiPath
+        {
+            get
+            {
+                string configPath = GetConfigPath();
+                string directory = Path.GetDirectoryName(configPath);
+                return Path.Combine(String.IsNullOrWhiteSpace(directory) ? Path.Combine(AppRoot, "config") : directory, "ui.toml");
+            }
+        }
 
         private static string ResolveAppRoot()
         {
@@ -301,7 +308,6 @@ namespace Splined.WindowsGui
             state.CacheDir = ResolvePortablePath(ReadString(text, "scan", "cache_dir", "_cache"));
             state.SqliteShared = ReadBool(text, "scan", "sqlite_shared", false);
             state.LogDir = ResolvePortablePath(ReadString(text, "scan", "log_dir", "_logs"));
-            state.HistoryDir = ResolvePortablePath(ReadString(text, "scan", "history_dir", "_logs/_history"));
             state.CredentialDir = ResolvePortablePath(ReadString(text, "credentials", "credential_dir", "credentials"));
             state.Formats = ReadArray(text, "output", "file_formats");
             if (state.Formats.Count == 0) state.Formats.AddRange(new[] { "jpeg", "png", "webp" });
@@ -372,7 +378,6 @@ namespace Splined.WindowsGui
             state.ConfigPath = DefaultConfigPath;
             state.CacheDir = Path.Combine(AppRoot, "_cache");
             state.LogDir = Path.Combine(AppRoot, "_logs");
-            state.HistoryDir = Path.Combine(AppRoot, "_logs", "_history");
             state.CredentialDir = Path.Combine(AppRoot, "credentials");
             state.SourcePolicies["amazon"] = new SourcePolicyState { Enabled = false };
             return state;
@@ -593,7 +598,6 @@ namespace Splined.WindowsGui
             text.AppendLine("cache_dir = " + Quote(ToPortablePath(state.CacheDir)));
             text.AppendLine("sqlite_shared = " + Bool(state.SqliteShared));
             text.AppendLine("log_dir = " + Quote(ToPortablePath(state.LogDir)));
-            text.AppendLine("history_dir = " + Quote(ToPortablePath(state.HistoryDir)));
             text.AppendLine();
             text.AppendLine("[output]");
             text.AppendLine("file_name = " + Quote(state.FileName));

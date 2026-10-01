@@ -98,7 +98,7 @@ namespace Splined.WindowsGui
                     "Override-off source policy must preserve the existing global range behavior.");
 
                 ConfigState optionCoverage = loaded.Clone();
-                optionCoverage.ConfigPath = Path.Combine(ConfigStore.AppRoot, "all-options-config.toml");
+                optionCoverage.ConfigPath = Path.Combine(ConfigStore.AppRoot, "qa-test", "external-config", "config.toml");
                 optionCoverage.Mode = "read";
                 optionCoverage.Verbosity = "trace";
                 optionCoverage.ScanLibraryDir = firstAlbum;
@@ -108,7 +108,6 @@ namespace Splined.WindowsGui
                 optionCoverage.CacheDir = Path.Combine(ConfigStore.AppRoot, "coverage-cache");
                 optionCoverage.SqliteShared = true;
                 optionCoverage.LogDir = Path.Combine(ConfigStore.AppRoot, "coverage-logs");
-                optionCoverage.HistoryDir = Path.Combine(ConfigStore.AppRoot, "coverage-history");
                 optionCoverage.CredentialDir = Path.Combine(ConfigStore.AppRoot, "coverage-credentials");
                 optionCoverage.Formats = new List<string>(new[] { "webp", "jpeg", "png" });
                 optionCoverage.Sources = new List<string>(new[] { "discogs", "coverartarchive", "lastfm", "fanarttv", "itunes", "deezer" });
@@ -135,8 +134,13 @@ namespace Splined.WindowsGui
                     && Math.Abs(optionReopened.ScanModeTimeout - 12.5) < 0.001,
                     "Python runtime and scan options did not round-trip through Config v5.");
                 Assert(optionReopened.CacheDir == optionCoverage.CacheDir && optionReopened.SqliteShared && optionReopened.LogDir == optionCoverage.LogDir
-                    && optionReopened.HistoryDir == optionCoverage.HistoryDir && optionReopened.CredentialDir == optionCoverage.CredentialDir,
+                    && optionReopened.CredentialDir == optionCoverage.CredentialDir,
                     "Python directory options did not round-trip through Config v5.");
+                Assert(ConfigStore.UiPath == Path.Combine(Path.GetDirectoryName(optionCoverage.ConfigPath), "ui.toml"),
+                    "ui.toml did not follow the active config.toml directory.");
+                string redactedLog = RuntimeLog.Redact("Authorization: Bearer top-secret access_token=also-secret");
+                Assert(!redactedLog.Contains("top-secret") && !redactedLog.Contains("also-secret"),
+                    "Runtime diagnostics did not redact authorization and token values.");
                 Assert(optionReopened.Formats.SequenceEqual(optionCoverage.Formats)
                     && optionReopened.Sources.SequenceEqual(optionCoverage.Sources)
                     && optionReopened.ExcludedSources.SequenceEqual(optionCoverage.ExcludedSources),

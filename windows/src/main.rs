@@ -988,6 +988,7 @@ async fn main() {
         config.scan.scan_library_dir = path.to_string_lossy().into_owned();
         if let Err(error) = run_scan_library_read_report(&config, &resolved_sources).await {
             eprintln!("{error}");
+            std::process::exit(2);
         }
         return;
     }
@@ -995,6 +996,7 @@ async fn main() {
     if cli.scan_dir {
         if let Err(error) = run_scan_library_read_report(&config, &resolved_sources).await {
             eprintln!("{error}");
+            std::process::exit(2);
         }
         return;
     }

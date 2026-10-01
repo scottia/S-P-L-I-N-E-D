@@ -27,7 +27,7 @@ Do not infer one from another.
 - [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
 - [Python Ratatui TUI](ratatui-tui.md)
 - [SPLINED media database](splined-media-database.md)
-- [Retired Select Media JSON cache](select-media-status-cache.md)
+- [Select Media SQLite status authority](select-media-status-cache.md)
 - [Docker installation](../docker/README.md)
 
 ## Python Ratatui display model
@@ -199,7 +199,7 @@ Redirected/scripted runs retain the plain CLI.
 - Never commit credential JSON, API keys, OAuth tokens, or secrets.
 - Use Read mode to evaluate without changing artwork in Album folders.
 - Test Write mode against a copy, backup, snapshot, or staging library first.
-- Back up `config/`, `credentials/`, and the configured log/history location.
+- Back up `config/`, `credentials/`, and `<scan.cache_dir>/splined.db`.
 - For Python/Docker, also back up `<scan.cache_dir>/splined.db`; other candidate
   and sample data under the cache directory remains disposable.
 
