@@ -892,7 +892,10 @@ namespace Splined.WindowsGui
                 if (version == reloadVersion)
                 {
                     loadingLibrary = false;
-                    UpdateSelectionControls();
+                    // Preserve the completed load count or exact SQLite/core
+                    // error. A selection summary will replace it only after a
+                    // subsequent selection action.
+                    UpdateSelectionControlsCore(false);
                 }
             }
         }
@@ -1075,6 +1078,11 @@ namespace Splined.WindowsGui
 
         private void UpdateSelectionControls()
         {
+            UpdateSelectionControlsCore(true);
+        }
+
+        private void UpdateSelectionControlsCore(bool updateStatus)
+        {
             int count = albums.Count(album => album.Selected);
             bool waiting = running && awaitingDecision;
             launch.Enabled = running || (!loadingLibrary && count > 0);
@@ -1096,7 +1104,7 @@ namespace Splined.WindowsGui
             if (selectModeNone != null) selectModeNone.Enabled = filterActionsEnabled;
             if (selectModeFiltered != null) selectModeFiltered.Enabled = filterActionsEnabled;
             UpdateAutoLaunchButton();
-            if (!running && !loadingLibrary) SetStatus(count == 0 ? "No albums selected. Launch is disabled." : count + " album(s) selected. Launch will process only these albums.");
+            if (updateStatus && !running && !loadingLibrary) SetStatus(count == 0 ? "No albums selected. Launch is disabled." : count + " album(s) selected. Launch will process only these albums.");
         }
 
         private void UpdateSelectModeChecks()

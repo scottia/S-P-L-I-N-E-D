@@ -170,6 +170,9 @@ namespace Splined.WindowsGui
                 AlbumInfo[] albums = LibraryInventory.FromSnapshotJson(snapshotJson).ToArray();
                 Assert(albums.Length == 1 && albums[0].Title == "Album One", "SQLite snapshot did not populate the Album model.");
                 Assert(albums[0].State == AlbumState.New && albums[0].EligibleByDefault, "A new SQLite Album was not eligible by default.");
+                string oversizedSnapshot = snapshotJson.Replace("Album One", new string('A', 2200000));
+                Assert(LibraryInventory.FromSnapshotJson(oversizedSnapshot).Count == 1,
+                    "SQLite snapshots larger than JavaScriptSerializer's legacy 2 MB default were rejected.");
 
                 VerifyArtistAggregateAndSelectionRules();
 

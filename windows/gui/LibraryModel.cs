@@ -143,7 +143,17 @@ namespace Splined.WindowsGui
 
     internal static class LibraryInventory
     {
-        private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+        private static readonly JavaScriptSerializer Json = CreateSnapshotSerializer();
+
+        private static JavaScriptSerializer CreateSnapshotSerializer()
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            // A several-thousand-Album SQLite projection legitimately exceeds
+            // JavaScriptSerializer's 2 MB default. The Rust core is the trusted
+            // local producer, and the GUI still deserializes only its DTO shape.
+            serializer.MaxJsonLength = Int32.MaxValue;
+            return serializer;
+        }
 
 #pragma warning disable 0649 // Populated reflectively by JavaScriptSerializer.
         private sealed class SnapshotPayload
