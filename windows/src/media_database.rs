@@ -8,7 +8,7 @@ use crate::history::{AlbumHistoryState, album_history_status, load_completion_hi
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags};
 use image::ImageFormat;
-use rusqlite::{Connection, OptionalExtension, Transaction, named_params, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, named_params, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -208,6 +208,39 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
         );
     }
     let db_path = database_path(&config.scan.cache_dir);
+
+    // A normal Select Media startup is a projection of an already-published
+    // index. Keep that path strictly read-only: in particular, do not request
+    // a journal-mode transition or reapply the schema over an SMB share. This
+    // also lets simultaneous GUI warm-load requests coexist as readers. Only
+    // an explicit refresh (or a missing/uninitialized index) enters the
+    // writable initialization path below.
+    if !refresh && db_path.exists() {
+        let (connection, current) = open_database_read_only(&db_path)?;
+        if current == SCHEMA_VERSION {
+            let saved_signature = read_signature(&connection)?;
+            validate_signature(config, saved_signature.as_ref())?;
+            let usable = saved_signature.is_some()
+                && connection
+                    .query_row("SELECT count(*) FROM albums", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap_or(0)
+                    > 0;
+            if usable {
+                let canonical_root = saved_signature
+                    .as_ref()
+                    .and_then(|value| value.get("library_root"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(local_root);
+                let mapper = PathMapper::new(canonical_root, local_root)?;
+                return load_snapshot(&connection, &db_path, &mapper);
+            }
+        } else if current != 0 {
+            return Err(incompatible_schema(current));
+        }
+    }
+
     let mut connection = open_database(&db_path, config.scan.sqlite_shared)?;
     let saved_signature = read_signature(&connection)?;
     let canonical_root = saved_signature
@@ -376,20 +409,23 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(db_error("read SQLite schema version"))?;
     if current != 0 && current != SCHEMA_VERSION {
-        return Err(format!(
-            "SPLINED database schema v{current} is incompatible with required v{SCHEMA_VERSION}; the database was not changed."
-        ));
+        return Err(incompatible_schema(current));
     }
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(db_error("enable SQLite foreign keys"))?;
-    let journal = if shared { "DELETE" } else { "WAL" };
-    connection
-        .pragma_update(None, "journal_mode", journal)
-        .map_err(db_error("configure SQLite journal mode"))?;
-    let actual_journal: String = connection
+    let journal = if shared { "delete" } else { "wal" };
+    let mut actual_journal: String = connection
         .pragma_query_value(None, "journal_mode", |row| row.get(0))
-        .map_err(db_error("verify SQLite journal mode"))?;
+        .map_err(db_error("read SQLite journal mode"))?;
+    if !actual_journal.eq_ignore_ascii_case(journal) {
+        connection
+            .pragma_update(None, "journal_mode", journal)
+            .map_err(db_error("configure SQLite journal mode"))?;
+        actual_journal = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .map_err(db_error("verify SQLite journal mode"))?;
+    }
     if !actual_journal.eq_ignore_ascii_case(journal) {
         return Err(format!(
             "SPLINED SQLite journal mode did not activate: expected {journal}, received {actual_journal}."
@@ -398,13 +434,38 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
     connection
         .pragma_update(None, "synchronous", if shared { "FULL" } else { "NORMAL" })
         .map_err(db_error("configure SQLite synchronization"))?;
-    connection
-        .execute_batch(SCHEMA)
-        .map_err(db_error("apply shared schema"))?;
-    connection
-        .pragma_update(None, "user_version", SCHEMA_VERSION)
-        .map_err(db_error("set SQLite schema version"))?;
+    if current == 0 {
+        connection
+            .execute_batch(SCHEMA)
+            .map_err(db_error("apply shared schema"))?;
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(db_error("set SQLite schema version"))?;
+    }
     Ok(connection)
+}
+
+fn open_database_read_only(path: &Path) -> Result<(Connection, i64), String> {
+    let connection =
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+            format!(
+                "Unable to open existing SPLINED database read-only {}: {error}",
+                path.display()
+            )
+        })?;
+    connection
+        .busy_timeout(Duration::from_secs(30))
+        .map_err(db_error("configure SQLite read timeout"))?;
+    let current = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(db_error("read SQLite schema version"))?;
+    Ok((connection, current))
+}
+
+fn incompatible_schema(current: i64) -> String {
+    format!(
+        "SPLINED database schema v{current} is incompatible with required v{SCHEMA_VERSION}; the database was not changed."
+    )
 }
 
 fn read_signature(connection: &Connection) -> Result<Option<Value>, String> {
@@ -1362,6 +1423,20 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn established_database_warm_connection_is_read_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        drop(open_database(&db, true).unwrap());
+
+        let (connection, version) = open_database_read_only(&db).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let error = connection
+            .execute("DELETE FROM albums", [])
+            .expect_err("warm connection unexpectedly allowed a database write");
+        assert!(error.to_string().to_ascii_lowercase().contains("readonly"));
     }
 
     #[test]

@@ -45,6 +45,10 @@ layer is involved. Enable shared-file behavior in every process that opens it:
 sqlite_shared = true
 ```
 
+TOML keys are section-scoped: `sqlite_shared` must appear after the `[scan]`
+header and before the next table header. Placing the same text elsewhere in the
+file does not configure `scan.sqlite_shared`.
+
 Local/default mode retains WAL and `synchronous=NORMAL`. Shared mode uses the
 rollback `DELETE` journal, `synchronous=FULL`, foreign keys, and a 30-second
 busy timeout. This prevents Linux from repeatedly forcing WAL while Windows
@@ -61,6 +65,11 @@ root from database paths, preserves the relative Artist/Album/file location,
 and joins that location to the Windows root for I/O. Writes are translated back
 before SQL is updated. A Python-created `/music/...` value therefore remains
 `/music/...` in SQLite while Windows opens the corresponding UNC path.
+
+Windows normal startup opens an established, usable index read-only. It does
+not reapply the schema or request a journal-mode transition. **Refresh Library
+Index**, first-time initialization, and runtime outcome updates are the explicit
+writable paths and must not overlap a writer from another installation.
 
 The centralized mapper is the only Windows conversion boundary. Windows maps
 the path-bearing Artist/Album snapshot, representative, cover/local-art, and
