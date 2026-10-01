@@ -91,7 +91,8 @@ mount. If none exists, it creates a temporary, non-persistent connection only
 while SQLite is open, then removes it. The TOML remains UNC-based and never
 depends on a particular drive letter.
 
-The centralized path mapper is the only media-path conversion boundary. Windows maps
+The centralized path mapper is the only media-path conversion boundary.
+Windows maps
 the path-bearing Artist/Album snapshot, representative, cover/local-art, and
 retired-path values that it reads or writes. Existing canonical track and
 compilation-progress/artwork rows are left untouched by workflows that do not
