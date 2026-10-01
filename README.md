@@ -104,7 +104,7 @@ schema versions are independent.
 
 ## 🗃️ Python/Docker Select Media database
 
-The Python/Docker TUI stores its persistent Artist/Album read model at:
+Python/Docker and Windows store the persistent Artist/Album read model at:
 
 ```text
 <scan.cache_dir>/splined.db
@@ -116,9 +116,17 @@ Default Docker path:
 /_cache/splined.db
 ```
 
+Windows derives the same filename from its browsable Cache directory. The
+Rust core owns SQLite access and supplies the embedded GUI with a compact JSON
+projection; the GUI does not maintain a second database or recursively rebuild
+Select Media before first paint. Set `[scan].sqlite_shared = true` only when
+the same physical database is intentionally opened through multiple OS or
+network filesystem views.
+
 The first interactive launch inventories Artist/Album folders and reads one
-representative audio file per Album with Mutagen. The build saves resumable
-SQLite checkpoints and publishes the picker only after the completed snapshot
+representative audio file per Album (Mutagen in Python, Lofty in Rust). The
+build saves resumable SQLite checkpoints and publishes the picker only after
+the completed snapshot
 validates.
 
 Artist and Album SQL identity is based on MusicBrainz/tag values; filesystem

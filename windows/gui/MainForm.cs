@@ -227,8 +227,8 @@ namespace Splined.WindowsGui
             settingsMenuItem.Click += OpenSettings;
             ToolStripMenuItem credentials = new ToolStripMenuItem("Credentials...");
             credentials.Click += delegate { using (CredentialsForm form = new CredentialsForm(state)) form.ShowDialog(this); };
-            ToolStripMenuItem reload = new ToolStripMenuItem("Reload Library");
-            reload.Click += async delegate { await ReloadLibraryAsync(false); };
+            ToolStripMenuItem reload = new ToolStripMenuItem("Refresh Library Index");
+            reload.Click += async delegate { await ReloadLibraryAsync(false, true); };
             ToolStripMenuItem exit = new ToolStripMenuItem("Exit");
             exit.Click += delegate { Close(); };
             file.DropDownItems.Add(settingsMenuItem);
@@ -686,7 +686,7 @@ namespace Splined.WindowsGui
             }
             foreach (AlbumInfo album in visible)
             {
-                if (album.State == AlbumState.New || album.State == AlbumState.Processed)
+                if (album.State == AlbumState.New || album.State == AlbumState.Incomplete || album.State == AlbumState.Processed)
                     album.Selected = true;
                 else if (album.State == AlbumState.Bypassed && includeBypassed)
                 {
@@ -839,7 +839,12 @@ namespace Splined.WindowsGui
             lower.Controls.Add(actions, 0, 4);
         }
 
-        private async Task ReloadLibraryAsync(bool preserveSelection)
+        private Task ReloadLibraryAsync(bool preserveSelection)
+        {
+            return ReloadLibraryAsync(preserveSelection, false);
+        }
+
+        private async Task ReloadLibraryAsync(bool preserveSelection, bool refreshIndex)
         {
             int version = ++reloadVersion;
             loadingLibrary = true;
@@ -850,17 +855,18 @@ namespace Splined.WindowsGui
                 ? new HashSet<string>(uiState.SelectedAlbumPaths ?? new List<string>(), StringComparer.OrdinalIgnoreCase)
                 : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             ConfigState snapshot = state.Clone();
-            SetStatus("Loading library without blocking the window...");
+            string core = FindCoreExecutable();
+            SetStatus(refreshIndex ? "Refreshing SQLite Album Status index..." : "Loading Album Status from SQLite...");
             UpdateSelectionControls();
             try
             {
-                List<AlbumInfo> loaded = await Task.Run(delegate { return LibraryInventory.Load(snapshot); });
+                List<AlbumInfo> loaded = await Task.Run(delegate { return LibraryInventory.Load(snapshot, core, refreshIndex); });
                 if (version != reloadVersion || IsDisposed) return;
                 albums = loaded;
                 foreach (AlbumInfo album in albums)
                 {
                     bool selected;
-                    bool safeState = album.State == AlbumState.New || album.State == AlbumState.Processed;
+                    bool safeState = album.State == AlbumState.New || album.State == AlbumState.Incomplete || album.State == AlbumState.Processed;
                     album.Selected = safeState && ((preserveSelection
                         && previouslySelected.TryGetValue(album.Path, out selected)
                         && selected) || persistedSelection.Contains(album.Path));
@@ -935,7 +941,7 @@ namespace Splined.WindowsGui
                 };
                 foreach (AlbumInfo album in visibleAlbums)
                 {
-                    TreeNode node = new TreeNode(album.Title) { Tag = album, Checked = album.Selected, ForeColor = HistoryResolver.StateColor(album.State, dark), ToolTipText = album.ToolTip };
+                    TreeNode node = new TreeNode(album.Title) { Tag = album, Checked = album.Selected, ForeColor = AlbumStatePresentation.StateColor(album.State, dark), ToolTipText = album.ToolTip };
                     artistNode.Nodes.Add(node);
                 }
                 tree.Nodes.Add(artistNode);
@@ -954,6 +960,7 @@ namespace Splined.WindowsGui
         private static MediaStatusFilter AlbumFilterCategory(AlbumState state)
         {
             if (state == AlbumState.Processed) return MediaStatusFilter.Orange;
+            if (state == AlbumState.Incomplete) return MediaStatusFilter.Blue;
             if (state == AlbumState.Bypassed) return MediaStatusFilter.Red;
             if (state == AlbumState.TimeoutActive) return MediaStatusFilter.Purple;
             return MediaStatusFilter.White;

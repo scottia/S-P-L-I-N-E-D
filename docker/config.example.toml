@@ -19,6 +19,9 @@ scan_mode_timeout = 24
 # Python/Docker stores the persistent Select Media index at /_cache/splined.db.
 # Candidate downloads and samples beside it remain disposable.
 cache_dir = "/_cache"
+# Set true only when this exact splined.db is also opened through another OS/share.
+# Shared mode uses a rollback journal plus a busy timeout instead of WAL.
+sqlite_shared = false
 # Current-run log is created under log_dir/run and replaced next invocation.
 log_dir = "/_logs"
 history_dir = "/_logs/_history"

@@ -6,14 +6,15 @@ use crate::final_artwork::{
 };
 use crate::gui_events;
 use crate::history::{
-    AlbumHistoryState, album_history_status, load_completion_history, record_scan_completion,
-    unix_now,
+    AlbumHistoryState, CompletionHistory, album_history_status, load_completion_history,
+    record_scan_completion, unix_now,
 };
 use crate::inspect::inspect_image;
 use crate::local_artwork::{
     LocalPreflightAction, cleanup_competing_static, cleanup_replaced_static_covers,
     inspect_local_preflight,
 };
+use crate::media_database::record_album_outcome;
 use crate::musicbrainz::MusicBrainzClient;
 use crate::pipeline::{
     PipelineCandidate, RegistryPipelineOptions, candidate_summary, prepare_persistent_cache_dir,
@@ -21,7 +22,7 @@ use crate::pipeline::{
 };
 use crate::range::Range;
 use crate::safe_write::replace_binary_file;
-use crate::scan::inventory_album_directories;
+use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_musicbrainz::{
     AlbumReleaseDecision, LocalTrackEvidence, TaggedAlbumIdAudit, compilation_context,
     resolve_album_release_with_fallback, tagged_album_id_audit, tagged_album_title,
@@ -392,12 +393,13 @@ pub async fn run_scan_library_read_report(
                     } else {
                         "embedded-ideal"
                     };
-                    let _ = record_scan_completion(
+                    let _ = record_runtime_completion(
                         config,
                         &mut completion_history,
                         album,
                         resolved_sources,
                         action,
+                        Some("local"),
                     );
                     gui_events::emit(json!({
                         "event": "local_preflight",
@@ -831,12 +833,13 @@ pub async fn run_scan_library_read_report(
                     } else {
                         "normal-out-of-range-bypassed"
                     };
-                    let _ = record_scan_completion(
+                    let _ = record_runtime_completion(
                         config,
                         &mut completion_history,
                         album,
                         resolved_sources,
                         outcome,
+                        None,
                     );
                     gui_events::emit(json!({
                         "event": "album_completed",
@@ -1016,12 +1019,13 @@ pub async fn run_scan_library_read_report(
                         "action": "KeptLocal",
                         "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
                     }));
-                    let _ = record_scan_completion(
+                    let _ = record_runtime_completion(
                         config,
                         &mut completion_history,
                         album,
                         resolved_sources,
                         "local-kept",
+                        Some("local"),
                     );
                     println!("  Artwork:     {}", "KEPT LOCAL".cyan().bold());
                     println!();
@@ -1152,12 +1156,13 @@ pub async fn run_scan_library_read_report(
                             } else {
                                 format!("{:?}", final_result.action).to_ascii_lowercase()
                             };
-                            let _ = record_scan_completion(
+                            let _ = record_runtime_completion(
                                 config,
                                 &mut completion_history,
                                 album,
                                 resolved_sources,
                                 &outcome,
+                                Some(&candidate.source),
                             );
                             // Python's chosen-source history is count-only and
                             // intentionally excludes every fallback choice.
@@ -1876,6 +1881,18 @@ fn fallback_reason_from_error(error: &str) -> String {
     } else {
         "TEMPORARY MB FAILURE".to_string()
     }
+}
+
+fn record_runtime_completion(
+    config: &Config,
+    history: &mut CompletionHistory,
+    album: &AlbumDirectory,
+    sources: &[String],
+    outcome: &str,
+    selected_source: Option<&str>,
+) -> Result<(), String> {
+    record_scan_completion(config, history, album, sources, outcome)?;
+    record_album_outcome(config, &album.path, outcome, selected_source)
 }
 
 fn fallback_format_priority(candidate: &Candidate, format_order: &[StaticFormat]) -> usize {

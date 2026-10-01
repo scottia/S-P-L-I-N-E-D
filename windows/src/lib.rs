@@ -9,6 +9,7 @@ pub mod gui_events;
 pub mod history;
 pub mod inspect;
 pub mod local_artwork;
+pub mod media_database;
 pub mod musicbrainz;
 pub mod pipeline;
 pub mod portable;

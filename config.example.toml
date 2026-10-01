@@ -17,6 +17,9 @@ scan_mode = true
 library_scan = false
 scan_mode_timeout = 24
 cache_dir = "_cache"
+# Set true only when splined.db is intentionally shared across OS/filesystem views.
+# Shared mode uses a rollback journal plus a busy timeout instead of WAL.
+sqlite_shared = false
 # Current-run log is created under log_dir/run and replaced next invocation.
 log_dir = "_logs"
 history_dir = "_logs/_history"

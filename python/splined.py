@@ -7187,6 +7187,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     config_row("scan.library_scan", bool(scan.get("library_scan", False)))
     config_row("scan.scan_mode_timeout", format_timeout_hours(scan_timeout_hours(cfg)))
     config_row("scan.cache_dir", cache)
+    config_row("scan.sqlite_shared", bool(scan.get("sqlite_shared", False)))
     config_row("scan.log_dir", logs)
     config_row("scan.history_dir", history_dir)
     config_row("samples.sample_write", bool(section(cfg, "samples").get("sample_write", True)))
@@ -7533,6 +7534,10 @@ def main() -> int:
                 raise SplinedError("--oauth-validation does not accept additional command options.")
             return run_oauth_validation_command(path, cfg)
         scan_cfg = section(cfg, "scan")
+        if bool(scan_cfg.get("sqlite_shared", False)):
+            os.environ["SPLINED_SQLITE_SHARED"] = "1"
+        else:
+            os.environ.pop("SPLINED_SQLITE_SHARED", None)
         runtime_cache = runtime_cache_dir(path, cfg)
         ensure_runtime_directories(path, cfg, runtime_cache)
         init_debug_log(path, cfg)

@@ -15,6 +15,8 @@ scan_mode = true
 library_scan = false
 scan_mode_timeout = 24
 cache_dir = "_cache"
+# Enable only for an intentional shared/network splined.db (for example a UNC cache).
+sqlite_shared = false
 log_dir = "_logs"
 history_dir = "_logs/_history"
 

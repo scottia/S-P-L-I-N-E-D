@@ -168,6 +168,7 @@ namespace Splined.WindowsGui
         public bool LibraryScan;
         public double ScanModeTimeout = 24;
         public string CacheDir;
+        public bool SqliteShared;
         public string LogDir;
         public string HistoryDir;
         public string CredentialDir;
@@ -298,6 +299,7 @@ namespace Splined.WindowsGui
             state.LibraryScan = ReadBool(text, "scan", "library_scan", false);
             state.ScanModeTimeout = ReadDoubleOrOff(text, "scan", "scan_mode_timeout", 24);
             state.CacheDir = ResolvePortablePath(ReadString(text, "scan", "cache_dir", "_cache"));
+            state.SqliteShared = ReadBool(text, "scan", "sqlite_shared", false);
             state.LogDir = ResolvePortablePath(ReadString(text, "scan", "log_dir", "_logs"));
             state.HistoryDir = ResolvePortablePath(ReadString(text, "scan", "history_dir", "_logs/_history"));
             state.CredentialDir = ResolvePortablePath(ReadString(text, "credentials", "credential_dir", "credentials"));
@@ -589,6 +591,7 @@ namespace Splined.WindowsGui
             text.AppendLine("library_scan = " + Bool(state.LibraryScan));
             text.AppendLine("scan_mode_timeout = " + state.ScanModeTimeout.ToString("0.###", CultureInfo.InvariantCulture));
             text.AppendLine("cache_dir = " + Quote(ToPortablePath(state.CacheDir)));
+            text.AppendLine("sqlite_shared = " + Bool(state.SqliteShared));
             text.AppendLine("log_dir = " + Quote(ToPortablePath(state.LogDir)));
             text.AppendLine("history_dir = " + Quote(ToPortablePath(state.HistoryDir)));
             text.AppendLine();

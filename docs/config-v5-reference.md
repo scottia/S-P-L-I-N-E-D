@@ -55,13 +55,14 @@ container paths supplied by bind mounts.
 | `scan_mode` | `true` | Enables configured scan-directory behavior |
 | `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
-| `cache_dir` | `"_cache"` | Candidate/sample cache and, for Python/Docker, persistent `splined.db` |
+| `cache_dir` | `"_cache"` | Candidate/sample cache and persistent `<cache_dir>/splined.db` |
+| `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; selects rollback journaling and a 30-second busy timeout |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 | `history_dir` | `"_logs/_history"` | Completion, chosen-source, bypass, and timeout authority |
 
-### Python/Docker `cache_dir`
+### SQLite `cache_dir`
 
-The Python/Docker TUI stores its persistent Select Media read model at:
+Python/Docker and Windows store the persistent Select Media read model at:
 
 ```text
 <scan.cache_dir>/splined.db
@@ -70,8 +71,8 @@ The Python/Docker TUI stores its persistent Select Media read model at:
 Normal run-cache cleanup preserves that file and its SQLite sidecars. Candidate
 downloads, samples, and other cache content remain disposable.
 
-The database location follows `cache_dir`; no additional Config v5 key is
-required. With the Docker example:
+The database location follows `cache_dir`; there is no separate database-path
+setting. With the Docker example:
 
 ```toml
 [scan]
@@ -83,6 +84,14 @@ SPLINED uses:
 ```text
 /_cache/splined.db
 ```
+
+Windows Setup retains its browsable **Cache directory** field and derives the
+same filename. A portable Windows `_cache` creates an independent database; a
+shared UNC cache can expose the same physical database as another installation.
+
+For an intentional shared file, set `sqlite_shared = true` in every process
+that can open it. Local databases default to WAL for warm-start performance;
+shared mode uses rollback journaling plus `busy_timeout=30000`.
 
 See [SPLINED media database](splined-media-database.md).
 
@@ -258,7 +267,7 @@ Back up:
 config/
 credentials/
 <scan.history_dir>/
-<scan.cache_dir>/splined.db   # Python/Docker
+<scan.cache_dir>/splined.db   # Python/Docker and Windows
 ```
 
 ## `[aisplined]`
