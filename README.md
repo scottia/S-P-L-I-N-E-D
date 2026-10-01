@@ -121,7 +121,10 @@ Rust core owns SQLite access and supplies the embedded GUI with a compact JSON
 projection; the GUI does not maintain a second database or recursively rebuild
 Select Media before first paint. Set `[scan].sqlite_shared = true` only when
 the same physical database is intentionally opened through multiple OS or
-network filesystem views.
+network filesystem views. In shared mode Python/Docker owns inventory and
+exclusion policy; Windows reloads that inventory while retaining independent
+local configuration and read/write runtime updates. Raw UNC cache paths are
+supported without requiring a persistent mapped drive.
 
 The first interactive launch inventories Artist/Album folders and reads one
 representative audio file per Album (Mutagen in Python, Lofty in Rust). The

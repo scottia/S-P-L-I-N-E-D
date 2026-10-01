@@ -49,6 +49,15 @@ TOML keys are section-scoped: `sqlite_shared` must appear after the `[scan]`
 header and before the next table header. Placing the same text elsewhere in the
 file does not configure `scan.sqlite_shared`.
 
+The Python/Docker installation is the inventory authority for a shared
+database. Its `library.ignored_subs`, Album discovery, and representative-track
+policy determine which rows are published. Windows consumes that inventory and
+maps the saved canonical paths onto its own `library.music_library`; Windows
+does not compare or apply its local `ignored_subs` or output filename while
+loading the shared inventory. The two TOML files therefore remain independent
+apart from intentionally resolving `scan.cache_dir` to the same physical
+`splined.db` and enabling `sqlite_shared`.
+
 Local/default mode retains WAL and `synchronous=NORMAL`. Shared mode uses the
 rollback `DELETE` journal, `synchronous=FULL`, foreign keys, and a 30-second
 busy timeout. This prevents Linux from repeatedly forcing WAL while Windows
@@ -67,19 +76,31 @@ before SQL is updated. A Python-created `/music/...` value therefore remains
 `/music/...` in SQLite while Windows opens the corresponding UNC path.
 
 Windows normal startup opens an established, usable index read-only. It does
-not reapply the schema or request a journal-mode transition. **Refresh Library
-Index**, first-time initialization, and runtime outcome updates are the explicit
-writable paths and must not overlap a writer from another installation.
+not reapply the schema or request a journal-mode transition. In shared mode,
+**Refresh Library Index** reloads the inventory already published by Python; it
+does not rebuild that inventory with Windows scan settings. Reindex through
+Python after external library/tag changes, then reload in Windows. Windows
+LIVE WRITE and status actions still update their applicable shared SQL rows.
 
-The centralized mapper is the only Windows conversion boundary. Windows maps
+Raw UNC cache paths are supported and are preferred when mapped drive letters
+are not stable across devices or sessions. On Windows, SPLINED internally
+adapts a configured path such as `\\server\share\path\to\_cache`. It dynamically
+reuses any Windows connection to the same remote prefix, regardless of its
+current drive letter; this preserves provider-specific behavior such as an NFS
+mount. If none exists, it creates a temporary, non-persistent connection only
+while SQLite is open, then removes it. The TOML remains UNC-based and never
+depends on a particular drive letter.
+
+The centralized path mapper is the only media-path conversion boundary. Windows maps
 the path-bearing Artist/Album snapshot, representative, cover/local-art, and
 retired-path values that it reads or writes. Existing canonical track and
 compilation-progress/artwork rows are left untouched by workflows that do not
 consume them; any Windows workflow that later consumes those rows must pass
-their paths through the same mapper. A mount-root difference alone is
-compatible; schema version, ignored-directory rules, and cover name must still
-agree. A genuine non-path conflict fails clearly without quarantining or
-rebuilding the shared database.
+their paths through the same mapper. A mount-root difference, independent
+ignored-directory rules, and different output filenames are compatible because
+Python owns the shared inventory. The database schema version must still agree;
+a genuine schema conflict fails clearly without quarantining or rebuilding the
+shared database.
 
 ## Design
 
@@ -229,8 +250,9 @@ Full right-side Album statistics are read lazily by indexed `album_key` when an
 Album is focused instead of loading every statistics column before first paint.
 
 Windows follows the same rule. Normal GUI loading invokes the Rust snapshot
-command and reads indexed rows only. **Refresh Library Index** is the explicit
-filesystem reconciliation boundary.
+command and reads indexed rows only. For an independent Windows database,
+**Refresh Library Index** is the explicit filesystem reconciliation boundary.
+For a shared database it reloads Python's published inventory instead.
 
 When `splined.db` is on a different device from the container temporary
 directory and has no active WAL, the default `auto` policy copies it
@@ -251,7 +273,9 @@ SPLINED actions, such as processing an Album or adding/removing a bypass.
 
 ## Explicit Refresh
 
-`R` / Refresh is the external-library reconciliation boundary.
+`R` / Refresh is the external-library reconciliation boundary for Python and
+for an independent Windows database. With `sqlite_shared = true`, Python owns
+the rebuild and Windows Refresh reloads that published result.
 
 An explicit refresh:
 

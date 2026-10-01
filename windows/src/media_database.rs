@@ -19,6 +19,16 @@ use std::time::{Duration, UNIX_EPOCH};
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{
+    ERROR_ALREADY_ASSIGNED, ERROR_DEVICE_ALREADY_REMEMBERED, ERROR_SUCCESS,
+};
+#[cfg(windows)]
+use windows_sys::Win32::NetworkManagement::WNet::{
+    CONNECT_TEMPORARY, NETRESOURCEW, RESOURCETYPE_DISK, WNetAddConnection2W,
+    WNetCancelConnection2W, WNetGetConnectionW,
+};
+
 pub const DB_NAME: &str = "splined.db";
 pub const SCHEMA_VERSION: i64 = 2;
 const INVENTORY_KEY: &str = "splined-media-library";
@@ -200,6 +210,179 @@ pub fn database_path(cache_dir: impl AsRef<Path>) -> PathBuf {
     cache_dir.as_ref().join(DB_NAME)
 }
 
+struct DatabasePathAccess {
+    sqlite_path: PathBuf,
+    #[cfg(windows)]
+    _temporary_mapping: Option<TemporaryDriveMapping>,
+}
+
+impl DatabasePathAccess {
+    fn new(path: &Path, shared: bool) -> Result<Self, String> {
+        #[cfg(windows)]
+        if shared {
+            // Preserve the active network provider (including NFS) by
+            // discovering any current drive connection for this UNC prefix.
+            // The configured path remains independent of its drive letter.
+            if let Some(sqlite_path) = existing_mapped_path(path) {
+                return Ok(Self {
+                    sqlite_path,
+                    _temporary_mapping: None,
+                });
+            }
+            if let Some((remote_root, relative_path)) = split_unc_path(path) {
+                let mapping = TemporaryDriveMapping::connect(&remote_root)?;
+                return Ok(Self {
+                    sqlite_path: PathBuf::from(format!(
+                        "{}\\{}",
+                        mapping.local_name, relative_path
+                    )),
+                    _temporary_mapping: Some(mapping),
+                });
+            }
+        }
+
+        Ok(Self {
+            sqlite_path: path.to_path_buf(),
+            #[cfg(windows)]
+            _temporary_mapping: None,
+        })
+    }
+
+    fn path(&self) -> &Path {
+        &self.sqlite_path
+    }
+}
+
+#[cfg(windows)]
+struct TemporaryDriveMapping {
+    local_name: String,
+}
+
+#[cfg(windows)]
+impl TemporaryDriveMapping {
+    fn connect(remote_root: &str) -> Result<Self, String> {
+        let mut remote = wide_null(remote_root);
+        for letter in (b'D'..=b'Z').rev() {
+            let local_name = format!("{}:", char::from(letter));
+            if Path::new(&format!("{local_name}\\")).exists() {
+                continue;
+            }
+            let mut local = wide_null(&local_name);
+            let resource = NETRESOURCEW {
+                dwType: RESOURCETYPE_DISK,
+                lpLocalName: local.as_mut_ptr(),
+                lpRemoteName: remote.as_mut_ptr(),
+                ..Default::default()
+            };
+            // SAFETY: NETRESOURCEW points to live, NUL-terminated UTF-16
+            // buffers for the duration of this call. Null credentials reuse
+            // the caller's existing Windows SMB/Tailscale session.
+            let result = unsafe {
+                WNetAddConnection2W(
+                    &resource,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    CONNECT_TEMPORARY,
+                )
+            };
+            if result == ERROR_SUCCESS {
+                return Ok(Self { local_name });
+            }
+            if result != ERROR_ALREADY_ASSIGNED && result != ERROR_DEVICE_ALREADY_REMEMBERED {
+                return Err(format!(
+                    "Unable to create temporary SQLite drive adapter for {remote_root}: {} (Windows error {result}).",
+                    std::io::Error::from_raw_os_error(result as i32)
+                ));
+            }
+        }
+        Err(format!(
+            "Unable to create temporary SQLite drive adapter for {remote_root}: no drive letter is available."
+        ))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TemporaryDriveMapping {
+    fn drop(&mut self) {
+        let local = wide_null(&self.local_name);
+        // SAFETY: `local` is a live, NUL-terminated UTF-16 buffer. SQLite
+        // connections are declared after the mapping guard and have already
+        // been dropped before this guard is released.
+        let _ = unsafe { WNetCancelConnection2W(local.as_ptr(), 0, 0) };
+    }
+}
+
+#[cfg(windows)]
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn existing_mapped_path(path: &Path) -> Option<PathBuf> {
+    let unc_path = path.to_string_lossy();
+    if !unc_path.replace('/', "\\").starts_with("\\\\") {
+        return None;
+    }
+    for letter in (b'D'..=b'Z').rev() {
+        let local_name = format!("{}:", char::from(letter));
+        let local = wide_null(&local_name);
+        let mut remote = vec![0_u16; 32_768];
+        let mut remote_len = u32::try_from(remote.len()).ok()?;
+        // SAFETY: all pointers reference live UTF-16 buffers and
+        // `remote_len` describes the writable destination capacity.
+        let result =
+            unsafe { WNetGetConnectionW(local.as_ptr(), remote.as_mut_ptr(), &mut remote_len) };
+        if result != ERROR_SUCCESS {
+            continue;
+        }
+        let end = remote
+            .iter()
+            .position(|value| *value == 0)
+            .unwrap_or(remote.len());
+        let remote_name = String::from_utf16_lossy(&remote[..end]);
+        if let Some(mapped) = translate_unc_to_drive(&unc_path, &local_name, &remote_name) {
+            return Some(PathBuf::from(mapped));
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn translate_unc_to_drive(unc_path: &str, local_name: &str, remote_name: &str) -> Option<String> {
+    let unc = unc_path.replace('/', "\\");
+    let remote = remote_name.replace('/', "\\");
+    let remote = remote.trim_end_matches('\\');
+    let unc_folded = unc.to_lowercase();
+    let remote_folded = remote.to_lowercase();
+    let boundary = format!("{remote_folded}\\");
+    let relative = if unc_folded == remote_folded {
+        ""
+    } else if unc_folded.starts_with(&boundary) {
+        &unc[remote.len() + 1..]
+    } else {
+        return None;
+    };
+    if relative.is_empty() {
+        Some(format!("{local_name}\\"))
+    } else {
+        Some(format!("{local_name}\\{relative}"))
+    }
+}
+
+#[cfg(windows)]
+fn split_unc_path(path: &Path) -> Option<(String, String)> {
+    let normalized = path.to_string_lossy().replace('/', "\\");
+    let remainder = normalized.strip_prefix("\\\\")?;
+    let mut parts = remainder.split('\\').filter(|part| !part.is_empty());
+    let server = parts.next()?;
+    let share = parts.next()?;
+    let relative = parts.collect::<Vec<_>>().join("\\");
+    if relative.is_empty() {
+        return None;
+    }
+    Some((format!("\\\\{server}\\{share}"), relative))
+}
+
 pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, String> {
     let local_root = config.library.music_library.trim();
     if local_root.is_empty() {
@@ -208,6 +391,7 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
         );
     }
     let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
 
     // A normal Select Media startup is a projection of an already-published
     // index. Keep that path strictly read-only: in particular, do not request
@@ -215,8 +399,8 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
     // also lets simultaneous GUI warm-load requests coexist as readers. Only
     // an explicit refresh (or a missing/uninitialized index) enters the
     // writable initialization path below.
-    if !refresh && db_path.exists() {
-        let (connection, current) = open_database_read_only(&db_path)?;
+    if (!refresh || config.scan.sqlite_shared) && database_access.path().exists() {
+        let (connection, current) = open_database_read_only(database_access.path())?;
         if current == SCHEMA_VERSION {
             let saved_signature = read_signature(&connection)?;
             validate_signature(config, saved_signature.as_ref())?;
@@ -241,7 +425,14 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
         }
     }
 
-    let mut connection = open_database(&db_path, config.scan.sqlite_shared)?;
+    if config.scan.sqlite_shared {
+        return Err(
+            "The shared SPLINED database has no usable Python inventory. Refresh the library index from Python, then reload it in Windows."
+                .to_string(),
+        );
+    }
+
+    let mut connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
     let saved_signature = read_signature(&connection)?;
     let canonical_root = saved_signature
         .as_ref()
@@ -280,10 +471,11 @@ pub fn record_album_outcome(
         return Ok(());
     }
     let db_path = database_path(&config.scan.cache_dir);
-    if !db_path.exists() {
+    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    if !database_access.path().exists() {
         return Ok(());
     }
-    let connection = open_database(&db_path, config.scan.sqlite_shared)?;
+    let connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
     let Some(signature) = read_signature(&connection)? else {
         return Ok(());
     };
@@ -509,7 +701,15 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
         .and_then(Value::as_str)
         .ok_or_else(|| "SPLINED database signature is missing library_root.".to_string())?;
     let expected = expected_signature(config, canonical_root);
-    for field in ["schema_version", "ignored_subs", "cover_name"] {
+    // A shared database is a Python-published inventory. Windows maps its own
+    // local library root onto that inventory and must not impose its local
+    // scan exclusions or output filename on Python's indexing policy.
+    let fields: &[&str] = if config.scan.sqlite_shared {
+        &["schema_version"]
+    } else {
+        &["schema_version", "ignored_subs", "cover_name"]
+    };
+    for field in fields {
         if saved.get(field) != expected.get(field) {
             return Err(format!(
                 "SPLINED shared database is incompatible for {field}; the database was not rebuilt or modified."
@@ -1379,6 +1579,53 @@ mod tests {
             database_path(r"\\server\share\splined\_cache"),
             PathBuf::from(r"\\server\share\splined\_cache").join(DB_NAME)
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unc_database_path_splits_into_share_root_and_relative_path() {
+        let (remote_root, relative_path) = split_unc_path(Path::new(
+            r"\\100.105.181.116\volume2\data\downloads\splined\_cache\splined.db",
+        ))
+        .unwrap();
+        assert_eq!(remote_root, r"\\100.105.181.116\volume2");
+        assert_eq!(relative_path, r"data\downloads\splined\_cache\splined.db");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unc_path_translates_through_any_matching_drive_connection() {
+        assert_eq!(
+            translate_unc_to_drive(
+                r"\\100.105.181.116\volume2\data\downloads\splined.db",
+                "Q:",
+                r"\\100.105.181.116\volume2\data",
+            ),
+            Some(r"Q:\downloads\splined.db".to_string())
+        );
+        assert_eq!(
+            translate_unc_to_drive(r"\\server\share-two\file", "Q:", r"\\server\share"),
+            None
+        );
+    }
+
+    #[test]
+    fn shared_signature_accepts_independent_windows_scan_and_output_policy() {
+        let mut config = Config::default();
+        config.scan.sqlite_shared = true;
+        config.library.ignored_subs = vec!["windows-only".to_string()];
+        config.output.file_name = "folder".to_string();
+        let python_signature = json!({
+            "schema_version": SCHEMA_VERSION,
+            "library_root": "/music",
+            "ignored_subs": ["python-only"],
+            "cover_name": "cover",
+        });
+
+        validate_signature(&config, Some(&python_signature)).unwrap();
+
+        config.scan.sqlite_shared = false;
+        assert!(validate_signature(&config, Some(&python_signature)).is_err());
     }
 
     #[test]
