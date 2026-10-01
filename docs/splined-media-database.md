@@ -16,13 +16,13 @@ With the standard Docker configuration:
 If the host bind mount is:
 
 ```yaml
-- /mnt/psy_data/downloads/0_backups/splined/_cache:/_cache:rw
+- /mnt/splined/_cache:/_cache:rw
 ```
 
 then the host file is:
 
 ```text
-/mnt/psy_data/downloads/0_backups/splined/_cache/splined.db
+/mnt/splined/_cache/splined.db
 ```
 
 This database is persistent. Candidate downloads and samples beside it remain
