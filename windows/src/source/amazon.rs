@@ -54,7 +54,20 @@ impl AmazonStore {
         if body.contains("validateCaptcha") || body.contains("api-services-support@amazon.com") {
             return Err("Amazon Store blocked the public search request".to_string());
         }
-        Ok(parse_search_results(&body, title))
+        let parsed = parse_search_results(&body, title);
+        if parsed.result_blocks > 0 && parsed.image_tags == 0 {
+            return Err(format!(
+                "Amazon Store result markup contained no primary image tags (blocks={})",
+                parsed.result_blocks
+            ));
+        }
+        if parsed.image_tags > 0 && parsed.normalized_images == 0 {
+            return Err(format!(
+                "Amazon Store result markup contained no supported primary image URLs (blocks={} image_tags={})",
+                parsed.result_blocks, parsed.image_tags
+            ));
+        }
+        Ok(parsed.references)
     }
 }
 
@@ -72,33 +85,41 @@ impl ArtworkProvider for AmazonStore {
     }
 }
 
-fn parse_search_results(body: &str, expected_title: &str) -> Vec<ArtworkReference> {
-    let marker = "data-component-type=\"s-search-result\"";
-    let mut starts = body
-        .match_indices(marker)
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
+#[derive(Default)]
+struct ParsedSearchResults {
+    references: Vec<ArtworkReference>,
+    result_blocks: usize,
+    image_tags: usize,
+    normalized_images: usize,
+}
+
+fn parse_search_results(body: &str, expected_title: &str) -> ParsedSearchResults {
+    let mut starts = [
+        "data-component-type=\"s-search-result\"",
+        "data-component-type='s-search-result'",
+    ]
+    .iter()
+    .flat_map(|marker| body.match_indices(marker).map(|(index, _)| index))
+    .collect::<Vec<_>>();
+    starts.sort_unstable();
+    starts.dedup();
+    let result_blocks = starts.len();
     starts.push(body.len());
     let mut references = Vec::new();
     let mut seen = HashSet::new();
+    let mut image_tags = 0;
+    let mut normalized_images = 0;
 
     for pair in starts.windows(2) {
         let block = &body[pair[0]..pair[1]];
-        let Some(image_class) = block.find("s-image") else {
+        let Some(image) = primary_image_tag(block) else {
             continue;
         };
-        let image_start = block[..image_class].rfind("<img").unwrap_or(0);
-        let image_end = block[image_class..]
-            .find('>')
-            .map(|offset| image_class + offset + 1)
-            .unwrap_or(block.len());
-        let image = &block[image_start..image_end];
-        let Some(raw_url) = attribute_value(image, "src") else {
+        image_tags += 1;
+        let Some(url) = primary_image_url(image) else {
             continue;
         };
-        let Some(url) = original_image_url(&raw_url) else {
-            continue;
-        };
+        normalized_images += 1;
         let alt = attribute_value(image, "alt").unwrap_or_default();
         if !alt.is_empty() && !title_matches(&alt, expected_title) {
             continue;
@@ -123,7 +144,44 @@ fn parse_search_results(body: &str, expected_title: &str) -> Vec<ArtworkReferenc
             break;
         }
     }
-    references
+    ParsedSearchResults {
+        references,
+        result_blocks,
+        image_tags,
+        normalized_images,
+    }
+}
+
+fn primary_image_tag(block: &str) -> Option<&str> {
+    let mut offset = 0;
+    while let Some(relative_start) = block[offset..].find("<img") {
+        let start = offset + relative_start;
+        let end = block[start..]
+            .find('>')
+            .map(|relative_end| start + relative_end + 1)?;
+        let tag = &block[start..end];
+        let is_primary = attribute_value(tag, "class")
+            .is_some_and(|classes| classes.split_whitespace().any(|class| class == "s-image"));
+        if is_primary {
+            return Some(tag);
+        }
+        offset = end;
+    }
+    None
+}
+
+fn primary_image_url(tag: &str) -> Option<String> {
+    ["src", "data-src"]
+        .into_iter()
+        .filter_map(|attribute| attribute_value(tag, attribute))
+        .find_map(|value| original_image_url(&value))
+        .or_else(|| {
+            attribute_value(tag, "srcset").and_then(|srcset| {
+                srcset
+                    .split(',')
+                    .find_map(|entry| entry.split_whitespace().next().and_then(original_image_url))
+            })
+        })
 }
 
 fn attribute_value(tag: &str, name: &str) -> Option<String> {
@@ -212,7 +270,45 @@ mod tests {
           <img class="s-image" alt="A Summer Place" src="https://m.media-amazon.com/images/I/81Y+xtQACkL._AC_UY218_.jpg">
         </div>"#;
         let results = parse_search_results(html, "A Summer Place");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].source, "amazon");
+        assert_eq!(results.references.len(), 1);
+        assert_eq!(results.references[0].source, "amazon");
+        assert_eq!(results.result_blocks, 1);
+        assert_eq!(results.image_tags, 1);
+        assert_eq!(results.normalized_images, 1);
+    }
+
+    #[test]
+    fn skips_amazon_image_wrapper_and_finds_actual_primary_image() {
+        let html = r#"<div data-component-type="s-search-result">
+          <div class="a-section s-image-fixed-height">
+            <span class="rush-component s-latency-cf-section">
+              <img class="s-image" alt="Heart Of Stone"
+                   src="https://m.media-amazon.com/images/I/61h9ycBlFuL._AC_UY218_.jpg">
+            </span>
+          </div>
+        </div>"#;
+        let results = parse_search_results(html, "Heart of Stone");
+        assert_eq!(results.references.len(), 1);
+        assert_eq!(results.image_tags, 1);
+        assert_eq!(results.normalized_images, 1);
+        assert_eq!(
+            results.references[0].url,
+            "https://m.media-amazon.com/images/I/61h9ycBlFuL.jpg"
+        );
+    }
+
+    #[test]
+    fn reads_lazy_primary_image_attributes() {
+        let html = r#"<div data-component-type='s-search-result'>
+          <img class='a-lazy-loaded s-image' alt='Heart Of Stone'
+               src='data:image/gif;base64,placeholder'
+               data-src='https://m.media-amazon.com/images/I/61h9ycBlFuL._AC_UY218_.jpg'>
+        </div>"#;
+        let results = parse_search_results(html, "Heart of Stone");
+        assert_eq!(results.references.len(), 1);
+        assert_eq!(
+            results.references[0].url,
+            "https://m.media-amazon.com/images/I/61h9ycBlFuL.jpg"
+        );
     }
 }
