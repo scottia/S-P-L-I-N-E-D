@@ -12,6 +12,15 @@ S:P:L:I:N:E:D has separate supported runtimes:
 - **Repository-root native command line:** Config v5 implementation used by Linux and macOS; its application version follows repository releases.
 - **Python/Docker:** Config v5 runtime whose application version follows repository releases and whose interactive workflow uses the Ratatui TUI.
 
+Only the Python/Docker Ratatui implementation uses
+`<scan.cache_dir>/splined.db`. It accesses SQLite through Python's
+standard-library `sqlite3` module; the `sqlite3` command-line program is
+optional and diagnostic-only. The Windows GUI/source runtime does not use
+`splined.db` and does not require Python. This change retires only the
+Python/Docker v2 `/_logs/_history/select-media-status.json` picker cache;
+completion, chosen-source, bypass, and timeout authority remains in the
+existing JSON history.
+
 Application release versions and configuration schema versions are independent.
 Do not infer one from another.
 
