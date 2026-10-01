@@ -27,8 +27,6 @@ namespace Splined.WindowsGui
                 Directory.CreateDirectory(ignoredAlbum);
                 File.WriteAllBytes(Path.Combine(firstAlbum, "track.mp3"), new byte[] { 0 });
                 File.WriteAllBytes(Path.Combine(ignoredAlbum, "track.mp3"), new byte[] { 0 });
-                string fixtureCover = Path.Combine(firstAlbum, "cover.jpg");
-                if (File.Exists(fixtureCover)) File.Delete(fixtureCover);
 
                 ConfigState state = ConfigStore.Defaults();
                 state.ConfigPath = ConfigStore.DefaultConfigPath;
@@ -108,6 +106,7 @@ namespace Splined.WindowsGui
                 optionCoverage.LibraryScan = true;
                 optionCoverage.ScanModeTimeout = 12.5;
                 optionCoverage.CacheDir = Path.Combine(ConfigStore.AppRoot, "coverage-cache");
+                optionCoverage.SqliteShared = true;
                 optionCoverage.LogDir = Path.Combine(ConfigStore.AppRoot, "coverage-logs");
                 optionCoverage.HistoryDir = Path.Combine(ConfigStore.AppRoot, "coverage-history");
                 optionCoverage.CredentialDir = Path.Combine(ConfigStore.AppRoot, "coverage-credentials");
@@ -135,7 +134,7 @@ namespace Splined.WindowsGui
                     && optionReopened.ScanLibraryDir == firstAlbum && !optionReopened.ScanMode && optionReopened.LibraryScan
                     && Math.Abs(optionReopened.ScanModeTimeout - 12.5) < 0.001,
                     "Python runtime and scan options did not round-trip through Config v5.");
-                Assert(optionReopened.CacheDir == optionCoverage.CacheDir && optionReopened.LogDir == optionCoverage.LogDir
+                Assert(optionReopened.CacheDir == optionCoverage.CacheDir && optionReopened.SqliteShared && optionReopened.LogDir == optionCoverage.LogDir
                     && optionReopened.HistoryDir == optionCoverage.HistoryDir && optionReopened.CredentialDir == optionCoverage.CredentialDir,
                     "Python directory options did not round-trip through Config v5.");
                 Assert(optionReopened.Formats.SequenceEqual(optionCoverage.Formats)
@@ -152,33 +151,33 @@ namespace Splined.WindowsGui
                     "Artwork resolution range did not round-trip.");
                 ConfigStore.Save(loaded);
 
-                AlbumInfo[] albums = LibraryInventory.Load(loaded).ToArray();
-                Assert(albums.Length == 1 && albums[0].Title == "Album One", "Library inventory did not honor ignored directories.");
-                Assert(albums[0].State == AlbumState.New && albums[0].EligibleByDefault, "A new album was not eligible by default.");
-
-                loaded.HistoryDir = Path.Combine(ConfigStore.AppRoot, "history-fixture");
-                Directory.CreateDirectory(loaded.HistoryDir);
-                Dictionary<string, object> historyEntry = new Dictionary<string, object>();
-                historyEntry["completed_at_unix"] = (DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
-                historyEntry["outcome"] = "installed";
-                historyEntry["album_fingerprint"] = HistoryResolver.AlbumFingerprint(albums[0]);
-                historyEntry["policy_fingerprint"] = HistoryResolver.PolicyFingerprint(loaded);
-                Dictionary<string, object> historyAlbums = new Dictionary<string, object>();
-                historyAlbums[albums[0].Path] = historyEntry;
-                File.WriteAllText(Path.Combine(loaded.HistoryDir, "scan-completed-history.json"),
-                    new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "albums", historyAlbums } }));
-                HistoryResolver.Apply(loaded, albums);
-                Assert(albums[0].State == AlbumState.Processed && !albums[0].EligibleUtc.HasValue,
-                    "Timeout 0 must leave processed albums manually eligible instead of purple/blocked.");
+                string snapshotJson = new JavaScriptSerializer().Serialize(new Dictionary<string, object>
+                {
+                    { "schema_version", 2 },
+                    { "database_path", Path.Combine(loaded.CacheDir, "splined.db") },
+                    { "canonical_root", loaded.MusicLibrary },
+                    { "local_root", loaded.MusicLibrary },
+                    { "albums", new object[] { new Dictionary<string, object>
+                        {
+                            { "artist", "Artist One" }, { "tagged_artist", "Tagged Artist" },
+                            { "title", "Album One" }, { "path", firstAlbum },
+                            { "representative_file", Path.Combine(firstAlbum, "track.mp3") }, { "status", "unprocessed" },
+                            { "compilation", false }, { "track_count", 1 },
+                            { "has_local_artwork", false }, { "local_artwork_files", new string[0] }
+                        }
+                    } }
+                });
+                AlbumInfo[] albums = LibraryInventory.FromSnapshotJson(snapshotJson).ToArray();
+                Assert(albums.Length == 1 && albums[0].Title == "Album One", "SQLite snapshot did not populate the Album model.");
+                Assert(albums[0].State == AlbumState.New && albums[0].EligibleByDefault, "A new SQLite Album was not eligible by default.");
 
                 VerifyArtistAggregateAndSelectionRules();
 
-                ConfigState filesystemState = loaded.Clone();
-                filesystemState.HistoryEnabled = false;
-                File.WriteAllBytes(fixtureCover, new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
-                AlbumInfo filesystemAlbum = LibraryInventory.Load(filesystemState).Single(album => album.Path == firstAlbum);
-                Assert(filesystemAlbum.HasLocalArtwork && filesystemAlbum.State == AlbumState.Processed,
-                    "Library reload did not reconcile an existing cover* file into processed album state.");
+                string processedSnapshot = snapshotJson.Replace("\"status\":\"unprocessed\"", "\"status\":\"processed\"")
+                    .Replace("\"has_local_artwork\":false", "\"has_local_artwork\":true");
+                AlbumInfo indexedAlbum = LibraryInventory.FromSnapshotJson(processedSnapshot).Single(album => album.Path == firstAlbum);
+                Assert(indexedAlbum.HasLocalArtwork && indexedAlbum.State == AlbumState.Processed,
+                    "SQLite snapshot did not preserve materialized artwork/status state.");
 
                 UiState ui = new UiState
                 {

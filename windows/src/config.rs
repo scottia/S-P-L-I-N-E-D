@@ -71,6 +71,9 @@ pub struct ScanConfig {
     #[serde(default)]
     pub scan_mode_timeout: ScanTimeout,
     pub cache_dir: String,
+    /// Use rollback journaling for an intentionally shared/network SQLite file.
+    #[serde(default)]
+    pub sqlite_shared: bool,
     #[serde(default = "default_log_dir")]
     pub log_dir: String,
     #[serde(default = "default_history_dir")]
@@ -317,6 +320,7 @@ impl Default for ScanConfig {
             library_scan: false,
             scan_mode_timeout: ScanTimeout::default(),
             cache_dir: DEFAULT_CACHE_DIR.to_string(),
+            sqlite_shared: false,
             log_dir: default_log_dir(),
             history_dir: default_history_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),

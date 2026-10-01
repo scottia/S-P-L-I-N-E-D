@@ -18,6 +18,14 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub config_path: Option<PathBuf>,
 
+    /// Emit the Rust-owned SQLite Select Media snapshot for the embedded GUI
+    #[arg(long, hide = true)]
+    pub media_snapshot: bool,
+
+    /// Explicitly reconcile the SQLite Select Media index before emitting it
+    #[arg(long, hide = true, requires = "media_snapshot")]
+    pub refresh_media_index: bool,
+
     /// Open SPLINED configuration
     #[arg(long)]
     pub config: bool,

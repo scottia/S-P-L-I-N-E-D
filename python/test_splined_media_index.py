@@ -98,6 +98,40 @@ class SplinedMediaIndexTests(unittest.TestCase):
             Path("/_cache/splined.db"),
         )
 
+    def test_explicit_shared_database_uses_rollback_journal_and_busy_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            connection = connect(
+                Path(directory) / "splined.db",
+                "test",
+                shared=True,
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA journal_mode").fetchone()[0],
+                "delete",
+            )
+            self.assertEqual(
+                connection.execute("PRAGMA busy_timeout").fetchone()[0],
+                30000,
+            )
+            connection.close()
+
+    def test_incompatible_shared_database_is_not_quarantined_or_rebuilt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "splined.db"
+            raw = sqlite3.connect(database)
+            raw.execute("PRAGMA user_version = 1")
+            raw.close()
+            with self.assertRaisesRegex(RuntimeError, "incompatible"):
+                connect(database, "test", shared=True)
+            self.assertTrue(database.exists())
+            unchanged = sqlite3.connect(database)
+            self.assertEqual(
+                unchanged.execute("PRAGMA user_version").fetchone()[0],
+                1,
+            )
+            unchanged.close()
+            self.assertEqual(list(Path(directory).glob("splined.db.schema-*")), [])
+
     def test_retained_session_requires_same_ready_library_and_database(self) -> None:
         session = SimpleNamespace(
             ready=True,

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import os
 import sqlite3
 import time
 from typing import Any
@@ -87,25 +88,63 @@ def quarantine_database(path: Path, reason: str) -> None:
             sidecar.replace(Path(str(target) + suffix))
 
 
-def connect(path: Path, version: str) -> sqlite3.Connection:
+def _shared_mode(shared: bool | None) -> bool:
+    if shared is not None:
+        return shared
+    return os.environ.get("SPLINED_SQLITE_SHARED", "").strip().casefold() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _configure_connection(
+    connection: sqlite3.Connection,
+    shared: bool,
+) -> None:
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 30000")
+    expected_journal = "delete" if shared else "wal"
+    actual_journal = str(
+        connection.execute(
+            "PRAGMA journal_mode = DELETE" if shared else "PRAGMA journal_mode = WAL"
+        ).fetchone()[0]
+    ).casefold()
+    if actual_journal != expected_journal:
+        raise RuntimeError(
+            "SPLINED SQLite journal mode did not activate: "
+            f"expected {expected_journal}, received {actual_journal}."
+        )
+    connection.execute(
+        "PRAGMA synchronous = FULL" if shared else "PRAGMA synchronous = NORMAL"
+    )
+
+
+def connect(
+    path: Path,
+    version: str,
+    shared: bool | None = None,
+) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
+    shared_mode = _shared_mode(shared)
     connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
+        connection.execute("PRAGMA busy_timeout = 30000")
         current = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if current not in {0, SCHEMA_VERSION}:
+            if shared_mode:
+                raise RuntimeError(
+                    "SPLINED shared database schema "
+                    f"v{current} is incompatible with required v{SCHEMA_VERSION}; "
+                    "the database was not changed."
+                )
             connection.close()
             connection = None
             quarantine_database(path, f"schema-v{current}")
             connection = sqlite3.connect(path, timeout=30.0)
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = NORMAL")
+        _configure_connection(connection, shared_mode)
         try:
             schema = schema_path().read_text(encoding="utf-8")
         except OSError as exc:
@@ -133,18 +172,27 @@ def connect(path: Path, version: str) -> sqlite3.Connection:
                 ),
             )
         return connection
-    except (sqlite3.DatabaseError, OSError):
+    except RuntimeError:
         if connection is not None:
             try:
                 connection.close()
             except Exception:
                 pass
+        raise
+    except (sqlite3.DatabaseError, OSError) as exc:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+        if shared_mode:
+            raise RuntimeError(
+                f"SPLINED shared database could not be opened safely: {exc}"
+            ) from exc
         quarantine_database(path, "corrupt")
         connection = sqlite3.connect(path, timeout=30.0)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
+        _configure_connection(connection, shared_mode)
         connection.executescript(schema_path().read_text(encoding="utf-8"))
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return connection

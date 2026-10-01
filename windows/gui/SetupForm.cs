@@ -18,6 +18,7 @@ namespace Splined.WindowsGui
         private TextBox configPath;
         private TextBox credentialDir;
         private TextBox cacheDir;
+        private CheckBox sqliteShared;
         private TextBox logDir;
         private TextBox historyDir;
         private TextBox scanDir;
@@ -380,12 +381,13 @@ namespace Splined.WindowsGui
             page.Controls.Add(scroll);
 
             GroupBox paths = new FluentGroupBox { Name = "pathsGroup", Text = "Application and Library Paths", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(10) };
-            TableLayoutPanel table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 8 };
+            TableLayoutPanel table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 9 };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 185));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 102));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
             for (int index = 1; index <= 6; index++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             paths.Controls.Add(table);
             stack.Controls.Add(paths, 0, 0);
@@ -403,6 +405,13 @@ namespace Splined.WindowsGui
             logDir = AddPathSetting(table, 4, "Log directory", false);
             historyDir = AddPathSetting(table, 5, "History directory", false);
             scanDir = AddPathSetting(table, 6, "Scan directory (optional)", false);
+            sqliteShared = new FluentCheckBox
+            {
+                Text = "Shared SQLite database (network / multi-OS)",
+                Dock = DockStyle.Fill
+            };
+            table.Controls.Add(sqliteShared, 1, 7);
+            table.Controls.Add(new InfoButton("Enable only when the selected cache directory exposes the same physical splined.db to another OS. Shared mode uses rollback journaling and a busy timeout; local databases retain WAL."), 2, 7);
             FlowLayoutPanel pathActions = new FlowLayoutPanel { Name = "pathsActionRow", Dock = DockStyle.Fill, WrapContents = false, AutoSize = true };
             Button credentialsButton = ActionButton("Credentials / Status...", 190);
             credentialsButton.Name = "pathsCredentialsButton";
@@ -414,7 +423,7 @@ namespace Splined.WindowsGui
             pathActions.Controls.Add(credentialsButton);
             pathActions.Controls.Add(restore);
             pathActions.Controls.Add(new InfoButton("Credentials remain JSON files beneath the configured credential directory. Restoring portable paths does not rewrite or expose credential contents."));
-            table.Controls.Add(pathActions, 0, 7);
+            table.Controls.Add(pathActions, 0, 8);
             table.SetColumnSpan(pathActions, 3);
 
             stack.Controls.Add(BuildAdvancedCommandsGroup(), 0, 1);
@@ -1499,6 +1508,7 @@ namespace Splined.WindowsGui
             configPath.Text = state.ConfigPath;
             credentialDir.Text = state.CredentialDir;
             cacheDir.Text = state.CacheDir;
+            sqliteShared.Checked = state.SqliteShared;
             logDir.Text = state.LogDir;
             historyDir.Text = state.HistoryDir;
             scanDir.Text = state.ScanLibraryDir;
@@ -1588,6 +1598,7 @@ namespace Splined.WindowsGui
                 state.IgnoredSubs = ignored.Text.Split(',').Select(value => value.Trim()).Where(value => value.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 state.CredentialDir = credentialDir.Text.Trim();
                 state.CacheDir = cacheDir.Text.Trim();
+                state.SqliteShared = sqliteShared.Checked;
                 state.LogDir = logDir.Text.Trim();
                 state.HistoryDir = historyDir.Text.Trim();
                 state.ScanLibraryDir = scanDir.Text.Trim();
@@ -1665,6 +1676,7 @@ namespace Splined.WindowsGui
             configPath.Text = defaults.ConfigPath;
             credentialDir.Text = defaults.CredentialDir;
             cacheDir.Text = defaults.CacheDir;
+            sqliteShared.Checked = defaults.SqliteShared;
             logDir.Text = defaults.LogDir;
             historyDir.Text = defaults.HistoryDir;
             scanDir.Text = "";

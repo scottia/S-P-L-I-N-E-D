@@ -1,7 +1,7 @@
 # SPLINED media database
 
-The Python/Docker Ratatui implementation stores its persistent Select Media
-read model in:
+The Python/Docker Ratatui and Windows implementations store their persistent
+Select Media read model in:
 
 ```text
 <scan.cache_dir>/splined.db
@@ -27,6 +27,50 @@ then the host file is:
 
 This database is persistent. Candidate downloads and samples beside it remain
 disposable, but `splined.db` must not be removed by normal run-cache cleanup.
+
+Windows derives the file from the existing browsable Cache directory field.
+SQLite access, schema validation, refresh, and status updates are owned by the
+Rust core; the embedded C# GUI receives a compact JSON snapshot from that core.
+It does not link another SQLite library or maintain a separate JSON-derived
+Select Media authority.
+
+## Shared Windows/Linux database
+
+Two installations use the same physical database by selecting cache
+directories that resolve to the same file. No database server or synchronization
+layer is involved. Enable shared-file behavior in every process that opens it:
+
+```toml
+[scan]
+sqlite_shared = true
+```
+
+Local/default mode retains WAL and `synchronous=NORMAL`. Shared mode uses the
+rollback `DELETE` journal, `synchronous=FULL`, foreign keys, and a 30-second
+busy timeout. This prevents Linux from repeatedly forcing WAL while Windows
+opens the same file through a UNC/network share.
+
+An existing database establishes its canonical path namespace in
+`picker_inventory.signature_json`. For a cross-mounted shared database, build
+the initial index from the Python/Docker view so that its canonical namespace
+(normally `/music`) is recorded before Windows opens it. A brand-new independent
+Windows database naturally records the configured Windows library root.
+Windows treats its configured
+`library.music_library` as the local filesystem root, strips the saved canonical
+root from database paths, preserves the relative Artist/Album/file location,
+and joins that location to the Windows root for I/O. Writes are translated back
+before SQL is updated. A Python-created `/music/...` value therefore remains
+`/music/...` in SQLite while Windows opens the corresponding UNC path.
+
+The centralized mapper is the only Windows conversion boundary. Windows maps
+the path-bearing Artist/Album snapshot, representative, cover/local-art, and
+retired-path values that it reads or writes. Existing canonical track and
+compilation-progress/artwork rows are left untouched by workflows that do not
+consume them; any Windows workflow that later consumes those rows must pass
+their paths through the same mapper. A mount-root difference alone is
+compatible; schema version, ignored-directory rules, and cover name must still
+agree. A genuine non-path conflict fails clearly without quarantining or
+rebuilding the shared database.
 
 ## Design
 
@@ -174,6 +218,10 @@ sentinel pass, and no color change merely because the user opens an Artist.
 Artist and Album rows are already resident before the first Select Media frame.
 Full right-side Album statistics are read lazily by indexed `album_key` when an
 Album is focused instead of loading every statistics column before first paint.
+
+Windows follows the same rule. Normal GUI loading invokes the Rust snapshot
+command and reads indexed rows only. **Refresh Library Index** is the explicit
+filesystem reconciliation boundary.
 
 When `splined.db` is on a different device from the container temporary
 directory and has no active WAL, the default `auto` policy copies it
@@ -324,6 +372,12 @@ is renamed to:
 It is no longer loaded or updated. Completion, source, bypass, and timeout
 history JSON files remain authoritative and are not migrated into the picker
 database.
+
+The former Windows C# recursive filesystem inventory and JSON history
+projection are also retired from GUI startup. Operational completion, source,
+bypass, and timeout history remains in the Rust processing engine and is
+projected into SQLite during index builds and runtime actions; those history
+files were not deleted.
 
 ## Backup and deletion
 

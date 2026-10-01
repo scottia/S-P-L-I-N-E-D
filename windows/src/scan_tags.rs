@@ -8,6 +8,75 @@ use lofty::tag::ItemKey;
 use std::fs::File;
 use std::path::Path;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AlbumIndexTags {
+    pub album: String,
+    pub album_artist: String,
+    pub artist_sort: String,
+    pub album_sort: String,
+    pub musicbrainz_album_id: String,
+    pub musicbrainz_release_group_id: String,
+    pub musicbrainz_album_artist_id: String,
+    pub year: String,
+    pub compilation: bool,
+}
+
+/// Read only the representative-track fields that define the media index.
+/// Normal Select Media indexing must continue to call this once per Album.
+pub fn read_album_index_tags(path: &Path) -> Result<AlbumIndexTags, String> {
+    let tagged_file = lofty::read_from_path(path).map_err(|error| {
+        format!(
+            "Unable to read SPLINED representative tags from {}: {error}",
+            path.display()
+        )
+    })?;
+    let album = read_optional(&tagged_file, &ItemKey::AlbumTitle).unwrap_or_default();
+    let album_artist = read_optional(&tagged_file, &ItemKey::AlbumArtist)
+        .or_else(|| read_optional(&tagged_file, &ItemKey::TrackArtist))
+        .unwrap_or_default();
+    let date = read_optional(&tagged_file, &ItemKey::RecordingDate)
+        .or_else(|| read_optional(&tagged_file, &ItemKey::OriginalReleaseDate))
+        .unwrap_or_default();
+    let year = date
+        .as_bytes()
+        .windows(4)
+        .find(|value| value.iter().all(u8::is_ascii_digit))
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+        .unwrap_or_default();
+    let musicbrainz_album_id = read_optional(&tagged_file, &ItemKey::MusicBrainzReleaseId)
+        .or_else(|| read_mpeg_txxx_album_id(path, tagged_file.file_type()))
+        .unwrap_or_default();
+    let compilation = read_optional(&tagged_file, &ItemKey::FlagCompilation).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y"
+        )
+    });
+
+    Ok(AlbumIndexTags {
+        album,
+        album_artist,
+        artist_sort: read_optional(&tagged_file, &ItemKey::AlbumArtistSortOrder)
+            .or_else(|| read_optional(&tagged_file, &ItemKey::TrackArtistSortOrder))
+            .unwrap_or_default(),
+        album_sort: read_optional(&tagged_file, &ItemKey::AlbumTitleSortOrder).unwrap_or_default(),
+        musicbrainz_album_id,
+        musicbrainz_release_group_id: read_optional(
+            &tagged_file,
+            &ItemKey::MusicBrainzReleaseGroupId,
+        )
+        .unwrap_or_default(),
+        musicbrainz_album_artist_id: read_optional(
+            &tagged_file,
+            &ItemKey::MusicBrainzReleaseArtistId,
+        )
+        .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzArtistId))
+        .unwrap_or_default(),
+        year,
+        compilation,
+    })
+}
+
 pub fn read_album_track_evidence(
     album: &AlbumDirectory,
 ) -> Result<Vec<LocalTrackEvidence>, String> {

@@ -12,6 +12,7 @@ use splined::credentials::{
     FanartTvCredential, LastFmCredential, resolve_credential_path, save_fanarttv_credential,
     save_lastfm_credential,
 };
+use splined::media_database::media_snapshot;
 use splined::musicbrainz::{
     MusicBrainzClient, OAuthCredential, load_credential as load_musicbrainz_credential,
     resolve_token_path, save_credential as save_musicbrainz_credential,
@@ -909,6 +910,20 @@ async fn main() {
             return;
         }
     };
+
+    if cli.media_snapshot {
+        match media_snapshot(&config, cli.refresh_media_index).and_then(|snapshot| {
+            serde_json::to_string(&snapshot)
+                .map_err(|error| format!("Unable to serialize media snapshot: {error}"))
+        }) {
+            Ok(body) => println!("{body}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
 
     if let Some(preserve_file) = cli.preserve_file {
         config.output.preserve_file = preserve_file;
