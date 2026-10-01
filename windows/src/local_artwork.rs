@@ -482,8 +482,10 @@ mod tests {
             path: album_path,
             audio_files: Vec::new(),
         };
-        let mut config = Config::default();
-        config.mode = Mode::Read;
+        let config = Config {
+            mode: Mode::Read,
+            ..Config::default()
+        };
         let preflight = inspect_local_preflight(&album, &config, &Range::default(), &cache);
         assert_eq!(preflight.action, LocalPreflightAction::Compare);
         assert_eq!(

@@ -387,7 +387,12 @@ This removes the ordinary delay previously caused by reparsing tags and image
 statistics every time focus moved between already-indexed Albums. Warm startup
 loads full statistics only for an already-selected Album; later focus changes
 read the indexed row on demand. When LIVE WRITE changes an Album, SPLINED
-refreshes that one Album's materialized values and its authority/folder status.
+persists the already-validated final path, format, and dimensions with its
+authority/folder status. It updates only that Album and its owning Artist
+aggregate; it does not re-enumerate the Album directory or recompute every
+Artist after the final artwork write. The rollback journal, `FULL`
+synchronization, audit row, and commit-before-`album_completed` ordering remain
+unchanged.
 
 ## Runtime state
 

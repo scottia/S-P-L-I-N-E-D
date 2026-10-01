@@ -9,12 +9,16 @@ use crate::source::{
     ArtworkProvider, ArtworkQuery, ArtworkReference, ProviderContext, ProviderRegistry,
 };
 use crate::source_policy::{SourcePolicyConfig, best_candidate_index, reference_allowed};
+use futures_util::future::join_all;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
+use tokio::sync::Semaphore;
 
 static CLEANED_PERSISTENT_CACHE_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+const CANDIDATE_DOWNLOAD_CONCURRENCY: usize = 4;
 
 #[derive(Debug)]
 pub struct PipelineCandidate {
@@ -34,6 +38,30 @@ pub struct PipelineResult {
     pub candidates: Vec<PipelineCandidate>,
     pub best_index: Option<usize>,
     pub diagnostics: Vec<PipelineDiagnostic>,
+    pub provider_timings: Vec<ProviderTiming>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderTiming {
+    pub source: String,
+    pub discovery_ms: u64,
+    pub download_ms: u64,
+    pub references: usize,
+    pub candidates: usize,
+    pub errors: usize,
+    pub error: Option<String>,
+}
+
+impl ProviderTiming {
+    pub fn status(&self) -> &'static str {
+        if self.errors > 0 {
+            "error"
+        } else if self.candidates > 0 {
+            "success"
+        } else {
+            "zero"
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -89,22 +117,59 @@ pub async fn discover_all_providers(
     registry: &ProviderRegistry,
     query: &ArtworkQuery,
     context: &ProviderContext,
-) -> (Vec<ArtworkReference>, Vec<PipelineDiagnostic>) {
+) -> (
+    Vec<ArtworkReference>,
+    Vec<PipelineDiagnostic>,
+    Vec<ProviderTiming>,
+) {
     let mut references = Vec::new();
     let mut diagnostics = Vec::new();
+    let discovery = join_all(registry.providers().map(|provider| async move {
+        let started = Instant::now();
+        let result = discover_provider(provider, query, context).await;
+        (provider.name(), elapsed_ms(started), result)
+    }))
+    .await;
+    let mut timings = Vec::with_capacity(discovery.len());
 
-    for provider in registry.providers() {
-        match discover_provider(provider, query, context).await {
-            Ok(mut discovered) => references.append(&mut discovered),
-            Err(error) => diagnostics.push(PipelineDiagnostic {
-                source: provider.name().to_string(),
-                url: String::new(),
-                message: error,
-            }),
+    // join_all preserves input order, so concurrent I/O cannot change source
+    // priority or the deterministic reference order consumed by ranking.
+    for (source, discovery_ms, result) in discovery {
+        match result {
+            Ok(mut discovered) => {
+                let reference_count = discovered.len();
+                references.append(&mut discovered);
+                timings.push(ProviderTiming {
+                    source: source.to_string(),
+                    discovery_ms,
+                    download_ms: 0,
+                    references: reference_count,
+                    candidates: 0,
+                    errors: 0,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                let error = compact_safe_error(&error);
+                diagnostics.push(PipelineDiagnostic {
+                    source: source.to_string(),
+                    url: String::new(),
+                    message: error.clone(),
+                });
+                timings.push(ProviderTiming {
+                    source: source.to_string(),
+                    discovery_ms,
+                    download_ms: 0,
+                    references: 0,
+                    candidates: 0,
+                    errors: 1,
+                    error: Some(error),
+                });
+            }
         }
     }
 
-    (references, diagnostics)
+    (references, diagnostics, timings)
 }
 
 pub async fn run_registry_pipeline(
@@ -220,7 +285,7 @@ async fn run_registry_pipeline_with_cache(
     options: RegistryPipelineOptions<'_>,
     cache: &DownloadCache,
 ) -> Result<PipelineResult, String> {
-    let (references, mut discovery_diagnostics) =
+    let (references, mut discovery_diagnostics, mut provider_timings) =
         discover_all_providers(registry, query, context).await;
 
     let mut result = run_artwork_pipeline_with_cache(
@@ -234,6 +299,8 @@ async fn run_registry_pipeline_with_cache(
     .await?;
     discovery_diagnostics.append(&mut result.diagnostics);
     result.diagnostics = discovery_diagnostics;
+    merge_download_timings(&mut provider_timings, &result.provider_timings);
+    result.provider_timings = provider_timings;
 
     Ok(result)
 }
@@ -269,8 +336,10 @@ async fn run_artwork_pipeline_with_cache(
     source_policies: Option<&BTreeMap<String, SourcePolicyConfig>>,
     cache: &DownloadCache,
 ) -> Result<PipelineResult, String> {
-    let mut candidates = Vec::new();
+    let mut pending = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut provider_timings = Vec::<ProviderTiming>::new();
+    let download_slots = Arc::new(Semaphore::new(CANDIDATE_DOWNLOAD_CONCURRENCY));
 
     for reference in references {
         let allowed = source_policies
@@ -292,25 +361,47 @@ async fn run_artwork_pipeline_with_cache(
             continue;
         };
 
-        let downloaded = match cache
-            .download_candidate(reference.source.clone(), &reference.url, source_priority)
-            .await
-        {
-            Ok(downloaded) => downloaded,
+        let download_slots = Arc::clone(&download_slots);
+        pending.push(async move {
+            let started = Instant::now();
+            let _slot = download_slots
+                .acquire_owned()
+                .await
+                .expect("candidate download semaphore was closed");
+            let result = cache
+                .download_candidate(reference.source.clone(), &reference.url, source_priority)
+                .await;
+            (reference, elapsed_ms(started), result)
+        });
+    }
+
+    let mut candidates = Vec::new();
+    // Candidate downloads are independent network operations. Results are
+    // consumed in the original reference order to preserve stable ranking.
+    for (reference, download_ms, result) in join_all(pending).await {
+        let timing = provider_timing_mut(&mut provider_timings, &reference.source);
+        timing.download_ms = timing.download_ms.max(download_ms);
+        match result {
+            Ok(downloaded) => {
+                timing.candidates += 1;
+                candidates.push(PipelineCandidate {
+                    reference,
+                    downloaded,
+                });
+            }
             Err(error) => {
+                let error = compact_safe_error(&error);
+                timing.errors += 1;
+                if timing.error.is_none() {
+                    timing.error = Some(error.clone());
+                }
                 diagnostics.push(PipelineDiagnostic {
                     source: reference.source.clone(),
                     url: reference.url.clone(),
                     message: error,
                 });
-                continue;
             }
-        };
-
-        candidates.push(PipelineCandidate {
-            reference,
-            downloaded,
-        });
+        }
     }
 
     let candidate_values: Vec<Candidate> = candidates
@@ -331,7 +422,73 @@ async fn run_artwork_pipeline_with_cache(
         candidates,
         best_index,
         diagnostics,
+        provider_timings,
     })
+}
+
+fn provider_timing_mut<'a>(
+    timings: &'a mut Vec<ProviderTiming>,
+    source: &str,
+) -> &'a mut ProviderTiming {
+    if let Some(index) = timings.iter().position(|timing| timing.source == source) {
+        return &mut timings[index];
+    }
+    timings.push(ProviderTiming {
+        source: source.to_string(),
+        discovery_ms: 0,
+        download_ms: 0,
+        references: 0,
+        candidates: 0,
+        errors: 0,
+        error: None,
+    });
+    timings.last_mut().expect("provider timing was inserted")
+}
+
+fn merge_download_timings(discovery: &mut Vec<ProviderTiming>, downloads: &[ProviderTiming]) {
+    for downloaded in downloads {
+        let timing = provider_timing_mut(discovery, &downloaded.source);
+        timing.download_ms = downloaded.download_ms;
+        timing.candidates = downloaded.candidates;
+        timing.errors += downloaded.errors;
+        if timing.error.is_none() {
+            timing.error.clone_from(&downloaded.error);
+        }
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn compact_safe_error(message: &str) -> String {
+    let mut safe = String::with_capacity(message.len().min(240));
+    let mut remaining = message;
+    while let Some(offset) = remaining
+        .find("http://")
+        .or_else(|| remaining.find("https://"))
+    {
+        safe.push_str(&remaining[..offset]);
+        remaining = &remaining[offset..];
+        let end = remaining
+            .find(|character: char| character.is_whitespace() || matches!(character, ')' | ']'))
+            .unwrap_or(remaining.len());
+        let url = &remaining[..end];
+        if let Some(query) = url.find('?') {
+            safe.push_str(&url[..query]);
+            safe.push_str("?<redacted>");
+        } else {
+            safe.push_str(url);
+        }
+        remaining = &remaining[end..];
+    }
+    safe.push_str(remaining);
+    let mut safe = safe.replace(['\r', '\n'], " ");
+    if safe.chars().count() > 240 {
+        safe = safe.chars().take(237).collect::<String>();
+        safe.push_str("...");
+    }
+    safe
 }
 
 pub async fn run_coverartarchive_pipeline(
@@ -387,6 +544,8 @@ pub fn candidate_summary(
 mod tests {
     use super::*;
     use crate::source::ProviderDiscoveryFuture;
+    use tokio::sync::Barrier;
+    use tokio::time::{Duration, timeout};
 
     fn reference(source: &str, id: &str) -> ArtworkReference {
         ArtworkReference {
@@ -402,6 +561,28 @@ mod tests {
     struct FixtureProvider {
         source: &'static str,
         returned_source: &'static str,
+    }
+
+    struct CoordinatedProvider {
+        source: &'static str,
+        barrier: Arc<Barrier>,
+    }
+
+    impl ArtworkProvider for CoordinatedProvider {
+        fn name(&self) -> &'static str {
+            self.source
+        }
+
+        fn discover<'a>(
+            &'a self,
+            _query: &'a ArtworkQuery,
+            _context: &'a ProviderContext,
+        ) -> ProviderDiscoveryFuture<'a> {
+            Box::pin(async move {
+                self.barrier.wait().await;
+                Ok(vec![reference(self.source, self.source)])
+            })
+        }
     }
 
     impl ArtworkProvider for FixtureProvider {
@@ -438,6 +619,57 @@ mod tests {
             .await
             .expect_err("mismatched provider identity must fail");
         assert!(error.contains("returned a reference owned by deezer"));
+    }
+
+    #[tokio::test]
+    async fn provider_discovery_overlaps_without_changing_source_order() {
+        let barrier = Arc::new(Barrier::new(2));
+        let registry = ProviderRegistry::from_providers(vec![
+            Box::new(CoordinatedProvider {
+                source: "itunes",
+                barrier: Arc::clone(&barrier),
+            }),
+            Box::new(CoordinatedProvider {
+                source: "amazon",
+                barrier,
+            }),
+        ]);
+        let query = ArtworkQuery::release("f60a6a1c-56cf-4dd9-a6ad-c47450d1b132");
+        let (references, diagnostics, timings) = timeout(
+            Duration::from_secs(1),
+            discover_all_providers(&registry, &query, &fixture_context()),
+        )
+        .await
+        .expect("provider discovery did not overlap");
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            references
+                .iter()
+                .map(|reference| reference.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["itunes", "amazon"]
+        );
+        assert_eq!(
+            timings
+                .iter()
+                .map(|timing| timing.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["itunes", "amazon"]
+        );
+    }
+
+    #[test]
+    fn provider_errors_remove_query_values_and_newlines() {
+        let safe = compact_safe_error(
+            "request failed: https://example.test/api?api_key=secret&token=private\nupstream 503",
+        );
+        assert_eq!(
+            safe,
+            "request failed: https://example.test/api?<redacted> upstream 503"
+        );
+        assert!(!safe.contains("secret"));
+        assert!(!safe.contains("private"));
     }
 
     #[test]

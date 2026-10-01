@@ -265,6 +265,11 @@ provider discovery
 -> TUI/source summary
 ```
 
+Independent provider discovery and candidate downloads may overlap to avoid
+adding unrelated network waits together. SPLINED consumes their results in the
+configured source and provider-reference order before applying policy and
+ranking, so concurrency does not change deterministic priority or selection.
+
 Avoid an architecture that downloads and AI-reviews every returned variant only to hide most of them later.
 
 This optimization must not change normal SPLINED ranking semantics among candidates that remain eligible.
