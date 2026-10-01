@@ -56,7 +56,7 @@ container paths supplied by bind mounts.
 | `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
 | `cache_dir` | `"_cache"` | Candidate/sample cache and persistent `<cache_dir>/splined.db` |
-| `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; selects rollback journaling and a 30-second busy timeout |
+| `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; Python owns shared inventory, while rollback journaling and a 30-second busy timeout protect shared writes |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 | `history_dir` | `"_logs/_history"` | Completion, chosen-source, bypass, and timeout authority |
 
@@ -88,10 +88,19 @@ SPLINED uses:
 Windows Setup retains its browsable **Cache directory** field and derives the
 same filename. A portable Windows `_cache` creates an independent database; a
 shared UNC cache can expose the same physical database as another installation.
+Raw UNC paths are supported directly in TOML. SPLINED creates an internal,
+provider-aware Windows drive adapter for SQLite because Windows network locking
+can differ between raw UNC and drive-letter paths. An existing connection to
+the same UNC prefix is found dynamically (including NFS, even if its letter
+changes); otherwise a temporary connection is used. The configured path remains
+UNC and never names a drive letter.
 
 For an intentional shared file, set `sqlite_shared = true` in every process
 that can open it. Local databases default to WAL for warm-start performance;
-shared mode uses rollback journaling plus `busy_timeout=30000`.
+shared mode uses rollback journaling plus `busy_timeout=30000`. Python/Docker
+owns shared Album inventory and exclusions. Windows `ignored_subs` and output
+filename remain local configuration and are not compatibility requirements;
+Windows Refresh reloads the Python-published inventory instead of rebuilding it.
 
 See [SPLINED media database](splined-media-database.md).
 
