@@ -1,8 +1,9 @@
 use crate::candidate::{Candidate, StaticFormat};
 use crate::config::{Config, Mode, OutputConfig, samples_dir};
 use crate::final_artwork::{
-    FinalArtworkAction, FinalArtworkResult, PreparedArtwork, destination_matches_prepared,
-    install_prepared_artwork, prepare_configured_artwork, project_configured_artwork,
+    FinalArtworkAction, FinalArtworkResult, PreparedArtwork, PreparedArtworkInfo,
+    destination_matches_prepared, install_prepared_artwork, prepare_configured_artwork,
+    project_configured_artwork,
 };
 use crate::gui_events;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
@@ -11,7 +12,7 @@ use crate::local_artwork::{
     LocalPreflightAction, cleanup_competing_static, cleanup_replaced_static_covers,
     inspect_local_preflight,
 };
-use crate::media_database::record_album_outcome;
+use crate::media_database::{RuntimeArtworkMaterial, record_album_outcome_from_runtime};
 use crate::musicbrainz::MusicBrainzClient;
 use crate::pipeline::{
     PipelineCandidate, RegistryPipelineOptions, candidate_summary, prepare_persistent_cache_dir,
@@ -38,6 +39,7 @@ use std::cmp::Ordering;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 const ORANGE: Color = Color::AnsiValue(208);
 
@@ -369,6 +371,7 @@ pub async fn run_scan_library_read_report(
                 },
             ) {
                 Ok((final_result, destination)) => {
+                    let post_cover_started = Instant::now();
                     if let Err(error) = cleanup_competing_static(
                         &local_preflight.cleanup,
                         config.mode,
@@ -390,7 +393,15 @@ pub async fn run_scan_library_read_report(
                     } else {
                         "embedded-ideal"
                     };
-                    record_runtime_completion(config, album, action, Some("local"))?;
+                    record_runtime_completion(
+                        config,
+                        album,
+                        action,
+                        Some("local"),
+                        runtime_artwork_material(&destination, final_result.info),
+                        post_cover_started,
+                        post_cover_started,
+                    )?;
                     gui_events::emit(json!({
                         "event": "local_preflight",
                         "album_path": album.path,
@@ -622,6 +633,21 @@ pub async fn run_scan_library_read_report(
             }
         };
 
+        for timing in &result.provider_timings {
+            gui_events::emit(json!({
+                "event": "provider_timing",
+                "album_path": album.path,
+                "source": timing.source,
+                "status": timing.status(),
+                "discovery_ms": timing.discovery_ms,
+                "download_ms": timing.download_ms,
+                "references": timing.references,
+                "candidates": timing.candidates,
+                "errors": timing.errors,
+                "error": timing.error,
+            }));
+        }
+
         if let Some(local) = local_comparison_candidate {
             if let Some(best_index) = result.best_index.as_mut() {
                 *best_index += 1;
@@ -818,12 +844,21 @@ pub async fn run_scan_library_read_report(
                     continue;
                 }
                 Ok(gui_events::CandidateDecision::Bypass) => {
+                    let post_cover_started = Instant::now();
                     let outcome = if fallback_reason.is_some() {
                         "fallback-bypassed"
                     } else {
                         "normal-out-of-range-bypassed"
                     };
-                    record_runtime_completion(config, album, outcome, None)?;
+                    record_runtime_completion(
+                        config,
+                        album,
+                        outcome,
+                        None,
+                        None,
+                        post_cover_started,
+                        post_cover_started,
+                    )?;
                     gui_events::emit(json!({
                         "event": "album_completed",
                         "album_path": album.path,
@@ -994,8 +1029,22 @@ pub async fn run_scan_library_read_report(
                 }
 
                 if matches!(candidate.source.as_str(), "local" | "webpstill") {
+                    let post_cover_started = Instant::now();
                     summary.unchanged += 1;
-                    record_runtime_completion(config, album, "local-kept", Some("local"))?;
+                    record_runtime_completion(
+                        config,
+                        album,
+                        "local-kept",
+                        Some("local"),
+                        Some(RuntimeArtworkMaterial {
+                            path: best.downloaded.path().to_path_buf(),
+                            format: format!("{:?}", candidate.format).to_ascii_uppercase(),
+                            width: candidate.width,
+                            height: candidate.height,
+                        }),
+                        post_cover_started,
+                        post_cover_started,
+                    )?;
                     gui_events::emit(json!({
                         "event": "album_completed",
                         "album_path": album.path,
@@ -1057,6 +1106,7 @@ pub async fn run_scan_library_read_report(
                     },
                 ) {
                     Ok((final_result, destination)) => {
+                        let post_cover_started = Instant::now();
                         if final_result.action == FinalArtworkAction::Installed {
                             match cleanup_replaced_static_covers(
                                 &album.path,
@@ -1090,6 +1140,7 @@ pub async fn run_scan_library_read_report(
                                 info.width, info.height, info.format, info.resized, info.converted
                             );
                         }
+                        let final_logged_started = Instant::now();
 
                         match final_result.action {
                             FinalArtworkAction::Installed => {
@@ -1130,6 +1181,9 @@ pub async fn run_scan_library_read_report(
                                 album,
                                 &outcome,
                                 Some(&candidate.source),
+                                runtime_artwork_material(&destination, final_result.info),
+                                post_cover_started,
+                                final_logged_started,
                             )?;
                             // Python's chosen-source history is count-only and
                             // intentionally excludes every fallback choice.
@@ -1862,8 +1916,49 @@ fn record_runtime_completion(
     album: &AlbumDirectory,
     outcome: &str,
     selected_source: Option<&str>,
+    material: Option<RuntimeArtworkMaterial>,
+    post_cover_started: Instant,
+    final_logged_started: Instant,
 ) -> Result<(), String> {
-    record_album_outcome(config, &album.path, outcome, selected_source)
+    let pre_persistence_ms = elapsed_ms(post_cover_started);
+    let timing = record_album_outcome_from_runtime(
+        config,
+        &album.path,
+        outcome,
+        selected_source,
+        material.as_ref(),
+    )?;
+    gui_events::emit(json!({
+        "event": "post_cover_timing",
+        "album_path": album.path,
+        "pre_persistence_ms": pre_persistence_ms,
+        "database_ms": timing.database_ms,
+        "filesystem_ms": timing.filesystem_ms,
+        "update_ms": timing.update_ms,
+        "aggregate_ms": timing.aggregate_ms,
+        "audit_ms": timing.audit_ms,
+        "commit_ms": timing.commit_ms,
+        "persistence_ms": timing.total_ms,
+        "post_cover_total_ms": elapsed_ms(post_cover_started),
+        "final_to_album_completed_ms": elapsed_ms(final_logged_started),
+    }));
+    Ok(())
+}
+
+fn runtime_artwork_material(
+    destination: &Path,
+    info: Option<PreparedArtworkInfo>,
+) -> Option<RuntimeArtworkMaterial> {
+    info.map(|info| RuntimeArtworkMaterial {
+        path: destination.to_path_buf(),
+        format: format!("{:?}", info.format).to_ascii_uppercase(),
+        width: info.width,
+        height: info.height,
+    })
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
 fn fallback_format_priority(candidate: &Candidate, format_order: &[StaticFormat]) -> usize {

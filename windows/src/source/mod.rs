@@ -119,6 +119,11 @@ impl ProviderRegistry {
     pub fn providers(&self) -> impl Iterator<Item = &dyn ArtworkProvider> {
         self.providers.iter().map(Box::as_ref)
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_providers(providers: Vec<Box<dyn ArtworkProvider>>) -> Self {
+        Self { providers }
+    }
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
@@ -206,6 +206,30 @@ struct CoverFacts {
     webp_size_mb: f64,
     webp_resolution: String,
     webp_conversion: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeArtworkMaterial {
+    pub path: PathBuf,
+    pub format: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AlbumOutcomeTiming {
+    pub database_ms: u64,
+    pub filesystem_ms: u64,
+    pub update_ms: u64,
+    pub aggregate_ms: u64,
+    pub audit_ms: u64,
+    pub commit_ms: u64,
+    pub total_ms: u64,
+}
+
+enum OutcomeMaterial<'a> {
+    Inspect,
+    Runtime(Option<&'a RuntimeArtworkMaterial>),
 }
 
 pub fn database_path(cache_dir: impl AsRef<Path>) -> PathBuf {
@@ -469,9 +493,44 @@ pub fn record_album_outcome(
     outcome: &str,
     selected_source: Option<&str>,
 ) -> Result<(), String> {
+    record_album_outcome_inner(
+        config,
+        local_album_path,
+        outcome,
+        selected_source,
+        OutcomeMaterial::Inspect,
+    )
+    .map(|_| ())
+}
+
+pub fn record_album_outcome_from_runtime(
+    config: &Config,
+    local_album_path: &Path,
+    outcome: &str,
+    selected_source: Option<&str>,
+    material: Option<&RuntimeArtworkMaterial>,
+) -> Result<AlbumOutcomeTiming, String> {
+    record_album_outcome_inner(
+        config,
+        local_album_path,
+        outcome,
+        selected_source,
+        OutcomeMaterial::Runtime(material),
+    )
+}
+
+fn record_album_outcome_inner(
+    config: &Config,
+    local_album_path: &Path,
+    outcome: &str,
+    selected_source: Option<&str>,
+    material_source: OutcomeMaterial<'_>,
+) -> Result<AlbumOutcomeTiming, String> {
+    let total_started = Instant::now();
     if config.mode == crate::config::Mode::Read {
-        return Ok(());
+        return Ok(AlbumOutcomeTiming::default());
     }
+    let database_started = Instant::now();
     let db_path = database_path(&config.scan.cache_dir);
     let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
     if !database_access.path().exists() {
@@ -492,14 +551,18 @@ pub fn record_album_outcome(
     let mapper = PathMapper::new(canonical_root, &config.library.music_library)?;
     let canonical_album = mapper.to_canonical(&local_album_path.to_string_lossy())?;
     let bypassed = outcome.to_ascii_lowercase().contains("bypass");
-    // Runtime writes stay Album-oriented. Reinspect only this Album directory;
-    // never turn a normal Select Media refresh into a per-track tag scan.
-    let material = inventory_album_directories(local_album_path, &[])?
-        .albums
-        .into_iter()
-        .find(|album| album.path == local_album_path)
-        .map(|album| inspect_cover(&album, &config.output.file_name, &mapper))
-        .transpose()?;
+    let database_ms = elapsed_ms(database_started);
+    let filesystem_started = Instant::now();
+    let inspected_material = match &material_source {
+        OutcomeMaterial::Inspect => inventory_album_directories(local_album_path, &[])?
+            .albums
+            .into_iter()
+            .find(|album| album.path == local_album_path)
+            .map(|album| inspect_cover(&album, &config.output.file_name, &mapper))
+            .transpose()?,
+        OutcomeMaterial::Runtime(_) => None,
+    };
+    let filesystem_ms = elapsed_ms(filesystem_started);
     let transaction = connection
         .transaction()
         .map_err(db_error("begin Album outcome transaction"))?;
@@ -525,8 +588,9 @@ pub fn record_album_outcome(
     } else {
         "processed"
     };
-    let changed = if let Some(cover) = material {
-        transaction.execute(
+    let update_started = Instant::now();
+    let changed = match (&material_source, inspected_material) {
+        (_, Some(cover)) => transaction.execute(
             "UPDATE albums SET status=?, processed_at=?, bypassed=?, timeout_until=?, \
              selected_source=COALESCE(?, selected_source), cover_found=?, cover_path=?, \
              cover_name=?, cover_format=?, cover_width=?, cover_height=?, artwork_jpeg=?, \
@@ -563,9 +627,37 @@ pub fn record_album_outcome(
                 now,
                 canonical_album
             ],
-        )
-    } else {
-        transaction.execute(
+        ),
+        (OutcomeMaterial::Runtime(Some(material)), None) => {
+            let canonical_cover = mapper.to_canonical(&material.path.to_string_lossy())?;
+            let cover_name = material
+                .path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            transaction.execute(
+                "UPDATE albums SET status=?, processed_at=?, bypassed=?, timeout_until=?, \
+                 selected_source=COALESCE(?, selected_source), cover_found=1, cover_path=?, \
+                 cover_name=?, cover_format=?, cover_width=?, cover_height=?, updated_at=?, \
+                 last_seen_at=? WHERE path=? COLLATE NOCASE",
+                params![
+                    status,
+                    now,
+                    i64::from(bypassed),
+                    timeout_until,
+                    selected_source,
+                    canonical_cover,
+                    cover_name,
+                    material.format,
+                    material.width,
+                    material.height,
+                    now,
+                    now,
+                    canonical_album
+                ],
+            )
+        }
+        _ => transaction.execute(
             "UPDATE albums SET status=?, processed_at=?, bypassed=?, timeout_until=?, \
              selected_source=COALESCE(?, selected_source), updated_at=?, last_seen_at=? \
              WHERE path=? COLLATE NOCASE",
@@ -579,15 +671,19 @@ pub fn record_album_outcome(
                 now,
                 canonical_album
             ],
-        )
+        ),
     }
     .map_err(db_error("update Album outcome"))?;
+    let update_ms = elapsed_ms(update_started);
     if changed == 0 {
         return Err(format!(
             "Album outcome has no matching shared inventory row: {canonical_album}"
         ));
     }
-    refresh_artist_aggregates(&transaction)?;
+    let aggregate_started = Instant::now();
+    refresh_album_artist_aggregate(&transaction, &canonical_album)?;
+    let aggregate_ms = elapsed_ms(aggregate_started);
+    let audit_started = Instant::now();
     transaction
         .execute(
             "INSERT INTO cache_history(cache_key, cache_type, album_key, action, payload_json, splined_version, event_at) \
@@ -595,10 +691,21 @@ pub fn record_album_outcome(
             params![canonical_album, outcome, json!({"source": selected_source}).to_string(), env!("CARGO_PKG_VERSION"), now, canonical_album],
         )
         .map_err(db_error("write Album audit"))?;
+    let audit_ms = elapsed_ms(audit_started);
+    let commit_started = Instant::now();
     transaction
         .commit()
         .map_err(db_error("commit Album outcome transaction"))?;
-    Ok(())
+    let commit_ms = elapsed_ms(commit_started);
+    Ok(AlbumOutcomeTiming {
+        database_ms,
+        filesystem_ms,
+        update_ms,
+        aggregate_ms,
+        audit_ms,
+        commit_ms,
+        total_ms: elapsed_ms(total_started),
+    })
 }
 
 pub fn read_runtime_cache_payload(
@@ -1380,32 +1487,33 @@ fn inspect_cover(
     Ok(facts)
 }
 
-fn refresh_artist_aggregates(connection: &Connection) -> Result<(), String> {
-    let mut keys = connection
-        .prepare("SELECT artist_key FROM artists")
-        .map_err(db_error("prepare Artist aggregates"))?;
-    let keys = keys
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(db_error("read Artist aggregate keys"))?
+fn refresh_album_artist_aggregate(connection: &Connection, album_path: &str) -> Result<(), String> {
+    let key = connection
+        .query_row(
+            "SELECT artist_key FROM albums WHERE path=? COLLATE NOCASE",
+            [album_path],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(db_error("read Album Artist aggregate key"))?;
+    let mut statuses = connection
+        .prepare("SELECT status FROM albums WHERE artist_key=?")
+        .map_err(db_error("prepare Album statuses"))?;
+    let values = statuses
+        .query_map([&key], |row| row.get::<_, String>(0))
+        .map_err(db_error("read Album statuses"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(db_error("decode Artist aggregate keys"))?;
-    for key in keys {
-        let mut statuses = connection
-            .prepare("SELECT status FROM albums WHERE artist_key=?")
-            .map_err(db_error("prepare Album statuses"))?;
-        let values = statuses
-            .query_map([&key], |row| row.get::<_, String>(0))
-            .map_err(db_error("read Album statuses"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db_error("decode Album statuses"))?;
-        let aggregate = aggregate_status(values.iter().map(String::as_str));
-        let counts = status_counts(values.iter().map(String::as_str));
-        connection.execute(
-            "UPDATE artists SET status=?, album_count=?, unprocessed_count=?, processed_count=?, bypassed_count=?, timeout_count=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE artist_key=?",
-            params![aggregate, values.len() as i64, counts.0, counts.1, counts.2, counts.3, key],
-        ).map_err(db_error("update Artist aggregate"))?;
-    }
+        .map_err(db_error("decode Album statuses"))?;
+    let aggregate = aggregate_status(values.iter().map(String::as_str));
+    let counts = status_counts(values.iter().map(String::as_str));
+    connection.execute(
+        "UPDATE artists SET status=?, album_count=?, unprocessed_count=?, processed_count=?, bypassed_count=?, timeout_count=?, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE artist_key=?",
+        params![aggregate, values.len() as i64, counts.0, counts.1, counts.2, counts.3, key],
+    ).map_err(db_error("update Artist aggregate"))?;
     Ok(())
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
 fn aggregate_status<'a>(statuses: impl Iterator<Item = &'a str>) -> &'static str {
@@ -1925,15 +2033,12 @@ mod tests {
     }
 
     #[test]
-    fn windows_runtime_status_is_immediately_python_compatible() {
+    fn runtime_outcome_uses_authoritative_material_and_targeted_artist_update() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
         let album = library.join("Artist").join("Album");
         fs::create_dir_all(&album).unwrap();
         File::create(album.join("01.mp3")).unwrap();
-        image::RgbImage::new(12, 12)
-            .save(album.join("cover.jpg"))
-            .unwrap();
         let mut config = Config::default();
         config.mode = crate::config::Mode::Write;
         config.scan.scan_mode_timeout = crate::config::ScanTimeout(0.0);
@@ -1944,10 +2049,26 @@ mod tests {
         let now = sqlite_now(&connection).unwrap();
         connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:artist','Artist',?,?,?,?,'test')", params![library.join("Artist").to_string_lossy(), now, now, now]).unwrap();
         connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:album','tag:artist','Album',?,'tags',?,?,?,'test')", params![album.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, status, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:other','Other',?,'complete',?,?,?,'test')", params![library.join("Other").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,status,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:other-album','tag:other','Other Album',?,'tags','unprocessed',?,?,?,'test')", params![library.join("Other").join("Other Album").to_string_lossy(), now, now, now]).unwrap();
         connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
         drop(connection);
 
-        record_album_outcome(&config, &album, "installed", Some("itunes")).unwrap();
+        let cover = album.join("cover.jpg");
+        assert!(!cover.exists());
+        let timing = record_album_outcome_from_runtime(
+            &config,
+            &album,
+            "installed",
+            Some("itunes"),
+            Some(&RuntimeArtworkMaterial {
+                path: cover,
+                format: "JPEG".to_string(),
+                width: 1800,
+                height: 1800,
+            }),
+        )
+        .unwrap();
         let connection = Connection::open(db).unwrap();
         let values: (String, i64, String, i64, i64) = connection
             .query_row(
@@ -1958,7 +2079,18 @@ mod tests {
             .unwrap();
         assert_eq!(
             values,
-            ("processed".to_string(), 0, "itunes".to_string(), 1, 12)
+            ("processed".to_string(), 0, "itunes".to_string(), 1, 1800)
         );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM artists WHERE artist_key='tag:other'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "complete"
+        );
+        assert!(timing.total_ms >= timing.commit_ms);
     }
 }

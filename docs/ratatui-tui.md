@@ -300,6 +300,10 @@ folder-level `cover.*`; the compilation restriction above writes embedded art.
 All remote candidates expose the successfully downloaded direct image URL for
 mouse/`U` preview before approval.
 
+Mouse-wheel and arrow navigation in MusicBrainz Matches move the highlighted
+release and clamp at the first and last result. Repeated scrolling at either
+boundary never wraps, submits a release, or exits the session.
+
 ## Selected Album artwork and statistics
 
 When focus moves to another Album, a compact green-framed/orange-text

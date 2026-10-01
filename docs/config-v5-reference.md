@@ -266,9 +266,23 @@ counts; a launch records at most three sample paths plus the number omitted.
 This keeps a debug run readable without losing the event sequence needed to
 diagnose startup, selection, report return, or launch behavior.
 
-History supplies processed, timeout, chosen-source, and bypass authority. The
-Python/Docker `splined.db` materializes those facts for Select Media but does
-and stores completion, bypass, timeout, and source-selection state in that same database.
+Windows debug runs also record compact timing summaries. `provider_timing`
+reports each enabled source independently as `success`, `zero`, or `error`,
+with discovery/download milliseconds and reference/candidate/error counts.
+`post_cover_timing` separates pre-persistence work, database open/validation,
+the Album update, the affected Artist aggregate, audit insert, durable commit,
+and total `Final`-to-`album_completed` time. `media_snapshot.timing` records
+SQLite picker-load milliseconds and the returned Album count. Provider timing
+errors are bounded and URL query values are redacted; credentials and tokens
+are never included. Unexpected Python exceptions are written as one bounded
+record, while fatal native interpreter/input-extension failures write a
+one-time thread stack so an abrupt TUI exit is not indistinguishable from an
+external process termination. SIGTERM is recorded explicitly.
+
+SQLite supplies processed, timeout, chosen-source, and bypass authority. The
+shared Python/Docker and Windows `splined.db` materializes those facts for
+Select Media and stores completion, bypass, timeout, and source-selection state
+in that same database.
 
 Back up:
 

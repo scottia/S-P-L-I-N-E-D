@@ -6,6 +6,7 @@ import atexit
 import base64
 import concurrent.futures
 from collections import deque
+import faulthandler
 import getpass
 import html as html_lib
 import hashlib
@@ -24,6 +25,7 @@ import tempfile
 import threading
 import time
 import tomllib
+import traceback
 from urllib.parse import urlencode, urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2654,6 +2656,7 @@ _RUNTIME_LOG_HANDLE: io.TextIOBase | None = None
 _RUNTIME_LOG_LOCK = threading.Lock()
 _RUNTIME_LOG_PENDING = 0
 _RUNTIME_LOG_LAST_FLUSH = 0.0
+_RUNTIME_FAULTHANDLER_ENABLED = False
 _RUNTIME_VERBOSITY = "info"
 _DEBUG_ENABLED = False
 RUNTIME_LOG_MESSAGE_LIMIT = 2048
@@ -2716,7 +2719,7 @@ def runtime_log_path() -> Path | None:
 
 
 def _close_runtime_log() -> None:
-    global _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
+    global _RUNTIME_FAULTHANDLER_ENABLED, _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
     with _RUNTIME_LOG_LOCK:
         handle = _RUNTIME_LOG_HANDLE
         _RUNTIME_LOG_HANDLE = None
@@ -2724,6 +2727,9 @@ def _close_runtime_log() -> None:
         if handle is None:
             return
         try:
+            if _RUNTIME_FAULTHANDLER_ENABLED and faulthandler.is_enabled():
+                faulthandler.disable()
+            _RUNTIME_FAULTHANDLER_ENABLED = False
             handle.flush()
             handle.close()
         except OSError:
@@ -2777,6 +2783,7 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
     callers/tests. Runtime logs now live under <log_dir>/run and the prior run
     is removed at the beginning of the next invocation.
     """
+    global _RUNTIME_FAULTHANDLER_ENABLED
     global _RUNTIME_LOG_PATH, _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
     global _RUNTIME_LOG_LAST_FLUSH, _RUNTIME_VERBOSITY, _DEBUG_ENABLED
 
@@ -2844,6 +2851,15 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
         "========================================\n"
     )
     _RUNTIME_LOG_HANDLE.flush()
+    # Native terminal/input-extension failures bypass Python exception
+    # handling. Record their thread stacks in the same per-run log once, only
+    # on a fatal interpreter signal; routine debug output remains compact.
+    try:
+        faulthandler.enable(file=_RUNTIME_LOG_HANDLE, all_threads=True)
+        _RUNTIME_FAULTHANDLER_ENABLED = True
+    except (OSError, RuntimeError):
+        _RUNTIME_FAULTHANDLER_ENABLED = False
+        pass
     _RUNTIME_LOG_PENDING = 0
     _RUNTIME_LOG_LAST_FLUSH = time.monotonic()
 
@@ -7592,5 +7608,15 @@ def main() -> int:
     except KeyboardInterrupt:
         runtime_log("warning", "run.interrupted keyboard_interrupt")
         print("\nSPLINED interrupted.",file=sys.stderr); return 130
+    except Exception as exc:
+        detail = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__, limit=8)
+        )
+        runtime_log(
+            "error",
+            f"run.unhandled type={type(exc).__name__} message={exc} "
+            f"traceback={detail}",
+        )
+        raise
 
 if __name__=="__main__": raise SystemExit(main())

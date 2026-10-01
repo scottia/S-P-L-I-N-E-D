@@ -1798,6 +1798,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "crossterm",
+ "futures-util",
  "image",
  "lofty",
  "rand",
