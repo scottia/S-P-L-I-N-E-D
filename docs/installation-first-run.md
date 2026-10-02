@@ -49,6 +49,11 @@ accepted update is downloaded from the repository's `windows-dev` prerelease,
 verified against the manifest's SHA-256 and byte count, installed beside the
 existing executable with rollback protection, and then restarted.
 
+This is a complete executable replacement, not an in-place binary patch. The
+rolling workflow uses one optimized Windows build and a reusable Rust cache; it
+does not repeat the full test and static-analysis matrix before each active-dev
+update.
+
 The dev updater replaces only `splined.exe`. It does not rewrite `config/`,
 `credentials/`, `_cache/`, `_logs/`, or the configured shared SQLite database.
 An active Album run must be stopped or completed before installation. If the

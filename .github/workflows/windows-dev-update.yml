@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - dev
+    paths-ignore:
+      - ".github/workflows/windows-dev-update.yml"
+      - "README.md"
+      - "docs/**"
+      - "windows/README.md"
   workflow_dispatch:
 
 permissions:
@@ -34,20 +39,16 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - name: Validate Windows source
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo fmt --manifest-path windows/Cargo.toml --all -- --check
-          cargo test --manifest-path windows/Cargo.toml --locked
-          cargo clippy --manifest-path windows/Cargo.toml --locked --all-targets -- -D warnings
-
-      - name: Run Windows GUI QA
-        shell: cmd
-        run: |
-          cd windows\gui
-          call TEST-WINDOWS-GUI.cmd
-          call TEST-CREDENTIALS-WINDOWS-GUI.cmd
+      - name: Restore Rust build cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: ${{ runner.os }}-splined-windows-${{ hashFiles('windows/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-splined-windows-
 
       - name: Build commit-aware Windows updater
         shell: bash
@@ -79,16 +80,6 @@ jobs:
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8NoBOM release-assets/windows-dev-update.json
           "$digest  setup-splined.exe" | Set-Content -Encoding ascii release-assets/SHA256SUMS.txt
-
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: splined-windows-dev-${{ github.sha }}
-          path: |
-            release-assets/setup-splined.exe
-            release-assets/windows-dev-update.json
-            release-assets/SHA256SUMS.txt
-          if-no-files-found: error
 
       - name: Publish rolling Windows dev update
         shell: bash
