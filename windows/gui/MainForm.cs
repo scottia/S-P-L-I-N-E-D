@@ -1122,33 +1122,25 @@ namespace Splined.WindowsGui
                 UpdateSelectionControlsCore(false);
                 return;
             }
-            string runConfigPath = state.ConfigPath;
-            string temporaryConfigPath = null;
+            string runConfigText;
             activeRunMode = filteredScanRead != null && filteredScanRead.Checked
                 ? "read"
                 : filteredScanWrite != null && filteredScanWrite.Checked
                     ? "write"
                     : state.Mode;
-            if (!String.Equals(activeRunMode, state.Mode, StringComparison.OrdinalIgnoreCase))
+            try
             {
-                try
-                {
-                    ConfigState runState = state.Clone();
-                    runState.Mode = activeRunMode;
-                    string runtimeConfigDirectory = Path.Combine(Path.GetTempPath(), "SPLINED", "runtime-config");
-                    Directory.CreateDirectory(runtimeConfigDirectory);
-                    temporaryConfigPath = Path.Combine(runtimeConfigDirectory, "gui-run-" + Guid.NewGuid().ToString("N") + ".toml");
-                    ConfigStore.SaveTemporaryRunConfig(runState, temporaryConfigPath);
-                    runConfigPath = temporaryConfigPath;
-                }
-                catch (Exception error)
-                {
-                    activeRunMode = null;
-                    MessageBox.Show(this, "Unable to prepare the temporary filtered run mode.\r\n\r\n" + error.Message,
-                        "Filtered scan mode", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    UpdateSelectionControlsCore(false);
-                    return;
-                }
+                ConfigState runState = state.Clone();
+                runState.Mode = activeRunMode;
+                runConfigText = ConfigStore.ExportConfigText(runState);
+            }
+            catch (Exception error)
+            {
+                activeRunMode = null;
+                MessageBox.Show(this, "Unable to prepare the in-memory runtime settings.\r\n\r\n" + error.Message,
+                    "SPLINED runtime settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateSelectionControlsCore(false);
+                return;
             }
             running = true;
             stopRequested = false;
@@ -1183,7 +1175,7 @@ namespace Splined.WindowsGui
                 BeginAlbumRunStatistics(album);
                 AppendAlbumActivityHeader(index + 1, selected.Count, album.Artist, album.Title);
                 AppendActivity("  1. Reading local album and tag evidence...\r\n");
-                bool albumSucceeded = await RunCoreAlbum(core, album, runConfigPath);
+                bool albumSucceeded = await RunCoreAlbum(core, album, runConfigText);
                 if (!albumSucceeded && !stopRequested)
                 {
                     FinishActiveAlbumStatistics("Failed");
@@ -1203,11 +1195,6 @@ namespace Splined.WindowsGui
                 AppendActivity("\r\n");
             }
 
-            if (!String.IsNullOrWhiteSpace(temporaryConfigPath))
-            {
-                try { if (File.Exists(temporaryConfigPath)) File.Delete(temporaryConfigPath); }
-                catch { }
-            }
             currentProcess = null;
             activeLaunchAlbum = null;
             running = false;
@@ -1227,7 +1214,7 @@ namespace Splined.WindowsGui
                 ShowAlbumRunReport(completedRunMode, selected.Count);
         }
 
-        private async Task<bool> RunCoreAlbum(string core, AlbumInfo album, string runConfigPath)
+        private async Task<bool> RunCoreAlbum(string core, AlbumInfo album, string runConfigText)
         {
             string retryArtist = null;
             string retryAlbum = null;
@@ -1235,7 +1222,7 @@ namespace Splined.WindowsGui
             {
                 fallbackRetryRequested = false;
                 musicBrainzRetryRequested = false;
-                bool succeeded = await RunCoreAlbumOnce(core, album, retryArtist, retryAlbum, runConfigPath);
+                bool succeeded = await RunCoreAlbumOnce(core, album, retryArtist, retryAlbum, runConfigText);
                 if (!succeeded) return false;
                 if (musicBrainzRetryRequested && !stopRequested)
                 {
@@ -1254,7 +1241,7 @@ namespace Splined.WindowsGui
             return !stopRequested;
         }
 
-        private Task<bool> RunCoreAlbumOnce(string core, AlbumInfo album, string retryArtist, string retryAlbum, string runConfigPath)
+        private Task<bool> RunCoreAlbumOnce(string core, AlbumInfo album, string retryArtist, string retryAlbum, string runConfigText)
         {
             TaskCompletionSource<bool> completion = new TaskCompletionSource<bool>();
             string scanPath = ResolveExistingAlbumPath(album.Path);
@@ -1262,7 +1249,9 @@ namespace Splined.WindowsGui
                 RuntimeLog.Write("debug", "album.path.translated indexed=" + album.Path + " physical=" + scanPath);
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = core;
-            start.Arguments = "--config-path " + QuoteArgument(runConfigPath);
+            // Keep the child in core scan mode instead of the no-argument
+            // Windows entry point, which launches the GUI shell.
+            start.Arguments = "--scan-dir";
             start.WorkingDirectory = ConfigStore.AppRoot;
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
@@ -1277,6 +1266,7 @@ namespace Splined.WindowsGui
             start.StandardErrorEncoding = new UTF8Encoding(false);
             start.EnvironmentVariables["SPLINED_GUI_EVENTS"] = "1";
             start.EnvironmentVariables["SPLINED_GUI_REVIEW"] = "1";
+            start.EnvironmentVariables["SPLINED_CONFIG_TOML"] = runConfigText;
             // Pass the resolved physical Windows directory losslessly. The
             // shared SQLite identity may use proper Unicode while the same
             // SMB folder is exposed on Windows with a legacy-decoded name.

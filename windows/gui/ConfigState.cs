@@ -254,6 +254,7 @@ namespace Splined.WindowsGui
     internal static class ConfigStore
     {
         public static readonly string AppRoot = ResolveAppRoot();
+        public static readonly string DefaultUserDataRoot = ResolveDefaultUserDataRoot();
         public const string InternalSettingsLabel = "Windows internal settings";
         private const string ConfigRegistryValue = "ConfigV5";
         private const string UiRegistryValue = "UiV4";
@@ -277,6 +278,16 @@ namespace Splined.WindowsGui
             return Path.GetFullPath(String.IsNullOrWhiteSpace(configured)
                 ? AppDomain.CurrentDomain.BaseDirectory
                 : configured);
+        }
+
+        private static string ResolveDefaultUserDataRoot()
+        {
+            string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (String.IsNullOrWhiteSpace(root))
+                root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (String.IsNullOrWhiteSpace(root))
+                throw new InvalidOperationException("Unable to determine the current Windows user's application-data directory.");
+            return Path.Combine(root, "SPLINED");
         }
 
         private static string BuildRegistryPath()
@@ -363,10 +374,10 @@ namespace Splined.WindowsGui
             state.ScanMode = ReadBool(text, "scan", "scan_mode", true);
             state.LibraryScan = ReadBool(text, "scan", "library_scan", false);
             state.ScanModeTimeout = ReadDoubleOrOff(text, "scan", "scan_mode_timeout", 24);
-            state.CacheDir = ResolvePortablePath(ReadString(text, "scan", "cache_dir", "_cache"));
+            state.CacheDir = ResolvePortablePath(ReadString(text, "scan", "cache_dir", state.CacheDir));
             state.SqliteShared = ReadBool(text, "scan", "sqlite_shared", false);
-            state.LogDir = ResolvePortablePath(ReadString(text, "scan", "log_dir", "_logs"));
-            state.CredentialDir = ResolvePortablePath(ReadString(text, "credentials", "credential_dir", "credentials"));
+            state.LogDir = ResolvePortablePath(ReadString(text, "scan", "log_dir", state.LogDir));
+            state.CredentialDir = ResolvePortablePath(ReadString(text, "credentials", "credential_dir", state.CredentialDir));
             state.Formats = ReadArray(text, "output", "file_formats");
             if (state.Formats.Count == 0) state.Formats.AddRange(new[] { "jpeg", "png", "webp" });
             state.Sources = ReadArray(text, "sources", "cover_sources");
@@ -436,9 +447,9 @@ namespace Splined.WindowsGui
         {
             ConfigState state = new ConfigState();
             state.ConfigPath = InternalSettingsLabel;
-            state.CacheDir = Path.Combine(AppRoot, "_cache");
-            state.LogDir = Path.Combine(AppRoot, "_logs");
-            state.CredentialDir = Path.Combine(AppRoot, "credentials");
+            state.CacheDir = Path.Combine(DefaultUserDataRoot, "cache");
+            state.LogDir = Path.Combine(DefaultUserDataRoot, "logs");
+            state.CredentialDir = Path.Combine(DefaultUserDataRoot, "credentials");
             state.SourcePolicies["amazon"] = new SourcePolicyState { Enabled = false };
             return state;
         }
@@ -495,16 +506,6 @@ namespace Splined.WindowsGui
                 }
                 throw;
             }
-        }
-
-        public static void SaveTemporaryRunConfig(ConfigState state, string path)
-        {
-            if (String.IsNullOrWhiteSpace(path))
-                throw new InvalidOperationException("A temporary run configuration path is required.");
-            ConfigState snapshot = state.Clone();
-            snapshot.ConfigPath = path;
-            Validate(snapshot);
-            WriteTextAtomic(path, BuildConfigText(snapshot));
         }
 
         public static void Validate(ConfigState state)
