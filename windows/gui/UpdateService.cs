@@ -30,6 +30,8 @@ namespace Splined.WindowsGui
     internal static class WindowsUpdateService
     {
         private const long MaximumUpdaterBytes = 200L * 1024L * 1024L;
+        private const string ManifestPath = "/scottia/S-P-L-I-N-E-D/releases/download/windows-dev/windows-dev-update.json";
+        private const string UpdaterPath = "/scottia/S-P-L-I-N-E-D/releases/download/windows-dev/setup-splined.exe";
         private static readonly Regex CommitPattern = new Regex("^[0-9a-fA-F]{40}$", RegexOptions.Compiled);
         private static readonly Regex ShaPattern = new Regex("^[0-9a-fA-F]{64}$", RegexOptions.Compiled);
 
@@ -43,7 +45,7 @@ namespace Splined.WindowsGui
             if (!UsesDevChannel)
                 return new WindowsUpdateCheck { Available = false, Manifest = null };
 
-            byte[] bytes = await DownloadBytesAsync(ReleaseInfo.DevUpdateManifestUrl, 1024L * 1024L);
+            byte[] bytes = await DownloadBytesAsync(ReleaseInfo.DevUpdateManifestUrl, 1024L * 1024L, ManifestPath);
             string json = System.Text.Encoding.UTF8.GetString(bytes).TrimStart('\uFEFF');
             WindowsUpdateManifest manifest = new JavaScriptSerializer().Deserialize<WindowsUpdateManifest>(json);
             ValidateManifest(manifest);
@@ -56,7 +58,10 @@ namespace Splined.WindowsGui
         public static async Task<string> DownloadAndStageAsync(WindowsUpdateManifest manifest)
         {
             ValidateManifest(manifest);
-            byte[] bytes = await DownloadBytesAsync(AddCommitCacheBuster(manifest.asset_url, manifest.short_commit), MaximumUpdaterBytes);
+            byte[] bytes = await DownloadBytesAsync(
+                AddCommitCacheBuster(manifest.asset_url, manifest.short_commit),
+                MaximumUpdaterBytes,
+                UpdaterPath);
             if (manifest.size > 0 && bytes.LongLength != manifest.size)
                 throw new InvalidOperationException("The downloaded updater size does not match the published manifest.");
             string digest = Sha256(bytes);
@@ -96,9 +101,9 @@ namespace Splined.WindowsGui
             Process.Start(start);
         }
 
-        private static async Task<byte[]> DownloadBytesAsync(string url, long maximumBytes)
+        private static async Task<byte[]> DownloadBytesAsync(string url, long maximumBytes, string expectedPath)
         {
-            Uri uri = ValidateDownloadUri(url);
+            Uri uri = ValidateDownloadUri(url, expectedPath);
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             using (WebClient client = new WebClient())
             {
@@ -124,20 +129,41 @@ namespace Splined.WindowsGui
                 throw new InvalidOperationException("The Windows update manifest commit identity is inconsistent.");
             if (manifest.size <= 0 || manifest.size > MaximumUpdaterBytes)
                 throw new InvalidOperationException("The Windows update manifest contains an invalid updater size.");
-            ValidateDownloadUri(manifest.asset_url);
+            ValidateDownloadUri(manifest.asset_url, UpdaterPath);
         }
 
-        private static Uri ValidateDownloadUri(string value)
+        internal static bool IsApprovedManifestUrl(string value)
+        {
+            return IsApprovedDownloadUrl(value, ManifestPath);
+        }
+
+        internal static bool IsApprovedUpdaterUrl(string value)
+        {
+            return IsApprovedDownloadUrl(value, UpdaterPath);
+        }
+
+        private static Uri ValidateDownloadUri(string value, string expectedPath)
         {
             Uri uri;
-            if (!Uri.TryCreate(value, UriKind.Absolute, out uri)
-                || !uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
-                || !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
-                || !uri.AbsolutePath.Equals(
-                    "/scottia/S-P-L-I-N-E-D/releases/download/windows-dev/setup-splined.exe",
-                    StringComparison.Ordinal))
+            if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || !IsApprovedDownloadUrl(uri, expectedPath))
                 throw new InvalidOperationException("The Windows update URL is not an approved SPLINED release asset.");
             return uri;
+        }
+
+        private static bool IsApprovedDownloadUrl(string value, string expectedPath)
+        {
+            Uri uri;
+            return Uri.TryCreate(value, UriKind.Absolute, out uri)
+                && IsApprovedDownloadUrl(uri, expectedPath);
+        }
+
+        private static bool IsApprovedDownloadUrl(Uri uri, string expectedPath)
+        {
+            return uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
+                && uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+                && uri.IsDefaultPort
+                && String.IsNullOrEmpty(uri.UserInfo)
+                && uri.AbsolutePath.Equals(expectedPath, StringComparison.Ordinal);
         }
 
         private static string AddCommitCacheBuster(string url, string shortCommit)

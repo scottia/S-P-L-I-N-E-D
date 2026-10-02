@@ -440,6 +440,16 @@ namespace Splined.WindowsGui
                 string unc = @"\\server\share\music\Artist\Album";
                 string quotedUnc = (string)quoteArgument.Invoke(null, new object[] { unc });
                 Assert(quotedUnc == "\"" + unc + "\"", "UNC command argument changed its leading backslashes.");
+                Assert(WindowsUpdateService.IsApprovedManifestUrl(ReleaseInfo.DevUpdateManifestUrl),
+                    "The fixed Windows dev manifest URL is not approved by its own validator.");
+                Assert(WindowsUpdateService.IsApprovedUpdaterUrl(ReleaseInfo.DevUpdateAssetUrl),
+                    "The fixed Windows dev executable URL is not approved by its own validator.");
+                Assert(!WindowsUpdateService.IsApprovedManifestUrl(ReleaseInfo.DevUpdateAssetUrl)
+                    && !WindowsUpdateService.IsApprovedUpdaterUrl(ReleaseInfo.DevUpdateManifestUrl),
+                    "Windows update manifest and executable URL policies are not isolated.");
+                Assert(!WindowsUpdateService.IsApprovedUpdaterUrl(
+                        "https://github.com.evil.invalid/scottia/S-P-L-I-N-E-D/releases/download/windows-dev/setup-splined.exe"),
+                    "The Windows updater accepted an unapproved release host.");
 
                 loadedUi.HoverEnabled = false;
                 ConfigStore.SaveUi(loadedUi);
