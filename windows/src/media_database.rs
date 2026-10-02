@@ -496,6 +496,7 @@ pub fn record_album_outcome(
     record_album_outcome_inner(
         config,
         local_album_path,
+        None,
         outcome,
         selected_source,
         OutcomeMaterial::Inspect,
@@ -506,6 +507,7 @@ pub fn record_album_outcome(
 pub fn record_album_outcome_from_runtime(
     config: &Config,
     local_album_path: &Path,
+    indexed_album_path: Option<&Path>,
     outcome: &str,
     selected_source: Option<&str>,
     material: Option<&RuntimeArtworkMaterial>,
@@ -513,6 +515,7 @@ pub fn record_album_outcome_from_runtime(
     record_album_outcome_inner(
         config,
         local_album_path,
+        indexed_album_path,
         outcome,
         selected_source,
         OutcomeMaterial::Runtime(material),
@@ -522,6 +525,7 @@ pub fn record_album_outcome_from_runtime(
 fn record_album_outcome_inner(
     config: &Config,
     local_album_path: &Path,
+    indexed_album_path: Option<&Path>,
     outcome: &str,
     selected_source: Option<&str>,
     material_source: OutcomeMaterial<'_>,
@@ -549,7 +553,11 @@ fn record_album_outcome_inner(
         .and_then(Value::as_str)
         .ok_or_else(|| "SPLINED database signature has no canonical library_root.".to_string())?;
     let mapper = PathMapper::new(canonical_root, &config.library.music_library)?;
-    let canonical_album = mapper.to_canonical(&local_album_path.to_string_lossy())?;
+    let canonical_album = mapper.to_canonical(
+        &indexed_album_path
+            .unwrap_or(local_album_path)
+            .to_string_lossy(),
+    )?;
     let bypassed = outcome.to_ascii_lowercase().contains("bypass");
     let database_ms = elapsed_ms(database_started);
     let filesystem_started = Instant::now();
@@ -629,7 +637,12 @@ fn record_album_outcome_inner(
             ],
         ),
         (OutcomeMaterial::Runtime(Some(material)), None) => {
-            let canonical_cover = mapper.to_canonical(&material.path.to_string_lossy())?;
+            let canonical_cover = canonical_runtime_path(
+                &mapper,
+                local_album_path,
+                &canonical_album,
+                &material.path,
+            )?;
             let cover_name = material
                 .path
                 .file_name()
@@ -706,6 +719,37 @@ fn record_album_outcome_inner(
         commit_ms,
         total_ms: elapsed_ms(total_started),
     })
+}
+
+fn canonical_runtime_path(
+    mapper: &PathMapper,
+    local_album_path: &Path,
+    canonical_album: &str,
+    local_material_path: &Path,
+) -> Result<String, String> {
+    if let Ok(relative) = local_material_path.strip_prefix(local_album_path) {
+        let separator = if canonical_album.contains('\\')
+            || (canonical_album.len() >= 2 && canonical_album.as_bytes()[1] == b':')
+        {
+            '\\'
+        } else {
+            '/'
+        };
+        let relative = relative
+            .to_string_lossy()
+            .replace(['/', '\\'], &separator.to_string());
+        let relative = relative.trim_start_matches(['/', '\\']);
+        if relative.is_empty() {
+            return Ok(canonical_album.to_string());
+        }
+        return Ok(format!(
+            "{}{}{}",
+            canonical_album.trim_end_matches(['/', '\\']),
+            separator,
+            relative
+        ));
+    }
+    mapper.to_canonical(&local_material_path.to_string_lossy())
 }
 
 pub fn read_runtime_cache_payload(
@@ -2070,6 +2114,7 @@ mod tests {
         let timing = record_album_outcome_from_runtime(
             &config,
             &album,
+            None,
             "installed",
             Some("itunes"),
             Some(&RuntimeArtworkMaterial {
@@ -2103,5 +2148,57 @@ mod tests {
             "complete"
         );
         assert!(timing.total_ms >= timing.commit_ms);
+    }
+
+    #[test]
+    fn runtime_outcome_separates_physical_and_indexed_unicode_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let physical = library.join("Cheech & Chong").join("Big BambÃº");
+        let indexed = library.join("Cheech & Chong").join("Big Bambú");
+        fs::create_dir_all(&physical).unwrap();
+        let mut config = Config::default();
+        config.mode = crate::config::Mode::Write;
+        config.scan.scan_mode_timeout = crate::config::ScanTimeout(0.0);
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let db = database_path(&config.scan.cache_dir);
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:cheech','Cheech & Chong',?,?,?,?,'test')", params![library.join("Cheech & Chong").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:bambu','tag:cheech','Big Bambú',?,'tags',?,?,?,'test')", params![indexed.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
+        drop(connection);
+
+        let physical_cover = physical.join("cover.jpg");
+        record_album_outcome_from_runtime(
+            &config,
+            &physical,
+            Some(&indexed),
+            "installed",
+            Some("amazon"),
+            Some(&RuntimeArtworkMaterial {
+                path: physical_cover,
+                format: "JPEG".to_string(),
+                width: 1600,
+                height: 1600,
+            }),
+        )
+        .unwrap();
+
+        let connection = Connection::open(db).unwrap();
+        let values: (String, String, String) = connection
+            .query_row(
+                "SELECT status, selected_source, cover_path FROM albums WHERE album_key='tag:bambu'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(values.0, "processed");
+        assert_eq!(values.1, "amazon");
+        assert_eq!(
+            values.2,
+            indexed.join("cover.jpg").to_string_lossy().into_owned()
+        );
     }
 }

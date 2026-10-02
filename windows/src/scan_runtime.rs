@@ -1921,9 +1921,11 @@ fn record_runtime_completion(
     final_logged_started: Instant,
 ) -> Result<(), String> {
     let pre_persistence_ms = elapsed_ms(post_cover_started);
+    let indexed_album_path = std::env::var_os("SPLINED_INDEXED_ALBUM_PATH").map(PathBuf::from);
     let timing = record_album_outcome_from_runtime(
         config,
         &album.path,
+        indexed_album_path.as_deref(),
         outcome,
         selected_source,
         material.as_ref(),

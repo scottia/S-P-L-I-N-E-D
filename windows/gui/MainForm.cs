@@ -1319,6 +1319,9 @@ namespace Splined.WindowsGui
             // shared SQLite identity may use proper Unicode while the same
             // SMB folder is exposed on Windows with a legacy-decoded name.
             start.EnvironmentVariables["SPLINED_SCAN_DIR_PATH"] = scanPath;
+            // Preserve the SQLite/index identity separately from the translated
+            // physical directory so completion updates the authoritative row.
+            start.EnvironmentVariables["SPLINED_INDEXED_ALBUM_PATH"] = album.Path;
             start.EnvironmentVariables["NO_COLOR"] = "1";
             if (!String.IsNullOrWhiteSpace(retryArtist)) start.EnvironmentVariables["SPLINED_FALLBACK_ARTIST"] = retryArtist;
             if (!String.IsNullOrWhiteSpace(retryAlbum)) start.EnvironmentVariables["SPLINED_FALLBACK_ALBUM"] = retryAlbum;

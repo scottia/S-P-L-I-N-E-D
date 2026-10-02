@@ -12,6 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
 
 jobs:
   build-and-publish:
@@ -19,40 +20,52 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout dev commit
+      - name: Checkout latest dev commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: dev
           fetch-depth: 1
+
+      - name: Resolve dev commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "Building dev commit ${commit}"
 
       - name: Install stable Rust
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
 
       - name: Restore Rust build cache
+        id: rust-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             windows/target
-          key: ${{ runner.os }}-splined-windows-${{ hashFiles('windows/Cargo.lock') }}
+          key: ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-
             ${{ runner.os }}-splined-windows-
 
       - name: Build commit-aware Windows updater
         shell: bash
         env:
-          SPLINED_BUILD_COMMIT: ${{ github.sha }}
+          SPLINED_BUILD_COMMIT: ${{ steps.source.outputs.commit }}
           SPLINED_UPDATE_CHANNEL: dev
         run: cargo build --manifest-path windows/Cargo.toml --locked --release
 
       - name: Create verified update manifest
         shell: pwsh
         env:
-          BUILD_COMMIT: ${{ github.sha }}
+          BUILD_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
@@ -77,20 +90,21 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          BUILD_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
           if gh release view windows-dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit windows-dev \
               --repo "$GITHUB_REPOSITORY" \
               --title "S:P:L:I:N:E:D Windows Dev Update" \
-              --notes "Rolling Windows development build from dev commit ${GITHUB_SHA}. The GUI verifies the published SHA-256 before installation." \
+              --notes "Rolling Windows development build from dev commit ${BUILD_COMMIT}. The GUI verifies the published SHA-256 before installation." \
               --prerelease
           else
             gh release create windows-dev \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
+              --target "$BUILD_COMMIT" \
               --title "S:P:L:I:N:E:D Windows Dev Update" \
-              --notes "Rolling Windows development build from dev commit ${GITHUB_SHA}. The GUI verifies the published SHA-256 before installation." \
+              --notes "Rolling Windows development build from dev commit ${BUILD_COMMIT}. The GUI verifies the published SHA-256 before installation." \
               --prerelease
           fi
           gh release upload windows-dev \
@@ -106,8 +120,10 @@ jobs:
           @"
           ## Windows dev update published
 
-          - Commit: ``${{ github.sha }}``
+          - Commit: ``${{ steps.source.outputs.commit }}``
           - Channel: ``dev``
+          - Rust cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
+          - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Release tag: ``windows-dev``
           - Manifest and executable: SHA-256 verified by the GUI
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
