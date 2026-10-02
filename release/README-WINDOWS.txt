@@ -13,12 +13,12 @@ FRESH INSTALL
 
    splined.exe
 
-3. Complete first-run setup. Choose the required library, cache, log, and
-   credential locations. SPLINED stores Config v5 and interface preferences
+3. Complete first-run setup. Choose the required library, SQL database,
+   temporary run cache, log, and credential locations. SPLINED stores Config v5 and interface preferences
    internally for the current Windows user, then creates only the selected
    runtime directories after Save and Continue.
 
-   Cache, log, and credential fields initially point beneath:
+   Database, run-cache, log, and credential fields initially point beneath:
 
    %LOCALAPPDATA%\SPLINED
 
@@ -55,7 +55,7 @@ To upgrade manually:
 
 2. Use File > Backup > Export Backup... to create a selective .spl backup, or
    separately back up the configured credential directory and
-   <cache directory>\splined.db. A .spl backup may be password protected.
+   <SQL database directory>\splined.db. A .spl backup may be password protected.
 
 3. Extract the new application files into the existing SPLINED folder,
    replacing the program files while preserving the persistent locations
@@ -64,8 +64,9 @@ To upgrade manually:
 4. Run splined.exe and verify Settings, Config v5 validation, and credential
    status before a production scan.
 
-Other candidate/sample files under the configured cache directory are
-disposable and are recreated as needed. Diagnostic files under the configured
+Downloaded and derived files under the Temporary Run Cache are disposable and
+are removed after a run. Optional review samples remain only when enabled.
+Diagnostic files under the configured
 log directory are not runtime-state authority.
 
 Opening a registered .spl file starts SPLINED's selective restore dialog.

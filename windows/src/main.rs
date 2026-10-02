@@ -18,7 +18,9 @@ use splined::musicbrainz::{
     resolve_token_path, save_credential as save_musicbrainz_credential,
 };
 use splined::pipeline::{candidate_summary, run_registry_pipeline};
-use splined::portable::{APP_ROOT_ENV, finish_setup_executable, running_as_setup_executable};
+use splined::portable::{
+    APP_ROOT_ENV, cleanup_stale_upgrade_files, finish_setup_executable, running_as_setup_executable,
+};
 use splined::range::Range;
 use splined::scan_runtime::run_scan_library_read_report;
 use splined::source::{ArtworkQuery, ProviderContext, ProviderRegistry, lastfm::LastFm};
@@ -389,11 +391,18 @@ fn print_dynamic_help(config: Option<&Config>) {
     let scan_dir = config
         .map(|config| configured_display(&config.scan.scan_library_dir))
         .unwrap_or_else(|| unavailable.clone());
-    let cache_dir = config
+    let database_dir = config
         .map(|config| config.scan.cache_dir.clone())
         .unwrap_or_else(|| unavailable.clone());
+    let temporary_cache_dir = config
+        .map(|config| config.scan.temporary_cache_dir.clone())
+        .unwrap_or_else(|| unavailable.clone());
     let sample_dir = config
-        .map(|config| samples_dir(&config.scan.cache_dir).display().to_string())
+        .map(|config| {
+            samples_dir(&config.scan.temporary_cache_dir)
+                .display()
+                .to_string()
+        })
         .unwrap_or_else(|| unavailable.clone());
     let credential_dir = config
         .map(|config| config.credentials.credential_dir.clone())
@@ -452,7 +461,8 @@ fn print_dynamic_help(config: Option<&Config>) {
     println!("Media Directories:");
     help_row("Library:", &green_value(&library));
     help_row("Scan Directory:", &green_value(&scan_dir));
-    help_row("Cache Directory:", &green_value(&cache_dir));
+    help_row("SQL Database Directory:", &green_value(&database_dir));
+    help_row("Temporary Run Cache:", &green_value(&temporary_cache_dir));
     help_row("Sample Directory:", &green_value(&sample_dir));
     help_row("Credential Directory:", &green_value(&credential_dir));
     help_row("Ignore Sub-Directories:", &red_value(&ignored_subs));
@@ -500,7 +510,7 @@ fn print_dynamic_help(config: Option<&Config>) {
     help_cont("true writes exactly one selected source image per resolved album");
     help_cont("Works in both Read review cycles and Write runs");
     help_row("Sample Directory", &green_value(&sample_dir));
-    help_cont("Derived automatically as <[scan].cache_dir>\\samples");
+    help_cont("Derived automatically as <[scan].temporary_cache_dir>\\samples");
     help_row("Sample Naming", "<artist>.<album>.sample.<extension>");
     help_cont("Samples preserve the selected source bytes before resize/conversion");
     help_row(
@@ -906,6 +916,13 @@ async fn main() {
 
     #[cfg(windows)]
     {
+        if let Ok(executable) = std::env::current_exe()
+            && let Some(parent) = executable.parent()
+        {
+            // The newly installed process is the first point at which the old
+            // executable is guaranteed to be unlocked on Windows.
+            cleanup_stale_upgrade_files(parent);
+        }
         let arguments = std::env::args_os().collect::<Vec<_>>();
         let restore_path = arguments.get(1).map(Path::new).filter(|path| {
             arguments.len() == 2

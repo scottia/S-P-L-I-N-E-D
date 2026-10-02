@@ -127,6 +127,7 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
     let parent = current_exe
         .parent()
         .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
+    cleanup_stale_upgrade_files(parent);
 
     let final_exe = parent.join(FINAL_EXECUTABLE_NAME);
     let stamp = unique_stamp();
@@ -169,10 +170,15 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
         }
 
         if let Err(error) = fs::remove_file(&backup) {
+            #[cfg(windows)]
+            schedule_file_cleanup(&backup);
+            #[cfg(not(windows))]
             eprintln!(
                 "Warning: SPLINED was upgraded, but the previous executable backup could not be removed: {}: {error}",
                 backup.display()
             );
+            #[cfg(windows)]
+            let _ = error;
         }
     } else if let Err(error) = rename_for_upgrade(&staging, &final_exe) {
         let _ = fs::remove_file(&staging);
@@ -183,6 +189,42 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
     }
 
     Ok(Some(final_exe))
+}
+
+pub fn cleanup_stale_upgrade_files(parent: &Path) {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if (name.starts_with(".splined-backup-") || name.starts_with(".splined-install-"))
+            && path.is_file()
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn schedule_file_cleanup(path: &Path) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut command = std::process::Command::new("cmd.exe");
+    command
+        .arg("/C")
+        .arg("ping 127.0.0.1 -n 6 >nul & del /F /Q \"%SPLINED_CLEANUP_FILE%\"")
+        .env("SPLINED_CLEANUP_FILE", path)
+        .creation_flags(CREATE_NO_WINDOW);
+    if let Err(error) = command.spawn() {
+        eprintln!(
+            "Warning: SPLINED could not schedule cleanup for {}: {error}",
+            path.display()
+        );
+    }
 }
 
 #[cfg(windows)]
@@ -223,23 +265,7 @@ fn remove_release_readme(parent: &Path) {
 
 #[cfg(windows)]
 fn remove_setup_executable_after_exit(current_exe: &Path) {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    let mut command = std::process::Command::new("cmd.exe");
-    command
-        .arg("/C")
-        .arg("ping 127.0.0.1 -n 3 >nul & del /F /Q \"%SPLINED_SETUP_EXE%\"")
-        .env("SPLINED_SETUP_EXE", current_exe)
-        .creation_flags(CREATE_NO_WINDOW);
-
-    if let Err(error) = command.spawn() {
-        eprintln!(
-            "Warning: SPLINED setup completed, but automatic setup launcher cleanup could not be scheduled for {}: {error}",
-            current_exe.display()
-        );
-    }
+    schedule_file_cleanup(current_exe);
 }
 
 #[cfg(not(windows))]
@@ -475,6 +501,8 @@ mod tests {
 
         fs::write(&setup, b"new executable").unwrap();
         fs::write(&installed, b"old executable").unwrap();
+        let stale_backup = layout.root.join(".splined-backup-stale");
+        fs::write(&stale_backup, b"older executable").unwrap();
         fs::write(&layout.config_file, b"custom portable config").unwrap();
         fs::write(
             layout.credentials_dir.join("lastfm.json"),
@@ -497,5 +525,12 @@ mod tests {
             b"existing credential"
         );
         assert!(setup.is_file());
+        assert!(!stale_backup.exists());
+        assert!(fs::read_dir(&layout.root).unwrap().flatten().all(|entry| {
+            !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".splined-backup-")
+        }));
     }
 }

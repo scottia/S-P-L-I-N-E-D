@@ -45,6 +45,7 @@ namespace Splined.WindowsGui
         public int VisibleCandidates;
         public int HiddenCandidates;
         public int ProviderDiagnostics;
+        public readonly List<string> ProviderDiagnosticMessages = new List<string>();
         public bool Fallback;
         public bool MusicBrainzResolved;
         public bool ReviewRequired;
@@ -146,6 +147,12 @@ namespace Splined.WindowsGui
         private bool applyingLayoutPreset;
         private const int ExpandedMediaFilterHeight = 421;
         private const int CollapsedMediaFilterHeight = 36;
+        private const int LibraryPanelMinimumWidth = 360;
+        private const int LibraryTreeMinimumHeight = 170;
+        private const int ActivityPanelMinimumWidth = 520;
+        private const int ActivityPanelMinimumHeight = 230;
+        private const int CandidatePanelMinimumWidth = 720;
+        private const int CandidatePanelMinimumHeight = 420;
 
         public MainForm(ConfigState state)
             : this(state, ConfigStore.LoadUi())
@@ -317,12 +324,14 @@ namespace Splined.WindowsGui
             TableLayoutPanel layout = new FluentCardTableLayoutPanel { Name = "mediaLibrarySelectionCard", VisualRole = CardVisualRole.Panel };
             libraryLayout = layout;
             layout.Dock = DockStyle.Fill;
+            layout.AutoScroll = true;
             layout.Padding = new Padding(ThemeManager.Space12);
             layout.ColumnCount = 1;
             layout.RowCount = 3;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, ExpandedMediaFilterHeight));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            UpdateLibraryScrollCanvas(true);
             parent.Controls.Add(layout);
 
             layout.Controls.Add(BuildPanelTitle("Media Library Selection",
@@ -519,8 +528,17 @@ namespace Splined.WindowsGui
             mediaFilterPanel.Visible = expanded;
             mediaFilterToggle.Text = expanded ? "Select Media  ▾" : "Select Media  ▸";
             libraryLayout.RowStyles[1].Height = expanded ? ExpandedMediaFilterHeight : CollapsedMediaFilterHeight;
+            UpdateLibraryScrollCanvas(expanded);
             libraryLayout.PerformLayout();
             uiState.MediaFilterExpanded = expanded;
+        }
+
+        private void UpdateLibraryScrollCanvas(bool expanded)
+        {
+            if (libraryLayout == null) return;
+            int filterHeight = expanded ? ExpandedMediaFilterHeight : CollapsedMediaFilterHeight;
+            int minimumHeight = 34 + filterHeight + LibraryTreeMinimumHeight + (ThemeManager.Space12 * 2);
+            libraryLayout.AutoScrollMinSize = new Size(LibraryPanelMinimumWidth, minimumHeight);
         }
 
         private void RestoreMainWindowState()
@@ -738,7 +756,7 @@ namespace Splined.WindowsGui
             rightSplit.SplitterDistance = Math.Max(rightSplit.Panel1MinSize, Math.Min(uiState.RightSplitterDistance, Math.Max(rightSplit.Panel1MinSize, rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth)));
             parent.Controls.Add(rightSplit);
 
-            TableLayoutPanel upper = new FluentCardTableLayoutPanel { Name = "scanActivityCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space12), RowCount = 2, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
+            TableLayoutPanel upper = new FluentCardTableLayoutPanel { Name = "scanActivityCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(ActivityPanelMinimumWidth, ActivityPanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 2, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
             upper.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             upper.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             rightSplit.Panel1.Controls.Add(upper);
@@ -749,7 +767,7 @@ namespace Splined.WindowsGui
             activityCard.Controls.Add(activity);
             upper.Controls.Add(activityCard, 0, 1);
 
-            TableLayoutPanel lower = new FluentCardTableLayoutPanel { Name = "artworkCandidatesCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space12), RowCount = 5, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
+            TableLayoutPanel lower = new FluentCardTableLayoutPanel { Name = "artworkCandidatesCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(CandidatePanelMinimumWidth, CandidatePanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 5, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
             lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             lower.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -1486,13 +1504,18 @@ namespace Splined.WindowsGui
                 if (payload.TryGetValue("items", out raw))
                 {
                     object[] diagnostics = ToObjectArray(raw);
-                    if (activeAlbumStatistics != null)
-                        activeAlbumStatistics.ProviderDiagnostics += diagnostics.Length;
                     foreach (object item in diagnostics)
                     {
                         Dictionary<string, object> diagnostic = item as Dictionary<string, object>;
-                        if (diagnostic != null) AppendActivity("     " + ReadString(diagnostic, "source") + ": " + ReadString(diagnostic, "message") + "\r\n", ActivityTone.Warning);
+                        if (diagnostic == null) continue;
+                        string note = ReadString(diagnostic, "source") + ": " + ReadString(diagnostic, "message");
+                        if (activeAlbumStatistics != null
+                            && !activeAlbumStatistics.ProviderDiagnosticMessages.Contains(note))
+                            activeAlbumStatistics.ProviderDiagnosticMessages.Add(note);
+                        AppendActivity("     " + note + "\r\n", ActivityTone.Warning);
                     }
+                    if (activeAlbumStatistics != null)
+                        activeAlbumStatistics.ProviderDiagnostics = activeAlbumStatistics.ProviderDiagnosticMessages.Count;
                 }
             }
             else if (eventName == "album_completed")
@@ -2296,6 +2319,8 @@ namespace Splined.WindowsGui
                 AppendActivity("  •  " + report.VisibleCandidates + " shown", ActivityTone.Success);
                 AppendActivity("  •  " + report.HiddenCandidates + " policy-hidden", report.HiddenCandidates > 0 ? ActivityTone.Warning : ActivityTone.Muted);
                 AppendActivity("  •  " + report.ProviderDiagnostics + " provider note(s)\r\n", report.ProviderDiagnostics > 0 ? ActivityTone.Warning : ActivityTone.Muted);
+                foreach (string note in report.ProviderDiagnosticMessages)
+                    AppendActivity("    - " + note + "\r\n", ActivityTone.Warning);
 
                 AppendActivity("  Duration: " + report.Duration.TotalSeconds.ToString("0.0") + "s", ActivityTone.Muted);
                 if (!String.IsNullOrWhiteSpace(report.Destination))

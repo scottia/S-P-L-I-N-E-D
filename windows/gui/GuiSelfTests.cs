@@ -37,10 +37,12 @@ namespace Splined.WindowsGui
 
                 ConfigState state = ConfigStore.Defaults();
                 Assert(state.CacheDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "cache")
+                    && state.TemporaryCacheDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "run-cache")
                     && state.LogDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "logs")
                     && state.CredentialDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "credentials"),
                     "First-run data paths did not default to the current user's Local AppData directory.");
                 state.CacheDir = Path.Combine(internalSettings, "cache");
+                state.TemporaryCacheDir = Path.Combine(internalSettings, "run-cache");
                 state.LogDir = Path.Combine(internalSettings, "logs");
                 state.CredentialDir = Path.Combine(internalSettings, "credentials");
                 state.ConfigPath = ConfigStore.DefaultConfigPath;
@@ -76,6 +78,7 @@ namespace Splined.WindowsGui
                 Assert(loaded.ScanModeTimeout == 0, "Disabled timeout did not round-trip.");
                 string configText = ConfigStore.ExportConfigText(loaded);
                 Assert(configText.Contains("[credentials]") && configText.Contains("credential_dir =")
+                    && configText.Contains("temporary_cache_dir =")
                     && !configText.Contains("[fanarttv]") && !configText.Contains("[lastfm]")
                     && !configText.Contains("[musicbrainz]") && !configText.Contains("credential_file")
                     && !configText.Contains("token_file") && !configText.Contains("client_id"),
@@ -120,6 +123,7 @@ namespace Splined.WindowsGui
                 optionCoverage.LibraryScan = true;
                 optionCoverage.ScanModeTimeout = 12.5;
                 optionCoverage.CacheDir = Path.Combine(ConfigStore.AppRoot, "coverage-cache");
+                optionCoverage.TemporaryCacheDir = Path.Combine(ConfigStore.AppRoot, "coverage-run-cache");
                 optionCoverage.SqliteShared = true;
                 optionCoverage.LogDir = Path.Combine(ConfigStore.AppRoot, "coverage-logs");
                 optionCoverage.CredentialDir = Path.Combine(ConfigStore.AppRoot, "coverage-credentials");
@@ -147,7 +151,9 @@ namespace Splined.WindowsGui
                     && optionReopened.ScanLibraryDir == firstAlbum && !optionReopened.ScanMode && optionReopened.LibraryScan
                     && Math.Abs(optionReopened.ScanModeTimeout - 12.5) < 0.001,
                     "Python runtime and scan options did not round-trip through Config v5.");
-                Assert(optionReopened.CacheDir == optionCoverage.CacheDir && optionReopened.SqliteShared && optionReopened.LogDir == optionCoverage.LogDir
+                Assert(optionReopened.CacheDir == optionCoverage.CacheDir
+                    && optionReopened.TemporaryCacheDir == optionCoverage.TemporaryCacheDir
+                    && optionReopened.SqliteShared && optionReopened.LogDir == optionCoverage.LogDir
                     && optionReopened.CredentialDir == optionCoverage.CredentialDir,
                     "Python directory options did not round-trip through Config v5.");
                 Assert(optionReopened.ConfigPath == ConfigStore.InternalSettingsLabel,
@@ -296,6 +302,16 @@ namespace Splined.WindowsGui
                     Assert(advanced.TabPages.Cast<TabPage>().Select(page => page.Text).SequenceEqual(new[] { "Library, Paths & Processing", "Artwork & Output", "Sources & Matching" }),
                         "Advanced settings are not grouped into the three task-oriented tabs.");
                     TabPage pathsTab = advanced.TabPages.Cast<TabPage>().Single(page => page.Text == "Library, Paths & Processing");
+                    string[] pathLabels = Descendants(pathsTab).OfType<Label>().Select(label => label.Text).ToArray();
+                    Assert(pathLabels.Contains("SQL Database Directory *")
+                        && pathLabels.Contains("Temporary Run Cache *")
+                        && pathLabels.Contains("Credentials Directory *")
+                        && pathLabels.Contains("Logs Directory *"),
+                        "Settings did not separate and order database, temporary cache, credentials, and logs paths.");
+                    Assert(Descendants(setup).OfType<Label>().Any(label => label.Text == "Music library scan folder")
+                        && Descendants(setup).OfType<Label>().Any(label => label.Text == "Excluded folders")
+                        && !Descendants(pathsTab).OfType<Label>().Any(label => label.Text.Contains("Scan directory")),
+                        "Music library scan and excluded-folder controls were not moved into the aligned library header.");
                     Assert(IsDescendant(pathsTab, setup.Controls.Find("runtimeSettingsGroup", true).Single())
                         && IsDescendant(pathsTab, setup.Controls.Find("retentionSettingsGroup", true).Single())
                         && IsDescendant(pathsTab, setup.Controls.Find("retentionGroup", true).Single()),
@@ -350,7 +366,7 @@ namespace Splined.WindowsGui
                         { "index", 1 }, { "decade", "2010s" }, { "release_class", "album" },
                         { "release_artist", "Fixture Artist" }, { "release_title", "Fixture Album" },
                         { "recording_mbid", "59a0c68f-ec68-418d-a29a-fa54a7d9aea9" },
-                        { "artist_mbids", new object[] { "291dcfb8-b31c-496a-905b-9955509d75b6" } },
+                        { "artist_mbids", new ArrayList { "291dcfb8-b31c-496a-905b-9955509d75b6" } },
                         { "release_mbid", "5d05694f-2b0f-427e-9df8-78dbc0983681" },
                         { "url", "https://musicbrainz.org/release/5d05694f-2b0f-427e-9df8-78dbc0983681" }
                     }
@@ -367,6 +383,13 @@ namespace Splined.WindowsGui
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Apply IDs")
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Return to Source Results"),
                         "MusicBrainz Matches omitted session-only Artist/Release/Recording authority editing or normal-Album return navigation.");
+                    Assert(Descendants(matches).OfType<TextBox>().Any(box => box.Text == "291dcfb8-b31c-496a-905b-9955509d75b6")
+                        && !Descendants(matches).OfType<TextBox>().Any(box => box.Text.Contains("System.Collections")),
+                        "MusicBrainz Artist ID collections were displayed as a collection type name.");
+                    ListView matchList = Descendants(matches).OfType<ListView>().Single();
+                    Assert(matchList.Items.Count >= 2 && matchList.Items[0].Tag == null
+                        && matchList.Items[0].ForeColor.ToArgb() == ThemeManager.CurrentPalette.CategoryMagenta.ToArgb(),
+                        "MusicBrainz decade/release categories did not use the magenta category role.");
                 }
 
                 Dictionary<string, object> fanartCredential = new Dictionary<string, object>
@@ -639,10 +662,15 @@ namespace Splined.WindowsGui
                         Label titleLabel = Descendants(form).OfType<Label>().Single(label => label.Text == titleText);
                         Assert(titleLabel.Parent.Controls.OfType<InfoButton>().Any(), titleText + " does not have its replacement information tooltip beside the heading.");
                     }
-                    Assert(form.Controls.Find("mediaLibrarySelectionCard", true).Single() is FluentCardTableLayoutPanel
-                        && form.Controls.Find("scanActivityCard", true).Single() is FluentCardTableLayoutPanel
-                        && form.Controls.Find("artworkCandidatesCard", true).Single() is FluentCardTableLayoutPanel,
+                    FluentCardTableLayoutPanel libraryCard = form.Controls.Find("mediaLibrarySelectionCard", true).Single() as FluentCardTableLayoutPanel;
+                    FluentCardTableLayoutPanel activityPanel = form.Controls.Find("scanActivityCard", true).Single() as FluentCardTableLayoutPanel;
+                    FluentCardTableLayoutPanel candidatesPanel = form.Controls.Find("artworkCandidatesCard", true).Single() as FluentCardTableLayoutPanel;
+                    Assert(libraryCard != null && activityPanel != null && candidatesPanel != null,
                         "The three major work areas do not use the shared rounded panel surface.");
+                    Assert(libraryCard.AutoScroll && libraryCard.AutoScrollMinSize.Height > 0
+                        && activityPanel.AutoScroll && activityPanel.AutoScrollMinSize.Height > 0
+                        && candidatesPanel.AutoScroll && candidatesPanel.AutoScrollMinSize.Height > 0,
+                        "Each major work area must retain an independent scroll canvas in every panel layout.");
                     FieldInfo candidateCardsField = typeof(MainForm).GetField("candidateCards", BindingFlags.Instance | BindingFlags.NonPublic);
                     FlowLayoutPanel candidateCards = (FlowLayoutPanel)candidateCardsField.GetValue(form);
                     Assert(candidateCards.WrapContents && candidateCards.FlowDirection == FlowDirection.LeftToRight,
@@ -813,9 +841,15 @@ namespace Splined.WindowsGui
                     Assert(savedPanelState.MainSplitterDistance == expectedMainDistance
                         && savedPanelState.RightSplitterDistance == expectedRightDistance,
                         "Main library and Activity/Candidate panel sizes were not retained on exit/save.");
+
+                    MethodInfo applyLayoutPreset = typeof(MainForm).GetMethod("ApplyLayoutPreset", BindingFlags.Instance | BindingFlags.NonPublic);
+                    applyLayoutPreset.Invoke(form, new object[] { "Stacked" });
+                    Assert(mainPanels.Orientation == Orientation.Horizontal
+                        && libraryCard.AutoScroll && activityPanel.AutoScroll && candidatesPanel.AutoScroll,
+                        "Stacked layout did not preserve independent scrolling for all three work areas.");
                 }
 
-                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes, relocated bottom-row LAUNCH, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, Config v5 and credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
+                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, relocated bottom-row LAUNCH, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, Config v5 and credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
                 return 0;
             }
             catch (Exception error)
@@ -1216,6 +1250,9 @@ namespace Splined.WindowsGui
             Assert(dark.ButtonActive != dark.StatusGreen && dark.ButtonActive != dark.StatusOrange
                 && light.ButtonActive != light.StatusGreen && light.ButtonActive != light.StatusOrange,
                 "Active-button tokens reused semantic library-status colors.");
+            Assert(dark.StatusPurple != dark.CategoryMagenta && dark.StatusPurple != dark.StatusBlue
+                && dark.StatusPurple.R < 180 && dark.StatusPurple.B > dark.StatusPurple.R,
+                "Dark purple status text is still too light or reuses a MusicBrainz category color.");
             Assert(ThemeManager.StatusColor(ThemeStatusColor.Orange, "Dark") == dark.StatusOrange
                 && ThemeManager.StatusColor(ThemeStatusColor.Blue, "Light") == light.StatusBlue,
                 "Folder status colors are no longer sourced from the semantic status palette.");

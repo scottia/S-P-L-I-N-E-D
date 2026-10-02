@@ -17,6 +17,7 @@ scan_mode = true
 library_scan = false
 scan_mode_timeout = 24
 cache_dir = "_cache"
+temporary_cache_dir = "_cache"
 # Enable only for an intentional shared/network splined.db (for example a UNC cache).
 sqlite_shared = false
 # Per-run diagnostic logs are created under log_dir/run and pruned by retention.

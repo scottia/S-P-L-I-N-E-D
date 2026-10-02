@@ -131,7 +131,9 @@ Default Docker path:
 /_cache/splined.db
 ```
 
-Windows derives the same filename from its browsable Cache directory. The
+Windows derives the same filename from its browsable **SQL Database
+Directory**. Its separate **Temporary Run Cache** holds downloaded and derived
+candidate images and may remain local even when SQLite is shared over UNC. The
 Rust core owns SQLite access and supplies the embedded GUI with a compact JSON
 projection; the GUI does not maintain a second database or recursively rebuild
 Select Media before first paint. Set `[scan].sqlite_shared = true` only when
@@ -254,7 +256,7 @@ When enabled, each resolved Album receives one sample named:
 <artists>.<album>.sample.jpg
 ```
 
-Samples live under the configured cache sample directory and are recreated for
+Samples live under the configured temporary run-cache sample directory and are recreated for
 the current operational scan.
 
 ---
@@ -278,7 +280,7 @@ All supported runtimes use **Config v5**:
 - [Config v5 reference](docs/config-v5-reference.md)
 
 The Windows GUI stores Config v5 internally and presents its fields through
-**File > Settings...**. Its first-run cache, log, and credential paths default
+**File > Settings...**. Its first-run SQL database, temporary run cache, log, and credential paths default
 beneath `%LOCALAPPDATA%\SPLINED`, remain editable, and are created only after
 Save and Continue. Native portable paths may be application-relative. Docker
 uses container-specific absolute paths while preserving the schema.
@@ -343,7 +345,7 @@ interface state, credentials, SQLite, and diagnostics independently. On
 file-backed runtimes, preserve Config v5, the credential directory, and
 `<scan.cache_dir>/splined.db`. The database contains durable completion,
 bypass, timeout, source-selection, and compilation-progress state. Diagnostic
-logs and other candidate/sample cache data remain disposable.
+logs and temporary run-cache candidate/sample data remain disposable.
 
 ---
 

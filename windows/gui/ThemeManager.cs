@@ -29,7 +29,7 @@ namespace Splined.WindowsGui
         public readonly Color Warning, Error, Success;
         public readonly Color LogReadBackground, LogWriteBackground, LogBorder, LogForeground, LogHeading, LogAccent, LogSuccess, LogWarning, LogError, LogMuted;
         public readonly Color Link, LinkActive;
-        public readonly Color StatusWhite, StatusOrange, StatusRed, StatusPurple, StatusGreen, StatusBlue;
+        public readonly Color StatusWhite, StatusOrange, StatusRed, StatusPurple, StatusGreen, StatusBlue, CategoryMagenta;
         public readonly float WatermarkOpacity;
 
         private ThemePalette(bool dark)
@@ -102,9 +102,10 @@ namespace Splined.WindowsGui
                 StatusWhite = Color.FromArgb(235, 237, 240);
                 StatusOrange = Color.FromArgb(235, 166, 92);
                 StatusRed = Color.FromArgb(255, 105, 115);
-                StatusPurple = Color.FromArgb(188, 145, 235);
+                StatusPurple = Color.FromArgb(157, 103, 211);
                 StatusGreen = Color.FromArgb(111, 214, 143);
                 StatusBlue = Color.FromArgb(103, 181, 255);
+                CategoryMagenta = Color.FromArgb(242, 72, 171);
                 WatermarkOpacity = 0.13f;
             }
             else
@@ -176,6 +177,7 @@ namespace Splined.WindowsGui
                 StatusPurple = Color.Purple;
                 StatusGreen = Color.ForestGreen;
                 StatusBlue = Color.RoyalBlue;
+                CategoryMagenta = Color.FromArgb(174, 24, 108);
                 WatermarkOpacity = 0.060f;
             }
         }

@@ -265,6 +265,26 @@ pub fn prepare_persistent_cache_dir(cache_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Best-effort removal of disposable artwork created by a completed or
+/// interrupted run. The SQLite database, samples, and unrelated files are
+/// intentionally outside this filename contract and are never touched.
+pub fn cleanup_run_cache_files(cache_dir: &Path) {
+    let Ok(entries) = fs::read_dir(cache_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if (name.starts_with("splined-candidate-") || name.starts_with("splined-local-"))
+            && path.is_file()
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 pub async fn run_registry_pipeline_with_cache_dir(
     registry: &ProviderRegistry,
     query: &ArtworkQuery,
@@ -687,6 +707,35 @@ mod tests {
 
         assert!(!cache_dir.join("splined-candidate-stale.jpg").exists());
         assert!(cache_dir.join("keep.txt").exists());
+    }
+
+    #[test]
+    fn completed_run_cleanup_removes_only_disposable_artwork() {
+        let root = tempfile::TempDir::new().expect("run cache fixture should create");
+        fs::write(
+            root.path().join("splined-candidate-current.jpg"),
+            b"candidate",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("splined-local-embedded-current.jpg"),
+            b"local",
+        )
+        .unwrap();
+        fs::write(root.path().join("splined.db"), b"database").unwrap();
+        fs::create_dir(root.path().join("samples")).unwrap();
+
+        cleanup_run_cache_files(root.path());
+
+        assert!(!root.path().join("splined-candidate-current.jpg").exists());
+        assert!(
+            !root
+                .path()
+                .join("splined-local-embedded-current.jpg")
+                .exists()
+        );
+        assert!(root.path().join("splined.db").exists());
+        assert!(root.path().join("samples").is_dir());
     }
 
     #[test]

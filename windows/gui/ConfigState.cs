@@ -169,7 +169,10 @@ namespace Splined.WindowsGui
         public bool ScanMode = true;
         public bool LibraryScan;
         public double ScanModeTimeout = 24;
+        // Config v5 retains the historical cache_dir key as the directory that
+        // owns splined.db. TemporaryCacheDir is disposable per-run artwork.
         public string CacheDir;
+        public string TemporaryCacheDir;
         public bool SqliteShared;
         public string LogDir;
         public string CredentialDir;
@@ -375,6 +378,7 @@ namespace Splined.WindowsGui
             state.LibraryScan = ReadBool(text, "scan", "library_scan", false);
             state.ScanModeTimeout = ReadDoubleOrOff(text, "scan", "scan_mode_timeout", 24);
             state.CacheDir = ResolvePortablePath(ReadString(text, "scan", "cache_dir", state.CacheDir));
+            state.TemporaryCacheDir = ResolvePortablePath(ReadString(text, "scan", "temporary_cache_dir", state.TemporaryCacheDir));
             state.SqliteShared = ReadBool(text, "scan", "sqlite_shared", false);
             state.LogDir = ResolvePortablePath(ReadString(text, "scan", "log_dir", state.LogDir));
             state.CredentialDir = ResolvePortablePath(ReadString(text, "credentials", "credential_dir", state.CredentialDir));
@@ -448,6 +452,7 @@ namespace Splined.WindowsGui
             ConfigState state = new ConfigState();
             state.ConfigPath = InternalSettingsLabel;
             state.CacheDir = Path.Combine(DefaultUserDataRoot, "cache");
+            state.TemporaryCacheDir = Path.Combine(DefaultUserDataRoot, "run-cache");
             state.LogDir = Path.Combine(DefaultUserDataRoot, "logs");
             state.CredentialDir = Path.Combine(DefaultUserDataRoot, "credentials");
             state.SourcePolicies["amazon"] = new SourcePolicyState { Enabled = false };
@@ -469,7 +474,7 @@ namespace Splined.WindowsGui
 
         private static void EnsureRuntimeDirectories(ConfigState state)
         {
-            foreach (string path in new[] { state.CacheDir, state.LogDir, state.CredentialDir })
+            foreach (string path in new[] { state.CacheDir, state.TemporaryCacheDir, state.LogDir, state.CredentialDir })
             {
                 if (String.IsNullOrWhiteSpace(path)) continue;
                 Directory.CreateDirectory(path);
@@ -513,7 +518,9 @@ namespace Splined.WindowsGui
             if (String.IsNullOrWhiteSpace(state.MusicLibrary))
                 throw new InvalidOperationException("Music library is required.");
             if (String.IsNullOrWhiteSpace(state.CacheDir))
-                throw new InvalidOperationException("Database and cache directory is required.");
+                throw new InvalidOperationException("SQL database directory is required.");
+            if (String.IsNullOrWhiteSpace(state.TemporaryCacheDir))
+                throw new InvalidOperationException("Temporary run cache is required.");
             if (String.IsNullOrWhiteSpace(state.LogDir))
                 throw new InvalidOperationException("Log directory is required.");
             if (String.IsNullOrWhiteSpace(state.CredentialDir))
@@ -736,6 +743,7 @@ namespace Splined.WindowsGui
             text.AppendLine("library_scan = " + Bool(state.LibraryScan));
             text.AppendLine("scan_mode_timeout = " + state.ScanModeTimeout.ToString("0.###", CultureInfo.InvariantCulture));
             text.AppendLine("cache_dir = " + Quote(ToPortablePath(state.CacheDir)));
+            text.AppendLine("temporary_cache_dir = " + Quote(ToPortablePath(state.TemporaryCacheDir)));
             text.AppendLine("sqlite_shared = " + Bool(state.SqliteShared));
             text.AppendLine("log_dir = " + Quote(ToPortablePath(state.LogDir)));
             text.AppendLine();
