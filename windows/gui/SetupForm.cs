@@ -1335,15 +1335,15 @@ namespace Splined.WindowsGui
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
             table.Controls.Add(new Label
             {
-                Text = "Disposable diagnostic logs may be pruned without changing album status.",
+                Text = "Windows keeps only the current _logs/run session. Retention remains available to other runtimes.",
                 Dock = DockStyle.Fill,
                 AutoEllipsis = true
             }, 0, 0);
             table.SetColumnSpan(table.GetControlFromPosition(0, 0), 3);
-            table.Controls.Add(new Label { Text = "Retain logs for (days)", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
+            table.Controls.Add(new Label { Text = "Other runtime logs (days)", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
             logDays = new FluentNumericUpDown { Minimum = 1, Maximum = 3650, Dock = DockStyle.Fill };
             table.Controls.Add(logDays, 1, 1);
-            table.Controls.Add(new InfoButton("Recommended: 14 days. Logs are troubleshooting output and may be pruned safely."), 2, 1);
+            table.Controls.Add(new InfoButton("Windows removes prior splined-*.log files from _logs/run at startup. This setting is retained for Config v5 compatibility with other runtimes."), 2, 1);
             group.Controls.Add(table);
             return group;
         }

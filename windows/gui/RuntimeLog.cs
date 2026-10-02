@@ -25,14 +25,13 @@ namespace Splined.WindowsGui
             {
                 string runDirectory = System.IO.Path.Combine(state.LogDir, "run");
                 Directory.CreateDirectory(runDirectory);
-                if (state.LogRetentionDays > 0)
+                // Windows run logs are a single-session diagnostic surface.
+                // Clear completed prior sessions before creating this one;
+                // SQLite, not log retention, owns Album status/history.
+                foreach (string existing in Directory.GetFiles(runDirectory, "splined-*.log"))
                 {
-                    DateTime cutoff = DateTime.UtcNow.AddDays(-state.LogRetentionDays);
-                    foreach (string existing in Directory.GetFiles(runDirectory, "splined-*.log"))
-                    {
-                        try { if (File.GetLastWriteTimeUtc(existing) < cutoff) File.Delete(existing); }
-                        catch { }
-                    }
+                    try { File.Delete(existing); }
+                    catch { }
                 }
                 string verbosity = String.IsNullOrWhiteSpace(state.Verbosity) ? "info" : state.Verbosity.Trim().ToLowerInvariant();
                 string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff");
