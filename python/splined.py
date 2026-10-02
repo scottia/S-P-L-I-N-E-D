@@ -1666,7 +1666,7 @@ def prepare_tui_library_selection(
                 timeout_paths.add(record.path)
             elif indexed_status in {"incomplete", "processed"}:
                 status = indexed_status
-            elif isinstance(history_entry, dict) or album.local_art_files:
+            elif isinstance(history_entry, dict):
                 status = "processed"
             else:
                 status = "unprocessed"
@@ -1747,7 +1747,7 @@ def prepare_tui_library_selection(
             return "timeout"
         if indexed_status in {"incomplete", "processed"}:
             return indexed_status
-        if isinstance(history_entry, dict) or album.local_art_files:
+        if isinstance(history_entry, dict):
             return "processed"
         return "unprocessed"
 

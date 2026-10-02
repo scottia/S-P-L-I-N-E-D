@@ -618,10 +618,19 @@ def inspect_album(
         and str(previous["status"]) in VALID_ALBUM_STATUSES
         else ""
     )
+    # A discovered cover is artwork inventory, not proof that SPLINED
+    # processed the Album.  Early SQLite builds conflated those facts and
+    # produced ``processed`` rows without either completion timestamp or
+    # selected-source evidence.  Do not carry that derived state forward.
+    if (
+        previous_status == "processed"
+        and previous is not None
+        and not str(previous["processed_at"] or "").strip()
+        and not str(previous["selected_source"] or "").strip()
+    ):
+        previous_status = ""
     now = utc_now()
-    status = previous_status or (
-        "processed" if cover["cover_found"] else "unprocessed"
-    )
+    status = previous_status or "unprocessed"
     artist_row = {
         "artist_key": identity,
         "artist_name": artist_name,

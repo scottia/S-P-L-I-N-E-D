@@ -14,9 +14,39 @@ from splined_media_index import _resident_session_usable
 import splined_media_runtime as runtime
 from splined_media_runtime import clean_transient_cache, stats_from_row
 from splined_media_tags import album_base_key, artist_key
+from splined_media_tags import inspect_album
 
 
 class SplinedMediaIndexTests(unittest.TestCase):
+    def test_fresh_album_with_existing_cover_is_unprocessed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "music"
+            album_path = root / "Artist" / "Album"
+            album_path.mkdir(parents=True)
+            track = album_path / "01.mp3"
+            track.write_bytes(b"")
+            cover = album_path / "cover.jpg"
+            cover.write_bytes(b"operator artwork")
+            album = SimpleNamespace(
+                path=album_path,
+                audio_files=[track],
+                local_art_files=[cover],
+                inventory_fingerprint=None,
+            )
+
+            _artist, row, _review, _reused = inspect_album(
+                album,
+                root,
+                "cover",
+                {},
+                {},
+                {},
+            )
+
+            self.assertEqual(row["status"], "unprocessed")
+            self.assertEqual(row["cover_found"], 1)
+            self.assertEqual(row["cover_path"], str(cover))
+
     def test_manual_material_result_updates_progress_status_without_folder_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "splined.db"
@@ -97,6 +127,80 @@ class SplinedMediaIndexTests(unittest.TestCase):
             database_path(Path("/_cache")),
             Path("/_cache/splined.db"),
         )
+
+    def test_cover_inventory_does_not_create_processed_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "splined.db"
+            connection = connect(database, "test")
+            with connection:
+                connection.execute(
+                    "INSERT INTO artists"
+                    "(artist_key, artist_name, primary_path, status, "
+                    "created_at, updated_at, last_seen_at, splined_version) "
+                    "VALUES('artist', 'Artist', '/music/Artist', 'complete', "
+                    "'now', 'now', 'now', 'test')"
+                )
+                connection.execute(
+                    "INSERT INTO albums"
+                    "(album_key, artist_key, album_name, path, tag_signature, "
+                    "status, cover_found, cover_path, local_art_json, "
+                    "processed_at, selected_source, created_at, updated_at, "
+                    "last_seen_at, splined_version) VALUES"
+                    "('cover-only', 'artist', 'Album', '/music/Artist/Album', "
+                    "'tag', 'processed', 1, '/music/Artist/Album/cover.jpg', "
+                    "'[\"/music/Artist/Album/cover.jpg\"]', NULL, NULL, "
+                    "'now', 'now', 'now', 'test')"
+                )
+            connection.close()
+
+            repaired = connect(database, "test")
+            row = repaired.execute(
+                "SELECT status, cover_found, cover_path FROM albums "
+                "WHERE album_key='cover-only'"
+            ).fetchone()
+            artist = repaired.execute(
+                "SELECT status, unprocessed_count, processed_count "
+                "FROM artists WHERE artist_key='artist'"
+            ).fetchone()
+            repaired.close()
+
+            self.assertEqual(tuple(row), (
+                "unprocessed",
+                1,
+                "/music/Artist/Album/cover.jpg",
+            ))
+            self.assertEqual(tuple(artist), ("unprocessed", 1, 0))
+
+    def test_recorded_processed_authority_survives_database_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "splined.db"
+            connection = connect(database, "test")
+            with connection:
+                connection.execute(
+                    "INSERT INTO artists"
+                    "(artist_key, artist_name, primary_path, status, "
+                    "created_at, updated_at, last_seen_at, splined_version) "
+                    "VALUES('artist', 'Artist', '/music/Artist', 'complete', "
+                    "'now', 'now', 'now', 'test')"
+                )
+                connection.execute(
+                    "INSERT INTO albums"
+                    "(album_key, artist_key, album_name, path, tag_signature, "
+                    "status, cover_found, processed_at, selected_source, "
+                    "created_at, updated_at, last_seen_at, splined_version) "
+                    "VALUES('completed', 'artist', 'Album', "
+                    "'/music/Artist/Album', 'tag', 'processed', 1, "
+                    "'2026-10-01T12:00:00Z', 'itunes', "
+                    "'now', 'now', 'now', 'test')"
+                )
+            connection.close()
+
+            reopened = connect(database, "test")
+            status = reopened.execute(
+                "SELECT status FROM albums WHERE album_key='completed'"
+            ).fetchone()[0]
+            reopened.close()
+            self.assertEqual(status, "processed")
 
     def test_explicit_shared_database_uses_rollback_journal_and_busy_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

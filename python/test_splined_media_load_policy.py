@@ -56,8 +56,9 @@ class SplinedMediaLoadPolicyTests(unittest.TestCase):
                     "INSERT INTO albums"
                     "(album_key, artist_key, album_name, album_sort, path, "
                     "tag_signature, status, cover_found, local_art_json, "
+                    "processed_at, selected_source, "
                     "created_at, updated_at, last_seen_at, splined_version) "
-                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     [
                         (
                             "mbid:first",
@@ -69,6 +70,8 @@ class SplinedMediaLoadPolicyTests(unittest.TestCase):
                             "processed",
                             1,
                             '["/music/Artist/First/Cover.jpeg"]',
+                            now,
+                            "itunes",
                             now,
                             now,
                             now,
@@ -84,6 +87,8 @@ class SplinedMediaLoadPolicyTests(unittest.TestCase):
                             "unprocessed",
                             0,
                             "[]",
+                            None,
+                            None,
                             now,
                             now,
                             now,

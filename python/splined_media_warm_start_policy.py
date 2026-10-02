@@ -290,10 +290,9 @@ def _project_statuses_in_memory(
             except ValueError:
                 active = False
             status = "timeout" if active else "processed"
-        elif (
-            current == "processed"
-            or bool(row["cover_found"])
-            or json_list(row["local_art_json"])
+        elif current == "processed" and (
+            str(row["processed_at"] or "").strip()
+            or str(row["selected_source"] or "").strip()
         ):
             status = "processed"
         else:
@@ -455,7 +454,8 @@ def populate_session_readonly(
         cursor = read_connection.execute(
             "SELECT album_key, artist_key, album_name, album_sort, path, "
             "inventory_fingerprint, status, bypassed, cover_found, "
-            "timeout_until, local_art_json FROM albums"
+            "timeout_until, local_art_json, processed_at, selected_source "
+            "FROM albums"
         )
         while True:
             batch = cursor.fetchmany(_PROGRESS_BATCH)

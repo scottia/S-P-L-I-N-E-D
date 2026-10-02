@@ -62,10 +62,12 @@ namespace Splined.WindowsGui
                         + ". Eligible again: " + EligibleUtc.Value.ToLocalTime().ToString("yyyy-MM-dd h:mm:ss tt zzz", CultureInfo.CurrentCulture) + ".";
                 }
                 if (State == AlbumState.Processed)
-                    return HasHistory
-                        ? "Previously processed and currently eligible for manual reprocessing."
-                        : "Existing local cover artwork detected (" + String.Join(", ", LocalArtworkFiles.Select(System.IO.Path.GetFileName)) + "). Eligible for manual reprocessing.";
-                return "Never processed. Eligible for Select All and artist selection.";
+                    return "Previously processed by SPLINED and currently eligible for manual reprocessing.";
+                if (HasLocalArtwork)
+                    return "Never processed by SPLINED. Existing local cover artwork detected ("
+                        + String.Join(", ", LocalArtworkFiles.Select(System.IO.Path.GetFileName))
+                        + "); eligible for Select All and artist selection.";
+                return "Never processed by SPLINED. Eligible for Select All and artist selection.";
             }
         }
 

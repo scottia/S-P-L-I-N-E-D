@@ -49,7 +49,7 @@ def project_statuses_delta(
         connection.execute(
             "SELECT album_key, artist_key, path, local_art_json, "
             "inventory_fingerprint, status, bypassed, cover_found, "
-            "timeout_until FROM albums"
+            "timeout_until, processed_at, selected_source FROM albums"
         )
     )
     artist_rows = {
@@ -151,10 +151,9 @@ def project_statuses_delta(
                 else "unprocessed"
             )
             timeout_until = ""
-        elif (
-            current_status == "processed"
-            or bool(row["cover_found"])
-            or json_list(row["local_art_json"])
+        elif current_status == "processed" and (
+            str(row["processed_at"] or "").strip()
+            or str(row["selected_source"] or "").strip()
         ):
             status = "processed"
         else:

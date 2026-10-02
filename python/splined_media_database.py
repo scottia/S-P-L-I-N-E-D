@@ -171,6 +171,7 @@ def connect(
                     version,
                 ),
             )
+            repair_cover_only_processed_statuses(connection)
         return connection
     except RuntimeError:
         if connection is not None:
@@ -529,7 +530,7 @@ def project_statuses(
     rows = connection.execute(
         "SELECT album_key, artist_key, path, local_art_json, "
         "inventory_fingerprint, status, bypassed, cover_found, "
-        "timeout_until FROM albums"
+        "timeout_until, processed_at, selected_source FROM albums"
     )
     for row in rows:
         path = str(row["path"])
@@ -596,10 +597,9 @@ def project_statuses(
                 else "incomplete"
             )
             timeout_until = ""
-        elif (
-            current == "processed"
-            or bool(row["cover_found"])
-            or json_list(row["local_art_json"])
+        elif current == "processed" and (
+            str(row["processed_at"] or "").strip()
+            or str(row["selected_source"] or "").strip()
         ):
             status = "processed"
         else:
@@ -654,3 +654,36 @@ def update_artist_aggregate(
             artist_key,
         ),
     )
+
+
+def repair_cover_only_processed_statuses(
+    connection: sqlite3.Connection,
+) -> int:
+    """Downgrade legacy cover-derived Processed rows without runtime proof.
+
+    ``cover_found`` and ``local_art_json`` remain useful materialized artwork
+    facts.  Neither is completion authority.  A real SPLINED completion has a
+    timestamp and/or selected-source provenance; explicit incomplete, bypass,
+    and timeout states have their own durable fields and are not touched.
+    """
+    artist_keys = [
+        str(row[0])
+        for row in connection.execute(
+            "SELECT DISTINCT artist_key FROM albums "
+            "WHERE status='processed' "
+            "AND COALESCE(TRIM(processed_at), '')='' "
+            "AND COALESCE(TRIM(selected_source), '')=''"
+        )
+    ]
+    if not artist_keys:
+        return 0
+    cursor = connection.execute(
+        "UPDATE albums SET status='unprocessed', updated_at=? "
+        "WHERE status='processed' "
+        "AND COALESCE(TRIM(processed_at), '')='' "
+        "AND COALESCE(TRIM(selected_source), '')=''",
+        (utc_now(),),
+    )
+    for artist_key in artist_keys:
+        update_artist_aggregate(connection, artist_key)
+    return max(0, int(cursor.rowcount))
