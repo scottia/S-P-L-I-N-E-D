@@ -95,13 +95,10 @@ namespace Splined.WindowsGui
         private readonly Dictionary<MediaStatusFilter, Label> mediaStatusDescriptions = new Dictionary<MediaStatusFilter, Label>();
         private CheckBox filteredScanRead;
         private CheckBox filteredScanWrite;
-        private Button selectAndLaunch;
         private CheckBox selectModeAll;
         private CheckBox selectModeNone;
         private CheckBox selectModeFiltered;
         private bool updatingFilteredControls;
-        private bool autoLaunchFinished;
-        private bool autoLaunchRun;
         private bool initialSelectionRestored;
         private string activeRunMode;
         private SplitContainer mainSplit;
@@ -119,6 +116,7 @@ namespace Splined.WindowsGui
         private Button skip;
         private Button refineFallback;
         private Button retryMusicBrainz;
+        private Button backToMusicBrainz;
         private FlowLayoutPanel fallbackActions;
         private Button enableHover;
         private Label candidateContext;
@@ -140,10 +138,12 @@ namespace Splined.WindowsGui
         private bool fallbackRetryRequested;
         private bool musicBrainzRetryRequested;
         private bool musicBrainzRetryAvailable;
+        private bool musicBrainzBackAvailable;
         private string fallbackRetryArtist = "";
         private string fallbackRetryAlbum = "";
         private HoverPreviewForm hoverPreview;
         private bool updateCheckRunning;
+        private bool applyingLayoutPreset;
         private const int ExpandedMediaFilterHeight = 421;
         private const int CollapsedMediaFilterHeight = 36;
 
@@ -193,14 +193,17 @@ namespace Splined.WindowsGui
             MainMenuStrip = menu;
             Panel header = new Panel { Dock = DockStyle.Top, Height = 54, Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4), Tag = "titlebar-surface" };
             Controls.Add(header);
-            // Let MenuStrip perform its native item measurement before the
-            // first paint. Hosting it directly avoids the empty item bounds
-            // produced by the former auto-sized TableLayout combination.
+            TableLayoutPanel navigation = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
+            navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+            navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            SplinedWordmark wordmark = new SplinedWordmark { Dock = DockStyle.Fill, Margin = new Padding(0) };
+            navigation.Controls.Add(wordmark, 0, 0);
             menu.AutoSize = true;
-            menu.Dock = DockStyle.Top;
+            menu.Dock = DockStyle.Fill;
             menu.GripStyle = ToolStripGripStyle.Hidden;
             menu.LayoutStyle = ToolStripLayoutStyle.HorizontalStackWithOverflow;
-            header.Controls.Add(menu);
+            navigation.Controls.Add(menu, 1, 0);
+            header.Controls.Add(navigation);
 
             statusStrip = new StatusStrip();
             statusStrip.Dock = DockStyle.Bottom;
@@ -213,13 +216,19 @@ namespace Splined.WindowsGui
             mainSplit = new SplitContainer();
             mainSplit.Dock = DockStyle.Fill;
             mainSplit.Size = new Size(Math.Max(850, ClientSize.Width), Math.Max(500, ClientSize.Height));
-            mainSplit.Orientation = Orientation.Vertical;
+            mainSplit.Orientation = uiState.LayoutStacked ? Orientation.Horizontal : Orientation.Vertical;
             mainSplit.SplitterWidth = 7;
-            mainSplit.Panel1MinSize = 280;
-            mainSplit.Panel2MinSize = 420;
-            mainSplit.Panel1.Padding = new Padding(ThemeManager.Space8, ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8);
-            mainSplit.Panel2.Padding = new Padding(ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space8, ThemeManager.Space8);
-            mainSplit.SplitterDistance = Math.Max(mainSplit.Panel1MinSize, Math.Min(uiState.MainSplitterDistance, Math.Max(mainSplit.Panel1MinSize, ClientSize.Width - mainSplit.Panel2MinSize - mainSplit.SplitterWidth)));
+            mainSplit.Panel1MinSize = uiState.LayoutStacked ? 180 : 280;
+            mainSplit.Panel2MinSize = uiState.LayoutStacked ? 250 : 420;
+            ApplyMainSplitPadding();
+            int mainExtent = uiState.LayoutStacked ? ClientSize.Height : ClientSize.Width;
+            mainSplit.SplitterDistance = Math.Max(mainSplit.Panel1MinSize, Math.Min(uiState.MainSplitterDistance, Math.Max(mainSplit.Panel1MinSize, mainExtent - mainSplit.Panel2MinSize - mainSplit.SplitterWidth)));
+            mainSplit.SplitterMoved += delegate
+            {
+                if (applyingLayoutPreset) return;
+                uiState.LayoutPreset = "Custom";
+                uiState.LayoutStacked = mainSplit.Orientation == Orientation.Horizontal;
+            };
             Controls.Add(mainSplit);
             mainSplit.BringToFront();
 
@@ -235,12 +244,30 @@ namespace Splined.WindowsGui
             settingsMenuItem.Click += OpenSettings;
             ToolStripMenuItem credentials = new ToolStripMenuItem("Credentials...");
             credentials.Click += delegate { using (CredentialsForm form = new CredentialsForm(state)) form.ShowDialog(this); };
+            ToolStripMenuItem backup = new ToolStripMenuItem("Backup");
+            ToolStripMenuItem exportBackup = new ToolStripMenuItem("Export Backup...");
+            exportBackup.Click += delegate { using (BackupForm form = new BackupForm(state, uiState, false, null)) form.ShowDialog(this); };
+            ToolStripMenuItem importBackup = new ToolStripMenuItem("Import Backup...");
+            importBackup.Click += async delegate
+            {
+                using (BackupForm form = new BackupForm(state, uiState, true, null))
+                {
+                    if (form.ShowDialog(this) != DialogResult.OK) return;
+                }
+                state = ConfigStore.Load();
+                uiState = ConfigStore.LoadUi();
+                ApplyTheme();
+                await ReloadLibraryAsync(false);
+            };
+            backup.DropDownItems.Add(exportBackup);
+            backup.DropDownItems.Add(importBackup);
             ToolStripMenuItem reload = new ToolStripMenuItem("Refresh Library Index");
             reload.Click += async delegate { await ReloadLibraryAsync(false, true); };
             ToolStripMenuItem exit = new ToolStripMenuItem("Exit");
             exit.Click += delegate { Close(); };
             file.DropDownItems.Add(settingsMenuItem);
             file.DropDownItems.Add(credentials);
+            file.DropDownItems.Add(backup);
             file.DropDownItems.Add(reload);
             file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add(exit);
@@ -254,6 +281,16 @@ namespace Splined.WindowsGui
                 appearance.DropDownItems.Add(item);
             }
             view.DropDownItems.Add(appearance);
+            ToolStripMenuItem layout = new ToolStripMenuItem("Panel Layout");
+            foreach (string choice in new[] { "Balanced", "Wider Select Media", "Wider Decisions", "Stacked" })
+            {
+                ToolStripMenuItem item = new ToolStripMenuItem(choice) { Tag = choice, Checked = String.Equals(choice, uiState.LayoutPreset, StringComparison.OrdinalIgnoreCase) };
+                item.Click += LayoutPresetClicked;
+                layout.DropDownItems.Add(item);
+            }
+            layout.DropDownItems.Add(new ToolStripSeparator());
+            layout.DropDownItems.Add(new ToolStripMenuItem("Drag the panel dividers for a custom layout") { Enabled = false });
+            view.DropDownItems.Add(layout);
 
             ToolStripMenuItem status = new ToolStripMenuItem("Status");
             status.Click += delegate { using (StatusForm form = new StatusForm(state)) form.ShowDialog(this); };
@@ -354,22 +391,25 @@ namespace Splined.WindowsGui
             artistFilter.TextChanged += MediaFilterCriteriaChanged;
             albumFilter.TextChanged += MediaFilterCriteriaChanged;
 
-            TableLayoutPanel columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(0, 4, 0, 0) };
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
+            TableLayoutPanel columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(0, 4, 0, 0) };
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 182));
+            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             GroupBox statuses = new FluentGroupBox { Name = "mediaStatusFilters", Text = "Folder status", Dock = DockStyle.Fill, Padding = new Padding(7) };
-            TableLayoutPanel statusRows = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6 };
-            for (int row = 0; row < 6; row++) statusRows.RowStyles.Add(new RowStyle(SizeType.Percent, 16.66f));
-            AddMediaStatusFilter(statusRows, 0, MediaStatusFilter.White, "Unprocessed");
-            AddMediaStatusFilter(statusRows, 1, MediaStatusFilter.Orange, "Processed");
-            AddMediaStatusFilter(statusRows, 2, MediaStatusFilter.Red, "Bypassed");
-            AddMediaStatusFilter(statusRows, 3, MediaStatusFilter.Purple, "Partial / Timeout");
-            AddMediaStatusFilter(statusRows, 4, MediaStatusFilter.Green, "Artist Complete");
-            AddMediaStatusFilter(statusRows, 5, MediaStatusFilter.Blue, "Artist Contains Bypass");
+            TableLayoutPanel statusRows = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3 };
+            statusRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            statusRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            for (int row = 0; row < 3; row++) statusRows.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
+            AddMediaStatusFilter(statusRows, 0, 0, MediaStatusFilter.White, "Unprocessed");
+            AddMediaStatusFilter(statusRows, 1, 0, MediaStatusFilter.Orange, "Processed");
+            AddMediaStatusFilter(statusRows, 2, 0, MediaStatusFilter.Red, "Bypassed");
+            AddMediaStatusFilter(statusRows, 0, 1, MediaStatusFilter.Purple, "Partial / Timeout");
+            AddMediaStatusFilter(statusRows, 1, 1, MediaStatusFilter.Green, "Artist Complete");
+            AddMediaStatusFilter(statusRows, 2, 1, MediaStatusFilter.Blue, "Artist Contains Bypass");
             statuses.Controls.Add(statusRows);
-            columns.Controls.Add(statuses, 0, 0);
-            columns.Controls.Add(BuildFilteredAutomationPanel(), 1, 0);
+            columns.Controls.Add(BuildFilteredAutomationPanel(), 0, 0);
+            columns.Controls.Add(statuses, 0, 1);
             layout.Controls.Add(columns, 0, 2);
             mediaFilterPanel.Controls.Add(layout);
             outer.Controls.Add(mediaFilterToggle, 0, 0);
@@ -389,7 +429,7 @@ namespace Splined.WindowsGui
             return box;
         }
 
-        private void AddMediaStatusFilter(TableLayoutPanel parent, int row, MediaStatusFilter stateFilter, string label)
+        private void AddMediaStatusFilter(TableLayoutPanel parent, int row, int column, MediaStatusFilter stateFilter, string label)
         {
             CheckBox filter = new FluentCheckBox
             {
@@ -424,15 +464,14 @@ namespace Splined.WindowsGui
             line.Controls.Add(filter);
             line.Controls.Add(bullet);
             line.Controls.Add(description);
-            parent.Controls.Add(line, 0, row);
+            parent.Controls.Add(line, column, row);
         }
 
         private Control BuildFilteredAutomationPanel()
         {
-            TableLayoutPanel stack = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(5, 0, 0, 0) };
-            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 90));
-            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
-            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            TableLayoutPanel stack = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(5, 0, 0, 0) };
+            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
 
             GroupBox select = new FluentGroupBox { Text = "Select Mode", Dock = DockStyle.Fill, Padding = new Padding(9, 8, 7, 7) };
             TableLayoutPanel selectChoices = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(0), Margin = new Padding(0) };
@@ -451,45 +490,26 @@ namespace Splined.WindowsGui
             selectChoices.Controls.Add(selectModeFiltered, 0, 2);
             select.Controls.Add(selectChoices);
 
-            GroupBox scan = new FluentGroupBox { Text = "Scan Mode", Dock = DockStyle.Fill, Padding = new Padding(9, 8, 7, 7) };
+            GroupBox scan = new FluentGroupBox { Text = "Launch Mode", Dock = DockStyle.Fill, Padding = new Padding(9, 8, 7, 7) };
             TableLayoutPanel scanChoices = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(0), Margin = new Padding(0) };
             scanChoices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             scanChoices.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
             scanChoices.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
-            filteredScanRead = new FluentCheckBox { Name = "filteredScanRead", Text = "Filtered Scan [READ]", AutoSize = false, Dock = DockStyle.Fill, Margin = new Padding(0) };
-            filteredScanWrite = new FluentCheckBox { Name = "filteredScanWrite", Text = "Filtered Scan [WRITE]", AutoSize = false, Dock = DockStyle.Fill, Margin = new Padding(0) };
+            filteredScanRead = new FluentCheckBox { Name = "filteredScanRead", Text = "Launch [READ] Source Results", AutoSize = false, Dock = DockStyle.Fill, Margin = new Padding(0) };
+            filteredScanWrite = new FluentCheckBox { Name = "filteredScanWrite", Text = "Launch [LIVE WRITE] Choice Results", AutoSize = false, Dock = DockStyle.Fill, Margin = new Padding(0) };
             filteredScanRead.CheckedChanged += FilteredScanChoiceChanged;
             filteredScanWrite.CheckedChanged += FilteredScanChoiceChanged;
             scanChoices.Controls.Add(filteredScanRead, 0, 0);
             scanChoices.Controls.Add(filteredScanWrite, 0, 1);
             scan.Controls.Add(scanChoices);
 
-            GroupBox automatic = new FluentGroupBox { Text = "Auto Mode", Dock = DockStyle.Fill, Padding = new Padding(9, 8, 7, 7) };
-            FlowLayoutPanel autoChoices = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(2, 0, 0, 0) };
-            selectAndLaunch = new FluentButton
-            {
-                Name = "selectAndLaunch",
-                Text = "AUTO LAUNCH",
-                Width = 160,
-                Height = 28,
-                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
-                Tag = "success",
-                Margin = new Padding(0)
-            };
-            selectAndLaunch.Click += SelectAndLaunchClicked;
-            autoChoices.Controls.Add(selectAndLaunch);
-            automatic.Controls.Add(autoChoices);
-
             ToolTip help = ThemeManager.CreateToolTip();
             help.SetToolTip(select, "Choose ALL, NONE, or FILTERED. FILTERED checks only the currently visible Artist and Album results and keeps its selected indicator until the selection is manually changed.");
-            help.SetToolTip(scan, "Choose one temporary Read or Write mode. Config v5 is not changed and bypass/timeout authority is preserved.");
-            help.SetToolTip(automatic, "AUTO LAUNCH invokes the normal LAUNCH workflow for the albums that are already checked. It never expands the run to other visible or hidden albums.");
+            help.SetToolTip(scan, "Choose one Read or Live Write mode, then use the single LAUNCH button in Artwork Candidates and Preview. Internal settings are not changed and bypass/timeout authority is preserved.");
             select.Tag = help;
             scan.Tag = help;
-            automatic.Tag = help;
             stack.Controls.Add(select, 0, 0);
             stack.Controls.Add(scan, 0, 1);
-            stack.Controls.Add(automatic, 0, 2);
             return stack;
         }
 
@@ -519,9 +539,10 @@ namespace Splined.WindowsGui
 
         private void RestorePanelSizes()
         {
-            if (mainSplit != null && mainSplit.Width > mainSplit.Panel1MinSize + mainSplit.Panel2MinSize + mainSplit.SplitterWidth)
+            int mainExtent = mainSplit == null ? 0 : mainSplit.Orientation == Orientation.Vertical ? mainSplit.Width : mainSplit.Height;
+            if (mainSplit != null && mainExtent > mainSplit.Panel1MinSize + mainSplit.Panel2MinSize + mainSplit.SplitterWidth)
             {
-                int maximum = mainSplit.Width - mainSplit.Panel2MinSize - mainSplit.SplitterWidth;
+                int maximum = mainExtent - mainSplit.Panel2MinSize - mainSplit.SplitterWidth;
                 mainSplit.SplitterDistance = Math.Max(mainSplit.Panel1MinSize, Math.Min(uiState.MainSplitterDistance, maximum));
             }
             if (rightSplit != null && rightSplit.Height > rightSplit.Panel1MinSize + rightSplit.Panel2MinSize + rightSplit.SplitterWidth)
@@ -538,14 +559,15 @@ namespace Splined.WindowsGui
             {
                 artistFilter.Text = uiState.MediaArtistFilter ?? "";
                 albumFilter.Text = uiState.MediaAlbumFilter ?? "";
-                filteredScanRead.Checked = String.Equals(uiState.FilteredScanMode, "read", StringComparison.OrdinalIgnoreCase);
-                filteredScanWrite.Checked = String.Equals(uiState.FilteredScanMode, "write", StringComparison.OrdinalIgnoreCase);
+                string launchMode = String.IsNullOrWhiteSpace(uiState.FilteredScanMode) ? state.Mode : uiState.FilteredScanMode;
+                filteredScanRead.Checked = String.Equals(launchMode, "read", StringComparison.OrdinalIgnoreCase);
+                filteredScanWrite.Checked = String.Equals(launchMode, "write", StringComparison.OrdinalIgnoreCase);
                 filteredScanRead.Enabled = !filteredScanWrite.Checked;
                 filteredScanWrite.Enabled = !filteredScanRead.Checked;
             }
             finally { updatingFilteredControls = false; }
             SetMediaFilterExpanded(uiState.MediaFilterExpanded);
-            UpdateAutoLaunchButton();
+            UpdateSelectionControlsCore(false);
         }
 
         private bool SavedMediaStatusFilter(MediaStatusFilter filter)
@@ -563,9 +585,8 @@ namespace Splined.WindowsGui
 
         private void MediaFilterCriteriaChanged(object sender, EventArgs e)
         {
-            autoLaunchFinished = false;
             BuildTree();
-            UpdateAutoLaunchButton();
+            UpdateSelectionControlsCore(false);
         }
 
         private void FilteredScanChoiceChanged(object sender, EventArgs e)
@@ -581,12 +602,11 @@ namespace Splined.WindowsGui
                 filteredScanRead.Enabled = !running && (!filteredScanWrite.Checked || filteredScanRead.Checked);
                 filteredScanWrite.Enabled = !running && (!filteredScanRead.Checked || filteredScanWrite.Checked);
                 uiState.FilteredScanMode = filteredScanRead.Checked ? "read" : filteredScanWrite.Checked ? "write" : "";
-                autoLaunchFinished = false;
             }
             finally { updatingFilteredControls = false; }
             ThemeManager.Apply(mediaFilterPanel, uiState.Theme);
             UpdateMediaFilterColors();
-            UpdateAutoLaunchButton();
+            UpdateSelectionControlsCore(false);
         }
 
         private void SelectModeChoiceChanged(object sender, EventArgs e)
@@ -615,7 +635,6 @@ namespace Splined.WindowsGui
             }
             finally { updatingFilteredControls = false; }
 
-            autoLaunchFinished = false;
             if (Object.ReferenceEquals(selected, selectModeAll))
             {
                 selectionMode = SelectionMode.All;
@@ -636,36 +655,6 @@ namespace Splined.WindowsGui
                 selectionMode = SelectionMode.Filtered;
                 SelectVisibleFilteredAlbums();
             }
-        }
-
-        private void SelectAndLaunchClicked(object sender, EventArgs e)
-        {
-            if (updatingFilteredControls) return;
-            if (running)
-            {
-                StopRun();
-                return;
-            }
-            if (!filteredScanRead.Checked && !filteredScanWrite.Checked)
-            {
-                MessageBox.Show(this, "Choose Filtered Scan [READ] or Filtered Scan [WRITE] first.", "Filtered scan mode", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            if (SelectedAlbumsForAutoLaunch(albums).Count == 0)
-            {
-                MessageBox.Show(this, "Check one or more Album folders first. AUTO LAUNCH processes only albums that are already checked.", "No Album selections", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            autoLaunchFinished = false;
-            autoLaunchRun = true;
-            LaunchClicked(launch, EventArgs.Empty);
-        }
-
-        private static List<AlbumInfo> SelectedAlbumsForAutoLaunch(IEnumerable<AlbumInfo> source)
-        {
-            return (source ?? Enumerable.Empty<AlbumInfo>())
-                .Where(album => album != null && album.Selected && album.State != AlbumState.TimeoutActive)
-                .ToList();
         }
 
         private int SelectVisibleFilteredAlbums()
@@ -732,41 +721,7 @@ namespace Splined.WindowsGui
                 if (mediaStatusDescriptions.TryGetValue(pair.Key, out description))
                     description.ForeColor = color;
             }
-            UpdateAutoLaunchButton();
-        }
-
-        private void UpdateAutoLaunchButton()
-        {
-            if (selectAndLaunch == null) return;
-            bool modeChosen = filteredScanRead != null && filteredScanWrite != null
-                && (filteredScanRead.Checked || filteredScanWrite.Checked);
-            bool selectedActionable = SelectedAlbumsForAutoLaunch(albums).Count > 0;
-
-            if (running && awaitingDecision)
-            {
-                selectAndLaunch.Text = "WAITING";
-                selectAndLaunch.Tag = "waiting";
-                selectAndLaunch.Enabled = true;
-            }
-            else if (running)
-            {
-                selectAndLaunch.Text = "STOP";
-                selectAndLaunch.Tag = null;
-                selectAndLaunch.Enabled = true;
-            }
-            else if (autoLaunchFinished)
-            {
-                selectAndLaunch.Text = "FINISHED";
-                selectAndLaunch.Tag = null;
-                selectAndLaunch.Enabled = false;
-            }
-            else
-            {
-                selectAndLaunch.Text = "AUTO LAUNCH";
-                selectAndLaunch.Tag = "success";
-                selectAndLaunch.Enabled = !loadingLibrary && modeChosen && selectedActionable;
-            }
-            ThemeManager.StyleButton(selectAndLaunch, uiState.Theme);
+            UpdateSelectionControlsCore(false);
         }
 
         private void BuildProcessingPanel(Control parent)
@@ -813,10 +768,9 @@ namespace Splined.WindowsGui
             refineFallback.Click += RefineFallbackClicked;
             refineFallback.EnabledChanged += delegate { ThemeManager.StyleButton(refineFallback, uiState.Theme); };
             fallbackActions.Controls.Add(refineFallback);
-            retryMusicBrainz = new FluentButton { Text = "Retry MusicBrainz", Width = 165, Height = 32, Enabled = false, Visible = false, Tag = "primary" };
+            retryMusicBrainz = new FluentButton { Text = "MusicBrainz Matches...", Width = 185, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
             retryMusicBrainz.Click += RetryMusicBrainzClicked;
             retryMusicBrainz.EnabledChanged += delegate { ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme); };
-            fallbackActions.Controls.Add(retryMusicBrainz);
             fallbackActions.Controls.Add(new InfoButton("Edit the tagged Artist and Album search values, then rerun the current album through SPLINED fallback. This does not change the music files or bypass history."));
             lower.Controls.Add(fallbackActions, 0, 3);
             FlowLayoutPanel actions = new FlowLayoutPanel { Name = "candidateActionRow", Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 5, 0, 7), Margin = new Padding(0) };
@@ -834,6 +788,10 @@ namespace Splined.WindowsGui
             compare.Click += CompareClicked;
             skip.Click += SkipClicked;
             actions.Controls.Add(launch); actions.Controls.Add(useSelected); actions.Controls.Add(keepLocal); actions.Controls.Add(compare); actions.Controls.Add(skip);
+            actions.Controls.Add(retryMusicBrainz);
+            backToMusicBrainz = new FluentButton { Text = "Back to MB Matches", Width = 155, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
+            backToMusicBrainz.Click += BackToMusicBrainzClicked;
+            actions.Controls.Add(backToMusicBrainz);
             enableHover = new FluentButton { Name = "enableHoverButton", Text = "Enable Hover", Width = 125, Height = 34, Enabled = false };
             enableHover.Click += delegate
             {
@@ -959,7 +917,7 @@ namespace Splined.WindowsGui
             }
             tree.EndUpdate();
             suppressTreeEvents = false;
-            UpdateAutoLaunchButton();
+            UpdateSelectionControlsCore(false);
         }
 
         private bool IsMediaStatusChecked(MediaStatusFilter filter)
@@ -988,7 +946,6 @@ namespace Splined.WindowsGui
         private void TreeAfterCheck(object sender, TreeViewEventArgs e)
         {
             if (suppressTreeEvents || running) return;
-            autoLaunchFinished = false;
             if (selectionMode != SelectionMode.Select)
             {
                 selectionMode = SelectionMode.Select;
@@ -1093,7 +1050,9 @@ namespace Splined.WindowsGui
         {
             int count = albums.Count(album => album.Selected);
             bool waiting = running && awaitingDecision;
-            launch.Enabled = running || (!loadingLibrary && count > 0);
+            bool launchModeChosen = filteredScanRead != null && filteredScanWrite != null
+                && (filteredScanRead.Checked || filteredScanWrite.Checked);
+            launch.Enabled = running || (!loadingLibrary && count > 0 && launchModeChosen);
             launch.Tag = waiting ? "waiting" : "launch";
             launch.Text = waiting ? "WAITING" : running ? "STOP" : (count > 0 ? "LAUNCH (" + count + ")" : "LAUNCH");
             ThemeManager.StyleButton(launch, uiState.Theme);
@@ -1111,7 +1070,6 @@ namespace Splined.WindowsGui
             if (selectModeAll != null) selectModeAll.Enabled = filterActionsEnabled;
             if (selectModeNone != null) selectModeNone.Enabled = filterActionsEnabled;
             if (selectModeFiltered != null) selectModeFiltered.Enabled = filterActionsEnabled;
-            UpdateAutoLaunchButton();
             if (updateStatus && !running && !loadingLibrary) SetStatus(count == 0 ? "No albums selected. Launch is disabled." : count + " album(s) selected. Launch will process only these albums.");
         }
 
@@ -1151,12 +1109,17 @@ namespace Splined.WindowsGui
             }
             List<AlbumInfo> selected = albums.Where(album => album.Selected).ToList();
             if (selected.Count == 0) return;
+            if (!filteredScanRead.Checked && !filteredScanWrite.Checked)
+            {
+                MessageBox.Show(this, "Choose Launch [READ] or Launch [LIVE WRITE] before starting the selected albums.",
+                    "Launch mode required", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             string core = FindCoreExecutable();
             if (core == null)
             {
-                autoLaunchRun = false;
                 MessageBox.Show(this, "The live SPLINED processing core was not found beside the GUI.", "SPLINED core missing", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                UpdateAutoLaunchButton();
+                UpdateSelectionControlsCore(false);
                 return;
             }
             string runConfigPath = state.ConfigPath;
@@ -1172,17 +1135,18 @@ namespace Splined.WindowsGui
                 {
                     ConfigState runState = state.Clone();
                     runState.Mode = activeRunMode;
-                    temporaryConfigPath = Path.Combine(ConfigStore.AppRoot, "_cache", "gui-run-" + Guid.NewGuid().ToString("N") + ".toml");
+                    string runtimeConfigDirectory = Path.Combine(Path.GetTempPath(), "SPLINED", "runtime-config");
+                    Directory.CreateDirectory(runtimeConfigDirectory);
+                    temporaryConfigPath = Path.Combine(runtimeConfigDirectory, "gui-run-" + Guid.NewGuid().ToString("N") + ".toml");
                     ConfigStore.SaveTemporaryRunConfig(runState, temporaryConfigPath);
                     runConfigPath = temporaryConfigPath;
                 }
                 catch (Exception error)
                 {
                     activeRunMode = null;
-                    autoLaunchRun = false;
                     MessageBox.Show(this, "Unable to prepare the temporary filtered run mode.\r\n\r\n" + error.Message,
                         "Filtered scan mode", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    UpdateAutoLaunchButton();
+                    UpdateSelectionControlsCore(false);
                     return;
                 }
             }
@@ -1249,8 +1213,6 @@ namespace Splined.WindowsGui
             running = false;
             string completedRunMode = activeRunMode;
             activeRunMode = null;
-            if (autoLaunchRun) autoLaunchFinished = true;
-            autoLaunchRun = false;
             ClearCandidates();
             candidateContext.Text = "";
             progress.Value = 100;
@@ -1425,14 +1387,87 @@ namespace Splined.WindowsGui
                     AppendActivity("  3. Querying enabled artwork providers...\r\n");
                 }
             }
+            else if (eventName == "musicbrainz_matches")
+            {
+                object raw;
+                object[] items = payload.TryGetValue("items", out raw) ? ToObjectArray(raw) : new object[0];
+                awaitingDecision = true;
+                candidateContext.Text = "MusicBrainz Matches — " + ReadString(payload, "artist") + " — " + ReadString(payload, "title");
+                UpdateSelectionControls();
+                using (MusicBrainzMatchesForm form = new MusicBrainzMatchesForm(
+                    ReadString(payload, "artist"), ReadString(payload, "title"), items,
+                    ReadBool(payload, "compilation_track"), uiState.Theme))
+                {
+                    DialogResult choice = form.ShowDialog(this);
+                    if (choice == DialogResult.OK && form.SelectedMatchIndex > 0)
+                    {
+                        Dictionary<string, object> command = new Dictionary<string, object>();
+                        command["action"] = "use_musicbrainz_match";
+                        command["index"] = form.SelectedMatchIndex;
+                        SendDecision(json.Serialize(command));
+                    }
+                    else if (choice == DialogResult.Retry || form.SearchRequested)
+                        SendDecision("{\"action\":\"search_musicbrainz\"}");
+                    else if (choice == DialogResult.Yes && form.AuthorityEditRequested)
+                    {
+                        Dictionary<string, object> command = new Dictionary<string, object>();
+                        command["action"] = "edit_musicbrainz_authority";
+                        command["recording_mbid"] = form.EditedRecordingMbid ?? "";
+                        command["artist_mbids"] = form.EditedArtistMbids ?? "";
+                        command["release_mbid"] = form.EditedReleaseMbid ?? "";
+                        SendDecision(json.Serialize(command));
+                    }
+                    else
+                        SendDecision("{\"action\":\"leave_unchanged\"}");
+                }
+            }
+            else if (eventName == "compilation_started")
+            {
+                AppendActivity("  Curated compilation: per-track embedded artwork mode. Folder cover files will not be changed.\r\n", ActivityTone.Warning);
+            }
+            else if (eventName == "compilation_track_started")
+            {
+                AppendActivity("  Track " + ReadInt(payload, "index", 0) + "/" + ReadInt(payload, "total", 0)
+                    + ": " + ReadString(payload, "artist") + " — " + ReadString(payload, "title") + "\r\n", ActivityTone.Accent);
+            }
+            else if (eventName == "compilation_track_completed")
+            {
+                AppendActivity("     " + ReadString(payload, "action") + " from " + ReadString(payload, "source")
+                    + " (" + ReadInt(payload, "width", 0) + "x" + ReadInt(payload, "height", 0) + ")\r\n", ActivityTone.Success);
+            }
+            else if (eventName == "source_results_cache_hit")
+            {
+                AppendActivity("     Restored " + ReadInt(payload, "candidates", 0)
+                    + " cached source result(s); provider APIs were not queried again.\r\n", ActivityTone.Accent);
+            }
+            else if (eventName == "source_results_restored")
+            {
+                candidateContext.Text = "Source Results — choose artwork or open MusicBrainz Matches again.";
+                awaitingDecision = true;
+                UpdateCandidateActions();
+            }
+            else if (eventName == "musicbrainz_authority_error")
+            {
+                string message = ReadString(payload, "message");
+                AppendActivity("     MusicBrainz authority correction rejected: " + message + "\r\n", ActivityTone.Warning);
+                SetStatus("MusicBrainz authority correction was rejected; review the IDs and try again.");
+            }
+            else if (eventName == "compilation_track_unresolved" || eventName == "compilation_lookup_warning")
+            {
+                string issue = ReadString(payload, "reason");
+                if (String.IsNullOrWhiteSpace(issue)) issue = ReadString(payload, "message");
+                AppendActivity("     Unresolved: " + issue + "\r\n", ActivityTone.Warning);
+            }
             else if (eventName == "candidates")
             {
                 fallbackMode = ReadBool(payload, "fallback") || fallbackMode;
-                musicBrainzRetryAvailable = ReadBool(payload, "musicbrainz_retry_available");
+                musicBrainzRetryAvailable = ReadBool(payload, "musicbrainz_retry_available")
+                    || ReadBool(payload, "musicbrainz_matches_available");
                 string eventFallbackReason = ReadString(payload, "fallback_reason");
                 if (!String.IsNullOrWhiteSpace(eventFallbackReason)) fallbackReason = eventFallbackReason;
                 object raw;
                 if (payload.TryGetValue("items", out raw)) ShowCandidates(raw as object[] ?? ToObjectArray(raw));
+                musicBrainzBackAvailable = ReadBool(payload, "musicbrainz_back_available");
                 SetFallbackControls(fallbackMode);
                 int hidden = ReadInt(payload, "hidden_by_source_policy", 0);
                 int evaluated = candidates.Count + hidden;
@@ -1618,12 +1653,15 @@ namespace Splined.WindowsGui
             compare.Enabled = candidates.Count > 1 && compareCandidateIndexes.Count > 1;
             skip.Enabled = awaitingDecision;
             refineFallback.Enabled = awaitingDecision && fallbackMode;
-            retryMusicBrainz.Visible = fallbackMode && musicBrainzRetryAvailable;
-            retryMusicBrainz.Enabled = awaitingDecision && fallbackMode && musicBrainzRetryAvailable;
+            retryMusicBrainz.Visible = musicBrainzRetryAvailable;
+            retryMusicBrainz.Enabled = awaitingDecision && musicBrainzRetryAvailable;
+            backToMusicBrainz.Visible = musicBrainzBackAvailable;
+            backToMusicBrainz.Enabled = awaitingDecision && musicBrainzBackAvailable;
             ThemeManager.StyleButton(useSelected, uiState.Theme);
             ThemeManager.StyleButton(keepLocal, uiState.Theme);
             ThemeManager.StyleButton(refineFallback, uiState.Theme);
             ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme);
+            ThemeManager.StyleButton(backToMusicBrainz, uiState.Theme);
         }
 
         private void SetFallbackControls(bool visible)
@@ -1631,8 +1669,8 @@ namespace Splined.WindowsGui
             if (fallbackActions == null) return;
             fallbackActions.Visible = visible;
             refineFallback.Enabled = visible && awaitingDecision;
-            retryMusicBrainz.Visible = visible && musicBrainzRetryAvailable;
-            retryMusicBrainz.Enabled = visible && awaitingDecision && musicBrainzRetryAvailable;
+            retryMusicBrainz.Visible = musicBrainzRetryAvailable;
+            retryMusicBrainz.Enabled = awaitingDecision && musicBrainzRetryAvailable;
             ThemeManager.StyleButton(refineFallback, uiState.Theme);
             ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme);
         }
@@ -1657,6 +1695,8 @@ namespace Splined.WindowsGui
             keepLocal.Visible = false;
             compare.Enabled = false;
             skip.Enabled = false;
+            musicBrainzBackAvailable = false;
+            if (backToMusicBrainz != null) { backToMusicBrainz.Visible = false; backToMusicBrainz.Enabled = false; }
             UpdateHoverButton();
             UpdateSelectionControls();
         }
@@ -1825,9 +1865,16 @@ namespace Splined.WindowsGui
         {
             if (!musicBrainzRetryAvailable || !awaitingDecision || currentProcess == null) return;
             SendDecision("{\"action\":\"retry_musicbrainz\"}");
-            candidateContext.Text = "Retrying the current album's MusicBrainz release lookup...";
+            candidateContext.Text = "Loading MusicBrainz Matches...";
+            retryMusicBrainz.Enabled = false;
+        }
+
+        private void BackToMusicBrainzClicked(object sender, EventArgs e)
+        {
+            if (!musicBrainzBackAvailable || !awaitingDecision || currentProcess == null) return;
+            SendDecision("{\"action\":\"back_musicbrainz\"}");
+            candidateContext.Text = "Returning to cached MusicBrainz Matches...";
             ClearCandidates();
-            SetFallbackControls(false);
         }
 
         private void SkipClicked(object sender, EventArgs e)
@@ -1968,6 +2015,55 @@ namespace Splined.WindowsGui
             SaveUiState();
             foreach (ToolStripMenuItem sibling in selected.Owner.Items.OfType<ToolStripMenuItem>()) sibling.Checked = sibling == selected;
             ApplyThemeAndMaybeRebuildTree(true);
+        }
+
+        private void LayoutPresetClicked(object sender, EventArgs e)
+        {
+            ToolStripMenuItem selected = sender as ToolStripMenuItem;
+            if (selected == null) return;
+            ApplyLayoutPreset(Convert.ToString(selected.Tag));
+            foreach (ToolStripMenuItem sibling in selected.Owner.Items.OfType<ToolStripMenuItem>())
+                sibling.Checked = sibling == selected;
+            SaveUiState();
+        }
+
+        private void ApplyLayoutPreset(string preset)
+        {
+            if (mainSplit == null) return;
+            applyingLayoutPreset = true;
+            try
+            {
+                bool stacked = String.Equals(preset, "Stacked", StringComparison.OrdinalIgnoreCase);
+                mainSplit.Orientation = stacked ? Orientation.Horizontal : Orientation.Vertical;
+                mainSplit.Panel1MinSize = stacked ? 180 : 280;
+                mainSplit.Panel2MinSize = stacked ? 250 : 420;
+                ApplyMainSplitPadding();
+                int extent = stacked ? mainSplit.Height : mainSplit.Width;
+                double proportion = String.Equals(preset, "Wider Select Media", StringComparison.OrdinalIgnoreCase) ? 0.46
+                    : String.Equals(preset, "Wider Decisions", StringComparison.OrdinalIgnoreCase) ? 0.27
+                    : stacked ? 0.40 : 0.35;
+                int maximum = Math.Max(mainSplit.Panel1MinSize, extent - mainSplit.Panel2MinSize - mainSplit.SplitterWidth);
+                mainSplit.SplitterDistance = Math.Max(mainSplit.Panel1MinSize, Math.Min((int)Math.Round(extent * proportion), maximum));
+                uiState.LayoutPreset = preset;
+                uiState.LayoutStacked = stacked;
+                uiState.MainSplitterDistance = mainSplit.SplitterDistance;
+            }
+            finally { applyingLayoutPreset = false; }
+        }
+
+        private void ApplyMainSplitPadding()
+        {
+            if (mainSplit == null) return;
+            if (mainSplit.Orientation == Orientation.Horizontal)
+            {
+                mainSplit.Panel1.Padding = new Padding(ThemeManager.Space8, ThemeManager.Space8, ThemeManager.Space8, ThemeManager.Space4);
+                mainSplit.Panel2.Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space8);
+            }
+            else
+            {
+                mainSplit.Panel1.Padding = new Padding(ThemeManager.Space8, ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8);
+                mainSplit.Panel2.Padding = new Padding(ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space8, ThemeManager.Space8);
+            }
         }
 
         private async void CheckForUpdateClicked(object sender, EventArgs e)

@@ -4,8 +4,8 @@ use clap::Parser;
 use sha2::{Digest, Sha256};
 use splined::candidate::StaticFormat;
 use splined::config::{
-    Config, Mode, Verbosity, config_path, default_toml, load_config, load_config_from,
-    resolve_sources, samples_dir,
+    Config, Mode, Verbosity, config_path, load_config, load_config_from, resolve_sources,
+    samples_dir,
 };
 use splined::config_migration::{MigrationReport, migrate_config_if_needed};
 use splined::credentials::{
@@ -18,7 +18,7 @@ use splined::musicbrainz::{
     resolve_token_path, save_credential as save_musicbrainz_credential,
 };
 use splined::pipeline::{candidate_summary, run_registry_pipeline};
-use splined::portable::{APP_ROOT_ENV, bootstrap_portable_install, running_as_setup_executable};
+use splined::portable::{APP_ROOT_ENV, finish_setup_executable, running_as_setup_executable};
 use splined::range::Range;
 use splined::scan_runtime::run_scan_library_read_report;
 use splined::source::{ArtworkQuery, ProviderContext, ProviderRegistry, lastfm::LastFm};
@@ -39,14 +39,17 @@ const EMBEDDED_GUI: &[u8] = include_bytes!(env!("SPLINED_EMBEDDED_GUI"));
 const CORE_PATH_ENV: &str = "SPLINED_CORE_PATH";
 
 #[cfg(windows)]
-fn launch_embedded_gui() -> Result<i32, String> {
+fn launch_embedded_gui(restore_path: Option<&Path>) -> Result<i32, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
     let app_root = executable
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
-    let runtime_dir = app_root.join("_cache").join("runtime");
+    let runtime_root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let runtime_dir = runtime_root.join("SPLINED").join("runtime");
     fs::create_dir_all(&runtime_dir).map_err(|error| {
         format!(
             "Unable to create SPLINED runtime cache {}: {error}",
@@ -80,10 +83,15 @@ fn launch_embedded_gui() -> Result<i32, String> {
         }
     }
 
-    let status = Command::new(&gui_path)
+    let mut command = Command::new(&gui_path);
+    command
         .current_dir(&app_root)
         .env(APP_ROOT_ENV, &app_root)
-        .env(CORE_PATH_ENV, &executable)
+        .env(CORE_PATH_ENV, &executable);
+    if let Some(path) = restore_path {
+        command.arg("--restore").arg(path);
+    }
+    let status = command
         .status()
         .map_err(|error| format!("Unable to start the SPLINED interface: {error}"))?;
     Ok(status.code().unwrap_or(1))
@@ -133,9 +141,10 @@ fn setup_only_bootstrap() -> Result<bool, String> {
         return Ok(false);
     }
 
-    let defaults = default_toml()
-        .map_err(|error| format!("Unable to generate default SPLINED config: {error}"))?;
-    bootstrap_portable_install(&defaults)?;
+    // Windows v4 setup installs only the application. The GUI prompts for all
+    // required runtime locations on first launch and creates those locations
+    // only after the operator saves them.
+    finish_setup_executable()?;
 
     // A setup executable is installation machinery only. It must not continue
     // into config migration, credential discovery, scans, or provider activity.
@@ -753,11 +762,17 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
     }
 
     let query = ArtworkQuery::release(release_mbid);
+    let apple_collection_ids = release
+        .external_urls
+        .iter()
+        .filter_map(|url| splined::source::itunes::apple_collection_id_from_url(url))
+        .collect::<Vec<_>>();
     let context = ProviderContext {
         artist_credit: release.artist_credit,
         release_title: release.title,
         release_group_mbid: release.release_group_id,
         release_group_title: release.release_group_title,
+        apple_collection_ids,
     };
 
     let registry = match ProviderRegistry::from_source_order_with_credentials(
@@ -862,13 +877,23 @@ async fn main() {
     }
 
     #[cfg(windows)]
-    if std::env::args_os().len() == 1 {
-        match launch_embedded_gui() {
-            Ok(0) => {}
-            Ok(code) => std::process::exit(code),
-            Err(error) => show_gui_error(&error),
+    {
+        let arguments = std::env::args_os().collect::<Vec<_>>();
+        let restore_path = arguments.get(1).map(Path::new).filter(|path| {
+            arguments.len() == 2
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("spl"))
+        });
+        if arguments.len() == 1 || restore_path.is_some() {
+            match launch_embedded_gui(restore_path) {
+                Ok(0) => {}
+                Ok(code) => std::process::exit(code),
+                Err(error) => show_gui_error(&error),
+            }
+            return;
         }
-        return;
     }
 
     let cli = Cli::parse();

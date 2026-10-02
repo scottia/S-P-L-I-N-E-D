@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 const SEARCH_URL: &str = "https://itunes.apple.com/search";
+const LOOKUP_URL: &str = "https://itunes.apple.com/lookup";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const SEARCH_LIMIT: usize = 25;
 const ARTWORK_SIZE: u32 = 3000;
@@ -102,7 +103,7 @@ impl ITunes {
         for term in terms {
             for item in self.search_query(artist, album, &term).await? {
                 if item.artwork_url_100.trim().is_empty()
-                    || !same_text(&item.artist_name, artist)
+                    || !artist_matches(&item.artist_name, artist)
                     || !title_matches(&item.collection_name, album)
                     || !seen.insert(item.collection_id)
                 {
@@ -127,6 +128,51 @@ impl ITunes {
         Ok(references)
     }
 
+    async fn lookup_collections(
+        &self,
+        artist: &str,
+        album: &str,
+        collection_ids: &[String],
+    ) -> Result<Vec<ArtworkReference>, String> {
+        let mut references = Vec::new();
+        let mut seen = HashSet::new();
+        for collection_id in collection_ids {
+            if !seen.insert(collection_id.to_string()) {
+                continue;
+            }
+            let response = self
+                .client
+                .get(LOOKUP_URL)
+                .query(&[("id", collection_id.as_str()), ("country", "US")])
+                .send()
+                .await
+                .map_err(|error| {
+                    format!("Unable to query iTunes collection {collection_id}: {error}")
+                })?;
+            if response.status() != StatusCode::OK {
+                continue;
+            }
+            let payload = response.json::<SearchResponse>().await.map_err(|error| {
+                format!("Invalid iTunes collection response for {collection_id}: {error}")
+            })?;
+            if let Some(item) = payload.results.into_iter().find(|item| {
+                !item.artwork_url_100.trim().is_empty()
+                    && artist_matches(&item.artist_name, artist)
+                    && title_matches(&item.collection_name, album)
+            }) {
+                references.push(ArtworkReference {
+                    source: "itunes".to_string(),
+                    id: item.collection_id.to_string(),
+                    url: high_resolution_artwork_url(&item.artwork_url_100, ARTWORK_SIZE),
+                    front: true,
+                    approved: true,
+                    types: vec!["Front".to_string()],
+                });
+            }
+        }
+        Ok(references)
+    }
+
     async fn discover_release_context(
         &self,
         context: &ProviderContext,
@@ -136,6 +182,15 @@ impl ITunes {
 
         if artist.is_empty() || release_title.is_empty() {
             return Ok(Vec::new());
+        }
+
+        if !context.apple_collection_ids.is_empty() {
+            let direct = self
+                .lookup_collections(artist, release_title, &context.apple_collection_ids)
+                .await?;
+            if !direct.is_empty() {
+                return Ok(direct);
+            }
         }
 
         let mut titles = Vec::new();
@@ -195,6 +250,45 @@ fn normalized(value: &str) -> String {
 
 fn same_text(left: &str, right: &str) -> bool {
     normalized(left) == normalized(right)
+}
+
+fn artist_matches(found: &str, requested: &str) -> bool {
+    if same_text(found, requested) {
+        return true;
+    }
+    let found = found
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let requested = requested
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    !found.is_empty()
+        && !requested.is_empty()
+        && (found.starts_with(&(requested.clone() + " ")) || requested.starts_with(&(found + " ")))
+}
+
+pub fn apple_collection_id_from_url(url: &str) -> Option<String> {
+    let lower = url.trim().to_ascii_lowercase();
+    if !(lower.starts_with("https://music.apple.com/")
+        || lower.starts_with("http://music.apple.com/")
+        || lower.starts_with("https://itunes.apple.com/")
+        || lower.starts_with("http://itunes.apple.com/"))
+    {
+        return None;
+    }
+    let album_position = lower.find("/album/")?;
+    let tail = &lower[album_position + "/album/".len()..];
+    tail.split(['/', '?', '#'])
+        .filter_map(|part| {
+            let digits = part.strip_prefix("id").unwrap_or(part);
+            (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| digits.to_string())
+        })
+        .next_back()
 }
 
 fn title_matches(found: &str, requested: &str) -> bool {
@@ -282,5 +376,19 @@ mod tests {
     #[test]
     fn title_match_rejects_unrelated_album() {
         assert!(!title_matches("24K Magic", "Unorthodox Jukebox"));
+    }
+
+    #[test]
+    fn apple_relationship_urls_accept_slugged_and_current_album_forms() {
+        assert_eq!(
+            apple_collection_id_from_url("https://music.apple.com/us/album/1658654996"),
+            Some("1658654996".to_string())
+        );
+        assert_eq!(
+            apple_collection_id_from_url(
+                "https://itunes.apple.com/us/album/just-push-play/id571803416"
+            ),
+            Some("571803416".to_string())
+        );
     }
 }

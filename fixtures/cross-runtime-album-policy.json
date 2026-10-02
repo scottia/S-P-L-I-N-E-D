@@ -1,0 +1,32 @@
+{
+  "albums": [
+    {
+      "name": "official album",
+      "album_mbid": "5d05694f-2b0f-427e-9df8-78dbc0983681",
+      "compilation": "0",
+      "manual_compilation": false,
+      "output_target": "folder"
+    },
+    {
+      "name": "curated compilation",
+      "album_mbid": "",
+      "compilation": "1",
+      "manual_compilation": true,
+      "output_target": "embedded-track"
+    },
+    {
+      "name": "untagged ordinary album",
+      "album_mbid": "",
+      "compilation": "0",
+      "manual_compilation": false,
+      "output_target": "folder"
+    }
+  ],
+  "automatic_release_classes": [
+    { "primary": "Album", "secondary": [], "expected": "album" },
+    { "primary": "Album", "secondary": ["Soundtrack"], "expected": "soundtrack" },
+    { "primary": "Album", "secondary": ["Compilation"], "expected": "compilation" },
+    { "primary": "Single", "secondary": [], "expected": null },
+    { "primary": "Album", "secondary": ["Live"], "expected": null }
+  ]
+}

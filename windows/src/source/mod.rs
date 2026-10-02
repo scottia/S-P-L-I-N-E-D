@@ -39,6 +39,7 @@ pub struct ProviderContext {
     pub release_title: String,
     pub release_group_mbid: Option<String>,
     pub release_group_title: Option<String>,
+    pub apple_collection_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

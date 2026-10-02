@@ -1,5 +1,10 @@
 use crate::candidate::{Candidate, StaticFormat};
+use crate::compilation::{
+    CompilationMatchCache, MusicBrainzMatch, manual_album_eligible, track_authority,
+};
 use crate::config::{Config, Mode, OutputConfig, samples_dir};
+use crate::download::DownloadedCandidate;
+use crate::embedded_artwork::replace_embedded_front;
 use crate::final_artwork::{
     FinalArtworkAction, FinalArtworkResult, PreparedArtwork, PreparedArtworkInfo,
     destination_matches_prepared, install_prepared_artwork, prepare_configured_artwork,
@@ -12,11 +17,15 @@ use crate::local_artwork::{
     LocalPreflightAction, cleanup_competing_static, cleanup_replaced_static_covers,
     inspect_local_preflight,
 };
-use crate::media_database::{RuntimeArtworkMaterial, record_album_outcome_from_runtime};
+use crate::media_database::{
+    CompilationArtworkApplication, RuntimeArtworkMaterial, completed_compilation_track_paths,
+    find_local_compilation_artwork, record_album_outcome_from_runtime,
+    record_compilation_artwork_application, record_compilation_progress,
+};
 use crate::musicbrainz::MusicBrainzClient;
 use crate::pipeline::{
-    PipelineCandidate, RegistryPipelineOptions, candidate_summary, prepare_persistent_cache_dir,
-    run_registry_pipeline_with_cache_dir,
+    PipelineCandidate, PipelineResult, RegistryPipelineOptions, candidate_summary,
+    prepare_persistent_cache_dir, run_registry_pipeline_with_cache_dir,
 };
 use crate::range::Range;
 use crate::safe_write::replace_binary_file;
@@ -27,7 +36,7 @@ use crate::scan_musicbrainz::{
     tagged_album_title_matches_release,
 };
 use crate::scan_tags::read_album_track_evidence;
-use crate::source::{ArtworkQuery, ProviderContext, ProviderRegistry};
+use crate::source::{ArtworkQuery, ArtworkReference, ProviderContext, ProviderRegistry};
 use crate::source_history::{load_source_history, record_source_selection};
 use crate::source_policy::{
     SourcePolicyDecision, SourcePolicyStatus, active_policy, global_range_decision,
@@ -213,7 +222,8 @@ pub async fn run_scan_library_read_report(
         ..ReadScanSummary::default()
     };
 
-    for (index, album) in inventory.albums.iter().enumerate() {
+    let mut compilation_match_cache = CompilationMatchCache::default();
+    'album_loop: for (index, album) in inventory.albums.iter().enumerate() {
         if gui_events::cancelled() {
             return Err("SPLINED scan stopped by user.".to_string());
         }
@@ -289,6 +299,50 @@ pub async fn run_scan_library_read_report(
                 .yellow()
                 .bold()
         );
+
+        if manual_album_eligible(&tracks) {
+            let compilation_context = CompilationRunContext {
+                config,
+                resolved_sources,
+                registry: &registry,
+                musicbrainz: &musicbrainz,
+                range: &range,
+                format_order: &format_order,
+                cache_dir,
+            };
+            match run_compilation_album(
+                &compilation_context,
+                &mut compilation_match_cache,
+                album,
+                &tracks,
+            )
+            .await
+            {
+                Ok(result) => {
+                    summary.selected += result.selected;
+                    summary.installed += result.installed;
+                    summary.read_only += result.read_only;
+                    summary.unresolved += result.unresolved;
+                    if result.failed {
+                        summary.failed += 1;
+                    }
+                }
+                Err(error) => {
+                    summary.failed += 1;
+                    println!(
+                        "  {}",
+                        format!("ERROR: compilation track-art workflow failed: {error}")
+                            .red()
+                            .bold()
+                    );
+                    gui_events::emit(
+                        json!({ "event": "album_error", "album_path": album.path, "message": error }),
+                    );
+                }
+            }
+            println!();
+            continue;
+        }
 
         let mut local_preflight = inspect_local_preflight(album, config, &range, cache_dir);
         for diagnostic in &local_preflight.diagnostics {
@@ -494,6 +548,13 @@ pub async fn run_scan_library_read_report(
                         fallback_release_mbid = Some(release_mbid);
                     } else {
                         summary.resolved += 1;
+                        let apple_collection_ids = release
+                            .external_urls
+                            .iter()
+                            .filter_map(|url| {
+                                crate::source::itunes::apple_collection_id_from_url(url)
+                            })
+                            .collect::<Vec<_>>();
                         println!(
                             "  MB Artist:   {}",
                             release.artist_credit.as_str().green().bold()
@@ -517,6 +578,7 @@ pub async fn run_scan_library_read_report(
                                 release_title: release.title,
                                 release_group_mbid: release.release_group_id,
                                 release_group_title: release.release_group_title,
+                                apple_collection_ids,
                             },
                         ));
                     }
@@ -575,7 +637,7 @@ pub async fn run_scan_library_read_report(
             ));
         }
 
-        let (query, context) = query_and_context.expect("normal or fallback provider context");
+        let (query, mut context) = query_and_context.expect("normal or fallback provider context");
         let fallback_sources: Vec<String> = resolved_sources
             .iter()
             .filter(|source| {
@@ -746,59 +808,18 @@ pub async fn run_scan_library_read_report(
         };
         let mut manually_selected = false;
 
-        let gui_candidates: Vec<_> = display_indices
-            .iter()
-            .map(|candidate_index| {
-                let item = &result.candidates[*candidate_index];
-                let candidate = &item.downloaded.candidate;
-                let projected = project_configured_artwork(candidate, &range, &config.output);
-                let policy = configured_candidate_policy(candidate, &projected, &range, config);
-                let source_override_active =
-                    active_policy(&config.source_policies, &candidate.source).is_some();
-                json!({
-                    "index": *candidate_index + 1,
-                    "source": candidate.source,
-                    "width": candidate.width,
-                    "height": candidate.height,
-                    "format": format!("{:?}", candidate.format).to_ascii_lowercase(),
-                    "range_class": projected_range_class(projected.width.min(projected.height), &range),
-                    "distance_from_ideal": projected.width.min(projected.height).abs_diff(range.ideal),
-                    "square": candidate.is_square(),
-                    "acceptable": policy.status != SourcePolicyStatus::Reject,
-                    "policy_status": policy.status,
-                    "policy_reason": policy.reason,
-                    "source_override_active": source_override_active,
-                    "projected_width": projected.width,
-                    "projected_height": projected.height,
-                    "cropped": projected.cropped,
-                    "resized": projected.resized,
-                    "upscaled": projected.upscaled,
-                    "approved": item.reference.approved,
-                    "reference_id": item.reference.id,
-                    "local_origin": if item.reference.types.iter().any(|value| value == "EmbeddedTrack") {
-                        "embedded-track"
-                    } else if item.reference.types.iter().any(|value| value == "CoverFile") {
-                        "cover-file"
-                    } else {
-                        ""
-                    },
-                    "local_reference": item.reference.id,
-                    "url": item.reference.url,
-                    "cache_path": item.downloaded.path(),
-                    "recommended": Some(*candidate_index) == suggested_index,
-                })
-            })
-            .collect();
-        gui_events::emit(json!({
-            "event": "candidates",
-            "album_path": album.path,
-            "items": gui_candidates,
-            "recommended_index": suggested_index.map(|value| value + 1),
-            "hidden_by_source_policy": hidden_by_source_policy,
-            "fallback": fallback_reason.is_some(),
-            "fallback_reason": fallback_reason,
-            "musicbrainz_retry_available": musicbrainz_retry_available,
-        }));
+        emit_normal_source_results(NormalSourceResultsEvent {
+            album,
+            result: &result,
+            display_indices: &display_indices,
+            suggested_index,
+            hidden_by_source_policy,
+            fallback_reason: fallback_reason.as_deref(),
+            musicbrainz_retry_available,
+            musicbrainz_matches_available: musicbrainz.is_enabled() && !tracks.is_empty(),
+            range: &range,
+            config,
+        });
 
         if selected_index.is_none()
             && (!result.candidates.is_empty() || fallback_reason.is_some())
@@ -812,107 +833,168 @@ pub async fn run_scan_library_read_report(
                 "suggested_index": suggested_index.map(|value| value + 1),
                 "allow_bypass": true,
                 "musicbrainz_retry_available": musicbrainz_retry_available,
+                "musicbrainz_matches_available": musicbrainz.is_enabled() && !tracks.is_empty(),
             }));
             if !gui_events::enabled() {
                 print!("  Choose a candidate number or b to bypass: ");
                 let _ = io::stdout().flush();
             }
-            match gui_events::wait_for_candidate_decision() {
-                Ok(gui_events::CandidateDecision::Use(index))
-                    if index < result.candidates.len() =>
-                {
-                    let candidate = &result.candidates[index].downloaded.candidate;
-                    if !candidate_visible_for_review(candidate, &range, config) {
+            'candidate_review: loop {
+                match gui_events::wait_for_candidate_decision() {
+                    Ok(gui_events::CandidateDecision::Use(index))
+                        if index < result.candidates.len() =>
+                    {
+                        let candidate = &result.candidates[index].downloaded.candidate;
+                        if !candidate_visible_for_review(candidate, &range, config) {
+                            summary.failed += 1;
+                            println!(
+                                "  {}",
+                                "ERROR: candidate is rejected by the active source policy."
+                                    .red()
+                                    .bold()
+                            );
+                            gui_events::emit(json!({
+                                "event": "album_error",
+                                "album_path": album.path,
+                                "message": "Candidate is rejected by the active source policy."
+                            }));
+                            continue 'album_loop;
+                        }
+                        selected_index = Some(index);
+                        manually_selected = true;
+                        break 'candidate_review;
+                    }
+                    Ok(gui_events::CandidateDecision::Use(index)) => {
+                        summary.failed += 1;
+                        println!("  ERROR: candidate {} does not exist.", index + 1);
+                        continue 'album_loop;
+                    }
+                    Ok(gui_events::CandidateDecision::Bypass) => {
+                        let post_cover_started = Instant::now();
+                        let outcome = if fallback_reason.is_some() {
+                            "fallback-bypassed"
+                        } else {
+                            "normal-out-of-range-bypassed"
+                        };
+                        record_runtime_completion(
+                            config,
+                            album,
+                            outcome,
+                            None,
+                            None,
+                            post_cover_started,
+                            post_cover_started,
+                        )?;
+                        gui_events::emit(json!({
+                            "event": "album_completed",
+                            "album_path": album.path,
+                            "destination": "",
+                            "action": "Bypassed",
+                            "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
+                        }));
+                        println!("  Artwork:     {}", "BYPASSED".yellow().bold());
+                        println!();
+                        continue 'album_loop;
+                    }
+                    Ok(gui_events::CandidateDecision::RetryMusicBrainz) => {
+                        match run_normal_musicbrainz_browser(
+                            &CompilationRunContext {
+                                config,
+                                resolved_sources,
+                                registry: &registry,
+                                musicbrainz: &musicbrainz,
+                                range: &range,
+                                format_order: &format_order,
+                                cache_dir,
+                            },
+                            &mut compilation_match_cache,
+                            album,
+                            &tracks[0],
+                        )
+                        .await?
+                        {
+                            NormalBrowserOutcome::Use {
+                                pipeline,
+                                selected,
+                                provider_context,
+                            } => {
+                                result = *pipeline;
+                                selected_index = Some(selected);
+                                context = *provider_context;
+                                fallback_reason = None;
+                                manually_selected = true;
+                                break 'candidate_review;
+                            }
+                            NormalBrowserOutcome::ReturnToSources => {
+                                emit_normal_source_results(NormalSourceResultsEvent {
+                                    album,
+                                    result: &result,
+                                    display_indices: &display_indices,
+                                    suggested_index,
+                                    hidden_by_source_policy,
+                                    fallback_reason: fallback_reason.as_deref(),
+                                    musicbrainz_retry_available,
+                                    musicbrainz_matches_available: musicbrainz.is_enabled()
+                                        && !tracks.is_empty(),
+                                    range: &range,
+                                    config,
+                                });
+                                gui_events::emit(
+                                    json!({ "event": "source_results_restored", "album_path": album.path }),
+                                );
+                                continue 'candidate_review;
+                            }
+                            NormalBrowserOutcome::Bypass => {
+                                let post_cover_started = Instant::now();
+                                record_runtime_completion(
+                                    config,
+                                    album,
+                                    "normal-out-of-range-bypassed",
+                                    None,
+                                    None,
+                                    post_cover_started,
+                                    post_cover_started,
+                                )?;
+                                gui_events::emit(
+                                    json!({ "event": "album_completed", "album_path": album.path,
+                                "destination": "", "action": "Bypassed",
+                                "mode": format!("{:?}", config.mode).to_ascii_lowercase() }),
+                                );
+                                continue 'album_loop;
+                            }
+                        }
+                    }
+                    Ok(gui_events::CandidateDecision::Retry {
+                        artist,
+                        album: retry_album,
+                    }) if fallback_reason.is_some() => {
+                        gui_events::emit(json!({
+                            "event": "album_retry_requested",
+                            "album_path": album.path,
+                            "artist": artist,
+                            "release": retry_album,
+                        }));
+                        println!("  Fallback search will retry with edited Artist / Album values.");
+                        println!();
+                        continue 'album_loop;
+                    }
+                    Ok(gui_events::CandidateDecision::Retry { .. }) => {
+                        summary.failed += 1;
+                        println!("  ERROR: fallback retry is only available in fallback mode.");
+                        continue 'album_loop;
+                    }
+                    Ok(gui_events::CandidateDecision::BackToMusicBrainz) => {
                         summary.failed += 1;
                         println!(
-                            "  {}",
-                            "ERROR: candidate is rejected by the active source policy."
-                                .red()
-                                .bold()
+                            "  ERROR: MusicBrainz match navigation is available only for curated compilation tracks."
                         );
-                        gui_events::emit(json!({
-                            "event": "album_error",
-                            "album_path": album.path,
-                            "message": "Candidate is rejected by the active source policy."
-                        }));
-                        continue;
+                        continue 'album_loop;
                     }
-                    selected_index = Some(index);
-                    manually_selected = true;
-                }
-                Ok(gui_events::CandidateDecision::Use(index)) => {
-                    summary.failed += 1;
-                    println!("  ERROR: candidate {} does not exist.", index + 1);
-                    continue;
-                }
-                Ok(gui_events::CandidateDecision::Bypass) => {
-                    let post_cover_started = Instant::now();
-                    let outcome = if fallback_reason.is_some() {
-                        "fallback-bypassed"
-                    } else {
-                        "normal-out-of-range-bypassed"
-                    };
-                    record_runtime_completion(
-                        config,
-                        album,
-                        outcome,
-                        None,
-                        None,
-                        post_cover_started,
-                        post_cover_started,
-                    )?;
-                    gui_events::emit(json!({
-                        "event": "album_completed",
-                        "album_path": album.path,
-                        "destination": "",
-                        "action": "Bypassed",
-                        "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
-                    }));
-                    println!("  Artwork:     {}", "BYPASSED".yellow().bold());
-                    println!();
-                    continue;
-                }
-                Ok(gui_events::CandidateDecision::RetryMusicBrainz)
-                    if musicbrainz_retry_available =>
-                {
-                    gui_events::emit(json!({
-                        "event": "album_musicbrainz_retry_requested",
-                        "album_path": album.path,
-                    }));
-                    println!("  MusicBrainz lookup will retry for the current album.");
-                    println!();
-                    continue;
-                }
-                Ok(gui_events::CandidateDecision::RetryMusicBrainz) => {
-                    summary.failed += 1;
-                    println!(
-                        "  ERROR: MusicBrainz retry is available only after an actual lookup failure."
-                    );
-                    continue;
-                }
-                Ok(gui_events::CandidateDecision::Retry {
-                    artist,
-                    album: retry_album,
-                }) if fallback_reason.is_some() => {
-                    gui_events::emit(json!({
-                        "event": "album_retry_requested",
-                        "album_path": album.path,
-                        "artist": artist,
-                        "release": retry_album,
-                    }));
-                    println!("  Fallback search will retry with edited Artist / Album values.");
-                    println!();
-                    continue;
-                }
-                Ok(gui_events::CandidateDecision::Retry { .. }) => {
-                    summary.failed += 1;
-                    println!("  ERROR: fallback retry is only available in fallback mode.");
-                    continue;
-                }
-                Err(error) => {
-                    summary.failed += 1;
-                    println!("  ERROR: {error}");
-                    continue;
+                    Err(error) => {
+                        summary.failed += 1;
+                        println!("  ERROR: {error}");
+                        continue 'album_loop;
+                    }
                 }
             }
         }
@@ -1430,6 +1512,847 @@ fn resolve_bytes_destination(
     })
 }
 
+#[derive(Default)]
+struct CompilationRunResult {
+    selected: usize,
+    installed: usize,
+    read_only: usize,
+    unresolved: usize,
+    failed: bool,
+}
+
+struct NormalSourceResultsEvent<'a> {
+    album: &'a AlbumDirectory,
+    result: &'a PipelineResult,
+    display_indices: &'a [usize],
+    suggested_index: Option<usize>,
+    hidden_by_source_policy: usize,
+    fallback_reason: Option<&'a str>,
+    musicbrainz_retry_available: bool,
+    musicbrainz_matches_available: bool,
+    range: &'a Range,
+    config: &'a Config,
+}
+
+fn emit_normal_source_results(event: NormalSourceResultsEvent<'_>) {
+    let items = event.display_indices
+        .iter()
+        .map(|candidate_index| {
+            let item = &event.result.candidates[*candidate_index];
+            let candidate = &item.downloaded.candidate;
+            let projected = project_configured_artwork(candidate, event.range, &event.config.output);
+            let policy = configured_candidate_policy(candidate, &projected, event.range, event.config);
+            json!({
+                "index": *candidate_index + 1, "source": candidate.source,
+                "width": candidate.width, "height": candidate.height,
+                "format": format!("{:?}", candidate.format).to_ascii_lowercase(),
+                "range_class": projected_range_class(projected.width.min(projected.height), event.range),
+                "distance_from_ideal": projected.width.min(projected.height).abs_diff(event.range.ideal),
+                "square": candidate.is_square(),
+                "acceptable": policy.status != SourcePolicyStatus::Reject,
+                "policy_status": policy.status, "policy_reason": policy.reason,
+                "source_override_active": active_policy(&event.config.source_policies, &candidate.source).is_some(),
+                "projected_width": projected.width, "projected_height": projected.height,
+                "cropped": projected.cropped, "resized": projected.resized,
+                "upscaled": projected.upscaled, "approved": item.reference.approved,
+                "reference_id": item.reference.id,
+                "local_origin": if item.reference.types.iter().any(|value| value == "EmbeddedTrack") {
+                    "embedded-track"
+                } else if item.reference.types.iter().any(|value| value == "CoverFile") {
+                    "cover-file"
+                } else { "" },
+                "local_reference": item.reference.id, "url": item.reference.url,
+                "cache_path": item.downloaded.path(),
+                "recommended": Some(*candidate_index) == event.suggested_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    gui_events::emit(json!({
+        "event": "candidates", "album_path": event.album.path, "items": items,
+        "recommended_index": event.suggested_index.map(|value| value + 1),
+        "hidden_by_source_policy": event.hidden_by_source_policy,
+        "fallback": event.fallback_reason.is_some(), "fallback_reason": event.fallback_reason,
+        "musicbrainz_retry_available": event.musicbrainz_retry_available,
+        "musicbrainz_matches_available": event.musicbrainz_matches_available,
+    }));
+}
+
+struct CompilationRunContext<'a> {
+    config: &'a Config,
+    resolved_sources: &'a [String],
+    registry: &'a ProviderRegistry,
+    musicbrainz: &'a MusicBrainzClient,
+    range: &'a Range,
+    format_order: &'a [StaticFormat],
+    cache_dir: &'a Path,
+}
+
+#[derive(Clone)]
+struct CachedPipelineCandidate {
+    reference: ArtworkReference,
+    path: PathBuf,
+    source_priority: usize,
+}
+
+#[derive(Clone)]
+struct CachedPipelineResult {
+    candidates: Vec<CachedPipelineCandidate>,
+    best_index: Option<usize>,
+    diagnostics: Vec<crate::pipeline::PipelineDiagnostic>,
+}
+
+impl CachedPipelineResult {
+    fn capture(result: &PipelineResult) -> Self {
+        Self {
+            candidates: result
+                .candidates
+                .iter()
+                .map(|item| CachedPipelineCandidate {
+                    reference: item.reference.clone(),
+                    path: item.downloaded.path().to_path_buf(),
+                    source_priority: item.downloaded.candidate.source_priority,
+                })
+                .collect(),
+            best_index: result.best_index,
+            diagnostics: result.diagnostics.clone(),
+        }
+    }
+
+    fn restore(&self) -> Result<PipelineResult, String> {
+        let candidates = self
+            .candidates
+            .iter()
+            .map(|item| {
+                Ok(PipelineCandidate {
+                    reference: item.reference.clone(),
+                    downloaded: DownloadedCandidate::from_existing_path(
+                        item.reference.source.clone(),
+                        item.path.clone(),
+                        item.source_priority,
+                        item.reference.url.clone(),
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(PipelineResult {
+            candidates,
+            best_index: self.best_index,
+            diagnostics: self.diagnostics.clone(),
+            provider_timings: Vec::new(),
+        })
+    }
+}
+
+enum NormalBrowserOutcome {
+    Use {
+        pipeline: Box<PipelineResult>,
+        selected: usize,
+        provider_context: Box<ProviderContext>,
+    },
+    ReturnToSources,
+    Bypass,
+}
+
+async fn run_normal_musicbrainz_browser(
+    context: &CompilationRunContext<'_>,
+    match_cache: &mut CompilationMatchCache,
+    album: &AlbumDirectory,
+    track: &LocalTrackEvidence,
+) -> Result<NormalBrowserOutcome, String> {
+    let CompilationRunContext {
+        config,
+        resolved_sources,
+        registry,
+        musicbrainz,
+        range,
+        format_order,
+        cache_dir,
+    } = context;
+    let (recording_mbid, artist_mbids) = track_authority(track);
+    let mut use_search = recording_mbid.is_none();
+    let mut matches = match_cache
+        .browser_matches(
+            musicbrainz,
+            recording_mbid.as_deref(),
+            &artist_mbids,
+            &track.artist,
+            &track.title,
+        )
+        .await?;
+    let mut visited = std::collections::HashSet::<String>::new();
+    let mut current_release = None::<String>;
+    let mut source_results = std::collections::HashMap::<String, CachedPipelineResult>::new();
+    let mut resolutions = std::collections::HashMap::<String, String>::new();
+
+    loop {
+        emit_normal_musicbrainz_matches(
+            track,
+            &matches,
+            &visited,
+            current_release.as_deref(),
+            use_search,
+            &resolutions,
+        );
+        let selected = match gui_events::wait_for_musicbrainz_match_decision()? {
+            gui_events::MusicBrainzMatchDecision::Use(index) if index < matches.len() => {
+                matches[index].clone()
+            }
+            gui_events::MusicBrainzMatchDecision::Use(_) => {
+                return Err("Selected MusicBrainz match does not exist.".to_string());
+            }
+            gui_events::MusicBrainzMatchDecision::Search => {
+                use_search = true;
+                matches = match_cache
+                    .browser_matches(musicbrainz, None, &[], &track.artist, &track.title)
+                    .await?;
+                continue;
+            }
+            gui_events::MusicBrainzMatchDecision::EditAuthority {
+                recording_mbid,
+                artist_mbids,
+                release_mbid,
+            } => {
+                match match_cache
+                    .edited_authority_matches(
+                        musicbrainz,
+                        &recording_mbid,
+                        &artist_mbids,
+                        &release_mbid,
+                        &track.artist,
+                        &track.title,
+                    )
+                    .await
+                {
+                    Ok(edited) => matches = edited,
+                    Err(error) => {
+                        gui_events::emit(json!({ "event": "musicbrainz_authority_error",
+                            "album_path": album.path, "message": error }));
+                        continue;
+                    }
+                }
+                use_search = recording_mbid.trim().is_empty();
+                continue;
+            }
+            gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
+                return Ok(NormalBrowserOutcome::ReturnToSources);
+            }
+        };
+
+        let provider_context = ProviderContext {
+            artist_credit: selected.release_artist.clone(),
+            release_title: selected.release_title.clone(),
+            release_group_mbid: selected.release_group_mbid.clone(),
+            release_group_title: Some(selected.release_title.clone()),
+            apple_collection_ids: Vec::new(),
+        };
+        let pipeline = if let Some(cached) = source_results.get(&selected.release_mbid) {
+            gui_events::emit(json!({ "event": "source_results_cache_hit",
+                "album_path": album.path, "release_mbid": selected.release_mbid,
+                "candidates": cached.candidates.len() }));
+            cached.restore()?
+        } else {
+            let discovered = run_registry_pipeline_with_cache_dir(
+                registry,
+                &ArtworkQuery::release(&selected.release_mbid),
+                &provider_context,
+                RegistryPipelineOptions {
+                    source_order: resolved_sources,
+                    range,
+                    format_order,
+                    source_policies: &config.source_policies,
+                },
+                cache_dir,
+            )
+            .await?;
+            for timing in &discovered.provider_timings {
+                gui_events::emit(
+                    json!({ "event": "provider_timing", "album_path": album.path,
+                    "source": timing.source, "status": timing.status(),
+                    "discovery_ms": timing.discovery_ms, "download_ms": timing.download_ms,
+                    "references": timing.references, "candidates": timing.candidates,
+                    "errors": timing.errors, "error": timing.error }),
+                );
+            }
+            if let Some(best) = discovered
+                .best_index
+                .and_then(|index| discovered.candidates.get(index))
+            {
+                resolutions.insert(
+                    selected.release_mbid.clone(),
+                    format!(
+                        "{}x{}",
+                        best.downloaded.candidate.width, best.downloaded.candidate.height
+                    ),
+                );
+            }
+            source_results.insert(
+                selected.release_mbid.clone(),
+                CachedPipelineResult::capture(&discovered),
+            );
+            discovered
+        };
+        let suggested_index = pipeline.best_index;
+        let display_indices = (0..pipeline.candidates.len())
+            .filter(|index| {
+                candidate_visible_for_review(
+                    &pipeline.candidates[*index].downloaded.candidate,
+                    range,
+                    config,
+                )
+            })
+            .collect::<Vec<_>>();
+        let gui_candidates = display_indices
+            .iter()
+            .map(|candidate_index| {
+                let item = &pipeline.candidates[*candidate_index];
+                let candidate = &item.downloaded.candidate;
+                let projected = project_configured_artwork(candidate, range, &config.output);
+                let policy = configured_candidate_policy(candidate, &projected, range, config);
+                json!({ "index": candidate_index + 1, "source": candidate.source,
+                    "width": candidate.width, "height": candidate.height,
+                    "format": format!("{:?}", candidate.format).to_ascii_lowercase(),
+                    "range_class": projected_range_class(projected.width.min(projected.height), range),
+                    "distance_from_ideal": projected.width.min(projected.height).abs_diff(range.ideal),
+                    "square": candidate.is_square(), "acceptable": policy.status != SourcePolicyStatus::Reject,
+                    "policy_status": policy.status, "policy_reason": policy.reason,
+                    "source_override_active": active_policy(&config.source_policies, &candidate.source).is_some(),
+                    "projected_width": projected.width, "projected_height": projected.height,
+                    "cropped": projected.cropped, "resized": projected.resized,
+                    "upscaled": projected.upscaled, "approved": item.reference.approved,
+                    "reference_id": item.reference.id, "local_origin": "",
+                    "local_reference": item.reference.id, "url": item.reference.url,
+                    "cache_path": item.downloaded.path(),
+                    "recommended": Some(*candidate_index) == suggested_index })
+            })
+            .collect::<Vec<_>>();
+        gui_events::emit(json!({ "event": "candidates", "album_path": album.path,
+            "items": gui_candidates, "recommended_index": suggested_index.map(|value| value + 1),
+            "hidden_by_source_policy": pipeline.candidates.len() - display_indices.len(),
+            "fallback": false, "musicbrainz_back_available": true,
+            "musicbrainz_matches_available": false }));
+        gui_events::emit(
+            json!({ "event": "decision_required", "album_path": album.path,
+            "reason": "musicbrainz-release", "suggested_index": suggested_index.map(|value| value + 1),
+            "allow_bypass": true, "musicbrainz_back_available": true,
+            "musicbrainz_matches_available": false }),
+        );
+
+        match gui_events::wait_for_candidate_decision()? {
+            gui_events::CandidateDecision::Use(index) if index < pipeline.candidates.len() => {
+                if !candidate_visible_for_review(
+                    &pipeline.candidates[index].downloaded.candidate,
+                    range,
+                    config,
+                ) {
+                    return Err("Candidate is rejected by the active source policy.".to_string());
+                }
+                return Ok(NormalBrowserOutcome::Use {
+                    pipeline: Box::new(pipeline),
+                    selected: index,
+                    provider_context: Box::new(provider_context),
+                });
+            }
+            gui_events::CandidateDecision::BackToMusicBrainz => {
+                visited.insert(selected.release_mbid.clone());
+                current_release = Some(selected.release_mbid);
+            }
+            gui_events::CandidateDecision::Bypass => {
+                return Ok(NormalBrowserOutcome::Bypass);
+            }
+            _ => return Err("Invalid MusicBrainz artwork decision.".to_string()),
+        }
+    }
+}
+
+fn emit_normal_musicbrainz_matches(
+    track: &LocalTrackEvidence,
+    matches: &[MusicBrainzMatch],
+    visited_releases: &std::collections::HashSet<String>,
+    current_release: Option<&str>,
+    searched: bool,
+    resolutions: &std::collections::HashMap<String, String>,
+) {
+    let items = matches
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            json!({ "index": index + 1, "recording_mbid": item.recording_mbid,
+                "recording_title": item.recording_title, "recording_artist": item.recording_artist,
+                "artist_mbids": item.artist_mbids, "release_mbid": item.release_mbid,
+                "release_group_mbid": item.release_group_mbid, "release_class": item.release_class,
+                "release_title": item.release_title, "release_artist": item.release_artist,
+                "release_date": item.release_date, "country": item.country, "score": item.score,
+                "url": item.url, "decade": crate::compilation::decade(item.release_date.as_deref()),
+                "resolution": resolutions.get(&item.release_mbid),
+                "visited": visited_releases.contains(&item.release_mbid),
+                "current": current_release.is_some_and(|value| value.eq_ignore_ascii_case(&item.release_mbid)) })
+        })
+        .collect::<Vec<_>>();
+    gui_events::emit(
+        json!({ "event": "musicbrainz_matches", "track_path": track.path,
+        "artist": track.artist, "title": track.title, "searched": searched,
+        "compilation_track": false, "items": items }),
+    );
+}
+
+async fn run_compilation_album(
+    context: &CompilationRunContext<'_>,
+    match_cache: &mut CompilationMatchCache,
+    album: &AlbumDirectory,
+    tracks: &[LocalTrackEvidence],
+) -> Result<CompilationRunResult, String> {
+    let CompilationRunContext {
+        config,
+        resolved_sources,
+        registry,
+        musicbrainz,
+        range,
+        format_order,
+        cache_dir,
+    } = context;
+    gui_events::emit(json!({
+        "event": "compilation_started", "album_path": album.path,
+        "total_tracks": tracks.len(),
+        "message": "Missing Album MBID + compilation=1: approved artwork will be embedded per track; folder cover files are untouched."
+    }));
+    let identities = tracks
+        .iter()
+        .filter_map(|track| {
+            let (recording, artists) = track_authority(track);
+            recording
+                .map(|recording| (track.path.clone(), recording, artists.join(",")))
+                .filter(|(_, _, artists)| !artists.is_empty())
+        })
+        .collect::<Vec<_>>();
+    let already_completed = completed_compilation_track_paths(config, &album.path, &identities)?;
+    let mut completed = already_completed.len();
+    let mut result = CompilationRunResult::default();
+    // Keep every inspected release available for the duration of this Album.
+    // Returning to MusicBrainz Matches must not repeat provider discovery or
+    // downloads, and ranking is restored from the original deterministic run.
+    let mut source_results_cache = std::collections::HashMap::<String, CachedPipelineResult>::new();
+
+    for (track_index, track) in tracks.iter().enumerate() {
+        if gui_events::cancelled() {
+            break;
+        }
+        if already_completed.contains(&track.path) {
+            gui_events::emit(
+                json!({ "event": "compilation_track_skipped", "album_path": album.path,
+                "track_path": track.path, "index": track_index + 1, "total": tracks.len(), "reason": "already-complete" }),
+            );
+            continue;
+        }
+        gui_events::emit(
+            json!({ "event": "compilation_track_started", "album_path": album.path,
+            "track_path": track.path, "artist": track.artist, "title": track.title,
+            "index": track_index + 1, "total": tracks.len() }),
+        );
+
+        let (recording_mbid, artist_mbids) = track_authority(track);
+        let mut local_candidate = None;
+        if let Some(recording) = recording_mbid
+            .as_deref()
+            .filter(|_| !artist_mbids.is_empty())
+        {
+            local_candidate = find_local_compilation_artwork(
+                config,
+                recording,
+                &artist_mbids,
+                &album.path,
+                None,
+            )?;
+        }
+
+        let mut selected_match: Option<MusicBrainzMatch> = None;
+        let mut visited_releases = std::collections::HashSet::<String>::new();
+        let mut current_release: Option<String> = None;
+        let mut matches = Vec::<MusicBrainzMatch>::new();
+        let mut used_search = false;
+
+        if local_candidate.is_none() {
+            matches = if let Some(recording) = recording_mbid
+                .as_deref()
+                .filter(|_| !artist_mbids.is_empty())
+            {
+                match match_cache
+                    .recording_matches(musicbrainz, config, recording, &artist_mbids)
+                    .await
+                {
+                    Ok(items) => items,
+                    Err(error) => {
+                        gui_events::emit(
+                            json!({ "event": "compilation_lookup_warning", "track_path": track.path, "message": error }),
+                        );
+                        Vec::new()
+                    }
+                }
+            } else {
+                used_search = true;
+                match match_cache
+                    .artist_title_matches(musicbrainz, &track.artist, &track.title)
+                    .await
+                {
+                    Ok(items) => items,
+                    Err(error) => {
+                        gui_events::emit(
+                            json!({ "event": "compilation_lookup_warning", "track_path": track.path, "message": error }),
+                        );
+                        Vec::new()
+                    }
+                }
+            };
+            if matches.is_empty() {
+                result.unresolved += 1;
+                record_compilation_progress(config, &album.path, tracks.len(), completed)?;
+                gui_events::emit(
+                    json!({ "event": "compilation_track_unresolved", "track_path": track.path,
+                    "artist": track.artist, "title": track.title, "reason": "No Official Album, Soundtrack, or Compilation match was found" }),
+                );
+                continue;
+            }
+        }
+
+        'match_selection: loop {
+            if local_candidate.is_none() && selected_match.is_none() {
+                emit_musicbrainz_matches(
+                    track,
+                    &matches,
+                    &visited_releases,
+                    current_release.as_deref(),
+                    used_search,
+                );
+                match gui_events::wait_for_musicbrainz_match_decision()? {
+                    gui_events::MusicBrainzMatchDecision::Use(index) if index < matches.len() => {
+                        selected_match = Some(matches[index].clone());
+                    }
+                    gui_events::MusicBrainzMatchDecision::Use(_) => {
+                        return Err("Selected MusicBrainz match does not exist.".to_string());
+                    }
+                    gui_events::MusicBrainzMatchDecision::Search => {
+                        used_search = true;
+                        matches = match_cache
+                            .artist_title_matches(musicbrainz, &track.artist, &track.title)
+                            .await?;
+                        if matches.is_empty() {
+                            result.unresolved += 1;
+                            record_compilation_progress(
+                                config,
+                                &album.path,
+                                tracks.len(),
+                                completed,
+                            )?;
+                            gui_events::emit(
+                                json!({ "event": "compilation_track_unresolved", "track_path": track.path,
+                                "artist": track.artist, "title": track.title, "reason": "MusicBrainz Artist/Title search returned no supported releases" }),
+                            );
+                            break 'match_selection;
+                        }
+                        continue;
+                    }
+                    gui_events::MusicBrainzMatchDecision::EditAuthority {
+                        recording_mbid,
+                        artist_mbids,
+                        release_mbid,
+                    } => {
+                        match match_cache
+                            .edited_authority_matches(
+                                musicbrainz,
+                                &recording_mbid,
+                                &artist_mbids,
+                                &release_mbid,
+                                &track.artist,
+                                &track.title,
+                            )
+                            .await
+                        {
+                            Ok(edited) => matches = edited,
+                            Err(error) => {
+                                gui_events::emit(json!({ "event": "musicbrainz_authority_error",
+                                    "album_path": album.path, "track_path": track.path,
+                                    "message": error }));
+                                continue;
+                            }
+                        }
+                        used_search = recording_mbid.trim().is_empty();
+                        if matches.is_empty() {
+                            result.unresolved += 1;
+                            record_compilation_progress(
+                                config,
+                                &album.path,
+                                tracks.len(),
+                                completed,
+                            )?;
+                            gui_events::emit(json!({ "event": "compilation_track_unresolved",
+                                "track_path": track.path, "artist": track.artist, "title": track.title,
+                                "reason": "Edited MusicBrainz authority returned no supported release" }));
+                            break 'match_selection;
+                        }
+                        continue;
+                    }
+                    gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
+                        result.unresolved += 1;
+                        record_compilation_progress(config, &album.path, tracks.len(), completed)?;
+                        gui_events::emit(
+                            json!({ "event": "compilation_track_unresolved", "track_path": track.path,
+                            "artist": track.artist, "title": track.title, "reason": "Operator left embedded artwork unchanged" }),
+                        );
+                        break 'match_selection;
+                    }
+                }
+            }
+
+            let mut pipeline = if let Some(local) = local_candidate.as_ref() {
+                let downloaded = DownloadedCandidate::from_existing_path(
+                    "local",
+                    local.cover_path.clone(),
+                    0,
+                    local.cover_path.to_string_lossy(),
+                )?;
+                PipelineResult {
+                    candidates: vec![PipelineCandidate {
+                        reference: ArtworkReference {
+                            source: "local".to_string(),
+                            id: local.release_mbid.clone(),
+                            url: local.cover_path.to_string_lossy().into_owned(),
+                            front: true,
+                            approved: true,
+                            types: vec!["CoverFile".to_string()],
+                        },
+                        downloaded,
+                    }],
+                    best_index: Some(0),
+                    diagnostics: Vec::new(),
+                    provider_timings: Vec::new(),
+                }
+            } else {
+                let selected = selected_match
+                    .as_ref()
+                    .expect("MusicBrainz selection required");
+                if let Some(cached) = source_results_cache.get(&selected.release_mbid) {
+                    gui_events::emit(json!({ "event": "source_results_cache_hit",
+                        "album_path": album.path, "track_path": track.path,
+                        "release_mbid": selected.release_mbid,
+                        "candidates": cached.candidates.len() }));
+                    cached.restore()?
+                } else {
+                    let discovered = run_registry_pipeline_with_cache_dir(
+                        registry,
+                        &ArtworkQuery::release(&selected.release_mbid),
+                        &ProviderContext {
+                            artist_credit: selected.release_artist.clone(),
+                            release_title: selected.release_title.clone(),
+                            release_group_mbid: selected.release_group_mbid.clone(),
+                            release_group_title: Some(selected.release_title.clone()),
+                            apple_collection_ids: Vec::new(),
+                        },
+                        RegistryPipelineOptions {
+                            source_order: resolved_sources,
+                            range,
+                            format_order,
+                            source_policies: &config.source_policies,
+                        },
+                        cache_dir,
+                    )
+                    .await?;
+                    source_results_cache.insert(
+                        selected.release_mbid.clone(),
+                        CachedPipelineResult::capture(&discovered),
+                    );
+                    discovered
+                }
+            };
+            for timing in &pipeline.provider_timings {
+                gui_events::emit(
+                    json!({ "event": "provider_timing", "album_path": album.path, "track_path": track.path,
+                    "source": timing.source, "status": timing.status(), "discovery_ms": timing.discovery_ms,
+                    "download_ms": timing.download_ms, "references": timing.references, "candidates": timing.candidates,
+                    "errors": timing.errors, "error": timing.error }),
+                );
+            }
+            if pipeline.candidates.is_empty() {
+                if let Some(selected) = selected_match.take() {
+                    visited_releases.insert(selected.release_mbid.clone());
+                    current_release = Some(selected.release_mbid);
+                    continue;
+                }
+                result.unresolved += 1;
+                record_compilation_progress(config, &album.path, tracks.len(), completed)?;
+                break 'match_selection;
+            }
+            let suggested_index = pipeline.best_index.or(Some(0));
+            let display_indices = (0..pipeline.candidates.len())
+                .filter(|index| {
+                    candidate_visible_for_review(
+                        &pipeline.candidates[*index].downloaded.candidate,
+                        range,
+                        config,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let gui_candidates = display_indices.iter().map(|candidate_index| {
+                let item = &pipeline.candidates[*candidate_index];
+                let candidate = &item.downloaded.candidate;
+                let projected = project_configured_artwork(candidate, range, &config.output);
+                let policy = configured_candidate_policy(candidate, &projected, range, config);
+                json!({ "index": candidate_index + 1, "source": candidate.source, "width": candidate.width,
+                    "height": candidate.height, "format": format!("{:?}", candidate.format).to_ascii_lowercase(),
+                    "range_class": projected_range_class(projected.width.min(projected.height), range),
+                    "distance_from_ideal": projected.width.min(projected.height).abs_diff(range.ideal),
+                    "square": candidate.is_square(), "acceptable": policy.status != SourcePolicyStatus::Reject,
+                    "policy_status": policy.status, "policy_reason": policy.reason,
+                    "source_override_active": active_policy(&config.source_policies, &candidate.source).is_some(),
+                    "projected_width": projected.width, "projected_height": projected.height,
+                    "cropped": projected.cropped, "resized": projected.resized, "upscaled": projected.upscaled,
+                    "approved": item.reference.approved, "reference_id": item.reference.id,
+                    "local_origin": if candidate.source == "local" { "cover-file" } else { "" },
+                    "local_reference": item.reference.id, "url": item.reference.url,
+                    "cache_path": item.downloaded.path(), "recommended": Some(*candidate_index) == suggested_index })
+            }).collect::<Vec<_>>();
+            gui_events::emit(
+                json!({ "event": "candidates", "album_path": album.path, "track_path": track.path,
+                "items": gui_candidates, "recommended_index": suggested_index.map(|value| value + 1),
+                "hidden_by_source_policy": pipeline.candidates.len() - display_indices.len(), "fallback": false,
+                "compilation_track": true, "musicbrainz_back_available": local_candidate.is_none() }),
+            );
+            gui_events::emit(
+                json!({ "event": "decision_required", "album_path": album.path, "track_path": track.path,
+                "reason": "compilation-track", "suggested_index": suggested_index.map(|value| value + 1),
+                "allow_bypass": true, "musicbrainz_back_available": local_candidate.is_none() }),
+            );
+
+            let chosen_index = match gui_events::wait_for_candidate_decision()? {
+                gui_events::CandidateDecision::Use(index) if index < pipeline.candidates.len() => {
+                    index
+                }
+                gui_events::CandidateDecision::BackToMusicBrainz if local_candidate.is_none() => {
+                    if let Some(selected) = selected_match.take() {
+                        visited_releases.insert(selected.release_mbid.clone());
+                        current_release = Some(selected.release_mbid);
+                    }
+                    continue;
+                }
+                gui_events::CandidateDecision::Bypass => {
+                    result.unresolved += 1;
+                    record_compilation_progress(config, &album.path, tracks.len(), completed)?;
+                    gui_events::emit(
+                        json!({ "event": "compilation_track_unresolved", "track_path": track.path,
+                        "artist": track.artist, "title": track.title, "reason": "Operator left embedded artwork unchanged" }),
+                    );
+                    break 'match_selection;
+                }
+                _ => return Err("Invalid compilation artwork decision.".to_string()),
+            };
+            let chosen = pipeline.candidates.swap_remove(chosen_index);
+            result.selected += 1;
+            let target_format = match chosen.downloaded.candidate.format {
+                StaticFormat::Png => StaticFormat::Png,
+                _ => StaticFormat::Jpeg,
+            };
+            let embedding_range = Range {
+                min: config.range.min.min(config.range.ladder),
+                ideal: config.range.ladder,
+                max: config.range.ladder,
+                ladder: config.range.ladder,
+            };
+            let mut embedding_output = config.output.clone();
+            embedding_output.upscale_below_ideal = false;
+            let prepared = prepare_configured_artwork(
+                &chosen.downloaded.candidate,
+                chosen.downloaded.path(),
+                &embedding_range,
+                target_format,
+                &embedding_output,
+                true,
+            )?;
+            let selected_release = selected_match
+                .as_ref()
+                .map(|item| item.release_mbid.as_str())
+                .or_else(|| {
+                    local_candidate
+                        .as_ref()
+                        .map(|item| item.release_mbid.as_str())
+                });
+            let authority_recording = selected_match
+                .as_ref()
+                .map(|item| item.recording_mbid.clone())
+                .or(recording_mbid.clone())
+                .unwrap_or_default();
+            let authority_artists = selected_match
+                .as_ref()
+                .map(|item| item.artist_mbids.clone())
+                .unwrap_or_else(|| artist_mbids.clone());
+            if config.mode == Mode::Write {
+                replace_embedded_front(&track.path, &prepared.bytes)?;
+                completed += 1;
+                record_compilation_artwork_application(
+                    config,
+                    CompilationArtworkApplication {
+                        album_path: &album.path,
+                        track_path: &track.path,
+                        recording_mbid: &authority_recording,
+                        artist_mbids_key: &authority_artists.join(","),
+                        source_kind: &chosen.downloaded.candidate.source,
+                        source_locator: &chosen.reference.url,
+                        release_mbid: selected_release,
+                        artwork: &prepared.bytes,
+                        outcome: "embedded-replaced",
+                        total_tracks: tracks.len(),
+                        completed_tracks: completed,
+                    },
+                )?;
+                result.installed += 1;
+            } else {
+                result.read_only += 1;
+            }
+            gui_events::emit(
+                json!({ "event": "compilation_track_completed", "album_path": album.path,
+                "track_path": track.path, "artist": track.artist, "title": track.title,
+                "action": if config.mode == Mode::Write { "EmbeddedReplaced" } else { "ReadOnly" },
+                "source": chosen.downloaded.candidate.source, "release_mbid": selected_release,
+                "width": prepared.info.width, "height": prepared.info.height }),
+            );
+            break 'match_selection;
+        }
+    }
+
+    record_compilation_progress(config, &album.path, tracks.len(), completed)?;
+    result.failed = gui_events::cancelled();
+    gui_events::emit(
+        json!({ "event": "album_completed", "album_path": album.path,
+        "destination": format!("{completed}/{} embedded track artwork", tracks.len()),
+        "action": if completed == tracks.len() { "CompilationComplete" } else { "CompilationIncomplete" },
+        "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
+        "unresolved_tracks": tracks.len().saturating_sub(completed) }),
+    );
+    Ok(result)
+}
+
+fn emit_musicbrainz_matches(
+    track: &LocalTrackEvidence,
+    matches: &[MusicBrainzMatch],
+    visited_releases: &std::collections::HashSet<String>,
+    current_release: Option<&str>,
+    searched: bool,
+) {
+    let items = matches.iter().enumerate().map(|(index, item)| json!({
+        "index": index + 1, "recording_mbid": item.recording_mbid, "recording_title": item.recording_title,
+        "recording_artist": item.recording_artist, "artist_mbids": item.artist_mbids,
+        "release_mbid": item.release_mbid, "release_group_mbid": item.release_group_mbid,
+        "release_class": item.release_class, "release_title": item.release_title,
+        "release_artist": item.release_artist, "release_date": item.release_date,
+        "country": item.country, "score": item.score, "url": item.url,
+        "decade": crate::compilation::decade(item.release_date.as_deref()),
+        "visited": visited_releases.contains(&item.release_mbid),
+        "current": current_release.is_some_and(|value| value.eq_ignore_ascii_case(&item.release_mbid)),
+    })).collect::<Vec<_>>();
+    gui_events::emit(
+        json!({ "event": "musicbrainz_matches", "track_path": track.path,
+        "artist": track.artist, "title": track.title, "searched": searched,
+        "compilation_track": true, "items": items }),
+    );
+}
+
 struct FinalizationOptions<'a> {
     preserve_file: bool,
     explicit_manual_selection: bool,
@@ -1893,6 +2816,7 @@ fn fallback_provider_context(
         release_title,
         release_group_mbid: None,
         release_group_title: None,
+        apple_collection_ids: Vec::new(),
     })
 }
 
@@ -2180,5 +3104,49 @@ mod tests {
             &range,
             &config
         ));
+    }
+
+    #[test]
+    fn compilation_source_results_cache_restores_original_ranking() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("candidate.png");
+        image::RgbImage::from_pixel(32, 32, image::Rgb([12, 34, 56]))
+            .save(&path)
+            .unwrap();
+        let downloaded = DownloadedCandidate::from_existing_path(
+            "itunes",
+            path.clone(),
+            3,
+            "https://example.invalid/art.png",
+        )
+        .unwrap();
+        let original = PipelineResult {
+            candidates: vec![PipelineCandidate {
+                reference: ArtworkReference {
+                    source: "itunes".to_string(),
+                    id: "fixture".to_string(),
+                    url: "https://example.invalid/art.png".to_string(),
+                    front: true,
+                    approved: true,
+                    types: vec!["Front".to_string()],
+                },
+                downloaded,
+            }],
+            best_index: Some(0),
+            diagnostics: Vec::new(),
+            provider_timings: Vec::new(),
+        };
+
+        let restored = CachedPipelineResult::capture(&original).restore().unwrap();
+        assert_eq!(restored.best_index, Some(0));
+        assert_eq!(
+            restored.candidates[0].reference,
+            original.candidates[0].reference
+        );
+        assert_eq!(restored.candidates[0].downloaded.path(), path);
+        assert_eq!(
+            restored.candidates[0].downloaded.candidate.source_priority,
+            3
+        );
     }
 }

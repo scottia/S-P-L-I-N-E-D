@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Win32;
 
 namespace Splined.WindowsGui
 {
@@ -234,6 +236,8 @@ namespace Splined.WindowsGui
         public bool MainMaximized;
         public int MainSplitterDistance = 430;
         public int RightSplitterDistance = 285;
+        public string LayoutPreset = "Balanced";
+        public bool LayoutStacked;
         public int SetupWidth = 980;
         public int SetupHeight = 790;
         public int SetupX = -1;
@@ -250,6 +254,11 @@ namespace Splined.WindowsGui
     internal static class ConfigStore
     {
         public static readonly string AppRoot = ResolveAppRoot();
+        public const string InternalSettingsLabel = "Windows internal settings";
+        private const string ConfigRegistryValue = "ConfigV5";
+        private const string UiRegistryValue = "UiV4";
+        private static readonly string RegistryPath = BuildRegistryPath();
+        // These paths are migration inputs only. Windows v4 never writes them.
         public static readonly string DefaultConfigPath = Path.Combine(AppRoot, "config", "config.toml");
         public static readonly string LocatorPath = Path.Combine(AppRoot, "config.location");
         public static string UiPath
@@ -270,6 +279,50 @@ namespace Splined.WindowsGui
                 : configured);
         }
 
+        private static string BuildRegistryPath()
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(AppRoot.TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant());
+            using (SHA256 hash = SHA256.Create())
+            {
+                string id = BitConverter.ToString(hash.ComputeHash(bytes), 0, 8).Replace("-", "");
+                return @"Software\SPLINED\WindowsV4\" + id;
+            }
+        }
+
+        private static string ReadInternalText(string name)
+        {
+            string testStore = Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR");
+            if (!String.IsNullOrWhiteSpace(testStore))
+            {
+                string path = Path.Combine(testStore, name + ".txt");
+                return File.Exists(path) ? File.ReadAllText(path) : null;
+            }
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryPath, false))
+                return key == null ? null : key.GetValue(name) as string;
+        }
+
+        private static void WriteInternalText(string name, string text)
+        {
+            string testStore = Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR");
+            if (!String.IsNullOrWhiteSpace(testStore))
+            {
+                Directory.CreateDirectory(testStore);
+                File.WriteAllText(Path.Combine(testStore, name + ".txt"), text ?? "");
+                return;
+            }
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RegistryPath))
+            {
+                if (key == null) throw new InvalidOperationException("Unable to open the Windows settings store.");
+                key.SetValue(name, text ?? "", RegistryValueKind.String);
+                key.Flush();
+            }
+        }
+
+        public static bool HasSavedSettings
+        {
+            get { return !String.IsNullOrWhiteSpace(ReadInternalText(ConfigRegistryValue)); }
+        }
+
         public static string GetConfigPath()
         {
             try
@@ -288,11 +341,16 @@ namespace Splined.WindowsGui
         public static ConfigState Load()
         {
             ConfigState state = Defaults();
-            state.ConfigPath = GetConfigPath();
-            if (!File.Exists(state.ConfigPath))
-                return state;
-
-            string text = File.ReadAllText(state.ConfigPath);
+            state.ConfigPath = InternalSettingsLabel;
+            string text = ReadInternalText(ConfigRegistryValue);
+            bool migratedLegacyConfig = false;
+            if (String.IsNullOrWhiteSpace(text))
+            {
+                string legacyPath = GetConfigPath();
+                if (!File.Exists(legacyPath)) return state;
+                text = File.ReadAllText(legacyPath);
+                migratedLegacyConfig = true;
+            }
             int version = ReadInt(text, "", "config_version", 0);
             if (version != 5)
                 throw new InvalidOperationException("Unsupported SPLINED configuration version " + version + "; expected Config v5.");
@@ -369,13 +427,15 @@ namespace Splined.WindowsGui
             state.AiSplinedEndpoint = hasAiSplined ? canonicalEndpoint : legacyEndpoint;
             state.AiSplinedMinimumShortSide = hasAiSplined ? canonicalMinimumShortSide : legacyMinimumShortSide;
             state.AiSplinedAllowBelowMinimumOverride = hasAiSplined ? canonicalAllowBelowMinimumOverride : legacyAllowBelowMinimumOverride;
+            state.ConfigPath = InternalSettingsLabel;
+            if (migratedLegacyConfig) Save(state, false);
             return state;
         }
 
         public static ConfigState Defaults()
         {
             ConfigState state = new ConfigState();
-            state.ConfigPath = DefaultConfigPath;
+            state.ConfigPath = InternalSettingsLabel;
             state.CacheDir = Path.Combine(AppRoot, "_cache");
             state.LogDir = Path.Combine(AppRoot, "_logs");
             state.CredentialDir = Path.Combine(AppRoot, "credentials");
@@ -385,9 +445,56 @@ namespace Splined.WindowsGui
 
         public static void Save(ConfigState state)
         {
+            Save(state, true);
+        }
+
+        internal static void Save(ConfigState state, bool createRuntimeDirectories)
+        {
             Validate(state);
-            WriteTextAtomic(state.ConfigPath, BuildConfigText(state));
-            WriteTextAtomic(LocatorPath, ToPortablePath(state.ConfigPath) + Environment.NewLine);
+            if (createRuntimeDirectories) EnsureRuntimeDirectories(state);
+            state.ConfigPath = InternalSettingsLabel;
+            WriteInternalText(ConfigRegistryValue, BuildConfigText(state));
+        }
+
+        private static void EnsureRuntimeDirectories(ConfigState state)
+        {
+            foreach (string path in new[] { state.CacheDir, state.LogDir, state.CredentialDir })
+            {
+                if (String.IsNullOrWhiteSpace(path)) continue;
+                Directory.CreateDirectory(path);
+            }
+        }
+
+        internal static string ExportConfigText(ConfigState state)
+        {
+            Validate(state);
+            return BuildConfigText(state);
+        }
+
+        internal static void ImportConfigText(string text, bool createRuntimeDirectories)
+        {
+            if (String.IsNullOrWhiteSpace(text)) throw new InvalidDataException("The backup contains no Windows settings.");
+            string previous = ReadInternalText(ConfigRegistryValue);
+            try
+            {
+                WriteInternalText(ConfigRegistryValue, text);
+                ConfigState imported = Load();
+                Validate(imported);
+                if (createRuntimeDirectories) EnsureRuntimeDirectories(imported);
+            }
+            catch
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RegistryPath))
+                {
+                    if (key != null)
+                    {
+                        if (previous == null) key.DeleteValue(ConfigRegistryValue, false);
+                        else key.SetValue(ConfigRegistryValue, previous, RegistryValueKind.String);
+                        key.Flush();
+                    }
+                }
+                throw;
+            }
         }
 
         public static void SaveTemporaryRunConfig(ConfigState state, string path)
@@ -402,6 +509,14 @@ namespace Splined.WindowsGui
 
         public static void Validate(ConfigState state)
         {
+            if (String.IsNullOrWhiteSpace(state.MusicLibrary))
+                throw new InvalidOperationException("Music library is required.");
+            if (String.IsNullOrWhiteSpace(state.CacheDir))
+                throw new InvalidOperationException("Database and cache directory is required.");
+            if (String.IsNullOrWhiteSpace(state.LogDir))
+                throw new InvalidOperationException("Log directory is required.");
+            if (String.IsNullOrWhiteSpace(state.CredentialDir))
+                throw new InvalidOperationException("Credential directory is required.");
             if (state.RangeMin >= state.RangeIdeal)
                 throw new InvalidOperationException("Minimum artwork resolution must be below Ideal.");
             if (state.RangeIdeal > state.RangeMax)
@@ -433,8 +548,13 @@ namespace Splined.WindowsGui
             UiState state = new UiState();
             try
             {
-                if (!File.Exists(UiPath)) return state;
-                string text = File.ReadAllText(UiPath);
+                string text = ReadInternalText(UiRegistryValue);
+                if (String.IsNullOrWhiteSpace(text) && File.Exists(UiPath))
+                {
+                    text = File.ReadAllText(UiPath);
+                    WriteInternalText(UiRegistryValue, text);
+                }
+                if (String.IsNullOrWhiteSpace(text)) return state;
                 state.Theme = ReadString(text, "ui", "theme", "System");
                 state.ShowStatusOnLaunch = ReadBool(text, "ui", "show_status_on_launch", true);
                 state.ShowConfirmations = ReadBool(text, "ui", "show_confirmations", true);
@@ -457,6 +577,8 @@ namespace Splined.WindowsGui
                 state.MainMaximized = ReadBool(text, "ui", "main_maximized", false);
                 state.MainSplitterDistance = ReadInt(text, "ui", "main_splitter_distance", 430);
                 state.RightSplitterDistance = ReadInt(text, "ui", "right_splitter_distance", 285);
+                state.LayoutPreset = ReadString(text, "ui", "layout_preset", "Balanced");
+                state.LayoutStacked = ReadBool(text, "ui", "layout_stacked", false);
                 state.SetupWidth = ReadInt(text, "ui", "setup_width", 980);
                 state.SetupHeight = ReadInt(text, "ui", "setup_height", 790);
                 state.SetupX = ReadInt(text, "ui", "setup_x", -1);
@@ -475,7 +597,23 @@ namespace Splined.WindowsGui
 
         public static void SaveUi(UiState state)
         {
-            string text = "[ui]" + Environment.NewLine
+            WriteInternalText(UiRegistryValue, BuildUiText(state));
+        }
+
+        internal static string ExportUiText(UiState state)
+        {
+            return BuildUiText(state);
+        }
+
+        internal static void ImportUiText(string text)
+        {
+            if (String.IsNullOrWhiteSpace(text)) throw new InvalidDataException("The backup contains no interface settings.");
+            WriteInternalText(UiRegistryValue, text);
+        }
+
+        private static string BuildUiText(UiState state)
+        {
+            return "[ui]" + Environment.NewLine
                 + "show_status_on_launch = " + Bool(state.ShowStatusOnLaunch) + Environment.NewLine
                 + "show_confirmations = " + Bool(state.ShowConfirmations) + Environment.NewLine
                 + "hover_enabled = " + Bool(state.HoverEnabled) + Environment.NewLine
@@ -498,6 +636,8 @@ namespace Splined.WindowsGui
                 + "main_maximized = " + Bool(state.MainMaximized) + Environment.NewLine
                 + "main_splitter_distance = " + Math.Max(280, state.MainSplitterDistance) + Environment.NewLine
                 + "right_splitter_distance = " + Math.Max(150, state.RightSplitterDistance) + Environment.NewLine
+                + "layout_preset = " + Quote(state.LayoutPreset) + Environment.NewLine
+                + "layout_stacked = " + Bool(state.LayoutStacked) + Environment.NewLine
                 + "setup_width = " + Math.Max(820, state.SetupWidth) + Environment.NewLine
                 + "setup_height = " + Math.Max(650, state.SetupHeight) + Environment.NewLine
                 + "setup_x = " + state.SetupX + Environment.NewLine
@@ -509,7 +649,6 @@ namespace Splined.WindowsGui
                 + "compare_height = " + Math.Max(500, state.CompareHeight) + Environment.NewLine
                 + "preview_width = " + Math.Max(360, state.PreviewWidth) + Environment.NewLine
                 + "preview_height = " + Math.Max(420, state.PreviewHeight) + Environment.NewLine;
-            WriteTextAtomic(UiPath, text);
         }
 
         public static string ResolvePortablePath(string value)

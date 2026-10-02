@@ -14,24 +14,20 @@ All runtimes:        Config v5
 
 ## Location and path rules
 
-The portable Windows default is:
+Config v5 is the common runtime contract, but its storage is runtime-specific.
+Python, Docker, Linux, and macOS read `config.toml`. Windows v4 stores the same
+validated Config v5 document and its interface state in the current user's
+internal application settings. It does not create or depend on `config.toml`,
+`ui.toml`, or `config.location` during normal operation.
 
-```text
-SPLINED/
-├── splined.exe
-├── config/
-│   ├── config.toml
-│   └── ui.toml
-├── credentials/
-├── _cache/
-│   └── splined.db
-└── _logs/
-    └── run/
-```
+On first Windows launch the library, cache, log, and credential directories are
+mandatory choices. SPLINED creates only the selected cache, log, and credential
+directories after **Save and Continue**. The ZIP/setup extraction does not
+precreate `_cache`, `_logs`, `config`, `credentials`, or `docker_builds`.
 
 Relative runtime paths are resolved from the SPLINED application directory.
-External, NAS, and UNC paths remain absolute. Docker paths are normally absolute
-container paths supplied by bind mounts.
+External, NAS, mapped-drive, and UNC paths remain absolute. Docker paths are
+normally absolute container paths supplied by bind mounts.
 
 ## General settings
 
@@ -85,9 +81,9 @@ SPLINED uses:
 /_cache/splined.db
 ```
 
-Windows Setup retains its browsable **Cache directory** field and derives the
-same filename. A portable Windows `_cache` creates an independent database; a
-shared UNC cache can expose the same physical database as another installation.
+Windows Setup requires a browsable **Cache directory** field and derives the
+same filename. A local Windows cache creates an independent database; a shared
+UNC cache can expose the same physical database as another installation.
 Raw UNC paths are supported directly in TOML. SPLINED creates an internal,
 provider-aware Windows drive adapter for SQLite because Windows network locking
 can differ between raw UNC and drive-letter paths. An existing connection to
@@ -289,13 +285,11 @@ shared Python/Docker and Windows `splined.db` materializes those facts for
 Select Media and stores completion, bypass, timeout, and source-selection state
 in that same database.
 
-Back up:
-
-```text
-config/
-credentials/
-<scan.cache_dir>/splined.db   # Python/Docker and Windows
-```
+Back up Python/Docker Config v5, credentials, and the authoritative database.
+On Windows use **File > Backup > Export Backup...** to choose internal settings,
+interface state, credential JSON, SQLite, and diagnostic metadata separately.
+The `.spl` export may be password protected and can be opened with SPLINED for
+guided restore.
 
 ## `[aisplined]`
 
@@ -324,17 +318,19 @@ constitute a finalized companion-product requirement.
 Legacy `[splineai]` remains a compatibility concern for existing installations;
 `[aisplined]` is the canonical public name.
 
-## GUI-only `ui.toml`
+## Windows internal interface settings
 
-`ui.toml` is separate from operational Config v5 and is stored beside the active
-`config.toml`. This also applies when Windows uses a relocated or UNC-hosted
-configuration. It stores presentation and transient GUI state such as theme,
-window placement, filters, splitter positions, and current UI selections.
-Editing it does not change source policy, credentials, the media database, or
-artwork-writing rules.
+Windows interface state is stored internally beside the internal Config v5
+record, not in `ui.toml`. It includes theme, window placement, filters, splitter
+positions, panel-layout preset, hover behavior, and current selections. It does
+not change source policy, credentials, the media database, or artwork-writing
+rules. **View > Panel Layout** supplies presets; splitters remain draggable and
+custom positions persist.
 
 ## Validation
 
-Windows Settings **Validate Saved Config** and **Save and Continue** validate
-Config v5 before execution. Native and Python/Docker implementations also
-validate Config v5; use the Docker example for container-specific paths.
+Windows Settings **Validate Saved Settings** and **Save and Continue** validate
+the internal Config v5 record before execution. A temporary runtime TOML is
+created only while launching the Rust core and is removed after the run. Native
+and Python/Docker implementations also validate Config v5; use the Docker
+example for container-specific paths.

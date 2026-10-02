@@ -77,6 +77,82 @@ pub enum CandidateDecision {
     Bypass,
     Retry { artist: String, album: String },
     RetryMusicBrainz,
+    BackToMusicBrainz,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MusicBrainzMatchDecision {
+    Use(usize),
+    Search,
+    EditAuthority {
+        recording_mbid: String,
+        artist_mbids: String,
+        release_mbid: String,
+    },
+    LeaveUnchanged,
+}
+
+pub fn wait_for_musicbrainz_match_decision() -> Result<MusicBrainzMatchDecision, String> {
+    loop {
+        let mut answer = String::new();
+        io::stdin()
+            .read_line(&mut answer)
+            .map_err(|error| format!("Unable to read MusicBrainz match decision: {error}"))?;
+        if answer.is_empty() {
+            return Err("MusicBrainz match input closed before a choice was made.".to_string());
+        }
+        let trimmed = answer.trim();
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+            match value.get("action").and_then(Value::as_str).unwrap_or("") {
+                "use_musicbrainz_match" => {
+                    let index = value.get("index").and_then(Value::as_u64).ok_or_else(|| {
+                        "MusicBrainz match decision did not include an index.".to_string()
+                    })?;
+                    if index == 0 {
+                        return Err("MusicBrainz match indexes start at 1.".to_string());
+                    }
+                    return Ok(MusicBrainzMatchDecision::Use(index as usize - 1));
+                }
+                "search_musicbrainz" => return Ok(MusicBrainzMatchDecision::Search),
+                "edit_musicbrainz_authority" => {
+                    return Ok(MusicBrainzMatchDecision::EditAuthority {
+                        recording_mbid: value
+                            .get("recording_mbid")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
+                        artist_mbids: value
+                            .get("artist_mbids")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
+                        release_mbid: value
+                            .get("release_mbid")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
+                    });
+                }
+                "leave_unchanged" | "bypass" | "skip" => {
+                    return Ok(MusicBrainzMatchDecision::LeaveUnchanged);
+                }
+                _ => {}
+            }
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "m" => return Ok(MusicBrainzMatchDecision::Search),
+            "b" | "skip" => return Ok(MusicBrainzMatchDecision::LeaveUnchanged),
+            value if value.parse::<usize>().is_ok_and(|index| index > 0) => {
+                return Ok(MusicBrainzMatchDecision::Use(
+                    value.parse::<usize>().unwrap() - 1,
+                ));
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn decisions_available() -> bool {
@@ -106,6 +182,7 @@ pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
                 }
                 "bypass" | "skip" => return Ok(CandidateDecision::Bypass),
                 "retry_musicbrainz" => return Ok(CandidateDecision::RetryMusicBrainz),
+                "back_musicbrainz" => return Ok(CandidateDecision::BackToMusicBrainz),
                 "retry" => {
                     let artist = value
                         .get("artist")
@@ -130,6 +207,7 @@ pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
         match trimmed.to_ascii_lowercase().as_str() {
             "b" | "bypass" | "skip" => return Ok(CandidateDecision::Bypass),
             "m" => return Ok(CandidateDecision::RetryMusicBrainz),
+            "back" => return Ok(CandidateDecision::BackToMusicBrainz),
             value => {
                 if let Ok(index) = value.parse::<usize>()
                     && index > 0

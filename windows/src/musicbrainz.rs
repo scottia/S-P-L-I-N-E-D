@@ -151,6 +151,7 @@ pub struct Release {
     pub artist_credit: String,
     pub release_group_id: Option<String>,
     pub release_group_title: Option<String>,
+    pub external_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +161,8 @@ pub struct RecordingRelease {
     pub artist_credit: String,
     pub status: Option<String>,
     pub date: Option<String>,
+    pub country: Option<String>,
+    pub artist_mbids: Vec<String>,
     pub release_group_id: Option<String>,
     pub release_group_title: Option<String>,
     pub release_group_primary_type: Option<String>,
@@ -171,6 +174,7 @@ pub struct RecordingLookup {
     pub id: String,
     pub title: String,
     pub artist_credit: String,
+    pub artist_mbids: Vec<String>,
     pub video: bool,
     pub disambiguation: Option<String>,
     pub releases: Vec<RecordingRelease>,
@@ -182,6 +186,7 @@ pub struct RecordingSearchHit {
     pub score: u16,
     pub title: String,
     pub artist_credit: String,
+    pub artist_mbids: Vec<String>,
     pub video: bool,
     pub disambiguation: Option<String>,
     pub releases: Vec<RecordingRelease>,
@@ -197,8 +202,24 @@ struct ApiRelease {
     status: Option<String>,
     #[serde(default)]
     date: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
     #[serde(rename = "release-group")]
     release_group: Option<ApiReleaseGroup>,
+    #[serde(default)]
+    relations: Vec<ApiUrlRelation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiUrlRelation {
+    #[serde(default)]
+    url: Option<ApiRelatedUrl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiRelatedUrl {
+    #[serde(default)]
+    resource: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +228,14 @@ struct ApiArtistCredit {
     name: String,
     #[serde(default)]
     joinphrase: String,
+    #[serde(default)]
+    artist: Option<ApiArtist>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiArtist {
+    #[serde(default)]
+    id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -493,19 +522,20 @@ impl MusicBrainzClient {
             None
         };
 
-        for attempt in 0..=self.config.retry_max {
+        let attempts = self.config.retry_max.max(1);
+        for attempt in 0..attempts {
             self.wait_for_rate_limit().await;
-            let mut request = self
-                .client
-                .get(&url)
-                .query(&[("fmt", "json"), ("inc", "artist-credits+release-groups")]);
+            let mut request = self.client.get(&url).query(&[
+                ("fmt", "json"),
+                ("inc", "artist-credits+release-groups+url-rels"),
+            ]);
             if let Some(token) = access_token.as_deref() {
                 request = request.bearer_auth(token);
             }
 
             let response = match request.send().await {
                 Ok(response) => response,
-                Err(error) if attempt < self.config.retry_max => {
+                Err(error) if attempt + 1 < attempts => {
                     let _ = error;
                     continue;
                 }
@@ -526,7 +556,7 @@ impl MusicBrainzClient {
                 StatusCode::UNAUTHORIZED => {
                     return Err("MusicBrainz OAuth authentication was rejected.".to_string());
                 }
-                status if is_retryable_status(status) && attempt < self.config.retry_max => {
+                status if is_retryable_status(status) && attempt + 1 < attempts => {
                     continue;
                 }
                 status => {
@@ -554,6 +584,13 @@ impl MusicBrainzClient {
                 artist_credit: render_artist_credit(&release.artist_credit),
                 release_group_id: release.release_group.as_ref().map(|group| group.id.clone()),
                 release_group_title: release.release_group.map(|group| group.title),
+                external_urls: release
+                    .relations
+                    .into_iter()
+                    .filter_map(|relation| relation.url)
+                    .map(|url| url.resource)
+                    .filter(|url| !url.trim().is_empty())
+                    .collect(),
             });
         }
 
@@ -573,7 +610,8 @@ impl MusicBrainzClient {
             None
         };
 
-        for attempt in 0..=self.config.retry_max {
+        let attempts = self.config.retry_max.max(1);
+        for attempt in 0..attempts {
             self.wait_for_rate_limit().await;
             let mut request = self
                 .client
@@ -589,7 +627,7 @@ impl MusicBrainzClient {
 
             let response = match request.send().await {
                 Ok(response) => response,
-                Err(error) if attempt < self.config.retry_max => {
+                Err(error) if attempt + 1 < attempts => {
                     let _ = error;
                     continue;
                 }
@@ -610,7 +648,7 @@ impl MusicBrainzClient {
                 StatusCode::UNAUTHORIZED => {
                     return Err("MusicBrainz OAuth authentication was rejected.".to_string());
                 }
-                status if is_retryable_status(status) && attempt < self.config.retry_max => {
+                status if is_retryable_status(status) && attempt + 1 < attempts => {
                     continue;
                 }
                 status => {
@@ -659,7 +697,8 @@ impl MusicBrainzClient {
             None
         };
 
-        for attempt in 0..=self.config.retry_max {
+        let attempts = self.config.retry_max.max(1);
+        for attempt in 0..attempts {
             self.wait_for_rate_limit().await;
             let limit_text = limit.to_string();
             let mut request = self
@@ -677,7 +716,7 @@ impl MusicBrainzClient {
 
             let response = match request.send().await {
                 Ok(response) => response,
-                Err(error) if attempt < self.config.retry_max => {
+                Err(error) if attempt + 1 < attempts => {
                     let _ = error;
                     continue;
                 }
@@ -695,7 +734,7 @@ impl MusicBrainzClient {
                 StatusCode::UNAUTHORIZED => {
                     return Err("MusicBrainz OAuth authentication was rejected.".to_string());
                 }
-                status if is_retryable_status(status) && attempt < self.config.retry_max => {
+                status if is_retryable_status(status) && attempt + 1 < attempts => {
                     continue;
                 }
                 status => {
@@ -848,6 +887,7 @@ fn recording_lookup_from_api(recording: ApiRecording) -> RecordingLookup {
         id: recording.id,
         title: recording.title,
         artist_credit: render_artist_credit(&recording.artist_credit),
+        artist_mbids: render_artist_mbids(&recording.artist_credit),
         video: recording.video.unwrap_or(false),
         disambiguation: nonempty(recording.disambiguation),
         releases: recording
@@ -864,6 +904,7 @@ fn recording_search_hit_from_api(recording: ApiRecording) -> RecordingSearchHit 
         score: recording.score.min(100),
         title: recording.title,
         artist_credit: render_artist_credit(&recording.artist_credit),
+        artist_mbids: render_artist_mbids(&recording.artist_credit),
         video: recording.video.unwrap_or(false),
         disambiguation: nonempty(recording.disambiguation),
         releases: recording
@@ -896,6 +937,8 @@ fn recording_release_from_api(release: ApiRelease) -> RecordingRelease {
         artist_credit: render_artist_credit(&release.artist_credit),
         status: release.status,
         date: release.date,
+        country: release.country,
+        artist_mbids: render_artist_mbids(&release.artist_credit),
         release_group_id,
         release_group_title,
         release_group_primary_type,
@@ -908,6 +951,18 @@ fn render_artist_credit(credits: &[ApiArtistCredit]) -> String {
         .iter()
         .map(|credit| format!("{}{}", credit.name, credit.joinphrase))
         .collect()
+}
+
+fn render_artist_mbids(credits: &[ApiArtistCredit]) -> Vec<String> {
+    let mut ids = credits
+        .iter()
+        .filter_map(|credit| credit.artist.as_ref())
+        .map(|artist| artist.id.trim().to_ascii_lowercase())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 fn nonempty(value: String) -> Option<String> {

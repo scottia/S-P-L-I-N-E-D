@@ -196,6 +196,54 @@ where
     install_staged_file(path, staged, label)
 }
 
+/// Copy an existing file to a same-directory staging file, mutate and
+/// validate the staged copy, then atomically replace the original. This keeps
+/// audio-tag updates recoverable without reading an entire media file into
+/// memory.
+pub fn transform_existing_file<M, V>(
+    path: &Path,
+    label: &str,
+    mutate: M,
+    validate: V,
+) -> Result<(), String>
+where
+    M: FnOnce(&Path) -> Result<(), String>,
+    V: FnOnce(&Path) -> Result<(), String>,
+{
+    if !path.is_file() {
+        return Err(format!(
+            "Unable to update {label}; file does not exist: {}",
+            path.display()
+        ));
+    }
+    recover_backup_if_needed(path, label)?;
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "Unable to determine parent directory for {label}: {}",
+            path.display()
+        )
+    })?;
+    let staged = NamedTempFile::new_in(parent).map_err(|error| {
+        format!(
+            "Unable to create staged {label} file in {}: {error}",
+            parent.display()
+        )
+    })?;
+    fs::copy(path, staged.path()).map_err(|error| {
+        format!(
+            "Unable to copy staged {label} file {}: {error}",
+            path.display()
+        )
+    })?;
+    mutate(staged.path())?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("Unable to sync staged {label} file: {error}"))?;
+    validate(staged.path())?;
+    install_staged_file(path, staged, label)
+}
+
 fn install_staged_file(path: &Path, staged: NamedTempFile, label: &str) -> Result<(), String> {
     let backup = backup_path(path);
     let had_existing = path.exists();

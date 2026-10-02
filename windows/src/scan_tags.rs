@@ -115,6 +115,7 @@ fn evidence_from_tagged_file(
         album_artist: read_optional(tagged_file, &ItemKey::AlbumArtist),
         musicbrainz_album_id,
         musicbrainz_track_id: read_optional(tagged_file, &ItemKey::MusicBrainzRecordingId),
+        musicbrainz_artist_id: read_optional(tagged_file, &ItemKey::MusicBrainzArtistId),
         compilation: read_optional(tagged_file, &ItemKey::FlagCompilation),
     })
 }

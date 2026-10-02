@@ -504,6 +504,7 @@ pub async fn run_coverartarchive_pipeline(
         release_title: String::new(),
         release_group_mbid: None,
         release_group_title: None,
+        apple_collection_ids: Vec::new(),
     };
 
     run_provider_pipeline(
@@ -605,6 +606,7 @@ mod tests {
             release_title: "Fixture Release".to_string(),
             release_group_mbid: Some("978d88db-60ec-41d9-ade7-beea020941b0".to_string()),
             release_group_title: Some("Fixture Release".to_string()),
+            apple_collection_ids: Vec::new(),
         }
     }
 

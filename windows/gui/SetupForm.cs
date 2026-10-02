@@ -15,7 +15,6 @@ namespace Splined.WindowsGui
         private readonly bool firstRun;
         private TextBox music;
         private TextBox ignored;
-        private TextBox configPath;
         private TextBox credentialDir;
         private TextBox cacheDir;
         private CheckBox sqliteShared;
@@ -301,14 +300,14 @@ namespace Splined.WindowsGui
 
             Label workflow = new Label();
             workflow.Dock = DockStyle.Fill;
-            workflow.Text = "1. Choose the music library.\r\n2. Review the proposed configuration.\r\n3. Save and open the library.\r\n4. Select artists or albums and launch.";
+            workflow.Text = "1. Choose the music library and required runtime locations.\r\n2. Review artwork and provider settings.\r\n3. Save and open the library.\r\n4. Select artists or albums and launch.";
             layout.Controls.Add(workflow, 0, 1);
 
-            GroupBox defaults = new FluentGroupBox { Text = "Portable defaults", Dock = DockStyle.Fill };
+            GroupBox defaults = new FluentGroupBox { Text = "Windows internal settings", Dock = DockStyle.Fill };
             Label summary = new Label();
             summary.Dock = DockStyle.Fill;
             summary.Padding = new Padding(12, 8, 12, 8);
-            summary.Text = "Configuration: stored beside SPLINED        Credentials: stored beside SPLINED\r\nCache: stored beside SPLINED                       Logs: retained for 14 days\r\nHistory: retained forever";
+            summary.Text = "Configuration: saved internally by the Windows application\r\nLibrary, database/cache, logs, and credential locations are required and user-selected.\r\nMissing selected directories are created only after Save and Continue.";
             defaults.Controls.Add(summary);
             layout.Controls.Add(defaults, 0, 2);
 
@@ -316,17 +315,14 @@ namespace Splined.WindowsGui
             Button setUp = ActionButton("Set Up SPLINED", 155);
             setUp.Tag = "primary";
             setUp.Click += delegate { music.Focus(); music.SelectAll(); };
-            Button useExisting = ActionButton("Use Existing Configuration...", 235);
-            useExisting.Click += UseExistingConfiguration;
             Button advanced = ActionButton("Advanced Settings", 165);
             advanced.Click += delegate { primaryTabs.SelectedIndex = 1; };
             choices.Controls.Add(setUp);
-            choices.Controls.Add(useExisting);
             choices.Controls.Add(advanced);
-            choices.Controls.Add(new InfoButton("Set Up uses portable defaults, Use Existing opens a prior Config v5 without resetting it, and Advanced exposes every Config v5 control."));
+            choices.Controls.Add(new InfoButton("Windows v4 stores settings internally. Advanced exposes every runtime option; Backup restores selected settings and credentials from a .spl file."));
             layout.Controls.Add(choices, 0, 3);
 
-            Label details = new Label { Text = "Portable folder detail", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft };
+            Label details = new Label { Text = "Created only after Save and Continue", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft };
             layout.Controls.Add(details, 0, 4);
 
             TextBox tree = new FluentTextBox();
@@ -335,7 +331,7 @@ namespace Splined.WindowsGui
             tree.ReadOnly = true;
             tree.ScrollBars = ScrollBars.Vertical;
             tree.Font = new Font("Consolas", 9.5f);
-            tree.Text = "<where SPLINED is run>\r\n+-- config\r\n|   +-- config.toml\r\n|   +-- ui.toml\r\n+-- credentials\r\n+-- _cache\r\n|   +-- splined.db\r\n|   +-- samples\r\n+-- _logs\r\n    +-- run";
+            tree.Text = "Music library        <required user-selected location>\r\nDatabase / cache     <required user-selected location>\r\nLogs                 <required user-selected location>\r\nCredentials          <required user-selected location>\r\n\r\nNo config folder, config.toml, ui.toml, or config.location file is created.";
             layout.Controls.Add(tree, 0, 5);
 
             Label active = new Label();
@@ -380,48 +376,47 @@ namespace Splined.WindowsGui
             page.Controls.Add(scroll);
 
             GroupBox paths = new FluentGroupBox { Name = "pathsGroup", Text = "Application and Library Paths", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(10) };
-            TableLayoutPanel table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 8 };
+            TableLayoutPanel table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 7 };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 185));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 102));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-            for (int index = 1; index <= 5; index++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            for (int index = 1; index <= 4; index++) table.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             table.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             paths.Controls.Add(table);
             stack.Controls.Add(paths, 0, 0);
             Label info = new Label();
             info.Dock = DockStyle.Fill;
-            info.Text = "Paths inside the SPLINED folder are saved as portable relative paths. External, NAS, and cloud paths remain absolute.";
+            info.Text = "All runtime locations are required. Windows stores them internally; external, NAS, and cloud paths are retained exactly.";
             table.Controls.Add(info, 0, 0);
             table.SetColumnSpan(info, 2);
-            InfoButton help = new InfoButton("Portable paths move with the SPLINED folder. A selected external path is retained exactly.");
+            InfoButton help = new InfoButton("SPLINED validates these paths and creates only missing selected runtime directories after Save and Continue.");
             help.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             table.Controls.Add(help, 2, 0);
-            configPath = AddPathSetting(table, 1, "Configuration file", true);
-            credentialDir = AddPathSetting(table, 2, "Credential directory", false);
-            cacheDir = AddPathSetting(table, 3, "Cache directory", false);
-            logDir = AddPathSetting(table, 4, "Log directory", false);
-            scanDir = AddPathSetting(table, 5, "Scan directory (optional)", false);
+            credentialDir = AddPathSetting(table, 1, "Credential directory *", false);
+            cacheDir = AddPathSetting(table, 2, "Database / cache directory *", false);
+            logDir = AddPathSetting(table, 3, "Log directory *", false);
+            scanDir = AddPathSetting(table, 4, "Scan directory (optional)", false);
             sqliteShared = new FluentCheckBox
             {
                 Text = "Shared SQLite database (network / multi-OS)",
                 Dock = DockStyle.Fill
             };
-            table.Controls.Add(sqliteShared, 1, 6);
-            table.Controls.Add(new InfoButton("Enable only when the selected cache directory exposes the same physical splined.db to another OS. Shared mode uses rollback journaling and a busy timeout; local databases retain WAL."), 2, 6);
+            table.Controls.Add(sqliteShared, 1, 5);
+            table.Controls.Add(new InfoButton("Enable only when the selected cache directory exposes the same physical splined.db to another OS. Shared mode uses rollback journaling and a busy timeout; local databases retain WAL."), 2, 5);
             FlowLayoutPanel pathActions = new FlowLayoutPanel { Name = "pathsActionRow", Dock = DockStyle.Fill, WrapContents = false, AutoSize = true };
             Button credentialsButton = ActionButton("Credentials / Status...", 190);
             credentialsButton.Name = "pathsCredentialsButton";
             credentialsButton.Click += delegate { using (CredentialsForm form = new CredentialsForm(state)) form.ShowDialog(this); };
-            Button restore = ActionButton("Restore Portable Defaults", 210);
+            Button restore = ActionButton("Restore Suggested Paths", 210);
             restore.Tag = "reset";
             restore.Anchor = AnchorStyles.Left | AnchorStyles.Top;
             restore.Click += delegate { RestorePortablePaths(); };
             pathActions.Controls.Add(credentialsButton);
             pathActions.Controls.Add(restore);
             pathActions.Controls.Add(new InfoButton("Credentials remain JSON files beneath the configured credential directory. Restoring portable paths does not rewrite or expose credential contents."));
-            table.Controls.Add(pathActions, 0, 7);
+            table.Controls.Add(pathActions, 0, 6);
             table.SetColumnSpan(pathActions, 3);
 
             stack.Controls.Add(BuildAdvancedCommandsGroup(), 0, 1);
@@ -1380,36 +1375,33 @@ namespace Splined.WindowsGui
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.Controls.Add(new Label
             {
-                Text = "Validate Config v5 or open the configured diagnostic locations.",
+                Text = "Validate the saved Windows settings or open the configured diagnostic location.",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft
             }, 0, 0);
             FlowLayoutPanel buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Padding = new Padding(0, 4, 0, 4) };
 
-            Button validate = ActionButton("Validate Saved Config", 175);
+            Button validate = ActionButton("Validate Saved Settings", 185);
             validate.Click += delegate
             {
                 try
                 {
                     ConfigState saved = ConfigStore.Load();
                     ConfigStore.Validate(saved);
-                    MessageBox.Show(this, "The saved Config v5 is valid.", "SPLINED config check", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(this, "The saved Windows settings are valid.", "SPLINED settings check", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception error)
                 {
-                    MessageBox.Show(this, error.Message, "Config v5 validation failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(this, error.Message, "Settings validation failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             };
 
-            Button configFolder = ActionButton("Open Config Folder", 165);
-            configFolder.Click += delegate { OpenContainingFolder(configPath.Text); };
             Button logsFolder = ActionButton("Open Logs Folder", 155);
             logsFolder.Click += delegate { OpenContainingFolder(logDir.Text); };
 
             buttons.Controls.Add(validate);
-            buttons.Controls.Add(configFolder);
             buttons.Controls.Add(logsFolder);
-            buttons.Controls.Add(new InfoButton("Config validation uses the same Config v5 rules as Save and Continue. Public command documentation opens from Help."));
+            buttons.Controls.Add(new InfoButton("Validation uses the same runtime rules as Save and Continue. Windows settings are internal and have no external config folder."));
             layout.Controls.Add(buttons, 0, 1);
             group.Controls.Add(layout);
             return group;
@@ -1503,7 +1495,6 @@ namespace Splined.WindowsGui
         {
             music.Text = state.MusicLibrary;
             ignored.Text = String.Join(", ", state.IgnoredSubs);
-            configPath.Text = state.ConfigPath;
             credentialDir.Text = state.CredentialDir;
             cacheDir.Text = state.CacheDir;
             sqliteShared.Checked = state.SqliteShared;
@@ -1553,7 +1544,7 @@ namespace Splined.WindowsGui
             else if (state.HistoryRetentionDays == 365) historyRetention.SelectedIndex = 4;
             else historyRetention.SelectedIndex = 1;
             Label active = FindControl<Label>(primaryTabs, "activeConfigLabel");
-            if (active != null) active.Text = "Active configuration: " + state.ConfigPath;
+            if (active != null) active.Text = "Active configuration: Windows internal settings";
             loadingSourceEditor = true;
             int discogsIndex = -1;
             for (int index = 0; index < sourceSelector.Items.Count; index++)
@@ -1590,7 +1581,6 @@ namespace Splined.WindowsGui
             try
             {
                 SaveCurrentSourceEditor(true);
-                state.ConfigPath = configPath.Text.Trim();
                 state.MusicLibrary = music.Text.Trim();
                 state.IgnoredSubs = ignored.Text.Split(',').Select(value => value.Trim()).Where(value => value.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 state.CredentialDir = credentialDir.Text.Trim();
@@ -1642,34 +1632,13 @@ namespace Splined.WindowsGui
             }
             catch (Exception error)
             {
-                MessageBox.Show(this, error.Message, "Unable to save Config v5", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void UseExistingConfiguration(object sender, EventArgs e)
-        {
-            using (OpenFileDialog dialog = new OpenFileDialog())
-            {
-                dialog.Filter = "TOML configuration (*.toml)|*.toml|All files (*.*)|*.*";
-                dialog.CheckFileExists = true;
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                try
-                {
-                    ConfigStore.WriteTextAtomic(ConfigStore.LocatorPath, ConfigStore.ToPortablePath(dialog.FileName) + Environment.NewLine);
-                    state = ConfigStore.Load();
-                    Populate();
-                }
-                catch (Exception error)
-                {
-                    MessageBox.Show(this, error.Message, "Unable to use configuration", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                MessageBox.Show(this, error.Message, "Unable to save Windows settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
         private void RestorePortablePaths()
         {
             ConfigState defaults = ConfigStore.Defaults();
-            configPath.Text = defaults.ConfigPath;
             credentialDir.Text = defaults.CredentialDir;
             cacheDir.Text = defaults.CacheDir;
             sqliteShared.Checked = defaults.SqliteShared;

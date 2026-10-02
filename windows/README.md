@@ -26,11 +26,21 @@ cargo build --manifest-path windows/Cargo.toml --locked --release
 ```
 
 `gui/TEST-WINDOWS-GUI.cmd` runs the WinForms Config v5 and lifecycle regression
-suite. At runtime the embedded GUI is materialized only in the disposable
-`_cache/runtime/` directory; no GUI, watermark, icon, or core sidecar is part
-of the release archive. Generated executables, QA images, local configuration,
+suite. At runtime the embedded GUI is materialized only beneath the current
+user's Local Application Data runtime directory; it does not require the
+user-selected artwork cache. No GUI, watermark, icon, or core sidecar is part
+of the release archive. Generated executables, QA images, local settings,
 credentials, cache, logs, and history are intentionally excluded from version
 control.
+
+Windows v4 stores the validated Config v5 document and interface preferences
+in the current user's internal application settings. First run requires the
+library, cache, log, and credential paths and creates the selected runtime
+directories only after save. The distribution does not create `config.toml`,
+`ui.toml`, `config.location`, `_cache`, `_logs`, `config`, `credentials`, or
+`docker_builds`. **File > Backup** exports and restores selected internal
+settings, interface state, credential JSON, SQLite, and diagnostics in an
+optionally password-protected `.spl` container.
 
 The Windows GUI clears prior `splined-*.log` files from `_logs/run` during the
 next startup and creates one diagnostic file for the new application session.

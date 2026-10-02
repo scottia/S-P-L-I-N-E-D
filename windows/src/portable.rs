@@ -252,7 +252,7 @@ fn remove_setup_executable_after_exit(current_exe: &Path) {
     }
 }
 
-fn finish_setup_executable() -> Result<(), String> {
+pub fn finish_setup_executable() -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
 
@@ -269,8 +269,10 @@ fn finish_setup_executable() -> Result<(), String> {
         println!("Permanent executable:");
         println!("  {}", final_exe.display());
         println!();
-        println!("Existing config, credentials, cache/database, and logs were preserved.");
-        println!("Disposable cache is recreated as needed by scan operations.");
+        println!("Windows settings and runtime folders are selected in the GUI on first launch.");
+        println!(
+            "Setup does not create config, credentials, cache/database, logs, or docker_builds folders."
+        );
         println!("Temporary setup files are removed automatically.");
         println!();
         println!("Use this executable for future SPLINED launches.");
