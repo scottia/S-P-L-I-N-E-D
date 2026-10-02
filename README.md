@@ -81,6 +81,11 @@ Start with:
 Windows GUI v3.0.0 Stable opens the documentation home from **Help > Help** and
 from the Help button in its About dialog.
 
+Windows `dev` builds also expose **Help > Check for Update...** and notify the
+operator when the rolling, SHA-256-verified Windows dev build advances. Stable
+release builds continue to use the official Releases page. See
+[Windows upgrade](docs/installation-first-run.md#windows-upgrade).
+
 ---
 
 ## 🧩 Source implementation layout

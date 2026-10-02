@@ -188,6 +188,9 @@ jobs:
 
       - name: Build Windows release
         shell: bash
+        env:
+          SPLINED_BUILD_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+          SPLINED_UPDATE_CHANNEL: stable
         run: cargo build --manifest-path windows/Cargo.toml --locked --release
 
       - name: Package Windows release

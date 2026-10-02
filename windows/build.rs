@@ -12,6 +12,7 @@ const GUI_SOURCES: &[&str] = &[
     "EmbeddedAssets.cs",
     "ConfigState.cs",
     "RuntimeLog.cs",
+    "UpdateService.cs",
     "ThemeManager.cs",
     "SetupForm.cs",
     "SupportWindows.cs",
@@ -39,6 +40,8 @@ fn main() {
     println!("cargo:rerun-if-changed=gui/app.manifest");
     println!("cargo:rerun-if-changed=gui/app.ico");
     println!("cargo:rerun-if-changed=gui/app.rc");
+    println!("cargo:rerun-if-env-changed=SPLINED_BUILD_COMMIT");
+    println!("cargo:rerun-if-env-changed=SPLINED_UPDATE_CHANNEL");
     for source in GUI_SOURCES {
         println!("cargo:rerun-if-changed=gui/{source}");
     }
@@ -53,7 +56,8 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is not set"));
     let embedded_gui = out_dir.join("splined-gui.exe");
-    compile_gui(&gui_dir, &embedded_gui);
+    let build_info = write_build_info(&manifest_dir, &out_dir);
+    compile_gui(&gui_dir, &embedded_gui, &build_info);
     compile_native_resources(&gui_dir, &out_dir);
 
     println!(
@@ -62,7 +66,7 @@ fn main() {
     );
 }
 
-fn compile_gui(gui_dir: &Path, output_path: &Path) {
+fn compile_gui(gui_dir: &Path, output_path: &Path, build_info: &Path) {
     let csc = locate_csc()
         .unwrap_or_else(|| panic!("Microsoft .NET Framework C# compiler csc.exe was not found"));
     let manifest = gui_dir.join("app.manifest");
@@ -85,11 +89,60 @@ fn compile_gui(gui_dir: &Path, output_path: &Path) {
         arguments.push(resource_option(&gui_dir.join(asset), name));
     }
     arguments.extend(GUI_SOURCES.iter().map(OsString::from));
+    arguments.push(build_info.as_os_str().to_os_string());
 
     run_checked(
         Command::new(&csc).current_dir(gui_dir).args(&arguments),
         "SPLINED embedded Windows GUI compilation failed",
     );
+}
+
+fn write_build_info(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
+    let commit = env::var("SPLINED_BUILD_COMMIT")
+        .ok()
+        .filter(|value| valid_commit(value))
+        .or_else(|| git_commit(manifest_dir))
+        .unwrap_or_else(|| "unknown".to_string());
+    let channel = env::var("SPLINED_UPDATE_CHANNEL")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "stable" | "dev"))
+        .unwrap_or_else(|| "stable".to_string());
+    let short_commit = if commit == "unknown" {
+        commit.clone()
+    } else {
+        commit.chars().take(7).collect()
+    };
+    let source = format!(
+        "namespace Splined.WindowsGui\n{{\n    internal static class BuildInfo\n    {{\n        public const string Commit = \"{commit}\";\n        public const string ShortCommit = \"{short_commit}\";\n        public const string UpdateChannel = \"{channel}\";\n    }}\n}}\n"
+    );
+    let path = out_dir.join("BuildInfo.cs");
+    fs::write(&path, source).unwrap_or_else(|error| {
+        panic!(
+            "Unable to write Windows GUI build metadata {}: {error}",
+            path.display()
+        )
+    });
+    path
+}
+
+fn valid_commit(value: &str) -> bool {
+    let value = value.trim();
+    (7..=40).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn git_commit(manifest_dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(manifest_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim();
+    valid_commit(value).then(|| value.to_ascii_lowercase())
 }
 
 fn compile_native_resources(gui_dir: &Path, out_dir: &Path) {

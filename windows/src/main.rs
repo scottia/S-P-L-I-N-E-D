@@ -848,6 +848,18 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
 
 #[tokio::main]
 async fn main() {
+    match setup_only_bootstrap() {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            #[cfg(windows)]
+            show_gui_error(&error);
+            #[cfg(not(windows))]
+            eprintln!("{error}");
+            return;
+        }
+    }
+
     #[cfg(windows)]
     if std::env::args_os().len() == 1 {
         match launch_embedded_gui() {
@@ -856,15 +868,6 @@ async fn main() {
             Err(error) => show_gui_error(&error),
         }
         return;
-    }
-
-    match setup_only_bootstrap() {
-        Ok(true) => return,
-        Ok(false) => {}
-        Err(error) => {
-            eprintln!("{error}");
-            return;
-        }
     }
 
     let cli = Cli::parse();
