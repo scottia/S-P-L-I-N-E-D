@@ -195,7 +195,7 @@ namespace Splined.WindowsGui
             ProcessStartInfo start = new ProcessStartInfo
             {
                 FileName = corePath,
-                Arguments = "--config-path " + Quote(config.ConfigPath) + " --media-snapshot" + (refresh ? " --refresh-media-index" : ""),
+                Arguments = "--media-snapshot" + (refresh ? " --refresh-media-index" : ""),
                 WorkingDirectory = ConfigStore.AppRoot,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -205,6 +205,7 @@ namespace Splined.WindowsGui
                 StandardOutputEncoding = new UTF8Encoding(false),
                 StandardErrorEncoding = new UTF8Encoding(false)
             };
+            start.EnvironmentVariables["SPLINED_CONFIG_TOML"] = ConfigStore.ExportConfigText(config);
             string output;
             string error;
             int exitCode;
@@ -222,6 +223,8 @@ namespace Splined.WindowsGui
                 + " stderr=" + (String.IsNullOrWhiteSpace(error) ? "none" : error.Trim()));
             if (exitCode != 0)
                 throw new InvalidOperationException(String.IsNullOrWhiteSpace(error) ? "SPLINED SQLite media snapshot failed." : error.Trim());
+            if (String.IsNullOrWhiteSpace(output))
+                throw new InvalidOperationException("SPLINED returned no SQLite media snapshot.");
             List<AlbumInfo> albums = FromSnapshotJson(output);
             timing.Stop();
             RuntimeLog.Write("debug", "media_snapshot.timing refresh=" + refresh

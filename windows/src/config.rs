@@ -765,6 +765,19 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
     Ok(config)
 }
 
+/// Load an in-memory GUI configuration without creating a runtime file.
+/// Relative paths retain the same application-root semantics as file-backed
+/// configuration, and the source text must never be written to diagnostics.
+pub fn load_config_text(text: &str) -> Result<Config, String> {
+    if text.trim().is_empty() {
+        return Err("SPLINED received empty Windows internal settings.".to_string());
+    }
+    let mut config = parse_config(text)?;
+    let root = app_root()?;
+    resolve_runtime_paths(&mut config, &root);
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,5 +966,13 @@ mod tests {
         );
         assert!(config.library.music_library.is_empty());
         assert!(config.scan.scan_library_dir.is_empty());
+    }
+
+    #[test]
+    fn in_memory_windows_config_loads_without_a_runtime_file() {
+        let text = default_toml().unwrap();
+        let config = load_config_text(&text).expect("in-memory config should load");
+        assert_eq!(config.config_version, Config::default().config_version);
+        assert!(load_config_text("  \r\n ").is_err());
     }
 }

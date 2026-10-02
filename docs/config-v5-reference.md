@@ -1,8 +1,10 @@
 # Config v5 Reference
 
 This page documents the common Config v5 contract. The complete secret-free
-native/Windows example is [`config.example.toml`](../config.example.toml). The
-Docker example uses the same schema with container paths.
+native example is [`config.example.toml`](../config.example.toml); it is also a
+field-value reference for the Windows Settings interface. Windows does not use
+that file during normal GUI operation. The Docker example uses the same schema
+with container paths.
 
 Application release and configuration schema versions are separate:
 
@@ -24,6 +26,9 @@ On first Windows launch the library, cache, log, and credential directories are
 mandatory choices. SPLINED creates only the selected cache, log, and credential
 directories after **Save and Continue**. The ZIP/setup extraction does not
 precreate `_cache`, `_logs`, `config`, `credentials`, or `docker_builds`.
+Cache, log, and credential fields initially point beneath
+`%LOCALAPPDATA%\SPLINED`, not machine-wide `%PROGRAMDATA%`, and remain editable.
+Existing saved and UNC paths are not migrated automatically.
 
 Relative runtime paths are resolved from the SPLINED application directory.
 External, NAS, mapped-drive, and UNC paths remain absolute. Docker paths are
@@ -56,6 +61,11 @@ normally absolute container paths supplied by bind mounts.
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; Python owns shared inventory, while rollback journaling and a 30-second busy timeout protect shared writes |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 
+The `_cache` and `_logs` values above are file-backed native defaults. Windows
+first-run defaults are `%LOCALAPPDATA%\SPLINED\cache` and
+`%LOCALAPPDATA%\SPLINED\logs`; the saved Config v5 values are whatever the user
+accepts or selects in Settings.
+
 ### SQLite `cache_dir`
 
 Python/Docker and Windows store the persistent Select Media read model at:
@@ -84,7 +94,7 @@ SPLINED uses:
 Windows Setup requires a browsable **Cache directory** field and derives the
 same filename. A local Windows cache creates an independent database; a shared
 UNC cache can expose the same physical database as another installation.
-Raw UNC paths are supported directly in TOML. SPLINED creates an internal,
+Raw UNC paths are supported directly through Windows Settings. SPLINED creates an internal,
 provider-aware Windows drive adapter for SQLite because Windows network locking
 can differ between raw UNC and drive-letter paths. An existing connection to
 the same UNC prefix is found dynamically (including NFS, even if its letter
@@ -207,6 +217,10 @@ This is the only normal credential setting. Standard provider JSON filenames
 are resolved internally. API keys, OAuth tokens, shared secrets, and provider
 filenames do not belong in `config.toml`.
 
+`credentials` is the file-backed native default. Windows first run proposes
+`%LOCALAPPDATA%\SPLINED\credentials`; the user may select another local or UNC
+directory before saving.
+
 ### MusicBrainz runtime options
 
 MusicBrainz authentication and runtime options share the credential document
@@ -242,7 +256,7 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `logging.retention_days` | `14` | Retention for ordinary diagnostic files; Windows keeps only its current `_logs/run` session |
+| `logging.retention_days` | `14` | Retention for ordinary diagnostic files; Windows keeps only its current `<configured log directory>\run` session |
 | `history.enabled` | `true` | Enables persistent completion/status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
 
@@ -330,7 +344,13 @@ custom positions persist.
 ## Validation
 
 Windows Settings **Validate Saved Settings** and **Save and Continue** validate
-the internal Config v5 record before execution. A temporary runtime TOML is
-created only while launching the Rust core and is removed after the run. Native
-and Python/Docker implementations also validate Config v5; use the Docker
-example for container-specific paths.
+the internal Config v5 record before execution. The GUI passes the validated
+document directly to its Rust child process through that process's private
+environment; it creates no runtime TOML or portable settings folder. Native and
+Python/Docker implementations also validate Config v5; use the Docker example
+for container-specific paths.
+
+The fingerprinted embedded Windows Forms shell is a separate executable cache
+under `%LOCALAPPDATA%\SPLINED\runtime`. It contains no Config v5 values or
+credentials, is reused to avoid repeated extraction/security scanning, and
+prunes stale shells from older builds on startup.

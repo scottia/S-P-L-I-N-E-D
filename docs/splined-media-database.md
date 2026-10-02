@@ -47,15 +47,17 @@ sqlite_shared = true
 
 TOML keys are section-scoped: `sqlite_shared` must appear after the `[scan]`
 header and before the next table header. Placing the same text elsewhere in the
-file does not configure `scan.sqlite_shared`.
+Python/Docker file does not configure `scan.sqlite_shared`. On Windows, enable
+**Shared SQLite database (network / multi-OS)** in Settings; the GUI stores the
+same Config v5 field internally.
 
 The Python/Docker installation is the inventory authority for a shared
 database. Its `library.ignored_subs`, Album discovery, and representative-track
 policy determine which rows are published. Windows consumes that inventory and
 maps the saved canonical paths onto its own `library.music_library`; Windows
 does not compare or apply its local `ignored_subs` or output filename while
-loading the shared inventory. The two TOML files therefore remain independent
-apart from intentionally resolving `scan.cache_dir` to the same physical
+loading the shared inventory. The two runtime configurations therefore remain
+independent apart from intentionally resolving `scan.cache_dir` to the same physical
 `splined.db` and enabling `sqlite_shared`.
 
 Local/default mode retains WAL and `synchronous=NORMAL`. Shared mode uses the
@@ -88,8 +90,8 @@ adapts a configured path such as `\\server\share\path\to\_cache`. It dynamically
 reuses any Windows connection to the same remote prefix, regardless of its
 current drive letter; this preserves provider-specific behavior such as an NFS
 mount. If none exists, it creates a temporary, non-persistent connection only
-while SQLite is open, then removes it. The TOML remains UNC-based and never
-depends on a particular drive letter.
+while SQLite is open, then removes it. The internally saved Config v5 path
+remains UNC-based and never depends on a particular drive letter.
 
 The centralized path mapper is the only media-path conversion boundary.
 Windows maps
@@ -414,6 +416,10 @@ For Python/Docker installations, back up:
 
 The WAL/SHM sidecars may exist while SPLINED is running. Stop SPLINED before
 copying the database if a consistent filesystem-level backup is required.
+
+On Windows, **File > Backup > Export Backup...** can include internal settings,
+interface state, credentials, `splined.db`, and diagnostics independently. Stop
+other writers before exporting an actively shared database.
 
 Deleting `splined.db` is safe for music files, but also removes the durable
 index and runtime state. The next Python interactive launch performs the

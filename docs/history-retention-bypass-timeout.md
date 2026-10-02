@@ -30,8 +30,8 @@ Processed, so an operator-added or third-party `cover.*` remains Unprocessed.
 selection. `[history].retention_days = 0` retains them indefinitely; a positive
 value makes older completion state eligible for pruning/reprocessing.
 
-Diagnostic log retention is independent. Deleting `_logs/run` never changes
-Album state.
+Diagnostic log retention is independent. Deleting the configured
+`<scan.log_dir>/run` directory never changes Album state.
 
 ## Bypass and timeout
 
@@ -42,7 +42,8 @@ successfully completed Album.
 
 ## Backup
 
-Preserve:
+On Windows, use **File > Backup > Export Backup...** and select internal
+settings, credentials, and SQLite as needed. On file-backed runtimes, preserve:
 
 ```text
 config/

@@ -7,6 +7,10 @@ This directory contains the finalized native Windows application:
 - GUI: C# Windows Forms under `gui/`
 - Processing core: Rust under `src/`
 
+User-facing Windows behavior is documented in the
+[Windows v4 guide](../docs/windows-v4-interface.md). This file covers source,
+build, packaging, and update implementation details.
+
 The Cargo manifest is the reproducible Windows build entry point. On Windows,
 the build script embeds the WinForms shell, processing core, watermark, and
 application icon into one distributable executable:
@@ -18,33 +22,44 @@ windows/target/release/splined.exe
 Build and validate from the repository root:
 
 ```text
-cargo fmt --manifest-path windows/Cargo.toml --all -- --check
+cargo fmt --manifest-path windows/Cargo.toml -- --check
 cargo check --manifest-path windows/Cargo.toml --locked
 cargo test --manifest-path windows/Cargo.toml --locked
-cargo clippy --manifest-path windows/Cargo.toml --locked -- -D warnings
+cargo clippy --manifest-path windows/Cargo.toml --all-targets --locked -- -D warnings
 cargo build --manifest-path windows/Cargo.toml --locked --release
 ```
 
 `gui/TEST-WINDOWS-GUI.cmd` runs the WinForms Config v5 and lifecycle regression
 suite. At runtime the embedded GUI is materialized only beneath the current
-user's Local Application Data runtime directory; it does not require the
-user-selected artwork cache. No GUI, watermark, icon, or core sidecar is part
-of the release archive. Generated executables, QA images, local settings,
-credentials, cache, logs, and history are intentionally excluded from version
+user's `%LOCALAPPDATA%\SPLINED\runtime` directory; it does not require the
+user-selected artwork cache. The shell filename is derived from its content
+digest, the identical build is reused, and stale older shells are removed on
+startup. No GUI, watermark, icon, or core sidecar is distributed beside
+`splined.exe`. Generated executables, QA images, local settings, credentials,
+cache, logs, and database files are intentionally excluded from version
 control.
 
 Windows v4 stores the validated Config v5 document and interface preferences
 in the current user's internal application settings. First run requires the
 library, cache, log, and credential paths and creates the selected runtime
-directories only after save. The distribution does not create `config.toml`,
+directories only after save. Cache, log, and credential fields initially point
+beneath `%LOCALAPPDATA%\SPLINED`, remain editable, and do not change existing
+saved or UNC paths. The distribution does not create `config.toml`,
 `ui.toml`, `config.location`, `_cache`, `_logs`, `config`, `credentials`, or
 `docker_builds`. **File > Backup** exports and restores selected internal
 settings, interface state, credential JSON, SQLite, and diagnostics in an
 optionally password-protected `.spl` container.
 
-The Windows GUI clears prior `splined-*.log` files from `_logs/run` during the
-next startup and creates one diagnostic file for the new application session.
-SQLite remains the authority for Album state and is not affected by log cleanup.
+The GUI serializes the validated Config v5 record directly into each Rust
+child process's private environment. Snapshot and Album runs do not create a
+runtime TOML and must never treat the display label `Windows internal settings`
+as a filesystem path. Configuration-load failures exit nonzero so the GUI can
+surface the actual error instead of attempting to parse empty snapshot output.
+
+The Windows GUI clears prior `splined-*.log` files from
+`<configured log directory>\run` during the next startup and creates one
+diagnostic file for the new application session. SQLite remains the authority
+for Album state and is not affected by log cleanup.
 
 The repository/native release number is independent of this application's
 v3.0.0 Stable identity. The next-patch release workflow must not rewrite this

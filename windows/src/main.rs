@@ -4,8 +4,8 @@ use clap::Parser;
 use sha2::{Digest, Sha256};
 use splined::candidate::StaticFormat;
 use splined::config::{
-    Config, Mode, Verbosity, config_path, load_config, load_config_from, resolve_sources,
-    samples_dir,
+    Config, Mode, Verbosity, config_path, load_config, load_config_from, load_config_text,
+    resolve_sources, samples_dir,
 };
 use splined::config_migration::{MigrationReport, migrate_config_if_needed};
 use splined::credentials::{
@@ -63,6 +63,7 @@ fn launch_embedded_gui(restore_path: Option<&Path>) -> Result<i32, String> {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let gui_path = runtime_dir.join(format!("splined-gui-{fingerprint}.exe"));
+    cleanup_stale_embedded_gui_files(&runtime_dir, Some(&gui_path));
     if !embedded_file_matches(&gui_path, &digest)? {
         let staged = runtime_dir.join(format!(
             ".splined-gui-{fingerprint}-{}.tmp",
@@ -95,6 +96,27 @@ fn launch_embedded_gui(restore_path: Option<&Path>) -> Result<i32, String> {
         .status()
         .map_err(|error| format!("Unable to start the SPLINED interface: {error}"))?;
     Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(windows)]
+fn cleanup_stale_embedded_gui_files(runtime_dir: &Path, keep: Option<&Path>) {
+    let Ok(entries) = fs::read_dir(runtime_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if keep.is_some_and(|current| current == path) {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if (name.starts_with("splined-gui-") && name.ends_with(".exe"))
+            || (name.starts_with(".splined-gui-") && name.ends_with(".tmp"))
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -603,7 +625,13 @@ fn ensure_regular_config() -> Result<Config, String> {
 fn load_selected_config(cli: &Cli) -> Result<Config, String> {
     match cli.config_path.as_deref() {
         Some(path) => load_config_from(path),
-        None => ensure_regular_config(),
+        None => match std::env::var("SPLINED_CONFIG_TOML") {
+            Ok(text) => load_config_text(&text),
+            Err(std::env::VarError::NotPresent) => ensure_regular_config(),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("Windows internal settings contain invalid Unicode.".to_string())
+            }
+        },
     }
 }
 
@@ -936,7 +964,7 @@ async fn main() {
         Ok(config) => config,
         Err(error) => {
             eprintln!("{error}");
-            return;
+            std::process::exit(2);
         }
     };
 

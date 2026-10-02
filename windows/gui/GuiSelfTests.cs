@@ -36,6 +36,13 @@ namespace Splined.WindowsGui
                 File.WriteAllBytes(Path.Combine(ignoredAlbum, "track.mp3"), new byte[] { 0 });
 
                 ConfigState state = ConfigStore.Defaults();
+                Assert(state.CacheDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "cache")
+                    && state.LogDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "logs")
+                    && state.CredentialDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "credentials"),
+                    "First-run data paths did not default to the current user's Local AppData directory.");
+                state.CacheDir = Path.Combine(internalSettings, "cache");
+                state.LogDir = Path.Combine(internalSettings, "logs");
+                state.CredentialDir = Path.Combine(internalSettings, "credentials");
                 state.ConfigPath = ConfigStore.DefaultConfigPath;
                 state.MusicLibrary = library;
                 string[] excludedFolders =
@@ -248,14 +255,19 @@ namespace Splined.WindowsGui
                 catch (InvalidOperationException) { wrongPasswordRejected = true; }
                 Assert(wrongPasswordRejected, "Password-protected .spl backup accepted an incorrect password.");
                 string savedConfigBeforeTemporaryRun = ConfigStore.ExportConfigText(ConfigStore.Load());
-                string temporaryRunConfig = Path.Combine(ConfigStore.AppRoot, "temporary-filtered-run.toml");
                 ConfigState temporaryRunState = loaded.Clone();
                 temporaryRunState.Mode = "read";
-                ConfigStore.SaveTemporaryRunConfig(temporaryRunState, temporaryRunConfig);
-                Assert(File.ReadAllText(temporaryRunConfig).Contains("mode = \"read\"")
+                string runtimeConfigText = ConfigStore.ExportConfigText(temporaryRunState);
+                Assert(runtimeConfigText.Contains("mode = \"read\"")
                     && ConfigStore.ExportConfigText(ConfigStore.Load()) == savedConfigBeforeTemporaryRun,
-                    "A temporary Read/Write override changed the saved internal settings.");
-                File.Delete(temporaryRunConfig);
+                    "The in-memory runtime settings handoff changed the saved internal settings.");
+                Assert(!Directory.Exists(Path.Combine(ConfigStore.AppRoot, ".splined-runtime")),
+                    "The in-memory runtime settings handoff created a portable runtime directory.");
+
+                bool emptySnapshotRejected = false;
+                try { LibraryInventory.FromSnapshotJson(""); }
+                catch (InvalidOperationException) { emptySnapshotRejected = true; }
+                Assert(emptySnapshotRejected, "An empty SQLite media snapshot was accepted.");
 
                 using (SetupForm setup = new SetupForm(loaded, false))
                 {
