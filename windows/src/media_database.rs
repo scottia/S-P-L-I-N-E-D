@@ -1868,6 +1868,17 @@ mod tests {
             r"\\server\share\media\music\10,000 Maniacs\Love Among the Ruins\1-01 - Rainy Day.mp3"
         );
         assert_eq!(mapper.to_canonical(&local).unwrap(), canonical);
+
+        let unicode_canonical = "/music/Françoise Hardy/L’amitié — Big Bambú/01 - Voilà.mp3";
+        let unicode_local = mapper.to_local(unicode_canonical).unwrap();
+        assert_eq!(
+            unicode_local,
+            r"\\server\share\media\music\Françoise Hardy\L’amitié — Big Bambú\01 - Voilà.mp3"
+        );
+        assert_eq!(
+            mapper.to_canonical(&unicode_local).unwrap(),
+            unicode_canonical
+        );
     }
 
     #[test]

@@ -36,7 +36,20 @@ The repository/native release number is independent of this application's
 v3.0.0 Stable identity. The next-patch release workflow must not rewrite this
 manifest or `gui/ReleaseInfo.cs`.
 
-## Rolling dev updates
+## Windows updates
+
+The updater is compiled into the Windows application source. Stable builds
+discover the newest official, non-prerelease release containing both
+`windows-update.json` and `setup-splined.exe`. The official release workflow
+publishes those paired assets whenever Windows is selected. A release for only
+another operating system is skipped during Windows update discovery.
+
+Stable and dev channels are isolated. Stable builds accept only versioned
+official-release assets and dev builds accept only the fixed rolling dev
+assets. Both require the manifest channel, full commit, byte count, SHA-256,
+and executable URL to agree before installation.
+
+### Rolling dev updates
 
 Code-bearing pushes to `dev` run `.github/workflows/windows-dev-update.yml`.
 Documentation-only and updater-workflow-only pushes do not rebuild the
@@ -44,8 +57,9 @@ executable. The workflow restores its Rust build cache, performs one optimized
 build, and publishes a commit-aware `setup-splined.exe` and manifest to the
 rolling `windows-dev` prerelease. The manifest contains the exact commit, byte
 count, and SHA-256 digest. Dev-channel builds check that manifest after startup
-and through **Help > Check for Update...**. Stable builds do not consume the dev
-channel.
+and through **Help > Check for Update...**. The public rolling prerelease is a
+temporary compatibility endpoint for installed dev builds, not the stable
+distribution path.
 
 The rolling updater deliberately does not repeat the full test, clippy, and GUI
 QA matrix before its distribution build. Those checks remain developer/CI

@@ -38,6 +38,12 @@ are required.
 UPGRADE AN EXISTING PORTABLE INSTALL
 ------------------------------------
 
+Use Help > Check for Update... to download, verify, install, and restart the
+newest official Windows release. The updater is built into splined.exe and
+preserves the persistent locations listed below.
+
+To upgrade manually:
+
 1. Close SPLINED.
 
 2. Back up these persistent locations:

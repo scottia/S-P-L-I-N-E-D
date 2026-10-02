@@ -24,7 +24,7 @@ use splined::scan_runtime::run_scan_library_read_report;
 use splined::source::{ArtworkQuery, ProviderContext, ProviderRegistry, lastfm::LastFm};
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod cli;
@@ -987,7 +987,12 @@ async fn main() {
         return;
     }
 
-    if let Some(path) = cli.scan_dir_path.as_deref() {
+    let gui_scan_dir_path = std::env::var_os("SPLINED_SCAN_DIR_PATH").map(PathBuf::from);
+    if let Some(path) = cli
+        .scan_dir_path
+        .as_deref()
+        .or(gui_scan_dir_path.as_deref())
+    {
         config.scan.scan_library_dir = path.to_string_lossy().into_owned();
         if let Err(error) = run_scan_library_read_report(&config, &resolved_sources).await {
             eprintln!("{error}");
