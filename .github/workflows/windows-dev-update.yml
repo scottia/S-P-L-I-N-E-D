@@ -1,14 +1,6 @@
 name: Windows Dev Update
 
 on:
-  push:
-    branches:
-      - dev
-    paths-ignore:
-      - ".github/workflows/windows-dev-update.yml"
-      - "README.md"
-      - "docs/**"
-      - "windows/README.md"
   workflow_dispatch:
 
 permissions:

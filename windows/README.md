@@ -55,8 +55,8 @@ and executable URL to agree before installation.
 
 ### Rolling dev updates
 
-Code-bearing pushes to `dev` run `.github/workflows/windows-dev-update.yml`.
-Documentation-only and updater-workflow-only pushes do not rebuild the
+`.github/workflows/windows-dev-update.yml` is manually dispatched after the
+desired `dev` commit is ready. Ordinary pushes do not rebuild or publish the
 executable. The workflow restores its Rust build cache, performs one optimized
 build, and publishes a commit-aware `setup-splined.exe` and manifest to the
 rolling `windows-dev` prerelease. The manifest contains the exact commit, byte
