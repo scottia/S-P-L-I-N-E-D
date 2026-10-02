@@ -97,7 +97,7 @@ underlying status color.
 | --- | --- | --- |
 | White | Unprocessed / no current processed authority | Yes |
 | Blue | Compilation LIVE WRITE has unfinished per-track progress | No |
-| Orange | Processed/history or recognized canonical local cover | No |
+| Orange | A completed SPLINED operation is recorded in SQLite | No |
 | Red | Persistent bypass | No |
 | Purple | Timeout active | No |
 
@@ -109,6 +109,10 @@ Purple Albums remain protected while timeout is active.
 READ mode may evaluate a candidate, but a no-cover Album does not become
 durably processed merely because a possible image was found. LIVE WRITE updates
 the database after the actual Album result and local `cover.*` state are known.
+The presence of an existing `cover.*` is inventory information only. Artwork
+added by another application or by the operator remains White/Unprocessed until
+SPLINED records a completed operation; SPLINED may still evaluate that artwork
+as a local candidate.
 
 ## Physical Artist-folder aggregate states
 

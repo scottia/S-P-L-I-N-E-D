@@ -19,6 +19,11 @@ Python owns shared-library indexing. Python and Windows may both update Album
 runtime state when `[scan].sqlite_shared = true`; shared mode uses rollback
 journaling and a 30-second busy timeout.
 
+`cover_found`, `cover_path`, and `local_art_json` describe artwork currently in
+the Album folder. They do not create Processed authority. Only an explicit
+SPLINED completion recorded through runtime history/provenance marks an Album
+Processed, so an operator-added or third-party `cover.*` remains Unprocessed.
+
 ## Retention policy
 
 `[history].enabled` controls whether completed runtime outcomes influence later

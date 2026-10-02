@@ -348,9 +348,9 @@ def _assign_unique_album_key(
             + hashlib.sha256(relative.encode("utf-8")).hexdigest()[:12]
         )
         if previous is None:
-            row["status"] = (
-                "processed" if int(row.get("cover_found", 0) or 0) else "unprocessed"
-            )
+            # A second physical copy may already contain cover.*, but only a
+            # recorded SPLINED outcome may make it Processed.
+            row["status"] = "unprocessed"
             row["processed_at"] = ""
             row["bypassed"] = 0
             row["timeout_until"] = ""

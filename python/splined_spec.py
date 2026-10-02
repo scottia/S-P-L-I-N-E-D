@@ -279,16 +279,13 @@ def check_docs(audit: Audit) -> None:
         windows_body = (ROOT / "windows/gui/LibraryModel.cs").read_text(
             encoding="utf-8"
         )
-        assert "recognized local cover artwork already exists" in history_body
-        assert "detected local artwork state" in media_body
-        assert (
-            "album.State = album.HasLocalArtwork ? AlbumState.Processed : AlbumState.New;"
-            in windows_body
-        )
+        assert "do not create Processed authority" in history_body
+        assert "inventory information only" in media_body
+        assert "Never processed by SPLINED" in windows_body
 
     audit.check(
         "DOC-002",
-        "Processed/Orange authority explicitly covers history and local artwork parity",
+        "Processed/Orange authority requires an explicit SPLINED completion",
         processed_authority,
     )
 

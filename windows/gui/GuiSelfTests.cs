@@ -188,6 +188,12 @@ namespace Splined.WindowsGui
                 Assert(albums.Length == 1 && albums[0].Title == "Album One" && albums[0].Key == "tag:album-one",
                     "SQLite snapshot did not populate the Album identity model.");
                 Assert(albums[0].State == AlbumState.New && albums[0].EligibleByDefault, "A new SQLite Album was not eligible by default.");
+                string coverOnlySnapshot = snapshotJson.Replace(
+                    "\"has_local_artwork\":false",
+                    "\"has_local_artwork\":true");
+                AlbumInfo coverOnlyAlbum = LibraryInventory.FromSnapshotJson(coverOnlySnapshot).Single();
+                Assert(coverOnlyAlbum.HasLocalArtwork && coverOnlyAlbum.State == AlbumState.New && coverOnlyAlbum.EligibleByDefault,
+                    "Existing artwork incorrectly created Processed authority in the Windows picker.");
                 string oversizedSnapshot = snapshotJson.Replace("Album One", new string('A', 2200000));
                 Assert(LibraryInventory.FromSnapshotJson(oversizedSnapshot).Count == 1,
                     "SQLite snapshots larger than JavaScriptSerializer's legacy 2 MB default were rejected.");
@@ -198,7 +204,7 @@ namespace Splined.WindowsGui
                     .Replace("\"has_local_artwork\":false", "\"has_local_artwork\":true");
                 AlbumInfo indexedAlbum = LibraryInventory.FromSnapshotJson(processedSnapshot).Single(album => album.Path == firstAlbum);
                 Assert(indexedAlbum.HasLocalArtwork && indexedAlbum.State == AlbumState.Processed,
-                    "SQLite snapshot did not preserve materialized artwork/status state.");
+                    "SQLite snapshot did not preserve an explicit Processed status.");
 
                 UiState ui = new UiState
                 {

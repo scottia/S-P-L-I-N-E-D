@@ -902,6 +902,7 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(db_error("set SQLite schema version"))?;
     }
+    repair_cover_only_processed_statuses(&connection)?;
     Ok(connection)
 }
 
@@ -1151,25 +1152,13 @@ fn rebuild_index(
                 .as_ref()
                 .map(|value| {
                     (
-                        value.status.clone(),
+                        retained_album_status(value),
                         value.processed_at.clone(),
                         value.bypassed,
                         value.timeout_until.clone(),
                     )
                 })
-                .unwrap_or_else(|| {
-                    (
-                        if cover.found {
-                            "processed"
-                        } else {
-                            "unprocessed"
-                        }
-                        .to_string(),
-                        None,
-                        false,
-                        None,
-                    )
-                }),
+                .unwrap_or_else(|| ("unprocessed".to_string(), None, false, None)),
         };
         let tag_signature = if reuse {
             prior_status
@@ -1387,6 +1376,16 @@ fn load_snapshot(
             let representative: String = row.get(4)?;
             let physical_artist = physical_artist_name(mapper.local_root(), Path::new(&local_path));
             let local_art_json: String = row.get(9)?;
+            let processed_at: Option<String> = row.get(10)?;
+            let selected_source: Option<String> = row.get(12)?;
+            let stored_status: String = row.get(5)?;
+            let status = if stored_status.eq_ignore_ascii_case("processed")
+                && !has_processed_evidence(processed_at.as_deref(), selected_source.as_deref())
+            {
+                "unprocessed".to_string()
+            } else {
+                stored_status
+            };
             Ok(MediaAlbumSnapshot {
                 album_key: row.get(0)?,
                 artist: physical_artist,
@@ -1394,14 +1393,14 @@ fn load_snapshot(
                 title: row.get(2)?,
                 path: local_path,
                 representative_file: mapper.to_local(&representative).unwrap_or_default(),
-                status: row.get(5)?,
+                status,
                 compilation: row.get::<_, i64>(6)? != 0,
                 track_count: row.get(7)?,
                 has_local_artwork: row.get::<_, i64>(8)? != 0,
                 local_artwork_files: mapper.json_paths_to_local(&local_art_json),
-                processed_at: row.get(10)?,
+                processed_at,
                 timeout_until: row.get(11)?,
-                selected_source: row.get(12)?,
+                selected_source,
             })
         })
         .map_err(db_error("read Select Media snapshot"))?
@@ -1570,6 +1569,57 @@ fn inspect_cover(
         }
     }
     Ok(facts)
+}
+
+fn has_processed_evidence(processed_at: Option<&str>, selected_source: Option<&str>) -> bool {
+    processed_at.is_some_and(|value| !value.trim().is_empty())
+        || selected_source.is_some_and(|value| !value.trim().is_empty())
+}
+
+fn retained_album_status(album: &ExistingAlbum) -> String {
+    if album.status.eq_ignore_ascii_case("processed")
+        && !has_processed_evidence(
+            album.processed_at.as_deref(),
+            album.selected_source.as_deref(),
+        )
+    {
+        "unprocessed".to_string()
+    } else {
+        album.status.clone()
+    }
+}
+
+fn repair_cover_only_processed_statuses(connection: &Connection) -> Result<usize, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT artist_key FROM albums WHERE status='processed' \
+             AND coalesce(trim(processed_at), '')='' \
+             AND coalesce(trim(selected_source), '')=''",
+        )
+        .map_err(db_error("prepare cover-only status repair"))?;
+    let artist_keys = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_error("read cover-only status repair Artists"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("collect cover-only status repair Artists"))?;
+    drop(statement);
+    if artist_keys.is_empty() {
+        return Ok(0);
+    }
+    let repaired = connection
+        .execute(
+            "UPDATE albums SET status='unprocessed', \
+             updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') \
+             WHERE status='processed' \
+             AND coalesce(trim(processed_at), '')='' \
+             AND coalesce(trim(selected_source), '')=''",
+            [],
+        )
+        .map_err(db_error("repair cover-only processed Albums"))?;
+    for artist_key in artist_keys {
+        refresh_album_artist_aggregate(connection, &artist_key)?;
+    }
+    Ok(repaired)
 }
 
 fn refresh_album_artist_aggregate(connection: &Connection, artist_key: &str) -> Result<(), String> {
@@ -2065,6 +2115,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(builds, 1);
+    }
+
+    #[test]
+    fn local_cover_inventory_does_not_mark_album_processed() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Artist").join("Album");
+        fs::create_dir_all(&album).unwrap();
+        File::create(album.join("01.mp3")).unwrap();
+        File::create(album.join("cover.jpg")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+
+        let snapshot = media_snapshot(&config, false).unwrap();
+        assert_eq!(snapshot.albums.len(), 1);
+        assert!(snapshot.albums[0].has_local_artwork);
+        assert_eq!(snapshot.albums[0].status, "unprocessed");
+
+        let db = database_path(&config.scan.cache_dir);
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute(
+                "UPDATE albums SET status='processed', processed_at=NULL, selected_source=NULL",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        // Snapshot projection protects the GUI even before a writable open.
+        let snapshot = media_snapshot(&config, false).unwrap();
+        assert_eq!(snapshot.albums[0].status, "unprocessed");
+
+        // A writable open repairs the legacy cover-derived row in SQLite.
+        let repaired = open_database(&db, false).unwrap();
+        let values: (String, i64) = repaired
+            .query_row("SELECT status, cover_found FROM albums", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(values, ("unprocessed".to_string(), 1));
+    }
+
+    #[test]
+    fn recorded_processed_authority_survives_database_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:artist','Artist','/music/Artist',?,?,?,'test')", params![now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,status,cover_found,processed_at,selected_source,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:album','tag:artist','Album','/music/Artist/Album','tags','processed',1,?,'itunes',?,?,?,'test')", params![now, now, now, now]).unwrap();
+        drop(connection);
+
+        let reopened = open_database(&db, false).unwrap();
+        let status: String = reopened
+            .query_row("SELECT status FROM albums", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "processed");
     }
 
     #[test]
