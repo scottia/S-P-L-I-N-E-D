@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 pub mod amazon;
 pub mod coverartarchive;
@@ -69,7 +70,7 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn from_source_order(source_order: &[String]) -> Result<Self, String> {
-        Self::from_source_order_with_credentials(source_order, "", "", "")
+        Self::from_source_order_with_credentials(source_order, "", "", "", Duration::from_secs(20))
     }
 
     pub fn from_source_order_with_credentials(
@@ -77,6 +78,7 @@ impl ProviderRegistry {
         fanarttv_credential_file: &str,
         lastfm_credential_file: &str,
         discogs_credential_file: &str,
+        authority_request_timeout: Duration,
     ) -> Result<Self, String> {
         let mut providers: Vec<Box<dyn ArtworkProvider>> = Vec::new();
 
@@ -86,8 +88,12 @@ impl ProviderRegistry {
                 "itunes" => providers.push(Box::new(ITunes::new()?)),
                 "fanarttv" => providers.push(Box::new(FanartTv::new(fanarttv_credential_file)?)),
                 "lastfm" => providers.push(Box::new(LastFm::new(lastfm_credential_file)?)),
-                "musicbrainz" => providers.push(Box::new(MusicBrainzArtwork::new()?)),
-                "coverartarchive" => providers.push(Box::new(CoverArtArchive::new()?)),
+                "musicbrainz" => providers.push(Box::new(MusicBrainzArtwork::new(
+                    authority_request_timeout,
+                )?)),
+                "coverartarchive" => {
+                    providers.push(Box::new(CoverArtArchive::new(authority_request_timeout)?))
+                }
                 "discogs" => providers.push(Box::new(Discogs::new(discogs_credential_file)?)),
                 "amazon" => providers.push(Box::new(AmazonStore::new()?)),
                 _ => {
@@ -152,6 +158,7 @@ mod tests {
             "fanarttv.json",
             "lastfm.json",
             "discogs.json",
+            Duration::from_secs(7),
         )
         .unwrap();
         assert_eq!(

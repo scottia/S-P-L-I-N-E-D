@@ -175,6 +175,7 @@ namespace Splined.WindowsGui
                     { "local_root", loaded.MusicLibrary },
                     { "albums", new object[] { new Dictionary<string, object>
                         {
+                            { "album_key", "tag:album-one" },
                             { "artist", "Artist One" }, { "tagged_artist", "Tagged Artist" },
                             { "title", "Album One" }, { "path", firstAlbum },
                             { "representative_file", Path.Combine(firstAlbum, "track.mp3") }, { "status", "unprocessed" },
@@ -184,7 +185,8 @@ namespace Splined.WindowsGui
                     } }
                 });
                 AlbumInfo[] albums = LibraryInventory.FromSnapshotJson(snapshotJson).ToArray();
-                Assert(albums.Length == 1 && albums[0].Title == "Album One", "SQLite snapshot did not populate the Album model.");
+                Assert(albums.Length == 1 && albums[0].Title == "Album One" && albums[0].Key == "tag:album-one",
+                    "SQLite snapshot did not populate the Album identity model.");
                 Assert(albums[0].State == AlbumState.New && albums[0].EligibleByDefault, "A new SQLite Album was not eligible by default.");
                 string oversizedSnapshot = snapshotJson.Replace("Album One", new string('A', 2200000));
                 Assert(LibraryInventory.FromSnapshotJson(oversizedSnapshot).Count == 1,
@@ -1047,6 +1049,17 @@ namespace Splined.WindowsGui
             List<AlbumInfo> nextQueue = (List<AlbumInfo>)autoSelection.Invoke(null, new object[] { consecutiveLaunchAlbums });
             Assert(!firstLaunch.Selected && nextArtist.Selected && nextQueue.Count == 1 && Object.ReferenceEquals(nextQueue[0], nextArtist),
                 "A completed launch album survived an equivalent trailing-separator path and led the next artist's queue.");
+
+            firstLaunch.Selected = true;
+            formUi.SelectedAlbumPaths = new List<string> { firstLaunch.Path };
+            typeof(MainForm).GetField("activeLaunchAlbum", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, firstLaunch);
+            applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
+            {
+                { "event", "album_completed" }, { "album_path", @"\\server\music\First Launch Artist\Big BambÃº" },
+                { "action", "Installed" }, { "destination", "cover.jpg" }
+            } });
+            Assert(!firstLaunch.Selected,
+                "A translated physical Album completion did not consume its proper-Unicode indexed selection.");
 
             typeof(MainForm).GetField("activeLaunchAlbum", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, nextArtist);
             typeof(MainForm).GetMethod("ConsumeLaunchAlbumSelection", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { nextArtist });

@@ -767,6 +767,7 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
         &std::path::Path::new(&config.credentials.credential_dir)
             .join("discogs.json")
             .to_string_lossy(),
+        std::time::Duration::from_secs_f64(musicbrainz.recording_timeout_seconds()),
     ) {
         Ok(registry) => registry,
         Err(error) => {

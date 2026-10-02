@@ -3,6 +3,7 @@ use crate::source::{
 };
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use std::time::Duration;
 
 const BASE_URL: &str = "https://coverartarchive.org";
 
@@ -46,9 +47,15 @@ pub struct CoverArtArchive {
 }
 
 impl CoverArtArchive {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(request_timeout: Duration) -> Result<Self, String> {
         let client = Client::builder()
-            .user_agent(concat!("SPLINED/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!(
+                "SPLINED/",
+                env!("CARGO_PKG_VERSION"),
+                " (https://github.com/scottia/S-P-L-I-N-E-D)"
+            ))
+            .http1_only()
+            .timeout(request_timeout)
             .build()
             .map_err(|error| format!("Unable to create Cover Art Archive HTTP client: {error}"))?;
 
@@ -154,7 +161,8 @@ mod tests {
 
     #[test]
     fn provider_name_is_canonical() {
-        let provider = CoverArtArchive::new().expect("provider should create");
+        let provider =
+            CoverArtArchive::new(Duration::from_secs(7)).expect("provider should create");
         assert_eq!(provider.name(), "coverartarchive");
     }
 

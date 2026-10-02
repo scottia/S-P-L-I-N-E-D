@@ -110,7 +110,7 @@ Credential files receive the filesystem protection described in
 | --- | ---: | --- |
 | `retry_max` | `4` | Recording lookup's maximum total attempts |
 | `min_delay` | `1.05` | Minimum seconds between MusicBrainz requests |
-| `recording_timeout` | `7` | Per-attempt Recording-query timeout in seconds |
+| `recording_timeout` | `7` | Per-attempt Recording-query timeout; the native Windows runtime also uses it to bound MusicBrainz/CAA authority-art discovery |
 
 When `[source_policies.musicbrainz].source_override` is `false`, the standard
 defaults are active while saved custom options remain retained. When it is
@@ -122,6 +122,11 @@ from `musicbrainz.json` and does not use aliases or hard-coded fallbacks. It
 loads them only after the local SQL lookup misses. `retry_max = 4` means four
 total attempts, not one initial request plus four retries. A zero value disables
 the remote attempt.
+
+On Windows, MusicBrainz release-group artwork and exact-release Cover Art
+Archive discovery follow the same configured timeout. CAA can redirect through
+multiple `archive.org` hosts; SPLINED uses the Python-compatible HTTP/1.1 path
+and does not allow that redirect chain to exceed `recording_timeout`.
 
 No access token, refresh token, authorization header, client secret, or other
 credential value is written to a runtime/debug log. Central log redaction is a

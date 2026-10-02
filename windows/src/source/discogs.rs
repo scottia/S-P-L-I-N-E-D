@@ -140,7 +140,7 @@ impl Discogs {
                 } else {
                     image.uri.trim()
                 };
-                if url.is_empty() {
+                if !usable_artwork_url(url) {
                     continue;
                 }
                 references.push(ArtworkReference {
@@ -160,7 +160,7 @@ impl Discogs {
                 });
                 emitted = true;
             }
-            if !emitted && !result.cover_image.trim().is_empty() {
+            if !emitted && usable_artwork_url(&result.cover_image) {
                 references.push(ArtworkReference {
                     source: "discogs".to_string(),
                     id: result.id.to_string(),
@@ -173,6 +173,16 @@ impl Discogs {
         }
         Ok(references)
     }
+}
+
+fn usable_artwork_url(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    let lower = value.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://"))
+        && !lower.ends_with("/images/spacer.gif")
 }
 
 impl ArtworkProvider for Discogs {
@@ -214,5 +224,15 @@ mod tests {
         .expect("fixture should parse");
         assert_eq!(payload.images[0].image_type, "primary");
         assert_eq!(payload.images[0].id, Some(45));
+    }
+
+    #[test]
+    fn discogs_placeholder_is_not_an_artwork_candidate() {
+        assert!(!usable_artwork_url(
+            "https://st.discogs.com/build/images/spacer.gif"
+        ));
+        assert!(usable_artwork_url(
+            "https://i.discogs.com/example/release-cover.jpg"
+        ));
     }
 }

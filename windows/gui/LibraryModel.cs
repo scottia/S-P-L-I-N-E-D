@@ -29,6 +29,7 @@ namespace Splined.WindowsGui
 
     internal sealed class AlbumInfo
     {
+        public string Key;
         public string Artist;
         public string Title;
         public string Path;
@@ -168,6 +169,7 @@ namespace Splined.WindowsGui
 
         private sealed class SnapshotAlbum
         {
+            public string album_key;
             public string artist;
             public string tagged_artist;
             public string title;
@@ -233,6 +235,7 @@ namespace Splined.WindowsGui
                 throw new InvalidOperationException("SPLINED returned an incompatible SQLite media snapshot.");
             return (snapshot.albums ?? new SnapshotAlbum[0]).Select(item => new AlbumInfo
             {
+                Key = item.album_key,
                 Artist = item.artist,
                 Title = item.title,
                 Path = item.path,
