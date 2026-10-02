@@ -33,12 +33,35 @@ No executable rename or setup launcher is required.
 
 ### Windows upgrade
 
+Official stable releases can be upgraded manually:
+
 1. Close SPLINED.
 2. Back up `config/`, `credentials/`, and `<scan.cache_dir>/splined.db`.
 3. Extract the new application files into the existing directory, replacing
    program files.
 4. Preserve application-owned data directories.
 5. Run `splined.exe` and verify Settings and credential status.
+
+Windows builds produced by the rolling `dev` channel also support **Help >
+Check for Update...**. A dev build checks its small update manifest after the
+library opens and notifies the operator when a newer commit is available. An
+accepted update is downloaded from the repository's `windows-dev` prerelease,
+verified against the manifest's SHA-256 and byte count, installed beside the
+existing executable with rollback protection, and then restarted.
+
+This is a complete executable replacement, not an in-place binary patch. The
+rolling workflow uses one optimized Windows build and a reusable Rust cache; it
+does not repeat the full test and static-analysis matrix before each active-dev
+update.
+
+The dev updater replaces only `splined.exe`. It does not rewrite `config/`,
+`credentials/`, `_cache/`, `_logs/`, or the configured shared SQLite database.
+An active Album run must be stopped or completed before installation. If the
+download, manifest, size, checksum, replacement, or restart validation fails,
+the GUI reports the failure and leaves persistent application data unchanged.
+
+Stable release builds keep the existing manual release-page check; they never
+silently opt into development builds.
 
 See [Windows portable instructions](../release/README-WINDOWS.txt).
 

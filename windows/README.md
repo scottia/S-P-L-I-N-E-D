@@ -35,3 +35,26 @@ control.
 The repository/native release number is independent of this application's
 v3.0.0 Stable identity. The next-patch release workflow must not rewrite this
 manifest or `gui/ReleaseInfo.cs`.
+
+## Rolling dev updates
+
+Code-bearing pushes to `dev` run `.github/workflows/windows-dev-update.yml`.
+Documentation-only and updater-workflow-only pushes do not rebuild the
+executable. The workflow restores its Rust build cache, performs one optimized
+build, and publishes a commit-aware `setup-splined.exe` and manifest to the
+rolling `windows-dev` prerelease. The manifest contains the exact commit, byte
+count, and SHA-256 digest. Dev-channel builds check that manifest after startup
+and through **Help > Check for Update...**. Stable builds do not consume the dev
+channel.
+
+The rolling updater deliberately does not repeat the full test, clippy, and GUI
+QA matrix before its distribution build. Those checks remain developer/CI
+validation; the dev updater's job is a fast, deterministic full-executable
+replacement for an active test environment.
+
+The GUI accepts only the fixed HTTPS repository release asset, validates the
+manifest and executable before launch, and refuses installation during an
+active Album run. The setup process waits briefly for the prior Windows process
+to release `splined.exe`, preserves a rollback copy during replacement, starts
+the verified executable, and leaves Config v5, credentials, cache/SQLite, and
+logs untouched.

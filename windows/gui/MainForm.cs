@@ -110,6 +110,7 @@ namespace Splined.WindowsGui
         private ToolTip treeToolTip;
         private Button launch;
         private ToolStripMenuItem settingsMenuItem;
+        private ToolStripMenuItem checkUpdateMenuItem;
         private RichTextBox activity;
         private FlowLayoutPanel candidateCards;
         private Button useSelected;
@@ -142,6 +143,7 @@ namespace Splined.WindowsGui
         private string fallbackRetryArtist = "";
         private string fallbackRetryAlbum = "";
         private HoverPreviewForm hoverPreview;
+        private bool updateCheckRunning;
         private const int ExpandedMediaFilterHeight = 421;
         private const int CollapsedMediaFilterHeight = 36;
 
@@ -175,6 +177,7 @@ namespace Splined.WindowsGui
                 await ReloadLibraryAsync(false);
                 if (uiState.ShowStatusOnLaunch)
                     using (StatusForm form = new StatusForm(this.state)) form.ShowDialog(this);
+                await CheckForUpdateAsync(false);
             };
             FormClosing += MainFormClosing;
             FormClosed += delegate
@@ -257,12 +260,12 @@ namespace Splined.WindowsGui
             ToolStripMenuItem help = new ToolStripMenuItem("Help");
             ToolStripMenuItem helpPage = new ToolStripMenuItem("Help");
             helpPage.Click += delegate { HelpWindows.OpenHelp(this); };
-            ToolStripMenuItem checkUpdate = new ToolStripMenuItem("Check for Update...");
-            checkUpdate.Click += CheckForUpdateClicked;
+            checkUpdateMenuItem = new ToolStripMenuItem("Check for Update...");
+            checkUpdateMenuItem.Click += CheckForUpdateClicked;
             ToolStripMenuItem about = new ToolStripMenuItem("About...");
             about.Click += delegate { using (AboutForm form = new AboutForm()) form.ShowDialog(this); };
             help.DropDownItems.Add(helpPage);
-            help.DropDownItems.Add(checkUpdate);
+            help.DropDownItems.Add(checkUpdateMenuItem);
             help.DropDownItems.Add(new ToolStripSeparator());
             help.DropDownItems.Add(about);
             menu.Items.Add(file);
@@ -1883,23 +1886,106 @@ namespace Splined.WindowsGui
             ApplyThemeAndMaybeRebuildTree(true);
         }
 
-        private void CheckForUpdateClicked(object sender, EventArgs e)
+        private async void CheckForUpdateClicked(object sender, EventArgs e)
         {
+            await CheckForUpdateAsync(true);
+        }
+
+        private async Task CheckForUpdateAsync(bool interactive)
+        {
+            if (updateCheckRunning) return;
+            if (!WindowsUpdateService.UsesDevChannel)
+            {
+                if (!interactive) return;
+                try
+                {
+                    DialogResult open = MessageBox.Show(this,
+                        "Installed: " + ReleaseInfo.VersionLabel
+                        + "\r\n\r\nOpen the official SPLINED releases page to check for updates?",
+                        "SPLINED update check", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                    if (open == DialogResult.Yes)
+                        Process.Start(new ProcessStartInfo { FileName = ReleaseInfo.ReleasesUrl, UseShellExecute = true });
+                }
+                catch (Exception error)
+                {
+                    MessageBox.Show(this,
+                        "SPLINED could not open the releases page.\r\n\r\n"
+                        + ReleaseInfo.ReleasesUrl + "\r\n\r\n" + error.Message,
+                        "SPLINED update check", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                return;
+            }
+
+            updateCheckRunning = true;
+            if (checkUpdateMenuItem != null) checkUpdateMenuItem.Enabled = false;
             try
             {
-                DialogResult open = MessageBox.Show(this,
-                    "Installed: " + ReleaseInfo.VersionLabel
-                    + "\r\n\r\nOpen the official SPLINED releases page to check for updates?",
-                    "SPLINED update check", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                if (open == DialogResult.Yes)
-                    Process.Start(new ProcessStartInfo { FileName = ReleaseInfo.ReleasesUrl, UseShellExecute = true });
+                if (interactive) SetStatus("Checking for Windows dev updates...");
+                WindowsUpdateCheck update = await WindowsUpdateService.CheckAsync();
+                RuntimeLog.Write("info", "windows.update.checked current=" + BuildInfo.ShortCommit
+                    + " latest=" + update.Manifest.short_commit
+                    + " available=" + update.Available.ToString().ToLowerInvariant());
+                if (!update.Available)
+                {
+                    if (interactive) SetStatus("SPLINED is current at dev commit " + BuildInfo.ShortCommit + ".");
+                    if (interactive)
+                        MessageBox.Show(this,
+                            "SPLINED is current.\r\n\r\nInstalled commit: " + BuildInfo.ShortCommit,
+                            "SPLINED update check", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                WindowsUpdateManifest manifest = update.Manifest;
+                SetStatus("Windows dev update " + manifest.short_commit + " is available.");
+                string published = String.IsNullOrWhiteSpace(manifest.published_at)
+                    ? "unknown"
+                    : manifest.published_at;
+                DialogResult install = MessageBox.Show(this,
+                    "A Windows dev update is available.\r\n\r\n"
+                    + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
+                    + "Available commit: " + manifest.short_commit + "\r\n"
+                    + "Published: " + published + "\r\n\r\n"
+                    + "Download, verify, install, and restart SPLINED now?",
+                    "SPLINED update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                if (install != DialogResult.Yes) return;
+                if (running)
+                {
+                    MessageBox.Show(this,
+                        "Finish or stop the active album run before installing the update.",
+                        "SPLINED update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                SetStatus("Downloading and verifying Windows update " + manifest.short_commit + "...");
+                progress.Style = ProgressBarStyle.Marquee;
+                progress.Visible = true;
+                string updater = await WindowsUpdateService.DownloadAndStageAsync(manifest);
+                RuntimeLog.Write("info", "windows.update.verified current=" + BuildInfo.ShortCommit
+                    + " available=" + manifest.short_commit);
+                MessageBox.Show(this,
+                    "The update was downloaded and SHA-256 verified. SPLINED will now restart.",
+                    "SPLINED update ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                WindowsUpdateService.LaunchUpdater(updater);
+                RuntimeLog.Write("info", "windows.update.launched commit=" + manifest.short_commit);
+                Application.Exit();
             }
             catch (Exception error)
             {
-                MessageBox.Show(this,
-                    "SPLINED could not open the releases page.\r\n\r\n"
-                    + ReleaseInfo.ReleasesUrl + "\r\n\r\n" + error.Message,
-                    "SPLINED update check", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                if (interactive) SetStatus("Windows update check failed.");
+                RuntimeLog.Write("error", "windows.update.failed type=" + error.GetType().Name
+                    + " message=" + error.Message);
+                if (interactive)
+                    MessageBox.Show(this,
+                        "SPLINED could not complete the update check.\r\n\r\n" + error.Message,
+                        "SPLINED update check", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                updateCheckRunning = false;
+                if (checkUpdateMenuItem != null) checkUpdateMenuItem.Enabled = true;
+                progress.Visible = false;
+                progress.Style = ProgressBarStyle.Blocks;
+                if (!IsDisposed && !running) UpdateSelectionControls();
             }
         }
 

@@ -3,6 +3,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use std::time::{Duration, Instant};
+
 pub const APP_ROOT_ENV: &str = "SPLINED_HOME";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,7 +143,7 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
     if final_exe.exists() {
         let backup = parent.join(format!(".splined-backup-{}-{stamp}", std::process::id()));
 
-        if let Err(error) = fs::rename(&final_exe, &backup) {
+        if let Err(error) = rename_for_upgrade(&final_exe, &backup) {
             let _ = fs::remove_file(&staging);
             return Err(format!(
                 "Unable to prepare existing SPLINED executable {} for upgrade: {error}",
@@ -148,7 +151,7 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
             ));
         }
 
-        if let Err(error) = fs::rename(&staging, &final_exe) {
+        if let Err(error) = rename_for_upgrade(&staging, &final_exe) {
             let restore_result = fs::rename(&backup, &final_exe);
             let _ = fs::remove_file(&staging);
 
@@ -171,7 +174,7 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
                 backup.display()
             );
         }
-    } else if let Err(error) = fs::rename(&staging, &final_exe) {
+    } else if let Err(error) = rename_for_upgrade(&staging, &final_exe) {
         let _ = fs::remove_file(&staging);
         return Err(format!(
             "Unable to install permanent SPLINED executable {}: {error}",
@@ -180,6 +183,29 @@ fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, 
     }
 
     Ok(Some(final_exe))
+}
+
+#[cfg(windows)]
+fn rename_for_upgrade(source: &Path, destination: &Path) -> std::io::Result<()> {
+    const RETRY_WINDOW: Duration = Duration::from_secs(20);
+    const RETRY_DELAY: Duration = Duration::from_millis(200);
+
+    let started = Instant::now();
+    loop {
+        match fs::rename(source, destination) {
+            Ok(()) => return Ok(()),
+            Err(error) if started.elapsed() < RETRY_WINDOW => {
+                std::thread::sleep(RETRY_DELAY);
+                let _ = error;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn rename_for_upgrade(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
 }
 
 fn remove_release_readme(parent: &Path) {
@@ -243,14 +269,32 @@ fn finish_setup_executable() -> Result<(), String> {
         println!("Permanent executable:");
         println!("  {}", final_exe.display());
         println!();
-        println!("Existing config, credentials, logs, and history were preserved.");
+        println!("Existing config, credentials, cache/database, and logs were preserved.");
         println!("Disposable cache is recreated as needed by scan operations.");
         println!("Temporary setup files are removed automatically.");
         println!();
         println!("Use this executable for future SPLINED launches.");
         println!();
+
+        relaunch_after_gui_update(&final_exe)?;
     }
 
+    Ok(())
+}
+
+fn relaunch_after_gui_update(final_exe: &Path) -> Result<(), String> {
+    if std::env::var_os("SPLINED_UPDATE_RELAUNCH").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return Ok(());
+    }
+
+    let parent = final_exe
+        .parent()
+        .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
+    std::process::Command::new(final_exe)
+        .current_dir(parent)
+        .env_remove("SPLINED_UPDATE_RELAUNCH")
+        .spawn()
+        .map_err(|error| format!("SPLINED was updated but could not be restarted: {error}"))?;
     Ok(())
 }
 
