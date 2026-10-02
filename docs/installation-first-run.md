@@ -11,14 +11,27 @@ Config v5; application release identities remain independent.
 3. Run `splined.exe` directly.
 4. Choose the music library and the required cache, log, and credential
    directories, or open Advanced Settings.
-5. Configure provider credentials through **Credentials / Status** as needed.
-6. Start in Read mode against a small selection.
+5. Select **Save and Continue**.
+6. Configure provider credentials through **File > Credentials...** as needed.
+7. Start in Read mode against a small selection.
 
 Windows v4 keeps Config v5 and interface state internally for the current user.
 Extraction creates no `config`, `credentials`, `_cache`, `_logs`, or
 `docker_builds` folders and no `config.location` file. The required directories
 are created only at the user-selected locations after settings are saved. No
 executable rename or setup launcher is required.
+
+The first-run cache, log, and credential fields default beneath
+`%LOCALAPPDATA%\SPLINED` for the current Windows user, not beside the portable
+executable and not in machine-wide `%PROGRAMDATA%`. These locations remain
+editable before saving; selecting UNC paths does not change the portable
+program files. Existing saved locations are never migrated automatically.
+
+The single-file launcher keeps its fingerprinted embedded GUI shell in
+`%LOCALAPPDATA%\SPLINED\runtime` so Windows does not repeatedly extract and
+security-scan the same build. Older fingerprinted shells are pruned on start.
+This private executable cache contains no Config v5 values or credentials.
+GUI-to-core Config v5 handoff is memory-only and creates no runtime TOML.
 
 Use **File > Backup > Export Backup...** for a selective `.spl` backup. Internal
 settings, interface state, credential JSON, SQLite, and diagnostics are
@@ -46,10 +59,11 @@ does not repeat the full test and static-analysis matrix before each active-dev
 update.
 
 The updater replaces only `splined.exe`. It does not rewrite internal settings,
-the selected credential/cache/log directories, or the configured shared SQLite database.
-An active Album run must be stopped or completed before installation. If the
-download, manifest, size, checksum, replacement, or restart validation fails,
-the GUI reports the failure and leaves persistent application data unchanged.
+the selected credential/cache/log directories, or the configured shared SQLite
+database. An active Album run must be stopped or completed before installation.
+If the download, manifest, size, checksum, replacement, or restart validation
+fails, the GUI reports the failure and leaves persistent application data
+unchanged.
 
 The updater can still be performed manually by closing SPLINED and extracting
 the current official Windows ZIP over the program files. Preserve the selected
@@ -141,8 +155,10 @@ See [SPLINED media database](splined-media-database.md).
 
 ## Persistent and disposable data
 
-Back up Config v5 (internal Windows settings or `config.toml` on other
-runtimes), credentials, and the authoritative runtime database:
+On Windows, **File > Backup > Export Backup...** can include internal Config v5,
+interface state, credentials, SQLite, and diagnostics independently. On
+file-backed runtimes, back up `config.toml`, credentials, and the authoritative
+runtime database:
 
 ```text
 <scan.cache_dir>/splined.db

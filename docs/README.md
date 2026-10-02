@@ -18,7 +18,8 @@ Do not infer one from another.
 ## Start here
 
 - [Installation and first run](installation-first-run.md)
-- [Windows v4 interface and runtime](windows-v4-interface.md)
+- [Windows v4 complete guide](windows-v4-interface.md)
+- [Windows v4 build notes](windows-v4-release-notes.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Credentials and provider setup](credentials-providers.md)
 - [API/OAuth credential validation](oauth-validation.md)
@@ -162,7 +163,9 @@ because placeholder configuration or layout code exists.
 
 ## Configuration examples
 
-- [`../config.example.toml`](../config.example.toml) is the native/Windows Config v5 example.
+- [`../config.example.toml`](../config.example.toml) is the native Config v5
+  example and a field-value reference for Windows. The Windows GUI stores those
+  values internally and does not read this file during normal operation.
 - [`../docker/config.example.toml`](../docker/config.example.toml) is the Python/Docker Config v5 example with container paths.
 
 Both examples use the central credential-directory architecture. Provider
@@ -178,7 +181,7 @@ secrets and normal provider credential filenames do not belong in
 | Red | Bypassed; confirm removal before processing |
 | Purple | Partial Artist or timeout-active Album, depending on row type |
 | Green | Artist complete |
-| Blue | Artist contains at least one bypassed Album |
+| Blue | Artist contains a bypass, or Album has incomplete compilation track-art work |
 
 The database materializes these facts for immediate display, while completion
 history, bypass history, timeout policy, and actual local artwork remain the
@@ -200,9 +203,11 @@ Redirected/scripted runs retain the plain CLI.
 - Never commit credential JSON, API keys, OAuth tokens, or secrets.
 - Use Read mode to evaluate without changing artwork in Album folders.
 - Test Write mode against a copy, backup, snapshot, or staging library first.
-- Back up `config/`, `credentials/`, and `<scan.cache_dir>/splined.db`.
-- For Python/Docker, also back up `<scan.cache_dir>/splined.db`; other candidate
-  and sample data under the cache directory remains disposable.
+- On Windows, use **File > Backup > Export Backup...** and select internal
+  settings, interface state, credentials, SQLite, and diagnostics as needed.
+- On file-backed runtimes, back up Config v5, the credential directory, and
+  `<scan.cache_dir>/splined.db`; other candidate and sample cache data remains
+  disposable.
 
 ## Project links
 

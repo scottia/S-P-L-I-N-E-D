@@ -9,7 +9,10 @@ internal Config v5 record store only the directory:
 credential_dir = "credentials"
 ```
 
-Docker normally uses `/credentials`. Standard filenames are fixed beneath that directory; `credential_file` and `token_file` are not Config v5 settings.
+Docker normally uses `/credentials`. Windows first run proposes
+`%LOCALAPPDATA%\SPLINED\credentials`, but the field may be changed before save.
+Standard filenames are fixed beneath the selected directory; `credential_file`
+and `token_file` are not Config v5 settings.
 
 | Provider | File | Normal artwork access |
 | --- | --- | --- |
@@ -153,8 +156,10 @@ The root native and Python/Docker commands expose the corresponding `--mb-oauth-
 
 Changing `credential_dir` does not move existing JSON files. Close SPLINED, move the four standard files deliberately, update Config v5, verify filesystem permissions, then test provider status before deleting the old copy.
 
-Back up `credentials/`, `config/`, and `<scan.cache_dir>/splined.db`. Other
-candidate and sample cache files are disposable.
+On Windows, use selective `.spl` export to include credentials, internal
+settings, and SQLite as needed. On file-backed runtimes, back up the credential
+directory, Config v5, and `<scan.cache_dir>/splined.db`. Other candidate and
+sample cache files are disposable.
 
 ## Related documentation
 

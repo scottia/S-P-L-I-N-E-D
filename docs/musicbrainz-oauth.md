@@ -35,8 +35,9 @@ The credential document may contain:
 }
 ```
 
-Secrets belong only in this credential JSON. `config.toml` contains the
-credential directory and `[source_policies.musicbrainz]` only.
+Secrets belong only in this credential JSON. File-backed Config v5—or the
+equivalent internal Windows settings—contains the credential directory and
+`[source_policies.musicbrainz]` values only.
 
 ## Authorization-code flow
 

@@ -18,6 +18,13 @@ FRESH INSTALL
    internally for the current Windows user, then creates only the selected
    runtime directories after Save and Continue.
 
+   Cache, log, and credential fields initially point beneath:
+
+   %LOCALAPPDATA%\SPLINED
+
+   They remain editable. Existing saved locations and UNC paths are never
+   changed automatically. %PROGRAMDATA% is not used for per-user defaults.
+
    The archive does not create config\, credentials\, _cache\, _logs\,
    docker_builds\, config.toml, ui.toml, or config.location.
 
@@ -26,7 +33,13 @@ FRESH INSTALL
 
 The GUI, processing core, watermark, and icon resources are embedded in
 splined.exe. No sidecar application files, setup launcher, or executable rename
-are required.
+are required in the portable folder. The fingerprinted GUI shell is privately
+cached beneath %LOCALAPPDATA%\SPLINED\runtime so the same verified build does
+not require extraction and security scanning on every start; stale older shells
+are removed automatically.
+
+Config v5 is handed from the GUI to the Rust core in memory. No runtime TOML is
+created in the portable folder, cache directory, or user profile.
 
 
 UPGRADE AN EXISTING PORTABLE INSTALL
@@ -51,8 +64,9 @@ To upgrade manually:
 4. Run splined.exe and verify Settings, Config v5 validation, and credential
    status before a production scan.
 
-Other files under _cache\ are disposable and are recreated as needed.
-Diagnostic files under _logs\ are not runtime-state authority.
+Other candidate/sample files under the configured cache directory are
+disposable and are recreated as needed. Diagnostic files under the configured
+log directory are not runtime-state authority.
 
 Opening a registered .spl file starts SPLINED's selective restore dialog.
 SPLINED does not otherwise discover, import, or move another installation.

@@ -36,7 +36,7 @@ the selected artwork into the Album folder.
 - 💾 **Selective `.spl` backup** — export/import settings, interface state, credentials, SQLite, or diagnostics with optional password protection
 - 🐳 **Docker image** provides a Linux/server deployment path
 - 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, local `cover.*` preview/resolution, URL-backed candidate preview, and mouse/touch operation
-- 📦 **Portable Windows, Linux, and macOS releases** keep application-owned files together
+- 📦 **Portable releases** separate replaceable program files from explicitly selected persistent data
 
 ---
 
@@ -76,6 +76,8 @@ Start with:
 
 - [Documentation home](docs/README.md)
 - [Installation and first run](docs/installation-first-run.md)
+- [Windows v4 guide](docs/windows-v4-interface.md)
+- [Windows v4 build notes](docs/windows-v4-release-notes.md)
 - [Config v5 reference](docs/config-v5-reference.md)
 - [Python Ratatui TUI](docs/ratatui-tui.md)
 - [SPLINED media database](docs/splined-media-database.md)
@@ -115,7 +117,7 @@ schema versions are independent.
 
 ---
 
-## 🗃️ Python/Docker Select Media database
+## 🗃️ SQLite Select Media database
 
 Python/Docker and Windows store the persistent Artist/Album read model at:
 
@@ -271,12 +273,15 @@ under persistent history authority until explicitly removed.
 
 All supported runtimes use **Config v5**:
 
-- [Native/Windows Config v5 example](config.example.toml)
+- [Native Config v5 example and Windows field reference](config.example.toml)
 - [Docker Config v5 example](docker/config.example.toml)
 - [Config v5 reference](docs/config-v5-reference.md)
 
-Portable native/Windows paths are application-relative by default. Docker uses
-container-specific absolute paths while preserving the schema.
+The Windows GUI stores Config v5 internally and presents its fields through
+**File > Settings...**. Its first-run cache, log, and credential paths default
+beneath `%LOCALAPPDATA%\SPLINED`, remain editable, and are created only after
+Save and Continue. Native portable paths may be application-relative. Docker
+uses container-specific absolute paths while preserving the schema.
 
 ---
 
@@ -333,9 +338,12 @@ are implemented.
 Write mode changes files in Album directories. Test against a copy, staging
 library, backup, or snapshot first.
 
-For backups, preserve `config/`, `credentials/`, and `_cache/splined.db`. The
-database contains durable completion, bypass, timeout, and source-selection
-state. Diagnostic logs and other candidate/sample cache data remain disposable.
+On Windows, use **File > Backup > Export Backup...** to select internal settings,
+interface state, credentials, SQLite, and diagnostics independently. On
+file-backed runtimes, preserve Config v5, the credential directory, and
+`<scan.cache_dir>/splined.db`. The database contains durable completion,
+bypass, timeout, source-selection, and compilation-progress state. Diagnostic
+logs and other candidate/sample cache data remain disposable.
 
 ---
 
