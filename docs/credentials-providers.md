@@ -125,6 +125,10 @@ The standard `musicbrainz.json` can contain:
 
 The runtime supports OAuth2 authorization code with PKCE S256, token expiry tracking, refresh-token renewal, and non-destructive JSON updates. See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
+The native Windows runtime also applies `recording_timeout` to MusicBrainz/CAA
+release-group and exact-release artwork discovery. This bounds the external
+CAA redirect chain without changing source priority or candidate ranking.
+
 Python/Docker `splined --oauth-validation` refreshes an expired MusicBrainz
 access token before checking `/oauth2/userinfo`, then performs one normal
 metadata lookup. If a nominally current bearer token is rejected, it forces one

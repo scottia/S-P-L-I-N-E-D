@@ -235,6 +235,11 @@ hard-code or infer missing values. In that workflow `retry_max` is the maximum
 total attempt count, `min_delay` applies between requests, and
 `recording_timeout` applies to each Recording-ID request.
 
+The native Windows runtime additionally uses `recording_timeout` as the bound
+for MusicBrainz/CAA release-group and exact-release artwork discovery. This
+affects waiting time only; it does not alter artwork source order, policy, or
+ranking.
+
 See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
 ## `[logging]` and `[history]`

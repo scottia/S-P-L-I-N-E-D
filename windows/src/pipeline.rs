@@ -497,7 +497,7 @@ pub async fn run_coverartarchive_pipeline(
     range: &Range,
     format_order: &[StaticFormat],
 ) -> Result<PipelineResult, String> {
-    let provider = CoverArtArchive::new()?;
+    let provider = CoverArtArchive::new(std::time::Duration::from_secs(20))?;
     let query = ArtworkQuery::release(release_mbid);
     let context = ProviderContext {
         artist_credit: String::new(),

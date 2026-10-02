@@ -1322,6 +1322,8 @@ namespace Splined.WindowsGui
             // Preserve the SQLite/index identity separately from the translated
             // physical directory so completion updates the authoritative row.
             start.EnvironmentVariables["SPLINED_INDEXED_ALBUM_PATH"] = album.Path;
+            if (!String.IsNullOrWhiteSpace(album.Key))
+                start.EnvironmentVariables["SPLINED_INDEXED_ALBUM_KEY"] = album.Key;
             start.EnvironmentVariables["NO_COLOR"] = "1";
             if (!String.IsNullOrWhiteSpace(retryArtist)) start.EnvironmentVariables["SPLINED_FALLBACK_ARTIST"] = retryArtist;
             if (!String.IsNullOrWhiteSpace(retryAlbum)) start.EnvironmentVariables["SPLINED_FALLBACK_ALBUM"] = retryAlbum;
@@ -1670,8 +1672,12 @@ namespace Splined.WindowsGui
         {
             string albumPath = ReadString(payload, "album_path");
             AlbumInfo completed = albums.FirstOrDefault(album => SameAlbumPath(album.Path, albumPath));
-            if (completed == null && activeLaunchAlbum != null
-                && (String.IsNullOrWhiteSpace(albumPath) || SameAlbumPath(activeLaunchAlbum.Path, albumPath)))
+            // The core reports the physical Windows path. A shared SQLite row
+            // can intentionally retain the proper-Unicode indexed path while
+            // the SMB directory exposes a legacy-decoded name. Events belong
+            // to the one active Album process, so retain that indexed identity
+            // when the two path spellings cannot compare equal.
+            if (completed == null && activeLaunchAlbum != null)
                 completed = activeLaunchAlbum;
             ConsumeLaunchAlbumSelection(completed);
             ClearCandidates();

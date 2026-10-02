@@ -3,6 +3,7 @@ use crate::source::{
 };
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use std::time::Duration;
 
 const BASE_URL: &str = "https://coverartarchive.org";
 
@@ -45,9 +46,19 @@ pub struct MusicBrainzArtwork {
 }
 
 impl MusicBrainzArtwork {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(request_timeout: Duration) -> Result<Self, String> {
         let client = Client::builder()
-            .user_agent(concat!("SPLINED/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!(
+                "SPLINED/",
+                env!("CARGO_PKG_VERSION"),
+                " (https://github.com/scottia/S-P-L-I-N-E-D)"
+            ))
+            // Python requests and the successful Windows curl path both use
+            // HTTP/1.1 across CAA's archive.org redirect chain. Keep the native
+            // client on that proven path instead of negotiating HTTP/2 with a
+            // rotating archive host.
+            .http1_only()
+            .timeout(request_timeout)
             .build()
             .map_err(|error| {
                 format!("Unable to create MusicBrainz artwork HTTP client: {error}")
@@ -142,7 +153,8 @@ mod tests {
 
     #[test]
     fn provider_name_is_canonical() {
-        let provider = MusicBrainzArtwork::new().expect("provider should create");
+        let provider =
+            MusicBrainzArtwork::new(Duration::from_secs(7)).expect("provider should create");
         assert_eq!(provider.name(), "musicbrainz");
     }
 

@@ -39,7 +39,7 @@ use std::cmp::Ordering;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const ORANGE: Color = Color::AnsiValue(208);
 
@@ -94,6 +94,7 @@ pub async fn run_scan_library_read_report(
         &config.fanarttv.credential_file,
         &config.lastfm.credential_file,
         &discogs_credential_file,
+        Duration::from_secs_f64(musicbrainz.recording_timeout_seconds()),
     )?;
 
     if registry.is_empty() {
@@ -593,6 +594,7 @@ pub async fn run_scan_library_read_report(
                 &config.fanarttv.credential_file,
                 &config.lastfm.credential_file,
                 &discogs_credential_file,
+                Duration::from_secs_f64(musicbrainz.recording_timeout_seconds()),
             )?)
         } else {
             None
@@ -1922,10 +1924,12 @@ fn record_runtime_completion(
 ) -> Result<(), String> {
     let pre_persistence_ms = elapsed_ms(post_cover_started);
     let indexed_album_path = std::env::var_os("SPLINED_INDEXED_ALBUM_PATH").map(PathBuf::from);
+    let indexed_album_key = std::env::var("SPLINED_INDEXED_ALBUM_KEY").ok();
     let timing = record_album_outcome_from_runtime(
         config,
         &album.path,
         indexed_album_path.as_deref(),
+        indexed_album_key.as_deref(),
         outcome,
         selected_source,
         material.as_ref(),
@@ -1936,6 +1940,7 @@ fn record_runtime_completion(
         "pre_persistence_ms": pre_persistence_ms,
         "database_ms": timing.database_ms,
         "filesystem_ms": timing.filesystem_ms,
+        "identity_ms": timing.identity_ms,
         "update_ms": timing.update_ms,
         "aggregate_ms": timing.aggregate_ms,
         "audit_ms": timing.audit_ms,
