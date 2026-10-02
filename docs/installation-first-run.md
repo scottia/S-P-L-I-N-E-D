@@ -9,8 +9,8 @@ Config v5; application release identities remain independent.
    [latest release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest).
 2. Extract the complete archive into its final application directory.
 3. Run `splined.exe` directly.
-4. Choose the music library and the required cache, log, and credential
-   directories, or open Advanced Settings.
+4. Choose the music library and the required SQL database, temporary run cache,
+   log, and credential directories, or open Advanced Settings.
 5. Select **Save and Continue**.
 6. Configure provider credentials through **File > Credentials...** as needed.
 7. Start in Read mode against a small selection.
@@ -21,7 +21,7 @@ Extraction creates no `config`, `credentials`, `_cache`, `_logs`, or
 are created only at the user-selected locations after settings are saved. No
 executable rename or setup launcher is required.
 
-The first-run cache, log, and credential fields default beneath
+The first-run SQL database, temporary run cache, log, and credential fields default beneath
 `%LOCALAPPDATA%\SPLINED` for the current Windows user, not beside the portable
 executable and not in machine-wide `%PROGRAMDATA%`. These locations remain
 editable before saving; selecting UNC paths does not change the portable
@@ -50,7 +50,9 @@ other channel's assets.
 
 An accepted update is verified against the manifest's SHA-256 and byte count,
 installed beside the existing executable with rollback protection, and then
-restarted. Official Windows releases therefore publish all three artifacts:
+restarted. A locked previous executable backup is deleted by deferred cleanup
+after the old process exits, and stale update backups are pruned by the next
+updater as a safety net. Official Windows releases therefore publish all three artifacts:
 the portable ZIP, `windows-update.json`, and `setup-splined.exe`.
 
 This is a complete executable replacement, not an in-place binary patch. The
@@ -59,7 +61,7 @@ does not repeat the full test and static-analysis matrix before each active-dev
 update.
 
 The updater replaces only `splined.exe`. It does not rewrite internal settings,
-the selected credential/cache/log directories, or the configured shared SQLite
+the selected credential/database/temporary-cache/log directories, or the configured shared SQLite
 database. An active Album run must be stopped or completed before installation.
 If the download, manifest, size, checksum, replacement, or restart validation
 fails, the GUI reports the failure and leaves persistent application data

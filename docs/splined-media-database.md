@@ -25,10 +25,12 @@ then the host file is:
 /mnt/splined/_cache/splined.db
 ```
 
-This database is persistent. Candidate downloads and samples beside it remain
-disposable, but `splined.db` must not be removed by normal run-cache cleanup.
+This database is persistent. Candidate downloads and optional samples belong
+to the independently configurable temporary run cache; `splined.db` is never
+part of normal run-cache cleanup.
 
-Windows derives the file from the existing browsable Cache directory field.
+Windows derives the file from the browsable **SQL Database Directory** field;
+its **Temporary Run Cache** is independent and may remain local.
 SQLite access, schema validation, refresh, and status updates are owned by the
 Rust core; the embedded C# GUI receives a compact JSON snapshot from that core.
 It does not link another SQLite library or maintain a separate JSON-derived

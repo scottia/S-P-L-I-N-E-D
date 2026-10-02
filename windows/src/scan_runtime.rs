@@ -85,11 +85,14 @@ pub async fn run_scan_library_read_report(
     }
 
     let root = Path::new(&config.scan.scan_library_dir);
-    let cache_dir = Path::new(&config.scan.cache_dir);
-    let sample_dir = samples_dir(&config.scan.cache_dir);
+    let cache_dir = Path::new(&config.scan.temporary_cache_dir);
+    let sample_dir = samples_dir(&config.scan.temporary_cache_dir);
 
     prepare_persistent_cache_dir(cache_dir)?;
-    prepare_samples_dir(&sample_dir)?;
+    let _run_cache_cleanup = RunCacheCleanup::new(cache_dir);
+    if config.samples.sample_write {
+        prepare_samples_dir(&sample_dir)?;
+    }
 
     let inventory = inventory_album_directories(root, &config.library.ignored_subs)?;
     let musicbrainz = MusicBrainzClient::new(&config.musicbrainz)?;
@@ -160,8 +163,16 @@ pub async fn run_scan_library_read_report(
         inventory.root.display().to_string().yellow().bold()
     );
     println!(
-        "Cache:       {}",
+        "Run Cache:   {}",
         cache_dir.display().to_string().cyan().bold()
+    );
+    println!(
+        "State DB:    {}",
+        crate::media_database::database_path(&config.scan.cache_dir)
+            .display()
+            .to_string()
+            .cyan()
+            .bold()
     );
     println!(
         "Samples:     {}",
@@ -1433,6 +1444,22 @@ fn prepare_samples_dir(sample_dir: &Path) -> Result<(), String> {
             sample_dir.display()
         )
     })
+}
+
+struct RunCacheCleanup<'a> {
+    path: &'a Path,
+}
+
+impl<'a> RunCacheCleanup<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for RunCacheCleanup<'_> {
+    fn drop(&mut self) {
+        crate::pipeline::cleanup_run_cache_files(self.path);
+    }
 }
 
 fn write_selected_sample(

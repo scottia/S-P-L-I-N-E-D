@@ -17,7 +17,8 @@ replaced without moving the media library or selected persistent data.
 | Program | `splined.exe` in the selected portable folder | Replaced by an update |
 | Config v5 | Current user's internal Windows application settings | Persists until reset or restored |
 | Interface state | Current user's internal Windows application settings | Persists theme, layout, filters, and selection |
-| Cache and SQLite | User-selected cache directory; first-run default is `%LOCALAPPDATA%\SPLINED\cache` | Persistent |
+| SQL database | User-selected database directory; first-run default is `%LOCALAPPDATA%\SPLINED\cache` | Persistent; contains `splined.db` |
+| Temporary run cache | User-selected disposable directory; first-run default is `%LOCALAPPDATA%\SPLINED\run-cache` | Candidate and derived images are removed after the run |
 | Logs | User-selected log directory; first-run default is `%LOCALAPPDATA%\SPLINED\logs` | Diagnostic and disposable |
 | Credentials | User-selected credential directory; first-run default is `%LOCALAPPDATA%\SPLINED\credentials` | Persistent and sensitive |
 | GUI-to-core configuration | Private child-process environment | Memory-only; disappears with the child process |
@@ -25,7 +26,7 @@ replaced without moving the media library or selected persistent data.
 
 `%PROGRAMDATA%` is not used for per-user defaults because it is shared by all
 users on the computer. `%LOCALAPPDATA%` is the correct Windows per-user data
-location. The cache, log, and credential fields remain editable, including to
+location. The database, temporary-cache, log, and credential fields remain editable, including to
 UNC or mapped-drive locations. Existing saved paths are never moved
 automatically.
 
@@ -38,7 +39,8 @@ file-backed Config v5 document.
 
 1. Extract the complete Windows archive into its final folder.
 2. Run `splined.exe`.
-3. Choose the required music-library, cache, log, and credential directories.
+3. Choose the required music-library, SQL database, temporary run cache, log,
+   and credential directories.
 4. Review Read/Write, artwork, range, source, history, and shared-SQLite
    settings under **Advanced**.
 5. Select **Save and Continue**.
@@ -46,7 +48,7 @@ file-backed Config v5 document.
 7. Begin with **Filtered Scan [READ]** and a small Album selection.
 
 The first-run fields are mandatory. SPLINED validates them before saving and
-creates the selected cache, log, and credential directories only after
+creates the selected database, temporary-cache, log, and credential directories only after
 **Save and Continue**. Merely extracting or opening Setup does not create those
 directories.
 
@@ -57,7 +59,7 @@ display label `Windows internal settings` is never treated as a filename.
 
 ## UNC, NAS, and mapped paths
 
-The Windows library, cache, log, and credential fields accept normal absolute
+The Windows library, database, run-cache, log, and credential fields accept normal absolute
 paths, mapped drives, and UNC paths. A UNC path is preferred when a drive letter
 may vary between devices or sessions.
 
@@ -95,7 +97,10 @@ Major panels use the spectrum border colors. Light appearance uses a warm
 cream canvas so artwork, state colors, and the watermark retain contrast.
 **View > Panel Layout** offers Balanced, Wider Select Media, Wider Decisions,
 and Stacked presets. Panel dividers remain draggable; a custom layout persists
-for the current user.
+for the current user. Media Library Selection, Scan Activity and Decisions,
+and Artwork Candidates and Preview each have an independent scroll canvas in
+every layout, so shrinking one panel never clips its title, controls, or action
+rows behind another panel.
 
 ### Media Library Selection
 
@@ -291,8 +296,10 @@ redacted and must never be logged.
 The updater verifies channel, commit, byte count, SHA-256, and asset URL before
 replacement. It refuses installation during an active Album run, preserves a
 rollback copy during replacement, restarts the verified executable, and leaves
-internal settings plus the configured cache, SQLite, logs, and credentials
-unchanged. It replaces the whole executable; it is not a source-code patcher.
+internal settings plus the configured database, temporary cache, logs, and credentials
+unchanged. The rollback executable is removed after the old process unlocks it;
+the restarted application also prunes a stale `.splined-backup-*` as a safety
+net. It replaces the whole executable; it is not a source-code patcher.
 
 Ordinary pushes do not publish the rolling dev build. The corresponding GitHub
 workflow is manually dispatched after the desired commit is ready.
@@ -313,7 +320,7 @@ of treating empty output as a successful snapshot.
 
 ### `database is locked` or `attempt to write a readonly database`
 
-Confirm that the configured cache directory and `splined.db` are writable by
+Confirm that the configured SQL Database Directory and `splined.db` are writable by
 the current Windows user and that every runtime opening the same physical
 database has `sqlite_shared=true`. Do not place a shared database in WAL mode.
 Close obsolete test executables before retrying.

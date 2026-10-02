@@ -41,8 +41,8 @@ control.
 
 Windows v4 stores the validated Config v5 document and interface preferences
 in the current user's internal application settings. First run requires the
-library, cache, log, and credential paths and creates the selected runtime
-directories only after save. Cache, log, and credential fields initially point
+library, SQL database, temporary run cache, log, and credential paths and creates the selected runtime
+directories only after save. Database, run-cache, log, and credential fields initially point
 beneath `%LOCALAPPDATA%\SPLINED`, remain editable, and do not change existing
 saved or UNC paths. The distribution does not create `config.toml`,
 `ui.toml`, `config.location`, `_cache`, `_logs`, `config`, `credentials`, or
@@ -60,6 +60,10 @@ The Windows GUI clears prior `splined-*.log` files from
 `<configured log directory>\run` during the next startup and creates one
 diagnostic file for the new application session. SQLite remains the authority
 for Album state and is not affected by log cleanup.
+
+The historical Config v5 `scan.cache_dir` key is the SQL Database Directory.
+`scan.temporary_cache_dir` owns downloaded and derived images; those disposable
+files are removed after the Album run while `splined.db` remains untouched.
 
 The repository/native release number is independent of this application's
 v3.0.0 Stable identity. The next-patch release workflow must not rewrite this

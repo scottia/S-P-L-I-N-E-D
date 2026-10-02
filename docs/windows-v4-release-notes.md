@@ -21,7 +21,7 @@ an application-version declaration: the Windows application currently reports
 - The release archive contains one replaceable `splined.exe`.
 - Extraction creates no `config`, `credentials`, `_cache`, `_logs`,
   `docker_builds`, `config.toml`, `ui.toml`, or `config.location`.
-- First-run cache, log, and credential values default beneath
+- First-run SQL database, temporary run cache, log, and credential values default beneath
   `%LOCALAPPDATA%\SPLINED`, remain editable, and are created only after save.
 - Existing local, mapped, and UNC paths are not migrated automatically.
 - The fingerprinted GUI shell is privately cached beneath
@@ -29,6 +29,8 @@ an application-version declaration: the Windows application currently reports
   security scanning; stale older shells are pruned on start.
 - Internal Config v5 is passed to the Rust child process in memory and is not
   written into the portable folder or user profile as a handoff file.
+- Downloaded and derived candidate images are removed when the run completes;
+  `splined.db` remains isolated in the SQL Database Directory.
 
 ## MusicBrainz matching
 
@@ -42,6 +44,8 @@ an application-version declaration: the Windows application currently reports
   green current or blue inspected match does not repeat provider discovery.
 - Added session-only Artist, Release, and Recording MBID correction fields with
   UUID and relationship validation.
+- Fixed Artist MBID arrays displaying as `System.Collections.ArrayList` and
+  gave decade/release category rows a distinct magenta role.
 - Used exact MusicBrainz Apple Music/iTunes relationships before ordinary
   Artist/Album iTunes searches when available.
 
@@ -83,6 +87,8 @@ and does not restore data without confirmation.
 - Kept one primary LAUNCH/STOP action beneath Artwork Candidates and Preview.
 - Added Balanced, Wider Select Media, Wider Decisions, Stacked, and custom
   draggable layouts.
+- Made Media Library Selection, Scan Activity, and Artwork Candidates
+  independently scrollable in every layout, including Stacked.
 - Consolidated Artist/Album filters, selection scope, scan scope, launch mode,
   and Folder Status in Select Media.
 - Added URL preview, hover preview, comparison, and contextual information
@@ -99,6 +105,12 @@ and does not restore data without confirmation.
 - Added safe embedded-artwork replacement and resumable compilation ledgers.
 - Added Unicode normalization and legacy-decoded SMB directory translation.
 - Added compact snapshot, provider, candidate, and post-cover timing records.
+- Preserved detailed provider notes in the final Album report instead of
+  replacing them with only a count.
+- Stopped preparing or touching the review-samples directory when review
+  samples are disabled.
+- Removed successful-update `.splined-backup-*` files after Windows releases
+  the prior executable.
 - Configuration failures now exit nonzero; empty core output is no longer
   reported merely as an incompatible snapshot.
 - Logs centrally redact credential, token, password, authorization, and private

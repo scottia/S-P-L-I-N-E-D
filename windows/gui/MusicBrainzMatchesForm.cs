@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -71,12 +72,16 @@ namespace Splined.WindowsGui
             authority.SetRowSpan(applyAuthority, 3);
             layout.Controls.Add(authority, 0, 1);
 
-            matches = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false, ShowGroups = true };
+            matches = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false, ShowGroups = false };
             matches.Columns.Add("[#]", 52); matches.Columns.Add("Artist", 190); matches.Columns.Add("Country", 74);
             matches.Columns.Add("Date", 100); matches.Columns.Add("Release Type", 110); matches.Columns.Add("Release", 350);
             matches.Columns.Add("Resolution", 100); matches.Columns.Add("URL", 90);
             Populate(rawItems ?? new object[0]);
-            matches.SelectedIndexChanged += delegate { use.Enabled = matches.SelectedItems.Count == 1; };
+            matches.SelectedIndexChanged += delegate
+            {
+                use.Enabled = matches.SelectedItems.Count == 1
+                    && matches.SelectedItems[0].Tag is Dictionary<string, object>;
+            };
             matches.DoubleClick += delegate { UseSelected(); };
             layout.Controls.Add(matches, 0, 2);
 
@@ -103,7 +108,7 @@ namespace Splined.WindowsGui
 
         private void Populate(object[] rawItems)
         {
-            Dictionary<string, ListViewGroup> groups = new Dictionary<string, ListViewGroup>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> groups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (object raw in rawItems)
             {
                 Dictionary<string, object> item = raw as Dictionary<string, object>;
@@ -111,14 +116,18 @@ namespace Splined.WindowsGui
                 string decade = TextValue(item, "decade", "Unknown");
                 string releaseType = TextValue(item, "release_class", "album").ToUpperInvariant();
                 string groupKey = decade + "|" + releaseType;
-                ListViewGroup group;
-                if (!groups.TryGetValue(groupKey, out group))
+                if (groups.Add(groupKey))
                 {
-                    group = new ListViewGroup("[" + decade + "]  RELEASE TYPE [" + releaseType + "]", HorizontalAlignment.Left);
-                    groups[groupKey] = group; matches.Groups.Add(group);
+                    ListViewItem category = new ListViewItem("");
+                    category.SubItems.Add("[" + decade + "]  RELEASE TYPE [" + releaseType + "]");
+                    while (category.SubItems.Count < matches.Columns.Count) category.SubItems.Add("");
+                    category.ForeColor = ThemeManager.CurrentPalette.CategoryMagenta;
+                    category.Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold);
+                    category.Tag = null;
+                    matches.Items.Add(category);
                 }
                 int index = IntValue(item, "index", matches.Items.Count + 1);
-                ListViewItem row = new ListViewItem(index.ToString(), group);
+                ListViewItem row = new ListViewItem(index.ToString());
                 row.SubItems.Add(TextValue(item, "release_artist", TextValue(item, "recording_artist", "")));
                 row.SubItems.Add(TextValue(item, "country", "")); row.SubItems.Add(TextValue(item, "release_date", ""));
                 row.SubItems.Add(releaseType); row.SubItems.Add(TextValue(item, "release_title", ""));
@@ -174,9 +183,11 @@ namespace Splined.WindowsGui
         private static string StringListValue(Dictionary<string, object> item, string key)
         {
             if (item == null || !item.ContainsKey(key) || item[key] == null) return "";
-            object[] values = item[key] as object[];
+            string scalar = item[key] as string;
+            if (scalar != null) return scalar;
+            IEnumerable values = item[key] as IEnumerable;
             if (values == null) return Convert.ToString(item[key]);
-            return String.Join(", ", values.Select(Convert.ToString));
+            return String.Join(", ", values.Cast<object>().Select(Convert.ToString));
         }
 
         private static string TextValue(Dictionary<string, object> item, string key, string fallback) { object value; return item.TryGetValue(key, out value) && value != null ? Convert.ToString(value) : fallback; }

@@ -17,6 +17,7 @@ namespace Splined.WindowsGui
         private TextBox ignored;
         private TextBox credentialDir;
         private TextBox cacheDir;
+        private TextBox temporaryCacheDir;
         private CheckBox sqliteShared;
         private TextBox logDir;
         private TextBox scanDir;
@@ -152,11 +153,12 @@ namespace Splined.WindowsGui
             root.Dock = DockStyle.Fill;
             root.Padding = new Padding(18, 14, 18, 14);
             root.ColumnCount = 1;
-            root.RowCount = 7;
+            root.RowCount = 8;
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
@@ -176,25 +178,37 @@ namespace Splined.WindowsGui
             root.Controls.Add(intro, 0, 1);
 
             music = CreatePathRow(root, 2, "Music library", true, false);
+            scanDir = CreatePathRow(root, 3, "Music library scan folder", true, false);
 
-            Panel ignoredPanel = new Panel();
-            ignoredPanel.Dock = DockStyle.Fill;
-            Label ignoredLabel = new Label();
-            ignoredLabel.Text = "Excluded folders - comma separated (saved in Config v5)";
-            ignoredLabel.Dock = DockStyle.Top;
-            ignoredLabel.Height = 22;
+            TableLayoutPanel ignoredPanel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = new Padding(0, 3, 0, 3)
+            };
+            ignoredPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
+            ignoredPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            ignoredPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
+            Label ignoredLabel = new Label
+            {
+                Text = "Excluded folders",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
             ignored = new FluentTextBox();
             ignored.Name = "ignoredDirectories";
-            ignored.Dock = DockStyle.Top;
-            ignoredPanel.Controls.Add(ignored);
-            ignoredPanel.Controls.Add(ignoredLabel);
-            root.Controls.Add(ignoredPanel, 0, 3);
+            ignored.Dock = DockStyle.Fill;
+            ignoredPanel.Controls.Add(ignoredLabel, 0, 0);
+            ignoredPanel.Controls.Add(ignored, 1, 0);
+            ignoredPanel.SetColumnSpan(ignored, 2);
+            root.Controls.Add(ignoredPanel, 0, 4);
 
             primaryTabs = new ThemedTabControl();
             primaryTabs.Dock = DockStyle.Fill;
             primaryTabs.TabPages.Add(BuildRecommendedTab());
             primaryTabs.TabPages.Add(BuildAdvancedTab());
-            root.Controls.Add(primaryTabs, 0, 5);
+            root.Controls.Add(primaryTabs, 0, 6);
 
             FlowLayoutPanel actions = new FlowLayoutPanel();
             actions.Dock = DockStyle.Fill;
@@ -214,7 +228,7 @@ namespace Splined.WindowsGui
             spacer.Width = 10;
             actions.Controls.Add(spacer);
             actions.Controls.Add(help);
-            root.Controls.Add(actions, 0, 6);
+            root.Controls.Add(actions, 0, 7);
             AcceptButton = save;
             CancelButton = cancel;
         }
@@ -230,21 +244,21 @@ namespace Splined.WindowsGui
         {
             TableLayoutPanel panel = new TableLayoutPanel();
             panel.Dock = DockStyle.Fill;
-            panel.ColumnCount = 2;
-            panel.RowCount = 2;
+            panel.ColumnCount = 3;
+            panel.RowCount = 1;
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 112));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            panel.Margin = new Padding(0, 3, 0, 3);
             Label label = new Label();
             label.Text = labelText;
             label.Dock = DockStyle.Fill;
-            label.TextAlign = ContentAlignment.BottomLeft;
+            label.TextAlign = ContentAlignment.MiddleLeft;
             panel.Controls.Add(label, 0, 0);
-            panel.SetColumnSpan(label, 2);
             TextBox box = new FluentTextBox();
             box.Dock = DockStyle.Fill;
-            panel.Controls.Add(box, 0, 1);
+            panel.Controls.Add(box, 1, 0);
             Button browse = ActionButton("Browse...", 102);
             browse.Dock = DockStyle.Fill;
             browse.Click += delegate
@@ -269,7 +283,7 @@ namespace Splined.WindowsGui
                     }
                 }
             };
-            panel.Controls.Add(browse, 1, 1);
+            panel.Controls.Add(browse, 2, 0);
             root.Controls.Add(panel, 0, row);
             return box;
         }
@@ -307,7 +321,7 @@ namespace Splined.WindowsGui
             Label summary = new Label();
             summary.Dock = DockStyle.Fill;
             summary.Padding = new Padding(12, 8, 12, 8);
-            summary.Text = "Configuration: saved internally by the Windows application\r\nLibrary, database/cache, logs, and credential locations are required and user-selected.\r\nMissing selected directories are created only after Save and Continue.";
+            summary.Text = "Configuration: saved internally by the Windows application\r\nLibrary, SQL database, temporary cache, logs, and credential locations are required and user-selected.\r\nMissing selected directories are created only after Save and Continue.";
             defaults.Controls.Add(summary);
             layout.Controls.Add(defaults, 0, 2);
 
@@ -331,7 +345,7 @@ namespace Splined.WindowsGui
             tree.ReadOnly = true;
             tree.ScrollBars = ScrollBars.Vertical;
             tree.Font = new Font("Consolas", 9.5f);
-            tree.Text = "Music library        <required user-selected location>\r\nDatabase / cache     <required user-selected location>\r\nLogs                 <required user-selected location>\r\nCredentials          <required user-selected location>\r\n\r\nNo config folder, config.toml, ui.toml, or config.location file is created.";
+            tree.Text = "Music library        <required user-selected location>\r\nSQL database         <required persistent location>\r\nTemporary run cache  <required disposable location>\r\nLogs                 <required user-selected location>\r\nCredentials          <required user-selected location>\r\n\r\nNo config folder, config.toml, ui.toml, or config.location file is created.";
             layout.Controls.Add(tree, 0, 5);
 
             Label active = new Label();
@@ -394,17 +408,17 @@ namespace Splined.WindowsGui
             InfoButton help = new InfoButton("SPLINED validates these paths and creates only missing selected runtime directories after Save and Continue.");
             help.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             table.Controls.Add(help, 2, 0);
-            credentialDir = AddPathSetting(table, 1, "Credential directory *", false);
-            cacheDir = AddPathSetting(table, 2, "Database / cache directory *", false);
-            logDir = AddPathSetting(table, 3, "Log directory *", false);
-            scanDir = AddPathSetting(table, 4, "Scan directory (optional)", false);
+            cacheDir = AddPathSetting(table, 1, "SQL Database Directory *", false);
+            temporaryCacheDir = AddPathSetting(table, 2, "Temporary Run Cache *", false);
+            credentialDir = AddPathSetting(table, 3, "Credentials Directory *", false);
+            logDir = AddPathSetting(table, 4, "Logs Directory *", false);
             sqliteShared = new FluentCheckBox
             {
                 Text = "Shared SQLite database (network / multi-OS)",
                 Dock = DockStyle.Fill
             };
             table.Controls.Add(sqliteShared, 1, 5);
-            table.Controls.Add(new InfoButton("Enable only when the selected cache directory exposes the same physical splined.db to another OS. Shared mode uses rollback journaling and a busy timeout; local databases retain WAL."), 2, 5);
+            table.Controls.Add(new InfoButton("Enable only when the SQL Database Directory exposes the same physical splined.db to another OS. Shared mode uses rollback journaling and a busy timeout; local databases retain WAL."), 2, 5);
             FlowLayoutPanel pathActions = new FlowLayoutPanel { Name = "pathsActionRow", Dock = DockStyle.Fill, WrapContents = false, AutoSize = true };
             Button credentialsButton = ActionButton("Credentials / Status...", 190);
             credentialsButton.Name = "pathsCredentialsButton";
@@ -1497,6 +1511,7 @@ namespace Splined.WindowsGui
             ignored.Text = String.Join(", ", state.IgnoredSubs);
             credentialDir.Text = state.CredentialDir;
             cacheDir.Text = state.CacheDir;
+            temporaryCacheDir.Text = state.TemporaryCacheDir;
             sqliteShared.Checked = state.SqliteShared;
             logDir.Text = state.LogDir;
             scanDir.Text = state.ScanLibraryDir;
@@ -1585,6 +1600,7 @@ namespace Splined.WindowsGui
                 state.IgnoredSubs = ignored.Text.Split(',').Select(value => value.Trim()).Where(value => value.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 state.CredentialDir = credentialDir.Text.Trim();
                 state.CacheDir = cacheDir.Text.Trim();
+                state.TemporaryCacheDir = temporaryCacheDir.Text.Trim();
                 state.SqliteShared = sqliteShared.Checked;
                 state.LogDir = logDir.Text.Trim();
                 state.ScanLibraryDir = scanDir.Text.Trim();
@@ -1641,6 +1657,7 @@ namespace Splined.WindowsGui
             ConfigState defaults = ConfigStore.Defaults();
             credentialDir.Text = defaults.CredentialDir;
             cacheDir.Text = defaults.CacheDir;
+            temporaryCacheDir.Text = defaults.TemporaryCacheDir;
             sqliteShared.Checked = defaults.SqliteShared;
             logDir.Text = defaults.LogDir;
             scanDir.Text = "";

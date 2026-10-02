@@ -22,11 +22,11 @@ validated Config v5 document and its interface state in the current user's
 internal application settings. It does not create or depend on `config.toml`,
 `ui.toml`, or `config.location` during normal operation.
 
-On first Windows launch the library, cache, log, and credential directories are
-mandatory choices. SPLINED creates only the selected cache, log, and credential
+On first Windows launch the library, SQL database, temporary run cache, log, and credential directories are
+mandatory choices. SPLINED creates only the selected database, run-cache, log, and credential
 directories after **Save and Continue**. The ZIP/setup extraction does not
 precreate `_cache`, `_logs`, `config`, `credentials`, or `docker_builds`.
-Cache, log, and credential fields initially point beneath
+Database, run-cache, log, and credential fields initially point beneath
 `%LOCALAPPDATA%\SPLINED`, not machine-wide `%PROGRAMDATA%`, and remain editable.
 Existing saved and UNC paths are not migrated automatically.
 
@@ -57,16 +57,18 @@ normally absolute container paths supplied by bind mounts.
 | `scan_mode` | `true` | Enables configured scan-directory behavior |
 | `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
-| `cache_dir` | `"_cache"` | Candidate/sample cache and persistent `<cache_dir>/splined.db` |
+| `cache_dir` | `"_cache"` | Persistent SQL database directory containing `<cache_dir>/splined.db`; the historical key name is retained for compatibility |
+| `temporary_cache_dir` | `"_cache"` | Disposable downloaded/derived artwork and optional review samples; an older Config v5 file that omits it falls back to `cache_dir` |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; Python owns shared inventory, while rollback journaling and a 30-second busy timeout protect shared writes |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 
 The `_cache` and `_logs` values above are file-backed native defaults. Windows
-first-run defaults are `%LOCALAPPDATA%\SPLINED\cache` and
+first-run defaults are `%LOCALAPPDATA%\SPLINED\cache`,
+`%LOCALAPPDATA%\SPLINED\run-cache`, and
 `%LOCALAPPDATA%\SPLINED\logs`; the saved Config v5 values are whatever the user
 accepts or selects in Settings.
 
-### SQLite `cache_dir`
+### SQLite and temporary run cache
 
 Python/Docker and Windows store the persistent Select Media read model at:
 
@@ -74,15 +76,17 @@ Python/Docker and Windows store the persistent Select Media read model at:
 <scan.cache_dir>/splined.db
 ```
 
-Normal run-cache cleanup preserves that file and its SQLite sidecars. Candidate
-downloads, samples, and other cache content remain disposable.
+Candidate downloads and derived local images are written under
+`temporary_cache_dir` and removed when the run completes or is interrupted.
+Optional review samples use its `samples` child only when sample writing is
+enabled. SQLite and its sidecars are never part of run-cache cleanup.
 
-The database location follows `cache_dir`; there is no separate database-path
-setting. With the Docker example:
+With the Docker compatibility defaults:
 
 ```toml
 [scan]
 cache_dir = "/_cache"
+temporary_cache_dir = "/_cache"
 ```
 
 SPLINED uses:
@@ -91,9 +95,11 @@ SPLINED uses:
 /_cache/splined.db
 ```
 
-Windows Setup requires a browsable **Cache directory** field and derives the
-same filename. A local Windows cache creates an independent database; a shared
-UNC cache can expose the same physical database as another installation.
+Windows Setup exposes separate **SQL Database Directory** and **Temporary Run
+Cache** fields. The database field derives the same filename. A local database
+directory creates an independent database; a shared UNC database directory can
+expose the same physical database as another installation while the disposable
+run cache remains on fast local storage.
 Raw UNC paths are supported directly through Windows Settings. SPLINED creates an internal,
 provider-aware Windows drive adapter for SQLite because Windows network locking
 can differ between raw UNC and drive-letter paths. An existing connection to
@@ -202,9 +208,9 @@ See [Source policies and Range Types](source-policies-range-types.md).
 sample_write = true
 ```
 
-When enabled, review samples are written beneath the configured cache directory.
-Samples are disposable even though `splined.db` in the same parent directory is
-persistent.
+When enabled, review samples are written beneath the configured temporary run
+cache. Samples are disposable and are not part of the persistent SQL database
+directory.
 
 ## `[credentials]`
 

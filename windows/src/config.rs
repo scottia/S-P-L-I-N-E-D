@@ -71,6 +71,10 @@ pub struct ScanConfig {
     #[serde(default)]
     pub scan_mode_timeout: ScanTimeout,
     pub cache_dir: String,
+    /// Disposable downloaded and derived artwork used only during an active run.
+    /// Older Config v5 files omit this field and continue to use `cache_dir`.
+    #[serde(default)]
+    pub temporary_cache_dir: String,
     /// Use rollback journaling for an intentionally shared/network SQLite file.
     #[serde(default)]
     pub sqlite_shared: bool,
@@ -318,6 +322,7 @@ impl Default for ScanConfig {
             library_scan: false,
             scan_mode_timeout: ScanTimeout::default(),
             cache_dir: DEFAULT_CACHE_DIR.to_string(),
+            temporary_cache_dir: DEFAULT_CACHE_DIR.to_string(),
             sqlite_shared: false,
             log_dir: default_log_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
@@ -512,6 +517,11 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     config.library.music_library = normalize_optional_directory(&config.library.music_library);
     config.scan.scan_library_dir = normalize_optional_directory(&config.scan.scan_library_dir);
     config.scan.cache_dir = normalize_required_directory(&config.scan.cache_dir, "scan.cache_dir")?;
+    config.scan.temporary_cache_dir = if config.scan.temporary_cache_dir.trim().is_empty() {
+        config.scan.cache_dir.clone()
+    } else {
+        normalize_required_directory(&config.scan.temporary_cache_dir, "scan.temporary_cache_dir")?
+    };
     config.scan.log_dir = normalize_required_directory(&config.scan.log_dir, "scan.log_dir")?;
     config.credentials.credential_dir = normalize_required_directory(
         &config.credentials.credential_dir,
@@ -652,6 +662,8 @@ fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.library.music_library = resolve_runtime_directory(root, &config.library.music_library);
     config.scan.scan_library_dir = resolve_runtime_directory(root, &config.scan.scan_library_dir);
     config.scan.cache_dir = resolve_runtime_directory(root, &config.scan.cache_dir);
+    config.scan.temporary_cache_dir =
+        resolve_runtime_directory(root, &config.scan.temporary_cache_dir);
     config.scan.log_dir = resolve_runtime_directory(root, &config.scan.log_dir);
     config.credentials.credential_dir =
         resolve_runtime_directory(root, &config.credentials.credential_dir);
@@ -792,6 +804,7 @@ mod tests {
         assert!(config.scan.scan_mode);
         assert!(!config.scan.library_scan);
         assert_eq!(config.scan.cache_dir, "_cache");
+        assert_eq!(config.scan.temporary_cache_dir, "_cache");
         assert!(config.scan.scan_library_dir.is_empty());
         assert!(config.library.music_library.is_empty());
         assert!(config.library.ignored_subs.is_empty());
@@ -828,6 +841,7 @@ mod tests {
         assert!(!text.contains("token_file"));
         assert!(text.contains("[aisplined]"));
         assert_eq!(parsed.scan.cache_dir, "_cache");
+        assert_eq!(parsed.scan.temporary_cache_dir, "_cache");
         assert_eq!(parsed.credentials.credential_dir, "credentials");
         assert!(!parsed.aisplined.enabled);
         assert!(parsed.aisplined.endpoint.is_empty());
@@ -939,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn samples_directory_is_derived_from_cache_directory() {
+    fn samples_directory_is_derived_from_temporary_cache_directory() {
         assert_eq!(
             samples_dir("portable-cache"),
             PathBuf::from("portable-cache").join("samples")
@@ -954,6 +968,10 @@ mod tests {
         resolve_runtime_paths(&mut config, root);
 
         assert_eq!(config.scan.cache_dir, root.join("_cache").to_string_lossy());
+        assert_eq!(
+            config.scan.temporary_cache_dir,
+            root.join("_cache").to_string_lossy()
+        );
         assert_eq!(
             config.credentials.credential_dir,
             root.join("credentials").to_string_lossy()
@@ -974,5 +992,19 @@ mod tests {
         let config = load_config_text(&text).expect("in-memory config should load");
         assert_eq!(config.config_version, Config::default().config_version);
         assert!(load_config_text("  \r\n ").is_err());
+    }
+
+    #[test]
+    fn older_config_v5_uses_database_directory_for_missing_temporary_cache() {
+        let text = default_toml()
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("temporary_cache_dir ="))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("cache_dir = \"_cache\"", "cache_dir = \"custom-database\"");
+        let parsed = parse_config(&text).expect("legacy Config v5 should remain compatible");
+        assert_eq!(parsed.scan.cache_dir, "custom-database");
+        assert_eq!(parsed.scan.temporary_cache_dir, "custom-database");
     }
 }
