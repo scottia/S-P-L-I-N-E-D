@@ -25,9 +25,11 @@ namespace Splined.WindowsGui
                 string ignoredAlbum = Path.Combine(library, "Skip This", "Ignored Album");
                 string unicodeArtist = Path.Combine(library, "Françoise Hardy");
                 string unicodeAlbum = Path.Combine(unicodeArtist, "Cafe\u0301 — Big Bambú");
+                string mojibakeAlbum = Path.Combine(library, "Cheech & Chong", "Big BambÃº");
                 Directory.CreateDirectory(firstAlbum);
                 Directory.CreateDirectory(ignoredAlbum);
                 Directory.CreateDirectory(unicodeAlbum);
+                Directory.CreateDirectory(mojibakeAlbum);
                 File.WriteAllBytes(Path.Combine(firstAlbum, "track.mp3"), new byte[] { 0 });
                 File.WriteAllBytes(Path.Combine(ignoredAlbum, "track.mp3"), new byte[] { 0 });
 
@@ -144,6 +146,13 @@ namespace Splined.WindowsGui
                 string redactedLog = RuntimeLog.Redact("Authorization: Bearer top-secret access_token=also-secret");
                 Assert(!redactedLog.Contains("top-secret") && !redactedLog.Contains("also-secret"),
                     "Runtime diagnostics did not redact authorization and token values.");
+                string runLogDirectory = Path.Combine(optionReopened.LogDir, "run");
+                Directory.CreateDirectory(runLogDirectory);
+                string staleRunLog = Path.Combine(runLogDirectory, "splined-debug-stale.log");
+                File.WriteAllText(staleRunLog, "stale");
+                RuntimeLog.Initialize(optionReopened);
+                Assert(!File.Exists(staleRunLog) && File.Exists(RuntimeLog.Path),
+                    "Windows startup did not replace prior run diagnostics with the current session log.");
                 Assert(optionReopened.Formats.SequenceEqual(optionCoverage.Formats)
                     && optionReopened.Sources.SequenceEqual(optionCoverage.Sources)
                     && optionReopened.ExcludedSources.SequenceEqual(optionCoverage.ExcludedSources),
@@ -450,6 +459,10 @@ namespace Splined.WindowsGui
                     && resolvedUnicodeAlbum.Normalize(System.Text.NormalizationForm.FormC)
                         == unicodeAlbum.Normalize(System.Text.NormalizationForm.FormC),
                     "Equivalent composed/decomposed French and accented Album paths were not resolved to the physical directory.");
+                string indexedMojibakeAlbum = Path.Combine(library, "Cheech & Chong", "Big Bambú");
+                string resolvedMojibakeAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { indexedMojibakeAlbum });
+                Assert(resolvedMojibakeAlbum == mojibakeAlbum && Directory.Exists(resolvedMojibakeAlbum),
+                    "UTF-8/Windows-1252 mojibake Album names were not translated to the physical directory.");
                 Assert(WindowsUpdateService.IsApprovedManifestUrl(ReleaseInfo.DevUpdateManifestUrl),
                     "The fixed Windows dev manifest URL is not approved by its own validator.");
                 Assert(WindowsUpdateService.IsApprovedUpdaterUrl(ReleaseInfo.DevUpdateAssetUrl),

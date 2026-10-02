@@ -1296,6 +1296,8 @@ namespace Splined.WindowsGui
         {
             TaskCompletionSource<bool> completion = new TaskCompletionSource<bool>();
             string scanPath = ResolveExistingAlbumPath(album.Path);
+            if (!String.Equals(scanPath, album.Path, StringComparison.Ordinal))
+                RuntimeLog.Write("debug", "album.path.translated indexed=" + album.Path + " physical=" + scanPath);
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = core;
             start.Arguments = "--config-path " + QuoteArgument(runConfigPath);
@@ -1313,9 +1315,9 @@ namespace Splined.WindowsGui
             start.StandardErrorEncoding = new UTF8Encoding(false);
             start.EnvironmentVariables["SPLINED_GUI_EVENTS"] = "1";
             start.EnvironmentVariables["SPLINED_GUI_REVIEW"] = "1";
-            // Preserve the selected path in Windows' UTF-16 environment block.
-            // Command-line conversion can depend on the launching runtime's
-            // active code page and has corrupted accented Album names.
+            // Pass the resolved physical Windows directory losslessly. The
+            // shared SQLite identity may use proper Unicode while the same
+            // SMB folder is exposed on Windows with a legacy-decoded name.
             start.EnvironmentVariables["SPLINED_SCAN_DIR_PATH"] = scanPath;
             start.EnvironmentVariables["NO_COLOR"] = "1";
             if (!String.IsNullOrWhiteSpace(retryArtist)) start.EnvironmentVariables["SPLINED_FALLBACK_ARTIST"] = retryArtist;
@@ -1725,13 +1727,13 @@ namespace Splined.WindowsGui
                         current = candidate;
                         continue;
                     }
-                    string expected = component.Normalize(NormalizationForm.FormC);
-                    string equivalent = Directory.EnumerateDirectories(current)
-                        .FirstOrDefault(entry => Path.GetFileName(entry)
-                            .Normalize(NormalizationForm.FormC)
-                            .Equals(expected, StringComparison.OrdinalIgnoreCase));
-                    if (equivalent == null) return path;
-                    current = equivalent;
+                    List<string> equivalents = Directory.EnumerateDirectories(current)
+                        .Where(entry => EquivalentWindowsFolderName(Path.GetFileName(entry), component))
+                        .OrderBy(entry => entry, StringComparer.OrdinalIgnoreCase)
+                        .Take(2)
+                        .ToList();
+                    if (equivalents.Count != 1) return path;
+                    current = equivalents[0];
                 }
                 return Directory.Exists(current) ? current : path;
             }
@@ -1739,6 +1741,39 @@ namespace Splined.WindowsGui
             {
                 return path;
             }
+        }
+
+        private static bool EquivalentWindowsFolderName(string physicalName, string indexedName)
+        {
+            string physical = (physicalName ?? "").Normalize(NormalizationForm.FormC);
+            string indexed = (indexedName ?? "").Normalize(NormalizationForm.FormC);
+            if (physical.Equals(indexed, StringComparison.OrdinalIgnoreCase)) return true;
+            return TranslateLegacyWindowsName(physical).Normalize(NormalizationForm.FormC)
+                    .Equals(indexed, StringComparison.OrdinalIgnoreCase)
+                || TranslateLegacyWindowsName(indexed).Normalize(NormalizationForm.FormC)
+                    .Equals(physical, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string TranslateLegacyWindowsName(string value)
+        {
+            string current = value ?? "";
+            Encoding legacy = Encoding.GetEncoding(
+                1252,
+                EncoderFallback.ExceptionFallback,
+                DecoderFallback.ExceptionFallback);
+            Encoding utf8 = new UTF8Encoding(false, true);
+            for (int pass = 0; pass < 3; pass++)
+            {
+                try
+                {
+                    string repaired = utf8.GetString(legacy.GetBytes(current));
+                    if (repaired == current) break;
+                    current = repaired;
+                }
+                catch (EncoderFallbackException) { break; }
+                catch (DecoderFallbackException) { break; }
+            }
+            return current;
         }
 
         private void UseSelectedClicked(object sender, EventArgs e)

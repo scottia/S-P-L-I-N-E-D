@@ -32,6 +32,10 @@ of the release archive. Generated executables, QA images, local configuration,
 credentials, cache, logs, and history are intentionally excluded from version
 control.
 
+The Windows GUI clears prior `splined-*.log` files from `_logs/run` during the
+next startup and creates one diagnostic file for the new application session.
+SQLite remains the authority for Album state and is not affected by log cleanup.
+
 The repository/native release number is independent of this application's
 v3.0.0 Stable identity. The next-patch release workflow must not rewrite this
 manifest or `gui/ReleaseInfo.cs`.

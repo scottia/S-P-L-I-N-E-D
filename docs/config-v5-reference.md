@@ -241,7 +241,7 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `logging.retention_days` | `14` | Retention for ordinary diagnostic files |
+| `logging.retention_days` | `14` | Retention for ordinary diagnostic files; Windows keeps only its current `_logs/run` session |
 | `history.enabled` | `true` | Enables persistent completion/status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
 
