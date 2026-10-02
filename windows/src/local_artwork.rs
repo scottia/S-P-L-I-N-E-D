@@ -101,12 +101,13 @@ pub fn inspect_local_preflight(
             .map(|candidate| candidate.path().to_path_buf())
             .collect();
         let projected = project_configured_artwork(&best.candidate, range, &config.output);
-        result.action =
-            if range.classify(projected.width.min(projected.height)) == RangeClass::Ideal {
-                LocalPreflightAction::LocalIdeal
-            } else {
-                LocalPreflightAction::Compare
-            };
+        result.action = if config.output.preserve_file
+            && range.classify(projected.width.min(projected.height)) == RangeClass::Ideal
+        {
+            LocalPreflightAction::LocalIdeal
+        } else {
+            LocalPreflightAction::Compare
+        };
         let reference = best
             .path()
             .file_name()
@@ -122,12 +123,13 @@ pub fn inspect_local_preflight(
             Ok(Some(candidate)) => {
                 let projected =
                     project_configured_artwork(&candidate.candidate, range, &config.output);
-                result.action =
-                    if range.classify(projected.width.min(projected.height)) == RangeClass::Ideal {
-                        LocalPreflightAction::EmbeddedIdeal
-                    } else {
-                        LocalPreflightAction::Compare
-                    };
+                result.action = if config.output.preserve_file
+                    && range.classify(projected.width.min(projected.height)) == RangeClass::Ideal
+                {
+                    LocalPreflightAction::EmbeddedIdeal
+                } else {
+                    LocalPreflightAction::Compare
+                };
                 let reference = audio_path
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -463,6 +465,30 @@ mod tests {
         let preflight =
             inspect_local_preflight(&album, &Config::default(), &Range::default(), &cache);
         assert_eq!(preflight.action, LocalPreflightAction::LocalIdeal);
+        assert_eq!(
+            preflight.candidate.unwrap().downloaded.candidate.source,
+            "local"
+        );
+    }
+
+    #[test]
+    fn overwrite_mode_compares_ideal_local_cover_with_providers() {
+        let temp = tempdir().unwrap();
+        let album_path = temp.path().join("album");
+        let cache = temp.path().join("cache");
+        fs::create_dir_all(&album_path).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        write_image(&album_path.join("cover.jpg"), 1800, 1800, ImageFormat::Jpeg);
+        let album = AlbumDirectory {
+            path: album_path,
+            audio_files: Vec::new(),
+        };
+        let mut config = Config::default();
+        config.output.preserve_file = false;
+
+        let preflight = inspect_local_preflight(&album, &config, &Range::default(), &cache);
+
+        assert_eq!(preflight.action, LocalPreflightAction::Compare);
         assert_eq!(
             preflight.candidate.unwrap().downloaded.candidate.source,
             "local"

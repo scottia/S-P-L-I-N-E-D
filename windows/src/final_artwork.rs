@@ -571,6 +571,7 @@ mod tests {
         let source = dir.path().join("source.png");
         let destination = dir.path().join("cover.jpg");
         write_image(&source, 20, 20, ImageFormat::Png);
+        write_image(&destination, 12, 12, ImageFormat::Jpeg);
         let candidate = candidate(&source);
         let result = finalize_selected_candidate(
             Mode::Write,
@@ -584,5 +585,6 @@ mod tests {
         let installed = inspect_image(&destination).unwrap();
         assert_eq!((installed.width, installed.height), (18, 18));
         assert_eq!(installed.format, StaticFormat::Jpeg);
+        assert!(!dir.path().join("cover-(2).jpg").exists());
     }
 }
