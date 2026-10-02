@@ -13,6 +13,7 @@ namespace Splined.WindowsGui
         public const string RepositoryUrl = "https://github.com/scottia/S-P-L-I-N-E-D";
         public const string HelpUrl = RepositoryUrl + "/blob/main/docs/README.md";
         public const string ReleasesUrl = RepositoryUrl + "/releases/latest";
+        public const string StableReleasesApiUrl = "https://api.github.com/repos/scottia/S-P-L-I-N-E-D/releases?per_page=20";
         public const string DevUpdateManifestUrl = RepositoryUrl + "/releases/download/windows-dev/windows-dev-update.json";
         public const string DevUpdateAssetUrl = RepositoryUrl + "/releases/download/windows-dev/setup-splined.exe";
     }

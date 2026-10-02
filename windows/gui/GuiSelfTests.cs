@@ -23,8 +23,11 @@ namespace Splined.WindowsGui
                 string library = Path.Combine(ConfigStore.AppRoot, "fixture-library");
                 string firstAlbum = Path.Combine(library, "Artist One", "Album One");
                 string ignoredAlbum = Path.Combine(library, "Skip This", "Ignored Album");
+                string unicodeArtist = Path.Combine(library, "Françoise Hardy");
+                string unicodeAlbum = Path.Combine(unicodeArtist, "Cafe\u0301 — Big Bambú");
                 Directory.CreateDirectory(firstAlbum);
                 Directory.CreateDirectory(ignoredAlbum);
+                Directory.CreateDirectory(unicodeAlbum);
                 File.WriteAllBytes(Path.Combine(firstAlbum, "track.mp3"), new byte[] { 0 });
                 File.WriteAllBytes(Path.Combine(ignoredAlbum, "track.mp3"), new byte[] { 0 });
 
@@ -440,6 +443,13 @@ namespace Splined.WindowsGui
                 string unc = @"\\server\share\music\Artist\Album";
                 string quotedUnc = (string)quoteArgument.Invoke(null, new object[] { unc });
                 Assert(quotedUnc == "\"" + unc + "\"", "UNC command argument changed its leading backslashes.");
+                MethodInfo resolveUnicodePath = typeof(MainForm).GetMethod("ResolveExistingAlbumPath", BindingFlags.Static | BindingFlags.NonPublic);
+                string requestedUnicodeAlbum = Path.Combine(unicodeArtist, "Café — Big Bambú");
+                string resolvedUnicodeAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { requestedUnicodeAlbum });
+                Assert(Directory.Exists(resolvedUnicodeAlbum)
+                    && resolvedUnicodeAlbum.Normalize(System.Text.NormalizationForm.FormC)
+                        == unicodeAlbum.Normalize(System.Text.NormalizationForm.FormC),
+                    "Equivalent composed/decomposed French and accented Album paths were not resolved to the physical directory.");
                 Assert(WindowsUpdateService.IsApprovedManifestUrl(ReleaseInfo.DevUpdateManifestUrl),
                     "The fixed Windows dev manifest URL is not approved by its own validator.");
                 Assert(WindowsUpdateService.IsApprovedUpdaterUrl(ReleaseInfo.DevUpdateAssetUrl),
@@ -450,6 +460,22 @@ namespace Splined.WindowsGui
                 Assert(!WindowsUpdateService.IsApprovedUpdaterUrl(
                         "https://github.com.evil.invalid/scottia/S-P-L-I-N-E-D/releases/download/windows-dev/setup-splined.exe"),
                     "The Windows updater accepted an unapproved release host.");
+                string stableManifest = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/windows-update.json";
+                string stableUpdater = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/setup-splined.exe";
+                Assert(WindowsUpdateService.IsApprovedStableManifestUrl(stableManifest)
+                    && WindowsUpdateService.IsApprovedStableUpdaterUrl(stableUpdater),
+                    "Official versioned Windows update assets are not approved.");
+                Assert(!WindowsUpdateService.IsApprovedStableManifestUrl(ReleaseInfo.DevUpdateManifestUrl)
+                    && !WindowsUpdateService.IsApprovedStableUpdaterUrl(ReleaseInfo.DevUpdateAssetUrl),
+                    "Stable update policy accepted the rolling dev release.");
+                string releasesJson = "["
+                    + "{\"draft\":false,\"prerelease\":true,\"tag_name\":\"preview\",\"assets\":[]},"
+                    + "{\"draft\":false,\"prerelease\":false,\"tag_name\":\"1.0.18\",\"assets\":["
+                    + "{\"name\":\"windows-update.json\",\"browser_download_url\":\"" + stableManifest + "\"},"
+                    + "{\"name\":\"setup-splined.exe\",\"browser_download_url\":\"" + stableUpdater + "\"}]}]";
+                WindowsUpdateLocation stableLocation = WindowsUpdateService.SelectStableUpdateLocation(releasesJson);
+                Assert(stableLocation.ManifestUrl == stableManifest && stableLocation.UpdaterUrl == stableUpdater,
+                    "Stable update discovery did not select the official paired Windows assets.");
 
                 loadedUi.HoverEnabled = false;
                 ConfigStore.SaveUi(loadedUi);

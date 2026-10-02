@@ -1295,9 +1295,10 @@ namespace Splined.WindowsGui
         private Task<bool> RunCoreAlbumOnce(string core, AlbumInfo album, string retryArtist, string retryAlbum, string runConfigPath)
         {
             TaskCompletionSource<bool> completion = new TaskCompletionSource<bool>();
+            string scanPath = ResolveExistingAlbumPath(album.Path);
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = core;
-            start.Arguments = "--config-path " + QuoteArgument(runConfigPath) + " --scan-dir-path " + QuoteArgument(album.Path);
+            start.Arguments = "--config-path " + QuoteArgument(runConfigPath);
             start.WorkingDirectory = ConfigStore.AppRoot;
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
@@ -1312,6 +1313,10 @@ namespace Splined.WindowsGui
             start.StandardErrorEncoding = new UTF8Encoding(false);
             start.EnvironmentVariables["SPLINED_GUI_EVENTS"] = "1";
             start.EnvironmentVariables["SPLINED_GUI_REVIEW"] = "1";
+            // Preserve the selected path in Windows' UTF-16 environment block.
+            // Command-line conversion can depend on the launching runtime's
+            // active code page and has corrupted accented Album names.
+            start.EnvironmentVariables["SPLINED_SCAN_DIR_PATH"] = scanPath;
             start.EnvironmentVariables["NO_COLOR"] = "1";
             if (!String.IsNullOrWhiteSpace(retryArtist)) start.EnvironmentVariables["SPLINED_FALLBACK_ARTIST"] = retryArtist;
             if (!String.IsNullOrWhiteSpace(retryAlbum)) start.EnvironmentVariables["SPLINED_FALLBACK_ALBUM"] = retryAlbum;
@@ -1333,7 +1338,7 @@ namespace Splined.WindowsGui
             };
             try
             {
-                RuntimeLog.Write("debug", "album.core.start album=" + album.Path);
+                RuntimeLog.Write("debug", "album.core.start album=" + scanPath);
                 currentProcess = process;
                 process.Start();
                 process.BeginOutputReadLine();
@@ -1697,8 +1702,43 @@ namespace Splined.WindowsGui
             string normalized = (path ?? "").Trim().Replace('/', '\\');
             while (normalized.Length > 3 && normalized.EndsWith("\\", StringComparison.Ordinal))
                 normalized = normalized.Substring(0, normalized.Length - 1);
-            try { return Path.GetFullPath(normalized); }
-            catch { return normalized; }
+            try { normalized = Path.GetFullPath(normalized); }
+            catch { }
+            return normalized.Normalize(NormalizationForm.FormC);
+        }
+
+        private static string ResolveExistingAlbumPath(string path)
+        {
+            if (String.IsNullOrWhiteSpace(path) || Directory.Exists(path)) return path;
+            try
+            {
+                string full = Path.GetFullPath(path);
+                string root = Path.GetPathRoot(full);
+                if (String.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return path;
+                string current = root;
+                string relative = full.Substring(root.Length);
+                foreach (string component in relative.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    string candidate = Path.Combine(current, component);
+                    if (Directory.Exists(candidate))
+                    {
+                        current = candidate;
+                        continue;
+                    }
+                    string expected = component.Normalize(NormalizationForm.FormC);
+                    string equivalent = Directory.EnumerateDirectories(current)
+                        .FirstOrDefault(entry => Path.GetFileName(entry)
+                            .Normalize(NormalizationForm.FormC)
+                            .Equals(expected, StringComparison.OrdinalIgnoreCase));
+                    if (equivalent == null) return path;
+                    current = equivalent;
+                }
+                return Directory.Exists(current) ? current : path;
+            }
+            catch
+            {
+                return path;
+            }
         }
 
         private void UseSelectedClicked(object sender, EventArgs e)
@@ -1894,40 +1934,19 @@ namespace Splined.WindowsGui
         private async Task CheckForUpdateAsync(bool interactive)
         {
             if (updateCheckRunning) return;
-            if (!WindowsUpdateService.UsesDevChannel)
-            {
-                if (!interactive) return;
-                try
-                {
-                    DialogResult open = MessageBox.Show(this,
-                        "Installed: " + ReleaseInfo.VersionLabel
-                        + "\r\n\r\nOpen the official SPLINED releases page to check for updates?",
-                        "SPLINED update check", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                    if (open == DialogResult.Yes)
-                        Process.Start(new ProcessStartInfo { FileName = ReleaseInfo.ReleasesUrl, UseShellExecute = true });
-                }
-                catch (Exception error)
-                {
-                    MessageBox.Show(this,
-                        "SPLINED could not open the releases page.\r\n\r\n"
-                        + ReleaseInfo.ReleasesUrl + "\r\n\r\n" + error.Message,
-                        "SPLINED update check", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                }
-                return;
-            }
-
             updateCheckRunning = true;
             if (checkUpdateMenuItem != null) checkUpdateMenuItem.Enabled = false;
             try
             {
-                if (interactive) SetStatus("Checking for Windows dev updates...");
+                string channel = WindowsUpdateService.UsesDevChannel ? "dev" : "stable";
+                if (interactive) SetStatus("Checking for Windows " + channel + " updates...");
                 WindowsUpdateCheck update = await WindowsUpdateService.CheckAsync();
                 RuntimeLog.Write("info", "windows.update.checked current=" + BuildInfo.ShortCommit
                     + " latest=" + update.Manifest.short_commit
                     + " available=" + update.Available.ToString().ToLowerInvariant());
                 if (!update.Available)
                 {
-                    if (interactive) SetStatus("SPLINED is current at dev commit " + BuildInfo.ShortCommit + ".");
+                    if (interactive) SetStatus("SPLINED is current at " + channel + " commit " + BuildInfo.ShortCommit + ".");
                     if (interactive)
                         MessageBox.Show(this,
                             "SPLINED is current.\r\n\r\nInstalled commit: " + BuildInfo.ShortCommit,
@@ -1936,12 +1955,12 @@ namespace Splined.WindowsGui
                 }
 
                 WindowsUpdateManifest manifest = update.Manifest;
-                SetStatus("Windows dev update " + manifest.short_commit + " is available.");
+                SetStatus("Windows " + channel + " update " + manifest.short_commit + " is available.");
                 string published = String.IsNullOrWhiteSpace(manifest.published_at)
                     ? "unknown"
                     : manifest.published_at;
                 DialogResult install = MessageBox.Show(this,
-                    "A Windows dev update is available.\r\n\r\n"
+                    "A Windows " + channel + " update is available.\r\n\r\n"
                     + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
                     + "Available commit: " + manifest.short_commit + "\r\n"
                     + "Published: " + published + "\r\n\r\n"
