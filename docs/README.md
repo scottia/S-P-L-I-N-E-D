@@ -18,6 +18,7 @@ Do not infer one from another.
 ## Start here
 
 - [Installation and first run](installation-first-run.md)
+- [Windows v4 interface and runtime](windows-v4-interface.md)
 - [Config v5 reference](config-v5-reference.md)
 - [Credentials and provider setup](credentials-providers.md)
 - [API/OAuth credential validation](oauth-validation.md)

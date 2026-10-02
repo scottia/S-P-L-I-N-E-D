@@ -32,6 +32,8 @@ the selected artwork into the Album folder.
 - 🧭 **Persistent history and bypass state** live in the authoritative SQLite database
 - 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and fast warm startup in Python/Docker
 - ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
+- 🪟 **Windows v4 internal settings** — Config v5 and interface layout no longer require external TOML files
+- 💾 **Selective `.spl` backup** — export/import settings, interface state, credentials, SQLite, or diagnostics with optional password protection
 - 🐳 **Docker image** provides a Linux/server deployment path
 - 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, local `cover.*` preview/resolution, URL-backed candidate preview, and mouse/touch operation
 - 📦 **Portable Windows, Linux, and macOS releases** keep application-owned files together
@@ -80,6 +82,11 @@ Start with:
 
 Windows GUI v3.0.0 Stable opens the documentation home from **Help > Help** and
 from the Help button in its About dialog.
+
+The Windows v4 source layout adds a single Launch surface, resizable panel
+presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
+internal settings, and selective `.spl` backup/restore. The application version,
+source-layout generation, and Config v5 schema remain independent identifiers.
 
 The Windows updater is compiled into `splined.exe`. Stable builds discover
 verified updater assets from official versioned releases; `dev` builds use the

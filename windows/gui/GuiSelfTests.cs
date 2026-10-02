@@ -20,6 +20,8 @@ namespace Splined.WindowsGui
         {
             try
             {
+                string internalSettings = Path.Combine(Path.GetTempPath(), "splined-windows-v4-tests-" + Guid.NewGuid().ToString("N"));
+                Environment.SetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR", internalSettings);
                 string library = Path.Combine(ConfigStore.AppRoot, "fixture-library");
                 string firstAlbum = Path.Combine(library, "Artist One", "Album One");
                 string ignoredAlbum = Path.Combine(library, "Skip This", "Ignored Album");
@@ -65,7 +67,7 @@ namespace Splined.WindowsGui
                 Assert(loaded.Mode == "write", "Config v5 mode did not round-trip.");
                 Assert(loaded.IgnoredSubs.SequenceEqual(excludedFolders), "Excluded folders with bracketed names did not round-trip.");
                 Assert(loaded.ScanModeTimeout == 0, "Disabled timeout did not round-trip.");
-                string configText = File.ReadAllText(loaded.ConfigPath);
+                string configText = ConfigStore.ExportConfigText(loaded);
                 Assert(configText.Contains("[credentials]") && configText.Contains("credential_dir =")
                     && !configText.Contains("[fanarttv]") && !configText.Contains("[lastfm]")
                     && !configText.Contains("[musicbrainz]") && !configText.Contains("credential_file")
@@ -103,7 +105,7 @@ namespace Splined.WindowsGui
                     "Override-off source policy must preserve the existing global range behavior.");
 
                 ConfigState optionCoverage = loaded.Clone();
-                optionCoverage.ConfigPath = Path.Combine(ConfigStore.AppRoot, "qa-test", "external-config", "config.toml");
+                optionCoverage.ConfigPath = ConfigStore.InternalSettingsLabel;
                 optionCoverage.Mode = "read";
                 optionCoverage.Verbosity = "trace";
                 optionCoverage.ScanLibraryDir = firstAlbum;
@@ -141,8 +143,8 @@ namespace Splined.WindowsGui
                 Assert(optionReopened.CacheDir == optionCoverage.CacheDir && optionReopened.SqliteShared && optionReopened.LogDir == optionCoverage.LogDir
                     && optionReopened.CredentialDir == optionCoverage.CredentialDir,
                     "Python directory options did not round-trip through Config v5.");
-                Assert(ConfigStore.UiPath == Path.Combine(Path.GetDirectoryName(optionCoverage.ConfigPath), "ui.toml"),
-                    "ui.toml did not follow the active config.toml directory.");
+                Assert(optionReopened.ConfigPath == ConfigStore.InternalSettingsLabel,
+                    "Windows v4 settings did not remain in the internal Windows store.");
                 string redactedLog = RuntimeLog.Redact("Authorization: Bearer top-secret access_token=also-secret");
                 Assert(!redactedLog.Contains("top-secret") && !redactedLog.Contains("also-secret"),
                     "Runtime diagnostics did not redact authorization and token values.");
@@ -225,15 +227,34 @@ namespace Splined.WindowsGui
                     && loadedUi.FilteredScanMode == "read" && loadedUi.SelectedAlbumPaths.SequenceEqual(new[] { firstAlbum })
                     && loadedUi.MainWidth == 1320 && loadedUi.MainSplitterDistance == 455
                     && loadedUi.SetupWidth == 1040 && loadedUi.SetupAdvancedTab == 2
-                    && loadedUi.CompareWidth == 1110 && loadedUi.PreviewHeight == 650, "GUI-local ui.toml did not round-trip.");
-                string savedConfigBeforeTemporaryRun = File.ReadAllText(loaded.ConfigPath);
+                    && loadedUi.CompareWidth == 1110 && loadedUi.PreviewHeight == 650, "Internal Windows interface settings did not round-trip.");
+                string backupPath = Path.Combine(internalSettings, "portable-settings.spl");
+                BackupSelection backupSelection = new BackupSelection
+                {
+                    Settings = true,
+                    Interface = true,
+                    Credentials = false,
+                    Database = false,
+                    Diagnostics = false
+                };
+                BackupService.Export(backupPath, loaded, loadedUi, backupSelection, "fixture-password");
+                SplinedBackupPayload protectedBackup = BackupService.Read(backupPath, "fixture-password");
+                Assert(protectedBackup.settings.Contains("config_version = 5")
+                    && protectedBackup.interface_settings.Contains("[ui]")
+                    && protectedBackup.credentials.Count == 0 && protectedBackup.database == null,
+                    "Selective password-protected .spl export did not preserve its chosen sections.");
+                bool wrongPasswordRejected = false;
+                try { BackupService.Read(backupPath, "wrong-password"); }
+                catch (InvalidOperationException) { wrongPasswordRejected = true; }
+                Assert(wrongPasswordRejected, "Password-protected .spl backup accepted an incorrect password.");
+                string savedConfigBeforeTemporaryRun = ConfigStore.ExportConfigText(ConfigStore.Load());
                 string temporaryRunConfig = Path.Combine(ConfigStore.AppRoot, "temporary-filtered-run.toml");
                 ConfigState temporaryRunState = loaded.Clone();
                 temporaryRunState.Mode = "read";
                 ConfigStore.SaveTemporaryRunConfig(temporaryRunState, temporaryRunConfig);
                 Assert(File.ReadAllText(temporaryRunConfig).Contains("mode = \"read\"")
-                    && File.ReadAllText(loaded.ConfigPath) == savedConfigBeforeTemporaryRun,
-                    "A temporary filtered Read/Write override changed the saved Config v5 document.");
+                    && ConfigStore.ExportConfigText(ConfigStore.Load()) == savedConfigBeforeTemporaryRun,
+                    "A temporary Read/Write override changed the saved internal settings.");
                 File.Delete(temporaryRunConfig);
 
                 using (SetupForm setup = new SetupForm(loaded, false))
@@ -273,10 +294,10 @@ namespace Splined.WindowsGui
                         "Tools was not placed beneath Paths.");
                     Control pathActions = setup.Controls.Find("pathsActionRow", true).Single();
                     Button pathCredentials = setup.Controls.Find("pathsCredentialsButton", true).OfType<Button>().Single();
-                    Button restorePortable = Descendants(pathActions).OfType<Button>().Single(button => button.Text == "Restore Portable Defaults");
+                    Button restorePortable = Descendants(pathActions).OfType<Button>().Single(button => button.Text == "Restore Suggested Paths");
                     Assert(IsDescendant(pathActions, pathCredentials) && IsDescendant(pathActions, restorePortable)
                         && Math.Abs(pathCredentials.Top - restorePortable.Top) <= 2,
-                        "Credential / Status and Restore Portable Defaults are not aligned in the Paths action row.");
+                        "Credential / Status and Restore Suggested Paths are not aligned in the Paths action row.");
                     Control artworkOptions = setup.Controls.Find("artworkOptionsGroup", true).Single();
                     Dictionary<string, Button> formats = (Dictionary<string, Button>)typeof(SetupForm).GetField("formatButtons", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(setup);
                     Assert(formats.Count == 3 && formats.Values.All(button => IsDescendant(artworkOptions, button)),
@@ -285,9 +306,11 @@ namespace Splined.WindowsGui
                     Assert(existingArtwork is FluentComboBox && existingArtwork.Items.Count == 2 && existingArtwork.SelectedIndex == 1
                         && Convert.ToString(existingArtwork.Items[0]).Contains("no numbered copies"),
                         "Existing-artwork overwrite/preserve behavior is not visible or did not repopulate.");
-                    string[] commandButtons = { "Validate Saved Config", "Credentials / Status...", "Open Config Folder", "Open Logs Folder" };
+                    string[] commandButtons = { "Validate Saved Settings", "Credentials / Status...", "Open Logs Folder" };
                     Assert(commandButtons.All(expected => Descendants(setup).OfType<Button>().Any(button => button.Text == expected)),
-                        "Advanced Settings omitted Config validation, credentials, or diagnostic-folder tools.");
+                        "Advanced Settings omitted internal-settings validation, credentials, or diagnostic-folder tools.");
+                    Assert(!Descendants(setup).OfType<Button>().Any(button => button.Text == "Open Config Folder"),
+                        "Windows v4 still exposes an external configuration folder.");
                     Assert(!Descendants(setup).OfType<Button>().Any(button => button.Text == "Resolved Config...")
                         && !Descendants(setup).OfType<GroupBox>().Any(group => group.Text.IndexOf("Python", StringComparison.OrdinalIgnoreCase) >= 0),
                         "Settings still exposes the removed Python Help/Config Coverage surface.");
@@ -306,6 +329,32 @@ namespace Splined.WindowsGui
                         "Artwork source priority is not visible/editable in Python's default order.");
                     Assert(setup.Icon != null, "The SPLINED application icon was not applied to Settings.");
                     VerifyRetentionLayout(setup, advanced, pathsTab);
+                }
+
+                object[] matchFixture =
+                {
+                    new Dictionary<string, object>
+                    {
+                        { "index", 1 }, { "decade", "2010s" }, { "release_class", "album" },
+                        { "release_artist", "Fixture Artist" }, { "release_title", "Fixture Album" },
+                        { "recording_mbid", "59a0c68f-ec68-418d-a29a-fa54a7d9aea9" },
+                        { "artist_mbids", new object[] { "291dcfb8-b31c-496a-905b-9955509d75b6" } },
+                        { "release_mbid", "5d05694f-2b0f-427e-9df8-78dbc0983681" },
+                        { "url", "https://musicbrainz.org/release/5d05694f-2b0f-427e-9df8-78dbc0983681" }
+                    }
+                };
+                using (MusicBrainzMatchesForm matches = new MusicBrainzMatchesForm(
+                    "Fixture Artist", "Fixture Track", matchFixture, false, loadedUi.Theme))
+                {
+                    matches.ShowInTaskbar = false;
+                    matches.StartPosition = FormStartPosition.Manual;
+                    matches.Location = new Point(-32000, -32000);
+                    matches.Show();
+                    Application.DoEvents();
+                    Assert(Descendants(matches).OfType<TextBox>().Count() == 3
+                        && Descendants(matches).OfType<Button>().Any(button => button.Text == "Apply IDs")
+                        && Descendants(matches).OfType<Button>().Any(button => button.Text == "Return to Source Results"),
+                        "MusicBrainz Matches omitted session-only Artist/Release/Recording authority editing or normal-Album return navigation.");
                 }
 
                 Dictionary<string, object> fanartCredential = new Dictionary<string, object>
@@ -534,7 +583,8 @@ namespace Splined.WindowsGui
                             || item.Text.IndexOf("Coverage", StringComparison.OrdinalIgnoreCase) >= 0),
                         "The Help menu still exposes duplicate Documentation/Python coverage surfaces.");
                     Assert(form.MainMenuStrip is FluentMenuStrip
-                        && form.MainMenuStrip.AutoSize && form.MainMenuStrip.Dock == DockStyle.Top,
+                        && form.MainMenuStrip.AutoSize && form.MainMenuStrip.Dock == DockStyle.Fill
+                        && Descendants(form).OfType<SplinedWordmark>().Any(),
                         "The top menu does not use the centralized first-frame Fluent menu surface.");
                     form.MainMenuStrip.CreateControl();
                     form.MainMenuStrip.PerformLayout();
@@ -643,9 +693,8 @@ namespace Splined.WindowsGui
                         "LAUNCH must become the orange WAITING state while an artwork decision is pending.");
                     Assert(launch.FlatAppearance.BorderSize == 0 && launch.Region == null,
                         "LAUNCH / WAITING still clips antialiasing through a rounded HWND region.");
-                    Button filteredLaunch = form.Controls.Find("selectAndLaunch", true).OfType<Button>().Single();
-                    Assert(filteredLaunch.Enabled && filteredLaunch.Text == "WAITING" && Convert.ToString(filteredLaunch.Tag) == "waiting",
-                        "Auto Mode mini-LAUNCH did not mirror the orange WAITING state.");
+                    Assert(form.Controls.Find("selectAndLaunch", true).Length == 0,
+                        "Select Media still contains the duplicate mini-LAUNCH control.");
                     FieldInfo settingsField = typeof(MainForm).GetField("settingsMenuItem", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert(!((ToolStripMenuItem)settingsField.GetValue(form)).Enabled,
                         "Settings must be unavailable while an album decision is active.");
@@ -662,7 +711,7 @@ namespace Splined.WindowsGui
                         "Enable Hover did not toggle on, persist, and display the green selected style.");
                     buttonClick.Invoke(hoverButton, new object[] { EventArgs.Empty });
                     Assert(!ConfigStore.LoadUi().HoverEnabled,
-                        "Enable Hover did not toggle off and persist through the GUI-local ui.toml mechanism.");
+                        "Enable Hover did not toggle off and persist through internal Windows interface settings.");
                     candidateMap.Clear();
                     candidateMap[1] = new CandidateView { Index = 1 };
                     candidateCards.Controls.Add(new Panel());
@@ -906,15 +955,15 @@ namespace Splined.WindowsGui
             }
             CheckBox scanRead = form.Controls.Find("filteredScanRead", true).OfType<CheckBox>().Single();
             CheckBox scanWrite = form.Controls.Find("filteredScanWrite", true).OfType<CheckBox>().Single();
-            Button autoLaunch = form.Controls.Find("selectAndLaunch", true).OfType<Button>().Single();
+            Button primaryLaunch = (Button)typeof(MainForm).GetField("launch", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
             CheckBox selectAll = form.Controls.Find("selectModeAll", true).OfType<CheckBox>().Single();
             CheckBox selectNone = form.Controls.Find("selectModeNone", true).OfType<CheckBox>().Single();
             CheckBox selectFiltered = form.Controls.Find("selectModeFiltered", true).OfType<CheckBox>().Single();
-            Assert(scanRead.Text == "Filtered Scan [READ]" && scanWrite.Text == "Filtered Scan [WRITE]"
-                && ((GroupBox)scanRead.Parent.Parent).Text == "Scan Mode"
+            Assert(scanRead.Text == "Launch [READ] Source Results" && scanWrite.Text == "Launch [LIVE WRITE] Choice Results"
+                && ((GroupBox)scanRead.Parent.Parent).Text == "Launch Mode"
                 && ((GroupBox)selectFiltered.Parent.Parent).Text == "Select Mode"
                 && selectAll.Text == "Select [ALL]" && selectNone.Text == "Select [NONE]" && selectFiltered.Text == "Select [FILTERED]",
-                "Select Mode or Scan Mode labels do not match the requested compact design.");
+                "Select Mode or Launch Mode labels do not match the Windows v4 design.");
             foreach (GroupBox modeGroup in new[] { (GroupBox)selectFiltered.Parent.Parent, (GroupBox)scanRead.Parent.Parent })
             {
                 modeGroup.PerformLayout();
@@ -930,13 +979,12 @@ namespace Splined.WindowsGui
             Assert(scanRead.Checked && !scanWrite.Checked && !selectFiltered.Checked,
                 "Persisted Filtered Scan [READ] choice was not restored without selecting Auto Mode.");
             scanRead.Checked = false;
-            Assert(!autoLaunch.Enabled, "Auto Mode mini-LAUNCH must be gray until a Scan Mode is chosen.");
+            Assert(!primaryLaunch.Enabled, "The single primary LAUNCH must be disabled until a Launch Mode is chosen.");
             scanRead.Checked = true;
             Assert(scanRead.Checked && !scanWrite.Checked && !scanWrite.Enabled,
                 "Filtered Scan [READ] did not gray the mutually exclusive Write choice.");
-            Assert(autoLaunch.Enabled && autoLaunch.Text == "AUTO LAUNCH" && Convert.ToString(autoLaunch.Tag) == "success"
-                && autoLaunch.ForeColor == ThemeManager.CurrentPalette.Success,
-                "Auto Mode mini-LAUNCH did not become green/active after selecting a Scan Mode.");
+            Assert(primaryLaunch.Enabled && primaryLaunch.Text.StartsWith("LAUNCH", StringComparison.Ordinal),
+                "The single primary LAUNCH did not become active after selecting a Launch Mode.");
             Assert(scanRead.ForeColor != scanWrite.ForeColor,
                 "Filtered Scan [READ] and [WRITE] do not have distinct green/red label colors.");
             scanRead.Checked = false;
@@ -1029,11 +1077,10 @@ namespace Splined.WindowsGui
             filterAlbums.ForEach(item => item.Selected = false);
             filterAlbums.Single(item => item.Title == "Fresh Album").Selected = true;
             filterAlbums.Single(item => item.Title == "Red Album").Selected = true;
-            MethodInfo autoSelection = typeof(MainForm).GetMethod("SelectedAlbumsForAutoLaunch", BindingFlags.Static | BindingFlags.NonPublic);
-            List<AlbumInfo> autoQueue = (List<AlbumInfo>)autoSelection.Invoke(null, new object[] { filterAlbums });
+            List<AlbumInfo> autoQueue = filterAlbums.Where(item => item.Selected && item.State != AlbumState.TimeoutActive).ToList();
             Assert(autoQueue.Select(item => item.Title).OrderBy(value => value).SequenceEqual(new[] { "Fresh Album", "Red Album" })
                 && autoQueue.Count == 2,
-                "AUTO LAUNCH expanded the checked Album set to visible or full-library rows.");
+                "The single LAUNCH expanded the checked Album set to visible or full-library rows.");
 
             AlbumInfo firstLaunch = Album("First Launch Artist", "First Launch Album", AlbumState.New);
             firstLaunch.Path = @"\\server\music\First Launch Artist\First Launch Album";
@@ -1052,7 +1099,7 @@ namespace Splined.WindowsGui
                 { "event", "album_completed" }, { "album_path", firstLaunch.Path + "\\" },
                 { "action", "Installed" }, { "destination", "cover.jpg" }
             } });
-            List<AlbumInfo> nextQueue = (List<AlbumInfo>)autoSelection.Invoke(null, new object[] { consecutiveLaunchAlbums });
+            List<AlbumInfo> nextQueue = consecutiveLaunchAlbums.Where(item => item.Selected && item.State != AlbumState.TimeoutActive).ToList();
             Assert(!firstLaunch.Selected && nextArtist.Selected && nextQueue.Count == 1 && Object.ReferenceEquals(nextQueue[0], nextArtist),
                 "A completed launch album survived an equivalent trailing-separator path and led the next artist's queue.");
 
@@ -1069,7 +1116,7 @@ namespace Splined.WindowsGui
 
             typeof(MainForm).GetField("activeLaunchAlbum", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, nextArtist);
             typeof(MainForm).GetMethod("ConsumeLaunchAlbumSelection", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { nextArtist });
-            nextQueue = (List<AlbumInfo>)autoSelection.Invoke(null, new object[] { consecutiveLaunchAlbums });
+            nextQueue = consecutiveLaunchAlbums.Where(item => item.Selected && item.State != AlbumState.TimeoutActive).ToList();
             Assert(!nextArtist.Selected && nextQueue.Count == 0
                 && !(formUi.SelectedAlbumPaths ?? new List<string>()).Any(path => path.IndexOf("Next Album", StringComparison.OrdinalIgnoreCase) >= 0),
                 "A stopped/ended active launch album remained checked or persisted into the next launch queue.");

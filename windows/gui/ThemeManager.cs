@@ -109,19 +109,22 @@ namespace Splined.WindowsGui
             }
             else
             {
-                WindowBackground = Color.FromArgb(243, 244, 246);
-                TitlebarBackground = Color.FromArgb(248, 249, 251);
-                TopNavigationSurface = Color.FromArgb(247, 249, 252);
-                SurfacePrimary = Color.FromArgb(250, 250, 251);
-                SurfaceSecondary = Color.FromArgb(246, 247, 249);
-                SurfaceRaised = Color.White;
-                PanelSurface = Color.White;
-                NestedCardSurface = Color.FromArgb(248, 250, 253);
-                TreeSurface = Color.White;
-                SurfaceHover = Color.FromArgb(240, 241, 243);
-                SurfacePressed = Color.FromArgb(231, 234, 238);
-                Shadow = Color.FromArgb(190, 197, 207);
-                BorderSubtle = Color.FromArgb(216, 220, 226);
+                // Windows v4 light mode is intentionally warm rather than
+                // paper-white so the spectrum identity and watermark retain
+                // contrast without the former glare.
+                WindowBackground = Color.FromArgb(239, 234, 220);
+                TitlebarBackground = Color.FromArgb(247, 242, 229);
+                TopNavigationSurface = Color.FromArgb(244, 239, 226);
+                SurfacePrimary = Color.FromArgb(248, 244, 233);
+                SurfaceSecondary = Color.FromArgb(241, 236, 223);
+                SurfaceRaised = Color.FromArgb(252, 248, 238);
+                PanelSurface = Color.FromArgb(250, 246, 235);
+                NestedCardSurface = Color.FromArgb(245, 240, 228);
+                TreeSurface = Color.FromArgb(252, 248, 238);
+                SurfaceHover = Color.FromArgb(235, 229, 214);
+                SurfacePressed = Color.FromArgb(226, 219, 202);
+                Shadow = Color.FromArgb(181, 172, 153);
+                BorderSubtle = Color.FromArgb(196, 187, 168);
                 BorderFocus = Color.FromArgb(0, 103, 184);
                 TextPrimary = Color.FromArgb(23, 25, 29);
                 TextSecondary = Color.FromArgb(95, 102, 112);
@@ -732,8 +735,40 @@ namespace Splined.WindowsGui
             using (LinearGradientBrush brush = new LinearGradientBrush(bounds, top, bottom, LinearGradientMode.Vertical))
                 graphics.FillPath(brush, path);
             using (GraphicsPath path = RoundedPath(bounds, radius))
-            using (Pen pen = new Pen(border))
-                graphics.DrawPath(pen, path);
+            {
+                if (role == CardVisualRole.Panel || role == CardVisualRole.Log)
+                    DrawSpectrumBorder(graphics, path, bounds, palette.Dark ? 0.82f : 0.70f);
+                else
+                    using (Pen pen = new Pen(border)) graphics.DrawPath(pen, path);
+            }
+        }
+
+        internal static Color[] SpectrumColors(float opacity)
+        {
+            int alpha = Math.Max(0, Math.Min(255, (int)Math.Round(255 * opacity)));
+            return new[]
+            {
+                Color.FromArgb(alpha, 44, 205, 255),
+                Color.FromArgb(alpha, 67, 222, 135),
+                Color.FromArgb(alpha, 255, 209, 74),
+                Color.FromArgb(alpha, 255, 135, 67),
+                Color.FromArgb(alpha, 242, 72, 171),
+                Color.FromArgb(alpha, 143, 92, 246),
+                Color.FromArgb(alpha, 44, 205, 255)
+            };
+        }
+
+        private static void DrawSpectrumBorder(Graphics graphics, GraphicsPath path, Rectangle bounds, float opacity)
+        {
+            Rectangle gradientBounds = bounds.Width > 1 && bounds.Height > 1 ? bounds : new Rectangle(0, 0, 2, 2);
+            using (LinearGradientBrush spectrum = new LinearGradientBrush(gradientBounds, Color.Cyan, Color.Magenta, LinearGradientMode.Horizontal))
+            {
+                ColorBlend blend = new ColorBlend();
+                blend.Colors = SpectrumColors(opacity);
+                blend.Positions = new[] { 0f, 0.17f, 0.34f, 0.50f, 0.67f, 0.84f, 1f };
+                spectrum.InterpolationColors = blend;
+                using (Pen pen = new Pen(spectrum, 1.2f)) graphics.DrawPath(pen, path);
+            }
         }
 
         private static int Scaled(Control control, int logicalPixels)
@@ -883,7 +918,7 @@ namespace Splined.WindowsGui
                 FluentMenuStrip fluentMenu = menu as FluentMenuStrip;
                 if (fluentMenu != null) fluentMenu.Palette = palette;
                 menu.Renderer = new FluentMenuRenderer(palette);
-                menu.Padding = new Padding(Space8, Space4, Space8, Space4);
+                menu.Padding = new Padding(0, Space4, 0, Space4);
                 foreach (ToolStripItem item in menu.Items) ApplyMenuItem(item, palette);
             }
             StatusStrip status = control as StatusStrip;
@@ -1055,7 +1090,7 @@ namespace Splined.WindowsGui
             if (menu == null) return;
             bool topLevel = menu.Owner is MenuStrip;
             menu.Padding = topLevel
-                ? new Padding(Space8, Space4, Space8, Space4)
+                ? new Padding(Space4, Space4, Space4, Space4)
                 : new Padding(Space8, Space4, Space12, Space4);
             menu.Margin = topLevel ? Padding.Empty : new Padding(Space4, 1, Space4, 1);
             menu.DropDown.BackColor = palette.SurfaceRaised;
@@ -1797,6 +1832,42 @@ namespace Splined.WindowsGui
                     item.Enabled ? active.TextPrimary : active.TextDisabled,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
                     | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+            }
+        }
+    }
+
+    internal sealed class SplinedWordmark : Control
+    {
+        public SplinedWordmark()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            Font = ThemeManager.UiFont(ThemeFontRole.AppTitle, FontStyle.Bold);
+            MinimumSize = new Size(142, 34);
+            Size = new Size(142, 34);
+            AccessibleName = "S:P:L:I:N:E:D";
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            const string wordmark = "S:P:L:I:N:E:D";
+            Color[] spectrum = ThemeManager.SpectrumColors(1f);
+            float x = 2f;
+            using (StringFormat format = new StringFormat(StringFormat.GenericTypographic))
+            {
+                format.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
+                for (int index = 0; index < wordmark.Length; index++)
+                {
+                    string glyph = wordmark[index].ToString();
+                    Color color = glyph == ":"
+                        ? ThemeManager.CurrentPalette.TextSecondary
+                        : spectrum[(index / 2) % (spectrum.Length - 1)];
+                    using (Brush brush = new SolidBrush(color))
+                        e.Graphics.DrawString(glyph, Font, brush, x, 5f, format);
+                    x += e.Graphics.MeasureString(glyph, Font, PointF.Empty, format).Width - 0.4f;
+                }
             }
         }
     }

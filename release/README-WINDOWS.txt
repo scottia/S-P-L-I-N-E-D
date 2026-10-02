@@ -13,19 +13,13 @@ FRESH INSTALL
 
    splined.exe
 
-3. Complete first-run setup. SPLINED creates and uses its application-owned
-   layout as required:
+3. Complete first-run setup. Choose the required library, cache, log, and
+   credential locations. SPLINED stores Config v5 and interface preferences
+   internally for the current Windows user, then creates only the selected
+   runtime directories after Save and Continue.
 
-   splined.exe
-   config\
-      config.toml
-      ui.toml
-   credentials\
-   _cache\
-      splined.db
-      samples\
-   _logs\
-      run\
+   The archive does not create config\, credentials\, _cache\, _logs\,
+   docker_builds\, config.toml, ui.toml, or config.location.
 
 4. Begin in Read mode with a small media selection. Confirm artwork choices
    and output policy before enabling Write mode.
@@ -46,11 +40,9 @@ To upgrade manually:
 
 1. Close SPLINED.
 
-2. Back up these persistent locations:
-
-   config\
-   credentials\
-   _cache\splined.db
+2. Use File > Backup > Export Backup... to create a selective .spl backup, or
+   separately back up the configured credential directory and
+   <cache directory>\splined.db. A .spl backup may be password protected.
 
 3. Extract the new application files into the existing SPLINED folder,
    replacing the program files while preserving the persistent locations
@@ -62,8 +54,8 @@ To upgrade manually:
 Other files under _cache\ are disposable and are recreated as needed.
 Diagnostic files under _logs\ are not runtime-state authority.
 
-SPLINED does not automatically discover, import, or move another portable
-installation. Copy persistent data deliberately when changing directories.
+Opening a registered .spl file starts SPLINED's selective restore dialog.
+SPLINED does not otherwise discover, import, or move another installation.
 
 
 SAFETY

@@ -11,6 +11,7 @@ pub struct LocalTrackEvidence {
     pub album_artist: Option<String>,
     pub musicbrainz_album_id: Option<String>,
     pub musicbrainz_track_id: Option<String>,
+    pub musicbrainz_artist_id: Option<String>,
     pub compilation: Option<String>,
 }
 
@@ -237,6 +238,7 @@ mod tests {
             album_artist: Some("Fixture Artist".to_string()),
             musicbrainz_album_id: album_id.map(str::to_string),
             musicbrainz_track_id: None,
+            musicbrainz_artist_id: None,
             compilation: None,
         }
     }

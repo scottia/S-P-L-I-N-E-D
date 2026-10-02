@@ -9,27 +9,22 @@ Config v5; application release identities remain independent.
    [latest release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest).
 2. Extract the complete archive into its final application directory.
 3. Run `splined.exe` directly.
-4. Choose the music library and keep the portable defaults or open Advanced
-   Settings.
+4. Choose the music library and the required cache, log, and credential
+   directories, or open Advanced Settings.
 5. Configure provider credentials through **Credentials / Status** as needed.
 6. Start in Read mode against a small selection.
 
-SPLINED creates its application-owned layout as required:
+Windows v4 keeps Config v5 and interface state internally for the current user.
+Extraction creates no `config`, `credentials`, `_cache`, `_logs`, or
+`docker_builds` folders and no `config.location` file. The required directories
+are created only at the user-selected locations after settings are saved. No
+executable rename or setup launcher is required.
 
-```text
-SPLINED/
-├── splined.exe
-├── config/
-│   ├── config.toml
-│   └── ui.toml
-├── credentials/
-├── _cache/
-│   └── splined.db
-└── _logs/
-    └── run/
-```
-
-No executable rename or setup launcher is required.
+Use **File > Backup > Export Backup...** for a selective `.spl` backup. Internal
+settings, interface state, credential JSON, SQLite, and diagnostics are
+independent options. A password is optional. Double-clicking a registered
+`.spl` file opens SPLINED's restore dialog; no data is restored until the user
+chooses the sections and confirms.
 
 ### Windows upgrade
 
@@ -50,15 +45,16 @@ rolling workflow uses one optimized Windows build and a reusable Rust cache; it
 does not repeat the full test and static-analysis matrix before each active-dev
 update.
 
-The updater replaces only `splined.exe`. It does not rewrite `config/`,
-`credentials/`, `_cache/`, `_logs/`, or the configured shared SQLite database.
+The updater replaces only `splined.exe`. It does not rewrite internal settings,
+the selected credential/cache/log directories, or the configured shared SQLite database.
 An active Album run must be stopped or completed before installation. If the
 download, manifest, size, checksum, replacement, or restart validation fails,
 the GUI reports the failure and leaves persistent application data unchanged.
 
 The updater can still be performed manually by closing SPLINED and extracting
-the current official Windows ZIP over the program files. Preserve `config/`,
-`credentials/`, and `<scan.cache_dir>/splined.db`.
+the current official Windows ZIP over the program files. Preserve the selected
+credential directory and `<scan.cache_dir>/splined.db`, or create a `.spl`
+export first.
 
 See [Windows portable instructions](../release/README-WINDOWS.txt).
 
@@ -145,11 +141,8 @@ See [SPLINED media database](splined-media-database.md).
 
 ## Persistent and disposable data
 
-Back up for all runtimes:
-
-- `config/`;
-- `credentials/`;
-- the authoritative runtime database:
+Back up Config v5 (internal Windows settings or `config.toml` on other
+runtimes), credentials, and the authoritative runtime database:
 
 ```text
 <scan.cache_dir>/splined.db

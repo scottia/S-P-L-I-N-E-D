@@ -1,8 +1,10 @@
 pub mod candidate;
+pub mod compilation;
 pub mod config;
 pub mod config_migration;
 pub mod credentials;
 pub mod download;
+pub mod embedded_artwork;
 pub mod evaluate;
 pub mod final_artwork;
 pub mod gui_events;
