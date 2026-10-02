@@ -110,7 +110,7 @@ See [SPLINED media database](splined-media-database.md).
 | --- | --- | --- |
 | `file_name` | `"cover"` | Output filename stem, without path or extension |
 | `file_formats` | JPEG, PNG, WebP | Enabled formats in preference order |
-| `preserve_file` | `true` | Preserve existing artwork according to current replacement policy |
+| `preserve_file` | `true` | `true` permits an Ideal existing cover to finish at local preflight; `false` continues provider discovery and permits canonical replacement |
 | `square` | `true` | Enable square output policy |
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |

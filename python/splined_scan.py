@@ -405,6 +405,7 @@ def inspect_local_preflight(
 ) -> dict[str, Any]:
     output = core.section(cfg, "output")
     file_name = str(output.get("file_name", "cover")).strip()
+    preserve = bool(output.get("preserve_file", True))
     core.validate_file_name(file_name)
     files = _canonical_local_files(album, file_name)
     diagnostics: list[str] = []
@@ -470,7 +471,10 @@ def inspect_local_preflight(
             if candidate.path != best.path
         ]
         projected = project_candidate(best, cfg, format_order)
-        is_ideal = projected["range_type"] == "Ideal"
+        # preserve_file=false is an explicit request to allow replacement.
+        # Keep the current cover in the comparison, but never let an Ideal
+        # local file short-circuit provider discovery in overwrite mode.
+        is_ideal = projected["range_type"] == "Ideal" and preserve
         return {
             "action": "local-ideal" if is_ideal else "fallback",
             "candidate": best,
@@ -483,7 +487,7 @@ def inspect_local_preflight(
         candidate = embedded_candidate(sorted(album.audio_files)[0], cache)
         if candidate is not None:
             projected = project_candidate(candidate, cfg, format_order)
-            is_ideal = projected["range_type"] == "Ideal"
+            is_ideal = projected["range_type"] == "Ideal" and preserve
             return {
                 "action": "embedded-ideal" if is_ideal else "fallback",
                 "candidate": candidate,
