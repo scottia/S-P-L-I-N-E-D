@@ -200,6 +200,20 @@ jobs:
 
           echo "PASS: Python compilation"
 
+      - name: Restore 1.0.28 Docker test context
+        if: ${{ inputs.version == '1.0.28' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f python/test_splined_scan_lazy_batch.py
+          if ! grep -Fxq '!test_splined_scan_lazy_batch.py' python/.dockerignore; then
+            printf '\n!test_splined_scan_lazy_batch.py\n' >> python/.dockerignore
+          fi
+
+          grep -Fx '!test_splined_scan_lazy_batch.py' python/.dockerignore
+          echo "PASS: 1.0.28 test file restored to the Docker build context"
+
       - name: Build exact release Docker image
         shell: bash
         run: |
