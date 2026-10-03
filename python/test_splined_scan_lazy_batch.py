@@ -32,6 +32,8 @@ class LazyAlbumBatchTests(unittest.TestCase):
         source = inspect.getsource(splined_scan._run_scan_dir_batch)
 
         self.assertIn("_iter_lazy_album_records", source)
+        self.assertIn('kind="normal-picker"', source)
+        self.assertIn("if not auto_scan", source)
         self.assertNotIn("fallback_records", source)
         self.assertNotIn("normal_records", source)
         self.assertNotIn("ordered_records", source)

@@ -32,6 +32,9 @@ more capable native Windows application.
   `[ALL]` and `[SELECTED]` scope.
 - Kept Select `[ALL]` separate from Auto Scan: bulk selection remains an
   operator-reviewed queue and never silently enables unattended acceptance.
+- Made ordinary Python Select launches wait for an explicit candidate choice;
+  only an explicitly selected Auto Scan mode can accept an Ideal candidate
+  unattended.
 - Fixed the Python Auto Scan handoff so `[ALL]`/`[SELECTED]` scope survives the
   required READ/LIVE WRITE choice. Auto Scan now accepts only a
   policy-qualified `Ideal` candidate and returns every non-Ideal result to
