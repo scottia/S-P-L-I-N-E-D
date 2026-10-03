@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from unittest import mock
 
 import splined_scan
 
@@ -34,6 +35,34 @@ class LazyAlbumBatchTests(unittest.TestCase):
         self.assertNotIn("fallback_records", source)
         self.assertNotIn("normal_records", source)
         self.assertNotIn("ordered_records", source)
+
+    def test_auto_selection_accepts_only_ideal_candidates(self) -> None:
+        lower = object()
+        ideal = object()
+        projected = {
+            lower: {"acceptable": True, "range_type": "LowerRange"},
+            ideal: {"acceptable": True, "range_type": "Ideal"},
+        }
+
+        with (
+            mock.patch.object(
+                splined_scan,
+                "project_candidate",
+                side_effect=lambda candidate, _cfg, _formats: projected[candidate],
+            ),
+            mock.patch.object(
+                splined_scan,
+                "candidate_key",
+                side_effect=lambda candidate, _cfg, _formats: 0 if candidate is ideal else 1,
+            ),
+        ):
+            self.assertIs(
+                splined_scan.select_auto_ideal([lower, ideal], {}, ["jpeg"]),
+                ideal,
+            )
+            self.assertIsNone(
+                splined_scan.select_auto_ideal([lower], {}, ["jpeg"])
+            )
 
 
 if __name__ == "__main__":

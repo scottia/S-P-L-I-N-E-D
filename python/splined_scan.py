@@ -100,6 +100,24 @@ def select_best(candidates: list[core.Candidate], cfg: dict[str, Any], format_or
     return min(acceptable, key=lambda candidate: candidate_key(candidate, cfg, format_order)) if acceptable else None
 
 
+def select_auto_ideal(
+    candidates: list[core.Candidate],
+    cfg: dict[str, Any],
+    format_order: list[str],
+) -> core.Candidate | None:
+    """Choose only a policy-acceptable Ideal candidate for unattended use."""
+    ideal: list[core.Candidate] = []
+    for candidate in candidates:
+        projected = project_candidate(candidate, cfg, format_order)
+        if projected["acceptable"] and projected["range_type"] == "Ideal":
+            ideal.append(candidate)
+    return (
+        min(ideal, key=lambda candidate: candidate_key(candidate, cfg, format_order))
+        if ideal
+        else None
+    )
+
+
 def fallback_sort_key(candidate: core.Candidate, cfg: dict[str, Any], format_order: list[str]):
     projected = project_candidate(candidate, cfg, format_order)
     return (
@@ -2198,6 +2216,8 @@ def _run_scan_dir_batch(
             else:
                 albums.append(album)
 
+    auto_scan = selected_scan_mode.startswith("auto-")
+
     http = core.Http()
     # Keep the unified workflow lazy: constructing the scan never refreshes
     # OAuth. Exact lookup or an operator's M action loads credentials only at
@@ -2811,7 +2831,11 @@ def _run_scan_dir_batch(
                             summary.unresolved += 1
                         break
 
-                normal_best = select_best(candidates, cfg, format_order)
+                normal_best = (
+                    select_auto_ideal(candidates, cfg, format_order)
+                    if auto_scan
+                    else select_best(candidates, cfg, format_order)
+                )
                 if normal_best is not None and not operator_release_selected:
                     print()
                     authority_text = (
@@ -3092,7 +3116,11 @@ def _run_scan_dir_batch(
                 print()
                 continue
 
-        best = select_best(candidates, cfg, format_order)
+        best = (
+            select_auto_ideal(candidates, cfg, format_order)
+            if auto_scan
+            else select_best(candidates, cfg, format_order)
+        )
 
         if best is None:
             acceptable_count = sum(1 for candidate in candidates if project_candidate(candidate, cfg, format_order)["acceptable"])
@@ -3136,9 +3164,14 @@ def _run_scan_dir_batch(
                 f"{core.white('File')} {core.bracketed_text(preview_name, core.orange)} "
                 f"{candidate_link(suggested) if suggested else ''}"
             )
+            picker_reason = (
+                "Auto Scan found no policy-acceptable Ideal candidate; review required"
+                if auto_scan
+                else "no candidate projects inside Artwork Resolution Range"
+            )
             print(
                 f"  {core.cyan('Picker Reason:'):13} "
-                f"{core.yellow('no candidate projects inside Artwork Resolution Range')}"
+                f"{core.yellow(picker_reason)}"
             )
             print(
                 f"  {core.cyan('Range:'):13} minimum={core.orange(str(int(core.section(cfg, 'range').get('min', 1200))))} "

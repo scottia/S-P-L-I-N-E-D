@@ -1122,6 +1122,8 @@ namespace Splined.WindowsGui
             Assert(scanRead.Checked && !scanWrite.Checked && !selectFiltered.Checked,
                 "Persisted Filtered Scan [READ] choice was not restored without selecting Auto Mode.");
             MethodInfo getLaunchAlbums = typeof(MainForm).GetMethod("GetLaunchAlbums", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert(!autoAll.Checked && !autoSelected.Checked,
+                "Auto Scan must remain opt-in so ordinary Select modes always use operator review.");
             autoSelected.Checked = true;
             Assert(((List<AlbumInfo>)getLaunchAlbums.Invoke(form, null)).Count == filterAlbums.Count(item => item.Selected),
                 "Auto Scan [Selected] does not use only explicit Album selections.");
@@ -1130,6 +1132,9 @@ namespace Splined.WindowsGui
             Assert(allQueue.All(item => item.Selected || item.State == AlbumState.New)
                 && allQueue.Any(item => item.State == AlbumState.New),
                 "Auto Scan [All] does not use every Unprocessed Album plus explicit selections.");
+            autoAll.Checked = false;
+            Assert(((List<AlbumInfo>)getLaunchAlbums.Invoke(form, null)).Count == filterAlbums.Count(item => item.Selected),
+                "Clearing Auto Scan did not restore the ordinary reviewed selection queue.");
             autoSelected.Checked = true;
             scanRead.Checked = false;
             Assert(!primaryLaunch.Enabled, "The single primary LAUNCH must be disabled until a Launch Mode is chosen.");

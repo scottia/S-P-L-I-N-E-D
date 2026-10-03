@@ -233,6 +233,7 @@ namespace Splined.WindowsGui
         public bool MediaShowBlue = true;
         public bool MediaShowIncomplete = true;
         public string FilteredScanMode = "";
+        public bool AutoScanEnabled;
         public string AutoScanScope = "selected";
         public List<string> SelectedAlbumPaths = new List<string>();
         public int MainWidth = 1280;
@@ -582,6 +583,7 @@ namespace Splined.WindowsGui
                 state.MediaShowBlue = ReadBool(text, "ui", "media_show_blue", true);
                 state.MediaShowIncomplete = ReadBool(text, "ui", "media_show_incomplete", true);
                 state.FilteredScanMode = ReadString(text, "ui", "filtered_scan_mode", "");
+                state.AutoScanEnabled = ReadBool(text, "ui", "auto_scan_enabled", false);
                 state.AutoScanScope = ReadString(text, "ui", "auto_scan_scope", "selected");
                 state.SelectedAlbumPaths = ReadArray(text, "ui", "selected_album_paths");
                 state.MainWidth = ReadInt(text, "ui", "main_width", 1280);
@@ -644,6 +646,7 @@ namespace Splined.WindowsGui
                 + "media_show_blue = " + Bool(state.MediaShowBlue) + Environment.NewLine
                 + "media_show_incomplete = " + Bool(state.MediaShowIncomplete) + Environment.NewLine
                 + "filtered_scan_mode = " + Quote(state.FilteredScanMode) + Environment.NewLine
+                + "auto_scan_enabled = " + Bool(state.AutoScanEnabled) + Environment.NewLine
                 + "auto_scan_scope = " + Quote(state.AutoScanScope) + Environment.NewLine
                 + "selected_album_paths = " + FormatArray(state.SelectedAlbumPaths) + Environment.NewLine
                 + "main_width = " + Math.Max(940, state.MainWidth) + Environment.NewLine

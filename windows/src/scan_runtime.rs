@@ -27,7 +27,7 @@ use crate::pipeline::{
     PipelineCandidate, PipelineResult, RegistryPipelineOptions, candidate_summary,
     prepare_persistent_cache_dir, run_registry_pipeline_with_cache_dir,
 };
-use crate::range::Range;
+use crate::range::{Range, RangeClass};
 use crate::safe_write::replace_binary_file;
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_musicbrainz::{
@@ -770,6 +770,10 @@ pub async fn run_scan_library_read_report(
             })
             .min_by_key(|(_, key)| *key)
             .map(|(index, _)| index);
+        let automatic_ideal_index = automatic_index.filter(|index| {
+            let candidate = &result.candidates[*index].downloaded.candidate;
+            candidate_is_auto_ideal(candidate, &range, config)
+        });
         let mut display_indices: Vec<usize> = (0..result.candidates.len()).collect();
         display_indices.retain(|candidate_index| {
             let candidate = &result.candidates[*candidate_index].downloaded.candidate;
@@ -813,7 +817,11 @@ pub async fn run_scan_library_read_report(
                 })
         });
         let mut selected_index = if gui_events::review_required() {
-            None
+            if gui_events::auto_ideal_enabled() {
+                automatic_ideal_index
+            } else {
+                None
+            }
         } else {
             automatic_index
         };
@@ -839,7 +847,7 @@ pub async fn run_scan_library_read_report(
             gui_events::emit(json!({
                 "event": "decision_required",
                 "album_path": album.path,
-                "reason": if fallback_reason.is_some() { "fallback" } else if gui_events::review_required() { "review" } else { "outside-range" },
+                "reason": if fallback_reason.is_some() { "fallback" } else if gui_events::auto_ideal_enabled() { "auto-no-ideal" } else if gui_events::review_required() { "review" } else { "outside-range" },
                 "fallback_reason": fallback_reason,
                 "suggested_index": suggested_index.map(|value| value + 1),
                 "allow_bypass": true,
@@ -2582,6 +2590,13 @@ fn candidate_visible_for_review(candidate: &Candidate, range: &Range, config: &C
     }
 }
 
+fn candidate_is_auto_ideal(candidate: &Candidate, range: &Range, config: &Config) -> bool {
+    let projected = project_configured_artwork(candidate, range, &config.output);
+    let policy = configured_candidate_policy(candidate, &projected, range, config);
+    policy.status == SourcePolicyStatus::Accept
+        && range.classify(projected.width.min(projected.height)) == RangeClass::Ideal
+}
+
 fn target_format_for_candidate(
     candidate_format: StaticFormat,
     configured_formats: &[StaticFormat],
@@ -3131,6 +3146,27 @@ mod tests {
             &range,
             &config
         ));
+    }
+
+    #[test]
+    fn unattended_selection_accepts_only_policy_accepted_ideal_candidates() {
+        let range = Range::default();
+        let config = Config::default();
+        let lower = Candidate {
+            source: "itunes".to_string(),
+            width: range.ideal - 1,
+            height: range.ideal - 1,
+            format: StaticFormat::Jpeg,
+            source_priority: 0,
+        };
+        let ideal = Candidate {
+            width: range.ideal,
+            height: range.ideal,
+            ..lower.clone()
+        };
+
+        assert!(!candidate_is_auto_ideal(&lower, &range, &config));
+        assert!(candidate_is_auto_ideal(&ideal, &range, &config));
     }
 
     #[test]

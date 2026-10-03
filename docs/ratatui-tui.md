@@ -262,6 +262,16 @@ Auto Scan [ALL]
 Auto Scan [SELECTED]
 ```
 
+Auto Scan is the explicit unattended path. After the operator also chooses
+READ or LIVE WRITE, SPLINED automatically accepts only a candidate that is
+policy-acceptable and classified `Ideal`. If no Ideal candidate is available,
+the Album returns to operator review. `Ideal` describes configured resolution,
+geometry, and source policy; it cannot verify that a provider returned the
+semantically correct front cover. Use an ordinary selected launch when visual
+accuracy matters more than unattended processing.
+
+`Select [ALL]` only checks Albums. It never enables Auto Scan.
+
 For a selected Album whose representative track has no Album/Release ID and
 has `compilation=1`, the panel keeps a yellow warning that the unified scan will
 use per-track embedded artwork. There is no separate Manual Scan selector.

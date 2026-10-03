@@ -97,6 +97,11 @@ and does not restore data without confirmation.
   Incomplete Albums from Artists that contain bypasses.
 - Matched Python Auto Scan scope: `[SELECTED]` queues explicit selections;
   `[ALL]` queues every Unprocessed Album plus explicit selections.
+- Made Auto Scan opt-in and limited unattended acceptance to a
+  policy-qualified `Ideal` candidate. Non-Ideal results return to operator
+  review, and ordinary Select modes never silently enable Auto Scan.
+- Clarified that `Ideal` is a resolution/geometry/policy classification, not a
+  visual guarantee that the provider returned the correct front cover.
 - Matched Python bulk selection: active-Artist Unprocessed Albums for ALL,
   clear for NONE, and required text-filter scope for FILTERED.
 - Added a persisted **View > Show Artwork** surface beside Album/activity

@@ -105,6 +105,7 @@ namespace Splined.WindowsGui
         private GroupBox selectModeGroup;
         private CheckBox autoScanAll;
         private CheckBox autoScanSelected;
+        private bool autoScanEnabled;
         private string autoScanScope = "selected";
         private bool updatingFilteredControls;
         private bool initialSelectionRestored;
@@ -574,7 +575,7 @@ namespace Splined.WindowsGui
 
             ToolTip help = ThemeManager.CreateToolTip();
             help.SetToolTip(selectModeGroup, "Matches Python: ALL replaces selection with the active Artist's unprocessed Albums; NONE clears selection; FILTERED requires Artist or Album text and replaces selection with matching unprocessed or processed Albums.");
-            help.SetToolTip(automatic, "Auto Scan [All] processes every unprocessed Album plus Albums selected explicitly. Auto Scan [Selected] processes only selected Albums.");
+            help.SetToolTip(automatic, "Auto Scan is optional unattended processing. [All] processes every unprocessed Album plus explicit selections; [Selected] processes only explicit selections. Only a policy-qualified Ideal candidate is accepted automatically. Ideal does not verify visual accuracy.");
             help.SetToolTip(scan, "Choose one Read or Live Write mode, then use the single LAUNCH button in Artwork Candidates and Preview. Internal settings are not changed and bypass/timeout authority is preserved.");
             selectModeGroup.Tag = help;
             automatic.Tag = help;
@@ -645,8 +646,9 @@ namespace Splined.WindowsGui
                 filteredScanRead.Enabled = !filteredScanWrite.Checked;
                 filteredScanWrite.Enabled = !filteredScanRead.Checked;
                 autoScanScope = String.Equals(uiState.AutoScanScope, "all", StringComparison.OrdinalIgnoreCase) ? "all" : "selected";
-                autoScanAll.Checked = autoScanScope == "all";
-                autoScanSelected.Checked = autoScanScope == "selected";
+                autoScanEnabled = uiState.AutoScanEnabled;
+                autoScanAll.Checked = autoScanEnabled && autoScanScope == "all";
+                autoScanSelected.Checked = autoScanEnabled && autoScanScope == "selected";
             }
             finally { updatingFilteredControls = false; }
             SetMediaFilterExpanded(uiState.MediaFilterExpanded);
@@ -671,19 +673,21 @@ namespace Splined.WindowsGui
         {
             CheckBox selected = sender as CheckBox;
             if (updatingFilteredControls || selected == null) return;
-            if (!selected.Checked)
-            {
-                updatingFilteredControls = true;
-                selected.Checked = true;
-                updatingFilteredControls = false;
-                return;
-            }
             updatingFilteredControls = true;
             try
             {
-                autoScanAll.Checked = Object.ReferenceEquals(selected, autoScanAll);
-                autoScanSelected.Checked = Object.ReferenceEquals(selected, autoScanSelected);
-                autoScanScope = autoScanAll.Checked ? "all" : "selected";
+                if (selected.Checked)
+                {
+                    autoScanAll.Checked = Object.ReferenceEquals(selected, autoScanAll);
+                    autoScanSelected.Checked = Object.ReferenceEquals(selected, autoScanSelected);
+                    autoScanScope = autoScanAll.Checked ? "all" : "selected";
+                    autoScanEnabled = true;
+                }
+                else if (!autoScanAll.Checked && !autoScanSelected.Checked)
+                {
+                    autoScanEnabled = false;
+                }
+                uiState.AutoScanEnabled = autoScanEnabled;
                 uiState.AutoScanScope = autoScanScope;
             }
             finally { updatingFilteredControls = false; }
@@ -1271,12 +1275,14 @@ namespace Splined.WindowsGui
             if (selectModeGroup != null) selectModeGroup.Text = "Select Mode [" + selectedCount + "]";
             if (updateStatus && !running && !loadingLibrary)
                 SetStatus(count == 0 ? "No albums selected. Launch is disabled."
-                    : count + " album(s) queued by Auto Scan [" + (autoScanScope == "all" ? "All" : "Selected") + "].");
+                    : autoScanEnabled
+                        ? count + " album(s) queued by Auto Scan [" + (autoScanScope == "all" ? "All" : "Selected") + "]; only Ideal candidates are accepted unattended."
+                        : count + " selected album(s) queued for operator review.");
         }
 
         private List<AlbumInfo> GetLaunchAlbums()
         {
-            if (String.Equals(autoScanScope, "all", StringComparison.OrdinalIgnoreCase))
+            if (autoScanEnabled && String.Equals(autoScanScope, "all", StringComparison.OrdinalIgnoreCase))
                 return albums.Where(album => album.State == AlbumState.New || album.Selected).ToList();
             return albums.Where(album => album.Selected).ToList();
         }
@@ -1478,6 +1484,7 @@ namespace Splined.WindowsGui
             start.StandardErrorEncoding = new UTF8Encoding(false);
             start.EnvironmentVariables["SPLINED_GUI_EVENTS"] = "1";
             start.EnvironmentVariables["SPLINED_GUI_REVIEW"] = "1";
+            if (autoScanEnabled) start.EnvironmentVariables["SPLINED_GUI_AUTO_IDEAL"] = "1";
             start.EnvironmentVariables["SPLINED_CONFIG_TOML"] = runConfigText;
             // Pass the resolved physical Windows directory losslessly. The
             // shared SQLite identity may use proper Unicode while the same
@@ -1712,13 +1719,16 @@ namespace Splined.WindowsGui
             }
             else if (eventName == "decision_required")
             {
-                if (ReadString(payload, "reason").Equals("fallback", StringComparison.OrdinalIgnoreCase)) fallbackMode = true;
+                string decisionReason = ReadString(payload, "reason");
+                if (decisionReason.Equals("fallback", StringComparison.OrdinalIgnoreCase)) fallbackMode = true;
                 if (activeAlbumStatistics != null) activeAlbumStatistics.ReviewRequired = true;
                 awaitingDecision = true;
                 UpdateCandidateActions();
                 skip.Enabled = true;
                 UpdateSelectionControls();
-                AppendActivity(fallbackMode
+                AppendActivity(decisionReason.Equals("auto-no-ideal", StringComparison.OrdinalIgnoreCase)
+                    ? "  Auto Scan found no policy-qualified Ideal candidate. Operator review is required; resolution alone cannot verify cover accuracy.\r\n"
+                    : fallbackMode
                     ? "  Fallback review required. The recommended exception follows Python fallback ranking; select one, compare several, or bypass.\r\n"
                     : "  Review required. Select one candidate to use, select several to compare, or skip this album.\r\n", ActivityTone.Accent);
             }
@@ -2755,6 +2765,7 @@ namespace Splined.WindowsGui
             uiState.MediaShowGreen = IsMediaStatusChecked(MediaStatusFilter.Green);
             uiState.MediaShowBlue = IsMediaStatusChecked(MediaStatusFilter.Blue);
             uiState.MediaShowIncomplete = IsMediaStatusChecked(MediaStatusFilter.Incomplete);
+            uiState.AutoScanEnabled = autoScanEnabled;
             uiState.AutoScanScope = autoScanScope;
             uiState.FilteredScanMode = filteredScanRead != null && filteredScanRead.Checked
                 ? "read"

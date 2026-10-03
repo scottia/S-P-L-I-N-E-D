@@ -486,7 +486,7 @@ class LibraryModel:
                 for item in self.albums
                 if item.path in visible and item.selected
             ]
-        elif scan_mode == "auto-all":
+        elif scan_mode == "auto-all" or scan_mode.startswith("auto-all-"):
             selected = [
                 item.path
                 for item in self.albums
