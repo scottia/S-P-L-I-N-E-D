@@ -30,6 +30,15 @@ more capable native Windows application.
 - Added Ctrl+Click multi-Album selection and additive multi-Artist selection.
 - Added Select `[ALL]`, `[NONE]`, and `[FILTERED]`, plus independent Auto Scan
   `[ALL]` and `[SELECTED]` scope.
+- Kept Select `[ALL]` separate from Auto Scan: bulk selection remains an
+  operator-reviewed queue and never silently enables unattended acceptance.
+- Fixed the Python Auto Scan handoff so `[ALL]`/`[SELECTED]` scope survives the
+  required READ/LIVE WRITE choice. Auto Scan now accepts only a
+  policy-qualified `Ideal` candidate and returns every non-Ideal result to
+  operator review.
+- Documented that `Ideal` measures configured resolution, geometry, and source
+  policy—not semantic cover accuracy—so manual review remains the safer choice
+  for providers that may return merchandise, inserts, discs, or photographs.
 - Changed multi-Album runs to be fully lazy. Python now resolves authority,
   discovers candidates, waits for the current Album decision, and completes
   that Album before reading tags or querying MusicBrainz for the next Album.
@@ -126,6 +135,9 @@ operator approves an image.
 - Added Python-equivalent Auto Scan behavior: `[SELECTED]` queues explicit
   selections, while `[ALL]` queues every Unprocessed Album plus explicit
   selections.
+- Made Windows Auto Scan opt-in and aligned it with Python: unattended
+  processing accepts only a policy-qualified `Ideal` candidate; otherwise the
+  Album pauses for operator review. Select modes only build the reviewed queue.
 - Separated Incomplete Album filtering from Artist Bypass filtering and added
   live selection and Folder Status counts.
 - Kept Windows Album processing lazy: each selected Album runs to its operator

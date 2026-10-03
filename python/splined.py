@@ -2583,14 +2583,20 @@ def prepare_tui_library_selection(
             "filtered-read",
             "auto-all",
             "auto-selected",
+            "auto-all-read",
+            "auto-selected-read",
         }:
             cfg["mode"] = "read"
-        elif scan_mode == "filtered-write":
+        elif scan_mode in {
+            "filtered-write",
+            "auto-all-write",
+            "auto-selected-write",
+        }:
             cfg["mode"] = "write"
         else:
             raise SplinedError(f"Unsupported TUI scan mode: {scan_mode}")
 
-        if scan_mode == "auto-all":
+        if scan_mode == "auto-all" or scan_mode.startswith("auto-all-"):
             scoped, _records = current_scope()
             load_artists(
                 [artist.path for artist in scoped],

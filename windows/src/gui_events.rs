@@ -71,6 +71,18 @@ pub fn review_required() -> bool {
             })
 }
 
+pub fn auto_ideal_enabled() -> bool {
+    review_required()
+        && std::env::var("SPLINED_GUI_AUTO_IDEAL")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateDecision {
     Use(usize),

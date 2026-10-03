@@ -124,10 +124,19 @@ The only control that starts or stops processing is the primary **LAUNCH**
 button beneath Artwork Candidates and Preview. There is no second Launch button
 inside Select Media.
 
-**Auto Scan `[SELECTED]`** queues only explicitly selected Albums. **Auto Scan
-`[ALL]`** matches Python by queuing every Unprocessed Album plus any Album the
-operator selected explicitly. Read versus Live Write remains an independent,
-required choice; changing scan scope never changes mutation mode.
+Auto Scan is opt-in. With neither Auto Scan choice active, selected Albums form
+an operator-reviewed queue. **Auto Scan `[SELECTED]`** processes only explicitly
+selected Albums, while **Auto Scan `[ALL]`** processes every Unprocessed Album
+plus any Album selected explicitly. Read versus Live Write remains an
+independent, required choice; changing scan scope never changes mutation mode.
+
+The unattended path accepts only a candidate classified `Ideal` and accepted by
+its active source policy. If no such candidate exists, Windows pauses for
+operator review. `Ideal` verifies configured resolution, geometry, and source
+policy—not the picture's semantic accuracy. It cannot detect merchandise,
+inserts, disc cases, or unrelated photographs returned by a provider.
+
+Select `[ALL]` only changes the checked Album set. It never enables Auto Scan.
 
 Ctrl+Click supports independent Album selections. Selecting multiple Artists
 selects their normally eligible Albums while leaving orange Processed Albums

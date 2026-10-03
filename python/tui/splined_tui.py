@@ -5118,8 +5118,12 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
     if state.scan_index not in {0, 1}:
         state.transient = "Select a SPLINED LAUNCH option."
         return
-    modes = ("filtered-read", "filtered-write")
-    mode = modes[state.scan_index]
+    launch_mode = "read" if state.scan_index == 0 else "write"
+    mode = (
+        f"{state.scan_scope}-{launch_mode}"
+        if state.scan_scope
+        else f"filtered-{launch_mode}"
+    )
     payload = state.library.selection_payload(mode)
     selected = payload.get("selected", [])
     if not isinstance(selected, list) or not selected:
@@ -5132,6 +5136,7 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
     _runtime_trace(
         f"library_launch.send mode={mode!r} {_library_snapshot(state)}"
     )
+    state.scan_scope = ""
     _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
 
 

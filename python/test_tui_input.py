@@ -148,7 +148,25 @@ class RenderHitMapTests(unittest.TestCase):
         state.scan_index = 0
         _submit_library(state, adapter)
         payload = json.loads(adapter.responses.get_nowait())
-        self.assertEqual(payload["scan_mode"], "filtered-read")
+        self.assertEqual(payload["scan_mode"], "auto-selected-read")
+        self.assertEqual(payload["selected"], [album.path])
+        self.assertEqual(state.scan_scope, "")
+
+    def test_auto_selected_live_write_preserves_scope_and_launch_mode(self) -> None:
+        state = _library_state(artists=1, albums_each=1)
+        assert state.library is not None
+        album = state.library.albums[0]
+        album.selected = True
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+
+        state.scan_index = 3
+        _submit_library(state, adapter)
+        state.scan_index = 1
+        _submit_library(state, adapter)
+
+        payload = json.loads(adapter.responses.get_nowait())
+        self.assertEqual(payload["scan_mode"], "auto-selected-write")
         self.assertEqual(payload["selected"], [album.path])
 
     def test_library_hit_geometry_is_rebuilt_at_all_responsive_sizes(self) -> None:
