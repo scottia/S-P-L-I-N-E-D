@@ -65,6 +65,12 @@ The historical Config v5 `scan.cache_dir` key is the SQL Database Directory.
 `scan.temporary_cache_dir` owns downloaded and derived images; those disposable
 files are removed after the Album run while `splined.db` remains untouched.
 
+The Windows media snapshot projects year, track count, cover path/name/format,
+cover dimensions, and root/cover file counts from existing SQLite Album rows.
+The GUI uses that projection for the selected-Album information and Artwork
+surface; selection must not trigger a provider call or a second filesystem
+inventory pass. Candidate hover uses the already-downloaded run-cache image.
+
 The repository/native release number is independent of this application's
 v3.0.0 Stable identity. The next-patch release workflow must not rewrite this
 manifest or `gui/ReleaseInfo.cs`.

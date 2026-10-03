@@ -109,7 +109,17 @@ namespace Splined.WindowsGui
         private Button launch;
         private ToolStripMenuItem settingsMenuItem;
         private ToolStripMenuItem checkUpdateMenuItem;
+        private ToolStripMenuItem showArtworkMenuItem;
         private RichTextBox activity;
+        private TableLayoutPanel activityWorkspace;
+        private Control artworkPreviewCard;
+        private PictureBox artworkPreviewImage;
+        private Label artworkPreviewTitle;
+        private Label artworkPreviewCaption;
+        private Label selectedAlbumInfo;
+        private AlbumInfo displayedAlbum;
+        private bool candidatePreviewActive;
+        private bool adjustingArtworkLayout;
         private FlowLayoutPanel candidateCards;
         private Button useSelected;
         private Button keepLocal;
@@ -151,6 +161,7 @@ namespace Splined.WindowsGui
         private const int LibraryTreeMinimumHeight = 170;
         private const int ActivityPanelMinimumWidth = 520;
         private const int ActivityPanelMinimumHeight = 230;
+        private const int AlbumActivityMinimumWidth = 340;
         private const int CandidatePanelMinimumWidth = 720;
         private const int CandidatePanelMinimumHeight = 420;
 
@@ -191,6 +202,7 @@ namespace Splined.WindowsGui
             {
                 RuntimeLog.Write("info", "windows.gui.closed");
                 if (treeToolTip != null) treeToolTip.Dispose();
+                DisposeArtworkPreviewImage();
             };
         }
 
@@ -298,6 +310,16 @@ namespace Splined.WindowsGui
             layout.DropDownItems.Add(new ToolStripSeparator());
             layout.DropDownItems.Add(new ToolStripMenuItem("Drag the panel dividers for a custom layout") { Enabled = false });
             view.DropDownItems.Add(layout);
+            view.DropDownItems.Add(new ToolStripSeparator());
+            showArtworkMenuItem = new ToolStripMenuItem("Show Artwork") { Checked = uiState.ShowArtwork };
+            showArtworkMenuItem.Click += delegate
+            {
+                uiState.ShowArtwork = !uiState.ShowArtwork;
+                showArtworkMenuItem.Checked = uiState.ShowArtwork;
+                ApplyArtworkPanelVisibility();
+                SaveUiState();
+            };
+            view.DropDownItems.Add(showArtworkMenuItem);
 
             ToolStripMenuItem status = new ToolStripMenuItem("Status");
             status.Click += delegate { using (StatusForm form = new StatusForm(state)) form.ShowDialog(this); };
@@ -321,7 +343,10 @@ namespace Splined.WindowsGui
 
         private void BuildLibraryPanel(Control parent)
         {
-            TableLayoutPanel layout = new FluentCardTableLayoutPanel { Name = "mediaLibrarySelectionCard", VisualRole = CardVisualRole.Panel };
+            TableLayoutPanel frame = new FluentCardTableLayoutPanel { Name = "mediaLibrarySelectionCard", VisualRole = CardVisualRole.Panel, Dock = DockStyle.Fill, Padding = new Padding(1), ColumnCount = 1, RowCount = 1 };
+            frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            frame.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            TableLayoutPanel layout = new TableLayoutPanel { Name = "mediaLibrarySelectionScrollCanvas" };
             libraryLayout = layout;
             layout.Dock = DockStyle.Fill;
             layout.AutoScroll = true;
@@ -332,16 +357,18 @@ namespace Splined.WindowsGui
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, ExpandedMediaFilterHeight));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             UpdateLibraryScrollCanvas(true);
-            parent.Controls.Add(layout);
+            frame.Controls.Add(layout, 0, 0);
+            parent.Controls.Add(frame);
 
             layout.Controls.Add(BuildPanelTitle("Media Library Selection",
-                "Select Media expands the Artist, Album, folder-status, selection-mode, and scan-mode controls. Select [ALL] checks every normally eligible album, Select [NONE] clears all selections, and Select [FILTERED] checks only the visible filtered results. LAUNCH processes checked albums only."), 0, 0);
+                "Select Media expands the Artist, Album, folder-status, selection-mode, and scan-mode controls. Select [ALL] replaces selection with the active Artist's unprocessed Albums, Select [NONE] clears selection, and Select [FILTERED] requires Artist or Album filter text. LAUNCH processes selected Albums only."), 0, 0);
 
             layout.Controls.Add(BuildMediaFilterPanel(), 0, 1);
 
             tree = new TreeView { Dock = DockStyle.Fill, CheckBoxes = true, ShowNodeToolTips = false, HideSelection = false, BorderStyle = BorderStyle.FixedSingle };
             treeToolTip = ThemeManager.CreateToolTip();
             tree.AfterCheck += TreeAfterCheck;
+            tree.AfterSelect += TreeAfterSelect;
             tree.NodeMouseClick += TreeNodeMouseClick;
             tree.NodeMouseHover += TreeNodeMouseHover;
             tree.MouseLeave += delegate { treeToolTip.Hide(tree); };
@@ -513,7 +540,7 @@ namespace Splined.WindowsGui
             scan.Controls.Add(scanChoices);
 
             ToolTip help = ThemeManager.CreateToolTip();
-            help.SetToolTip(select, "Choose ALL, NONE, or FILTERED. FILTERED checks only the currently visible Artist and Album results and keeps its selected indicator until the selection is manually changed.");
+            help.SetToolTip(select, "Matches Python: ALL replaces selection with the active Artist's unprocessed Albums; NONE clears selection; FILTERED requires Artist or Album text and replaces selection with matching unprocessed or processed Albums.");
             help.SetToolTip(scan, "Choose one Read or Live Write mode, then use the single LAUNCH button in Artwork Candidates and Preview. Internal settings are not changed and bypass/timeout authority is preserved.");
             select.Tag = help;
             scan.Tag = help;
@@ -655,8 +682,20 @@ namespace Splined.WindowsGui
 
             if (Object.ReferenceEquals(selected, selectModeAll))
             {
+                ArtistNodeInfo activeArtist = CurrentArtistNode();
+                if (activeArtist == null)
+                {
+                    selectionMode = SelectionMode.Select;
+                    UpdateSelectModeChecks();
+                    SetStatus("Select [ALL] requires an Artist.");
+                    return;
+                }
                 selectionMode = SelectionMode.All;
-                foreach (AlbumInfo album in albums) album.Selected = album.EligibleByDefault;
+                foreach (AlbumInfo album in albums)
+                {
+                    album.Selected = activeArtist.AllAlbums.Contains(album) && album.State == AlbumState.New;
+                    album.BypassOverride = false;
+                }
                 BuildTree();
                 UpdateSelectionControls();
             }
@@ -678,41 +717,33 @@ namespace Splined.WindowsGui
         private int SelectVisibleFilteredAlbums()
         {
             if (running) return 0;
-            List<AlbumInfo> visible = tree.Nodes.Cast<TreeNode>()
-                .SelectMany(node => node.Nodes.Cast<TreeNode>())
-                .Select(node => node.Tag as AlbumInfo)
-                .Where(album => album != null)
-                .Distinct()
-                .ToList();
-            List<AlbumInfo> bypassed = visible.Where(album => album.State == AlbumState.Bypassed).ToList();
-            bool includeBypassed = false;
-            if (bypassed.Count > 0)
+            string artistText = (artistFilter == null ? "" : artistFilter.Text).Trim();
+            string albumText = (albumFilter == null ? "" : albumFilter.Text).Trim();
+            if (artistText.Length == 0 && albumText.Length == 0)
             {
-                DialogResult answer = MessageBox.Show(this,
-                    "The filtered results contain " + bypassed.Count + " bypassed Album(s). Include them with a temporary override for this run?\r\n\r\nStored bypass history will not be deleted. Choosing No still selects other eligible filtered results.",
-                    "Temporary bypass overrides", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
-                includeBypassed = answer == DialogResult.Yes;
+                SetStatus("Select [FILTERED] requires Artist or Album filter text.");
+                return albums.Count(album => album.Selected);
             }
-
             foreach (AlbumInfo album in albums)
             {
-                album.Selected = false;
+                bool textMatch = (artistText.Length == 0 || album.Artist.IndexOf(artistText, StringComparison.OrdinalIgnoreCase) >= 0)
+                    && (albumText.Length == 0 || album.Title.IndexOf(albumText, StringComparison.OrdinalIgnoreCase) >= 0);
+                album.Selected = textMatch && (album.State == AlbumState.New || album.State == AlbumState.Processed);
                 album.BypassOverride = false;
-            }
-            foreach (AlbumInfo album in visible)
-            {
-                if (album.State == AlbumState.New || album.State == AlbumState.Incomplete || album.State == AlbumState.Processed)
-                    album.Selected = true;
-                else if (album.State == AlbumState.Bypassed && includeBypassed)
-                {
-                    album.Selected = true;
-                    album.BypassOverride = true;
-                }
             }
             selectionMode = SelectionMode.Filtered;
             BuildTree();
             UpdateSelectionControls();
             return albums.Count(album => album.Selected);
+        }
+
+        private ArtistNodeInfo CurrentArtistNode()
+        {
+            TreeNode node = tree == null ? null : tree.SelectedNode;
+            if (node != null && node.Tag is AlbumInfo) node = node.Parent;
+            ArtistNodeInfo active = node == null ? null : node.Tag as ArtistNodeInfo;
+            if (active != null) return active;
+            return tree == null || tree.Nodes.Count == 0 ? null : tree.Nodes[0].Tag as ArtistNodeInfo;
         }
 
         private void UpdateMediaFilterColors()
@@ -754,6 +785,8 @@ namespace Splined.WindowsGui
             rightSplit.Panel1.Padding = new Padding(0, 0, 0, ThemeManager.Space4);
             rightSplit.Panel2.Padding = new Padding(0, ThemeManager.Space4, 0, 0);
             rightSplit.SplitterDistance = Math.Max(rightSplit.Panel1MinSize, Math.Min(uiState.RightSplitterDistance, Math.Max(rightSplit.Panel1MinSize, rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth)));
+            rightSplit.SplitterMoved += delegate { UpdateArtworkSquareLayout(true); };
+            rightSplit.Resize += delegate { UpdateArtworkSquareLayout(false); };
             parent.Controls.Add(rightSplit);
 
             TableLayoutPanel upper = new FluentCardTableLayoutPanel { Name = "scanActivityCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(ActivityPanelMinimumWidth, ActivityPanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 2, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
@@ -762,10 +795,37 @@ namespace Splined.WindowsGui
             rightSplit.Panel1.Controls.Add(upper);
             upper.Controls.Add(BuildPanelTitle("Scan Activity and Decisions",
                 "Live discovery, validation, provider results, and write/read outcomes appear here."), 0, 0);
+            activityWorkspace = new TableLayoutPanel { Name = "activityWorkspace", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
+            activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64));
+            activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
+            activityWorkspace.Resize += delegate { UpdateArtworkSquareLayout(false); };
+            TableLayoutPanel activityColumn = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(0, 0, ThemeManager.Space4, 0), Padding = Padding.Empty };
+            activityColumn.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+            activityColumn.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            Panel albumInfoCard = new FluentCardPanel { Name = "selectedAlbumInfoCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space8), Margin = new Padding(0, 0, 0, ThemeManager.Space4), VisualRole = CardVisualRole.Nested };
+            selectedAlbumInfo = new Label { Name = "selectedAlbumInfo", Dock = DockStyle.Fill, AutoEllipsis = true, Text = "Select an Album to view its indexed metadata and current artwork.", TextAlign = ContentAlignment.MiddleLeft };
+            albumInfoCard.Controls.Add(selectedAlbumInfo);
+            activityColumn.Controls.Add(albumInfoCard, 0, 0);
             Panel activityCard = new FluentCardPanel { Name = "activityLogCard", Dock = DockStyle.Fill, Padding = new Padding(2), VisualRole = CardVisualRole.Log };
             activity = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = false, Font = new Font("Cascadia Mono", 9f) };
             activityCard.Controls.Add(activity);
-            upper.Controls.Add(activityCard, 0, 1);
+            activityColumn.Controls.Add(activityCard, 0, 1);
+            activityWorkspace.Controls.Add(activityColumn, 0, 0);
+
+            TableLayoutPanel artwork = new FluentCardTableLayoutPanel { Name = "selectedAlbumArtworkCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space8), RowCount = 3, ColumnCount = 1, Margin = new Padding(ThemeManager.Space4, 0, 0, 0), VisualRole = CardVisualRole.Nested };
+            artwork.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            artwork.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            artwork.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            artworkPreviewTitle = new Label { Text = "Selected Album Artwork", Dock = DockStyle.Fill, Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle), TextAlign = ContentAlignment.MiddleLeft };
+            artwork.Controls.Add(artworkPreviewTitle, 0, 0);
+            artworkPreviewImage = new PictureBox { Name = "artworkPreviewImage", Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.None };
+            artwork.Controls.Add(artworkPreviewImage, 0, 1);
+            artworkPreviewCaption = new Label { Name = "artworkPreviewCaption", Text = "No artwork selected", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true };
+            artwork.Controls.Add(artworkPreviewCaption, 0, 2);
+            artworkPreviewCard = artwork;
+            activityWorkspace.Controls.Add(artwork, 1, 0);
+            upper.Controls.Add(activityWorkspace, 0, 1);
+            ApplyArtworkPanelVisibility();
 
             TableLayoutPanel lower = new FluentCardTableLayoutPanel { Name = "artworkCandidatesCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(CandidatePanelMinimumWidth, CandidatePanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 5, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
             lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
@@ -819,7 +879,7 @@ namespace Splined.WindowsGui
                 UpdateHoverButton();
             };
             actions.Controls.Add(enableHover);
-            actions.Controls.Add(new InfoButton("The recommended candidate is selected first. Check one candidate to use it, check several to compare them, or skip the album. Processing continues after you confirm a choice."));
+            actions.Controls.Add(new InfoButton("The recommended candidate is selected first. Activate one candidate to use it, activate several to compare them, or skip the Album. Processing continues after you confirm a choice."));
             lower.Controls.Add(actions, 0, 4);
         }
 
@@ -844,6 +904,7 @@ namespace Splined.WindowsGui
             UpdateSelectionControls();
             try
             {
+                string displayedPath = displayedAlbum == null ? "" : displayedAlbum.Path;
                 List<AlbumInfo> loaded = await Task.Run(delegate { return LibraryInventory.Load(snapshot, core, refreshIndex); });
                 if (version != reloadVersion || IsDisposed) return;
                 albums = loaded;
@@ -859,9 +920,13 @@ namespace Splined.WindowsGui
                 initialSelectionRestored = true;
                 selectionMode = SelectionMode.Select;
                 BuildTree();
+                displayedAlbum = String.IsNullOrWhiteSpace(displayedPath)
+                    ? null
+                    : albums.FirstOrDefault(album => SameAlbumPath(album.Path, displayedPath));
+                RenderDisplayedAlbum();
                 int selectedCount = albums.Count(album => album.Selected);
                 SetStatus(albums.Count + " album folders loaded. " + (selectedCount == 0
-                    ? "Select is ready; no albums are checked."
+                    ? "Select is ready; no Albums are selected."
                     : selectedCount + " saved album selection(s) restored."));
             }
             catch (Exception error)
@@ -869,6 +934,8 @@ namespace Splined.WindowsGui
                 if (version != reloadVersion || IsDisposed) return;
                 albums.Clear();
                 BuildTree();
+                displayedAlbum = null;
+                RenderDisplayedAlbum();
                 SetStatus(error.Message);
             }
             finally
@@ -1026,8 +1093,16 @@ namespace Splined.WindowsGui
             UpdateSelectionControls();
         }
 
+        private void TreeAfterSelect(object sender, TreeViewEventArgs e)
+        {
+            AlbumInfo album = e.Node == null ? null : e.Node.Tag as AlbumInfo;
+            if (album != null) ShowSelectedAlbum(album);
+        }
+
         private void TreeNodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
         {
+            if (e.Button == MouseButtons.Left && e.Node != null && e.Node.Tag is AlbumInfo)
+                ShowSelectedAlbum((AlbumInfo)e.Node.Tag);
             if (e.Button == MouseButtons.Right && e.Node.ToolTipText.Length > 0)
                 SetStatus(e.Node.ToolTipText);
         }
@@ -1632,7 +1707,10 @@ namespace Splined.WindowsGui
             card.Controls.Add(image);
             Label source = new Label { Left = 8, Top = 188, Width = 180, Height = 20, Text = view.DisplaySource, AutoEllipsis = true };
             card.Controls.Add(source);
-            LinkLabel sourceLink = CandidateUrlUi.Create(view.Resolution, view.Url, uiState.Theme);
+            LinkLabel sourceLink = CandidateUrlUi.Create(view.Resolution, view.Url, uiState.Theme,
+                delegate { if (uiState.ShowArtwork) ShowArtworkCandidate(view); },
+                delegate { if (uiState.HoverEnabled) ShowHoverPreview(view); },
+                delegate { if (uiState.HoverEnabled) CloseHoverPreview(); });
             sourceLink.Left = 8; sourceLink.Top = 208; sourceLink.Width = 180; sourceLink.Height = 20;
             card.Controls.Add(sourceLink);
             bool fallbackOnly = view.PolicyStatus.Equals("fallback", StringComparison.OrdinalIgnoreCase);
@@ -1948,6 +2026,11 @@ namespace Splined.WindowsGui
         private void ShowHoverPreview(CandidateView candidate)
         {
             CloseHoverPreview();
+            if (uiState.ShowArtwork)
+            {
+                ShowArtworkCandidate(candidate);
+                return;
+            }
             hoverPreview = new HoverPreviewForm(candidate, uiState.Theme, uiState);
             hoverPreview.FormClosed += delegate { hoverPreview = null; };
             hoverPreview.Show(this);
@@ -1957,6 +2040,121 @@ namespace Splined.WindowsGui
         {
             if (hoverPreview != null && !hoverPreview.IsDisposed) hoverPreview.Close();
             hoverPreview = null;
+            if (candidatePreviewActive)
+            {
+                candidatePreviewActive = false;
+                RenderDisplayedAlbum();
+            }
+        }
+
+        private void ShowArtworkCandidate(CandidateView candidate)
+        {
+            if (candidate == null || !uiState.ShowArtwork) return;
+            candidatePreviewActive = true;
+            artworkPreviewTitle.Text = "Candidate Artwork Preview";
+            SetArtworkPreview(candidate.CachePath,
+                candidate.DisplaySource + " · " + candidate.Resolution + " · " + candidate.Range);
+        }
+
+        private void ShowSelectedAlbum(AlbumInfo album)
+        {
+            displayedAlbum = album;
+            candidatePreviewActive = false;
+            RenderDisplayedAlbum();
+        }
+
+        private void RenderDisplayedAlbum()
+        {
+            if (selectedAlbumInfo == null) return;
+            artworkPreviewTitle.Text = "Selected Album Artwork";
+            if (displayedAlbum == null)
+            {
+                selectedAlbumInfo.Text = "Select an Album to view its indexed metadata and current artwork.";
+                SetArtworkPreview("", "No artwork selected");
+                return;
+            }
+            string year = String.IsNullOrWhiteSpace(displayedAlbum.ReleaseYear) ? "—" : displayedAlbum.ReleaseYear;
+            string coverName = String.IsNullOrWhiteSpace(displayedAlbum.CoverName)
+                ? (displayedAlbum.LocalArtworkFiles.Count == 0 ? "No cover.* found" : Path.GetFileName(displayedAlbum.LocalArtworkFiles[0]))
+                : displayedAlbum.CoverName;
+            string resolution = displayedAlbum.CoverWidth > 0 && displayedAlbum.CoverHeight > 0
+                ? displayedAlbum.CoverWidth + " x " + displayedAlbum.CoverHeight
+                : "resolution unavailable";
+            selectedAlbumInfo.Text = displayedAlbum.Artist + "  ·  " + displayedAlbum.Title + Environment.NewLine
+                + "Year " + year + "  ·  Tracks " + displayedAlbum.TrackCount + "  ·  " + displayedAlbum.State + Environment.NewLine
+                + "Artwork " + coverName + "  ·  " + resolution + "  ·  Root files " + displayedAlbum.RootFiles + "  ·  Cover files " + displayedAlbum.CoverFiles + Environment.NewLine
+                + "Path " + displayedAlbum.Path;
+            string coverPath = displayedAlbum.CoverPath;
+            if (String.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
+                coverPath = displayedAlbum.LocalArtworkFiles.FirstOrDefault(File.Exists) ?? "";
+            SetArtworkPreview(coverPath, coverName + " · " + resolution);
+        }
+
+        private void SetArtworkPreview(string path, string caption)
+        {
+            if (artworkPreviewImage == null) return;
+            Image replacement = LoadImageCopy(path);
+            Image previous = artworkPreviewImage.Image;
+            artworkPreviewImage.Image = replacement;
+            if (previous != null) previous.Dispose();
+            artworkPreviewCaption.Text = String.IsNullOrWhiteSpace(caption) ? "No artwork selected" : caption;
+        }
+
+        private void DisposeArtworkPreviewImage()
+        {
+            if (artworkPreviewImage == null || artworkPreviewImage.Image == null) return;
+            artworkPreviewImage.Image.Dispose();
+            artworkPreviewImage.Image = null;
+        }
+
+        private void ApplyArtworkPanelVisibility()
+        {
+            if (activityWorkspace == null || activityWorkspace.ColumnStyles.Count < 2) return;
+            bool visible = uiState.ShowArtwork;
+            if (artworkPreviewCard != null) artworkPreviewCard.Visible = visible;
+            activityWorkspace.ColumnStyles[0].SizeType = SizeType.Percent;
+            activityWorkspace.ColumnStyles[0].Width = 100;
+            activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
+            activityWorkspace.ColumnStyles[1].Width = 0;
+            if (showArtworkMenuItem != null) showArtworkMenuItem.Checked = visible;
+            if (visible) RenderDisplayedAlbum();
+            else CloseHoverPreview();
+            UpdateArtworkSquareLayout(false);
+            activityWorkspace.PerformLayout();
+        }
+
+        private void UpdateArtworkSquareLayout(bool constrainSplitter)
+        {
+            if (adjustingArtworkLayout || activityWorkspace == null || activityWorkspace.ColumnStyles.Count < 2) return;
+            if (!uiState.ShowArtwork || activityWorkspace.ClientSize.Width <= 0 || activityWorkspace.ClientSize.Height <= 0)
+            {
+                activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
+                activityWorkspace.ColumnStyles[1].Width = 0;
+                return;
+            }
+            adjustingArtworkLayout = true;
+            try
+            {
+                int marginAllowance = ThemeManager.Space4;
+                int required = activityWorkspace.ClientSize.Height + marginAllowance;
+                int available = Math.Max(0, activityWorkspace.ClientSize.Width - AlbumActivityMinimumWidth);
+                if (constrainSplitter && rightSplit != null && required > available)
+                {
+                    int correction = required - available;
+                    int target = Math.Max(rightSplit.Panel1MinSize, rightSplit.SplitterDistance - correction);
+                    if (target < rightSplit.SplitterDistance)
+                    {
+                        rightSplit.SplitterDistance = target;
+                        required = Math.Max(0, activityWorkspace.ClientSize.Height + marginAllowance);
+                        available = Math.Max(0, activityWorkspace.ClientSize.Width - AlbumActivityMinimumWidth);
+                    }
+                }
+                activityWorkspace.ColumnStyles[0].SizeType = SizeType.Percent;
+                activityWorkspace.ColumnStyles[0].Width = 100;
+                activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
+                activityWorkspace.ColumnStyles[1].Width = Math.Max(0, Math.Min(required, available));
+            }
+            finally { adjustingArtworkLayout = false; }
         }
 
         private void StopRun()
@@ -2549,7 +2747,8 @@ namespace Splined.WindowsGui
 
     internal static class CandidateUrlUi
     {
-        public static LinkLabel Create(string leadingText, string url, string theme)
+        public static LinkLabel Create(string leadingText, string url, string theme,
+            Action preview = null, Action hover = null, Action leave = null)
         {
             LinkLabel label = new LinkLabel { Text = leadingText ?? "", AutoEllipsis = true, TextAlign = ContentAlignment.MiddleCenter };
             ThemePalette palette = ThemeManager.PaletteFor(theme);
@@ -2567,6 +2766,7 @@ namespace Splined.WindowsGui
                 {
                     try
                     {
+                        if (preview != null) preview();
                         Process.Start(new ProcessStartInfo { FileName = Convert.ToString(args.Link.LinkData), UseShellExecute = true });
                     }
                     catch (Exception error)
@@ -2574,6 +2774,8 @@ namespace Splined.WindowsGui
                         MessageBox.Show(label.FindForm(), error.Message, "Unable to open artwork source", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 };
+                if (hover != null) label.MouseEnter += delegate { hover(); };
+                if (leave != null) label.MouseLeave += delegate { leave(); };
             }
             return label;
         }

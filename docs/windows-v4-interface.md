@@ -89,7 +89,8 @@ menus:
 
 - **File** — Settings, Credentials, Backup import/export, Refresh Library
   Index, and Exit;
-- **View** — System/Dark/Light appearance and panel-layout presets;
+- **View** — System/Dark/Light appearance, panel-layout presets, and the
+  persisted **Show Artwork** switch;
 - **Status** — configured providers and credential state;
 - **Help** — documentation, update check, and About.
 
@@ -97,10 +98,17 @@ Major panels use the spectrum border colors. Light appearance uses a warm
 cream canvas so artwork, state colors, and the watermark retain contrast.
 **View > Panel Layout** offers Balanced, Wider Select Media, Wider Decisions,
 and Stacked presets. Panel dividers remain draggable; a custom layout persists
-for the current user. Media Library Selection, Scan Activity and Decisions,
-and Artwork Candidates and Preview each have an independent scroll canvas in
-every layout, so shrinking one panel never clips its title, controls, or action
-rows behind another panel.
+for the current user. Media Library Selection uses a scroll canvas contained
+inside its spectrum frame, while Scan Activity and Decisions and Artwork
+Candidates and Preview retain independent scroll canvases. This prevents the
+native scrollbar from painting across the Media Selection frame in Stacked
+layout and keeps controls reachable when a panel is reduced.
+
+Windows uses the same red/green state language throughout the picker, candidate
+cards, Settings, credentials, and Backup surfaces. A round indicator is red
+when off and green with an active center when on; interactive state changes use
+a short pulse rather than a checkbox/checkmark glyph. Folder-tree selection
+uses the same round red/green states.
 
 ### Media Library Selection
 
@@ -119,8 +127,14 @@ inside Select Media.
 
 Ctrl+Click supports independent Album selections. Selecting multiple Artists
 selects their normally eligible Albums while leaving orange Processed Albums
-manual. Filtered selection applies only to rows currently visible through the
-Artist, Album, and Folder Status filters.
+manual. Bulk selection matches Python:
+
+- **Select `[ALL]`** replaces the current selection with only the active
+  Artist's Unprocessed Albums;
+- **Select `[NONE]`** clears selection and temporary bypass overrides;
+- **Select `[FILTERED]`** requires Artist or Album filter text, replaces the
+  current selection, and includes text-matching Unprocessed and Processed
+  Albums. Folder Status visibility does not redefine that text-filter scope.
 
 ### Album status
 
@@ -148,19 +162,39 @@ committing completion state.
 installs the approved folder artwork according to Config v5. For an eligible
 curated compilation it replaces only the approved track's embedded front image.
 
-The Launch queue is a snapshot of checked Albums. A completed or
+The Launch queue is a snapshot of selected Albums. A completed or
 operator-stopped Album is consumed from that queue; a failed Album and Albums
 not yet started remain selected. After the batch, LAUNCH becomes available for
 another independent selection.
 
 ## Artwork candidates and preview
 
+**Scan Activity and Decisions** is divided into Album information on the left
+and an Artwork surface on the right. Selecting any Album—including an orange
+Processed Album—shows the SQLite-indexed Artist, Album, year, track count,
+status, path, root-file count, current `cover.*` filename, and recorded
+resolution. The image is loaded from the indexed local cover path; selecting an
+Album does not rerun providers or rescan the Album directory.
+
+The horizontal divider above Artwork Candidates also controls the Artwork
+surface geometry. Moving it up reduces the Artwork column with the available
+height; moving it down expands the column only while a square Artwork panel can
+coexist with the minimum Album/activity width. The divider is constrained at
+that point instead of stretching the Artwork panel.
+
+**View > Show Artwork** hides or restores the right-side Artwork surface and is
+saved as Windows interface state. When shown, **Enable Hover** routes candidate
+image and candidate-URL hover into that surface. Leaving the candidate restores
+the selected Album cover. Clicking a candidate URL also places its cached image
+in the Artwork surface before the authority URL opens. When Show Artwork is
+off, Enable Hover retains the floating resizable preview behavior.
+
 The processing panel reports local evidence, authority resolution, provider
 timings, candidate policy, and errors. Artwork Candidates and Preview displays
 only candidates allowed by the active source policy.
 
-- **Use Selected** approves one checked candidate.
-- **Compare** compares multiple checked candidates.
+- **Use Selected** approves one active candidate.
+- **Compare** compares multiple active candidates.
 - **Skip Album** leaves the current Album unchanged and applies the selected
   bypass behavior.
 - **Enable Hover** toggles automatic candidate preview and persists as

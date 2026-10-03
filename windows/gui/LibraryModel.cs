@@ -42,6 +42,15 @@ namespace Splined.WindowsGui
         public string Outcome;
         public bool HasLocalArtwork;
         public List<string> LocalArtworkFiles = new List<string>();
+        public int TrackCount;
+        public string ReleaseYear;
+        public string CoverPath;
+        public string CoverName;
+        public string CoverFormat;
+        public int CoverWidth;
+        public int CoverHeight;
+        public int RootFiles;
+        public int CoverFiles;
 
         public bool EligibleByDefault { get { return State == AlbumState.New || State == AlbumState.Incomplete; } }
         public bool HasHistory { get { return CompletedUtc.HasValue; } }
@@ -180,8 +189,16 @@ namespace Splined.WindowsGui
             public string status;
             public bool compilation;
             public int track_count;
+            public string release_year;
             public bool has_local_artwork;
             public string[] local_artwork_files;
+            public string cover_path;
+            public string cover_name;
+            public string cover_format;
+            public int cover_width;
+            public int cover_height;
+            public int root_files;
+            public int cover_files;
             public string processed_at;
             public string timeout_until;
             public string selected_source;
@@ -249,6 +266,15 @@ namespace Splined.WindowsGui
                     : new List<string> { item.representative_file },
                 HasLocalArtwork = item.has_local_artwork,
                 LocalArtworkFiles = (item.local_artwork_files ?? new string[0]).ToList(),
+                TrackCount = item.track_count,
+                ReleaseYear = item.release_year,
+                CoverPath = item.cover_path,
+                CoverName = item.cover_name,
+                CoverFormat = item.cover_format,
+                CoverWidth = item.cover_width,
+                CoverHeight = item.cover_height,
+                RootFiles = item.root_files,
+                CoverFiles = item.cover_files,
                 State = ParseStatus(item.status),
                 CompletedUtc = ParseTimestamp(item.processed_at),
                 EligibleUtc = ParseTimestamp(item.timeout_until),

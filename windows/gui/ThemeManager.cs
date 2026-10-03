@@ -1044,23 +1044,13 @@ namespace Splined.WindowsGui
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 float inset = Math.Max(0.75f, size / 20f);
                 RectangleF bounds = new RectangleF(inset, inset, size - inset * 2f - 0.5f, size - inset * 2f - 0.5f);
-                using (GraphicsPath path = RoundedPath(bounds, Math.Max(2f, size * 0.18f)))
                 using (SolidBrush fill = new SolidBrush(fillColor))
-                    graphics.FillPath(fill, path);
+                    graphics.FillEllipse(fill, bounds);
                 if (isChecked)
                 {
-                    using (Pen check = new Pen(glyphColor, Math.Max(1.5f, size / 9f)))
-                    {
-                        check.StartCap = LineCap.Round;
-                        check.EndCap = LineCap.Round;
-                        check.LineJoin = LineJoin.Round;
-                        graphics.DrawLines(check, new[]
-                        {
-                            new PointF(size * 0.24f, size * 0.52f),
-                            new PointF(size * 0.43f, size * 0.70f),
-                            new PointF(size * 0.78f, size * 0.29f)
-                        });
-                    }
+                    float dot = size * 0.38f;
+                    using (SolidBrush center = new SolidBrush(glyphColor))
+                        graphics.FillEllipse(center, (size - dot) / 2f, (size - dot) / 2f, dot, dot);
                 }
             }
             return bitmap;
@@ -1499,6 +1489,8 @@ namespace Splined.WindowsGui
     {
         private ThemePalette palette;
         private string theme;
+        private readonly Timer stateAnimation;
+        private float animationPulse;
 
         internal string Theme { get { return theme; } set { theme = value; Invalidate(); } }
         internal ThemePalette Palette
@@ -1520,6 +1512,13 @@ namespace Splined.WindowsGui
             UseVisualStyleBackColor = false;
             FlatStyle = FlatStyle.Flat;
             AutoEllipsis = true;
+            stateAnimation = new Timer { Interval = 16 };
+            stateAnimation.Tick += delegate
+            {
+                animationPulse = Math.Max(0f, animationPulse - 0.13f);
+                if (animationPulse <= 0f) stateAnimation.Stop();
+                Invalidate();
+            };
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1540,24 +1539,22 @@ namespace Splined.WindowsGui
             if (!Enabled) stateColor = ThemeManager.Blend(stateColor, active.ButtonDisabled, 0.58f);
 
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (GraphicsPath path = ThemeManager.RoundedPath(box, Math.Max(2f, boxSize * 0.18f)))
             using (SolidBrush fill = new SolidBrush(stateColor))
-                e.Graphics.FillPath(fill, path);
+                e.Graphics.FillEllipse(fill, box);
+
+            if (animationPulse > 0f && Enabled)
+            {
+                int haloInset = Math.Max(1, (int)Math.Round((1f - animationPulse) * boxSize * 0.18f));
+                Rectangle halo = Rectangle.Inflate(box, -haloInset, -haloInset);
+                using (Pen pulse = new Pen(Color.FromArgb((int)(150f * animationPulse), stateColor), Math.Max(1f, boxSize * 0.10f)))
+                    e.Graphics.DrawEllipse(pulse, halo);
+            }
 
             if (Checked)
             {
-                using (Pen check = new Pen(active.CheckGlyph, Math.Max(1.6f, DeviceDpi / 64f)))
-                {
-                    check.StartCap = LineCap.Round;
-                    check.EndCap = LineCap.Round;
-                    check.LineJoin = LineJoin.Round;
-                    e.Graphics.DrawLines(check, new[]
-                    {
-                        new PointF(box.Left + box.Width * 0.22f, box.Top + box.Height * 0.52f),
-                        new PointF(box.Left + box.Width * 0.43f, box.Top + box.Height * 0.73f),
-                        new PointF(box.Left + box.Width * 0.80f, box.Top + box.Height * 0.28f)
-                    });
-                }
+                float dot = boxSize * 0.38f;
+                using (SolidBrush center = new SolidBrush(active.CheckGlyph))
+                    e.Graphics.FillEllipse(center, box.Left + (boxSize - dot) / 2f, box.Top + (boxSize - dot) / 2f, dot, dot);
             }
             else if (CheckState == CheckState.Indeterminate)
             {
@@ -1578,7 +1575,13 @@ namespace Splined.WindowsGui
 
         }
 
-        protected override void OnCheckedChanged(EventArgs e) { base.OnCheckedChanged(e); Invalidate(); }
+        protected override void OnCheckedChanged(EventArgs e)
+        {
+            base.OnCheckedChanged(e);
+            animationPulse = 1f;
+            if (IsHandleCreated && Visible) stateAnimation.Start();
+            Invalidate();
+        }
         protected override void OnCheckStateChanged(EventArgs e) { base.OnCheckStateChanged(e); Invalidate(); }
         protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
         protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
@@ -1587,6 +1590,12 @@ namespace Splined.WindowsGui
             base.OnEnabledChanged(e);
             ForeColor = Enabled ? ActivePalette.TextPrimary : ActivePalette.TextDisabled;
             Invalidate();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) stateAnimation.Dispose();
+            base.Dispose(disposing);
         }
     }
 
@@ -1984,24 +1993,10 @@ namespace Splined.WindowsGui
             int left = Math.Max(5, (int)Math.Round(7f * dpi / 96f));
             Rectangle box = new Rectangle(left, Math.Max(1, (e.Item.Height - side) / 2), side, side);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (GraphicsPath path = ThemeManager.RoundedPath(box, Math.Max(CheckRadius, (int)Math.Round(CheckRadius * dpi / 96f))))
-            using (SolidBrush brush = new SolidBrush(palette.CheckOnBackground)) e.Graphics.FillPath(brush, path);
-            using (GraphicsPath path = ThemeManager.RoundedPath(box, Math.Max(CheckRadius, (int)Math.Round(CheckRadius * dpi / 96f))))
-            using (Pen pen = new Pen(palette.CheckOnBackground))
-            {
-                pen.Alignment = PenAlignment.Inset;
-                e.Graphics.DrawPath(pen, path);
-            }
-            using (Pen check = new Pen(palette.CheckGlyph, Math.Max(1.7f, 2f * dpi / 96f)))
-            {
-                check.StartCap = LineCap.Round;
-                check.EndCap = LineCap.Round;
-                check.LineJoin = LineJoin.Round;
-                PointF first = new PointF(box.Left + box.Width * 0.25f, box.Top + box.Height * 0.53f);
-                PointF middle = new PointF(box.Left + box.Width * 0.43f, box.Top + box.Height * 0.70f);
-                PointF last = new PointF(box.Left + box.Width * 0.76f, box.Top + box.Height * 0.32f);
-                e.Graphics.DrawLines(check, new[] { first, middle, last });
-            }
+            using (SolidBrush brush = new SolidBrush(palette.CheckOnBackground)) e.Graphics.FillEllipse(brush, box);
+            float dot = box.Width * 0.38f;
+            using (SolidBrush center = new SolidBrush(palette.CheckGlyph))
+                e.Graphics.FillEllipse(center, box.Left + (box.Width - dot) / 2f, box.Top + (box.Height - dot) / 2f, dot, dot);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)

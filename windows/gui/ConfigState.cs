@@ -221,6 +221,7 @@ namespace Splined.WindowsGui
         public bool ShowStatusOnLaunch = true;
         public bool ShowConfirmations = true;
         public bool HoverEnabled;
+        public bool ShowArtwork = true;
         public bool MediaFilterExpanded = true;
         public string MediaArtistFilter = "";
         public string MediaAlbumFilter = "";
@@ -567,6 +568,7 @@ namespace Splined.WindowsGui
                 state.ShowStatusOnLaunch = ReadBool(text, "ui", "show_status_on_launch", true);
                 state.ShowConfirmations = ReadBool(text, "ui", "show_confirmations", true);
                 state.HoverEnabled = ReadBool(text, "ui", "hover_enabled", false);
+                state.ShowArtwork = ReadBool(text, "ui", "show_artwork", true);
                 state.MediaFilterExpanded = ReadBool(text, "ui", "media_filter_expanded", true);
                 state.MediaArtistFilter = ReadString(text, "ui", "media_artist_filter", "");
                 state.MediaAlbumFilter = ReadString(text, "ui", "media_album_filter", "");
@@ -625,6 +627,7 @@ namespace Splined.WindowsGui
                 + "show_status_on_launch = " + Bool(state.ShowStatusOnLaunch) + Environment.NewLine
                 + "show_confirmations = " + Bool(state.ShowConfirmations) + Environment.NewLine
                 + "hover_enabled = " + Bool(state.HoverEnabled) + Environment.NewLine
+                + "show_artwork = " + Bool(state.ShowArtwork) + Environment.NewLine
                 + "theme = " + Quote(state.Theme) + Environment.NewLine
                 + "media_filter_expanded = " + Bool(state.MediaFilterExpanded) + Environment.NewLine
                 + "media_artist_filter = " + Quote(state.MediaArtistFilter) + Environment.NewLine

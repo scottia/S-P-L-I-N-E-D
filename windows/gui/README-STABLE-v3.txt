@@ -24,8 +24,8 @@ Stable Windows release
   authoritative library is reloaded before the report is shown.
 - The collapsed Select control and bottom candidate-action row include explicit
   bottom breathing room so their Fluent outlines are no longer clipped.
-- Each successfully completed or operator-stopped launch album is consumed from
-  the checked selection. Failed and unattempted albums remain checked for resume.
+- Each successfully completed or operator-stopped launch Album is consumed from
+  the active selection. Failed and unattempted Albums remain selected for resume.
   Equivalent UNC paths with trailing separators are matched correctly, so an old
   first album cannot lead a newly selected artist.
 - The top navigation no longer repeats the Media Library path. Appearance now
@@ -36,20 +36,21 @@ Stable Windows release
   Artwork Candidates action row; its execution behavior is unchanged.
 - The former Media Filter panel is now a single collapsible Select Media control,
   without a redundant Media Filter button/title. It provides mutually exclusive
-  Select [ALL], Select [NONE], and
-  Select [FILTERED] choices plus the temporary READ/WRITE Scan Mode. The
-  FILTERED choice retains its checked state until selection is changed.
+  Select [ALL], Select [NONE], and Select [FILTERED] choices plus the temporary
+  READ/WRITE Scan Mode. Bulk behavior matches Python: ALL replaces selection
+  with the active Artist's Unprocessed Albums, NONE clears it, and FILTERED
+  requires Artist or Album filter text.
 - Main library/right-workspace splitter sizes and Select-panel expansion state
   are restored from the GUI-local UI state on the next launch.
 
 Fluent Compact + SPLINED identity
 ---------------------------------
 
-Buttons, drop-downs, text fields, numeric settings, tabs, checkboxes, tooltips,
+Buttons, drop-downs, text fields, numeric settings, tabs, state controls, tooltips,
 cards, scrollable surfaces, and the Dark/Light/System theme paths continue to
-share the centralized SPLINED Fluent Compact theme. Checked boxes use dark green
-with a yellow tick; unchecked boxes use dark red. Folder and album status colors
-remain a separate semantic data palette.
+share the centralized SPLINED Fluent Compact theme. Active round states use
+green with a yellow center; inactive states use red, with no checkmark glyph.
+Folder and album status colors remain a separate semantic data palette.
 
 Settings layout canvas
 ----------------------
@@ -67,9 +68,8 @@ providers, MusicBrainz, library discovery, source policy, artwork evaluation
 and writing, Media Filter, history, retention, bypass, timeout, selection,
 hover behavior, and the LAUNCH / WAITING / STOP lifecycle.
 
-The AUTO LAUNCH correction from RC3 is retained: it queues only Album rows that
-are already checked. Select [FILTERED] is the explicit action that checks the
-current filtered result set and remains visibly selected afterward.
+LAUNCH queues only Album rows that are already selected. Select [FILTERED] is
+the explicit text-filter action and remains visibly active afterward.
 
 Package contents
 ----------------
