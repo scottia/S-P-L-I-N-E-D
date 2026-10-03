@@ -2836,7 +2836,7 @@ def _run_scan_dir_batch(
                     if auto_scan
                     else select_best(candidates, cfg, format_order)
                 )
-                if normal_best is not None and not operator_release_selected:
+                if normal_best is not None and not operator_release_selected and auto_scan:
                     print()
                     authority_text = (
                         "ExactAlbumId · OPERATOR SELECTED"
@@ -3293,6 +3293,85 @@ def _run_scan_dir_batch(
             print()
             continue
 
+        reviewed_choice = False
+        if not auto_scan:
+            preview_dest, _ = preview_destination(album, best, cfg, format_order)
+            print(
+                f"  {core.cyan('Candidates:'):13} "
+                f"{core.white(str(len(candidates)))} {core.paint('PURPLE', '· REVIEW REQUIRED')} "
+                f"{core.white('File')} {core.bracketed_text(preview_dest.name, core.orange)} "
+                f"{candidate_link(best)}"
+            )
+            render_candidate_table(
+                candidates,
+                cfg,
+                format_order,
+                suggested=best,
+                manual_fallback=True,
+            )
+            if diagnostics:
+                print(f"  {core.cyan('Diagnostics:'):13}")
+                for source, message in diagnostics:
+                    print(f"    - {core.magenta(provider_label(source))}: {message}")
+
+            chosen: core.Candidate | None = None
+            while chosen is None:
+                print()
+                print(
+                    f"  {core.paint('PURPLE', '[s]')} suggested candidate   "
+                    f"{core.cyan('[#]')} choose exact candidate   "
+                    f"{core.cyan('[b]')} bypass"
+                )
+                answer = core.read_input(
+                    "  Choice: ",
+                    kind="normal-picker",
+                ).strip().lower()
+                if answer == "__cancel__":
+                    raise core.TuiSessionExit()
+                if answer == "b":
+                    record_album_bypass(
+                        bypass_path,
+                        bypass_history,
+                        album,
+                        mbid,
+                        release.artist_credit,
+                        release.title,
+                        "normal-reviewed-bypass",
+                    )
+                    summary.resolved += 1
+                    core.record_scan_completion(
+                        completion_path,
+                        completion_history,
+                        album,
+                        cfg,
+                        sources,
+                        "normal-reviewed-bypass",
+                    )
+                    print(
+                        f"  {core.cyan('Artwork:'):13} "
+                        f"{core.bracketed_text('BYPASSED', core.yellow)}"
+                    )
+                    break
+                if answer == "s":
+                    chosen = best
+                    break
+                if answer.isdigit():
+                    number = int(answer)
+                    if 1 <= number <= len(candidates):
+                        candidate = candidates[number - 1]
+                        if project_candidate(candidate, cfg, format_order)["acceptable"]:
+                            chosen = candidate
+                            break
+                        print(f"  {core.yellow('Choose an acceptable listed candidate.')} ")
+                        continue
+                print("  Choose s, an acceptable listed number, or b.")
+
+            if chosen is None:
+                print()
+                continue
+            best = chosen
+            reviewed_choice = True
+
         summary.resolved += 1
         core.debug_log(
             f"normal.selection album={release.title!r} "
@@ -3307,12 +3386,13 @@ def _run_scan_dir_batch(
             f"{core.white('File')} {core.bracketed_text(preview_dest.name, core.orange)} "
             f"{candidate_link(best)}"
         )
-        render_candidate_table(candidates, cfg, format_order, selected=best)
+        if not reviewed_choice:
+            render_candidate_table(candidates, cfg, format_order, selected=best)
 
-        if diagnostics:
-            print(f"  {core.cyan('Diagnostics:'):13}")
-            for source, message in diagnostics:
-                print(f"    - {core.magenta(provider_label(source))}: {message}")
+            if diagnostics:
+                print(f"  {core.cyan('Diagnostics:'):13}")
+                for source, message in diagnostics:
+                    print(f"    - {core.magenta(provider_label(source))}: {message}")
 
         normal_apply_ok = apply_selected_candidate(
             album,

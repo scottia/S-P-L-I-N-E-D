@@ -271,6 +271,8 @@ semantically correct front cover. Use an ordinary selected launch when visual
 accuracy matters more than unattended processing.
 
 `Select [ALL]` only checks Albums. It never enables Auto Scan.
+Without Auto Scan, every acceptable source result waits for an explicit
+candidate choice before READ continues or LIVE WRITE changes artwork.
 
 For a selected Album whose representative track has no Album/Release ID and
 has `compilation=1`, the panel keeps a yellow warning that the unified scan will
