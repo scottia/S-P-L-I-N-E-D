@@ -48,7 +48,7 @@ from tui.picker_index import (
     should_ignore as picker_should_ignore,
 )
 
-USER_AGENT = "SPLINED/1.0.9 (https://github.com/scottia/S-P-L-I-N-E-D)"
+USER_AGENT = "SPLINED/1.0.25 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
 MB_AUTHORIZE_URL = "https://musicbrainz.org/oauth2/authorize"
 MB_OAUTH_ENDPOINT = "https://musicbrainz.org/oauth2/token"
@@ -6749,7 +6749,7 @@ def run_scan_preview(
 
 
 APP_NAME = "SPLINED"
-VERSION = "1.0.9"
+VERSION = "1.0.25"
 CONFIG_VERSION = 5
 
 
