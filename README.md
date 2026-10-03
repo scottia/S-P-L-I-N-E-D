@@ -3,7 +3,7 @@
 <h2 align="center">
   <img src="assets/branding/splined-slogan.svg"
        alt="SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
-       width="1000">
+       width="1020">
 </h2>
 </p>
 
