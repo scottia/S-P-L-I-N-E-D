@@ -231,7 +231,9 @@ namespace Splined.WindowsGui
         public bool MediaShowPurple = true;
         public bool MediaShowGreen = true;
         public bool MediaShowBlue = true;
+        public bool MediaShowIncomplete = true;
         public string FilteredScanMode = "";
+        public string AutoScanScope = "selected";
         public List<string> SelectedAlbumPaths = new List<string>();
         public int MainWidth = 1280;
         public int MainHeight = 840;
@@ -578,7 +580,9 @@ namespace Splined.WindowsGui
                 state.MediaShowPurple = ReadBool(text, "ui", "media_show_purple", true);
                 state.MediaShowGreen = ReadBool(text, "ui", "media_show_green", true);
                 state.MediaShowBlue = ReadBool(text, "ui", "media_show_blue", true);
+                state.MediaShowIncomplete = ReadBool(text, "ui", "media_show_incomplete", true);
                 state.FilteredScanMode = ReadString(text, "ui", "filtered_scan_mode", "");
+                state.AutoScanScope = ReadString(text, "ui", "auto_scan_scope", "selected");
                 state.SelectedAlbumPaths = ReadArray(text, "ui", "selected_album_paths");
                 state.MainWidth = ReadInt(text, "ui", "main_width", 1280);
                 state.MainHeight = ReadInt(text, "ui", "main_height", 840);
@@ -638,7 +642,9 @@ namespace Splined.WindowsGui
                 + "media_show_purple = " + Bool(state.MediaShowPurple) + Environment.NewLine
                 + "media_show_green = " + Bool(state.MediaShowGreen) + Environment.NewLine
                 + "media_show_blue = " + Bool(state.MediaShowBlue) + Environment.NewLine
+                + "media_show_incomplete = " + Bool(state.MediaShowIncomplete) + Environment.NewLine
                 + "filtered_scan_mode = " + Quote(state.FilteredScanMode) + Environment.NewLine
+                + "auto_scan_scope = " + Quote(state.AutoScanScope) + Environment.NewLine
                 + "selected_album_paths = " + FormatArray(state.SelectedAlbumPaths) + Environment.NewLine
                 + "main_width = " + Math.Max(940, state.MainWidth) + Environment.NewLine
                 + "main_height = " + Math.Max(640, state.MainHeight) + Environment.NewLine

@@ -214,6 +214,11 @@ Auto Scan [ALL]
 Auto Scan [SELECTED]
 ```
 
+`[SELECTED]` queues only Albums explicitly selected by the operator. `[ALL]`
+queues every White/Unprocessed Album plus explicit selections in other eligible
+states. This is the same scope rule used by Python; it does not reinterpret the
+visible Folder Status filters as a launch queue.
+
 Launch defines mutation mode:
 
 ```text
@@ -224,8 +229,9 @@ Launch [LIVE WRITE] Choice Results
 Auto Scan without an explicit Launch choice prompts inside the Album Scanning
 panel rather than silently defaulting to READ.
 
-The launch payload is path-exact and contains only the checked Album set unless
-Auto Scan [ALL] is explicitly chosen.
+The launch payload remains path-exact. It contains only the checked Album set
+unless Auto Scan `[ALL]` is explicitly chosen, in which case it additionally
+contains every Unprocessed Album.
 
 ## Refresh behavior
 

@@ -12,7 +12,7 @@ namespace Splined.WindowsGui
 {
     internal enum ThemeFontRole { Minor, Body, Control, PanelTitle, AppTitle }
     internal enum ThemeStatusColor { White, Orange, Red, Purple, Green, Blue }
-    internal enum CardVisualRole { Panel, Nested, Recommended, Log }
+    internal enum CardVisualRole { Panel, Nested, SpectrumNested, CandidateGlass, LocalCandidateGlass, Recommended, Log }
 
     /// <summary>Central semantic palette. Status colors remain data colors, not decoration.</summary>
     internal sealed class ThemePalette
@@ -714,13 +714,24 @@ namespace Splined.WindowsGui
             switch (role)
             {
                 case CardVisualRole.Nested:
+                case CardVisualRole.SpectrumNested:
                     top = palette.NestedCardSurface;
                     bottom = Blend(palette.NestedCardSurface, palette.SurfacePrimary, palette.Dark ? 0.12f : 0.04f);
                     break;
+                case CardVisualRole.CandidateGlass:
+                    top = Blend(Color.White, palette.NestedCardSurface, palette.Dark ? 0.94f : 0.975f);
+                    bottom = Blend(palette.AccentPrimary, palette.NestedCardSurface, palette.Dark ? 0.97f : 0.985f);
+                    border = Blend(palette.TextSecondary, palette.BorderSubtle, 0.58f);
+                    break;
+                case CardVisualRole.LocalCandidateGlass:
+                    top = Blend(palette.StatusPurple, palette.NestedCardSurface, palette.Dark ? 0.78f : 0.90f);
+                    bottom = Blend(palette.StatusPurple, palette.NestedCardSurface, palette.Dark ? 0.91f : 0.96f);
+                    border = Blend(palette.StatusPurple, palette.TextPrimary, palette.Dark ? 0.18f : 0.42f);
+                    break;
                 case CardVisualRole.Recommended:
-                    top = Blend(palette.AccentPrimary, palette.NestedCardSurface, palette.Dark ? 0.82f : 0.93f);
-                    bottom = palette.NestedCardSurface;
-                    border = palette.AccentPrimary;
+                    top = Blend(palette.Success, palette.NestedCardSurface, palette.Dark ? 0.77f : 0.90f);
+                    bottom = Blend(palette.Success, palette.NestedCardSurface, palette.Dark ? 0.91f : 0.96f);
+                    border = palette.Success;
                     break;
                 case CardVisualRole.Log:
                     top = palette.LogWriteBackground;
@@ -738,10 +749,19 @@ namespace Splined.WindowsGui
                 graphics.FillPath(brush, path);
             using (GraphicsPath path = RoundedPath(bounds, radius))
             {
-                if (role == CardVisualRole.Panel || role == CardVisualRole.Log)
+                if (role == CardVisualRole.Panel || role == CardVisualRole.Log || role == CardVisualRole.SpectrumNested)
                     DrawSpectrumBorder(graphics, path, bounds, palette.Dark ? 0.82f : 0.70f);
                 else
                     using (Pen pen = new Pen(border)) graphics.DrawPath(pen, path);
+            }
+            if (role == CardVisualRole.CandidateGlass || role == CardVisualRole.LocalCandidateGlass || role == CardVisualRole.Recommended)
+            {
+                RectangleF highlight = new RectangleF(bounds.Left + 2f, bounds.Top + 2f,
+                    Math.Max(1f, bounds.Width - 4f), Math.Max(1f, bounds.Height * 0.34f));
+                using (GraphicsPath shinePath = RoundedPath(highlight, Math.Max(2f, radius - 2f)))
+                using (LinearGradientBrush shine = new LinearGradientBrush(Rectangle.Round(highlight),
+                    Color.FromArgb(palette.Dark ? 30 : 48, Color.White), Color.FromArgb(0, Color.White), LinearGradientMode.Vertical))
+                    graphics.FillPath(shine, shinePath);
             }
         }
 
@@ -979,23 +999,11 @@ namespace Splined.WindowsGui
                     Rectangle box = new Rectangle(1, Math.Max(1, (key.Height - boxSize) / 2), boxSize, boxSize);
                     args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                     using (GraphicsPath path = RoundedPath(box, 2))
-                    using (SolidBrush fill = new SolidBrush(key.Checked ? active.CheckOnBackground : active.CheckOffBackground))
-                        args.Graphics.FillPath(fill, path);
-                    using (GraphicsPath path = RoundedPath(box, 2))
-                    using (Pen pen = new Pen(key.Checked ? active.CheckOnBackground : active.CheckOffBackground)) args.Graphics.DrawPath(pen, path);
-                    if (key.Checked)
                     {
-                        using (Pen pen = new Pen(active.CheckGlyph, Math.Max(1.5f, key.DeviceDpi / 72f)))
-                        {
-                            pen.StartCap = LineCap.Round;
-                            pen.EndCap = LineCap.Round;
-                            args.Graphics.DrawLines(pen, new[]
-                            {
-                                new PointF(box.Left + box.Width * 0.22f, box.Top + box.Height * 0.53f),
-                                new PointF(box.Left + box.Width * 0.43f, box.Top + box.Height * 0.74f),
-                                new PointF(box.Left + box.Width * 0.80f, box.Top + box.Height * 0.27f)
-                            });
-                        }
+                        if (key.Checked)
+                            using (SolidBrush fill = new SolidBrush(active.CheckOnBackground)) args.Graphics.FillPath(fill, path);
+                        using (Pen pen = new Pen(key.Checked ? active.CheckOnBackground : active.CheckOffBackground,
+                            Math.Max(1.4f, key.DeviceDpi / 72f))) args.Graphics.DrawPath(pen, path);
                     }
                 };
                 return created;
@@ -1044,14 +1052,13 @@ namespace Splined.WindowsGui
                 graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 float inset = Math.Max(0.75f, size / 20f);
                 RectangleF bounds = new RectangleF(inset, inset, size - inset * 2f - 0.5f, size - inset * 2f - 0.5f);
-                using (SolidBrush fill = new SolidBrush(fillColor))
-                    graphics.FillEllipse(fill, bounds);
                 if (isChecked)
                 {
-                    float dot = size * 0.38f;
-                    using (SolidBrush center = new SolidBrush(glyphColor))
-                        graphics.FillEllipse(center, (size - dot) / 2f, (size - dot) / 2f, dot, dot);
+                    using (SolidBrush fill = new SolidBrush(fillColor))
+                        graphics.FillEllipse(fill, bounds);
                 }
+                else
+                    using (Pen outline = new Pen(fillColor, Math.Max(1.5f, size / 8f))) graphics.DrawEllipse(outline, bounds);
             }
             return bitmap;
         }
@@ -1132,7 +1139,9 @@ namespace Splined.WindowsGui
 
         private static Color SurfaceForRole(ThemePalette palette, CardVisualRole role)
         {
-            if (role == CardVisualRole.Nested || role == CardVisualRole.Recommended) return palette.NestedCardSurface;
+            if (role == CardVisualRole.Nested || role == CardVisualRole.SpectrumNested
+                || role == CardVisualRole.CandidateGlass || role == CardVisualRole.LocalCandidateGlass
+                || role == CardVisualRole.Recommended) return palette.NestedCardSurface;
             if (role == CardVisualRole.Log) return palette.LogWriteBackground;
             return palette.PanelSurface;
         }
@@ -1262,6 +1271,39 @@ namespace Splined.WindowsGui
             base.NotifyDefault(false);
             Invalidate();
         }
+    }
+
+    /// <summary>Collapsible panel heading using the shared spectrum frame.</summary>
+    internal sealed class SpectrumToggleButton : FluentButton
+    {
+        private bool spectrumHot;
+        private bool spectrumPressed;
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            ThemePalette active = Palette ?? ThemeManager.CurrentPalette;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle bounds = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+            ThemeManager.DrawCardSurface(e.Graphics, bounds, active, CardVisualRole.SpectrumNested, ThemeManager.CardRadius);
+            if (spectrumHot || spectrumPressed)
+            {
+                Color overlay = spectrumPressed ? active.SurfacePressed : active.SurfaceHover;
+                using (GraphicsPath path = ThemeManager.RoundedPath(new RectangleF(1f, 1f,
+                    Math.Max(1f, Width - 2f), Math.Max(1f, Height - 2f)), ThemeManager.CardRadius))
+                using (SolidBrush brush = new SolidBrush(Color.FromArgb(spectrumPressed ? 76 : 42, overlay)))
+                    e.Graphics.FillPath(brush, path);
+            }
+            Rectangle textBounds = new Rectangle(ThemeManager.Space12, 0,
+                Math.Max(1, Width - ThemeManager.Space16), Height);
+            TextRenderer.DrawText(e.Graphics, Text, Font, textBounds,
+                Enabled ? active.TextPrimary : active.TextDisabled,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); spectrumHot = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); spectrumHot = false; spectrumPressed = false; Invalidate(); }
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) { spectrumPressed = true; Invalidate(); } }
+        protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); spectrumPressed = false; Invalidate(); }
     }
 
     /// <summary>
@@ -1539,8 +1581,10 @@ namespace Splined.WindowsGui
             if (!Enabled) stateColor = ThemeManager.Blend(stateColor, active.ButtonDisabled, 0.58f);
 
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (SolidBrush fill = new SolidBrush(stateColor))
-                e.Graphics.FillEllipse(fill, box);
+            if (Checked || CheckState == CheckState.Indeterminate)
+                using (SolidBrush fill = new SolidBrush(stateColor)) e.Graphics.FillEllipse(fill, box);
+            else
+                using (Pen outline = new Pen(stateColor, Math.Max(1.7f, DeviceDpi / 64f))) e.Graphics.DrawEllipse(outline, box);
 
             if (animationPulse > 0f && Enabled)
             {
@@ -1550,13 +1594,7 @@ namespace Splined.WindowsGui
                     e.Graphics.DrawEllipse(pulse, halo);
             }
 
-            if (Checked)
-            {
-                float dot = boxSize * 0.38f;
-                using (SolidBrush center = new SolidBrush(active.CheckGlyph))
-                    e.Graphics.FillEllipse(center, box.Left + (boxSize - dot) / 2f, box.Top + (boxSize - dot) / 2f, dot, dot);
-            }
-            else if (CheckState == CheckState.Indeterminate)
+            if (CheckState == CheckState.Indeterminate)
             {
                 using (Pen dash = new Pen(active.CheckGlyph, Math.Max(1.6f, DeviceDpi / 64f)))
                     e.Graphics.DrawLine(dash, box.Left + box.Width * 0.25f, box.Top + box.Height * 0.5f,
@@ -1854,9 +1892,10 @@ namespace Splined.WindowsGui
             DoubleBuffered = true;
             SetStyle(ControlStyles.SupportsTransparentBackColor, true);
             BackColor = Color.Transparent;
-            Font = ThemeManager.UiFont(ThemeFontRole.AppTitle, FontStyle.Bold);
-            MinimumSize = new Size(142, 34);
-            Size = new Size(142, 34);
+            using (Font baseFont = ThemeManager.UiFont(ThemeFontRole.AppTitle, FontStyle.Bold))
+                Font = new Font(baseFont.FontFamily, 15f, FontStyle.Bold, GraphicsUnit.Point);
+            MinimumSize = new Size(158, 38);
+            Size = new Size(158, 38);
             AccessibleName = "S:P:L:I:N:E:D";
         }
 
@@ -1865,7 +1904,7 @@ namespace Splined.WindowsGui
             base.OnPaint(e);
             const string wordmark = "S:P:L:I:N:E:D";
             Color[] spectrum = ThemeManager.SpectrumColors(1f);
-            float x = 2f;
+            float x = 4f;
             using (StringFormat format = new StringFormat(StringFormat.GenericTypographic))
             {
                 format.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
@@ -1876,7 +1915,7 @@ namespace Splined.WindowsGui
                         ? ThemeManager.CurrentPalette.TextSecondary
                         : spectrum[(index / 2) % (spectrum.Length - 1)];
                     using (Brush brush = new SolidBrush(color))
-                        e.Graphics.DrawString(glyph, Font, brush, x, 5f, format);
+                        e.Graphics.DrawString(glyph, Font, brush, x, 4f, format);
                     x += e.Graphics.MeasureString(glyph, Font, PointF.Empty, format).Width - 0.4f;
                 }
             }
@@ -1994,9 +2033,6 @@ namespace Splined.WindowsGui
             Rectangle box = new Rectangle(left, Math.Max(1, (e.Item.Height - side) / 2), side, side);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using (SolidBrush brush = new SolidBrush(palette.CheckOnBackground)) e.Graphics.FillEllipse(brush, box);
-            float dot = box.Width * 0.38f;
-            using (SolidBrush center = new SolidBrush(palette.CheckGlyph))
-                e.Graphics.FillEllipse(center, box.Left + (box.Width - dot) / 2f, box.Top + (box.Height - dot) / 2f, dot, dot);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)

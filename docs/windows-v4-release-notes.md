@@ -82,6 +82,8 @@ and does not restore data without confirmation.
 ## Interface and design
 
 - Added the multicolor `S:P:L:I:N:E:D` wordmark and spectrum panel framing.
+- Enlarged and aligned the wordmark, and applied matching spectrum frames to
+  Select Media, Album information, and the shared Artwork pane.
 - Reworked Light appearance around a warm cream palette.
 - Removed excess menu spacing and the duplicate Select Media Launch control.
 - Kept one primary LAUNCH/STOP action beneath Artwork Candidates and Preview.
@@ -91,11 +93,20 @@ and does not restore data without confirmation.
   kept all three work areas independently scrollable in Stacked layout.
 - Consolidated Artist/Album filters, selection scope, scan scope, launch mode,
   and Folder Status in Select Media.
+- Added live selection and seven-category Folder Status counts, separating
+  Incomplete Albums from Artists that contain bypasses.
+- Matched Python Auto Scan scope: `[SELECTED]` queues explicit selections;
+  `[ALL]` queues every Unprocessed Album plus explicit selections.
 - Matched Python bulk selection: active-Artist Unprocessed Albums for ALL,
   clear for NONE, and required text-filter scope for FILTERED.
 - Added a persisted **View > Show Artwork** surface beside Album/activity
   information. Selected Albums show SQLite-indexed cover, year, resolution,
   track count, status, path, and file counts without provider or inventory work.
+- Kept Album information synchronized with the active processing Album or the
+  manually focused Album, cleared stale context, and colored text by status.
+- Ordered candidate cards with `[LOCAL]` first, the recommended result second,
+  and remaining results by descending resolution. Added candidate-only purple,
+  green, and clear glass surfaces with square responsive thumbnails.
 - Routed enabled candidate and URL hover into the embedded Artwork surface,
   while retaining the floating preview whenever Show Artwork is disabled.
 - Integrated MusicBrainz Matches into the main Scan Activity workspace instead
@@ -105,7 +116,7 @@ and does not restore data without confirmation.
   restores Scan Activity plus the selected Album cover when review ends.
 - Kept the Artwork surface square as the Activity/Candidate divider moves and
   constrained downward travel when the minimum Album/activity width is reached.
-- Replaced checkbox/checkmark chrome with animated round green-on/red-off
+- Replaced checkbox/checkmark chrome with solid-green-on/red-outline-off
   state controls throughout the picker, candidate, Settings, credential, and
   Backup interfaces.
 
