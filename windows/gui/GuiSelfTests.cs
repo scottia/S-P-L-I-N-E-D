@@ -195,12 +195,19 @@ namespace Splined.WindowsGui
                             { "title", "Album One" }, { "path", firstAlbum },
                             { "representative_file", Path.Combine(firstAlbum, "track.mp3") }, { "status", "unprocessed" },
                             { "compilation", false }, { "track_count", 1 },
-                            { "has_local_artwork", false }, { "local_artwork_files", new string[0] }
+                            { "release_year", "1998" },
+                            { "has_local_artwork", false }, { "local_artwork_files", new string[0] },
+                            { "cover_path", Path.Combine(firstAlbum, "cover.jpg") }, { "cover_name", "cover.jpg" },
+                            { "cover_format", "JPEG" }, { "cover_width", 1500 }, { "cover_height", 1500 },
+                            { "root_files", 12 }, { "cover_files", 1 }
                         }
                     } }
                 });
                 AlbumInfo[] albums = LibraryInventory.FromSnapshotJson(snapshotJson).ToArray();
-                Assert(albums.Length == 1 && albums[0].Title == "Album One" && albums[0].Key == "tag:album-one",
+                Assert(albums.Length == 1 && albums[0].Title == "Album One" && albums[0].Key == "tag:album-one"
+                    && albums[0].ReleaseYear == "1998" && albums[0].TrackCount == 1
+                    && albums[0].CoverName == "cover.jpg" && albums[0].CoverWidth == 1500
+                    && albums[0].RootFiles == 12,
                     "SQLite snapshot did not populate the Album identity model.");
                 Assert(albums[0].State == AlbumState.New && albums[0].EligibleByDefault, "A new SQLite Album was not eligible by default.");
                 string coverOnlySnapshot = snapshotJson.Replace(
@@ -223,7 +230,7 @@ namespace Splined.WindowsGui
 
                 UiState ui = new UiState
                 {
-                    Theme = "Dark", ShowStatusOnLaunch = false, ShowConfirmations = false, HoverEnabled = true,
+                    Theme = "Dark", ShowStatusOnLaunch = false, ShowConfirmations = false, HoverEnabled = true, ShowArtwork = true,
                     MediaFilterExpanded = false, MediaArtistFilter = "Alpha", MediaAlbumFilter = "Fresh",
                     MediaShowRed = false, FilteredScanMode = "read",
                     SelectedAlbumPaths = new List<string> { firstAlbum },
@@ -235,7 +242,7 @@ namespace Splined.WindowsGui
                 };
                 ConfigStore.SaveUi(ui);
                 UiState loadedUi = ConfigStore.LoadUi();
-                Assert(loadedUi.Theme == "Dark" && !loadedUi.ShowStatusOnLaunch && !loadedUi.ShowConfirmations && loadedUi.HoverEnabled
+                Assert(loadedUi.Theme == "Dark" && !loadedUi.ShowStatusOnLaunch && !loadedUi.ShowConfirmations && loadedUi.HoverEnabled && loadedUi.ShowArtwork
                     && !loadedUi.MediaFilterExpanded && loadedUi.MediaArtistFilter == "Alpha" && !loadedUi.MediaShowRed
                     && loadedUi.FilteredScanMode == "read" && loadedUi.SelectedAlbumPaths.SequenceEqual(new[] { firstAlbum })
                     && loadedUi.MainWidth == 1320 && loadedUi.MainSplitterDistance == 455
@@ -642,6 +649,8 @@ namespace Splined.WindowsGui
                         .Single(item => item.Text == "View");
                     ToolStripMenuItem appearanceMenu = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
                         .Single(item => item.Text == "Appearance");
+                    ToolStripMenuItem showArtwork = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
+                        .Single(item => item.Text == "Show Artwork");
                     ToolStripDropDownMenu appearanceDropDown = appearanceMenu.DropDown as ToolStripDropDownMenu;
                     Assert(form.MainMenuStrip.Renderer is FluentMenuRenderer
                         && viewMenu.DropDown.Renderer is FluentMenuRenderer
@@ -653,6 +662,14 @@ namespace Splined.WindowsGui
                         && appearanceMenu.DropDownItems.OfType<ToolStripMenuItem>().All(item => item.Padding.Top >= ThemeManager.Space4
                             && item.Padding.Bottom >= ThemeManager.Space4 && item.Margin.Left >= ThemeManager.Space4),
                         "System / Light / Dark do not use the shared Fluent Compact theme-menu spacing.");
+                    TableLayoutPanel artworkWorkspace = form.Controls.Find("activityWorkspace", true).OfType<TableLayoutPanel>().Single();
+                    Assert(showArtwork.Checked && artworkWorkspace.ColumnStyles[1].Width > 0,
+                        "View / Show Artwork did not restore the persisted top-right artwork panel.");
+                    artworkWorkspace.Size = new Size(900, 240);
+                    typeof(MainForm).GetMethod("UpdateArtworkSquareLayout", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { false });
+                    Assert((int)artworkWorkspace.ColumnStyles[1].Width == 240 + ThemeManager.Space4,
+                        "The embedded Artwork column did not remain square with the Activity workspace height.");
                     Assert(!Descendants(form).OfType<Label>().Any(label => label.Text == "Choose Select, All, or None. Launch uses checked albums only."
                             || label.Text == "Live discovery, validation, provider results, and write/read outcomes appear here."
                             || label.Text == "Real provider candidates for the current album will appear below."),
@@ -667,10 +684,24 @@ namespace Splined.WindowsGui
                     FluentCardTableLayoutPanel candidatesPanel = form.Controls.Find("artworkCandidatesCard", true).Single() as FluentCardTableLayoutPanel;
                     Assert(libraryCard != null && activityPanel != null && candidatesPanel != null,
                         "The three major work areas do not use the shared rounded panel surface.");
-                    Assert(libraryCard.AutoScroll && libraryCard.AutoScrollMinSize.Height > 0
+                    TableLayoutPanel libraryScrollCanvas = form.Controls.Find("mediaLibrarySelectionScrollCanvas", true).Single() as TableLayoutPanel;
+                    Assert(!libraryCard.AutoScroll && libraryScrollCanvas != null && libraryScrollCanvas.AutoScroll && libraryScrollCanvas.AutoScrollMinSize.Height > 0
                         && activityPanel.AutoScroll && activityPanel.AutoScrollMinSize.Height > 0
                         && candidatesPanel.AutoScroll && candidatesPanel.AutoScrollMinSize.Height > 0,
-                        "Each major work area must retain an independent scroll canvas in every panel layout.");
+                        "The framed Media Selection scroll canvas or another independently scrolling work area is missing.");
+                    MethodInfo showSelectedAlbum = typeof(MainForm).GetMethod("ShowSelectedAlbum", BindingFlags.Instance | BindingFlags.NonPublic);
+                    AlbumInfo previewAlbum = new AlbumInfo { Artist = "Preview Artist", Title = "Preview Album", Path = firstAlbum,
+                        ReleaseYear = "1998", TrackCount = 12, RootFiles = 14, CoverName = "cover.jpg", CoverWidth = 1500, CoverHeight = 1500 };
+                    showSelectedAlbum.Invoke(form, new object[] { previewAlbum });
+                    Label albumInfo = form.Controls.Find("selectedAlbumInfo", true).OfType<Label>().Single();
+                    Label artworkCaption = form.Controls.Find("artworkPreviewCaption", true).OfType<Label>().Single();
+                    Assert(albumInfo.Text.Contains("Preview Artist") && albumInfo.Text.Contains("Tracks 12")
+                        && artworkCaption.Text.Contains("cover.jpg") && artworkCaption.Text.Contains("1500 x 1500"),
+                        "Selected Album metadata and cover resolution were not projected into the Activity/Artwork split.");
+                    showArtwork.PerformClick();
+                    Assert(!showArtwork.Checked && artworkWorkspace.ColumnStyles[1].Width == 0,
+                        "View / Show Artwork did not collapse the embedded preview surface.");
+                    showArtwork.PerformClick();
                     FieldInfo candidateCardsField = typeof(MainForm).GetField("candidateCards", BindingFlags.Instance | BindingFlags.NonPublic);
                     FlowLayoutPanel candidateCards = (FlowLayoutPanel)candidateCardsField.GetValue(form);
                     Assert(candidateCards.WrapContents && candidateCards.FlowDirection == FlowDirection.LeftToRight,
@@ -845,7 +876,7 @@ namespace Splined.WindowsGui
                     MethodInfo applyLayoutPreset = typeof(MainForm).GetMethod("ApplyLayoutPreset", BindingFlags.Instance | BindingFlags.NonPublic);
                     applyLayoutPreset.Invoke(form, new object[] { "Stacked" });
                     Assert(mainPanels.Orientation == Orientation.Horizontal
-                        && libraryCard.AutoScroll && activityPanel.AutoScroll && candidatesPanel.AutoScroll,
+                        && libraryScrollCanvas.AutoScroll && activityPanel.AutoScroll && candidatesPanel.AutoScroll,
                         "Stacked layout did not preserve independent scrolling for all three work areas.");
                 }
 
@@ -1042,7 +1073,7 @@ namespace Splined.WindowsGui
 
             buildTree.Invoke(form, null);
             Assert(tree.StateImageList != null && tree.StateImageList.Images.Count == 2,
-                "The media tree did not receive the shared red/green checkbox images.");
+                "The media tree did not receive the shared red/green radio-state images.");
             Assert(!tree.ShowNodeToolTips,
                 "The folder tree still uses native tooltip rendering instead of the clean owner-drawn tooltip surface.");
             using (Bitmap uncheckedState = new Bitmap(tree.StateImageList.Images[0]))
@@ -1115,8 +1146,9 @@ namespace Splined.WindowsGui
                 "Select [FILTERED] did not select exactly the visible results and retain its green checked state.");
             selectAll.Checked = true;
             Assert(selectAll.Checked && !selectNone.Checked && !selectFiltered.Checked
-                && filterAlbums.Where(item => item.EligibleByDefault).All(item => item.Selected),
-                "Select [ALL] did not become the sole selected mode or select all normally eligible Albums.");
+                && filterAlbums.Single(item => item.Title == "Fresh Album").Selected
+                && filterAlbums.Where(item => item.Title != "Fresh Album").All(item => !item.Selected),
+                "Select [ALL] did not match Python by replacing selection with the active Artist's unprocessed Albums.");
             selectNone.Checked = true;
             Assert(selectNone.Checked && !selectAll.Checked && !selectFiltered.Checked && filterAlbums.All(item => !item.Selected),
                 "Select [NONE] did not become the sole selected mode or clear all Album selections.");
@@ -1311,10 +1343,10 @@ namespace Splined.WindowsGui
                 stateCheck.DrawToBitmap(checkedImage, new Rectangle(Point.Empty, checkedImage.Size));
                 stateCheck.Checked = false;
                 stateCheck.DrawToBitmap(uncheckedImage, new Rectangle(Point.Empty, uncheckedImage.Size));
-                Assert(IsCloserTo(checkedImage.GetPixel(8, 12), dark.CheckOnBackground, dark.CheckOffBackground)
-                    && IsCloserTo(uncheckedImage.GetPixel(8, 12), dark.CheckOffBackground, dark.CheckOnBackground)
+                Assert(IsCloserTo(checkedImage.GetPixel(4, 12), dark.CheckOnBackground, dark.CheckOffBackground)
+                    && IsCloserTo(uncheckedImage.GetPixel(4, 12), dark.CheckOffBackground, dark.CheckOnBackground)
                     && dark.CheckGlyph.R > 220 && dark.CheckGlyph.G > 170 && dark.CheckGlyph.B < 120,
-                    "Checkbox state surfaces are not dark green/red with a yellow checked glyph.");
+                    "Radio state surfaces are not green/red with a yellow active center.");
             }
 
             ThemeManager.Initialize("Dark");

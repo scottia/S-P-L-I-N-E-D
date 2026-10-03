@@ -87,12 +87,22 @@ and does not restore data without confirmation.
 - Kept one primary LAUNCH/STOP action beneath Artwork Candidates and Preview.
 - Added Balanced, Wider Select Media, Wider Decisions, Stacked, and custom
   draggable layouts.
-- Made Media Library Selection, Scan Activity, and Artwork Candidates
-  independently scrollable in every layout, including Stacked.
+- Contained Media Library Selection scrolling inside its spectrum frame and
+  kept all three work areas independently scrollable in Stacked layout.
 - Consolidated Artist/Album filters, selection scope, scan scope, launch mode,
   and Folder Status in Select Media.
-- Added URL preview, hover preview, comparison, and contextual information
-  throughout the Windows workflow.
+- Matched Python bulk selection: active-Artist Unprocessed Albums for ALL,
+  clear for NONE, and required text-filter scope for FILTERED.
+- Added a persisted **View > Show Artwork** surface beside Album/activity
+  information. Selected Albums show SQLite-indexed cover, year, resolution,
+  track count, status, path, and file counts without provider or inventory work.
+- Routed enabled candidate and URL hover into the embedded Artwork surface,
+  while retaining the floating preview whenever Show Artwork is disabled.
+- Kept the Artwork surface square as the Activity/Candidate divider moves and
+  constrained downward travel when the minimum Album/activity width is reached.
+- Replaced checkbox/checkmark chrome with animated round green-on/red-off
+  state controls throughout the picker, candidate, Settings, credential, and
+  Backup interfaces.
 
 ## SQLite and reliability
 

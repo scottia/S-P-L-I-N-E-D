@@ -56,8 +56,16 @@ pub struct MediaAlbumSnapshot {
     pub status: String,
     pub compilation: bool,
     pub track_count: i64,
+    pub release_year: String,
     pub has_local_artwork: bool,
     pub local_artwork_files: Vec<String>,
+    pub cover_path: String,
+    pub cover_name: String,
+    pub cover_format: String,
+    pub cover_width: i64,
+    pub cover_height: i64,
+    pub root_files: i64,
+    pub cover_files: i64,
     pub processed_at: Option<String>,
     pub timeout_until: Option<String>,
     pub selected_source: Option<String>,
@@ -1866,7 +1874,7 @@ fn load_snapshot(
     mapper: &PathMapper,
 ) -> Result<MediaSnapshot, String> {
     let mut statement = connection.prepare(
-        "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, albums.cover_found, albums.local_art_json, albums.processed_at, albums.timeout_until, albums.selected_source \
+        "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source \
          FROM albums JOIN artists ON artists.artist_key=albums.artist_key ORDER BY albums.path COLLATE NOCASE",
     ).map_err(db_error("prepare Select Media snapshot"))?;
     let albums = statement
@@ -1877,9 +1885,9 @@ fn load_snapshot(
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
             let representative: String = row.get(4)?;
             let physical_artist = physical_artist_name(mapper.local_root(), Path::new(&local_path));
-            let local_art_json: String = row.get(9)?;
-            let processed_at: Option<String> = row.get(10)?;
-            let selected_source: Option<String> = row.get(12)?;
+            let local_art_json: String = row.get(10)?;
+            let processed_at: Option<String> = row.get(18)?;
+            let selected_source: Option<String> = row.get(20)?;
             let stored_status: String = row.get(5)?;
             let status = if stored_status.eq_ignore_ascii_case("processed")
                 && !has_processed_evidence(processed_at.as_deref(), selected_source.as_deref())
@@ -1898,10 +1906,20 @@ fn load_snapshot(
                 status,
                 compilation: row.get::<_, i64>(6)? != 0,
                 track_count: row.get(7)?,
-                has_local_artwork: row.get::<_, i64>(8)? != 0,
+                release_year: row.get(8)?,
+                has_local_artwork: row.get::<_, i64>(9)? != 0,
                 local_artwork_files: mapper.json_paths_to_local(&local_art_json),
+                cover_path: mapper
+                    .to_local(&row.get::<_, String>(11)?)
+                    .unwrap_or_default(),
+                cover_name: row.get(12)?,
+                cover_format: row.get(13)?,
+                cover_width: row.get(14)?,
+                cover_height: row.get(15)?,
+                root_files: row.get(16)?,
+                cover_files: row.get(17)?,
                 processed_at,
-                timeout_until: row.get(11)?,
+                timeout_until: row.get(19)?,
                 selected_source,
             })
         })
@@ -2635,6 +2653,10 @@ mod tests {
         assert_eq!(snapshot.albums.len(), 1);
         assert!(snapshot.albums[0].has_local_artwork);
         assert_eq!(snapshot.albums[0].status, "unprocessed");
+        assert_eq!(snapshot.albums[0].track_count, 1);
+        assert_eq!(snapshot.albums[0].cover_name, "cover.jpg");
+        assert_eq!(snapshot.albums[0].cover_files, 1);
+        assert_eq!(snapshot.albums[0].root_files, 1);
 
         let db = database_path(&config.scan.cache_dir);
         let connection = Connection::open(&db).unwrap();

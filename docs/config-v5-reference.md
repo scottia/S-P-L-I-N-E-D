@@ -341,11 +341,13 @@ Legacy `[splineai]` remains a compatibility concern for existing installations;
 ## Windows internal interface settings
 
 Windows interface state is stored internally beside the internal Config v5
-record, not in `ui.toml`. It includes theme, window placement, filters, splitter
-positions, panel-layout preset, hover behavior, and current selections. It does
-not change source policy, credentials, the media database, or artwork-writing
-rules. **View > Panel Layout** supplies presets; splitters remain draggable and
-custom positions persist.
+record, not in `ui.toml`. It includes theme, window placement, filters,
+splitter positions, panel-layout preset, Show Artwork, hover behavior, and
+current selections. It does not change source policy, credentials, the media
+database, or artwork-writing rules. **View > Panel Layout** supplies presets;
+splitters remain draggable and custom positions persist. **View > Show
+Artwork** controls the embedded selected-Album/candidate preview; disabling it
+restores the floating hover preview without changing artwork policy.
 
 ## Validation
 
