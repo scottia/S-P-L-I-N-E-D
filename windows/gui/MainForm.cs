@@ -4,8 +4,10 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -112,6 +114,10 @@ namespace Splined.WindowsGui
         private ToolStripMenuItem showArtworkMenuItem;
         private RichTextBox activity;
         private TableLayoutPanel activityWorkspace;
+        private Panel activityContentHost;
+        private TableLayoutPanel activityColumn;
+        private Label scanActivityTitle;
+        private MusicBrainzMatchesPanel musicBrainzMatchesPanel;
         private Control artworkPreviewCard;
         private PictureBox artworkPreviewImage;
         private Label artworkPreviewTitle;
@@ -120,6 +126,10 @@ namespace Splined.WindowsGui
         private AlbumInfo displayedAlbum;
         private bool candidatePreviewActive;
         private bool adjustingArtworkLayout;
+        private int musicBrainzPreviewVersion;
+        private readonly SemaphoreSlim musicBrainzPreviewGate = new SemaphoreSlim(1, 1);
+        private readonly Dictionary<string, byte[]> musicBrainzPreviewCache = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        private readonly Queue<string> musicBrainzPreviewCacheOrder = new Queue<string>();
         private FlowLayoutPanel candidateCards;
         private Button useSelected;
         private Button keepLocal;
@@ -793,13 +803,17 @@ namespace Splined.WindowsGui
             upper.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             upper.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             rightSplit.Panel1.Controls.Add(upper);
-            upper.Controls.Add(BuildPanelTitle("Scan Activity and Decisions",
-                "Live discovery, validation, provider results, and write/read outcomes appear here."), 0, 0);
+            Control activityTitleRow = BuildPanelTitle("Scan Activity and Decisions",
+                "Live discovery, validation, provider results, and write/read outcomes appear here. MusicBrainz Matches replace the Activity surface while a release decision is active; artwork URLs preview in the shared panel at right.");
+            scanActivityTitle = activityTitleRow.Controls.OfType<Label>().First();
+            scanActivityTitle.Name = "scanActivityTitle";
+            upper.Controls.Add(activityTitleRow, 0, 0);
             activityWorkspace = new TableLayoutPanel { Name = "activityWorkspace", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
             activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64));
             activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
             activityWorkspace.Resize += delegate { UpdateArtworkSquareLayout(false); };
-            TableLayoutPanel activityColumn = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(0, 0, ThemeManager.Space4, 0), Padding = Padding.Empty };
+            activityContentHost = new Panel { Name = "activityContentHost", Dock = DockStyle.Fill, Margin = new Padding(0, 0, ThemeManager.Space4, 0), Padding = Padding.Empty };
+            activityColumn = new TableLayoutPanel { Name = "activityColumn", Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
             activityColumn.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
             activityColumn.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Panel albumInfoCard = new FluentCardPanel { Name = "selectedAlbumInfoCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space8), Margin = new Padding(0, 0, 0, ThemeManager.Space4), VisualRole = CardVisualRole.Nested };
@@ -810,7 +824,8 @@ namespace Splined.WindowsGui
             activity = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, DetectUrls = false, Font = new Font("Cascadia Mono", 9f) };
             activityCard.Controls.Add(activity);
             activityColumn.Controls.Add(activityCard, 0, 1);
-            activityWorkspace.Controls.Add(activityColumn, 0, 0);
+            activityContentHost.Controls.Add(activityColumn);
+            activityWorkspace.Controls.Add(activityContentHost, 0, 0);
 
             TableLayoutPanel artwork = new FluentCardTableLayoutPanel { Name = "selectedAlbumArtworkCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space8), RowCount = 3, ColumnCount = 1, Margin = new Padding(ThemeManager.Space4, 0, 0, 0), VisualRole = CardVisualRole.Nested };
             artwork.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
@@ -1477,32 +1492,9 @@ namespace Splined.WindowsGui
                 awaitingDecision = true;
                 candidateContext.Text = "MusicBrainz Matches — " + ReadString(payload, "artist") + " — " + ReadString(payload, "title");
                 UpdateSelectionControls();
-                using (MusicBrainzMatchesForm form = new MusicBrainzMatchesForm(
+                ShowMusicBrainzMatchesWorkspace(
                     ReadString(payload, "artist"), ReadString(payload, "title"), items,
-                    ReadBool(payload, "compilation_track"), uiState.Theme))
-                {
-                    DialogResult choice = form.ShowDialog(this);
-                    if (choice == DialogResult.OK && form.SelectedMatchIndex > 0)
-                    {
-                        Dictionary<string, object> command = new Dictionary<string, object>();
-                        command["action"] = "use_musicbrainz_match";
-                        command["index"] = form.SelectedMatchIndex;
-                        SendDecision(json.Serialize(command));
-                    }
-                    else if (choice == DialogResult.Retry || form.SearchRequested)
-                        SendDecision("{\"action\":\"search_musicbrainz\"}");
-                    else if (choice == DialogResult.Yes && form.AuthorityEditRequested)
-                    {
-                        Dictionary<string, object> command = new Dictionary<string, object>();
-                        command["action"] = "edit_musicbrainz_authority";
-                        command["recording_mbid"] = form.EditedRecordingMbid ?? "";
-                        command["artist_mbids"] = form.EditedArtistMbids ?? "";
-                        command["release_mbid"] = form.EditedReleaseMbid ?? "";
-                        SendDecision(json.Serialize(command));
-                    }
-                    else
-                        SendDecision("{\"action\":\"leave_unchanged\"}");
-                }
+                    ReadBool(payload, "compilation_track"));
             }
             else if (eventName == "compilation_started")
             {
@@ -1769,6 +1761,7 @@ namespace Splined.WindowsGui
         private void ClearCandidates()
         {
             CloseHoverPreview();
+            CloseMusicBrainzMatchesWorkspace();
             foreach (Control control in candidateCards.Controls)
             {
                 foreach (PictureBox picture in control.Controls.OfType<PictureBox>()) if (picture.Image != null) picture.Image.Dispose();
@@ -2023,6 +2016,189 @@ namespace Splined.WindowsGui
             ClearCandidates();
         }
 
+        private void ShowMusicBrainzMatchesWorkspace(string artist, string title, object[] items, bool compilationTrack)
+        {
+            CloseMusicBrainzMatchesWorkspace();
+            if (activityContentHost == null) return;
+            musicBrainzMatchesPanel = new MusicBrainzMatchesPanel(artist, title, items, compilationTrack, uiState.Theme);
+            musicBrainzMatchesPanel.UseRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
+            {
+                Dictionary<string, object> command = new Dictionary<string, object>();
+                command["action"] = "use_musicbrainz_match";
+                command["index"] = args.Index;
+                CloseMusicBrainzMatchesWorkspace();
+                SendDecision(json.Serialize(command));
+            };
+            musicBrainzMatchesPanel.SearchRequested += delegate
+            {
+                CloseMusicBrainzMatchesWorkspace();
+                SendDecision("{\"action\":\"search_musicbrainz\"}");
+            };
+            musicBrainzMatchesPanel.LeaveRequested += delegate
+            {
+                CloseMusicBrainzMatchesWorkspace();
+                SendDecision("{\"action\":\"leave_unchanged\"}");
+            };
+            musicBrainzMatchesPanel.AuthorityEditRequested += delegate(object sender, MusicBrainzAuthorityEventArgs args)
+            {
+                Dictionary<string, object> command = new Dictionary<string, object>();
+                command["action"] = "edit_musicbrainz_authority";
+                command["recording_mbid"] = args.RecordingMbid;
+                command["artist_mbids"] = args.ArtistMbids;
+                command["release_mbid"] = args.ReleaseMbid;
+                CloseMusicBrainzMatchesWorkspace();
+                SendDecision(json.Serialize(command));
+            };
+            musicBrainzMatchesPanel.ArtworkPreviewRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
+            {
+                PreviewMusicBrainzArtworkAsync(args.Item, args.Index);
+            };
+            musicBrainzMatchesPanel.ArtworkPreviewEnded += delegate { EndMusicBrainzArtworkPreview(); };
+            activityColumn.Visible = false;
+            activityContentHost.Controls.Add(musicBrainzMatchesPanel);
+            musicBrainzMatchesPanel.BringToFront();
+            if (scanActivityTitle != null) scanActivityTitle.Text = "MusicBrainz Matches";
+            ApplyArtworkPanelVisibility();
+            UpdateArtworkSquareLayout(false);
+        }
+
+        private void CloseMusicBrainzMatchesWorkspace()
+        {
+            musicBrainzPreviewVersion++;
+            MusicBrainzMatchesPanel panel = musicBrainzMatchesPanel;
+            musicBrainzMatchesPanel = null;
+            if (panel != null)
+            {
+                activityContentHost.Controls.Remove(panel);
+                panel.Dispose();
+            }
+            if (activityColumn != null) activityColumn.Visible = true;
+            if (scanActivityTitle != null) scanActivityTitle.Text = "Scan Activity and Decisions";
+            candidatePreviewActive = false;
+            ApplyArtworkPanelVisibility();
+            RenderDisplayedAlbum();
+        }
+
+        private async void PreviewMusicBrainzArtworkAsync(Dictionary<string, object> item, int index)
+        {
+            MusicBrainzMatchesPanel owner = musicBrainzMatchesPanel;
+            if (owner == null || item == null) return;
+            string[] urls = MusicBrainzMatchesPanel.ArtworkPreviewUrls(item);
+            if (urls.Length == 0) return;
+            int version = ++musicBrainzPreviewVersion;
+            candidatePreviewActive = true;
+            artworkPreviewTitle.Text = "MusicBrainz Artwork Preview";
+            string release = ReadString(item, "release_title");
+            artworkPreviewCaption.Text = "Loading " + (String.IsNullOrWhiteSpace(release) ? "release artwork" : release) + "...";
+            ApplyArtworkPanelVisibility();
+            await Task.Delay(140);
+            if (version != musicBrainzPreviewVersion || owner != musicBrainzMatchesPanel) return;
+            await musicBrainzPreviewGate.WaitAsync();
+            try
+            {
+                if (version != musicBrainzPreviewVersion || owner != musicBrainzMatchesPanel) return;
+                Exception lastError = null;
+                foreach (string url in urls)
+                {
+                    try
+                    {
+                        Stopwatch timer = Stopwatch.StartNew();
+                        byte[] bytes;
+                        if (!musicBrainzPreviewCache.TryGetValue(url, out bytes))
+                        {
+                            bytes = await DownloadArtworkPreviewAsync(url);
+                            RememberMusicBrainzPreview(url, bytes);
+                        }
+                        if (version != musicBrainzPreviewVersion || owner != musicBrainzMatchesPanel) return;
+                        Image replacement = ImageFromBytes(bytes);
+                        if (replacement == null) throw new InvalidOperationException("The artwork response is not a supported image.");
+                        string resolution = replacement.Width + "x" + replacement.Height;
+                        Image previous = artworkPreviewImage.Image;
+                        artworkPreviewImage.Image = replacement;
+                        if (previous != null) previous.Dispose();
+                        artworkPreviewTitle.Text = "MusicBrainz Artwork Preview";
+                        artworkPreviewCaption.Text = (String.IsNullOrWhiteSpace(release) ? "MusicBrainz release" : release)
+                            + " · " + resolution;
+                        timer.Stop();
+                        RuntimeLog.Write("debug", "musicbrainz.artwork_preview success index=" + index
+                            + " resolution=" + resolution + " elapsed_ms=" + timer.ElapsedMilliseconds);
+                        return;
+                    }
+                    catch (Exception error)
+                    {
+                        lastError = error;
+                    }
+                }
+                if (version != musicBrainzPreviewVersion || owner != musicBrainzMatchesPanel) return;
+                artworkPreviewTitle.Text = "MusicBrainz Artwork Preview";
+                artworkPreviewCaption.Text = "Artwork unavailable for "
+                    + (String.IsNullOrWhiteSpace(release) ? "this release" : release);
+                RuntimeLog.Write("warning", "musicbrainz.artwork_preview unavailable index=" + index
+                    + " error=" + (lastError == null ? "no artwork endpoint succeeded" : lastError.Message));
+            }
+            finally
+            {
+                musicBrainzPreviewGate.Release();
+            }
+        }
+
+        private void EndMusicBrainzArtworkPreview()
+        {
+            musicBrainzPreviewVersion++;
+            candidatePreviewActive = false;
+            RenderDisplayedAlbum();
+        }
+
+        private static Task<byte[]> DownloadArtworkPreviewAsync(string url)
+        {
+            return Task.Run(delegate
+            {
+                HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+                request.AllowAutoRedirect = true;
+                request.Timeout = 7000;
+                request.ReadWriteTimeout = 7000;
+                request.UserAgent = "SPLINED-Windows/1.0";
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream source = response.GetResponseStream())
+                using (MemoryStream destination = new MemoryStream())
+                {
+                    if (response.ContentLength > 20 * 1024 * 1024)
+                        throw new InvalidOperationException("Artwork preview exceeds the 20 MB safety limit.");
+                    byte[] buffer = new byte[81920];
+                    int read;
+                    while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        destination.Write(buffer, 0, read);
+                        if (destination.Length > 20 * 1024 * 1024)
+                            throw new InvalidOperationException("Artwork preview exceeds the 20 MB safety limit.");
+                    }
+                    return destination.ToArray();
+                }
+            });
+        }
+
+        private void RememberMusicBrainzPreview(string url, byte[] bytes)
+        {
+            if (String.IsNullOrWhiteSpace(url) || bytes == null || bytes.Length == 0) return;
+            if (!musicBrainzPreviewCache.ContainsKey(url)) musicBrainzPreviewCacheOrder.Enqueue(url);
+            musicBrainzPreviewCache[url] = bytes;
+            while (musicBrainzPreviewCacheOrder.Count > 12)
+            {
+                string oldest = musicBrainzPreviewCacheOrder.Dequeue();
+                musicBrainzPreviewCache.Remove(oldest);
+            }
+        }
+
+        private static Image ImageFromBytes(byte[] bytes)
+        {
+            try
+            {
+                using (MemoryStream stream = new MemoryStream(bytes))
+                using (Image source = Image.FromStream(stream)) return new Bitmap(source);
+            }
+            catch { return null; }
+        }
+
         private void ShowHoverPreview(CandidateView candidate)
         {
             CloseHoverPreview();
@@ -2110,15 +2286,17 @@ namespace Splined.WindowsGui
         private void ApplyArtworkPanelVisibility()
         {
             if (activityWorkspace == null || activityWorkspace.ColumnStyles.Count < 2) return;
-            bool visible = uiState.ShowArtwork;
+            // MusicBrainz review temporarily forces the shared Artwork panel
+            // visible without changing the user's persisted View preference.
+            bool visible = uiState.ShowArtwork || musicBrainzMatchesPanel != null;
             if (artworkPreviewCard != null) artworkPreviewCard.Visible = visible;
             activityWorkspace.ColumnStyles[0].SizeType = SizeType.Percent;
             activityWorkspace.ColumnStyles[0].Width = 100;
             activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
             activityWorkspace.ColumnStyles[1].Width = 0;
             if (showArtworkMenuItem != null) showArtworkMenuItem.Checked = visible;
-            if (visible) RenderDisplayedAlbum();
-            else CloseHoverPreview();
+            if (visible && musicBrainzMatchesPanel == null) RenderDisplayedAlbum();
+            else if (!visible) CloseHoverPreview();
             UpdateArtworkSquareLayout(false);
             activityWorkspace.PerformLayout();
         }
@@ -2126,7 +2304,7 @@ namespace Splined.WindowsGui
         private void UpdateArtworkSquareLayout(bool constrainSplitter)
         {
             if (adjustingArtworkLayout || activityWorkspace == null || activityWorkspace.ColumnStyles.Count < 2) return;
-            if (!uiState.ShowArtwork || activityWorkspace.ClientSize.Width <= 0 || activityWorkspace.ClientSize.Height <= 0)
+            if ((!uiState.ShowArtwork && musicBrainzMatchesPanel == null) || activityWorkspace.ClientSize.Width <= 0 || activityWorkspace.ClientSize.Height <= 0)
             {
                 activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
                 activityWorkspace.ColumnStyles[1].Width = 0;

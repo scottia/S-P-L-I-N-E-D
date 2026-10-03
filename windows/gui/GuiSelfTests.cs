@@ -375,16 +375,19 @@ namespace Splined.WindowsGui
                         { "recording_mbid", "59a0c68f-ec68-418d-a29a-fa54a7d9aea9" },
                         { "artist_mbids", new ArrayList { "291dcfb8-b31c-496a-905b-9955509d75b6" } },
                         { "release_mbid", "5d05694f-2b0f-427e-9df8-78dbc0983681" },
+                        { "release_group_mbid", "420c6768-0685-415a-bb59-d6a275121125" },
                         { "url", "https://musicbrainz.org/release/5d05694f-2b0f-427e-9df8-78dbc0983681" }
                     }
                 };
-                using (MusicBrainzMatchesForm matches = new MusicBrainzMatchesForm(
-                    "Fixture Artist", "Fixture Track", matchFixture, false, loadedUi.Theme))
+                using (FluentForm matchesHost = new FluentForm())
                 {
-                    matches.ShowInTaskbar = false;
-                    matches.StartPosition = FormStartPosition.Manual;
-                    matches.Location = new Point(-32000, -32000);
-                    matches.Show();
+                    MusicBrainzMatchesPanel matches = new MusicBrainzMatchesPanel(
+                        "Fixture Artist", "Fixture Track", matchFixture, false, loadedUi.Theme);
+                    matchesHost.Controls.Add(matches);
+                    matchesHost.ShowInTaskbar = false;
+                    matchesHost.StartPosition = FormStartPosition.Manual;
+                    matchesHost.Location = new Point(-32000, -32000);
+                    matchesHost.Show();
                     Application.DoEvents();
                     Assert(Descendants(matches).OfType<TextBox>().Count() == 3
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Apply IDs")
@@ -397,6 +400,11 @@ namespace Splined.WindowsGui
                     Assert(matchList.Items.Count >= 2 && matchList.Items[0].Tag == null
                         && matchList.Items[0].ForeColor.ToArgb() == ThemeManager.CurrentPalette.CategoryMagenta.ToArgb(),
                         "MusicBrainz decade/release categories did not use the magenta category role.");
+                    string[] previewUrls = MusicBrainzMatchesPanel.ArtworkPreviewUrls((Dictionary<string, object>)matchFixture[0]);
+                    Assert(previewUrls.Length == 2
+                        && previewUrls[0].Contains("/release-group/420c6768-0685-415a-bb59-d6a275121125/front")
+                        && previewUrls[1].Contains("/release/5d05694f-2b0f-427e-9df8-78dbc0983681/front"),
+                        "MusicBrainz artwork preview did not prefer release-group front art with exact-release fallback.");
                 }
 
                 Dictionary<string, object> fanartCredential = new Dictionary<string, object>
@@ -755,6 +763,24 @@ namespace Splined.WindowsGui
                     } });
                     FieldInfo refineField = typeof(MainForm).GetField("refineFallback", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert(((Button)refineField.GetValue(form)).Enabled, "Fallback Artist/Album retry was not enabled for review.");
+                    formUi.ShowArtwork = false;
+                    typeof(MainForm).GetMethod("ApplyArtworkPanelVisibility", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
+                    applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
+                    {
+                        { "event", "musicbrainz_matches" }, { "artist", "Fixture Artist" }, { "title", "Fixture Track" },
+                        { "compilation_track", false }, { "items", matchFixture }
+                    } });
+                    Control embeddedMatches = form.Controls.Find("musicBrainzMatchesPanel", true).Single();
+                    Label activityTitle = form.Controls.Find("scanActivityTitle", true).OfType<Label>().Single();
+                    Panel activityHost = form.Controls.Find("activityContentHost", true).OfType<Panel>().Single();
+                    Assert(activityHost.Controls.Contains(embeddedMatches) && activityTitle.Text == "MusicBrainz Matches"
+                        && artworkWorkspace.ColumnStyles[1].Width > 0,
+                        "MusicBrainz Matches did not replace Scan Activity while forcing the shared Artwork panel visible.");
+                    typeof(MainForm).GetMethod("CloseMusicBrainzMatchesWorkspace", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
+                    Assert(activityTitle.Text == "Scan Activity and Decisions" && activityHost.Controls.Find("musicBrainzMatchesPanel", true).Length == 0,
+                        "Returning from MusicBrainz Matches did not restore the Scan Activity workspace.");
+                    formUi.ShowArtwork = true;
+                    typeof(MainForm).GetMethod("ApplyArtworkPanelVisibility", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                     FieldInfo runningField = typeof(MainForm).GetField("running", BindingFlags.Instance | BindingFlags.NonPublic);
                     FieldInfo awaitingField = typeof(MainForm).GetField("awaitingDecision", BindingFlags.Instance | BindingFlags.NonPublic);
                     MethodInfo updateSelection = typeof(MainForm).GetMethod("UpdateSelectionControls", BindingFlags.Instance | BindingFlags.NonPublic);

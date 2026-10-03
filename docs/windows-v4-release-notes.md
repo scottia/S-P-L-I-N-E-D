@@ -34,7 +34,7 @@ an application-version declaration: the Windows application currently reports
 
 ## MusicBrainz matching
 
-- Added an interactive MusicBrainz Matches window for normal Albums and
+- Added an interactive MusicBrainz Matches workspace for normal Albums and
   curated compilations.
 - Grouped results by newest-to-oldest decade and populated official release
   type.
@@ -98,6 +98,11 @@ and does not restore data without confirmation.
   track count, status, path, and file counts without provider or inventory work.
 - Routed enabled candidate and URL hover into the embedded Artwork surface,
   while retaining the floating preview whenever Show Artwork is disabled.
+- Integrated MusicBrainz Matches into the main Scan Activity workspace instead
+  of a blocking dialog. Its artwork `[URL]` previews release-group front art in
+  the shared Artwork panel regardless of the ordinary hover switch, falls back
+  to exact-release art, reports preview dimensions beneath the image, and
+  restores Scan Activity plus the selected Album cover when review ends.
 - Kept the Artwork surface square as the Activity/Candidate divider moves and
   constrained downward travel when the minimum Album/activity width is reached.
 - Replaced checkbox/checkmark chrome with animated round green-on/red-off
