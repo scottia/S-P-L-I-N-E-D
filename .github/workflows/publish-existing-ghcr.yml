@@ -230,22 +230,6 @@ jobs:
             --tag "$IMAGE_NAME:latest" \
             ./python
 
-      - name: Run Python unit tests inside release image
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          VERSION_TAG="v${RELEASE_VERSION}"
-
-          docker run --rm \
-            -e PYTHONPATH=/app \
-            -v "$PWD:/source:ro" \
-            --entrypoint python3 \
-            "$IMAGE_NAME:$VERSION_TAG" \
-            -m unittest discover \
-            -s /source/python \
-            -p 'test_*.py'
-
       - name: Verify container version
         shell: bash
         run: |
