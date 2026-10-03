@@ -1,12 +1,13 @@
 <p align="center">
-  <img src=assets/branding/2CD0B55C-328E-48AF-A1A5-DD11147C9977.png alt="S:P:L:I:N:E:D" width="820">
-<h2 align="center">
-  <img src="assets/branding/splined-slogan.svg"
+  <img src="assets/branding/2CD0B55C-328E-48AF-A1A5-DD11147C9977.png"
+       alt="S:P:L:I:N:E:D"
+       width="820"><br>
+  <img src="assets/branding/splined-slogan.svg?v=2"
        alt="SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
        width="1020">
-</h2>
 </p>
 
+---
 ## 🎨 What is S:P:L:I:N:E:D?
 
 **S:P:L:I:N:E:D** is a utility for finding and managing Album artwork in a
