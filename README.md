@@ -2,21 +2,11 @@
   <img src=assets/branding/2CD0B55C-328E-48AF-A1A5-DD11147C9977.png alt="S:P:L:I:N:E:D" width="820">
 </p>
 
-<h2 align="center">
-SƎARCHABLƎ
-<img src="assets/branding/colon-red.svg" width="10" height="22" alt=":">
-PІXƎL
-<img src="assets/branding/colon-orange.svg" width="10" height="22" alt=":">
-LІNKS
-<img src="assets/branding/colon-yellow.svg" width="10" height="22" alt=":">
-ІDƎNTІFІƎD
-<img src="assets/branding/colon-green.svg" width="10" height="22" alt=":">
-NORMALІZƎD
-<img src="assets/branding/colon-cyan.svg" width="10" height="22" alt=":">
-ƎNRІCHƎD
-<img src="assets/branding/colon-purple.svg" width="10" height="22" alt=":">
-DƎFІNƎD
-</h2>
+<p align="center">
+  <img src="assets/branding/splined-slogan.svg"
+       alt="SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
+       width="900">
+</p>
 
 ## 🎨 What is S:P:L:I:N:E:D?
 
