@@ -2,9 +2,9 @@
   <img src="assets/branding/2CD0B55C-328E-48AF-A1A5-DD11147C9977.png"
        alt="S:P:L:I:N:E:D"
        width="820"><br>
-  <img src="assets/branding/splined-slogan.svg?v=2"
-       alt="SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
-       width="100%">
+  <img src="assets/branding/splined-slogan.svg?v=4"
+     alt="SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
+     width="100%">
 </p>
 
 ---
