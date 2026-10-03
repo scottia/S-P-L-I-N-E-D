@@ -4,7 +4,7 @@
        width="820"><br>
   <img src="assets/branding/splined-slogan.svg?v=2"
        alt="SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
-       width="1020">
+       width="100%">
 </p>
 
 ---
