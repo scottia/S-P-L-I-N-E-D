@@ -280,6 +280,13 @@ READ can query and evaluate candidates but does not install `cover.*` or create
 durable processed state for an Album that still has no cover. LIVE WRITE uses
 the same decision pipeline and may write the selected artwork.
 
+Multi-Album launches are lazy. SPLINED reads tags, resolves MusicBrainz
+authority, discovers artwork, and completes the operator decision for the
+current Album before it touches the next selected Album. `Select [ALL]` and
+Auto Scan do not prefetch MusicBrainz authority or artwork-source candidates
+for the rest of the queue. Source-result caching remains scoped to repeated
+release choices inside the active Album's MusicBrainz review loop.
+
 Compilation READ previews per-track embedded-artwork replacements. Compilation
 LIVE WRITE replaces only an approved track's embedded front image. It never
 creates, changes, or removes folder-level `cover.*`, and unresolved tracks keep

@@ -17,6 +17,7 @@ Do not infer one from another.
 
 ## Start here
 
+- [Release notes: S:P:L:I:N:E:D 1.0.28](release-notes-1.0.28.md)
 - [Installation and first run](installation-first-run.md)
 - [Windows v4 complete guide](windows-v4-interface.md)
 - [Windows v4 build notes](windows-v4-release-notes.md)
