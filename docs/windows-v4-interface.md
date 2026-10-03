@@ -105,10 +105,9 @@ native scrollbar from painting across the Media Selection frame in Stacked
 layout and keeps controls reachable when a panel is reduced.
 
 Windows uses the same red/green state language throughout the picker, candidate
-cards, Settings, credentials, and Backup surfaces. A round indicator is red
-when off and green with an active center when on; interactive state changes use
-a short pulse rather than a checkbox/checkmark glyph. Folder-tree selection
-uses the same round red/green states.
+cards, Settings, credentials, and Backup surfaces. A round indicator has a red
+outline when off and becomes solid green when on; no checkbox/checkmark glyph
+is used. Folder-tree selection uses the same round red/green states.
 
 ### Media Library Selection
 
@@ -124,6 +123,11 @@ Select Media contains:
 The only control that starts or stops processing is the primary **LAUNCH**
 button beneath Artwork Candidates and Preview. There is no second Launch button
 inside Select Media.
+
+**Auto Scan `[SELECTED]`** queues only explicitly selected Albums. **Auto Scan
+`[ALL]`** matches Python by queuing every Unprocessed Album plus any Album the
+operator selected explicitly. Read versus Live Write remains an independent,
+required choice; changing scan scope never changes mutation mode.
 
 Ctrl+Click supports independent Album selections. Selecting multiple Artists
 selects their normally eligible Albums while leaving orange Processed Albums
@@ -176,6 +180,11 @@ status, path, root-file count, current `cover.*` filename, and recorded
 resolution. The image is loaded from the indexed local cover path; selecting an
 Album does not rerun providers or rescan the Album directory.
 
+The Album information follows the Album currently being processed, then returns
+to the Album focused manually in the tree. It clears when neither context has
+an Album and uses that Album's status color. Both Album information and Artwork
+use the same spectrum frame as the other major work surfaces.
+
 The horizontal divider above Artwork Candidates also controls the Artwork
 surface geometry. Moving it up reduces the Artwork column with the available
 height; moving it down expands the column only while a square Artwork panel can
@@ -210,7 +219,14 @@ only candidates allowed by the active source policy.
 - Provider and candidate URLs open the corresponding artwork or authority page
   for inspection before approval.
 
-Candidate order remains deterministic. Concurrent provider work may reduce
+Candidate order remains deterministic. Local evidence is displayed first,
+the recommended result follows, and remaining results are ordered by descending
+pixel resolution with their stable candidate index as the final tie-breaker.
+Only candidate cards use the subtle glass treatment: local is light purple,
+recommended is green, and other results are clear. Thumbnails remain square
+and grow or shrink with the candidate pane. The shared Artwork preview,
+MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
+Concurrent provider work may reduce
 waiting time, but configured source order, source policy, Range Type, geometry,
 distance, and tie-breaking still determine the displayed ranking.
 

@@ -706,6 +706,12 @@ namespace Splined.WindowsGui
                     Assert(albumInfo.Text.Contains("Preview Artist") && albumInfo.Text.Contains("Tracks 12")
                         && artworkCaption.Text.Contains("cover.jpg") && artworkCaption.Text.Contains("1500 x 1500"),
                         "Selected Album metadata and cover resolution were not projected into the Activity/Artwork split.");
+                    Assert(((FluentCardPanel)form.Controls.Find("selectedAlbumInfoCard", true).Single()).VisualRole == CardVisualRole.SpectrumNested
+                        && ((FluentCardTableLayoutPanel)form.Controls.Find("selectedAlbumArtworkCard", true).Single()).VisualRole == CardVisualRole.SpectrumNested,
+                        "Album information and Artwork do not use matching spectrum frames.");
+                    showSelectedAlbum.Invoke(form, new object[] { null });
+                    Assert(albumInfo.Text.Length == 0, "Album information did not clear when no Album has focus.");
+                    showSelectedAlbum.Invoke(form, new object[] { previewAlbum });
                     showArtwork.PerformClick();
                     Assert(!showArtwork.Checked && artworkWorkspace.ColumnStyles[1].Width == 0,
                         "View / Show Artwork did not collapse the embedded preview surface.");
@@ -726,6 +732,24 @@ namespace Splined.WindowsGui
                             && ((FluentCardPanel)recommendedCard).VisualRole == CardVisualRole.Recommended,
                             "Recommended artwork does not use the subtle centralized candidate-card accent role.");
                     }
+                    MethodInfo showCandidates = typeof(MainForm).GetMethod("ShowCandidates", BindingFlags.Instance | BindingFlags.NonPublic);
+                    showCandidates.Invoke(form, new object[] { new object[]
+                    {
+                        CandidatePayload(9, "discogs", 3200, 3200, false, ""),
+                        CandidatePayload(4, "itunes", 1800, 1800, true, ""),
+                        CandidatePayload(7, "local", 600, 600, false, "cover-file"),
+                        CandidatePayload(8, "amazon", 2400, 2400, false, "")
+                    } });
+                    int[] displayedOrder = candidateCards.Controls.Cast<Control>().Select(card => (int)card.Tag).ToArray();
+                    Assert(displayedOrder.SequenceEqual(new[] { 7, 4, 9, 8 }),
+                        "Candidate order is not LOCAL, recommended, then descending resolution.");
+                    Assert(((FluentCardPanel)candidateCards.Controls[0]).VisualRole == CardVisualRole.LocalCandidateGlass
+                        && ((FluentCardPanel)candidateCards.Controls[1]).VisualRole == CardVisualRole.Recommended
+                        && ((FluentCardPanel)candidateCards.Controls[2]).VisualRole == CardVisualRole.CandidateGlass,
+                        "Candidate-only purple/green/clear glass roles were not assigned.");
+                    PictureBox candidateThumb = candidateCards.Controls[0].Controls["candidateImage"] as PictureBox;
+                    Assert(candidateThumb != null && candidateThumb.Width == candidateThumb.Height,
+                        "Candidate thumbnails do not preserve square responsive geometry.");
                     FieldInfo selectionField = typeof(MainForm).GetField("selectionMode", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert((SelectionMode)selectionField.GetValue(form) == SelectionMode.Select, "Manual Select must be the default selection mode.");
                     VerifyMediaFilter(form);
@@ -959,6 +983,17 @@ namespace Splined.WindowsGui
             return new AlbumInfo { Artist = artist, Title = title, Path = artist + "\\" + title, State = state };
         }
 
+        private static Dictionary<string, object> CandidatePayload(int index, string source, int width, int height, bool recommended, string localOrigin)
+        {
+            return new Dictionary<string, object>
+            {
+                { "index", index }, { "source", source }, { "width", width }, { "height", height },
+                { "recommended", recommended }, { "acceptable", true }, { "range_class", "Ideal" },
+                { "policy_status", "accept" }, { "cache_path", "" }, { "url", "" },
+                { "local_origin", localOrigin }, { "local_reference", "" }
+            };
+        }
+
         private static void VerifyRetentionLayout(SetupForm setup, TabControl advanced, TabPage pathsTab)
         {
             TabControl primary = (TabControl)typeof(SetupForm).GetField("primaryTabs", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(setup);
@@ -1007,6 +1042,7 @@ namespace Splined.WindowsGui
                 Album("Alpha Artist", "Processed Album", AlbumState.Processed),
                 Album("Bypass Artist", "Red Album", AlbumState.Bypassed),
                 Album("Timeout Artist", "Waiting Album", AlbumState.TimeoutActive),
+                Album("Incomplete Artist", "Resume Album", AlbumState.Incomplete),
                 Album("Complete Artist", "Done One", AlbumState.Processed),
                 Album("Complete Artist", "Done Two", AlbumState.Processed)
             };
@@ -1019,7 +1055,7 @@ namespace Splined.WindowsGui
             TextBox album = form.Controls.Find("mediaAlbumFilter", true).OfType<TextBox>().Single();
             artist.Text = "";
             album.Text = "";
-            foreach (string filterName in new[] { "mediaFilterWhite", "mediaFilterOrange", "mediaFilterRed", "mediaFilterPurple", "mediaFilterGreen", "mediaFilterBlue" })
+            foreach (string filterName in new[] { "mediaFilterWhite", "mediaFilterOrange", "mediaFilterRed", "mediaFilterPurple", "mediaFilterGreen", "mediaFilterBlue", "mediaFilterIncomplete" })
                 form.Controls.Find(filterName, true).OfType<CheckBox>().Single().Checked = true;
             Dictionary<string, AlbumState> originalStates = filterAlbums.ToDictionary(item => item.Path, item => item.State);
             Dictionary<string, bool> originalSelections = filterAlbums.ToDictionary(item => item.Path, item => item.Selected);
@@ -1028,7 +1064,7 @@ namespace Splined.WindowsGui
             TableLayoutPanel libraryLayout = (TableLayoutPanel)typeof(MainForm).GetField("libraryLayout", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
             Button collapse = form.Controls.Find("mediaFilterToggle", true).OfType<Button>().Single();
             setExpanded.Invoke(form, new object[] { false });
-            Assert(Math.Abs(libraryLayout.RowStyles[1].Height - 36) < 0.1 && collapse.Text.Contains("▸"),
+            Assert(Math.Abs(libraryLayout.RowStyles[1].Height - 38) < 0.1 && collapse.Text.Contains("▸"),
                 "Select did not collapse and return its space to the folder tree.");
             Control filterContainer = form.Controls.Find("mediaFilterContainer", true).Single();
             filterContainer.PerformLayout();
@@ -1047,7 +1083,7 @@ namespace Splined.WindowsGui
                 "Media Filter still spells out color names instead of using color bullets.");
             IDictionary statusBullets = (IDictionary)typeof(MainForm).GetField("mediaStatusBullets", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
             IDictionary statusDescriptions = (IDictionary)typeof(MainForm).GetField("mediaStatusDescriptions", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-            Assert(statusBullets.Count == 6 && statusDescriptions.Count == 6,
+            Assert(statusBullets.Count == 7 && statusDescriptions.Count == 7,
                 "Folder-status bullets or matching semantic labels are missing.");
             foreach (DictionaryEntry entry in statusBullets)
             {
@@ -1062,12 +1098,16 @@ namespace Splined.WindowsGui
             CheckBox selectAll = form.Controls.Find("selectModeAll", true).OfType<CheckBox>().Single();
             CheckBox selectNone = form.Controls.Find("selectModeNone", true).OfType<CheckBox>().Single();
             CheckBox selectFiltered = form.Controls.Find("selectModeFiltered", true).OfType<CheckBox>().Single();
+            CheckBox autoAll = form.Controls.Find("autoScanAll", true).OfType<CheckBox>().Single();
+            CheckBox autoSelected = form.Controls.Find("autoScanSelected", true).OfType<CheckBox>().Single();
             Assert(scanRead.Text == "Launch [READ] Source Results" && scanWrite.Text == "Launch [LIVE WRITE] Choice Results"
                 && ((GroupBox)scanRead.Parent.Parent).Text == "Launch Mode"
-                && ((GroupBox)selectFiltered.Parent.Parent).Text == "Select Mode"
+                && ((GroupBox)selectFiltered.Parent.Parent).Text.StartsWith("Select Mode [", StringComparison.Ordinal)
+                && ((GroupBox)autoAll.Parent.Parent).Text == "Album Scanning"
+                && autoAll.Text == "Auto Scan [All]" && autoSelected.Text == "Auto Scan [Selected]"
                 && selectAll.Text == "Select [ALL]" && selectNone.Text == "Select [NONE]" && selectFiltered.Text == "Select [FILTERED]",
                 "Select Mode or Launch Mode labels do not match the Windows v4 design.");
-            foreach (GroupBox modeGroup in new[] { (GroupBox)selectFiltered.Parent.Parent, (GroupBox)scanRead.Parent.Parent })
+            foreach (GroupBox modeGroup in new[] { (GroupBox)selectFiltered.Parent.Parent, (GroupBox)autoAll.Parent.Parent, (GroupBox)scanRead.Parent.Parent })
             {
                 modeGroup.PerformLayout();
                 Control clipped = modeGroup.Controls.Cast<Control>().SelectMany(control => control.Controls.Cast<Control>())
@@ -1076,11 +1116,21 @@ namespace Splined.WindowsGui
                     modeGroup.Text + " contains clipped option text or checkbox rows (group " + modeGroup.ClientSize.Width + "x" + modeGroup.ClientSize.Height
                     + (clipped == null ? "" : ", control " + clipped.Text + " at " + clipped.Bounds + " in " + clipped.Parent.ClientSize) + ").");
             }
-            foreach (CheckBox option in new[] { selectAll, selectNone, selectFiltered, scanRead, scanWrite })
+            foreach (CheckBox option in new[] { selectAll, selectNone, selectFiltered, autoAll, autoSelected, scanRead, scanWrite })
                 Assert(option.Width >= TextRenderer.MeasureText(option.Text, option.Font).Width + 28,
                     option.Text + " does not have enough themed checkbox width to render without ellipsis.");
             Assert(scanRead.Checked && !scanWrite.Checked && !selectFiltered.Checked,
                 "Persisted Filtered Scan [READ] choice was not restored without selecting Auto Mode.");
+            MethodInfo getLaunchAlbums = typeof(MainForm).GetMethod("GetLaunchAlbums", BindingFlags.Instance | BindingFlags.NonPublic);
+            autoSelected.Checked = true;
+            Assert(((List<AlbumInfo>)getLaunchAlbums.Invoke(form, null)).Count == filterAlbums.Count(item => item.Selected),
+                "Auto Scan [Selected] does not use only explicit Album selections.");
+            autoAll.Checked = true;
+            List<AlbumInfo> allQueue = (List<AlbumInfo>)getLaunchAlbums.Invoke(form, null);
+            Assert(allQueue.All(item => item.Selected || item.State == AlbumState.New)
+                && allQueue.Any(item => item.State == AlbumState.New),
+                "Auto Scan [All] does not use every Unprocessed Album plus explicit selections.");
+            autoSelected.Checked = true;
             scanRead.Checked = false;
             Assert(!primaryLaunch.Enabled, "The single primary LAUNCH must be disabled until a Launch Mode is chosen.");
             scanRead.Checked = true;
@@ -1108,7 +1158,7 @@ namespace Splined.WindowsGui
                 Assert(IsCloserTo(stateCorner, ThemeManager.CurrentPalette.TreeSurface, Color.White),
                     "The folder-list state image still contains a white native/transparent outline artifact.");
             }
-            Assert(tree.Nodes.Count == 4, "Media Filter did not initially show the in-memory Artist model.");
+            Assert(tree.Nodes.Count == 5, "Media Filter did not initially show the in-memory Artist model.");
             artist.Text = "alpha";
             Assert(tree.Nodes.Count == 1 && tree.Nodes[0].Text == "Alpha Artist",
                 "Artist live text filtering is not immediate or case-insensitive.");
@@ -1130,6 +1180,7 @@ namespace Splined.WindowsGui
                 .Concat(form.Controls.Find("mediaFilterPurple", true).OfType<CheckBox>())
                 .Concat(form.Controls.Find("mediaFilterGreen", true).OfType<CheckBox>())
                 .Concat(form.Controls.Find("mediaFilterBlue", true).OfType<CheckBox>())
+                .Concat(form.Controls.Find("mediaFilterIncomplete", true).OfType<CheckBox>())
                 .ToArray();
             foreach (CheckBox filter in filters) filter.Checked = false;
             form.Controls.Find("mediaFilterOrange", true).OfType<CheckBox>().Single().Checked = true;
@@ -1156,8 +1207,13 @@ namespace Splined.WindowsGui
             Assert(tree.Nodes.Count == 1 && tree.Nodes[0].Text == "Bypass Artist",
                 "Blue status filtering did not show Artists containing bypass.");
 
+            form.Controls.Find("mediaFilterBlue", true).OfType<CheckBox>().Single().Checked = false;
+            form.Controls.Find("mediaFilterIncomplete", true).OfType<CheckBox>().Single().Checked = true;
+            Assert(VisibleAlbumTitles(tree).SequenceEqual(new[] { "Resume Album" }),
+                "Incomplete status filtering did not remain independent from Artist Contains Bypass.");
+
             foreach (CheckBox filter in filters) filter.Checked = true;
-            Assert(tree.Nodes.Count == 4, "Clearing Media Filter criteria did not restore all rows.");
+            Assert(tree.Nodes.Count == 5, "Clearing Media Filter criteria did not restore all rows.");
             Assert(filterAlbums.All(item => item.State == originalStates[item.Path] && item.Selected == originalSelections[item.Path]),
                 "Media Filter mutated underlying Album status or selection state.");
 
@@ -1369,10 +1425,10 @@ namespace Splined.WindowsGui
                 stateCheck.DrawToBitmap(checkedImage, new Rectangle(Point.Empty, checkedImage.Size));
                 stateCheck.Checked = false;
                 stateCheck.DrawToBitmap(uncheckedImage, new Rectangle(Point.Empty, uncheckedImage.Size));
-                Assert(IsCloserTo(checkedImage.GetPixel(4, 12), dark.CheckOnBackground, dark.CheckOffBackground)
-                    && IsCloserTo(uncheckedImage.GetPixel(4, 12), dark.CheckOffBackground, dark.CheckOnBackground)
-                    && dark.CheckGlyph.R > 220 && dark.CheckGlyph.G > 170 && dark.CheckGlyph.B < 120,
-                    "Radio state surfaces are not green/red with a yellow active center.");
+                Assert(IsCloserTo(checkedImage.GetPixel(9, 12), dark.CheckOnBackground, dark.CheckOffBackground)
+                    && IsCloserTo(uncheckedImage.GetPixel(2, 12), dark.CheckOffBackground, dark.CheckOnBackground)
+                    && !IsCloserTo(uncheckedImage.GetPixel(9, 12), dark.CheckOffBackground, dark.CheckOnBackground),
+                    "Radio states are not solid green when selected and red outlines when unselected.");
             }
 
             ThemeManager.Initialize("Dark");
