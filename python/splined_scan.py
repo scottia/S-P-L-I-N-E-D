@@ -27,6 +27,12 @@ APP_NAME = core.APP_NAME
 VERSION = core.VERSION
 
 
+def _iter_lazy_album_records(albums, prepare_album):
+    """Yield prepared Albums one at a time without batch-wide prefetch."""
+    for index, album in enumerate(albums, 1):
+        yield index, prepare_album(album, index)
+
+
 def provider_label(source: str) -> str:
     mapping = {
         "local": "Local",
@@ -2217,8 +2223,16 @@ def _run_scan_dir_batch(
         phase="authority",
     )
 
-    records: list[dict[str, Any]] = []
-    for inventory_index, album in enumerate(albums, 1):
+    def prepare_album_record(
+        album: core.AlbumDir,
+        inventory_index: int,
+    ) -> dict[str, Any]:
+        """Resolve only the Album that is about to enter operator review.
+
+        Keep this preparation inside the processing iterator.  A multi-Album
+        selection must never read tags or query MusicBrainz for later Albums
+        while the current Album is still awaiting its candidate decision.
+        """
         authority_started = core.time.perf_counter()
         core.emit_ui(
             "album",
@@ -2318,11 +2332,8 @@ def _run_scan_dir_batch(
             f"fallback={str(record.get('fallback_reason') or '')!r} "
             f"elapsed={core.time.perf_counter() - authority_started:.3f}s"
         )
-        records.append(record)
+        return record
 
-    fallback_records = [record for record in records if record.get("fallback_reason")]
-    normal_records = [record for record in records if not record.get("fallback_reason")]
-    ordered_records = fallback_records + normal_records
     unresolved_items: list[dict[str, str]] = []
     manual_state: dict[str, Any] = {}
 
@@ -2393,7 +2404,13 @@ def _run_scan_dir_batch(
         print(core.ljust_color(core.cyan("Output:"), 14) + core.white("[]"))
     print()
 
-    for run_index, record in enumerate(ordered_records, 1):
+    for run_index, record in _iter_lazy_album_records(
+        albums,
+        prepare_album_record,
+    ):
+        # Authority, local evidence, provider discovery, candidate review, and
+        # persistence are intentionally completed for one Album before the
+        # next selected Album is touched.
         album: core.AlbumDir = record["album"]
         file_count = int(record.get("file_count", 0))
         compilation = str(record.get("compilation") or "Standard")
@@ -2409,7 +2426,7 @@ def _run_scan_dir_batch(
         core.emit_ui(
             "album",
             index=run_index,
-            total=len(ordered_records),
+            total=len(albums),
             path=str(album.path),
             artist=tag_artist,
             album=tag_album,
@@ -2422,7 +2439,7 @@ def _run_scan_dir_batch(
             phase="processing",
         )
 
-        print(core.bold(core.cyan(f"[{run_index}/{len(ordered_records)}] {core.album_path_text(album.path)}")))
+        print(core.bold(core.cyan(f"[{run_index}/{len(albums)}] {core.album_path_text(album.path)}")))
 
         if record.get("fatal_error"):
             summary.failed += 1
@@ -3326,7 +3343,7 @@ def _run_scan_dir_batch(
         + " "
         + core.white("Skipped") + " " + core.bracketed_list(skipped_list, core.gray)
     )
-    core.debug_log(f"picker.batch.report_ready albums={len(ordered_records)}")
+    core.debug_log(f"picker.batch.report_ready albums={len(albums)}")
     core.emit_ui(
         "summary",
         **vars(summary),

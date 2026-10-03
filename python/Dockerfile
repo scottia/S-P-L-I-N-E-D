@@ -69,6 +69,7 @@ COPY test_splined_media_load_policy.py /tmp/test_splined_media_load_policy.py
 COPY test_splined_media_warm_start_policy.py /tmp/test_splined_media_warm_start_policy.py
 COPY test_splined_media_checkpoint_policy.py /tmp/test_splined_media_checkpoint_policy.py
 COPY test_splined_compilation_authority_policy.py /tmp/test_splined_compilation_authority_policy.py
+COPY test_splined_scan_lazy_batch.py /tmp/test_splined_scan_lazy_batch.py
 RUN python3 -m py_compile \
         /app/sitecustomize.py \
         /app/splined_media_tags.py \
@@ -101,6 +102,7 @@ RUN python3 -m py_compile \
         test_splined_media_warm_start_policy \
         test_splined_media_checkpoint_policy \
         test_splined_compilation_authority_policy \
+        test_splined_scan_lazy_batch \
     && rm -f \
         /tmp/test_candidate_ranking_policy.py \
         /tmp/test_splined_media_index.py \
@@ -111,6 +113,7 @@ RUN python3 -m py_compile \
         /tmp/test_splined_media_warm_start_policy.py \
         /tmp/test_splined_media_checkpoint_policy.py \
         /tmp/test_splined_compilation_authority_policy.py \
+        /tmp/test_splined_scan_lazy_batch.py \
     && chmod 0444 /app/splined_schema.sql \
     && chmod 0555 \
         /app/sitecustomize.py \

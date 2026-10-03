@@ -78,6 +78,7 @@ public help system.
 
 Start with:
 
+- [Release notes: S:P:L:I:N:E:D 1.0.28](docs/release-notes-1.0.28.md)
 - [Documentation home](docs/README.md)
 - [Installation and first run](docs/installation-first-run.md)
 - [Windows v4 guide](docs/windows-v4-interface.md)
