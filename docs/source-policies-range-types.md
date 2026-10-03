@@ -334,6 +334,10 @@ The compilation branch is explicit and per track:
    different resolution/source results. Higher resolution is useful comparison
    evidence, not a replacement for normal range, source-priority, shape,
    approval, and fallback policy.
+   In Windows, this list replaces the Scan Activity surface while active and
+   uses the existing right-side Artwork panel. Its `[URL]` hover is active
+   during MusicBrainz review even when ordinary candidate hover is disabled;
+   it is a bounded visual authority check and does not rerun artwork providers.
 10. The three `[E]` controls in Ratatui `FALLBACK ARTIST / ALBUM INFO`, and the
    corresponding Windows Artist/Release/Recording fields plus **Apply IDs**,
    accept session-only MBID corrections. Applying validates the UUID and

@@ -189,6 +189,14 @@ the selected Album cover. Clicking a candidate URL also places its cached image
 in the Artwork surface before the authority URL opens. When Show Artwork is
 off, Enable Hover retains the floating resizable preview behavior.
 
+MusicBrainz review is an intentional exception to the ordinary hover switch.
+While MusicBrainz Matches is active, it replaces the left Scan Activity surface
+and temporarily shows the existing Artwork surface at right even if **Show
+Artwork** was off. Hovering or selecting an artwork `[URL]` previews the
+release-group front image there without requiring **Enable Hover**. Leaving the
+URL restores the selected Album cover; leaving MusicBrainz Matches restores
+Scan Activity and the user's saved Show Artwork preference.
+
 The processing panel reports local evidence, authority resolution, provider
 timings, candidate policy, and errors. Artwork Candidates and Preview displays
 only candidates allowed by the active source policy.
@@ -209,9 +217,12 @@ distance, and tie-breaking still determine the displayed ranking.
 ## MusicBrainz Matches
 
 Every Album candidate review can open **MusicBrainz Matches...**, including an
-Album that already has a valid Album/Release MBID. Matches are grouped by
-newest-to-oldest decade and by populated official release type: Album, Single,
-EP, Soundtrack, Compilation, and any additional type returned by MusicBrainz.
+Album that already has a valid Album/Release MBID. Matches are integrated into
+the main decision workspace rather than opened as a separate modal window, so
+the shared Artwork panel remains available throughout authority review.
+Matches are grouped by newest-to-oldest decade and by populated official
+release type: Album, Single, EP, Soundtrack, Compilation, and any additional
+type returned by MusicBrainz.
 
 Rows show:
 
@@ -221,7 +232,17 @@ Rows show:
 - release type;
 - release title;
 - known inspected artwork resolution;
-- direct MusicBrainz and artwork-preview links.
+- an artwork-preview `[URL]`, plus **Open MB Page** for the exact MusicBrainz
+  release page.
+
+The artwork `[URL]` uses the Cover Art Archive release-group front endpoint,
+falling back to the exact-release front endpoint. Hover and row selection load
+that image asynchronously into the existing Artwork surface and record its
+actual dimensions beneath the image. The match-list Resolution column remains
+the exact-Release-MBID evidence from inspected configured source results, not
+the release-group preview size. Preview bytes are bounded and cached for the
+active Windows session; previewing does not rerun provider discovery or alter
+source ranking.
 
 Selecting a row runs the ordinary configured artwork providers for that
 release. **Back to MB Matches** returns to the same cached list. The current
@@ -230,7 +251,7 @@ inspected row restores its source candidates, resolution evidence, diagnostics,
 and deterministic ordering without repeating provider discovery or image
 downloads. **Return to Source Results** restores the original Album results.
 
-The Matches window also has session-only Artist, Release, and Recording MBID
+The Matches workspace also has session-only Artist, Release, and Recording MBID
 fields. **Apply IDs** requires canonical UUIDs and lets the Rust core validate
 available Recording/Artist and Recording/Release relationships before
 rebuilding the list. These fields choose search authority for the current
