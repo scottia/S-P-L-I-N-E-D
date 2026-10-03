@@ -2,11 +2,11 @@
   <img src=assets/branding/2CD0B55C-328E-48AF-A1A5-DD11147C9977.png alt="S:P:L:I:N:E:D" width="820">
 </p>
 
-<p align="center">
+<h2 align="center">
   <img src="assets/branding/splined-slogan.svg"
        alt="SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
-       width="900">
-</p>
+       width="1000">
+</h2>
 
 ## 🎨 What is S:P:L:I:N:E:D?
 
