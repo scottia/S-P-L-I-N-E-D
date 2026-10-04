@@ -397,7 +397,9 @@ Candidate Decision area becomes `MUSICBRAINZ MATCHES`. Decades are ordered
 newest to oldest with `UNKNOWN` last and a blank row before each decade. Only
 release types containing matches are shown, ordered Album, Single, EP,
 Compilation, Soundtrack, then any additional MusicBrainz types. Decade and
-release-type labels begin at the left edge. One heading per decade labels the
+release-type labels begin at the left edge. A fixed `CURRENT ALBUM` context
+row remains above the scrollable results so the active Artist and Album stay
+visible while candidates are compared. One heading per decade labels the
 number, Artist, Country, Date, known Resolution, Release, and URL columns; its
 URL aligns with the source-candidate URL column above. A direct Cover Art
 Archive release-group front-image `[URL]` can be hovered or clicked to preview
@@ -554,9 +556,11 @@ active Album, authority, provider, download, and candidate activity surfaces.
 The right-side embedded panel remains Album-specific rather than reverting to a
 generic media-library summary.
 
-After a batch, the per-Album final report remains until Enter or Esc returns to
-the same resident Select Media session. `q` exits. A cumulative failure exit
-state is retained across multiple batches in the same TUI process.
+Escape from Candidate Decision ends only the active batch and opens its
+Album Run Report; it does not stop the resident TUI worker. After a batch, the
+per-Album final report remains until Enter or Esc returns to the same resident
+Select Media session. `q` exits. A cumulative failure exit state is retained
+across multiple batches in the same TUI process.
 
 The Enter/Esc used to leave the report is consumed by the report. A brief
 activation guard on return prevents that same physical Enter press from also
