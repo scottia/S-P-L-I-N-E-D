@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import splined_strict_source_policy as strict_policy
+
 
 _RANGE_RANK = {
     "Ideal": 0,
@@ -84,6 +86,11 @@ def operational_fallback_suggested(
     cfg: dict[str, Any],
     format_order: list[str],
 ) -> Any | None:
+    candidates = [
+        candidate
+        for candidate in candidates
+        if strict_policy.preferred_eligible(candidate)
+    ]
     if not candidates:
         return None
 
@@ -114,7 +121,8 @@ def operational_preferred_candidate(
     acceptable = [
         candidate
         for candidate in candidates
-        if bool(scan.project_candidate(candidate, cfg, format_order)["acceptable"])
+        if strict_policy.preferred_eligible(candidate)
+        and bool(scan.project_candidate(candidate, cfg, format_order)["acceptable"])
     ]
     if acceptable:
         return min(

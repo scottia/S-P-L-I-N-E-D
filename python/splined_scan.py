@@ -20,6 +20,7 @@ from mutagen.mp4 import MP4
 from PIL import Image
 
 import splined as core
+import splined_strict_source_policy as strict_policy
 from tui.aispline import validated_enhanced_results
 
 
@@ -96,7 +97,12 @@ def candidate_key(candidate: core.Candidate, cfg: dict[str, Any], format_order: 
 
 
 def select_best(candidates: list[core.Candidate], cfg: dict[str, Any], format_order: list[str]) -> core.Candidate | None:
-    acceptable = [candidate for candidate in candidates if project_candidate(candidate, cfg, format_order)["acceptable"]]
+    acceptable = [
+        candidate
+        for candidate in candidates
+        if strict_policy.preferred_eligible(candidate)
+        and project_candidate(candidate, cfg, format_order)["acceptable"]
+    ]
     return min(acceptable, key=lambda candidate: candidate_key(candidate, cfg, format_order)) if acceptable else None
 
 
@@ -109,7 +115,13 @@ def select_auto_ideal(
     ideal: list[core.Candidate] = []
     for candidate in candidates:
         projected = project_candidate(candidate, cfg, format_order)
-        if projected["acceptable"] and projected["range_type"] == "Ideal":
+        if (
+            strict_policy.auto_eligible(candidate)
+            and projected["acceptable"]
+            and projected["range_type"] == "Ideal"
+            and not projected["upscaled"]
+            and not projected["cropped"]
+        ):
             ideal.append(candidate)
     return (
         min(ideal, key=lambda candidate: candidate_key(candidate, cfg, format_order))
@@ -146,6 +158,11 @@ def fallback_suggested(
     cfg: dict[str, Any],
     format_order: list[str],
 ) -> core.Candidate | None:
+    candidates = [
+        candidate
+        for candidate in candidates
+        if strict_policy.preferred_eligible(candidate)
+    ]
     if not candidates:
         return None
 
@@ -222,6 +239,9 @@ def render_candidate_table(
     )
     for index, candidate in enumerate(candidates, 1):
         projected = project_candidate(candidate, cfg, format_order)
+        strict_eligible = strict_policy.preferred_eligible(candidate)
+        strict_status = str(getattr(candidate, "strict_status", "not-applicable"))
+        strict_reason = str(getattr(candidate, "strict_reason", ""))
         comparison = ""
         crop_risk = "equal"
         if local_candidate is not None and candidate is not local_candidate and local_projected is not None:
@@ -248,6 +268,11 @@ def render_candidate_table(
                 f"{resolution} · Shape: {shape} · Crop risk: {crop_risk} · "
                 "Source: remote replacement"
             )
+        if strict_status != "not-applicable":
+            strict_text = f"Strict: {strict_status}"
+            if strict_reason:
+                strict_text += f" · {strict_reason}"
+            comparison = f"{comparison} · {strict_text}" if comparison else strict_text
         candidate_items.append(
             {
                 "number": index,
@@ -258,7 +283,7 @@ def render_candidate_table(
                 "range_type": projected["range_type"],
                 "distance": projected["distance"],
                 "square": projected["square"],
-                "acceptable": projected["acceptable"],
+                "acceptable": projected["acceptable"] and strict_eligible,
                 "approved": candidate.ref.approved,
                 "id": str(candidate.ref.id),
                 "url": candidate_browser_url(candidate),
@@ -266,6 +291,8 @@ def render_candidate_table(
                 "provenance": candidate_provenance(candidate),
                 "comparison": comparison,
                 "crop_risk": crop_risk,
+                "strict_status": strict_status,
+                "strict_reason": strict_reason,
                 "selected": candidate is selected,
                 "suggested": candidate is suggested,
             }
@@ -321,7 +348,10 @@ def render_candidate_table(
             core.ljust_color(core.color_range_type(projected["range_type"]), 13),
             core.ljust_color(core.white(str(projected["distance"])), 10),
             core.ljust_color(core.bool_color(projected["square"]), 8),
-            core.ljust_color(core.bool_color(projected["acceptable"]), 12),
+            core.ljust_color(
+                core.bool_color(projected["acceptable"] and strict_eligible),
+                12,
+            ),
             core.ljust_color(core.bool_color(candidate.ref.approved), 10),
             candidate_link(candidate),
         ]
@@ -1523,6 +1553,13 @@ def run_manual_compilation_album(
                 diagnostics.extend(remote_diagnostics)
 
             candidates = local_candidates + remote
+            strict_policy.apply(
+                candidates,
+                cfg,
+                core.source_policy,
+                debug=core.debug_log,
+                emit=core.emit_ui,
+            )
             if release is not None:
                 authority["release_id"] = str(release.mbid or "").casefold()
                 friendly["album"] = str(release.title or "")
@@ -2761,6 +2798,13 @@ def _run_scan_dir_batch(
 
                 core.emit_ui("diagnostics", items=diagnostics)
                 candidates = local_fallback + enhanced_candidates + remote
+                strict_policy.apply(
+                    candidates,
+                    cfg,
+                    core.source_policy,
+                    debug=core.debug_log,
+                    emit=core.emit_ui,
+                )
 
                 if local_fallback:
                     local_candidate = local_fallback[0]
@@ -3063,6 +3107,13 @@ def _run_scan_dir_batch(
         )
         core.emit_ui("diagnostics", items=diagnostics)
         candidates = local_fallback + enhanced_candidates + remote
+        strict_policy.apply(
+            candidates,
+            cfg,
+            core.source_policy,
+            debug=core.debug_log,
+            emit=core.emit_ui,
+        )
 
         if local_fallback:
             local_candidate = local_fallback[0]
@@ -3123,7 +3174,12 @@ def _run_scan_dir_batch(
         )
 
         if best is None:
-            acceptable_count = sum(1 for candidate in candidates if project_candidate(candidate, cfg, format_order)["acceptable"])
+            acceptable_count = sum(
+                1
+                for candidate in candidates
+                if strict_policy.preferred_eligible(candidate)
+                and project_candidate(candidate, cfg, format_order)["acceptable"]
+            )
             core.debug_log(
                 f"normal.selection album={release.title!r} "
                 f"candidates={len(candidates)} acceptable={acceptable_count} chosen=none"

@@ -109,6 +109,23 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertFalse(splined.reference_allowed(config, "discogs", False))
         self.assertTrue(splined.reference_allowed(config, "discogs", True))
 
+    def test_strict_override_supersedes_source_range_authority(self) -> None:
+        config = load_example("config.example.toml")
+        policy = config["source_policies"]["amazon"]
+        policy.update(
+            {
+                "strict_override": True,
+                "source_override": True,
+                "minimum_range_type": "Ideal",
+                "minimum_short_side": 2000,
+            }
+        )
+        self.assertEqual(
+            splined.source_policy_decision(config, "amazon", 1200, 1200)[0],
+            "accept",
+        )
+        self.assertTrue(splined.source_policy(config, "amazon")["strict_override"])
+
     def test_disabled_provider_is_removed_without_erasing_policy(self) -> None:
         config = load_example("config.example.toml")
         config["source_policies"]["fanarttv"]["enabled"] = False

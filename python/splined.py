@@ -177,6 +177,7 @@ class Release:
     release_group_title: str | None
     track_count: int | None = None
     external_urls: list[str] = field(default_factory=list)
+    asin: str | None = None
 
 
 @dataclass
@@ -202,6 +203,16 @@ class Candidate:
     height: int
     format: str
     source_priority: int
+    # Populated by splined_strict_source_policy when a configured source uses
+    # content evidence as its Preferred/Auto authority.  Defaults preserve the
+    # historical ranking path for every non-strict source.
+    strict_status: str = "not-applicable"
+    strict_reason: str = ""
+    strict_preferred_eligible: bool = True
+    strict_auto_eligible: bool = True
+    strict_match_distance: int | None = None
+    strict_match_source: str = ""
+    strict_local_validated: bool = False
 
     @property
     def source(self) -> str:
@@ -374,6 +385,10 @@ def source_policy(cfg: dict[str, Any], source: str) -> dict[str, Any]:
             raw.get("source_override", False),
             f"[source_policies.{source_key}].source_override",
         ),
+        "strict_override": _bool_value(
+            raw.get("strict_override", source_key == "amazon"),
+            f"[source_policies.{source_key}].strict_override",
+        ),
         "minimum_range_type": normalized_range,
         "allow_below_minimum_fallback": _bool_value(
             raw.get("allow_below_minimum_fallback", False),
@@ -419,7 +434,10 @@ def source_policy_decision(
     short_side = min(width, height)
     range_type = classify_range(short_side, cfg)
 
-    if not policy["source_override"]:
+    # Strict content evidence supersedes source-specific scale authority.  The
+    # candidate still uses the global range for display and output policy, but
+    # its Preferred/Auto eligibility is decided by decoded image comparison.
+    if policy["strict_override"] or not policy["source_override"]:
         if range_type not in {"BelowMinimum", "AboveLadder"}:
             return "accept", "Accepted by the global artwork range"
         if range_type == "BelowMinimum":
@@ -450,7 +468,7 @@ def source_policy_decision(
 
 def reference_allowed(cfg: dict[str, Any], source: str, front: bool) -> bool:
     policy = source_policy(cfg, source)
-    if policy["source_override"]:
+    if policy["source_override"] and not policy["strict_override"]:
         return not policy["primary_image_only"] or front
     return front
 
@@ -3052,7 +3070,9 @@ def musicbrainz_settings(config_file: Path, cfg: dict[str, Any]) -> dict[str, An
 
     settings: dict[str, Any] = {
         "enabled": policy["enabled"],
-        "source_override": policy["source_override"],
+        "source_override": (
+            policy["source_override"] and not policy["strict_override"]
+        ),
         "retry_max": 4,
         "mb_min_delay": 1.05,
         "mb_recording_timeout": 7.0,
@@ -3069,7 +3089,7 @@ def musicbrainz_settings(config_file: Path, cfg: dict[str, Any]) -> dict[str, An
         "credential_path": path,
     }
 
-    if policy["source_override"]:
+    if policy["source_override"] and not policy["strict_override"]:
         options = credential.get("options", {})
         if not isinstance(options, dict):
             raise SplinedError("MusicBrainz credential options must be a JSON object.")
@@ -3538,6 +3558,7 @@ def lookup_release(http: Http, config_file: Path, cfg: dict[str, Any], mbid: str
             release_group_title=str(rg.get("title") or "").strip() or None,
             track_count=track_count if found_count else None,
             external_urls=external_urls,
+            asin=str(d.get("asin") or "").strip().upper() or None,
         )
         attempt_elapsed = time.perf_counter() - attempt_started
         total_elapsed = time.perf_counter() - lookup_started
@@ -3952,13 +3973,27 @@ def discover_amazon(http: Http, rel: Release) -> list[Ref]:
     than the Amazon Music player or its small artwork. Markup changes and
     automated-request blocking are surfaced as ordinary provider diagnostics.
     """
-    query = " ".join(
+    linked_asin = str(rel.asin or "").strip().upper()
+    if not linked_asin:
+        for resource in rel.external_urls:
+            match = re.search(
+                r"(?i)amazon\.[^/]+/(?:dp|gp/product)/([A-Z0-9]{10})(?:[/?]|$)",
+                resource,
+            )
+            if match is not None:
+                linked_asin = match.group(1).upper()
+                break
+    query = linked_asin or " ".join(
         value
         for value in (rel.artist_credit, rel.release_group_title or rel.title)
         if str(value or "").strip()
     )
     if not query:
         return []
+    debug_log(
+        f"amazon.discovery authority={'musicbrainz-asin' if linked_asin else 'artist-title'} "
+        f"asin={linked_asin or 'none'}"
+    )
     response = http.get(
         "https://www.amazon.com/s",
         params={"k": query, "i": "popular"},
@@ -4004,6 +4039,8 @@ def discover_amazon(http: Http, rel: Release) -> list[Ref]:
             continue
         asin_match = asin_pattern.search(block)
         asin = asin_match.group(1) if asin_match else ""
+        if linked_asin and asin.upper() != linked_asin:
+            continue
         seen.add(original)
         refs.append(
             Ref(
@@ -4137,6 +4174,7 @@ def discover_discogs(
         discogs_policy = source_policy(cfg, "discogs")
         primary_only = (
             not discogs_policy["source_override"]
+            or discogs_policy["strict_override"]
             or discogs_policy["primary_image_only"]
         )
         image_pool = (primary or all_images) if primary_only else all_images
@@ -4889,7 +4927,10 @@ def range_class(c: Candidate, cfg: dict[str, Any]) -> str:
 
 
 def acceptable(c: Candidate, cfg: dict[str, Any]) -> bool:
-    return source_policy_decision(cfg, c.source, c.width, c.height)[0] != "reject"
+    return (
+        c.strict_preferred_eligible
+        and source_policy_decision(cfg, c.source, c.width, c.height)[0] != "reject"
+    )
 
 
 def candidate_key(c: Candidate, cfg: dict[str, Any], format_order: list[str]):
@@ -4923,7 +4964,12 @@ def candidate_key(c: Candidate, cfg: dict[str, Any], format_order: list[str]):
     )
 
 def select_best(candidates: list[Candidate], cfg: dict[str, Any], format_order: list[str]) -> Candidate | None:
-    valid = [c for c in candidates if project_candidate(c, cfg, target_format_for_candidate(c, format_order))["acceptable"]]
+    valid = [
+        c
+        for c in candidates
+        if c.strict_preferred_eligible
+        and project_candidate(c, cfg, target_format_for_candidate(c, format_order))["acceptable"]
+    ]
     return min(valid, key=lambda c: candidate_key(c, cfg, format_order)) if valid else None
 
 
