@@ -101,6 +101,10 @@ class TuiSessionExit(RuntimeError):
     """Internal control signal for an explicit Select Media session exit."""
 
 
+class TuiBatchReturn(RuntimeError):
+    """Return an active Candidate Decision batch to its report without ending TUI."""
+
+
 class TuiConfigEditRequested(RuntimeError):
     """Leave Ratatui cleanly so micro can edit Config v5 on the real terminal."""
 
@@ -5291,6 +5295,8 @@ def musicbrainz_picker(
             options=results,
             back_action="source-results",
         ).strip().lower()
+        if answer == "__batch_return__":
+            raise TuiBatchReturn()
         if answer == "__cancel__":
             raise TuiSessionExit()
         if answer in {"b", ""}:
@@ -6288,6 +6294,8 @@ def _run_scan_dir_batch(
                     kind="fallback-picker",
                 ).strip().lower()
 
+                if answer == "__batch_return__":
+                    raise TuiBatchReturn()
                 if answer == "__cancel__":
                     raise TuiSessionExit()
                 if answer == "b":
@@ -6495,6 +6503,8 @@ def _run_scan_dir_batch(
                     kind="out-of-range-picker",
                 ).strip().lower()
 
+                if answer == "__batch_return__":
+                    raise TuiBatchReturn()
                 if answer == "__cancel__":
                     raise TuiSessionExit()
                 if answer == "b":
@@ -6688,6 +6698,9 @@ def run_scan_dir(
                 picker_session=picker_session,
                 initial_library_event=library_event,
             )
+        except TuiBatchReturn:
+            debug_log("picker.batch.return_to_report")
+            batch_exit_code = 0
         except TuiSessionExit:
             picker_session.validation_cancel.set()
             return session_exit_code
