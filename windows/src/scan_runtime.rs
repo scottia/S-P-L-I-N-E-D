@@ -1266,8 +1266,13 @@ pub async fn run_scan_library_read_report(
 
                         if let Some(info) = final_result.info {
                             println!(
-                                "  Final:       {}x{} {:?} resized={} converted={}",
-                                info.width, info.height, info.format, info.resized, info.converted
+                                "  Final:       {}x{} {:?} resized={} converted={} upscale_backend={}",
+                                info.width,
+                                info.height,
+                                info.format,
+                                info.resized,
+                                info.converted,
+                                info.upscale_backend.as_str()
                             );
                         }
                         let final_logged_started = Instant::now();
@@ -2402,7 +2407,8 @@ async fn run_compilation_album(
                 "track_path": track.path, "artist": track.artist, "title": track.title,
                 "action": if config.mode == Mode::Write { "EmbeddedReplaced" } else { "ReadOnly" },
                 "source": chosen.downloaded.candidate.source, "release_mbid": selected_release,
-                "width": prepared.info.width, "height": prepared.info.height }),
+                "width": prepared.info.width, "height": prepared.info.height,
+                "upscale_backend": prepared.info.upscale_backend.as_str() }),
             );
             break 'match_selection;
         }

@@ -36,4 +36,7 @@ unicode-normalization = "0.1.25"
 unicode-casefold = "0.2.0"
 
 [target.'cfg(windows)'.dependencies]
+bytemuck = "1.24.0"
+pollster = "0.4.0"
+wgpu = { version = "29.0.4", default-features = false, features = ["std", "vulkan", "wgsl"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet"] }

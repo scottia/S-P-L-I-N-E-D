@@ -65,6 +65,22 @@ The historical Config v5 `scan.cache_dir` key is the SQL Database Directory.
 `scan.temporary_cache_dir` owns downloaded and derived images; those disposable
 files are removed after the Album run while `splined.db` remains untouched.
 
+## GPU enlargement
+
+When `output.upscale_below_ideal = true`, Windows first attempts conventional
+Lanczos-3 enlargement on a high-performance hardware Vulkan adapter. Source
+and output pixels remain in memory; this path does not write an intermediate
+image into Temporary Run Cache and does not change candidate dimensions or
+ranking before selection. If a compatible hardware adapter is unavailable,
+initialization fails, the image exceeds the adapter's storage-buffer limit, or
+GPU execution fails, SPLINED immediately uses its existing in-memory CPU
+Lanczos-3 implementation. The final diagnostic reports
+`upscale_backend=gpu-lanczos3`, `cpu-lanczos3`, or `none`.
+
+This backend is ordinary deterministic resampling, not AI super-resolution.
+It provides the replaceable GPU boundary that future AISPLINED validation and
+enhancement models can reuse without changing Config v5 behavior.
+
 The Windows media snapshot projects year, track count, cover path/name/format,
 cover dimensions, and root/cover file counts from existing SQLite Album rows.
 The GUI uses that projection for the selected-Album information and Artwork
