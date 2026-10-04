@@ -2,7 +2,8 @@
 
 This page explains how S:P:L:I:N:E:D evaluates artwork size, how global Resolution Range policy works, how per-source overrides refine that policy, and how AISPLINE remediation remains separate from provider acceptance.
 
-> **Windows target:** v3.0.0 Stable with Config v5.
+This policy model applies to the current Python/Docker and Windows releases
+using Config v5.
 
 ---
 
@@ -582,7 +583,7 @@ Exact serialized Config v5 keys/defaults are listed in the Config v5 reference a
 # Related documentation
 
 - [Config v5 reference](config-v5-reference.md)
-- [Windows v4 guide](windows-v4-interface.md)
+- [Windows guide](windows-guide.md)
 - [Credentials and provider setup](credentials-providers.md)
 - [Select Media and status colors](media-filter-status-colors.md)
 - [Python Ratatui TUI](ratatui-tui.md)

@@ -2,13 +2,13 @@
 
 This directory contains the finalized native Windows application:
 
-- Application: **S:P:L:I:N:E:D v3.0.0 Stable**
+- Application: **S:P:L:I:N:E:D**, following the repository release
 - Configuration schema: **Config v5**
 - GUI: C# Windows Forms under `gui/`
 - Processing core: Rust under `src/`
 
 User-facing Windows behavior is documented in the
-[Windows v4 guide](../docs/windows-v4-interface.md). This file covers source,
+[Windows guide](../docs/windows-guide.md). This file covers source,
 build, packaging, and update implementation details.
 
 The Cargo manifest is the reproducible Windows build entry point. On Windows,
@@ -39,7 +39,7 @@ startup. No GUI, watermark, icon, or core sidecar is distributed beside
 cache, logs, and database files are intentionally excluded from version
 control.
 
-Windows v4 stores the validated Config v5 document and interface preferences
+Windows stores the validated Config v5 document and interface preferences
 in the current user's internal application settings. First run requires the
 library, SQL database, temporary run cache, log, and credential paths and creates the selected runtime
 directories only after save. Database, run-cache, log, and credential fields initially point

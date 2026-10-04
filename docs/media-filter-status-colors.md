@@ -340,6 +340,5 @@ first media-index build or explicit Refresh completed successfully.
 ## Related documentation
 
 - [SPLINED media database](splined-media-database.md)
-- [History, retention, bypass, and timeout](history-retention-bypass-timeout.md)
 - [Python Ratatui TUI](ratatui-tui.md)
 - [Config v5 reference](config-v5-reference.md)
