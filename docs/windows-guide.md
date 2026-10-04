@@ -121,7 +121,7 @@ Select Media contains:
 - the Artist/Album tree.
 
 The only control that starts or stops processing is the primary **LAUNCH**
-button beneath Artwork Candidates and Preview. There is no second Launch button
+button beneath the Artwork Candidates pane. There is no second Launch button
 inside Select Media.
 
 Auto Scan is opt-in. With neither Auto Scan choice active, selected Albums form
@@ -130,10 +130,13 @@ selected Albums, while **Auto Scan `[ALL]`** processes every Unprocessed Album
 plus any Album selected explicitly. Read versus Live Write remains an
 independent, required choice; changing scan scope never changes mutation mode.
 
-The unattended path accepts only a candidate classified `Ideal` and accepted by
-its active source policy. If no such candidate exists, Windows pauses for
-operator review. `Ideal` verifies configured resolution, geometry, and source
-policy—not the picture's semantic accuracy. It cannot detect merchandise,
+The unattended path accepts only a candidate classified `Ideal`, accepted by
+its active source policy, and eligible under strict validation when enabled.
+An enlarged candidate must also begin at or above the global `Minimum`; resize
+projection cannot promote a source image from `BelowMinimum` into Preferred or
+Auto eligibility. If no candidate qualifies, Windows pauses for operator
+review. `Ideal` verifies configured resolution, geometry, and source policy—not
+the picture's semantic accuracy. It cannot by itself detect merchandise,
 inserts, disc cases, or unrelated photographs returned by a provider.
 
 Select `[ALL]` only changes the checked Album set. It never enables Auto Scan.
@@ -216,10 +219,23 @@ URL restores the selected Album cover; leaving MusicBrainz Matches restores
 Scan Activity and the user's saved Show Artwork preference.
 
 The processing panel reports local evidence, authority resolution, provider
-timings, candidate policy, strict-content evidence, and errors. Artwork
-Candidates and Preview displays every manually reviewable strict candidate.
+timings, candidate policy, strict-content evidence, and errors. The Artwork
+Candidates pane displays every manually reviewable strict candidate.
 An unverified strict candidate is marked **Manual only**: its image and URL stay
 available, but it cannot become Recommended or be accepted by Auto Scan.
+
+The compact spectrum-framed **ARTWORK FILTER** replaces the former full-width
+heading. It is a display-only filter and does not rerank providers or change the
+result set. Its menus are built from the current Album only:
+
+- **Source Selection** follows enabled Artwork Source Priority and lists only
+  sources that actually returned a result;
+- **Image Type** lists only types present: Recommended, Upscalable, Rejected,
+  and Local;
+- **Policy** lists Acceptable and Strict only when represented;
+- **Wanted** and **Unwanted** classify the original downloaded short side,
+  before crop or enlargement. Source selection also limits the type, policy,
+  and range choices shown the next time the filter opens.
 
 - **Use Selected** approves one active candidate.
 - **Compare** compares multiple active candidates.
@@ -233,9 +249,21 @@ available, but it cannot become Recommended or be accepted by Auto Scan.
 Candidate order remains deterministic. Local evidence is displayed first,
 the recommended result follows, and remaining results are ordered by descending
 pixel resolution with their stable candidate index as the final tie-breaker.
-Only candidate cards use the subtle glass treatment: local is light purple,
-recommended is green, and other results are clear. Thumbnails remain square
-and grow or shrink with the candidate pane. The shared Artwork preview,
+Only candidate-card backgrounds use the subtle glass treatment: local is light
+purple, a policy-qualified Minimum-to-Ideal enlargement is magenta,
+BelowMinimum/rejected is red, recommended is green, and ordinary results are
+clear. Magenta takes precedence over a negative range only when the original
+source meets the configured Minimum; changing Minimum therefore changes the
+upscale eligibility boundary without changing the Ideal target. The thumbnail
+itself always uses an opaque neutral surface and is never color tinted.
+
+Each card now identifies the provider at its top, with compact symbols for
+Local, Recommended, Upscalable, and negative results. Hover the information
+indicator, heading, thumbnail, or card to see original and projected
+resolution, Range Type, format, square state, Approved/Acceptable state,
+strict Preferred/Auto eligibility, and policy reason. This replaces the former
+three lines of repeated card metadata. Thumbnails remain square and grow or
+shrink with the candidate pane. The shared Artwork preview,
 MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
 Concurrent provider work may reduce
 waiting time, but configured source order, source policy, Range Type, geometry,

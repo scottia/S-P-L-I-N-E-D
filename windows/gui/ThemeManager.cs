@@ -12,7 +12,7 @@ namespace Splined.WindowsGui
 {
     internal enum ThemeFontRole { Minor, Body, Control, PanelTitle, AppTitle }
     internal enum ThemeStatusColor { White, Orange, Red, Purple, Green, Blue }
-    internal enum CardVisualRole { Panel, Nested, SpectrumNested, CandidateGlass, LocalCandidateGlass, Recommended, Log }
+    internal enum CardVisualRole { Panel, Nested, SpectrumNested, CandidateGlass, LocalCandidateGlass, UpscaleCandidateGlass, RejectedCandidateGlass, Recommended, Log }
 
     /// <summary>Central semantic palette. Status colors remain data colors, not decoration.</summary>
     internal sealed class ThemePalette
@@ -728,6 +728,16 @@ namespace Splined.WindowsGui
                     bottom = Blend(palette.StatusPurple, palette.NestedCardSurface, palette.Dark ? 0.91f : 0.96f);
                     border = Blend(palette.StatusPurple, palette.TextPrimary, palette.Dark ? 0.18f : 0.42f);
                     break;
+                case CardVisualRole.UpscaleCandidateGlass:
+                    top = Blend(Color.FromArgb(242, 72, 171), palette.NestedCardSurface, palette.Dark ? 0.76f : 0.89f);
+                    bottom = Blend(Color.FromArgb(242, 72, 171), palette.NestedCardSurface, palette.Dark ? 0.91f : 0.96f);
+                    border = Color.FromArgb(242, 72, 171);
+                    break;
+                case CardVisualRole.RejectedCandidateGlass:
+                    top = Blend(palette.Error, palette.NestedCardSurface, palette.Dark ? 0.80f : 0.91f);
+                    bottom = Blend(palette.Error, palette.NestedCardSurface, palette.Dark ? 0.93f : 0.97f);
+                    border = palette.Error;
+                    break;
                 case CardVisualRole.Recommended:
                     top = Blend(palette.Success, palette.NestedCardSurface, palette.Dark ? 0.77f : 0.90f);
                     bottom = Blend(palette.Success, palette.NestedCardSurface, palette.Dark ? 0.91f : 0.96f);
@@ -754,7 +764,9 @@ namespace Splined.WindowsGui
                 else
                     using (Pen pen = new Pen(border)) graphics.DrawPath(pen, path);
             }
-            if (role == CardVisualRole.CandidateGlass || role == CardVisualRole.LocalCandidateGlass || role == CardVisualRole.Recommended)
+            if (role == CardVisualRole.CandidateGlass || role == CardVisualRole.LocalCandidateGlass
+                || role == CardVisualRole.UpscaleCandidateGlass || role == CardVisualRole.RejectedCandidateGlass
+                || role == CardVisualRole.Recommended)
             {
                 RectangleF highlight = new RectangleF(bounds.Left + 2f, bounds.Top + 2f,
                     Math.Max(1f, bounds.Width - 4f), Math.Max(1f, bounds.Height * 0.34f));
@@ -1141,6 +1153,7 @@ namespace Splined.WindowsGui
         {
             if (role == CardVisualRole.Nested || role == CardVisualRole.SpectrumNested
                 || role == CardVisualRole.CandidateGlass || role == CardVisualRole.LocalCandidateGlass
+                || role == CardVisualRole.UpscaleCandidateGlass || role == CardVisualRole.RejectedCandidateGlass
                 || role == CardVisualRole.Recommended) return palette.NestedCardSurface;
             if (role == CardVisualRole.Log) return palette.LogWriteBackground;
             return palette.PanelSurface;
