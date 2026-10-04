@@ -2980,11 +2980,25 @@ def _render_musicbrainz(
         ),
         0,
     )
-    page_size = max(1, int(area.height) - 2)
+    page_size = max(1, int(area.height) - 4)
     start = max(0, min(selected_display - page_size // 2, len(display_rows) - page_size))
     visible_rows = display_rows[start : start + page_size]
 
-    rendered: list[Line] = []
+    current_album = " • ".join(
+        part for part in (state.artist, state.album) if part
+    ) or state.album_path or "Unknown Album"
+    rendered: list[Line] = [
+        Line(
+            [
+                Span("CURRENT ALBUM · ", style(theme, Semantic.ACTIVE, bold=True)),
+                Span(
+                    _truncate(current_album, max(1, int(area.width) - 22)),
+                    style(theme, Semantic.ACTIVE),
+                ),
+            ]
+        ),
+        Line([Span("")]),
+    ]
     for kind, option_index, label in visible_rows:
         if kind == "blank":
             rendered.append(Line([Span("")]))
@@ -3083,7 +3097,7 @@ def _render_musicbrainz(
     for visible_index, (kind, option_index, _label) in enumerate(visible_rows):
         if kind != "result":
             continue
-        row_y = int(area.y) + 1 + visible_index
+        row_y = int(area.y) + 3 + visible_index
         _register_hit(
             state,
             "musicbrainz-result-row",
@@ -6398,7 +6412,7 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         ):
             _submit(state, adapter, "m")
         else:
-            _submit(state, adapter, "__cancel__")
+            _submit(state, adapter, "__batch_return__")
         return
     if action is Action.URL and state.candidates:
         _focus_candidate_url(state, state.selected_index)
