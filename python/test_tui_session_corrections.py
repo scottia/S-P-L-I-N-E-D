@@ -258,6 +258,48 @@ class MultiBatchSessionTests(unittest.TestCase):
         self.assertIs(calls[0][0], calls[1][0])
         self.assertIs(calls[1][0], calls[2][0])
 
+    def test_candidate_escape_requests_batch_return_not_session_cancel(self) -> None:
+        state = TuiState()
+        state.apply(
+            "input",
+            {"prompt": "Choice: ", "context": {"kind": "normal-picker"}},
+        )
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+
+        handle_key(state, adapter, _Key("esc"))
+
+        self.assertEqual(adapter.responses.get_nowait(), "__batch_return__")
+        self.assertFalse(state.finished)
+        self.assertFalse(state.exit_requested)
+
+    def test_candidate_batch_return_reaches_report_and_reuses_picker(self) -> None:
+        calls: list[tuple[object, str]] = []
+
+        def batch(*_args, **kwargs):
+            calls.append((kwargs["picker_session"], kwargs["initial_library_event"]))
+            if len(calls) == 1:
+                raise splined.TuiBatchReturn()
+            return 0
+
+        with (
+            mock.patch.object(splined_scan.core, "tui_active", return_value=True),
+            mock.patch.object(splined_scan, "_run_scan_dir_batch", side_effect=batch),
+            mock.patch.object(
+                splined_scan.core,
+                "read_input",
+                side_effect=["continue", "exit"],
+            ),
+        ):
+            result = splined_scan.run_scan_dir(Path("config.toml"), {}, ["itunes"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [event for _session, event in calls],
+            ["library", "library_update"],
+        )
+        self.assertIs(calls[0][0], calls[1][0])
+
     def test_windows_style_report_returns_to_preserved_library_state(self) -> None:
         state = TuiState()
         state.apply("library", _library_payload())
