@@ -1,4 +1,4 @@
-name: Windows Dev Update
+name: SPLINED Dev > Windows Update
 
 on:
   workflow_dispatch:
