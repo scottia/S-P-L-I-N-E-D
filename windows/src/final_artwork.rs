@@ -22,6 +22,24 @@ pub struct PreparedArtworkInfo {
     pub format: StaticFormat,
     pub resized: bool,
     pub converted: bool,
+    pub upscale_backend: UpscaleBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpscaleBackend {
+    None,
+    Cpu,
+    Gpu,
+}
+
+impl UpscaleBackend {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Cpu => "cpu-lanczos3",
+            Self::Gpu => "gpu-lanczos3",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +130,7 @@ pub fn prepare_configured_artwork(
     }
 
     let converted = candidate.format != target_format;
+    let mut upscale_backend = UpscaleBackend::None;
     let bytes = if !crop_square && !resized && !converted {
         fs::read(source_path).map_err(|error| {
             format!(
@@ -149,7 +168,9 @@ pub fn prepare_configured_artwork(
             image = image.crop_imm(left, top, side, side);
         }
         if image.width() != target_width || image.height() != target_height {
-            image = image.resize_exact(target_width, target_height, FilterType::Lanczos3);
+            let resized_output = resize_output_image(image, target_width, target_height);
+            image = resized_output.0;
+            upscale_backend = resized_output.1;
         }
         encode_image(&image, target_format)?
     };
@@ -160,9 +181,36 @@ pub fn prepare_configured_artwork(
         format: target_format,
         resized: resized || crop_square,
         converted,
+        upscale_backend,
     };
     validate_prepared_bytes(&bytes, info)?;
     Ok(PreparedArtwork { bytes, info })
+}
+
+fn resize_output_image(
+    image: DynamicImage,
+    target_width: u32,
+    target_height: u32,
+) -> (DynamicImage, UpscaleBackend) {
+    let is_upscale = target_width > image.width() || target_height > image.height();
+    #[cfg(windows)]
+    if is_upscale {
+        let rgba = image.to_rgba8();
+        if let Ok((resized, _adapter_name)) =
+            crate::gpu_upscale::resize_lanczos3(&rgba, target_width, target_height)
+        {
+            return (DynamicImage::ImageRgba8(resized), UpscaleBackend::Gpu);
+        }
+    }
+    let backend = if is_upscale {
+        UpscaleBackend::Cpu
+    } else {
+        UpscaleBackend::None
+    };
+    (
+        image.resize_exact(target_width, target_height, FilterType::Lanczos3),
+        backend,
+    )
 }
 
 pub fn project_configured_artwork(
@@ -308,6 +356,7 @@ fn prepare_final_artwork_inner(
         format: target_format,
         resized,
         converted,
+        upscale_backend: UpscaleBackend::None,
     };
 
     validate_prepared_bytes(&bytes, info)?;
