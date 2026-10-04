@@ -48,6 +48,27 @@ jobs:
           ref: refs/tags/${{ inputs.version }}
           fetch-depth: 0
 
+      - name: Checkout corrected production build definition
+        if: ${{ inputs.version == '1.0.29' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          path: .splined-production
+          sparse-checkout: python/Dockerfile
+          sparse-checkout-cone-mode: false
+
+      - name: Apply corrected production build definition
+        if: ${{ inputs.version == '1.0.29' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .splined-production/python/Dockerfile python/Dockerfile
+          if grep -q 'python3 -m unittest' python/Dockerfile; then
+            echo "ERROR: Production Dockerfile still runs unit tests."
+            exit 1
+          fi
+          echo "PASS: corrected production Dockerfile installed for 1.0.29"
+
       - name: Restore 1.0.28 Docker build context
         if: ${{ inputs.version == '1.0.28' }}
         shell: bash
