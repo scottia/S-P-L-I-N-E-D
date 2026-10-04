@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
+use tempfile::{Builder, NamedTempFile};
 
 fn backup_path(path: &Path) -> PathBuf {
     let file_name = path
@@ -223,12 +223,21 @@ where
             path.display()
         )
     })?;
-    let staged = NamedTempFile::new_in(parent).map_err(|error| {
-        format!(
-            "Unable to create staged {label} file in {}: {error}",
-            parent.display()
-        )
-    })?;
+    let staged_suffix = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_default();
+    let staged = Builder::new()
+        .prefix(".splined-stage-")
+        .suffix(&staged_suffix)
+        .tempfile_in(parent)
+        .map_err(|error| {
+            format!(
+                "Unable to create staged {label} file in {}: {error}",
+                parent.display()
+            )
+        })?;
     fs::copy(path, staged.path()).map_err(|error| {
         format!(
             "Unable to copy staged {label} file {}: {error}",
@@ -367,6 +376,40 @@ mod tests {
     }
 
     #[test]
+    fn transform_existing_file_preserves_source_extension_for_callbacks() {
+        let dir = TempDir::new().expect("temp directory should create");
+        let path = dir.path().join("track.mp3");
+        fs::write(&path, b"original").unwrap();
+
+        transform_existing_file(
+            &path,
+            "audio tags",
+            |staged| {
+                assert_eq!(
+                    staged.extension().and_then(|value| value.to_str()),
+                    Some("mp3")
+                );
+                fs::write(staged, b"updated").map_err(|error| error.to_string())
+            },
+            |staged| {
+                assert_eq!(
+                    staged.extension().and_then(|value| value.to_str()),
+                    Some("mp3")
+                );
+                if fs::read(staged).map_err(|error| error.to_string())? == b"updated" {
+                    Ok(())
+                } else {
+                    Err("unexpected staged bytes".to_string())
+                }
+            },
+        )
+        .expect("existing file transformation should succeed");
+
+        assert_eq!(fs::read(&path).unwrap(), b"updated");
+        assert!(!backup_path(&path).exists());
+    }
+
+    #[test]
     fn missing_destination_recovers_backup() {
         let dir = TempDir::new().expect("temp directory should create");
         let path = dir.path().join("fixture.json");
@@ -377,3 +420,4 @@ mod tests {
         assert!(!backup.exists());
     }
 }
+
