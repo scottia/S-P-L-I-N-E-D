@@ -24,3 +24,4 @@ pub mod scan_tags;
 pub mod source;
 pub mod source_history;
 pub mod source_policy;
+pub mod strict_source_policy;

@@ -54,7 +54,7 @@ namespace Splined.WindowsGui
         public event EventHandler LeaveRequested;
         public event EventHandler<MusicBrainzAuthorityEventArgs> AuthorityEditRequested;
 
-        public MusicBrainzMatchesPanel(string artist, string title, object[] rawItems, bool compilationTrack, string theme)
+        public MusicBrainzMatchesPanel(string artist, string title, string albumArtist, string albumTitle, object[] rawItems, bool compilationTrack, string theme)
         {
             Name = "musicBrainzMatchesPanel";
             Dock = DockStyle.Fill;
@@ -63,12 +63,13 @@ namespace Splined.WindowsGui
             {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(ThemeManager.Space8),
-                RowCount = 4,
+                RowCount = 5,
                 ColumnCount = 1,
                 VisualRole = CardVisualRole.Nested
             };
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
             Controls.Add(layout);
@@ -103,6 +104,20 @@ namespace Splined.WindowsGui
             authority.SetRowSpan(applyAuthority, 3);
             layout.Controls.Add(authority, 0, 1);
 
+            Label currentAlbum = new Label
+            {
+                Name = "musicBrainzCurrentAlbum",
+                Dock = DockStyle.Fill,
+                AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
+                Text = "CURRENT ALBUM  ·  "
+                    + (String.IsNullOrWhiteSpace(albumArtist) ? artist : albumArtist)
+                    + "  •  "
+                    + (String.IsNullOrWhiteSpace(albumTitle) ? title : albumTitle)
+            };
+            layout.Controls.Add(currentAlbum, 0, 2);
+
             matches = new ListView
             {
                 Name = "musicBrainzMatchesList",
@@ -136,7 +151,7 @@ namespace Splined.WindowsGui
                 EventHandler handler = ArtworkPreviewEnded;
                 if (handler != null) handler(this, EventArgs.Empty);
             };
-            layout.Controls.Add(matches, 0, 2);
+            layout.Controls.Add(matches, 0, 3);
 
             FlowLayoutPanel actions = new FlowLayoutPanel
             {
@@ -170,8 +185,9 @@ namespace Splined.WindowsGui
             actions.Controls.Add(search);
             actions.Controls.Add(unchanged);
             actions.Controls.Add(new InfoButton("Search Artist / Track performs the bounded MusicBrainz Recording search without using the curated compilation Album name."));
-            layout.Controls.Add(actions, 0, 3);
+            layout.Controls.Add(actions, 0, 4);
             ThemeManager.Apply(this, theme);
+            currentAlbum.ForeColor = ThemeManager.PaletteFor(theme).CategoryMagenta;
         }
 
         internal static string[] ArtworkPreviewUrls(Dictionary<string, object> item)

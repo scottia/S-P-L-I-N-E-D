@@ -430,6 +430,7 @@ impl Default for Config {
             "amazon".to_string(),
             SourcePolicyConfig {
                 enabled: false,
+                strict_override: true,
                 ..SourcePolicyConfig::default()
             },
         );
@@ -466,6 +467,18 @@ pub fn default_toml() -> Result<String, toml::ser::Error> {
 }
 
 pub fn parse_config(text: &str) -> Result<Config, String> {
+    let amazon_strict_explicit = toml::from_str::<toml::Value>(text)
+        .ok()
+        .and_then(|root| root.get("source_policies").cloned())
+        .and_then(|policies| policies.as_table().cloned())
+        .and_then(|policies| {
+            policies
+                .iter()
+                .find(|(source, _)| source.eq_ignore_ascii_case("amazon"))
+                .map(|(_, policy)| policy.clone())
+        })
+        .and_then(|policy| policy.as_table().cloned())
+        .is_some_and(|policy| policy.contains_key("strict_override"));
     let mut config: Config = toml::from_str(text)
         .map_err(|error| format!("Unable to parse SPLINED configuration: {error}"))?;
 
@@ -558,6 +571,9 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
         normalized_policies.insert(source, policy);
     }
     config.source_policies = normalized_policies;
+    if !amazon_strict_explicit && let Some(policy) = config.source_policies.get_mut("amazon") {
+        policy.strict_override = true;
+    }
 
     if let Some(policy) = config.source_policies.get("musicbrainz") {
         config.musicbrainz.enabled = policy.enabled;
@@ -901,6 +917,7 @@ mod tests {
             "Discogs".to_string(),
             SourcePolicyConfig {
                 enabled: true,
+                strict_override: false,
                 source_override: true,
                 minimum_range_type: crate::source_policy::MinimumRangeType::LowerRange,
                 allow_below_minimum_fallback: true,
@@ -926,6 +943,21 @@ mod tests {
         assert_eq!(policy.minimum_height, Some(1300));
         assert!(policy.allow_below_minimum_fallback);
         assert!(!policy.primary_image_only);
+    }
+
+    #[test]
+    fn missing_amazon_strict_key_migrates_to_safe_default() {
+        let text = default_toml()
+            .expect("default config should serialize")
+            .replace("strict_override = true\n", "");
+        let parsed = parse_config(&text).expect("legacy Config v5 should parse");
+        assert!(parsed.source_policies["amazon"].strict_override);
+
+        let explicit = default_toml()
+            .expect("default config should serialize")
+            .replace("strict_override = true", "strict_override = false");
+        let parsed = parse_config(&explicit).expect("explicit strict setting should parse");
+        assert!(!parsed.source_policies["amazon"].strict_override);
     }
 
     #[test]

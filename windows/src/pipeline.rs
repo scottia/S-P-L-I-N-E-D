@@ -9,6 +9,7 @@ use crate::source::{
     ArtworkProvider, ArtworkQuery, ArtworkReference, ProviderContext, ProviderRegistry,
 };
 use crate::source_policy::{SourcePolicyConfig, best_candidate_index, reference_allowed};
+use crate::strict_source_policy::StrictContentDecision;
 use futures_util::future::join_all;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -24,6 +25,7 @@ const CANDIDATE_DOWNLOAD_CONCURRENCY: usize = 4;
 pub struct PipelineCandidate {
     pub reference: ArtworkReference,
     pub downloaded: DownloadedCandidate,
+    pub strict: StrictContentDecision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,6 +409,7 @@ async fn run_artwork_pipeline_with_cache(
                 candidates.push(PipelineCandidate {
                     reference,
                     downloaded,
+                    strict: StrictContentDecision::default(),
                 });
             }
             Err(error) => {

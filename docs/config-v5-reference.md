@@ -203,6 +203,11 @@ whether saved provider-specific range values or the global range are used.
 MusicBrainz ASIN data narrows Amazon discovery to the exact linked product when
 available; image-content evidence still decides strict eligibility.
 
+The Windows Sources editor reads and writes `strict_override` directly. Saved
+Source Override dimensions remain intact while strict mode is active. Older
+Windows settings without this key migrate Amazon to `true`; other providers
+remain `false` unless explicitly enabled.
+
 See [Source policies and Range Types](source-policies-range-types.md).
 
 ## `[samples]`
