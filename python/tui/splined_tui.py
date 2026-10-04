@@ -4318,6 +4318,7 @@ def _render_candidates(frame: Any, area: Rect, state: TuiState, theme: Theme) ->
 
 POLICY_FIELDS = (
     "enabled",
+    "strict_override",
     "source_override",
     "minimum_range_type",
     "allow_below_minimum_fallback",
@@ -4428,6 +4429,7 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
 
     labels = {
         "enabled": "Source Enabled",
+        "strict_override": "Strict Content Override",
         "source_override": "Source Override",
         "minimum_range_type": "Minimum Range Type",
         "allow_below_minimum_fallback": "Fallback Range",
@@ -4441,9 +4443,17 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
     for index, key in enumerate(POLICY_FIELDS):
         raw = policy.get(key)
         value = "On" if raw is True else "Off" if raw is False else "—" if raw is None else str(raw)
-        disabled = key == "primary_image_only" and source not in PRIMARY_METADATA_SOURCES
+        disabled = (
+            key == "source_override" and bool(policy.get("strict_override"))
+        ) or (
+            key == "primary_image_only" and source not in PRIMARY_METADATA_SOURCES
+        )
         if disabled:
-            value = "Not differentiated by provider"
+            value = (
+                "Superseded by Strict"
+                if key == "source_override"
+                else "Not differentiated by provider"
+            )
         semantic = Semantic.DISABLED if disabled else Semantic.ACTIVE if index == state.album_index_cursor else Semantic.TEXT
         setting_lines.append(Line([Span(f"{'›' if index == state.album_index_cursor else ' '} {labels[key]:<25} {value}", style(theme, semantic, bold=index == state.album_index_cursor))]))
     frame.render_widget(Paragraph(Text(setting_lines)).block(card(theme, f"SOURCE · {source.upper()}", Semantic.FALLBACK)), panels[1])
@@ -5404,7 +5414,11 @@ def _handle_library_key(
                 global_key = GLOBAL_POLICY_FIELDS[state.status_index]
                 draft.adjust_number(None, global_key, delta * (16 if global_key == "square_round_to" else 100))
         elif action in {Action.ACTIVATE, Action.TOGGLE}:
-            if key in {"enabled", "source_override", "allow_below_minimum_fallback"}:
+            if key == "source_override" and bool(
+                draft.policies[source].get("strict_override")
+            ):
+                state.transient = "Source Override is retained but superseded while Strict Content Override is active."
+            elif key in {"enabled", "strict_override", "source_override", "allow_below_minimum_fallback"}:
                 draft.toggle(source, key)
             elif key == "primary_image_only":
                 if source in PRIMARY_METADATA_SOURCES:
@@ -6110,7 +6124,11 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.library_focus = 1
         state.album_index_cursor = region.index
         source = state.policy.source_order[state.artist_index]
-        if region.value in {"enabled", "source_override", "allow_below_minimum_fallback"}:
+        if region.value == "source_override" and bool(
+            state.policy.policies[source].get("strict_override")
+        ):
+            state.transient = "Source Override is retained but superseded while Strict Content Override is active."
+        elif region.value in {"enabled", "strict_override", "source_override", "allow_below_minimum_fallback"}:
             state.policy.toggle(source, region.value)
         elif region.value == "primary_image_only":
             if source in PRIMARY_METADATA_SOURCES:

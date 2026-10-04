@@ -79,6 +79,22 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
         self.assertTrue(refs[0].front)
         self.assertEqual(http.calls[0][0], "https://www.amazon.com/s")
 
+    def test_musicbrainz_asin_is_the_amazon_search_authority(self) -> None:
+        body = """
+        <div data-component-type="s-search-result" data-asin="B000RIGHT1">
+          <h2><span>A Summer Place</span></h2>
+          <img class="s-image" src="https://m.media-amazon.com/images/I/right.jpg">
+        </div>
+        <div data-component-type="s-search-result" data-asin="B000WRONG1">
+          <h2><span>A Summer Place</span></h2>
+          <img class="s-image" src="https://m.media-amazon.com/images/I/wrong.jpg">
+        </div>
+        """
+        http = _Http(_Response(text=body))
+        refs = splined.discover_amazon(http, _release(asin="B000RIGHT1"))
+        self.assertEqual([ref.id.split(" · ", 1)[0] for ref in refs], ["B000RIGHT1"])
+        self.assertEqual(http.calls[0][1]["params"]["k"], "B000RIGHT1")
+
     def test_musicbrainz_priority_uses_release_group_caa_artwork(self) -> None:
         http = _Http(
             _Response(
@@ -110,6 +126,7 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
         self.assertIn("amazon", draft.source_order)
         self.assertTrue(draft.policies["musicbrainz"]["enabled"])
         self.assertFalse(draft.policies["amazon"]["enabled"])
+        self.assertTrue(draft.policies["amazon"]["strict_override"])
         self.assertEqual(
             draft.policies["musicbrainz"]["minimum_range_type"],
             "LowerRange",

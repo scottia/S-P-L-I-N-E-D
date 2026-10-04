@@ -79,7 +79,7 @@ means candidates below `LowerRange` are not normally accepted by that source unl
 
 ---
 
-# Source Enabled vs Source Override
+# Source Enabled, Strict Override, and Source Override
 
 These are separate controls.
 
@@ -117,6 +117,33 @@ The provider uses its saved source-specific policy.
 
 Turning Source Override off must **not erase** its saved custom values. Those values should remain available if the override is turned back on later.
 
+## Strict Override
+
+`strict_override = true` makes decoded image-content evidence authoritative for
+Preferred (`s`) and unattended Auto selection. It supersedes
+`source_override`: source-specific range values remain saved, but the global
+`[range]` scale is used and scale, resolution, squareness, provider order, and
+the image URL cannot independently make the candidate Preferred.
+
+Strict comparison uses the complete decoded image. An exact-release Cover Art
+Archive image typed `Front` is authoritative front-cover evidence. A matching
+local image may also become an evidence anchor after it matches that Front or
+multiple independent front-art sources. Cover Art Archive `Medium`, `Disc`,
+`Back`, booklet, tray, and similar types can confirm release identity but do
+not validate a front-cover candidate.
+
+Candidates that fail or lack strict evidence remain in Candidate Decision and
+their URLs remain previewable. They are excluded only from Preferred and Auto,
+so an operator may still select one explicitly. Auto additionally requires an
+Ideal, acceptable result with no upscale or crop. This is intentionally more
+conservative than interactive Preferred selection.
+
+Amazon defaults to strict mode because Store search can return product photos,
+packages, inserts, discs, or other merchandise imagery. Trusted sources can
+retain existing behavior with `strict_override = false`. When MusicBrainz
+supplies an ASIN for the exact release, Amazon discovery searches that ASIN and
+rejects search rows for a different ASIN before decoded-content comparison.
+
 ---
 
 # Per-source policy controls
@@ -124,6 +151,7 @@ Turning Source Override off must **not erase** its saved custom values. Those va
 Where supported, a source may have custom values for:
 
 - Source Enabled;
+- Strict Content Override;
 - Source Override;
 - Minimum Range Type;
 - Allow BelowMinimum fallback;
@@ -241,9 +269,8 @@ Avoid adding unnecessary advanced constraints if the normal Range Type model alr
 
 # Primary image only
 
-`Primary image only` relies on **provider metadata**.
-
-It does not mean SPLINED visually analyzes artwork to decide whether an image is front cover, back cover, booklet, disc, jewel case, or promotional image.
+`Primary image only` relies on **provider metadata**. It is an early metadata
+filter and is separate from Strict Override's decoded-content evidence gate.
 
 If the provider exposes a reliable primary/front indicator, the option may use it. If the provider does not expose suitable metadata, the control should be disabled with an explanation.
 
@@ -526,14 +553,15 @@ These labels describe the candidate's effective range/policy result. They should
 If a candidate you expected to see is missing:
 
 1. confirm the source is Enabled;
-2. confirm Source Override state;
-3. check Minimum Range Type;
-4. check adjacent-lower fallback;
-5. inspect advanced short-side/width/height limits;
-6. check Primary image only if supported;
-7. review the scan log for policy-filtered candidate counts;
-8. verify the provider actually returned the candidate;
-9. verify the downloaded image dimensions.
+2. confirm Strict Override and inspect `strict.content` log results;
+3. confirm Source Override state;
+4. check Minimum Range Type;
+5. check adjacent-lower fallback;
+6. inspect advanced short-side/width/height limits;
+7. check Primary image only if supported;
+8. review the scan log for policy-filtered candidate counts;
+9. verify the provider actually returned the candidate;
+10. verify the downloaded image dimensions.
 
 If the scan log reports candidates hidden by active source policy, discovery succeeded but effective policy filtered those candidates from the review set.
 

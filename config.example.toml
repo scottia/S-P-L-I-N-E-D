@@ -46,10 +46,12 @@ ladder = 3600
 cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon"]
 exclude_cover_sources = []
 
-# Source Override activates the source-specific artwork policy. With it off,
-# the source uses the global [range] policy while retaining these saved values.
+# Strict Override makes decoded content evidence authoritative for Preferred
+# and Auto. It supersedes Source Override and keeps the global [range] scale.
+# Source Override otherwise activates the source-specific artwork range policy.
 [source_policies.deezer]
 enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
@@ -57,6 +59,7 @@ primary_image_only = true
 
 [source_policies.itunes]
 enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
@@ -64,6 +67,7 @@ primary_image_only = true
 
 [source_policies.fanarttv]
 enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
@@ -71,6 +75,7 @@ primary_image_only = true
 
 [source_policies.lastfm]
 enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
@@ -78,6 +83,7 @@ primary_image_only = true
 
 [source_policies.coverartarchive]
 enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
@@ -85,6 +91,7 @@ primary_image_only = true
 
 [source_policies.discogs]
 enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
@@ -94,6 +101,7 @@ primary_image_only = true
 # This priority is independent from exact-release Cover Art Archive discovery.
 [source_policies.musicbrainz]
 enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false
@@ -103,6 +111,7 @@ primary_image_only = true
 # Config upgrade cannot add Store traffic or latency to existing scans.
 [source_policies.amazon]
 enabled = false
+strict_override = true
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false

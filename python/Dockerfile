@@ -54,6 +54,7 @@ COPY splined_media_checkpoint_policy.py /app/splined_media_checkpoint_policy.py
 COPY splined_compilation_authority_policy.py /app/splined_compilation_authority_policy.py
 COPY splined_tui_progress_policy.py /app/splined_tui_progress_policy.py
 COPY splined_ranking_policy.py /app/splined_ranking_policy.py
+COPY splined_strict_source_policy.py /app/splined_strict_source_policy.py
 COPY splined_tui_overlay_policy.py /app/splined_tui_overlay_policy.py
 COPY splined_entry.py /app/splined_entry.py
 COPY splined.py /app/splined.py
@@ -61,6 +62,7 @@ COPY splined_scan.py /app/splined_scan.py
 COPY splined_oauth_validation.py /app/splined_oauth_validation.py
 COPY tui /app/tui
 COPY test_candidate_ranking_policy.py /tmp/test_candidate_ranking_policy.py
+COPY test_strict_source_policy.py /tmp/test_strict_source_policy.py
 COPY test_splined_media_index.py /tmp/test_splined_media_index.py
 COPY test_splined_media_build_policy.py /tmp/test_splined_media_build_policy.py
 COPY test_splined_media_fast_index_policy.py /tmp/test_splined_media_fast_index_policy.py
@@ -85,6 +87,7 @@ RUN python3 -m py_compile \
         /app/splined_compilation_authority_policy.py \
         /app/splined_tui_progress_policy.py \
         /app/splined_ranking_policy.py \
+        /app/splined_strict_source_policy.py \
         /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
         /app/splined.py \
@@ -94,6 +97,7 @@ RUN python3 -m py_compile \
     && cd /tmp \
     && python3 -m unittest -v \
         test_candidate_ranking_policy \
+        test_strict_source_policy \
         test_splined_media_index \
         test_splined_media_build_policy \
         test_splined_media_fast_index_policy \
@@ -105,6 +109,7 @@ RUN python3 -m py_compile \
         test_splined_scan_lazy_batch \
     && rm -f \
         /tmp/test_candidate_ranking_policy.py \
+        /tmp/test_strict_source_policy.py \
         /tmp/test_splined_media_index.py \
         /tmp/test_splined_media_build_policy.py \
         /tmp/test_splined_media_fast_index_policy.py \
@@ -130,6 +135,7 @@ RUN python3 -m py_compile \
         /app/splined_compilation_authority_policy.py \
         /app/splined_tui_progress_policy.py \
         /app/splined_ranking_policy.py \
+        /app/splined_strict_source_policy.py \
         /app/splined_tui_overlay_policy.py \
         /app/splined_entry.py \
         /app/splined.py \

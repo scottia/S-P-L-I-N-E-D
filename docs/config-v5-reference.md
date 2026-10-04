@@ -185,6 +185,7 @@ blocking or markup changes appear as provider diagnostics.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` (`false` for Amazon) | Whether the source may be used |
+| `strict_override` | `false` (`true` for Amazon) | Requires decoded front-art evidence for Preferred/Auto and supersedes `source_override` |
 | `source_override` | `false` | Activates saved provider-specific policy |
 | `minimum_range_type` | `"LowerRange"` | Minimum normal artwork range |
 | `allow_below_minimum_fallback` | `false` | Allows the adjacent lower range as fallback |
@@ -194,10 +195,13 @@ blocking or markup changes appear as provider diagnostics.
 | `minimum_height` | absent | Optional explicit height minimum |
 | `primary_image_only` | `true` | Uses primary/front metadata where available |
 
-MusicBrainz and Amazon use the same Minimum Range Type, adjacent fallback,
-dimension, and primary-image controls as other artwork sources. When Source
-Override is off, a provider uses the global range while retaining saved custom
-values.
+When Strict Override is on, a provider uses the global range and decoded image
+comparison against exact-release CAA Front, validated local art, or trusted
+multi-source consensus. An unverified result remains visible/manual but cannot
+be Preferred or Auto. When Strict Override is off, Source Override controls
+whether saved provider-specific range values or the global range are used.
+MusicBrainz ASIN data narrows Amazon discovery to the exact linked product when
+available; image-content evidence still decides strict eligibility.
 
 See [Source policies and Range Types](source-policies-range-types.md).
 

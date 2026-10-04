@@ -60,6 +60,7 @@ def _policy_defaults(raw: dict[str, Any], source: str = "") -> dict[str, Any]:
         # v5 files predate this provider, so saving Source Priority must not
         # silently add Store traffic to every album scan.
         "enabled": bool(raw.get("enabled", source != "amazon")),
+        "strict_override": bool(raw.get("strict_override", source == "amazon")),
         "source_override": bool(raw.get("source_override", False)),
         "minimum_range_type": str(raw.get("minimum_range_type", "LowerRange")),
         "allow_below_minimum_fallback": bool(
@@ -176,6 +177,11 @@ class PolicyDraft:
         policy = self.policies[source]
         if not policy["enabled"]:
             return "DISABLED · provider is not queried"
+        if policy["strict_override"]:
+            return (
+                "STRICT · decoded content must match exact-release CAA Front "
+                "or trusted source consensus · global range remains active"
+            )
         if not policy["source_override"]:
             return (
                 "GLOBAL · "
@@ -242,6 +248,7 @@ def persist_policy_draft(
         table = _ensure_table(policies, source)
         for key in (
             "enabled",
+            "strict_override",
             "source_override",
             "minimum_range_type",
             "allow_below_minimum_fallback",
