@@ -9,15 +9,14 @@ with container paths.
 Application release and configuration schema versions are separate:
 
 ```text
-Windows GUI release: 3.0.0 Stable
-Repository release:  independent
+Application release: follows the repository release
 All runtimes:        Config v5
 ```
 
 ## Location and path rules
 
 Config v5 is the common runtime contract, but its storage is runtime-specific.
-Python, Docker, Linux, and macOS read `config.toml`. Windows v4 stores the same
+Python, Docker, Linux, and macOS read `config.toml`. Windows stores the same
 validated Config v5 document and its interface state in the current user's
 internal application settings. It does not create or depend on `config.toml`,
 `ui.toml`, or `config.location` during normal operation.

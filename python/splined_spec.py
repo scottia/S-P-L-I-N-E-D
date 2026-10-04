@@ -140,20 +140,20 @@ REQUIRED_DOC_ANCHORS: dict[str, tuple[str, ...]] = {
         "history.enabled",
         "[aisplined]",
     ),
-    "docs/history-retention-bypass-timeout.md": (
-        "Manual reprocessing",
-        "persistent history / bypass / timeout authority",
-        "Orange album",
+    "docs/splined-media-database.md": (
+        "albums.status",
+        "cache_history",
+        "do not create Processed authority",
     ),
     "docs/media-filter-status-colors.md": (
         "Select [ALL]",
         "Select [FILTERED]",
-        "likewise processes only the checked Album set",
-        "Orange albums may be deliberately reselected",
+        "only the checked Album set",
+        "Orange Albums may be deliberately",
     ),
     "docs/ratatui-tui.md": (
-        "Direct lazy Select Media inventory",
-        "No SQLite picker snapshot",
+        "resumable per-Album SQLite checkpoints",
+        "SQLite is the only runtime-state authority",
         "Auto Scan [ALL]",
     ),
     "docs/source-policies-range-types.md": (
@@ -270,7 +270,7 @@ def check_docs(audit: Audit) -> None:
     audit.check("DOC-001", "required /docs contract anchors are present", anchors)
 
     def processed_authority() -> None:
-        history_body = (ROOT / "docs/history-retention-bypass-timeout.md").read_text(
+        database_body = (ROOT / "docs/splined-media-database.md").read_text(
             encoding="utf-8"
         )
         media_body = (ROOT / "docs/media-filter-status-colors.md").read_text(
@@ -279,7 +279,7 @@ def check_docs(audit: Audit) -> None:
         windows_body = (ROOT / "windows/gui/LibraryModel.cs").read_text(
             encoding="utf-8"
         )
-        assert "do not create Processed authority" in history_body
+        assert "do not create Processed authority" in database_body
         assert "inventory information only" in media_body
         assert "Never processed by SPLINED" in windows_body
 

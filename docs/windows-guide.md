@@ -1,10 +1,10 @@
-# Windows v4 Guide
+# Windows Guide
 
-This guide describes the native Windows application: the Windows Forms shell,
-the embedded Rust processing core, Config v5, and the SQLite media database.
-The Windows application currently identifies itself as **S:P:L:I:N:E:D
-v3.0.0 Stable**. “Windows v4” names the interface/source generation; it is not
-the application version or the Config v5 schema version.
+This is the single user guide for the native Windows application in the current
+S:P:L:I:N:E:D release. It covers the Windows Forms interface, embedded Rust
+processing core, Config v5 settings, SQLite media database, updates, backup,
+and troubleshooting. Historical Windows build notes belong in GitHub Releases,
+not in the current product documentation.
 
 ## Portable application model
 

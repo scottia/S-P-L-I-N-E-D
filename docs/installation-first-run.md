@@ -15,7 +15,7 @@ Config v5; application release identities remain independent.
 6. Configure provider credentials through **File > Credentials...** as needed.
 7. Start in Read mode against a small selection.
 
-Windows v4 keeps Config v5 and interface state internally for the current user.
+Windows keeps Config v5 and interface state internally for the current user.
 Extraction creates no `config`, `credentials`, `_cache`, `_logs`, or
 `docker_builds` folders and no `config.location` file. The required directories
 are created only at the user-selected locations after settings are saved. No

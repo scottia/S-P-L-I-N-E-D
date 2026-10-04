@@ -406,6 +406,32 @@ compilation progress are committed to SQLite. The Windows GUI also reads the
 published SQLite inventory instead of performing a separate C# filesystem
 inventory.
 
+The durable runtime fields and audit surfaces are:
+
+- `albums.status`: `unprocessed`, `incomplete`, `processed`, `bypassed`,
+  or `timeout`;
+- `albums.processed_at`: most recent completed Write operation;
+- `albums.bypassed`: explicit persistent bypass;
+- `albums.timeout_until`: time when a timed-out Album becomes eligible;
+- `albums.selected_source`: source selected for the installed artwork;
+- `cache_entries`: auxiliary state such as source-ranking counts and scan
+  fingerprints;
+- `cache_history`: append-only runtime audit records.
+
+An explicit bypass remains until cleared. A timeout is temporary and applies
+only until `timeout_until`. An unfinished manual compilation stays
+`incomplete` so it can resume without appearing successfully processed.
+
+`[history].enabled` controls whether completed outcomes affect later
+selection. `[history].retention_days = 0` retains them indefinitely; a positive
+value permits older completion state to be pruned or reprocessed. Diagnostic
+log retention is independent: deleting logs never changes Album state.
+
+`cover_found`, `cover_path`, and `local_art_json` describe artwork present
+in the Album folder. They do not create Processed authority. Only an explicit
+SPLINED completion recorded through runtime provenance marks an Album
+Processed, so operator-added or third-party `cover.*` remains Unprocessed.
+
 ## Backup and deletion
 
 For Python/Docker installations, back up:
@@ -422,6 +448,9 @@ copying the database if a consistent filesystem-level backup is required.
 On Windows, **File > Backup > Export Backup...** can include internal settings,
 interface state, credentials, `splined.db`, and diagnostics independently. Stop
 other writers before exporting an actively shared database.
+
+Candidate files, review samples, temporary run-cache images, and diagnostic
+logs are disposable and do not need to be included in a state backup.
 
 Deleting `splined.db` is safe for music files, but also removes the durable
 index and runtime state. The next Python interactive launch performs the
