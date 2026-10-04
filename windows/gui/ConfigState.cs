@@ -13,6 +13,7 @@ namespace Splined.WindowsGui
     internal sealed class SourcePolicyState
     {
         public bool Enabled = true;
+        public bool StrictOverride;
         public bool SourceOverride;
         public string MinimumRangeType = "LowerRange";
         public bool AllowBelowMinimumFallback;
@@ -55,7 +56,7 @@ namespace Splined.WindowsGui
             int shortSide = Math.Min(Math.Max(0, width), Math.Max(0, height));
             string rangeType = Classify(state, shortSide);
 
-            if (!policy.SourceOverride)
+            if (policy.StrictOverride || !policy.SourceOverride)
             {
                 bool accepted = rangeType != "BelowMinimum" && rangeType != "AboveLadder";
                 return new SourcePolicyDecision
@@ -399,6 +400,7 @@ namespace Splined.WindowsGui
                     && (state.Sources.Contains(source, StringComparer.OrdinalIgnoreCase)
                         && !state.ExcludedSources.Contains(source, StringComparer.OrdinalIgnoreCase));
                 policy.Enabled = ReadBool(text, section, "enabled", defaultEnabled);
+                policy.StrictOverride = ReadBool(text, section, "strict_override", source.Equals("amazon", StringComparison.OrdinalIgnoreCase));
                 policy.SourceOverride = ReadBool(text, section, "source_override", false);
                 policy.MinimumRangeType = ReadString(text, section, "minimum_range_type", "LowerRange");
                 if (!SourcePolicyRules.RangeTypes.Contains(policy.MinimumRangeType, StringComparer.OrdinalIgnoreCase))
@@ -459,7 +461,7 @@ namespace Splined.WindowsGui
             state.TemporaryCacheDir = Path.Combine(DefaultUserDataRoot, "run-cache");
             state.LogDir = Path.Combine(DefaultUserDataRoot, "logs");
             state.CredentialDir = Path.Combine(DefaultUserDataRoot, "credentials");
-            state.SourcePolicies["amazon"] = new SourcePolicyState { Enabled = false };
+            state.SourcePolicies["amazon"] = new SourcePolicyState { Enabled = false, StrictOverride = true };
             return state;
         }
 
@@ -785,6 +787,7 @@ namespace Splined.WindowsGui
                 if (!state.SourcePolicies.TryGetValue(source, out policy)) policy = new SourcePolicyState();
                 text.AppendLine("[source_policies." + source + "]");
                 text.AppendLine("enabled = " + Bool(policy.Enabled));
+                text.AppendLine("strict_override = " + Bool(policy.StrictOverride));
                 text.AppendLine("source_override = " + Bool(policy.SourceOverride));
                 text.AppendLine("minimum_range_type = " + Quote(policy.MinimumRangeType));
                 text.AppendLine("allow_below_minimum_fallback = " + Bool(policy.AllowBelowMinimumFallback));

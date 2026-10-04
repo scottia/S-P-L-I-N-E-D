@@ -216,8 +216,10 @@ URL restores the selected Album cover; leaving MusicBrainz Matches restores
 Scan Activity and the user's saved Show Artwork preference.
 
 The processing panel reports local evidence, authority resolution, provider
-timings, candidate policy, and errors. Artwork Candidates and Preview displays
-only candidates allowed by the active source policy.
+timings, candidate policy, strict-content evidence, and errors. Artwork
+Candidates and Preview displays every manually reviewable strict candidate.
+An unverified strict candidate is marked **Manual only**: its image and URL stay
+available, but it cannot become Recommended or be accepted by Auto Scan.
 
 - **Use Selected** approves one active candidate.
 - **Compare** compares multiple active candidates.
@@ -248,6 +250,11 @@ the shared Artwork panel remains available throughout authority review.
 Matches are grouped by newest-to-oldest decade and by populated official
 release type: Album, Single, EP, Soundtrack, Compilation, and any additional
 type returned by MusicBrainz.
+
+A fixed **CURRENT ALBUM · Artist • Album** row remains immediately above the
+scrollable result list. It identifies the Album being refined even when a
+representative track or a curated-compilation track supplied the Recording
+search terms.
 
 Rows show:
 
@@ -315,6 +322,13 @@ Windows displays Config v5 in native controls; it does not require the user to
 edit TOML. Provider credentials remain separate JSON files in the configured
 credential directory. Config v5 stores only that directory—not tokens,
 passwords, authorization headers, client secrets, or provider filenames.
+
+Each provider in **Sources & Matching** exposes **Strict Override**. When on,
+Windows compares the decoded complete image with exact-release CAA Front art,
+a validated local cover, or independent front-art consensus. Strict Override
+uses the global range and supersedes Source Override while retaining its saved
+custom values. Candidates without strict evidence remain visible and
+previewable for explicit operator selection. Amazon defaults to strict mode.
 
 Credential writes are atomic and Windows applies a current-user/System ACL
 where the selected filesystem supports it. A NAS may not support Windows ACLs;

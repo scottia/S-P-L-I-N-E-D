@@ -138,6 +138,10 @@ so an operator may still select one explicitly. Auto additionally requires an
 Ideal, acceptable result with no upscale or crop. This is intentionally more
 conservative than interactive Preferred selection.
 
+Python/Ratatui and Windows use the same strict states and eligibility rules.
+Windows displays an unverified strict candidate as **Manual only** and exposes
+the decoded-content decision in its tooltip and Activity diagnostics.
+
 Amazon defaults to strict mode because Store search can return product photos,
 packages, inserts, discs, or other merchandise imagery. Trusted sources can
 retain existing behavior with `strict_override = false`. When MusicBrainz

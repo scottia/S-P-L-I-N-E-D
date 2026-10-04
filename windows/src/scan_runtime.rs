@@ -39,9 +39,10 @@ use crate::scan_tags::read_album_track_evidence;
 use crate::source::{ArtworkQuery, ArtworkReference, ProviderContext, ProviderRegistry};
 use crate::source_history::{load_source_history, record_source_selection};
 use crate::source_policy::{
-    SourcePolicyDecision, SourcePolicyStatus, active_policy, global_range_decision,
-    source_override_decision,
+    SourcePolicyDecision, SourcePolicyStatus, active_policy, best_candidate_index,
+    global_range_decision, source_override_decision,
 };
+use crate::strict_source_policy::{StrictContentDecision, apply as apply_strict_source_policy};
 use crossterm::style::{Color, Stylize};
 use serde_json::json;
 use std::cmp::Ordering;
@@ -730,12 +731,35 @@ pub async fn run_scan_library_read_report(
             result.candidates.insert(0, local);
         }
 
+        apply_strict_source_policy(&mut result.candidates, &config.source_policies);
+        for item in result
+            .candidates
+            .iter()
+            .filter(|item| item.strict.status != "not-applicable")
+        {
+            gui_events::emit(json!({
+                "event": "activity",
+                "category": "strict-policy",
+                "state": item.strict.status,
+                "source": item.downloaded.candidate.source,
+                "message": format!(
+                    "{} strict check: {} · {}",
+                    item.downloaded.candidate.source,
+                    item.strict.status,
+                    item.strict.reason
+                ),
+            }));
+        }
+
         let automatic_index = result
             .candidates
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
                 let candidate = &item.downloaded.candidate;
+                if !item.strict.preferred_eligible {
+                    return None;
+                }
                 if matches!(candidate.source.as_str(), "local" | "webpstill") {
                     return None;
                 }
@@ -771,8 +795,9 @@ pub async fn run_scan_library_read_report(
             .min_by_key(|(_, key)| *key)
             .map(|(index, _)| index);
         let automatic_ideal_index = automatic_index.filter(|index| {
-            let candidate = &result.candidates[*index].downloaded.candidate;
-            candidate_is_auto_ideal(candidate, &range, config)
+            let item = &result.candidates[*index];
+            item.strict.auto_eligible
+                && candidate_is_auto_ideal(&item.downloaded.candidate, &range, config)
         });
         let mut display_indices: Vec<usize> = (0..result.candidates.len()).collect();
         display_indices.retain(|candidate_index| {
@@ -797,14 +822,15 @@ pub async fn run_scan_library_read_report(
                 .iter()
                 .copied()
                 .filter(|index| {
-                    !matches!(
-                        result.candidates[*index]
-                            .downloaded
-                            .candidate
-                            .source
-                            .as_str(),
-                        "local" | "webpstill"
-                    )
+                    result.candidates[*index].strict.preferred_eligible
+                        && !matches!(
+                            result.candidates[*index]
+                                .downloaded
+                                .candidate
+                                .source
+                                .as_str(),
+                            "local" | "webpstill"
+                        )
                 })
                 .min_by(|left_index, right_index| {
                     compare_fallback_suggestions(
@@ -825,6 +851,7 @@ pub async fn run_scan_library_read_report(
         } else {
             automatic_index
         };
+        result.best_index = suggested_index;
         let mut manually_selected = false;
 
         emit_normal_source_results(NormalSourceResultsEvent {
@@ -1587,6 +1614,15 @@ fn emit_normal_source_results(event: NormalSourceResultsEvent<'_>) {
                 "acceptable": policy.status != SourcePolicyStatus::Reject,
                 "policy_status": policy.status, "policy_reason": policy.reason,
                 "source_override_active": active_policy(&event.config.source_policies, &candidate.source).is_some(),
+                "strict_override_active": event.config.source_policies
+                    .get(&candidate.source.to_ascii_lowercase())
+                    .is_some_and(|source_policy| source_policy.strict_override),
+                "strict_status": item.strict.status,
+                "strict_reason": item.strict.reason,
+                "strict_preferred_eligible": item.strict.preferred_eligible,
+                "strict_auto_eligible": item.strict.auto_eligible,
+                "strict_match_distance": item.strict.match_distance,
+                "strict_match_source": item.strict.match_source,
                 "projected_width": projected.width, "projected_height": projected.height,
                 "cropped": projected.cropped, "resized": projected.resized,
                 "upscaled": projected.upscaled, "approved": item.reference.approved,
@@ -1627,6 +1663,7 @@ struct CachedPipelineCandidate {
     reference: ArtworkReference,
     path: PathBuf,
     source_priority: usize,
+    strict: StrictContentDecision,
 }
 
 #[derive(Clone)]
@@ -1646,6 +1683,7 @@ impl CachedPipelineResult {
                     reference: item.reference.clone(),
                     path: item.downloaded.path().to_path_buf(),
                     source_priority: item.downloaded.candidate.source_priority,
+                    strict: item.strict.clone(),
                 })
                 .collect(),
             best_index: result.best_index,
@@ -1666,6 +1704,7 @@ impl CachedPipelineResult {
                         item.source_priority,
                         item.reference.url.clone(),
                     )?,
+                    strict: item.strict.clone(),
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -1780,7 +1819,7 @@ async fn run_normal_musicbrainz_browser(
             release_group_title: Some(selected.release_title.clone()),
             apple_collection_ids: Vec::new(),
         };
-        let pipeline = if let Some(cached) = source_results.get(&selected.release_mbid) {
+        let mut pipeline = if let Some(cached) = source_results.get(&selected.release_mbid) {
             gui_events::emit(json!({ "event": "source_results_cache_hit",
                 "album_path": album.path, "release_mbid": selected.release_mbid,
                 "candidates": cached.candidates.len() }));
@@ -1808,24 +1847,25 @@ async fn run_normal_musicbrainz_browser(
                     "errors": timing.errors, "error": timing.error }),
                 );
             }
-            if let Some(best) = discovered
-                .best_index
-                .and_then(|index| discovered.candidates.get(index))
-            {
-                resolutions.insert(
-                    selected.release_mbid.clone(),
-                    format!(
-                        "{}x{}",
-                        best.downloaded.candidate.width, best.downloaded.candidate.height
-                    ),
-                );
-            }
-            source_results.insert(
-                selected.release_mbid.clone(),
-                CachedPipelineResult::capture(&discovered),
-            );
             discovered
         };
+        apply_strict_candidate_policy(&mut pipeline, range, format_order, config);
+        if let Some(best) = pipeline
+            .best_index
+            .and_then(|index| pipeline.candidates.get(index))
+        {
+            resolutions.insert(
+                selected.release_mbid.clone(),
+                format!(
+                    "{}x{}",
+                    best.downloaded.candidate.width, best.downloaded.candidate.height
+                ),
+            );
+        }
+        source_results.insert(
+            selected.release_mbid.clone(),
+            CachedPipelineResult::capture(&pipeline),
+        );
         let suggested_index = pipeline.best_index;
         let display_indices = (0..pipeline.candidates.len())
             .filter(|index| {
@@ -1851,6 +1891,10 @@ async fn run_normal_musicbrainz_browser(
                     "square": candidate.is_square(), "acceptable": policy.status != SourcePolicyStatus::Reject,
                     "policy_status": policy.status, "policy_reason": policy.reason,
                     "source_override_active": active_policy(&config.source_policies, &candidate.source).is_some(),
+                    "strict_override_active": config.source_policies.get(&candidate.source.to_ascii_lowercase()).is_some_and(|source_policy| source_policy.strict_override),
+                    "strict_status": item.strict.status, "strict_reason": item.strict.reason,
+                    "strict_preferred_eligible": item.strict.preferred_eligible,
+                    "strict_auto_eligible": item.strict.auto_eligible,
                     "projected_width": projected.width, "projected_height": projected.height,
                     "cropped": projected.cropped, "resized": projected.resized,
                     "upscaled": projected.upscaled, "approved": item.reference.approved,
@@ -1926,6 +1970,8 @@ fn emit_normal_musicbrainz_matches(
     gui_events::emit(
         json!({ "event": "musicbrainz_matches", "track_path": track.path,
         "artist": track.artist, "title": track.title, "searched": searched,
+        "album_artist": track.album_artist.as_deref().unwrap_or(&track.artist),
+        "album": track.album.as_deref().unwrap_or(""),
         "compilation_track": false, "items": items }),
     );
 }
@@ -2155,6 +2201,7 @@ async fn run_compilation_album(
                             types: vec!["CoverFile".to_string()],
                         },
                         downloaded,
+                        strict: StrictContentDecision::default(),
                     }],
                     best_index: Some(0),
                     diagnostics: Vec::new(),
@@ -2215,7 +2262,13 @@ async fn run_compilation_album(
                 record_compilation_progress(config, &album.path, tracks.len(), completed)?;
                 break 'match_selection;
             }
-            let suggested_index = pipeline.best_index.or(Some(0));
+            apply_strict_candidate_policy(&mut pipeline, range, format_order, config);
+            let suggested_index = pipeline.best_index.or_else(|| {
+                pipeline
+                    .candidates
+                    .iter()
+                    .position(|item| item.strict.preferred_eligible)
+            });
             let display_indices = (0..pipeline.candidates.len())
                 .filter(|index| {
                     candidate_visible_for_review(
@@ -2237,6 +2290,10 @@ async fn run_compilation_album(
                     "square": candidate.is_square(), "acceptable": policy.status != SourcePolicyStatus::Reject,
                     "policy_status": policy.status, "policy_reason": policy.reason,
                     "source_override_active": active_policy(&config.source_policies, &candidate.source).is_some(),
+                    "strict_override_active": config.source_policies.get(&candidate.source.to_ascii_lowercase()).is_some_and(|source_policy| source_policy.strict_override),
+                    "strict_status": item.strict.status, "strict_reason": item.strict.reason,
+                    "strict_preferred_eligible": item.strict.preferred_eligible,
+                    "strict_auto_eligible": item.strict.auto_eligible,
                     "projected_width": projected.width, "projected_height": projected.height,
                     "cropped": projected.cropped, "resized": projected.resized, "upscaled": projected.upscaled,
                     "approved": item.reference.approved, "reference_id": item.reference.id,
@@ -2384,6 +2441,8 @@ fn emit_musicbrainz_matches(
     gui_events::emit(
         json!({ "event": "musicbrainz_matches", "track_path": track.path,
         "artist": track.artist, "title": track.title, "searched": searched,
+        "album_artist": track.album_artist.as_deref().unwrap_or(&track.artist),
+        "album": track.album.as_deref().unwrap_or(""),
         "compilation_track": true, "items": items }),
     );
 }
@@ -2576,6 +2635,28 @@ fn configured_candidate_policy(
         Some(policy) => source_override_decision(policy, candidate.width, candidate.height, range),
         None => global_range_decision(projected.width, projected.height, range),
     }
+}
+
+fn apply_strict_candidate_policy(
+    result: &mut PipelineResult,
+    range: &Range,
+    format_order: &[StaticFormat],
+    config: &Config,
+) {
+    apply_strict_source_policy(&mut result.candidates, &config.source_policies);
+    let eligible_indices = result
+        .candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| item.strict.preferred_eligible.then_some(index))
+        .collect::<Vec<_>>();
+    let eligible = eligible_indices
+        .iter()
+        .map(|index| result.candidates[*index].downloaded.candidate.clone())
+        .collect::<Vec<_>>();
+    result.best_index =
+        best_candidate_index(&eligible, range, format_order, &config.source_policies)
+            .map(|index| eligible_indices[index]);
 }
 
 fn candidate_visible_for_review(candidate: &Candidate, range: &Range, config: &Config) -> bool {
@@ -3194,6 +3275,7 @@ mod tests {
                     types: vec!["Front".to_string()],
                 },
                 downloaded,
+                strict: StrictContentDecision::default(),
             }],
             best_index: Some(0),
             diagnostics: Vec::new(),

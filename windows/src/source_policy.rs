@@ -49,6 +49,7 @@ impl MinimumRangeType {
 #[serde(default)]
 pub struct SourcePolicyConfig {
     pub enabled: bool,
+    pub strict_override: bool,
     pub source_override: bool,
     pub minimum_range_type: MinimumRangeType,
     pub allow_below_minimum_fallback: bool,
@@ -67,6 +68,7 @@ impl Default for SourcePolicyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            strict_override: false,
             source_override: false,
             minimum_range_type: MinimumRangeType::LowerRange,
             allow_below_minimum_fallback: false,
@@ -132,7 +134,7 @@ pub fn active_policy<'a>(
 ) -> Option<&'a SourcePolicyConfig> {
     policies
         .get(&source.to_ascii_lowercase())
-        .filter(|policy| policy.source_override)
+        .filter(|policy| policy.source_override && !policy.strict_override)
 }
 
 pub fn reference_allowed(
@@ -378,5 +380,26 @@ mod tests {
             .unwrap()
             .primary_image_only = false;
         assert!(reference_allowed(&policies, "coverartarchive", false));
+    }
+
+    #[test]
+    fn strict_override_supersedes_source_range_authority() {
+        let mut configured = policy();
+        configured.strict_override = true;
+        configured.minimum_range_type = MinimumRangeType::Ideal;
+        configured.minimum_short_side = Some(2000);
+        let policies = BTreeMap::from([("amazon".to_string(), configured)]);
+        let candidate = Candidate {
+            source: "amazon".to_string(),
+            width: 1500,
+            height: 1500,
+            format: StaticFormat::Jpeg,
+            source_priority: 0,
+        };
+        assert!(active_policy(&policies, "amazon").is_none());
+        assert_eq!(
+            effective_candidate_decision(&candidate, &Range::default(), &policies).status,
+            SourcePolicyStatus::Accept
+        );
     }
 }

@@ -113,6 +113,18 @@ namespace Splined.WindowsGui
                     "Ideal fallback incorrectly opened every range down through BelowMinimum.");
                 Assert(SourcePolicyRules.Evaluate(loaded, new SourcePolicyState(), 900, 900).Result == SourcePolicyResult.Reject,
                     "Override-off source policy must preserve the existing global range behavior.");
+                SourcePolicyState strictPolicy = new SourcePolicyState
+                {
+                    StrictOverride = true,
+                    SourceOverride = true,
+                    MinimumRangeType = "Ideal",
+                    MinimumShortSide = 2000
+                };
+                Assert(SourcePolicyRules.Evaluate(loaded, strictPolicy, 1500, 1500).Result == SourcePolicyResult.Accept,
+                    "Strict Override did not supersede Source Override and retain the global range.");
+                Assert(loaded.SourcePolicies["amazon"].StrictOverride
+                    && configText.Contains("strict_override = true"),
+                    "Amazon strict policy default did not round-trip through Windows internal settings.");
 
                 ConfigState optionCoverage = loaded.Clone();
                 optionCoverage.ConfigPath = ConfigStore.InternalSettingsLabel;
@@ -382,7 +394,7 @@ namespace Splined.WindowsGui
                 using (FluentForm matchesHost = new FluentForm())
                 {
                     MusicBrainzMatchesPanel matches = new MusicBrainzMatchesPanel(
-                        "Fixture Artist", "Fixture Track", matchFixture, false, loadedUi.Theme);
+                        "Fixture Artist", "Fixture Track", "Fixture Album Artist", "Fixture Album", matchFixture, false, loadedUi.Theme);
                     matchesHost.Controls.Add(matches);
                     matchesHost.ShowInTaskbar = false;
                     matchesHost.StartPosition = FormStartPosition.Manual;
@@ -393,6 +405,9 @@ namespace Splined.WindowsGui
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Apply IDs")
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Return to Source Results"),
                         "MusicBrainz Matches omitted session-only Artist/Release/Recording authority editing or normal-Album return navigation.");
+                    Assert(Descendants(matches).OfType<Label>().Any(label => label.Name == "musicBrainzCurrentAlbum"
+                        && label.Text.Contains("Fixture Album Artist") && label.Text.Contains("Fixture Album")),
+                        "MusicBrainz Matches did not keep the current Album identity above the result list.");
                     Assert(Descendants(matches).OfType<TextBox>().Any(box => box.Text == "291dcfb8-b31c-496a-905b-9955509d75b6")
                         && !Descendants(matches).OfType<TextBox>().Any(box => box.Text.Contains("System.Collections")),
                         "MusicBrainz Artist ID collections were displayed as a collection type name.");
@@ -480,11 +495,14 @@ namespace Splined.WindowsGui
                     "Changing MusicBrainz authentication removed runtime options or the existing token.");
 
                 loaded.SourcePolicies["musicbrainz"].Enabled = false;
+                loaded.SourcePolicies["musicbrainz"].StrictOverride = true;
                 loaded.SourcePolicies["musicbrainz"].SourceOverride = true;
                 ConfigStore.Save(loaded);
                 ConfigState reopened = ConfigStore.Load();
-                Assert(!reopened.SourcePolicies["musicbrainz"].Enabled && reopened.SourcePolicies["musicbrainz"].SourceOverride,
-                    "MusicBrainz Source Enabled / Source Override did not round-trip.");
+                Assert(!reopened.SourcePolicies["musicbrainz"].Enabled
+                    && reopened.SourcePolicies["musicbrainz"].StrictOverride
+                    && reopened.SourcePolicies["musicbrainz"].SourceOverride,
+                    "MusicBrainz Source Enabled / Strict Override / Source Override did not round-trip.");
                 Dictionary<string, object> afterPolicySave = CredentialStore.Load(reopened, "musicbrainz");
                 Dictionary<string, object> afterPolicyOptions = (Dictionary<string, object>)afterPolicySave["options"];
                 Assert(Convert.ToString(afterPolicySave["access_token"]) == "fixture-access"

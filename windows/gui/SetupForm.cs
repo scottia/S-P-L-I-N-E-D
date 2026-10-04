@@ -36,6 +36,7 @@ namespace Splined.WindowsGui
         private Button sourceLater;
         private ComboBox sourceSelector;
         private ComboBox sourceEnabled;
+        private ComboBox sourceStrictOverride;
         private ComboBox sourceOverride;
         private ComboBox sourceMinimumRange;
         private ComboBox sourceBelowFallback;
@@ -627,20 +628,23 @@ namespace Splined.WindowsGui
             sourceEnabled = YesNoCombo();
             AddSourceRow(sourceTable, 1, "Source Enabled", sourceEnabled, "Enables or disables this provider without deleting its saved policy.");
 
+            sourceStrictOverride = YesNoCombo();
+            AddSourceRow(sourceTable, 2, "Strict Override", sourceStrictOverride, "Yes requires decoded full-frame evidence before this source can be Recommended or Auto-selected. Strict uses the global range and supersedes Source Override without erasing its saved values.");
+
             sourceOverride = YesNoCombo();
-            AddSourceRow(sourceTable, 2, "Source Override", sourceOverride, "No uses SPLINED's existing global artwork-range behavior. Yes activates this provider's saved custom range and dimension policy.");
+            AddSourceRow(sourceTable, 3, "Source Override", sourceOverride, "No uses SPLINED's existing global artwork-range behavior. Yes activates this provider's saved custom range and dimension policy when Strict Override is No.");
 
             sourceMinimumRange = new FluentComboBox { Dock = DockStyle.Fill };
             sourceMinimumRange.Items.AddRange(SourcePolicyRules.RangeTypes.Cast<object>().ToArray());
-            AddSourceRow(sourceTable, 3, "Minimum Range Type", sourceMinimumRange, "The lowest normal SPLINED range accepted for this provider when Source Override is Yes.");
+            AddSourceRow(sourceTable, 4, "Minimum Range Type", sourceMinimumRange, "The lowest normal SPLINED range accepted for this provider when Source Override is Yes and Strict Override is No.");
 
             sourceBelowFallback = SourceCombo();
             sourceBelowFallback.Name = "sourceFallbackRange";
             sourceBelowFallback.Items.Add("Disabled");
-            AddSourceRow(sourceTable, 4, "Fallback range", sourceBelowFallback, "Allows only the single SPLINED range immediately below Minimum Range Type when no accepted candidate is available. It never opens every lower range.");
+            AddSourceRow(sourceTable, 5, "Fallback range", sourceBelowFallback, "Allows only the single SPLINED range immediately below Minimum Range Type when no accepted candidate is available. It never opens every lower range.");
 
             sourcePolicyValidation = new Label { Dock = DockStyle.Fill, AutoSize = true, ForeColor = ThemeManager.PaletteFor(uiState.Theme).Error, Padding = new Padding(3, 3, 3, 5) };
-            sourceTable.Controls.Add(sourcePolicyValidation, 0, 5);
+            sourceTable.Controls.Add(sourcePolicyValidation, 0, 6);
             sourceTable.SetColumnSpan(sourcePolicyValidation, 3);
             sourceBox.Controls.Add(sourceTable);
             left.Controls.Add(sourceBox, 0, 0);
@@ -691,6 +695,7 @@ namespace Splined.WindowsGui
 
             sourceSelector.SelectedIndexChanged += SourceSelectionChanged;
             sourceEnabled.SelectedIndexChanged += SourceEditorChanged;
+            sourceStrictOverride.SelectedIndexChanged += SourceEditorChanged;
             sourceOverride.SelectedIndexChanged += SourceEditorChanged;
             sourceMinimumRange.SelectedIndexChanged += SourceMinimumRangeChanged;
             sourceBelowFallback.SelectedIndexChanged += SourceEditorChanged;
@@ -918,6 +923,7 @@ namespace Splined.WindowsGui
                 bool enabled;
                 if (!sourceEnabledStates.TryGetValue(currentSourceKey, out enabled)) enabled = false;
                 sourceEnabled.SelectedIndex = enabled ? 0 : 1;
+                sourceStrictOverride.SelectedIndex = policy.StrictOverride ? 0 : 1;
                 sourceOverride.SelectedIndex = policy.SourceOverride ? 0 : 1;
                 SelectComboText(sourceMinimumRange, policy.MinimumRangeType, "LowerRange");
                 PopulateFallbackChoices(policy.AllowBelowMinimumFallback);
@@ -949,6 +955,7 @@ namespace Splined.WindowsGui
             SourcePolicyState policy = GetSourcePolicy(currentSourceKey);
             sourceEnabledStates[currentSourceKey] = sourceEnabled.SelectedIndex == 0;
             policy.Enabled = sourceEnabledStates[currentSourceKey];
+            policy.StrictOverride = sourceStrictOverride.SelectedIndex == 0;
             policy.SourceOverride = sourceOverride.SelectedIndex == 0;
             if (currentSourceKey.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase))
             {
@@ -994,11 +1001,12 @@ namespace Splined.WindowsGui
 
         private void ApplySourceOverrideState()
         {
-            bool active = sourceOverride != null && sourceOverride.SelectedIndex == 0;
+            bool strictOverride = sourceStrictOverride != null && sourceStrictOverride.SelectedIndex == 0;
+            bool active = sourceOverride != null && sourceOverride.SelectedIndex == 0 && !strictOverride;
             bool musicBrainz = "musicbrainz".Equals(currentSourceKey, StringComparison.OrdinalIgnoreCase);
             if (advancedSourceGroup != null) advancedSourceGroup.Text = musicBrainz ? "Artwork Constraints / MusicBrainz Request Options" : "Advanced Source Constraints";
             if (sourcePolicyValidation != null) sourcePolicyValidation.Visible = true;
-            SetRowsVisible(sourceSettingsTable, new[] { 3, 4 }, true);
+            SetRowsVisible(sourceSettingsTable, new[] { 3, 4, 5 }, true);
             SetRowsVisible(advancedSourceTable, Enumerable.Range(0, 7), true);
             if (musicBrainzOptionsGroup != null) musicBrainzOptionsGroup.Visible = musicBrainz;
             if (artworkResolutionRangeGroup != null) artworkResolutionRangeGroup.Visible = true;
@@ -1043,7 +1051,8 @@ namespace Splined.WindowsGui
             if (!sourceEnabledStates.TryGetValue(currentSourceKey, out enabled)) enabled = false;
             string sourceName = SourceDisplayName(currentSourceKey);
             sourcePolicySummary.Text = sourceName + "  •  " + (enabled ? "Enabled" : "Disabled")
-                + (policy.SourceOverride ? "  •  Custom minimum: " + policy.MinimumRangeType : "  •  Global policy");
+                + (policy.StrictOverride ? "  •  Strict content / global range"
+                    : policy.SourceOverride ? "  •  Custom minimum: " + policy.MinimumRangeType : "  •  Global policy");
 
             sourceRangePreview.SuspendLayout();
             sourceRangePreview.Controls.Clear();
@@ -1070,6 +1079,7 @@ namespace Splined.WindowsGui
 
             List<string> constraints = new List<string>();
             if (!enabled) constraints.Add("Provider is disabled; saved policy remains available.");
+            else if (policy.StrictOverride) constraints.Add("Strict content evidence controls Recommended/Auto eligibility. Source Override values are retained but inactive; the global range applies.");
             else if (!policy.SourceOverride) constraints.Add("Override is off. Saved source values are retained but inactive; global range behavior is unchanged.");
             else
             {
@@ -1099,7 +1109,7 @@ namespace Splined.WindowsGui
                 new PolicyRangeBase("AboveLadder", state.RangeLadder + 1, null, ">" + state.RangeLadder)
             };
             List<int> breaks = new List<int>();
-            if (enabled && policy.SourceOverride)
+            if (enabled && policy.SourceOverride && !policy.StrictOverride)
             {
                 if (policy.MinimumShortSide.HasValue) breaks.Add(policy.MinimumShortSide.Value);
                 if (policy.MaximumShortSide.HasValue && policy.MaximumShortSide.Value < Int32.MaxValue) breaks.Add(policy.MaximumShortSide.Value + 1);

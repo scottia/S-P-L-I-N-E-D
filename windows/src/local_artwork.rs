@@ -257,6 +257,7 @@ fn pipeline_candidate(
             types: vec!["Front".to_string(), origin_type.to_string()],
         },
         downloaded,
+        strict: crate::strict_source_policy::StrictContentDecision::default(),
     }
 }
 

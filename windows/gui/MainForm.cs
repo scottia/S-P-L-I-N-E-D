@@ -1604,7 +1604,8 @@ namespace Splined.WindowsGui
                 candidateContext.Text = "MusicBrainz Matches — " + ReadString(payload, "artist") + " — " + ReadString(payload, "title");
                 UpdateSelectionControls();
                 ShowMusicBrainzMatchesWorkspace(
-                    ReadString(payload, "artist"), ReadString(payload, "title"), items,
+                    ReadString(payload, "artist"), ReadString(payload, "title"),
+                    ReadString(payload, "album_artist"), ReadString(payload, "album"), items,
                     ReadBool(payload, "compilation_track"));
             }
             else if (eventName == "compilation_started")
@@ -1756,6 +1757,11 @@ namespace Splined.WindowsGui
                 view.PolicyStatus = ReadString(candidate, "policy_status");
                 view.PolicyReason = ReadString(candidate, "policy_reason");
                 view.SourceOverrideActive = ReadBool(candidate, "source_override_active");
+                view.StrictOverrideActive = ReadBool(candidate, "strict_override_active");
+                view.StrictStatus = ReadString(candidate, "strict_status");
+                view.StrictReason = ReadString(candidate, "strict_reason");
+                view.StrictPreferredEligible = ReadBool(candidate, "strict_preferred_eligible");
+                view.StrictAutoEligible = ReadBool(candidate, "strict_auto_eligible");
                 view.Recommended = recommended;
                 view.CachePath = ReadString(candidate, "cache_path");
                 view.Url = ReadString(candidate, "url");
@@ -1832,19 +1838,25 @@ namespace Splined.WindowsGui
             sourceLink.Name = "candidateUrl";
             card.Controls.Add(sourceLink);
             bool fallbackOnly = view.PolicyStatus.Equals("fallback", StringComparison.OrdinalIgnoreCase);
-            string qualityText = fallbackOnly
+            bool strictManualOnly = view.StrictOverrideActive && !view.StrictPreferredEligible;
+            string qualityText = strictManualOnly
+                ? "Strict " + view.StrictStatus + " - Manual only"
+                : fallbackOnly
                 ? view.Range + " - Fallback only"
                 : sourceRejected
                     ? view.Range + " - Source policy reject"
                     : view.Range + (view.Acceptable ? " - Acceptable" : " - Outside range");
             ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
-            Color qualityColor = fallbackOnly ? palette.Warning : view.Acceptable ? palette.Success : palette.Error;
+            Color qualityColor = strictManualOnly || fallbackOnly ? palette.Warning : view.Acceptable ? palette.Success : palette.Error;
             Label quality = new Label { Name = "candidateQuality", Left = 8, Top = 228, Width = 180, Height = 20, Text = qualityText, ForeColor = qualityColor, AutoEllipsis = true };
             card.Controls.Add(quality);
-            if (!String.IsNullOrWhiteSpace(view.PolicyReason))
+            string decisionReason = view.StrictOverrideActive && !String.IsNullOrWhiteSpace(view.StrictReason)
+                ? view.StrictReason
+                : view.PolicyReason;
+            if (!String.IsNullOrWhiteSpace(decisionReason))
             {
                 ToolTip policyTip = ThemeManager.CreateToolTip();
-                policyTip.SetToolTip(quality, view.PolicyReason);
+                policyTip.SetToolTip(quality, decisionReason);
                 quality.Tag = policyTip;
             }
             card.Click += delegate { if (choose.Enabled) choose.Checked = !choose.Checked; };
@@ -2177,11 +2189,11 @@ namespace Splined.WindowsGui
             ClearCandidates();
         }
 
-        private void ShowMusicBrainzMatchesWorkspace(string artist, string title, object[] items, bool compilationTrack)
+        private void ShowMusicBrainzMatchesWorkspace(string artist, string title, string albumArtist, string albumTitle, object[] items, bool compilationTrack)
         {
             CloseMusicBrainzMatchesWorkspace();
             if (activityContentHost == null) return;
-            musicBrainzMatchesPanel = new MusicBrainzMatchesPanel(artist, title, items, compilationTrack, uiState.Theme);
+            musicBrainzMatchesPanel = new MusicBrainzMatchesPanel(artist, title, albumArtist, albumTitle, items, compilationTrack, uiState.Theme);
             musicBrainzMatchesPanel.UseRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
             {
                 Dictionary<string, object> command = new Dictionary<string, object>();
@@ -3011,6 +3023,11 @@ namespace Splined.WindowsGui
         public string PolicyStatus = "";
         public string PolicyReason = "";
         public bool SourceOverrideActive;
+        public bool StrictOverrideActive;
+        public string StrictStatus = "";
+        public string StrictReason = "";
+        public bool StrictPreferredEligible = true;
+        public bool StrictAutoEligible = true;
         public bool Recommended;
         public string CachePath;
         public string Url;
