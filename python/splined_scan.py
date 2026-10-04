@@ -1126,6 +1126,8 @@ def _manual_choose_candidate(
         ).strip().lower()
         if answer == "__manual_mb_results__" and has_musicbrainz_results:
             return "mb-results", None, {}
+        if answer == "__batch_return__":
+            raise core.TuiBatchReturn()
         if answer in {"__cancel__", "__manual_album_exit__"}:
             return "exit-album", None, {}
         try:
@@ -2034,6 +2036,8 @@ def local_comparison_prompt(local_candidate: core.Candidate, remote: list[core.C
             kind="local-comparison",
             musicbrainz=mb_retry_available,
         ).strip().lower()
+        if answer == "__batch_return__":
+            raise core.TuiBatchReturn()
         if answer == "__cancel__":
             raise core.TuiSessionExit()
         if answer == "unbypass":
@@ -2957,6 +2961,8 @@ def _run_scan_dir_batch(
                     musicbrainz_back=operator_release_selected,
                 ).strip().lower()
 
+                if answer == "__batch_return__":
+                    raise core.TuiBatchReturn()
                 if answer == "__cancel__":
                     raise core.TuiSessionExit()
                 if answer == "unbypass":
@@ -3258,6 +3264,8 @@ def _run_scan_dir_batch(
                     kind="out-of-range-picker",
                 ).strip().lower()
 
+                if answer == "__batch_return__":
+                    raise core.TuiBatchReturn()
                 if answer == "__cancel__":
                     raise core.TuiSessionExit()
                 if answer == "unbypass":
@@ -3382,6 +3390,8 @@ def _run_scan_dir_batch(
                     "  Choice: ",
                     kind="normal-picker",
                 ).strip().lower()
+                if answer == "__batch_return__":
+                    raise core.TuiBatchReturn()
                 if answer == "__cancel__":
                     raise core.TuiSessionExit()
                 if answer == "b":
@@ -3549,6 +3559,9 @@ def run_scan_dir(
                 picker_session=picker_session,
                 initial_library_event=library_event,
             )
+        except core.TuiBatchReturn:
+            core.debug_log("picker.batch.return_to_report")
+            batch_exit_code = 0
         except core.TuiSessionExit:
             picker_session.validation_cancel.set()
             return session_exit_code
