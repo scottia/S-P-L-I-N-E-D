@@ -764,7 +764,7 @@ pub async fn run_scan_library_read_report(
                     return None;
                 }
                 let projected = project_configured_artwork(candidate, &range, &config.output);
-                if projected.upscaled && candidate.short_side() < range.min {
+                if !candidate_meets_upscale_limit(candidate, &range, config) {
                     return None;
                 }
                 let policy = configured_candidate_policy(candidate, &projected, &range, config);
@@ -826,7 +826,7 @@ pub async fn run_scan_library_read_report(
                 .copied()
                 .filter(|index| {
                     result.candidates[*index].strict.preferred_eligible
-                        && candidate_meets_upscale_floor(
+                        && candidate_meets_upscale_limit(
                             &result.candidates[*index].downloaded.candidate,
                             &range,
                             config,
@@ -2705,13 +2705,15 @@ fn candidate_is_auto_ideal(candidate: &Candidate, range: &Range, config: &Config
     let projected = project_configured_artwork(candidate, range, &config.output);
     let policy = configured_candidate_policy(candidate, &projected, range, config);
     policy.status == SourcePolicyStatus::Accept
-        && candidate_meets_upscale_floor(candidate, range, config)
+        && candidate_meets_upscale_limit(candidate, range, config)
         && range.classify(projected.width.min(projected.height)) == RangeClass::Ideal
 }
 
-fn candidate_meets_upscale_floor(candidate: &Candidate, range: &Range, config: &Config) -> bool {
+fn candidate_meets_upscale_limit(candidate: &Candidate, range: &Range, config: &Config) -> bool {
     let projected = project_configured_artwork(candidate, range, &config.output);
-    !projected.upscaled || candidate.short_side() >= range.min
+    candidate.short_side() >= range.ideal
+        || !config.output.upscale_below_ideal
+        || projected.upscaled
 }
 
 fn target_format_for_candidate(
@@ -3287,31 +3289,36 @@ mod tests {
     }
 
     #[test]
-    fn upscaling_never_promotes_a_source_below_global_minimum() {
+    fn upscaling_promotes_only_sources_within_the_configured_maximum() {
         let range = Range::default();
         let mut config = Config::default();
         config.output.upscale_below_ideal = true;
-        let below_minimum = Candidate {
+        config.output.upscale_max_percent = 200;
+        let within_limit = Candidate {
             source: "itunes".to_string(),
-            width: range.min - 1,
-            height: range.min - 1,
+            width: range.ideal.div_ceil(2),
+            height: range.ideal.div_ceil(2),
             format: StaticFormat::Jpeg,
             source_priority: 0,
         };
-        let at_minimum = Candidate {
-            width: range.min,
-            height: range.min,
-            ..below_minimum.clone()
+        let exceeds_limit = Candidate {
+            width: within_limit.width - 1,
+            height: within_limit.height - 1,
+            ..within_limit.clone()
         };
 
-        assert!(!candidate_meets_upscale_floor(
-            &below_minimum,
+        assert!(candidate_meets_upscale_limit(
+            &within_limit,
             &range,
             &config
         ));
-        assert!(!candidate_is_auto_ideal(&below_minimum, &range, &config));
-        assert!(candidate_meets_upscale_floor(&at_minimum, &range, &config));
-        assert!(candidate_is_auto_ideal(&at_minimum, &range, &config));
+        assert!(candidate_is_auto_ideal(&within_limit, &range, &config));
+        assert!(!candidate_meets_upscale_limit(
+            &exceeds_limit,
+            &range,
+            &config
+        ));
+        assert!(!candidate_is_auto_ideal(&exceeds_limit, &range, &config));
     }
 
     #[test]

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -155,6 +156,7 @@ namespace Splined.WindowsGui
         private Button backToMusicBrainz;
         private FlowLayoutPanel fallbackActions;
         private Button enableHover;
+        private Button upscalePreview;
         private Label candidateContext;
         private StatusStrip statusStrip;
         private ToolStripStatusLabel statusLabel;
@@ -1105,6 +1107,10 @@ namespace Splined.WindowsGui
                 UpdateHoverButton();
             };
             actions.Controls.Add(enableHover);
+            upscalePreview = new FluentButton { Name = "upscalePreviewButton", Text = "Upscale Preview", Width = 135, Height = 34, Enabled = false, Visible = false };
+            upscalePreview.Click += UpscalePreviewClicked;
+            upscalePreview.EnabledChanged += delegate { ThemeManager.StyleButton(upscalePreview, uiState.Theme); };
+            actions.Controls.Add(upscalePreview);
             actions.Controls.Add(new InfoButton("The recommended candidate is selected first. Activate one candidate to use it, activate several to compare them, or skip the Album. Processing continues after you confirm a choice."));
             lower.Controls.Add(actions, 0, 5);
         }
@@ -1623,19 +1629,8 @@ namespace Splined.WindowsGui
             if (album.BypassOverride) start.EnvironmentVariables["SPLINED_BYPASS_OVERRIDE"] = "1";
             Process process = new Process();
             process.StartInfo = start;
-            process.EnableRaisingEvents = true;
             process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args) { if (args.Data != null) HandleCoreLine(args.Data, false); };
             process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs args) { if (args.Data != null) HandleCoreLine(args.Data, true); };
-            process.Exited += delegate
-            {
-                int exitCode = -1;
-                try { exitCode = process.ExitCode; }
-                catch { }
-                RuntimeLog.Write(exitCode == 0 ? "debug" : "error",
-                    "album.core.exit code=" + exitCode + " album=" + album.Path);
-                completion.TrySetResult(exitCode == 0);
-                process.Dispose();
-            };
             try
             {
                 RuntimeLog.Write("debug", "album.core.start album=" + scanPath);
@@ -1643,6 +1638,29 @@ namespace Splined.WindowsGui
                 process.Start();
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
+                // Process.Exited may be raised before the asynchronous stdout
+                // and stderr handlers receive their final buffered lines. The
+                // completion task must not release the Album loop until both
+                // redirected streams have drained, otherwise album_completed
+                // can arrive after the report has already become Incomplete.
+                Task.Run(delegate
+                {
+                    int exitCode = -1;
+                    try
+                    {
+                        process.WaitForExit();
+                        exitCode = process.ExitCode;
+                    }
+                    catch (Exception error)
+                    {
+                        RuntimeLog.Write("error", "album.core.wait_failed album=" + album.Path
+                            + " error=" + error.Message);
+                    }
+                    RuntimeLog.Write(exitCode == 0 ? "debug" : "error",
+                        "album.core.exit code=" + exitCode + " output_drained=true album=" + album.Path);
+                    completion.TrySetResult(exitCode == 0);
+                    process.Dispose();
+                });
             }
             catch (Exception error)
             {
@@ -1825,20 +1843,20 @@ namespace Splined.WindowsGui
                 string action = ReadString(payload, "action");
                 string destination = ReadString(payload, "destination");
                 CaptureFinalArtworkStatistics(payload);
-                MarkActiveAlbumOutcome(String.IsNullOrWhiteSpace(action) ? "Completed" : action, destination);
+                MarkAlbumOutcome(payload, String.IsNullOrWhiteSpace(action) ? "Completed" : action, destination);
                 AppendActivity("  5. " + action + ": " + destination + "\r\n", ActivityTone.Success);
                 CompleteAlbumEvent(payload, "Artwork choice completed. Candidate results cleared.");
             }
             else if (eventName == "album_postponed")
             {
-                MarkActiveAlbumOutcome("Postponed", ReadString(payload, "reason"));
+                MarkAlbumOutcome(payload, "Postponed", ReadString(payload, "reason"));
                 AppendActivity("  Timeout active; album postponed by authoritative history.\r\n", ActivityTone.Warning);
                 CompleteAlbumEvent(payload, "Album postponed. Candidate results cleared.");
             }
             else if (eventName == "album_skipped")
             {
                 string skipReason = ReadString(payload, "reason");
-                MarkActiveAlbumOutcome("Skipped", skipReason);
+                MarkAlbumOutcome(payload, "Skipped", skipReason);
                 AppendActivity("  Album skipped: " + skipReason + ".\r\n", ActivityTone.Warning);
                 CompleteAlbumEvent(payload, "Album skipped. Candidate results cleared.");
             }
@@ -2166,7 +2184,6 @@ namespace Splined.WindowsGui
                 if (String.IsNullOrWhiteSpace(view.SourceRange)) view.SourceRange = CandidateRangeKey(Math.Min(view.PixelWidth, view.PixelHeight));
                 if (String.IsNullOrWhiteSpace(view.Range)) view.Range = CandidateRangeKey(Math.Min(view.ProjectedWidth, view.ProjectedHeight));
                 view.UpscaleEligible = view.Upscaled && view.Acceptable && !view.IsRejected
-                    && Math.Min(view.PixelWidth, view.PixelHeight) >= state.RangeMin
                     && Math.Min(view.PixelWidth, view.PixelHeight) < state.RangeIdeal;
                 candidates[candidateIndex] = view;
                 if (recommended)
@@ -2396,11 +2413,18 @@ namespace Splined.WindowsGui
             retryMusicBrainz.Enabled = awaitingDecision && musicBrainzRetryAvailable;
             backToMusicBrainz.Visible = musicBrainzBackAvailable;
             backToMusicBrainz.Enabled = awaitingDecision && musicBrainzBackAvailable;
+            CandidateView previewCandidate;
+            bool canPreviewUpscale = selectedCandidateIndex >= 0
+                && candidates.TryGetValue(selectedCandidateIndex, out previewCandidate)
+                && previewCandidate.UpscaleEligible;
+            upscalePreview.Visible = canPreviewUpscale;
+            upscalePreview.Enabled = canPreviewUpscale;
             ThemeManager.StyleButton(useSelected, uiState.Theme);
             ThemeManager.StyleButton(keepLocal, uiState.Theme);
             ThemeManager.StyleButton(refineFallback, uiState.Theme);
             ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme);
             ThemeManager.StyleButton(backToMusicBrainz, uiState.Theme);
+            ThemeManager.StyleButton(upscalePreview, uiState.Theme);
         }
 
         private void SetFallbackControls(bool visible)
@@ -2441,6 +2465,7 @@ namespace Splined.WindowsGui
             keepLocal.Visible = false;
             compare.Enabled = false;
             skip.Enabled = false;
+            if (upscalePreview != null) { upscalePreview.Visible = false; upscalePreview.Enabled = false; }
             musicBrainzBackAvailable = false;
             if (backToMusicBrainz != null) { backToMusicBrainz.Visible = false; backToMusicBrainz.Enabled = false; }
             UpdateHoverButton();
@@ -2904,6 +2929,44 @@ namespace Splined.WindowsGui
                 candidate.DisplaySource + " · " + candidate.Resolution + " · " + candidate.Range);
         }
 
+        private void UpscalePreviewClicked(object sender, EventArgs e)
+        {
+            CandidateView candidate;
+            if (selectedCandidateIndex < 0
+                || !candidates.TryGetValue(selectedCandidateIndex, out candidate)
+                || !candidate.UpscaleEligible
+                || String.IsNullOrWhiteSpace(candidate.CachePath)
+                || !File.Exists(candidate.CachePath)) return;
+
+            using (Image source = LoadImageCopy(candidate.CachePath))
+            {
+                if (source == null) return;
+                int targetWidth = candidate.ProjectedWidth > 0 ? candidate.ProjectedWidth : state.RangeIdeal;
+                int targetHeight = candidate.ProjectedHeight > 0 ? candidate.ProjectedHeight : state.RangeIdeal;
+                Bitmap projected = new Bitmap(targetWidth, targetHeight);
+                using (Graphics graphics = Graphics.FromImage(projected))
+                {
+                    graphics.CompositingMode = CompositingMode.SourceCopy;
+                    graphics.CompositingQuality = CompositingQuality.HighQuality;
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    graphics.SmoothingMode = SmoothingMode.HighQuality;
+                    graphics.DrawImage(source, new Rectangle(0, 0, targetWidth, targetHeight));
+                }
+                if (!uiState.ShowArtwork)
+                {
+                    uiState.ShowArtwork = true;
+                    ApplyArtworkPanelVisibility();
+                    SaveUiState();
+                }
+                candidatePreviewActive = true;
+                artworkPreviewTitle.Text = "Upscale Preview";
+                SetArtworkPreviewImage(projected, candidate.DisplaySource + " · "
+                    + candidate.Resolution + " → " + targetWidth + " x " + targetHeight
+                    + " · preview only");
+            }
+        }
+
         private void ShowSelectedAlbum(AlbumInfo album)
         {
             displayedAlbum = running && activeLaunchAlbum != null ? activeLaunchAlbum : album;
@@ -2943,7 +3006,16 @@ namespace Splined.WindowsGui
         private void SetArtworkPreview(string path, string caption)
         {
             if (artworkPreviewImage == null) return;
-            Image replacement = LoadImageCopy(path);
+            SetArtworkPreviewImage(LoadImageCopy(path), caption);
+        }
+
+        private void SetArtworkPreviewImage(Image replacement, string caption)
+        {
+            if (artworkPreviewImage == null)
+            {
+                if (replacement != null) replacement.Dispose();
+                return;
+            }
             Image previous = artworkPreviewImage.Image;
             artworkPreviewImage.Image = replacement;
             if (previous != null) previous.Dispose();
@@ -3324,29 +3396,41 @@ namespace Splined.WindowsGui
             runAlbumStatistics.Add(activeAlbumStatistics);
         }
 
-        private void MarkActiveAlbumOutcome(string action, string destination)
+        private AlbumRunStatistics FindAlbumRunStatistics(Dictionary<string, object> payload)
         {
-            if (activeAlbumStatistics == null) return;
-            activeAlbumStatistics.Action = String.IsNullOrWhiteSpace(action) ? "Completed" : action;
-            activeAlbumStatistics.Destination = destination ?? "";
-            activeAlbumStatistics.FinishedUtc = DateTime.UtcNow;
+            string albumPath = ReadString(payload, "album_path");
+            if (activeAlbumStatistics != null
+                && (String.IsNullOrWhiteSpace(albumPath) || SameAlbumPath(activeAlbumStatistics.AlbumPath, albumPath)))
+                return activeAlbumStatistics;
+            if (String.IsNullOrWhiteSpace(albumPath)) return null;
+            return runAlbumStatistics.LastOrDefault(report => SameAlbumPath(report.AlbumPath, albumPath));
+        }
+
+        private void MarkAlbumOutcome(Dictionary<string, object> payload, string action, string destination)
+        {
+            AlbumRunStatistics report = FindAlbumRunStatistics(payload);
+            if (report == null) return;
+            report.Action = String.IsNullOrWhiteSpace(action) ? "Completed" : action;
+            report.Destination = destination ?? "";
+            report.FinishedUtc = DateTime.UtcNow;
         }
 
         private void CaptureFinalArtworkStatistics(Dictionary<string, object> payload)
         {
-            if (activeAlbumStatistics == null) return;
-            activeAlbumStatistics.SelectedSource = ReadString(payload, "source");
+            AlbumRunStatistics report = FindAlbumRunStatistics(payload);
+            if (report == null) return;
+            report.SelectedSource = ReadString(payload, "source");
             int sourceWidth = ReadInt(payload, "source_width", 0);
             int sourceHeight = ReadInt(payload, "source_height", 0);
             int finalWidth = ReadInt(payload, "final_width", 0);
             int finalHeight = ReadInt(payload, "final_height", 0);
-            activeAlbumStatistics.SourceResolution = sourceWidth > 0 && sourceHeight > 0
+            report.SourceResolution = sourceWidth > 0 && sourceHeight > 0
                 ? sourceWidth + " x " + sourceHeight : "";
-            activeAlbumStatistics.FinalResolution = finalWidth > 0 && finalHeight > 0
+            report.FinalResolution = finalWidth > 0 && finalHeight > 0
                 ? finalWidth + " x " + finalHeight : "";
-            activeAlbumStatistics.UpscaleBackend = ReadString(payload, "upscale_backend");
-            activeAlbumStatistics.Resized = ReadBool(payload, "resized");
-            activeAlbumStatistics.Converted = ReadBool(payload, "converted");
+            report.UpscaleBackend = ReadString(payload, "upscale_backend");
+            report.Resized = ReadBool(payload, "resized");
+            report.Converted = ReadBool(payload, "converted");
         }
 
         private void FinishActiveAlbumStatistics(string defaultAction)

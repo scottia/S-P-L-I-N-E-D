@@ -23,6 +23,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
 
 jobs:
   prepare-release:
@@ -183,15 +184,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Restore Rust build cache
+        id: rust-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            windows/target
+          key: ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-
+            ${{ runner.os }}-splined-windows-
 
       - name: Build Windows release
+        id: windows-build
         shell: bash
         env:
           SPLINED_BUILD_COMMIT: ${{ needs.prepare-release.outputs.commit }}
           SPLINED_UPDATE_CHANNEL: stable
-        run: cargo build --manifest-path windows/Cargo.toml --locked --release
+        run: |
+          set -euo pipefail
+          started=$SECONDS
+          cargo build --manifest-path windows/Cargo.toml --locked --release
+          echo "elapsed_seconds=$((SECONDS - started))" >> "$GITHUB_OUTPUT"
 
       - name: Package Windows release
         shell: pwsh
@@ -228,6 +247,17 @@ jobs:
             release-assets/setup-splined.exe
             release-assets/windows-update.json
           if-no-files-found: error
+
+      - name: Report Windows build cache
+        shell: pwsh
+        run: |
+          @"
+          ## Windows release build
+
+          - Rust cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
+          - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
+          - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
   build-ubuntu:
     name: Build Release — Ubuntu

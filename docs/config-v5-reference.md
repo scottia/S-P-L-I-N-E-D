@@ -125,7 +125,8 @@ See [SPLINED media database](splined-media-database.md).
 | `square` | `true` | Enable square output policy |
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
-| `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement from the global Minimum up to Ideal; original sources below Minimum remain manual-only |
+| `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement of eligible sources up to Ideal; accepted sources above Ideal retain native resolution |
+| `upscale_max_percent` | `200` | Maximum enlargement relative to the original short side; `200` permits 2×, and candidates exceeding the limit remain manual-only |
 | `evaluate_final_image` | `true` | Rank the image SPLINED would actually write |
 
 WebP source artwork is preserved by local-art policy. When better static artwork

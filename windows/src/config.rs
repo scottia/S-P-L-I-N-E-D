@@ -200,6 +200,7 @@ pub struct OutputConfig {
     pub square_mode: String,
     pub square_round_to: u32,
     pub upscale_below_ideal: bool,
+    pub upscale_max_percent: u32,
     pub evaluate_final_image: bool,
 }
 
@@ -370,6 +371,7 @@ impl Default for OutputConfig {
             square_mode: "crop".to_string(),
             square_round_to: 16,
             upscale_below_ideal: false,
+            upscale_max_percent: 200,
             evaluate_final_image: true,
         }
     }
@@ -521,6 +523,10 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
 
     if config.output.square_mode != "off" && config.output.square_mode != "crop" {
         return Err("SPLINED output square_mode must be 'off' or 'crop'.".to_string());
+    }
+
+    if !(100..=800).contains(&config.output.upscale_max_percent) {
+        return Err("SPLINED output upscale_max_percent must be between 100 and 800.".to_string());
     }
 
     if config.scan.scan_mode_timeout.0 < 0.0 || !config.scan.scan_mode_timeout.0.is_finite() {

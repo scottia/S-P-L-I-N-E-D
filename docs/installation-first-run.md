@@ -60,6 +60,11 @@ rolling workflow uses one optimized Windows build and a reusable Rust cache; it
 does not repeat the full test and static-analysis matrix before each active-dev
 update.
 
+The next-patch release workflow uses the same pinned Rust toolchain and Windows
+dependency/target cache. A warm cache recompiles SPLINED itself without rebuilding
+the complete Rust dependency graph; the first run for a new lockfile or toolchain
+still performs a cold build and may take longer.
+
 The updater replaces only `splined.exe`. It does not rewrite internal settings,
 the selected credential/database/temporary-cache/log directories, or the configured shared SQLite
 database. An active Album run must be stopped or completed before installation.

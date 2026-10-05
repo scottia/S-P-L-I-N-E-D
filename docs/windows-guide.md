@@ -260,12 +260,12 @@ Candidate order remains deterministic. Local evidence is displayed first,
 the recommended result follows, and remaining results are ordered by descending
 pixel resolution with their stable candidate index as the final tie-breaker.
 Only candidate-card backgrounds use the subtle glass treatment: local is light
-purple, a policy-qualified Minimum-to-Ideal enlargement is magenta,
+purple, a policy-qualified enlargement within Maximum Upscale is magenta,
 BelowMinimum/rejected is red, recommended is green, and ordinary results are
-clear. Magenta takes precedence over a negative range only when the original
-source meets the configured Minimum; changing Minimum therefore changes the
-upscale eligibility boundary without changing the Ideal target. The thumbnail
-itself always uses an opaque neutral surface and is never color tinted.
+clear. Magenta takes precedence over a negative range when enlargement to Ideal
+does not exceed the configured percentage. Candidates beyond that limit remain
+red/manual-only. The thumbnail itself always uses an opaque neutral surface and
+is never color tinted.
 
 Each card now identifies the provider at its top, with compact symbols for
 Local, Recommended, Upscalable, and negative results. Hover the information
@@ -275,6 +275,10 @@ strict Preferred/Auto eligibility, and policy reason. This replaces the former
 three lines of repeated card metadata. Thumbnails remain square and grow or
 shrink with the candidate pane. The shared Artwork preview,
 MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
+
+When exactly one Upscalable result is active, **Upscale Preview** appears beside
+**Enable Hover**. It renders the projected Ideal-size image in memory in the
+shared Artwork pane without writing the Album or changing candidate ranking.
 Concurrent provider work may reduce
 waiting time, but configured source order, source policy, Range Type, geometry,
 distance, and tie-breaking still determine the displayed ranking.
@@ -283,8 +287,11 @@ At batch completion, the Album Run Report records the selected provider,
 original and final resolution, resize/conversion state, and the actual upscale
 backend. READ reports remain `ReadOnly`, but a successfully rendered preview is
 reported explicitly as `gpu-lanczos3` or `cpu-lanczos3` instead of being lost
-when the live activity panel is replaced. Core events are applied before the
-process completion report, preventing the former `Incomplete` race.
+when the live activity panel is replaced. The GUI drains redirected core output
+before constructing the process completion report and reconciles a final event
+by Album path even if Windows reports process exit first. A successful
+`Unchanged`, `ReadOnly`, or installed decision therefore cannot be overwritten
+by the default `Incomplete` fallback.
 
 ## MusicBrainz Matches
 
