@@ -152,6 +152,7 @@ namespace Splined.WindowsGui
                 optionCoverage.SquareMode = "off";
                 optionCoverage.SquareRoundTo = 8;
                 optionCoverage.UpscaleBelowIdeal = true;
+                optionCoverage.UpscaleMaxPercent = 175;
                 optionCoverage.EvaluateFinalImage = false;
                 optionCoverage.RangeMin = 1000;
                 optionCoverage.RangeIdeal = 1700;
@@ -187,7 +188,8 @@ namespace Splined.WindowsGui
                 Assert(optionReopened.LogRetentionDays == 33 && optionReopened.HistoryEnabled && optionReopened.HistoryRetentionDays == 90
                     && !optionReopened.SampleWrite && optionReopened.FileName == "folder" && !optionReopened.PreserveFile
                     && !optionReopened.Square && optionReopened.SquareMode == "off" && optionReopened.SquareRoundTo == 8
-                    && optionReopened.UpscaleBelowIdeal && !optionReopened.EvaluateFinalImage,
+                    && optionReopened.UpscaleBelowIdeal && optionReopened.UpscaleMaxPercent == 175
+                    && !optionReopened.EvaluateFinalImage,
                     "Python output/sample or Config v5 retention options did not round-trip.");
                 Assert(optionReopened.RangeMin == 1000 && optionReopened.RangeIdeal == 1700
                     && optionReopened.RangeMax == 2300 && optionReopened.RangeLadder == 3500,
@@ -351,6 +353,19 @@ namespace Splined.WindowsGui
                     Dictionary<string, Button> formats = (Dictionary<string, Button>)typeof(SetupForm).GetField("formatButtons", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(setup);
                     Assert(formats.Count == 3 && formats.Values.All(button => IsDescendant(artworkOptions, button)),
                         "Output format buttons were not placed beside Artwork Options.");
+                    Dictionary<string, Button> artworkToggles = (Dictionary<string, Button>)typeof(SetupForm).GetField("optionButtons", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(setup);
+                    NumericUpDown maximumUpscale = setup.Controls.Find("upscaleMaxPercent", true).OfType<NumericUpDown>().Single();
+                    Control maximumUpscaleRow = setup.Controls.Find("upscaleMaxRow", true).Single();
+                    Assert(maximumUpscale.Value == 200 && !maximumUpscale.Enabled
+                        && maximumUpscaleRow.Parent.Controls.GetChildIndex(maximumUpscaleRow)
+                            == maximumUpscaleRow.Parent.Controls.GetChildIndex(artworkToggles["upscale"]) + 1,
+                        "Maximum Upscale was not hidden directly below the disabled Upscale control.");
+                    typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(artworkToggles["upscale"], new object[] { EventArgs.Empty });
+                    advanced.SelectedTab = advanced.TabPages[1];
+                    Application.DoEvents();
+                    Assert(maximumUpscale.Enabled && maximumUpscaleRow.Visible,
+                        "Maximum Upscale did not appear when Upscale below ideal was activated.");
                     ComboBox existingArtwork = setup.Controls.Find("existingArtworkAction", true).OfType<ComboBox>().Single();
                     Assert(existingArtwork is FluentComboBox && existingArtwork.Items.Count == 2 && existingArtwork.SelectedIndex == 1
                         && Convert.ToString(existingArtwork.Items[0]).Contains("no numbered copies"),
@@ -803,16 +818,19 @@ namespace Splined.WindowsGui
 
                     Dictionary<string, object> belowMinimum = CandidatePayload(10, "amazon", 600, 600, false, "");
                     belowMinimum["source_range_class"] = "below-minimum";
-                    belowMinimum["range_class"] = "ideal";
-                    belowMinimum["projected_width"] = 1800;
-                    belowMinimum["projected_height"] = 1800;
-                    belowMinimum["upscaled"] = true;
+                    belowMinimum["range_class"] = "below-minimum";
+                    belowMinimum["projected_width"] = 600;
+                    belowMinimum["projected_height"] = 600;
+                    belowMinimum["upscaled"] = false;
                     Dictionary<string, object> upscalable = CandidatePayload(11, "amazon", 1200, 1200, false, "");
                     upscalable["source_range_class"] = "lower-range";
                     upscalable["range_class"] = "ideal";
                     upscalable["projected_width"] = 1800;
                     upscalable["projected_height"] = 1800;
                     upscalable["upscaled"] = true;
+                    string upscalePreviewPath = Path.Combine(internalSettings, "upscale-preview.jpg");
+                    using (Bitmap fixture = new Bitmap(12, 12)) fixture.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    upscalable["cache_path"] = upscalePreviewPath;
                     showCandidates.Invoke(form, new object[] { new object[] { belowMinimum, upscalable } });
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
@@ -833,6 +851,17 @@ namespace Splined.WindowsGui
                     Assert(candidateCards.Controls.Count == 2 && upscaleFilter.Enabled && upscaleFilter.Checked
                         && rejectedFilter.Enabled && rejectedFilter.Checked,
                         "Dependent Candidate FILTER choices did not restore automatically with their source.");
+                    Control upscalableCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11);
+                    ((CheckBox)upscalableCard.Controls["candidateChoice"]).Checked = true;
+                    Button upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
+                    Assert(upscalePreviewButton.Enabled,
+                        "Upscale Preview did not activate for the single eligible candidate.");
+                    typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
+                    PictureBox projectedPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
+                    Assert(projectedPreview.Image != null && projectedPreview.Image.Width == 1800
+                        && projectedPreview.Image.Height == 1800,
+                        "Upscale Preview did not render the projected Ideal-size image in memory.");
                     FieldInfo selectionField = typeof(MainForm).GetField("selectionMode", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert((SelectionMode)selectionField.GetValue(form) == SelectionMode.Select, "Manual Select must be the default selection mode.");
                     VerifyMediaFilter(form);
@@ -973,16 +1002,18 @@ namespace Splined.WindowsGui
                     {
                         { "event", "decision_required" }, { "reason", "review" }
                     } });
+                    // Reproduce Windows raising process exit before the final
+                    // redirected album_completed line is dispatched.
+                    finishRunStats.Invoke(form, new object[] { "Incomplete" });
                     applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
                     {
-                        { "event", "album_completed" }, { "album_path", "report-fixture" },
+                        { "event", "album_completed" }, { "album_path", "Report Artist\\Report Album" },
                         { "action", "ReadOnly" }, { "destination", "cover.jpg" },
                         { "source", "amazon" }, { "source_width", 1200 }, { "source_height", 1200 },
                         { "final_width", 1800 }, { "final_height", 1800 }, { "resized", true },
                         { "converted", false }, { "upscale_backend", "gpu-lanczos3" }
                     } });
-                    finishRunStats.Invoke(form, new object[] { "Incomplete" });
-                    showRunReport.Invoke(form, new object[] { "write", 1 });
+                    showRunReport.Invoke(form, new object[] { "read", 1 });
                     Assert(activity.Text.StartsWith("S:P:L:I:N:E:D ALBUM RUN REPORT", StringComparison.Ordinal)
                         && activity.Text.Contains("[1/1] Report Artist - Report Album")
                         && activity.Text.Contains("2 evaluated") && activity.Text.Contains("2 policy-hidden")
@@ -990,7 +1021,7 @@ namespace Splined.WindowsGui
                         && activity.Text.Contains("Selected: Amazon") && activity.Text.Contains("Source 1200 x 1200")
                         && activity.Text.Contains("Final 1800 x 1800") && activity.Text.Contains("Upscale: gpu-lanczos3")
                         && !activity.Text.Contains("SPLINED LIVE PROCESSING"),
-                        "Completed processing did not replace live activity with the per-album statistics report.");
+                        "A late album_completed event did not replace Incomplete with the authoritative per-album result.");
 
                     FlowLayoutPanel candidateActions = form.Controls.Find("candidateActionRow", true).OfType<FlowLayoutPanel>().Single();
                     candidateActions.PerformLayout();

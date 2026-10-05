@@ -191,6 +191,7 @@ namespace Splined.WindowsGui
         public string SquareMode = "crop";
         public int SquareRoundTo = 16;
         public bool UpscaleBelowIdeal;
+        public int UpscaleMaxPercent = 200;
         public bool EvaluateFinalImage = true;
         public int RangeMin = 1200;
         public int RangeIdeal = 1800;
@@ -425,6 +426,7 @@ namespace Splined.WindowsGui
             state.SquareMode = ReadString(text, "output", "square_mode", "crop");
             state.SquareRoundTo = ReadInt(text, "output", "square_round_to", 16);
             state.UpscaleBelowIdeal = ReadBool(text, "output", "upscale_below_ideal", false);
+            state.UpscaleMaxPercent = ReadInt(text, "output", "upscale_max_percent", 200);
             state.EvaluateFinalImage = ReadBool(text, "output", "evaluate_final_image", true);
             state.RangeMin = ReadInt(text, "range", "min", 1200);
             state.RangeIdeal = ReadInt(text, "range", "ideal", 1800);
@@ -775,6 +777,7 @@ namespace Splined.WindowsGui
             text.AppendLine("square_mode = " + Quote(state.SquareMode));
             text.AppendLine("square_round_to = " + state.SquareRoundTo);
             text.AppendLine("upscale_below_ideal = " + Bool(state.UpscaleBelowIdeal));
+            text.AppendLine("upscale_max_percent = " + state.UpscaleMaxPercent);
             text.AppendLine("evaluate_final_image = " + Bool(state.EvaluateFinalImage));
             text.AppendLine();
             text.AppendLine("[range]");

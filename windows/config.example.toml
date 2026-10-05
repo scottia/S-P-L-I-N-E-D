@@ -33,6 +33,7 @@ square_round_to = 16
 # Windows attempts in-memory GPU Lanczos-3 enlargement first and falls back to
 # in-memory CPU Lanczos-3. This is conventional resizing, not AI enhancement.
 upscale_below_ideal = false
+upscale_max_percent = 200
 evaluate_final_image = true
 
 [range]

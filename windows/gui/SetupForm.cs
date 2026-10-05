@@ -28,6 +28,8 @@ namespace Splined.WindowsGui
         private NumericUpDown rangeMax;
         private NumericUpDown rangeLadder;
         private NumericUpDown squareRound;
+        private NumericUpDown upscaleMaxPercent;
+        private Control upscaleMaxRow;
         private Dictionary<string, Button> optionButtons;
         private Dictionary<string, Button> formatButtons;
         private Dictionary<string, bool> sourceEnabledStates = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -534,7 +536,44 @@ namespace Splined.WindowsGui
             optionFlow.Padding = new Padding(12, 10, 12, 10);
             optionFlow.Controls.Add(CreateToggle("Square artwork", "square", optionButtons));
             optionFlow.Controls.Add(CreateToggle("Crop to square when required", "crop", optionButtons));
-            optionFlow.Controls.Add(CreateToggle("Upscale below ideal", "upscale", optionButtons));
+            Button upscaleToggle = CreateToggle("Upscale below ideal", "upscale", optionButtons);
+            upscaleToggle.Click += delegate { UpdateUpscaleMaximumVisibility(); };
+            optionFlow.Controls.Add(upscaleToggle);
+            upscaleMaxRow = new FlowLayoutPanel
+            {
+                Name = "upscaleMaxRow",
+                Width = 310,
+                Height = 34,
+                WrapContents = false,
+                Margin = new Padding(20, 0, 2, 2)
+            };
+            upscaleMaxRow.Controls.Add(new Label
+            {
+                Text = "Maximum upscale",
+                Width = 155,
+                Height = 28,
+                TextAlign = ContentAlignment.MiddleLeft
+            });
+            upscaleMaxPercent = new FluentNumericUpDown
+            {
+                Name = "upscaleMaxPercent",
+                Minimum = 100,
+                Maximum = 800,
+                Increment = 25,
+                Value = 200,
+                Width = 82,
+                ThousandsSeparator = false
+            };
+            upscaleMaxRow.Controls.Add(upscaleMaxPercent);
+            upscaleMaxRow.Controls.Add(new Label
+            {
+                Text = "%",
+                Width = 20,
+                Height = 28,
+                TextAlign = ContentAlignment.MiddleLeft
+            });
+            upscaleMaxRow.Controls.Add(new InfoButton("Maximum enlargement from the original short side to Ideal. For example, 200% permits at most 2× enlargement. Candidates beyond this limit remain available for manual review."));
+            optionFlow.Controls.Add(upscaleMaxRow);
             optionFlow.Controls.Add(CreateToggle("Evaluate final image", "evaluate", optionButtons));
 
             formatButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
@@ -1507,6 +1546,14 @@ namespace Splined.WindowsGui
             button.Invalidate();
         }
 
+        private void UpdateUpscaleMaximumVisibility()
+        {
+            if (upscaleMaxRow == null || upscaleMaxPercent == null || optionButtons == null) return;
+            bool enabled = ToggleEnabled(optionButtons, "upscale");
+            upscaleMaxRow.Visible = enabled;
+            upscaleMaxPercent.Enabled = enabled;
+        }
+
         private void RefreshToggleVisuals()
         {
             foreach (Dictionary<string, Button> collection in new[] { optionButtons, formatButtons })
@@ -1535,6 +1582,8 @@ namespace Splined.WindowsGui
             SetToggle(optionButtons, "square", state.Square);
             SetToggle(optionButtons, "crop", state.SquareMode.Equals("crop", StringComparison.OrdinalIgnoreCase));
             SetToggle(optionButtons, "upscale", state.UpscaleBelowIdeal);
+            upscaleMaxPercent.Value = Clamp(state.UpscaleMaxPercent, upscaleMaxPercent.Minimum, upscaleMaxPercent.Maximum);
+            UpdateUpscaleMaximumVisibility();
             SetToggle(optionButtons, "evaluate", state.EvaluateFinalImage);
             sourceEnabledStates.Clear();
             foreach (string source in ConfigState.KnownSources)
@@ -1624,6 +1673,7 @@ namespace Splined.WindowsGui
                 state.Square = ToggleEnabled(optionButtons, "square");
                 state.SquareMode = ToggleEnabled(optionButtons, "crop") ? "crop" : "off";
                 state.UpscaleBelowIdeal = ToggleEnabled(optionButtons, "upscale");
+                state.UpscaleMaxPercent = (int)upscaleMaxPercent.Value;
                 state.EvaluateFinalImage = ToggleEnabled(optionButtons, "evaluate");
                 state.Formats = formatButtons.Where(pair => ((ToggleTag)pair.Value.Tag).Enabled).Select(pair => pair.Key).ToList();
                 state.Sources = sourcePriority.Items.Cast<SourceChoice>().Select(choice => choice.Key).ToList();

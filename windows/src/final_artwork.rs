@@ -267,12 +267,20 @@ fn projected_dimensions(
     }
 
     let short_side = width.min(height);
-    let resize =
-        short_side > range.ideal || (short_side < range.ideal && output.upscale_below_ideal);
+    // Ideal is the preferred quality target for smaller sources, not a ceiling.
+    // Preserve accepted high-resolution artwork at its native dimensions.
+    let resize = short_side < range.ideal
+        && output.upscale_below_ideal
+        && upscale_within_limit(short_side, range.ideal, output.upscale_max_percent);
     if resize && short_side > 0 {
         (width, height) = dimensions_for_short_side(width, height, range.ideal);
     }
     (width, height, crop_square, resize)
+}
+
+fn upscale_within_limit(source_short_side: u32, ideal: u32, max_percent: u32) -> bool {
+    source_short_side > 0
+        && u64::from(ideal) * 100 <= u64::from(source_short_side) * u64::from(max_percent)
 }
 
 fn prepare_final_artwork_inner(
@@ -305,7 +313,8 @@ fn prepare_final_artwork_inner(
         ));
     }
 
-    let resized = candidate.short_side() > range.ideal;
+    // Explicit selections above Ideal retain their validated source pixels.
+    let resized = false;
     let converted = candidate.format != target_format;
     let (target_width, target_height) = if resized {
         dimensions_for_short_side(candidate.width, candidate.height, range.ideal)
@@ -583,15 +592,75 @@ mod tests {
     }
 
     #[test]
-    fn upper_range_resizes_short_side_to_ideal() {
+    fn upper_range_preserves_native_resolution() {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("source.png");
         write_image(&source, 20, 20, ImageFormat::Png);
         let candidate = candidate(&source);
         let prepared =
             prepare_final_artwork(&candidate, &source, &test_range(), StaticFormat::Png).unwrap();
-        assert_eq!((prepared.info.width, prepared.info.height), (18, 18));
-        assert!(prepared.info.resized);
+        assert_eq!((prepared.info.width, prepared.info.height), (20, 20));
+        assert!(!prepared.info.resized);
+    }
+
+    #[test]
+    fn configured_upper_range_preserves_native_resolution() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("source.png");
+        write_image(&source, 30, 30, ImageFormat::Png);
+        let candidate = candidate(&source);
+        let output = OutputConfig {
+            evaluate_final_image: true,
+            ..OutputConfig::default()
+        };
+
+        let projected = project_configured_artwork(&candidate, &test_range(), &output);
+        assert_eq!((projected.width, projected.height), (30, 30));
+        assert!(!projected.resized);
+
+        let prepared = prepare_configured_artwork(
+            &candidate,
+            &source,
+            &test_range(),
+            StaticFormat::Png,
+            &output,
+            false,
+        )
+        .unwrap();
+        assert_eq!((prepared.info.width, prepared.info.height), (30, 30));
+        assert!(!prepared.info.resized);
+    }
+
+    #[test]
+    fn configured_upscale_respects_maximum_percentage() {
+        let range = test_range();
+        let mut output = OutputConfig {
+            upscale_below_ideal: true,
+            upscale_max_percent: 150,
+            ..OutputConfig::default()
+        };
+        let at_limit = Candidate {
+            source: "fixture".to_string(),
+            width: 12,
+            height: 12,
+            format: StaticFormat::Jpeg,
+            source_priority: 0,
+        };
+        let over_limit = Candidate {
+            width: 11,
+            height: 11,
+            ..at_limit.clone()
+        };
+
+        let projected = project_configured_artwork(&at_limit, &range, &output);
+        assert_eq!((projected.width, projected.height), (18, 18));
+        assert!(projected.upscaled);
+        let projected = project_configured_artwork(&over_limit, &range, &output);
+        assert_eq!((projected.width, projected.height), (11, 11));
+        assert!(!projected.upscaled);
+
+        output.upscale_max_percent = 200;
+        assert!(project_configured_artwork(&over_limit, &range, &output).upscaled);
     }
 
     #[test]
@@ -632,7 +701,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.action, FinalArtworkAction::Installed);
         let installed = inspect_image(&destination).unwrap();
-        assert_eq!((installed.width, installed.height), (18, 18));
+        assert_eq!((installed.width, installed.height), (20, 20));
         assert_eq!(installed.format, StaticFormat::Jpeg);
         assert!(!dir.path().join("cover-(2).jpg").exists());
     }

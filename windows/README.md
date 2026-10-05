@@ -77,10 +77,14 @@ GPU execution fails, SPLINED immediately uses its existing in-memory CPU
 Lanczos-3 implementation. The final diagnostic reports
 `upscale_backend=gpu-lanczos3`, `cpu-lanczos3`, or `none`.
 
-The original source short side must meet the configured global `range.min`
-before an enlargement may become Preferred or Auto eligible. A projected
-1800px output does not convert an original `BelowMinimum` source into an Ideal
-automatic choice. Such candidates remain visible for manual review.
+`output.upscale_max_percent` limits enlargement relative to the original short
+side. The default `200` permits at most 2× enlargement to Ideal. A source beyond
+that limit stays visible for manual review but cannot become Preferred or Auto
+eligible through enlargement.
+
+Ideal is an enlargement target, not a maximum output size. SPLINED preserves an
+accepted source above Ideal at its native resolution; it does not reduce a
+validated 3000×3000 selection to an 1800×1800 file.
 
 This backend is ordinary deterministic resampling, not AI super-resolution.
 It provides the replaceable GPU boundary that future AISPLINED validation and
