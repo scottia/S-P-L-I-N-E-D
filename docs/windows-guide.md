@@ -111,9 +111,10 @@ is used. Folder-tree selection uses the same round red/green states.
 
 ### Media Library Selection
 
-The high-contrast back-and-forth arrow control at the upper right of the title switches the
-Media Library Selection surface between expanded and hidden states. Its active
-button styling remains visible in the dark theme.
+The hollow double-left arrow at the upper right of the title reduces Media
+Library Selection to a narrow spectrum-framed rail instead of removing it.
+The double-right arrow on that rail restores the selector. Both arrows use the
+panel-title font size and remain visible in the dark theme.
 
 Select Media contains:
 
@@ -128,11 +129,12 @@ The only control that starts or stops processing is the primary **LAUNCH**
 button beneath the Artwork Candidates pane. There is no second Launch button
 inside Select Media.
 
-The 🔛 control at the top right hides the complete Media Album Selector and
-returns that space to processing. **View > Show Media Album Selector** restores
-it and preserves the choice in Windows interface settings. If the selector is
-hidden when a selected batch finishes successfully, Windows restores it
-automatically so the completed status and the next selection are visible.
+The `«` control at the top right reduces the Media Album Selector to its `≫`
+reopen rail and returns the remaining space to processing. **View > Show Media
+Album Selector** also restores it and preserves the choice in Windows interface
+settings. If the selector is reduced when a selected batch finishes
+successfully, Windows restores it automatically so the completed status and the
+next selection are visible.
 
 Auto Scan is opt-in. With neither Auto Scan choice active, selected Albums form
 an operator-reviewed queue. **Auto Scan `[SELECTED]`** processes only explicitly
@@ -472,6 +474,13 @@ track has no Album/Release MBID and the Album is tagged `compilation=1`. The
 yellow warning remains explicit. This path never creates, changes, or removes
 folder-level `cover.*` artwork.
 
+Select Media retains the snapshot's compilation marker. A compilation remains
+eligible for LAUNCH until SQLite records `embedded-compilation` completion,
+even when older Album-level processed or bypass history exists. Selecting the
+Album or its Artist therefore activates LAUNCH for the outstanding per-track
+embedded-art work without deleting that older history. A completed compilation
+is not selected again automatically.
+
 For each track SPLINED:
 
 1. checks the exact Recording-ID/Artist-ID SQLite cache;
@@ -564,8 +573,9 @@ Windows keeps one current GUI session: prior `splined-*.log` files in that
 `run` directory are removed at the next start. Logs are diagnostic only and do
 not own Album status, history, bypass, timeout, or compilation progress.
 
-Compact records include snapshot timing, per-provider elapsed time,
-candidate/reference counts, post-cover persistence timing, and error class.
+Compact records include snapshot timing, media-tree selection changes and
+compilation eligibility, per-provider elapsed time, candidate/reference counts,
+post-cover persistence timing, and error class.
 Credentials, tokens, passwords, authorization headers, and private values are
 redacted and must never be logged.
 

@@ -1324,6 +1324,7 @@ namespace Splined.WindowsGui
     {
         private bool spectrumHot;
         private bool spectrumPressed;
+        internal bool CenterText { get; set; }
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1339,11 +1340,13 @@ namespace Splined.WindowsGui
                 using (SolidBrush brush = new SolidBrush(Color.FromArgb(spectrumPressed ? 76 : 42, overlay)))
                     e.Graphics.FillPath(brush, path);
             }
-            Rectangle textBounds = new Rectangle(ThemeManager.Space12, 0,
-                Math.Max(1, Width - ThemeManager.Space16), Height);
+            Rectangle textBounds = CenterText
+                ? ClientRectangle
+                : new Rectangle(ThemeManager.Space12, 0, Math.Max(1, Width - ThemeManager.Space16), Height);
             TextRenderer.DrawText(e.Graphics, Text, Font, textBounds,
                 Enabled ? active.TextPrimary : active.TextDisabled,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                (CenterText ? TextFormatFlags.HorizontalCenter : TextFormatFlags.Left)
+                | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); spectrumHot = true; Invalidate(); }

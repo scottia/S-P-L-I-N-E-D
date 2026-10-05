@@ -40,6 +40,8 @@ namespace Splined.WindowsGui
         public DateTime? CompletedUtc;
         public DateTime? EligibleUtc;
         public string Outcome;
+        public bool Compilation;
+        public bool CompilationTrackArtworkEligible;
         public bool HasLocalArtwork;
         public List<string> LocalArtworkFiles = new List<string>();
         public int TrackCount;
@@ -52,13 +54,32 @@ namespace Splined.WindowsGui
         public int RootFiles;
         public int CoverFiles;
 
-        public bool EligibleByDefault { get { return State == AlbumState.New || State == AlbumState.Incomplete; } }
+        public bool CompilationTrackArtworkPending
+        {
+            get
+            {
+                return Compilation && CompilationTrackArtworkEligible
+                    && !String.Equals(Outcome, "embedded-compilation", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        public bool EligibleByDefault
+        {
+            get
+            {
+                return State == AlbumState.New || State == AlbumState.Incomplete
+                    || (CompilationTrackArtworkPending && State != AlbumState.TimeoutActive);
+            }
+        }
         public bool HasHistory { get { return CompletedUtc.HasValue; } }
 
         public string ToolTip
         {
             get
             {
+                if (CompilationTrackArtworkPending && State == AlbumState.Bypassed)
+                    return "Compilation track artwork is still pending. Prior Album-level bypass history does not block the separate embedded-art workflow.";
+                if (CompilationTrackArtworkPending && State == AlbumState.Processed)
+                    return "Album-level artwork was processed, but embedded artwork is still pending for this compilation's tracks.";
                 if (State == AlbumState.Bypassed)
                     return "Bypassed. Selecting this album requires a temporary one-run bypass override; bypass history is retained.";
                 if (State == AlbumState.Incomplete)
@@ -138,9 +159,11 @@ namespace Splined.WindowsGui
                     album.BypassOverride = false;
                     continue;
                 }
-                if (album.State == AlbumState.New || album.State == AlbumState.Incomplete)
+                if (album.EligibleByDefault)
                 {
                     album.Selected = true;
+                    album.BypassOverride = album.State == AlbumState.Bypassed
+                        && album.CompilationTrackArtworkPending;
                     continue;
                 }
                 if (album.State == AlbumState.Bypassed && includeBypassed)
@@ -148,7 +171,9 @@ namespace Splined.WindowsGui
                     album.Selected = true;
                     album.BypassOverride = true;
                 }
-                // Processed and timeout-active albums are never auto-selected.
+                // Ordinary processed and timeout-active albums are never auto-selected.
+                // A pending compilation is separate per-track work and remains eligible
+                // until the embedded-compilation completion authority is recorded.
                 // Existing manual selections are intentionally left unchanged.
             }
         }
@@ -188,6 +213,7 @@ namespace Splined.WindowsGui
             public string representative_file;
             public string status;
             public bool compilation;
+            public bool compilation_track_art_eligible;
             public int track_count;
             public string release_year;
             public bool has_local_artwork;
@@ -267,6 +293,8 @@ namespace Splined.WindowsGui
                 HasLocalArtwork = item.has_local_artwork,
                 LocalArtworkFiles = (item.local_artwork_files ?? new string[0]).ToList(),
                 TrackCount = item.track_count,
+                Compilation = item.compilation,
+                CompilationTrackArtworkEligible = item.compilation_track_art_eligible,
                 ReleaseYear = item.release_year,
                 CoverPath = item.cover_path,
                 CoverName = item.cover_name,
