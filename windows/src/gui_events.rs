@@ -94,6 +94,7 @@ pub struct UpscaleOverrides {
     pub brightness_percent: i32,
     pub gamma_percent: i32,
     pub color_temperature: i32,
+    pub apply_edit_profile: bool,
     pub edit_existing_cover: bool,
 }
 
@@ -258,6 +259,10 @@ pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
                                     .and_then(Value::as_i64)
                                     .unwrap_or(0)
                                     as i32,
+                                apply_edit_profile: value
+                                    .get("apply_edit_profile")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false),
                                 edit_existing_cover: value
                                     .get("edit_existing_cover")
                                     .and_then(Value::as_bool)

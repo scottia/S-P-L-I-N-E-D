@@ -300,16 +300,20 @@ surface. **Show all results** clears explicit exclusions.
 LAUNCH and the ordinary candidate actions occupy the same header row immediately to the
 right of **Artwork Filter**. There is no separate bottom action bar. Conditional
 actions such as Keep Local, Refine Fallback, MusicBrainz Matches, and Back to MB
-Matches appear in that row only when applicable. **Upscale Preview** and
-**Apply default upscale** live in the filter's Upscale / Advanced column.
+Matches appear in that row only when applicable. **Upscale Preview**, **Upscale
+Show Full**, and **Apply default upscale** live in the filter's Upscale /
+Advanced group.
 
 Opening Artwork Filter temporarily gives the Scan Activity pane enough height
 for the editing workspace and restores the user's previous Activity/Candidate
-divider when the filter closes. **Upscale Preview** is a fixed-width action
-beside the active aspect ratio and resolution, not a full-column bar. The eight
-advanced values use one contained row of long vertical controls. A readable
-legend names every control, with its matching symbol and current value directly
-above the adjustment and one square reset control below it. They are
+divider when the filter closes. **Upscale Preview** and **Upscale Show Full**
+are fixed-width actions placed side by side before the active 1:1 source-to-edit
+resolution, not full-column bars. Show Full opens the current upscaled and
+edited result at its actual pixels in a scrollable resizable window; it never
+substitutes the untouched source image or scales the preview to fit. The eight
+advanced values use one contained row of equal-width framed vertical controls.
+Each frame keeps its full name, matching symbol, current value, adjustment, and
+single square reset control aligned as one unit. They are
 Picture (color intensity), Sharpen, Softness, Contrast,
 Exposure, Brightness, Gamma Correction, and Color Correction (Cool through
 Middle to Warm). Numeric defaults are `0%`; Color Correction defaults to
@@ -337,13 +341,18 @@ three lines of repeated card metadata. Thumbnails remain square and grow or
 shrink with the candidate pane. The shared Artwork preview,
 MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
 
-When exactly one Upscalable result is active, **Upscale Preview** becomes
-available in the fourth filter column. Selecting an Album with an existing
-local cover exposes and preselects it before any scan; provider results are not
-required. The editing controls and live preview therefore remain available at
-any resolution or prior processing state. The preview renders the
-projected Ideal-size image in memory in the shared Artwork pane without writing
-the Album or changing candidate ranking.
+When exactly one cached result is active, **Upscale Preview** and **Upscale
+Show Full** become available. This includes Ideal, Ladder, Above Ladder,
+Below Minimum, remote-provider, alternative MusicBrainz-release, and local
+results: manual editing is not restricted to candidates that qualify for an
+automatic upscale. Selecting an Album with an existing local cover exposes and
+preselects it before any scan; provider results are not required. The editing
+controls and live preview therefore remain available at any resolution or prior
+processing state. The preview renders the configured result in memory in the
+shared Artwork pane without writing the Album or changing candidate ranking.
+After MusicBrainz Matches returns a new release's candidates, **Use Selected**
+remains available during the decision-event handoff so an alternate-release
+selection can be submitted and saved.
 The preview uses the same final-art pipeline as selection and preserves aspect
 ratio and the color profile where the output format permits it. **Apply default
 upscale** keeps the analyze-first profile: no sharpening, bounded adaptive
@@ -352,8 +361,12 @@ can explicitly add Sharpen, Contrast, Exposure, Brightness, or Cool/Warm color
 correction. Each `↕` control expands its slider, the `<value>` label changes
 immediately, and an active preview is regenerated after the value changes.
 Advanced values are persistent Config v5 defaults, not one-card transient
-effects. Brightness, contrast, and exposure are bounded to ±20%, sharpen to
-0–20%, and color correction to -100 Cool through +100 Warm.
+effects. Explicitly previewing or adjusting a selected result marks that choice
+for the same profile during finalization, even when its dimensions do not need
+enlargement. This explicit manual path does not make the candidate Recommended,
+Preferred, or Auto eligible; validation, policy, and quality rules retain sole
+authority over those statuses. Brightness, contrast, and exposure are bounded
+to ±20%, sharpen to 0–20%, and color correction to -100 Cool through +100 Warm.
 
 Candidate image bytes are retained in a bounded 256 MB process-memory cache
 after their first read. Candidate cards, the shared preview, and repeated edit
@@ -479,11 +492,13 @@ shown in Artwork Filter. Both surfaces edit the same saved Config v5 profile.
 The profile is applied when an eligible source below Ideal is enlarged. Ideal
 and higher-resolution validated artwork is never reduced automatically.
 
-An existing local `cover.*` is also always available for explicit editing,
-regardless of its resolution or whether it was previously upscaled. Selecting
-it and using Upscale Preview or changing an advanced value marks that local
-cover for editing at its native/projected resolution; simply choosing Keep
-Local still leaves its bytes untouched. Manual review carries an existing
+Any cached candidate is available for explicit manual editing regardless of
+its range or automatic-upscale eligibility. An existing local `cover.*` also
+remains available regardless of its resolution or whether it was previously
+upscaled. Selecting a result and using Upscale Preview, Upscale Show Full, or
+changing an advanced value marks that selected candidate for editing at its
+native/projected resolution; simply choosing Keep Local still leaves an
+unedited local cover's bytes untouched. Manual review carries an existing
 Ideal cover into candidate results instead of ending at local preflight; Auto
 mode retains the fast local-Ideal acceptance path. This does not require
 resetting or lowering the Album's completed status.

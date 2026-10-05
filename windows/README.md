@@ -89,8 +89,11 @@ The optional `upscale_picture_percent`, `upscale_sharpen_percent`,
 `upscale_gamma_percent`, and `upscale_color_temperature` values form one saved
 advanced profile shared by Settings and the Artwork Filter. Zero leaves that
 property unchanged. These values are applied during an eligible enlargement
-below Ideal or an explicit existing-cover edit. Automatic processing never
-downscales or modifies Ideal and higher-resolution artwork.
+below Ideal or an explicitly previewed/adjusted manual candidate edit. Manual
+editing is available for any cached provider or local candidate, but it does
+not change Preferred/Auto eligibility, validation, source policy, or Maximum
+Upscale safeguards. Automatic processing never downscales or modifies Ideal
+and higher-resolution artwork.
 
 The Artwork Filter opens in the Scan Activity workspace beside Selected Album
 Artwork rather than over candidate thumbnails. Its four framed groups keep compact
@@ -99,10 +102,12 @@ Candidate Findings, Source Selection, and Resolution sit above one full-width
 Upscale / Advanced group. Each group uses the same framed treatment, headings,
 padding, and row spacing as Select Media. Zero-count Image Type, Policy, Wanted,
 and Unwanted choices stay visible but disabled, so categories do not disappear
-between Albums. Upscale Preview is a compact fixed-width action beside the
-active resolution. Its eight profile controls use one contained row of long
-vertical adjustments with a readable full-name legend, matching symbols, live
-values, and one square reset button each. Opening the filter temporarily expands
+between Albums. Upscale Preview and Upscale Show Full are compact fixed-width
+actions beside the 1:1 source-to-edit resolution. Show Full opens the current
+upscaled and edited image at actual pixels in a scrollable resizable window.
+Its eight profile controls use one contained row of equal-width framed vertical
+adjustments; each frame keeps the full name, symbol, live value, slider, and one
+square reset button aligned together. Opening the filter temporarily expands
 the Activity pane, then restores the previous divider when it closes. Existing local `cover.*` candidates remain
 previewable and editable at any resolution without resetting Album status.
 Selecting an Album exposes its local cover in Artwork Filter immediately,
@@ -110,7 +115,9 @@ without provider discovery. **Save Existing** applies the previewed profile
 through the native safe-write pipeline in Write mode. Manual review keeps an
 Ideal local cover in candidate results; Auto mode retains fast preflight.
 Selecting one candidate immediately focuses that exact image in Selected Album
-Artwork for editing; multiple selections retain Compare behavior.
+Artwork for editing; multiple selections retain Compare behavior. Alternate
+MusicBrainz-release candidates keep Use Selected enabled while the replacement
+decision is handed back to the scanner, so the chosen artwork can be saved.
 
 Candidate image bytes are cached in RAM after their first read, with a fixed
 256 MB FIFO limit, so thumbnails and repeated previews do not reread the same
