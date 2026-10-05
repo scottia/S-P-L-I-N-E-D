@@ -86,6 +86,12 @@ This backend is ordinary deterministic resampling, not AI super-resolution.
 It provides the replaceable GPU boundary that future AISPLINED validation and
 enhancement models can reuse without changing Config v5 behavior.
 
+The `album_completed` GUI event includes selected source, source/final
+dimensions, resize/conversion flags, and the backend used. Windows applies core
+events before finalizing batch statistics so READ-mode upscales remain visible
+in the Album Run Report and cannot be overwritten by a premature `Incomplete`
+fallback.
+
 The Windows media snapshot projects year, track count, cover path/name/format,
 cover dimensions, and root/cover file counts from existing SQLite Album rows.
 The GUI uses that projection for the selected-Album information and Artwork

@@ -243,7 +243,8 @@ namespace Splined.WindowsGui
                 UiState ui = new UiState
                 {
                     Theme = "Dark", ShowStatusOnLaunch = false, ShowConfirmations = false, HoverEnabled = true, ShowArtwork = true,
-                    MediaFilterExpanded = false, MediaArtistFilter = "Alpha", MediaAlbumFilter = "Fresh",
+                    ShowMediaSelector = false, MediaFilterExpanded = false, CandidateFilterExpanded = true,
+                    MediaArtistFilter = "Alpha", MediaAlbumFilter = "Fresh",
                     MediaShowRed = false, FilteredScanMode = "read",
                     SelectedAlbumPaths = new List<string> { firstAlbum },
                     MainWidth = 1320, MainHeight = 860, MainX = 110, MainY = 90,
@@ -255,7 +256,8 @@ namespace Splined.WindowsGui
                 ConfigStore.SaveUi(ui);
                 UiState loadedUi = ConfigStore.LoadUi();
                 Assert(loadedUi.Theme == "Dark" && !loadedUi.ShowStatusOnLaunch && !loadedUi.ShowConfirmations && loadedUi.HoverEnabled && loadedUi.ShowArtwork
-                    && !loadedUi.MediaFilterExpanded && loadedUi.MediaArtistFilter == "Alpha" && !loadedUi.MediaShowRed
+                    && !loadedUi.ShowMediaSelector && !loadedUi.MediaFilterExpanded && loadedUi.CandidateFilterExpanded
+                    && loadedUi.MediaArtistFilter == "Alpha" && !loadedUi.MediaShowRed
                     && loadedUi.FilteredScanMode == "read" && loadedUi.SelectedAlbumPaths.SequenceEqual(new[] { firstAlbum })
                     && loadedUi.MainWidth == 1320 && loadedUi.MainSplitterDistance == 455
                     && loadedUi.SetupWidth == 1040 && loadedUi.SetupAdvancedTab == 2
@@ -616,6 +618,8 @@ namespace Splined.WindowsGui
                     "Stable update discovery did not select the official paired Windows assets.");
 
                 loadedUi.HoverEnabled = false;
+                loadedUi.ShowMediaSelector = true;
+                loadedUi.CandidateFilterExpanded = false;
                 ConfigStore.SaveUi(loadedUi);
                 using (MainForm form = new MainForm(loaded))
                 {
@@ -706,14 +710,33 @@ namespace Splined.WindowsGui
                         Assert(titleLabel.Parent.Controls.OfType<InfoButton>().Any(), titleText + " does not have its replacement information tooltip beside the heading.");
                     }
                     Button artworkFilter = form.Controls.Find("candidateFilterButton", true).OfType<Button>().Single();
-                    Assert(artworkFilter.Text.Contains("ARTWORK FILTER") && artworkFilter.Parent is FluentCardPanel
-                        && ((FluentCardPanel)artworkFilter.Parent).VisualRole == CardVisualRole.SpectrumNested,
-                        "Artwork Candidates did not replace the large heading with the compact spectrum FILTER control.");
+                    FluentCardPanel artworkFilterPanel = form.Controls.Find("candidateFilterPanel", true).OfType<FluentCardPanel>().Single();
+                    Assert(artworkFilter is SpectrumToggleButton && artworkFilter.Text.Contains("Artwork Filter")
+                        && artworkFilterPanel.VisualRole == CardVisualRole.SpectrumNested,
+                        "Artwork Candidates did not use the Media Selection-style dropdown and spectrum filter frame.");
+                    TableLayoutPanel candidateLayout = (TableLayoutPanel)typeof(MainForm).GetField("candidateLayout", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    MethodInfo invokeArtworkFilter = typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                    invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
+                    Assert(candidateLayout.RowStyles[1].Height > 0 && artworkFilter.Text.Contains("▾"),
+                        "Artwork Filter did not expand inline beneath its dropdown control.");
+                    invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
+                    Assert(candidateLayout.RowStyles[1].Height == 0 && artworkFilter.Text.Contains("▸"),
+                        "Artwork Filter did not collapse back into its compact dropdown control.");
                     FluentCardTableLayoutPanel libraryCard = form.Controls.Find("mediaLibrarySelectionCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel activityPanel = form.Controls.Find("scanActivityCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel candidatesPanel = form.Controls.Find("artworkCandidatesCard", true).Single() as FluentCardTableLayoutPanel;
                     Assert(libraryCard != null && activityPanel != null && candidatesPanel != null,
                         "The three major work areas do not use the shared rounded panel surface.");
+                    Button selectorVisibility = form.Controls.Find("mediaSelectorVisibilityToggle", true).OfType<Button>().Single();
+                    SplitContainer selectorSplit = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    ToolStripMenuItem showMediaSelector = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
+                        .Single(item => item.Text == "Show Media Album Selector");
+                    invokeArtworkFilter.Invoke(selectorVisibility, new object[] { EventArgs.Empty });
+                    Assert(selectorSplit.Panel1Collapsed && !showMediaSelector.Checked,
+                        "The Media Album Selector top-right show/hide control did not collapse the panel.");
+                    showMediaSelector.PerformClick();
+                    Assert(!selectorSplit.Panel1Collapsed && showMediaSelector.Checked,
+                        "View > Show Media Album Selector did not restore the hidden selector.");
                     TableLayoutPanel libraryScrollCanvas = form.Controls.Find("mediaLibrarySelectionScrollCanvas", true).Single() as TableLayoutPanel;
                     Assert(!libraryCard.AutoScroll && libraryScrollCanvas != null && libraryScrollCanvas.AutoScroll && libraryScrollCanvas.AutoScrollMinSize.Height > 0
                         && activityPanel.AutoScroll && activityPanel.AutoScrollMinSize.Height > 0
@@ -794,13 +817,22 @@ namespace Splined.WindowsGui
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
                         "BelowMinimum and policy-qualified Minimum-to-Ideal candidates did not receive red and magenta backgrounds respectively.");
-                    typeof(MainForm).GetMethod("RebuildCandidateFilterMenu", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
-                    ContextMenuStrip candidateFilterMenu = (ContextMenuStrip)typeof(MainForm).GetField("candidateFilterMenu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    Assert(candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Image Type")
-                        && candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Source Selection")
-                        && !candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Wanted")
-                        && candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Unwanted"),
-                        "Candidate FILTER did not expose only the result-backed type, source, wanted, and unwanted groups.");
+                    CheckBox amazonFilter = form.Controls.Find("candidateFilter_source_amazon", true).OfType<CheckBox>().Single();
+                    CheckBox upscaleFilter = form.Controls.Find("candidateFilter_type_Upscalable", true).OfType<CheckBox>().Single();
+                    CheckBox rejectedFilter = form.Controls.Find("candidateFilter_type_Rejected", true).OfType<CheckBox>().Single();
+                    CheckBox lowerFilter = form.Controls.Find("candidateFilter_range_LowerRange", true).OfType<CheckBox>().Single();
+                    CheckBox belowFilter = form.Controls.Find("candidateFilter_range_BelowMinimum", true).OfType<CheckBox>().Single();
+                    Assert(amazonFilter.Checked && upscaleFilter.Checked && rejectedFilter.Checked
+                        && lowerFilter.Checked && belowFilter.Checked,
+                        "Inline Candidate FILTER did not expose the result-backed source, type, and unwanted-range choices.");
+                    amazonFilter.Checked = false;
+                    Assert(candidateCards.Controls.Count == 0 && !upscaleFilter.Enabled && !upscaleFilter.Checked
+                        && !rejectedFilter.Enabled && !rejectedFilter.Checked,
+                        "Source filtering did not auto-unselect and gray dependent Image Type choices.");
+                    amazonFilter.Checked = true;
+                    Assert(candidateCards.Controls.Count == 2 && upscaleFilter.Enabled && upscaleFilter.Checked
+                        && rejectedFilter.Enabled && rejectedFilter.Checked,
+                        "Dependent Candidate FILTER choices did not restore automatically with their source.");
                     FieldInfo selectionField = typeof(MainForm).GetField("selectionMode", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert((SelectionMode)selectionField.GetValue(form) == SelectionMode.Select, "Manual Select must be the default selection mode.");
                     VerifyMediaFilter(form);
@@ -944,14 +976,19 @@ namespace Splined.WindowsGui
                     applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
                     {
                         { "event", "album_completed" }, { "album_path", "report-fixture" },
-                        { "action", "Installed" }, { "destination", "cover.jpg" }
+                        { "action", "ReadOnly" }, { "destination", "cover.jpg" },
+                        { "source", "amazon" }, { "source_width", 1200 }, { "source_height", 1200 },
+                        { "final_width", 1800 }, { "final_height", 1800 }, { "resized", true },
+                        { "converted", false }, { "upscale_backend", "gpu-lanczos3" }
                     } });
                     finishRunStats.Invoke(form, new object[] { "Incomplete" });
                     showRunReport.Invoke(form, new object[] { "write", 1 });
                     Assert(activity.Text.StartsWith("S:P:L:I:N:E:D ALBUM RUN REPORT", StringComparison.Ordinal)
                         && activity.Text.Contains("[1/1] Report Artist - Report Album")
                         && activity.Text.Contains("2 evaluated") && activity.Text.Contains("2 policy-hidden")
-                        && activity.Text.Contains("Outcome: Installed") && activity.Text.Contains("Result: cover.jpg")
+                        && activity.Text.Contains("Outcome: ReadOnly") && activity.Text.Contains("Result: cover.jpg")
+                        && activity.Text.Contains("Selected: Amazon") && activity.Text.Contains("Source 1200 x 1200")
+                        && activity.Text.Contains("Final 1800 x 1800") && activity.Text.Contains("Upscale: gpu-lanczos3")
                         && !activity.Text.Contains("SPLINED LIVE PROCESSING"),
                         "Completed processing did not replace live activity with the per-album statistics report.");
 

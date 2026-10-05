@@ -124,6 +124,10 @@ The only control that starts or stops processing is the primary **LAUNCH**
 button beneath the Artwork Candidates pane. There is no second Launch button
 inside Select Media.
 
+The 🔛 control at the top right hides the complete Media Album Selector and
+returns that space to processing. **View > Show Media Album Selector** restores
+it and preserves the choice in Windows interface settings.
+
 Auto Scan is opt-in. With neither Auto Scan choice active, selected Albums form
 an operator-reviewed queue. **Auto Scan `[SELECTED]`** processes only explicitly
 selected Albums, while **Auto Scan `[ALL]`** processes every Unprocessed Album
@@ -224,9 +228,10 @@ Candidates pane displays every manually reviewable strict candidate.
 An unverified strict candidate is marked **Manual only**: its image and URL stay
 available, but it cannot become Recommended or be accepted by Auto Scan.
 
-The compact spectrum-framed **ARTWORK FILTER** replaces the former full-width
-heading. It is a display-only filter and does not rerank providers or change the
-result set. Its menus are built from the current Album only:
+The spectrum-framed **Artwork Filter** uses the same inline dropdown pattern as
+**Select Media**. It is a display-only filter and does not rerank providers or
+change the underlying result set. The expanded three-column surface is built
+from the current Album only:
 
 - **Source Selection** follows enabled Artwork Source Priority and lists only
   sources that actually returned a result;
@@ -234,8 +239,13 @@ result set. Its menus are built from the current Album only:
   and Local;
 - **Policy** lists Acceptable and Strict only when represented;
 - **Wanted** and **Unwanted** classify the original downloaded short side,
-  before crop or enlargement. Source selection also limits the type, policy,
-  and range choices shown the next time the filter opens.
+  before crop or enlargement.
+
+Every option has a live candidate count. Changing a source, type, policy, or
+range immediately updates the visible cards and recalculates the other
+dimensions. Choices with no possible result are automatically unchecked and
+grayed; they restore automatically when another selection makes them possible
+again. **Show all results** clears explicit exclusions.
 
 - **Use Selected** approves one active candidate.
 - **Compare** compares multiple active candidates.
@@ -268,6 +278,13 @@ MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
 Concurrent provider work may reduce
 waiting time, but configured source order, source policy, Range Type, geometry,
 distance, and tie-breaking still determine the displayed ranking.
+
+At batch completion, the Album Run Report records the selected provider,
+original and final resolution, resize/conversion state, and the actual upscale
+backend. READ reports remain `ReadOnly`, but a successfully rendered preview is
+reported explicitly as `gpu-lanczos3` or `cpu-lanczos3` instead of being lost
+when the live activity panel is replaced. Core events are applied before the
+process completion report, preventing the former `Incomplete` race.
 
 ## MusicBrainz Matches
 

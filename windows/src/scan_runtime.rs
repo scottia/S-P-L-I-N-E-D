@@ -1347,6 +1347,16 @@ pub async fn run_scan_library_read_report(
                             "destination": destination,
                             "action": format!("{:?}", final_result.action),
                             "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
+                            "source": candidate.source,
+                            "source_width": candidate.width,
+                            "source_height": candidate.height,
+                            "final_width": final_result.info.map(|info| info.width),
+                            "final_height": final_result.info.map(|info| info.height),
+                            "resized": final_result.info.is_some_and(|info| info.resized),
+                            "converted": final_result.info.is_some_and(|info| info.converted),
+                            "upscale_backend": final_result.info
+                                .map(|info| info.upscale_backend.as_str())
+                                .unwrap_or("none"),
                         }));
                     }
                     Err(error) => {
