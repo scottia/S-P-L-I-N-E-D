@@ -223,7 +223,7 @@ namespace Splined.WindowsGui
                             { "artist", "Artist One" }, { "tagged_artist", "Tagged Artist" },
                             { "title", "Album One" }, { "path", firstAlbum },
                             { "representative_file", Path.Combine(firstAlbum, "track.mp3") }, { "status", "unprocessed" },
-                            { "compilation", false }, { "track_count", 1 },
+                            { "compilation", true }, { "compilation_track_art_eligible", true }, { "track_count", 1 },
                             { "release_year", "1998" },
                             { "has_local_artwork", false }, { "local_artwork_files", new string[0] },
                             { "cover_path", Path.Combine(firstAlbum, "cover.jpg") }, { "cover_name", "cover.jpg" },
@@ -235,6 +235,7 @@ namespace Splined.WindowsGui
                 AlbumInfo[] albums = LibraryInventory.FromSnapshotJson(snapshotJson).ToArray();
                 Assert(albums.Length == 1 && albums[0].Title == "Album One" && albums[0].Key == "tag:album-one"
                     && albums[0].ReleaseYear == "1998" && albums[0].TrackCount == 1
+                    && albums[0].Compilation && albums[0].CompilationTrackArtworkPending
                     && albums[0].CoverName == "cover.jpg" && albums[0].CoverWidth == 1500
                     && albums[0].RootFiles == 12,
                     "SQLite snapshot did not populate the Album identity model.");
@@ -780,36 +781,31 @@ namespace Splined.WindowsGui
                     Assert(libraryCard != null && activityPanel != null && candidatesPanel != null,
                         "The three major work areas do not use the shared rounded panel surface.");
                     Button selectorVisibility = form.Controls.Find("mediaSelectorVisibilityToggle", true).OfType<Button>().Single();
-                    ThemePalette selectorPalette = ThemeManager.PaletteFor("Dark");
-                    Assert(selectorVisibility is FluentButton && ((FluentButton)selectorVisibility).DirectionGlyph
-                        && selectorVisibility.Width >= 50
-                        && selectorVisibility.Padding.All == 0
-                        && selectorVisibility.ForeColor.ToArgb() == selectorPalette.PrimaryActionForeground.ToArgb()
-                        && selectorVisibility.BackColor.ToArgb() == selectorPalette.PrimaryAction.ToArgb(),
-                        "The Media Library Selection show/hide glyph is not visible in its active themed button.");
-                    int selectorGlyphPixels = 0;
-                    using (Bitmap selectorCapture = new Bitmap(selectorVisibility.Width, selectorVisibility.Height))
-                    {
-                        selectorVisibility.DrawToBitmap(selectorCapture, new Rectangle(Point.Empty, selectorCapture.Size));
-                        for (int y = 0; y < selectorCapture.Height; y++)
-                            for (int x = 0; x < selectorCapture.Width; x++)
-                            {
-                                Color pixel = selectorCapture.GetPixel(x, y);
-                                if (Math.Abs(pixel.R - selectorVisibility.ForeColor.R) < 18
-                                    && Math.Abs(pixel.G - selectorVisibility.ForeColor.G) < 18
-                                    && Math.Abs(pixel.B - selectorVisibility.ForeColor.B) < 18) selectorGlyphPixels++;
-                            }
-                    }
-                    Assert(selectorGlyphPixels >= 12,
-                        "The Media Library Selection show/hide direction glyph did not render in its button.");
+                    Button selectorExpand = form.Controls.Find("mediaSelectorExpandToggle", true).OfType<Button>().Single();
+                    Assert(selectorVisibility is SpectrumToggleButton && selectorVisibility.Text == "«"
+                        && selectorExpand is SpectrumToggleButton && selectorExpand.Text == "≫"
+                        && selectorVisibility.Font.SizeInPoints == selectorExpand.Font.SizeInPoints
+                        && selectorVisibility.Width >= 40
+                        && selectorVisibility.Padding.All == 0,
+                        "The Media Library Selection show/hide glyph is not visible at the panel-title font size.");
                     SplitContainer selectorSplit = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     ToolStripMenuItem showMediaSelector = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
                         .Single(item => item.Text == "Show Media Album Selector");
                     invokeArtworkFilter.Invoke(selectorVisibility, new object[] { EventArgs.Empty });
-                    Assert(selectorSplit.Panel1Collapsed && !showMediaSelector.Checked,
-                        "The Media Album Selector top-right show/hide control did not collapse the panel.");
+                    Control selectorRail = form.Controls.Find("mediaLibrarySelectionCollapsedRail", true).Single();
+                    Assert(!selectorSplit.Panel1Collapsed && selectorSplit.SplitterDistance <= 58
+                        && selectorRail.Parent.Controls.GetChildIndex(selectorRail) == 0
+                        && !libraryCard.Visible && !showMediaSelector.Checked,
+                        "The Media Album Selector top-right control did not reduce the panel to its reopen rail."
+                        + " collapsed=" + selectorSplit.Panel1Collapsed
+                        + " distance=" + selectorSplit.SplitterDistance
+                        + " rail=" + selectorRail.Visible
+                        + " content=" + libraryCard.Visible
+                        + " menu=" + showMediaSelector.Checked);
                     showMediaSelector.PerformClick();
-                    Assert(!selectorSplit.Panel1Collapsed && showMediaSelector.Checked,
+                    Assert(!selectorSplit.Panel1Collapsed && selectorSplit.SplitterDistance >= 180
+                        && libraryCard.Parent.Controls.GetChildIndex(libraryCard) == 0
+                        && !selectorRail.Visible && showMediaSelector.Checked,
                         "View > Show Media Album Selector did not restore the hidden selector.");
                     TableLayoutPanel libraryScrollCanvas = form.Controls.Find("mediaLibrarySelectionScrollCanvas", true).Single() as TableLayoutPanel;
                     Assert(!libraryCard.AutoScroll && libraryScrollCanvas != null && libraryScrollCanvas.AutoScroll && libraryScrollCanvas.AutoScrollMinSize.Height > 0
@@ -1332,6 +1328,18 @@ namespace Splined.WindowsGui
             AlbumInfo orange = Album("Artist", "Orange", AlbumState.Processed);
             AlbumInfo red = Album("Artist", "Red", AlbumState.Bypassed);
             AlbumInfo purple = Album("Artist", "Purple", AlbumState.TimeoutActive);
+            AlbumInfo pendingCompilation = Album("Artist", "Pending Compilation", AlbumState.Processed);
+            pendingCompilation.Compilation = true;
+            pendingCompilation.CompilationTrackArtworkEligible = true;
+            pendingCompilation.Outcome = "local";
+            AlbumInfo bypassedCompilation = Album("Artist", "Bypassed Compilation", AlbumState.Bypassed);
+            bypassedCompilation.Compilation = true;
+            bypassedCompilation.CompilationTrackArtworkEligible = true;
+            bypassedCompilation.Outcome = "bypass";
+            AlbumInfo completedCompilation = Album("Artist", "Completed Compilation", AlbumState.Processed);
+            completedCompilation.Compilation = true;
+            completedCompilation.CompilationTrackArtworkEligible = true;
+            completedCompilation.Outcome = "embedded-compilation";
 
             Assert(ArtistStateResolver.Aggregate(new[] { whiteOne, whiteTwo }) == ArtistAggregateState.Unprocessed,
                 "An all-white Artist did not aggregate to WHITE.");
@@ -1346,10 +1354,14 @@ namespace Splined.WindowsGui
             Assert(ArtistStateResolver.Aggregate(new[] { orange, red }) == ArtistAggregateState.ContainsBypass,
                 "A fully processed Artist with bypass did not aggregate to BLUE.");
 
-            List<AlbumInfo> selection = new List<AlbumInfo> { whiteOne, orange, red, purple };
+            List<AlbumInfo> selection = new List<AlbumInfo> { whiteOne, orange, red, purple,
+                pendingCompilation, bypassedCompilation, completedCompilation };
             ArtistSelectionRules.Apply(selection, true, false);
-            Assert(whiteOne.Selected && !orange.Selected && !red.Selected && !purple.Selected,
-                "Artist selection did not select only eligible WHITE Albums by default.");
+            Assert(whiteOne.Selected && pendingCompilation.Selected && bypassedCompilation.Selected
+                && !completedCompilation.Selected && !orange.Selected && !red.Selected && !purple.Selected,
+                "Artist selection did not include pending compilation track-art work or selected completed/ordinary protected Albums.");
+            Assert(bypassedCompilation.BypassOverride,
+                "Pending compilation track-art work did not receive its temporary runtime history override.");
             Assert(!red.BypassOverride && red.State == AlbumState.Bypassed,
                 "A RED Album was selected or its saved bypass state changed without confirmation.");
             Assert(purple.State == AlbumState.TimeoutActive,
@@ -1357,10 +1369,11 @@ namespace Splined.WindowsGui
 
             ArtistSelectionRules.Apply(selection, false, false);
             ArtistSelectionRules.Apply(selection, true, true);
-            Assert(whiteOne.Selected && red.Selected && red.BypassOverride && red.State == AlbumState.Bypassed,
+            Assert(whiteOne.Selected && pendingCompilation.Selected && bypassedCompilation.Selected
+                && red.Selected && red.BypassOverride && red.State == AlbumState.Bypassed,
                 "A confirmed temporary RED override did not select the Album while retaining bypass authority.");
-            Assert(!orange.Selected && !purple.Selected,
-                "ORANGE or timeout-active PURPLE Albums were auto-selected by Artist selection.");
+            Assert(!orange.Selected && !purple.Selected && !completedCompilation.Selected,
+                "An ordinary processed, completed compilation, or timeout-active Album was auto-selected by Artist selection.");
         }
 
         private static AlbumInfo Album(string artist, string title, AlbumState state)

@@ -101,10 +101,13 @@ underlying status color.
 | Red | Persistent bypass | No |
 | Purple | Timeout active | No |
 
-Blue Incomplete Albums may be selected explicitly to resume compilation work; they
-are excluded from normal automatic selection. Orange Albums may be deliberately
-selected for reprocessing. Red Albums require intentional saved-bypass removal.
-Purple Albums remain protected while timeout is active.
+Blue Incomplete Albums may be selected to resume compilation work. A tagged
+compilation whose per-track ledger has not reached `embedded-compilation`
+completion is also launch-eligible even if its row still carries older
+Album-level Processed or Bypassed history; that history is retained and the
+separate folder cover is untouched. Orange Albums may be deliberately selected
+for reprocessing. Ordinary Red Albums require an intentional temporary bypass
+override. Purple Albums remain protected while timeout is active.
 
 READ mode may evaluate a candidate, but a no-cover Album does not become
 durably processed merely because a possible image was found. LIVE WRITE updates
@@ -205,6 +208,11 @@ Orange Album → skipped by automatic selection; manually reprocessable
 Purple Album → protected while timeout active
 Red Album    → saved bypass removal required
 ```
+
+Pending compilation track-art work is the narrow exception to the ordinary Red
+and Orange automatic-selection rules. The compilation flag and completion
+source determine that exception; once `embedded-compilation` is recorded it no
+longer applies.
 
 A Blue Artist can therefore be selected without silently including Red child
 Albums.

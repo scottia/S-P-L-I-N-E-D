@@ -127,6 +127,12 @@ namespace Splined.WindowsGui
                             typeof(MainForm).GetMethod("UpdateMediaFilterColors", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                             form.PerformLayout();
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-media-filter-idle-qa.png"));
+                            typeof(MainForm).GetMethod("SetMediaSelectorVisible", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { false, false });
+                            form.PerformLayout();
+                            Application.DoEvents();
+                            CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-media-selector-collapsed-qa.png"));
+                            typeof(MainForm).GetMethod("SetMediaSelectorVisible", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { true, false });
+                            form.PerformLayout();
                             typeof(MainForm).GetMethod("SetMediaFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { false });
                             form.PerformLayout();
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-media-filter-collapsed-qa.png"));

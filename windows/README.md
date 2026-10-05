@@ -123,8 +123,15 @@ decision is handed back to the scanner, so the chosen artwork can be saved.
 Candidate hover changes only the Artwork preview and is exit-debounced to avoid
 flickering or rebuilding the filter controls. Completing Use Selected or Save
 Existing closes temporary MusicBrainz/filter workspaces and restores the final
-Album report. The Media Library Selection title uses a high-contrast back-and-forth arrow
-expand/hide control that remains visible in the dark theme.
+Album report. The Media Library Selection title uses a hollow `«` control at
+panel-title size. It reduces the selector to a narrow spectrum rail whose `≫`
+control restores it; **View > Show Media Album Selector** remains available.
+
+The Windows snapshot preserves the compilation marker. Pending compilation
+track-art work remains LAUNCH-eligible until `embedded-compilation` completion
+is recorded, including when older Album-level processed or bypass history is
+present. This eligibility change only enters the existing per-track embedded
+art workflow; it does not replace folder-level artwork.
 
 Candidate image bytes are cached in RAM after their first read, with a fixed
 256 MB FIFO limit, so thumbnails and repeated previews do not reread the same

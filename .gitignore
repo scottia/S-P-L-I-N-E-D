@@ -7,6 +7,7 @@
 *.py[cod]
 
 # Finalized Windows GUI build and local runtime state
+/debug/
 /windows/target/
 /windows/.env
 /windows/.env.*

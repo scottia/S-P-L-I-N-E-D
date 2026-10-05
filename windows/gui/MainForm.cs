@@ -174,6 +174,11 @@ namespace Splined.WindowsGui
         private ToolStripMenuItem showArtworkMenuItem;
         private ToolStripMenuItem showMediaSelectorMenuItem;
         private Button mediaSelectorVisibilityToggle;
+        private Button mediaSelectorExpandToggle;
+        private Control mediaSelectorExpandedContent;
+        private Control mediaSelectorCollapsedRail;
+        private int mediaSelectorExpandedDistance = -1;
+        private const int MediaSelectorCollapsedExtent = 58;
         private RichTextBox activity;
         private TableLayoutPanel activityWorkspace;
         private Panel activityContentHost;
@@ -481,6 +486,7 @@ namespace Splined.WindowsGui
         private void BuildLibraryPanel(Control parent)
         {
             TableLayoutPanel frame = new FluentCardTableLayoutPanel { Name = "mediaLibrarySelectionCard", VisualRole = CardVisualRole.Panel, Dock = DockStyle.Fill, Padding = new Padding(1), ColumnCount = 1, RowCount = 1 };
+            mediaSelectorExpandedContent = frame;
             frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             frame.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             TableLayoutPanel layout = new TableLayoutPanel { Name = "mediaLibrarySelectionScrollCanvas" };
@@ -490,12 +496,44 @@ namespace Splined.WindowsGui
             layout.Padding = new Padding(ThemeManager.Space12);
             layout.ColumnCount = 1;
             layout.RowCount = 3;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, ExpandedMediaFilterHeight));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             UpdateLibraryScrollCanvas(true);
             frame.Controls.Add(layout, 0, 0);
             parent.Controls.Add(frame);
+
+            TableLayoutPanel collapsedRail = new FluentCardTableLayoutPanel
+            {
+                Name = "mediaLibrarySelectionCollapsedRail",
+                VisualRole = CardVisualRole.SpectrumNested,
+                Dock = DockStyle.Fill,
+                Padding = new Padding(5),
+                ColumnCount = 1,
+                RowCount = 2,
+                Visible = false
+            };
+            collapsedRail.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            collapsedRail.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            collapsedRail.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            mediaSelectorExpandToggle = new SpectrumToggleButton
+            {
+                Name = "mediaSelectorExpandToggle",
+                Text = "≫",
+                CenterText = true,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0),
+                Padding = new Padding(0),
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                AccessibleName = "Show Media Album Selector"
+            };
+            ToolTip railTip = ThemeManager.CreateToolTip();
+            railTip.SetToolTip(mediaSelectorExpandToggle, "Show the Media Album Selector.");
+            mediaSelectorExpandToggle.Tag = railTip;
+            mediaSelectorExpandToggle.Click += delegate { SetMediaSelectorVisible(true, true); };
+            collapsedRail.Controls.Add(mediaSelectorExpandToggle, 0, 0);
+            mediaSelectorCollapsedRail = collapsedRail;
+            parent.Controls.Add(collapsedRail);
 
             layout.Controls.Add(BuildMediaLibraryTitle(), 0, 0);
 
@@ -539,46 +577,105 @@ namespace Splined.WindowsGui
             TableLayoutPanel row = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
+                ColumnCount = 4,
                 RowCount = 1,
                 Margin = new Padding(0),
                 Padding = new Padding(0)
             };
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
-            row.Controls.Add(BuildPanelTitle("Media Library Selection",
-                "Select Media expands the Artist, Album, folder-status, selection-mode, and scan-mode controls. Select [ALL] replaces selection with the active Artist's unprocessed Albums, Select [NONE] clears selection, and Select [FILTERED] requires Artist or Album filter text. LAUNCH processes selected Albums only."), 0, 0);
-            mediaSelectorVisibilityToggle = new FluentButton
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
+            row.Controls.Add(new Label
+            {
+                Text = "Media Library Selection",
+                AutoSize = true,
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 4, 6, 0)
+            }, 0, 0);
+            row.Controls.Add(new InfoButton(
+                "Select Media expands the Artist, Album, folder-status, selection-mode, and scan-mode controls. Select [ALL] replaces selection with the active Artist's unprocessed Albums, Select [NONE] clears selection, and Select [FILTERED] requires Artist or Album filter text. LAUNCH processes selected Albums only.")
+            {
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 1, 0, 0)
+            }, 1, 0);
+            mediaSelectorVisibilityToggle = new SpectrumToggleButton
             {
                 Name = "mediaSelectorVisibilityToggle",
-                Text = "",
-                DirectionGlyph = true,
+                Text = "«",
+                CenterText = true,
                 Dock = DockStyle.Fill,
-                Margin = new Padding(2, 0, 0, 2),
+                Margin = new Padding(2),
+                Padding = new Padding(0),
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
                 AccessibleName = "Hide Media Album Selector"
             };
             ToolTip tip = ThemeManager.CreateToolTip();
             tip.SetToolTip(mediaSelectorVisibilityToggle, "Hide the Media Album Selector. Restore it from View > Show Media Album Selector.");
             mediaSelectorVisibilityToggle.Tag = tip;
             mediaSelectorVisibilityToggle.Click += delegate { SetMediaSelectorVisible(false, true); };
-            row.Controls.Add(mediaSelectorVisibilityToggle, 1, 0);
+            row.Controls.Add(mediaSelectorVisibilityToggle, 3, 0);
             return row;
         }
 
         private void StyleMediaSelectorVisibilityToggle()
         {
-            if (mediaSelectorVisibilityToggle == null) return;
-            object metadata = mediaSelectorVisibilityToggle.Tag;
-            mediaSelectorVisibilityToggle.Tag = "primary";
-            ThemeManager.StyleButton(mediaSelectorVisibilityToggle, uiState.Theme);
-            mediaSelectorVisibilityToggle.Tag = metadata;
-            mediaSelectorVisibilityToggle.Padding = new Padding(0);
+            foreach (Button button in new[] { mediaSelectorVisibilityToggle, mediaSelectorExpandToggle })
+            {
+                if (button == null) continue;
+                object metadata = button.Tag;
+                button.Tag = "primary";
+                ThemeManager.StyleButton(button, uiState.Theme);
+                button.Tag = metadata;
+                button.Padding = new Padding(0);
+            }
         }
 
         private void SetMediaSelectorVisible(bool visible, bool save)
         {
             uiState.ShowMediaSelector = visible;
-            if (mainSplit != null) mainSplit.Panel1Collapsed = !visible;
+            if (mainSplit != null)
+            {
+                mainSplit.Panel1Collapsed = false;
+                if (!visible)
+                {
+                    int normalMinimum = mainSplit.Orientation == Orientation.Horizontal ? 180 : 280;
+                    if (mainSplit.SplitterDistance >= normalMinimum)
+                    {
+                        mediaSelectorExpandedDistance = mainSplit.SplitterDistance;
+                        uiState.MainSplitterDistance = mainSplit.SplitterDistance;
+                    }
+                    if (mediaSelectorExpandedContent != null) mediaSelectorExpandedContent.Visible = false;
+                    if (mediaSelectorCollapsedRail != null)
+                    {
+                        mediaSelectorCollapsedRail.Visible = true;
+                        mediaSelectorCollapsedRail.BringToFront();
+                    }
+                    mainSplit.Panel1MinSize = MediaSelectorCollapsedExtent;
+                    int extent = mainSplit.Orientation == Orientation.Vertical ? mainSplit.Width : mainSplit.Height;
+                    int maximum = Math.Max(MediaSelectorCollapsedExtent,
+                        extent - mainSplit.Panel2MinSize - mainSplit.SplitterWidth);
+                    mainSplit.SplitterDistance = Math.Min(MediaSelectorCollapsedExtent, maximum);
+                }
+                else
+                {
+                    int normalMinimum = mainSplit.Orientation == Orientation.Horizontal ? 180 : 280;
+                    mainSplit.Panel1MinSize = normalMinimum;
+                    if (mediaSelectorCollapsedRail != null) mediaSelectorCollapsedRail.Visible = false;
+                    if (mediaSelectorExpandedContent != null)
+                    {
+                        mediaSelectorExpandedContent.Visible = true;
+                        mediaSelectorExpandedContent.BringToFront();
+                    }
+                    int extent = mainSplit.Orientation == Orientation.Vertical ? mainSplit.Width : mainSplit.Height;
+                    int maximum = Math.Max(normalMinimum,
+                        extent - mainSplit.Panel2MinSize - mainSplit.SplitterWidth);
+                    int preferred = mediaSelectorExpandedDistance >= normalMinimum
+                        ? mediaSelectorExpandedDistance : uiState.MainSplitterDistance;
+                    mainSplit.SplitterDistance = Math.Max(normalMinimum, Math.Min(preferred, maximum));
+                }
+            }
             if (showMediaSelectorMenuItem != null) showMediaSelectorMenuItem.Checked = visible;
             if (save) SaveUiState();
         }
@@ -1010,11 +1107,14 @@ namespace Splined.WindowsGui
         private void RestorePanelSizes()
         {
             int mainExtent = mainSplit == null ? 0 : mainSplit.Orientation == Orientation.Vertical ? mainSplit.Width : mainSplit.Height;
-            if (mainSplit != null && mainExtent > mainSplit.Panel1MinSize + mainSplit.Panel2MinSize + mainSplit.SplitterWidth)
+            if (mainSplit != null && uiState.ShowMediaSelector
+                && mainExtent > mainSplit.Panel1MinSize + mainSplit.Panel2MinSize + mainSplit.SplitterWidth)
             {
                 int maximum = mainExtent - mainSplit.Panel2MinSize - mainSplit.SplitterWidth;
                 mainSplit.SplitterDistance = Math.Max(mainSplit.Panel1MinSize, Math.Min(uiState.MainSplitterDistance, maximum));
             }
+            else if (mainSplit != null && !uiState.ShowMediaSelector)
+                SetMediaSelectorVisible(false, false);
             if (rightSplit != null && rightSplit.Height > rightSplit.Panel1MinSize + rightSplit.Panel2MinSize + rightSplit.SplitterWidth)
             {
                 int maximum = rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth;
@@ -1152,8 +1252,9 @@ namespace Splined.WindowsGui
                 selectionMode = SelectionMode.All;
                 foreach (AlbumInfo album in albums)
                 {
-                    album.Selected = activeArtist.AllAlbums.Contains(album) && album.State == AlbumState.New;
-                    album.BypassOverride = false;
+                    album.Selected = activeArtist.AllAlbums.Contains(album) && album.EligibleByDefault;
+                    album.BypassOverride = album.Selected && album.State == AlbumState.Bypassed
+                        && album.CompilationTrackArtworkPending;
                 }
                 BuildTree();
                 UpdateSelectionControls();
@@ -1187,8 +1288,10 @@ namespace Splined.WindowsGui
             {
                 bool textMatch = (artistText.Length == 0 || album.Artist.IndexOf(artistText, StringComparison.OrdinalIgnoreCase) >= 0)
                     && (albumText.Length == 0 || album.Title.IndexOf(albumText, StringComparison.OrdinalIgnoreCase) >= 0);
-                album.Selected = textMatch && (album.State == AlbumState.New || album.State == AlbumState.Processed);
-                album.BypassOverride = false;
+                album.Selected = textMatch && (album.State == AlbumState.New || album.State == AlbumState.Incomplete
+                    || album.State == AlbumState.Processed || album.CompilationTrackArtworkPending);
+                album.BypassOverride = album.Selected && album.State == AlbumState.Bypassed
+                    && album.CompilationTrackArtworkPending;
             }
             selectionMode = SelectionMode.Filtered;
             BuildTree();
@@ -1368,11 +1471,13 @@ namespace Splined.WindowsGui
                 foreach (AlbumInfo album in albums)
                 {
                     bool selected;
-                    bool safeState = album.State == AlbumState.New || album.State == AlbumState.Incomplete || album.State == AlbumState.Processed;
+                    bool safeState = album.State == AlbumState.New || album.State == AlbumState.Incomplete
+                        || album.State == AlbumState.Processed || album.CompilationTrackArtworkPending;
                     album.Selected = safeState && ((preserveSelection
                         && previouslySelected.TryGetValue(album.Path, out selected)
                         && selected) || persistedSelection.Contains(album.Path));
-                    album.BypassOverride = false;
+                    album.BypassOverride = album.Selected && album.State == AlbumState.Bypassed
+                        && album.CompilationTrackArtworkPending;
                 }
                 initialSelectionRestored = true;
                 selectionMode = SelectionMode.Select;
@@ -1501,7 +1606,8 @@ namespace Splined.WindowsGui
                 bool includeBypassed = false;
                 if (e.Node.Checked)
                 {
-                    int bypassCount = artist.VisibleAlbums.Count(album => album.State == AlbumState.Bypassed && !album.BypassOverride);
+                    int bypassCount = artist.VisibleAlbums.Count(album => album.State == AlbumState.Bypassed
+                        && !album.CompilationTrackArtworkPending && !album.BypassOverride);
                     if (bypassCount > 0)
                     {
                         DialogResult allow = MessageBox.Show(this,
@@ -1519,6 +1625,10 @@ namespace Splined.WindowsGui
                 }
                 e.Node.Checked = artist.VisibleAlbums.Any(album => album.Selected);
                 suppressTreeEvents = false;
+                RuntimeLog.Write("debug", "windows.selection.artist artist=" + artist.Name
+                    + " selected=" + e.Node.Checked
+                    + " albums=" + artist.VisibleAlbums.Count(album => album.Selected)
+                    + " compilation_pending=" + artist.VisibleAlbums.Count(album => album.Selected && album.CompilationTrackArtworkPending));
                 UpdateSelectionControls();
                 return;
             }
@@ -1533,7 +1643,8 @@ namespace Splined.WindowsGui
                 MessageBox.Show(this, item.ToolTip, "Album timeout active", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
-            if (e.Node.Checked && item.State == AlbumState.Bypassed && !item.BypassOverride)
+            if (e.Node.Checked && item.State == AlbumState.Bypassed && !item.BypassOverride
+                && !item.CompilationTrackArtworkPending)
             {
                 DialogResult allow = MessageBox.Show(this,
                     "This album is marked bypassed. Override bypass for this run only?\r\n\r\nThe stored bypass history will not be deleted.",
@@ -1547,6 +1658,13 @@ namespace Splined.WindowsGui
             }
             item.Selected = e.Node.Checked;
             if (!item.Selected) item.BypassOverride = false;
+            else if (item.State == AlbumState.Bypassed && item.CompilationTrackArtworkPending)
+                item.BypassOverride = true;
+            RuntimeLog.Write("debug", "windows.selection.changed album=" + item.Path
+                + " selected=" + item.Selected
+                + " compilation=" + item.Compilation
+                + " compilation_pending=" + item.CompilationTrackArtworkPending
+                + " state=" + item.State);
             ShowSelectedAlbum(item);
             UpdateParentCheck(e.Node.Parent);
             UpdateSelectionControls();
@@ -1636,7 +1754,8 @@ namespace Splined.WindowsGui
         private List<AlbumInfo> GetLaunchAlbums()
         {
             if (autoScanEnabled && String.Equals(autoScanScope, "all", StringComparison.OrdinalIgnoreCase))
-                return albums.Where(album => album.State == AlbumState.New || album.Selected).ToList();
+                return albums.Where(album => album.State == AlbumState.New
+                    || album.CompilationTrackArtworkPending || album.Selected).ToList();
             return albums.Where(album => album.Selected).ToList();
         }
 
@@ -1857,7 +1976,8 @@ namespace Splined.WindowsGui
             start.EnvironmentVariables["NO_COLOR"] = "1";
             if (!String.IsNullOrWhiteSpace(retryArtist)) start.EnvironmentVariables["SPLINED_FALLBACK_ARTIST"] = retryArtist;
             if (!String.IsNullOrWhiteSpace(retryAlbum)) start.EnvironmentVariables["SPLINED_FALLBACK_ALBUM"] = retryAlbum;
-            if (album.BypassOverride) start.EnvironmentVariables["SPLINED_BYPASS_OVERRIDE"] = "1";
+            if (album.BypassOverride || (album.State == AlbumState.Bypassed && album.CompilationTrackArtworkPending))
+                start.EnvironmentVariables["SPLINED_BYPASS_OVERRIDE"] = "1";
             Process process = new Process();
             process.StartInfo = start;
             process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args) { if (args.Data != null) HandleCoreLine(args.Data, false); };
@@ -4385,6 +4505,8 @@ namespace Splined.WindowsGui
                 uiState.LayoutPreset = preset;
                 uiState.LayoutStacked = stacked;
                 uiState.MainSplitterDistance = mainSplit.SplitterDistance;
+                mediaSelectorExpandedDistance = mainSplit.SplitterDistance;
+                if (!uiState.ShowMediaSelector) SetMediaSelectorVisible(false, false);
             }
             finally { applyingLayoutPreset = false; }
         }
@@ -4551,7 +4673,7 @@ namespace Splined.WindowsGui
                 uiState.MainY = bounds.Y;
             }
             uiState.MainMaximized = WindowState == FormWindowState.Maximized;
-            if (mainSplit != null && mainSplit.SplitterDistance >= mainSplit.Panel1MinSize)
+            if (mainSplit != null && uiState.ShowMediaSelector && mainSplit.SplitterDistance >= mainSplit.Panel1MinSize)
                 uiState.MainSplitterDistance = mainSplit.SplitterDistance;
             if (rightSplit != null)
             {

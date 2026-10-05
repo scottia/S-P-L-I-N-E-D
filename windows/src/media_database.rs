@@ -55,6 +55,7 @@ pub struct MediaAlbumSnapshot {
     pub representative_file: String,
     pub status: String,
     pub compilation: bool,
+    pub compilation_track_art_eligible: bool,
     pub track_count: i64,
     pub release_year: String,
     pub has_local_artwork: bool,
@@ -1874,7 +1875,7 @@ fn load_snapshot(
     mapper: &PathMapper,
 ) -> Result<MediaSnapshot, String> {
     let mut statement = connection.prepare(
-        "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source \
+        "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source, COALESCE(albums.musicbrainz_albumid,'') \
          FROM albums JOIN artists ON artists.artist_key=albums.artist_key ORDER BY albums.path COLLATE NOCASE",
     ).map_err(db_error("prepare Select Media snapshot"))?;
     let albums = statement
@@ -1889,6 +1890,8 @@ fn load_snapshot(
             let processed_at: Option<String> = row.get(18)?;
             let selected_source: Option<String> = row.get(20)?;
             let stored_status: String = row.get(5)?;
+            let compilation = row.get::<_, i64>(6)? != 0;
+            let album_mbid: String = row.get(21)?;
             let status = if stored_status.eq_ignore_ascii_case("processed")
                 && !has_processed_evidence(processed_at.as_deref(), selected_source.as_deref())
             {
@@ -1904,7 +1907,8 @@ fn load_snapshot(
                 path: local_path,
                 representative_file: mapper.to_local(&representative).unwrap_or_default(),
                 status,
-                compilation: row.get::<_, i64>(6)? != 0,
+                compilation,
+                compilation_track_art_eligible: compilation && album_mbid.trim().is_empty(),
                 track_count: row.get(7)?,
                 release_year: row.get(8)?,
                 has_local_artwork: row.get::<_, i64>(9)? != 0,
