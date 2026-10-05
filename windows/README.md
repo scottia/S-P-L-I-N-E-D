@@ -99,15 +99,17 @@ The Artwork Filter opens in the Scan Activity workspace beside Selected Album
 Artwork rather than over candidate thumbnails. Its four framed groups keep compact
 top-aligned rows instead of stretching their contents across the workspace:
 Candidate Findings, Source Selection, and Resolution sit above one full-width
-Upscale / Advanced group. Each group uses the same framed treatment, headings,
+Upscale / Advanced group. Each group and each Advanced control uses the same
+multicolor spectrum-framed treatment, headings,
 padding, and row spacing as Select Media. Zero-count Image Type, Policy, Wanted,
 and Unwanted choices stay visible but disabled, so categories do not disappear
 between Albums. Upscale Preview and Upscale Show Full are compact fixed-width
 actions beside the 1:1 source-to-edit resolution. Show Full opens the current
 upscaled and edited image at actual pixels in a scrollable resizable window.
-Its eight profile controls use one contained row of equal-width framed vertical
-adjustments; each frame keeps the full name, symbol, live value, slider, and one
-square reset button aligned together. Opening the filter temporarily expands
+Its eight profile controls use one contained row of equal-width spectrum-framed
+vertical adjustments; each frame centers the name and symbol, live value above
+the slider, and one square reset button below it. The filter and Advanced region
+fill their workspace without nested scrollbars. Opening the filter temporarily expands
 the Activity pane, then restores the previous divider when it closes. Existing local `cover.*` candidates remain
 previewable and editable at any resolution without resetting Album status.
 Selecting an Album exposes its local cover in Artwork Filter immediately,
@@ -118,6 +120,11 @@ Selecting one candidate immediately focuses that exact image in Selected Album
 Artwork for editing; multiple selections retain Compare behavior. Alternate
 MusicBrainz-release candidates keep Use Selected enabled while the replacement
 decision is handed back to the scanner, so the chosen artwork can be saved.
+Candidate hover changes only the Artwork preview and is exit-debounced to avoid
+flickering or rebuilding the filter controls. Completing Use Selected or Save
+Existing closes temporary MusicBrainz/filter workspaces and restores the final
+Album report. The Media Library Selection title uses a high-contrast back-and-forth arrow
+expand/hide control that remains visible in the dark theme.
 
 Candidate image bytes are cached in RAM after their first read, with a fixed
 256 MB FIFO limit, so thumbnails and repeated previews do not reread the same

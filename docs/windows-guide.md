@@ -111,6 +111,10 @@ is used. Folder-tree selection uses the same round red/green states.
 
 ### Media Library Selection
 
+The high-contrast back-and-forth arrow control at the upper right of the title switches the
+Media Library Selection surface between expanded and hidden states. Its active
+button styling remains visible in the dark theme.
+
 Select Media contains:
 
 - Artist and Album text filters;
@@ -244,7 +248,8 @@ The spectrum-framed **Artwork Filter** activation button remains above the
 candidate cards. Opening it uses the same workspace-swap pattern as
 MusicBrainz Matches: the four-column filter replaces **Scan Activity and
 Decisions** beside **Selected Album Artwork**, so it never drops over or moves
-the source thumbnails. The four compact columns use the same framed-group
+the source thumbnails. The four compact columns and every Advanced control
+use the app's multicolor spectrum frame. They use the same framed-group
 structure, headings, padding, and row spacing as **Select Media**, rather than
 stretching loose controls across the window. Filtering does not rerank
 providers or change the underlying result set. The expanded surface is built
@@ -293,7 +298,9 @@ surface. **Show all results** clears explicit exclusions.
 - **Skip Album** leaves the current Album unchanged and applies the selected
   bypass behavior.
 - **Enable Hover** toggles automatic candidate preview and persists as
-  interface state.
+  interface state. Candidate-to-candidate hover changes only the Artwork
+  preview; a short exit delay prevents card boundaries from repeatedly
+  rebuilding or flickering the filter and Advanced controls.
 - Provider and candidate URLs open the corresponding artwork or authority page
   for inspection before approval.
 
@@ -306,14 +313,15 @@ Advanced group.
 
 Opening Artwork Filter temporarily gives the Scan Activity pane enough height
 for the editing workspace and restores the user's previous Activity/Candidate
-divider when the filter closes. **Upscale Preview** and **Upscale Show Full**
+divider when the filter closes. Its filter and Advanced regions fill that
+workspace without nested scrollbars. **Upscale Preview** and **Upscale Show Full**
 are fixed-width actions placed side by side before the active 1:1 source-to-edit
 resolution, not full-column bars. Show Full opens the current upscaled and
 edited result at its actual pixels in a scrollable resizable window; it never
 substitutes the untouched source image or scales the preview to fit. The eight
 advanced values use one contained row of equal-width framed vertical controls.
-Each frame keeps its full name, matching symbol, current value, adjustment, and
-single square reset control aligned as one unit. They are
+Each spectrum frame centers its name and matching symbol, current value above
+the adjustment, and single square reset control below it as one vertical unit. They are
 Picture (color intensity), Sharpen, Softness, Contrast,
 Exposure, Brightness, Gamma Correction, and Color Correction (Cool through
 Middle to Warm). Numeric defaults are `0%`; Color Correction defaults to
@@ -352,7 +360,9 @@ processing state. The preview renders the configured result in memory in the
 shared Artwork pane without writing the Album or changing candidate ranking.
 After MusicBrainz Matches returns a new release's candidates, **Use Selected**
 remains available during the decision-event handoff so an alternate-release
-selection can be submitted and saved.
+selection can be submitted and saved. After **Use Selected** or **Save Existing**
+finishes, temporary MusicBrainz and Artwork Filter workspaces close and the
+final Album run report is brought back to the front.
 The preview uses the same final-art pipeline as selection and preserves aspect
 ratio and the color profile where the output format permits it. **Apply default
 upscale** keeps the analyze-first profile: no sharpening, bounded adaptive

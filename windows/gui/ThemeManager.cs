@@ -792,7 +792,7 @@ namespace Splined.WindowsGui
             };
         }
 
-        private static void DrawSpectrumBorder(Graphics graphics, GraphicsPath path, Rectangle bounds, float opacity)
+        internal static void DrawSpectrumBorder(Graphics graphics, GraphicsPath path, Rectangle bounds, float opacity)
         {
             Rectangle gradientBounds = bounds.Width > 1 && bounds.Height > 1 ? bounds : new Rectangle(0, 0, 2, 2);
             using (LinearGradientBrush spectrum = new LinearGradientBrush(gradientBounds, Color.Cyan, Color.Magenta, LinearGradientMode.Horizontal))
@@ -1240,9 +1240,15 @@ namespace Splined.WindowsGui
     {
         private bool hot;
         private bool pressed;
+        private bool directionGlyph;
 
         internal string Theme { get; set; }
         internal ThemePalette Palette { get; set; }
+        internal bool DirectionGlyph
+        {
+            get { return directionGlyph; }
+            set { directionGlyph = value; Invalidate(); }
+        }
 
         public FluentButton()
         {
@@ -1264,6 +1270,33 @@ namespace Splined.WindowsGui
         protected override void OnPaint(PaintEventArgs pevent)
         {
             ThemeManager.DrawButton(this, pevent.Graphics, Palette, hot, pressed);
+            if (!directionGlyph) return;
+            ThemePalette active = Palette ?? ThemeManager.CurrentPalette;
+            float scale = Math.Max(1f, DeviceDpi / 96f);
+            float centerX = ClientSize.Width / 2f;
+            float centerY = ClientSize.Height / 2f;
+            float halfSpan = Math.Min(ClientSize.Width * 0.24f, 13f * scale);
+            float offset = 4f * scale;
+            float head = 4f * scale;
+            Color color = Enabled ? ForeColor : active.TextDisabled;
+            GraphicsState state = pevent.Graphics.Save();
+            pevent.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (Pen pen = new Pen(color, Math.Max(2f, 1.75f * scale)))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                float left = centerX - halfSpan;
+                float right = centerX + halfSpan;
+                float upper = centerY - offset;
+                float lower = centerY + offset;
+                pevent.Graphics.DrawLine(pen, left, upper, right, upper);
+                pevent.Graphics.DrawLine(pen, right, upper, right - head, upper - head);
+                pevent.Graphics.DrawLine(pen, right, upper, right - head, upper + head);
+                pevent.Graphics.DrawLine(pen, right, lower, left, lower);
+                pevent.Graphics.DrawLine(pen, left, lower, left + head, lower - head);
+                pevent.Graphics.DrawLine(pen, left, lower, left + head, lower + head);
+            }
+            pevent.Graphics.Restore(state);
         }
 
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hot = true; Invalidate(); }
@@ -2060,6 +2093,7 @@ namespace Splined.WindowsGui
     internal sealed class FluentGroupBox : GroupBox
     {
         public ThemePalette Palette { get; set; }
+        public bool SpectrumBorder { get; set; }
         public FluentGroupBox()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -2075,7 +2109,10 @@ namespace Splined.WindowsGui
             int lineTop = Math.Max(7, textSize.Height / 2);
             Rectangle outline = new Rectangle(0, lineTop, Math.Max(1, Width - 1), Math.Max(1, Height - lineTop - 1));
             using (GraphicsPath path = ThemeManager.RoundedPath(outline, ThemeManager.CardRadius))
-            using (Pen pen = new Pen(palette.BorderSubtle)) e.Graphics.DrawPath(pen, path);
+            {
+                if (SpectrumBorder) ThemeManager.DrawSpectrumBorder(e.Graphics, path, outline, palette.Dark ? 0.82f : 0.70f);
+                else using (Pen pen = new Pen(palette.BorderSubtle)) e.Graphics.DrawPath(pen, path);
+            }
             if (!String.IsNullOrEmpty(Text))
             {
                 Rectangle titleBack = new Rectangle(titleLeft - 4, 0, textSize.Width + 8, textSize.Height + 1);
