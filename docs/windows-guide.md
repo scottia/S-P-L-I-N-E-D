@@ -135,6 +135,10 @@ an operator-reviewed queue. **Auto Scan `[SELECTED]`** processes only explicitly
 selected Albums, while **Auto Scan `[ALL]`** processes every Unprocessed Album
 plus any Album selected explicitly. Read versus Live Write remains an
 independent, required choice; changing scan scope never changes mutation mode.
+At application startup the two Launch controls initialize from Config v5
+`mode`; an older saved interface preference cannot silently replace a configured
+LIVE WRITE session with READ. A deliberate Launch-mode change still applies to
+the current session and is recorded as `windows.batch.start` before processing.
 
 The unattended path accepts only a candidate classified `Ideal`, accepted by
 its active source policy, and eligible under strict validation when enabled.
@@ -177,7 +181,8 @@ status colors](media-filter-status-colors.md) for the full state model.
 A successful LIVE WRITE completion updates the resident Album and Artist state
 immediately, then reloads the authoritative SQLite snapshot. This prevents a
 completed Album from remaining White while the final database reconciliation
-is in progress. READ results remain non-mutating and never become Processed.
+is in progress. READ results remain non-mutating and never become Processed;
+their report says **Albums reviewed**, not **Albums processed**.
 
 ## Read and Live Write
 
@@ -248,13 +253,17 @@ from the current Album only:
 - **Wanted** and **Unwanted** classify the original downloaded short side,
   before crop or enlargement.
 
-Every option has a live candidate count. Changing a source, type, policy, or
+The three equal result columns are separated by vertical rules. Full option
+names occupy an auto-sized name column and their counts align immediately to
+the right; labels are not ellipsized. The expanded surface and its clipped
+contents share one rounded spectrum frame. Every option has a live candidate count. Changing a source, type, policy, or
 range immediately updates the visible cards and recalculates the other
 dimensions. Choices with no possible result are automatically unchecked and
 grayed; they restore automatically when another selection makes them possible
 again. Counts sit directly beside their option names so the expanded filter
-uses only the width its current results require. **Show all results** clears
-explicit exclusions.
+uses only the width its current results require. The dropdown disables and
+collapses whenever candidate results are cleared, preventing an empty expanded
+filter after a batch completes. **Show all results** clears explicit exclusions.
 
 - **Use Selected** approves one active candidate.
 - **Compare** compares multiple active candidates.
@@ -264,6 +273,11 @@ explicit exclusions.
   interface state.
 - Provider and candidate URLs open the corresponding artwork or authority page
   for inspection before approval.
+
+LAUNCH and every candidate action occupy the same header row immediately to the
+right of **Artwork Filter**. There is no separate bottom action bar. Conditional
+actions such as Keep Local, Refine Fallback, MusicBrainz Matches, Back to MB
+Matches, and Upscale Preview appear in that row only when applicable.
 
 Candidate order remains deterministic. Local evidence is displayed first,
 the recommended result follows, and remaining results are ordered by descending

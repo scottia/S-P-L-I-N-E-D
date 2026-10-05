@@ -656,7 +656,7 @@ namespace Splined.WindowsGui
                     Control candidateActionRow = form.Controls.Find("candidateActionRow", true).Single();
                     Assert(Object.ReferenceEquals(launch.Parent, candidateActionRow)
                         && candidateActionRow.Controls.GetChildIndex(launch) == 0,
-                        "The main LAUNCH control is not the first button in the Artwork Candidates bottom action row.");
+                        "The main LAUNCH control is not the first button beside the Artwork Filter.");
                     Assert(form.MainMenuStrip.Items.OfType<ToolStripMenuItem>()
                             .Any(item => item.Text == "Help" && item.Available),
                         "Help/About was pushed into the compact header overflow instead of remaining visibly reachable.");
@@ -732,11 +732,8 @@ namespace Splined.WindowsGui
                     TableLayoutPanel candidateLayout = (TableLayoutPanel)typeof(MainForm).GetField("candidateLayout", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     MethodInfo invokeArtworkFilter = typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
-                    Assert(candidateLayout.RowStyles[1].Height > 0 && artworkFilter.Text.Contains("▾"),
-                        "Artwork Filter did not expand inline beneath its dropdown control.");
-                    invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
-                    Assert(candidateLayout.RowStyles[1].Height == 0 && artworkFilter.Text.Contains("▸"),
-                        "Artwork Filter did not collapse back into its compact dropdown control.");
+                    Assert(candidateLayout.RowStyles[1].Height == 0 && artworkFilter.Text.Contains("▸") && !artworkFilter.Enabled,
+                        "Artwork Filter opened a blank expanded surface before candidate results existed.");
                     FluentCardTableLayoutPanel libraryCard = form.Controls.Find("mediaLibrarySelectionCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel activityPanel = form.Controls.Find("scanActivityCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel candidatesPanel = form.Controls.Find("artworkCandidatesCard", true).Single() as FluentCardTableLayoutPanel;
@@ -832,6 +829,15 @@ namespace Splined.WindowsGui
                     using (Bitmap fixture = new Bitmap(12, 12)) fixture.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
                     upscalable["cache_path"] = upscalePreviewPath;
                     showCandidates.Invoke(form, new object[] { new object[] { belowMinimum, upscalable } });
+                    Assert(artworkFilter.Enabled, "Artwork Filter did not become available with candidate results.");
+                    invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
+                    Assert(candidateLayout.RowStyles[1].Height > 0 && artworkFilter.Text.Contains("▾"),
+                        "Artwork Filter did not expand inline after candidate results were available.");
+                    TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
+                    Assert(filterColumns.ColumnCount == 5
+                        && filterColumns.ColumnStyles.Count == 5
+                        && filterColumns.ColumnStyles.Cast<ColumnStyle>().Count(style => style.SizeType == SizeType.Absolute && style.Width == 1) == 2,
+                        "Artwork Filter is not rendered as three aligned columns with two vertical dividers.");
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
                         "BelowMinimum and policy-qualified Minimum-to-Ideal candidates did not receive red and magenta backgrounds respectively.");
@@ -843,11 +849,16 @@ namespace Splined.WindowsGui
                     Assert(amazonFilter.Checked && upscaleFilter.Checked && rejectedFilter.Checked
                         && lowerFilter.Checked && belowFilter.Checked,
                         "Inline Candidate FILTER did not expose the result-backed source, type, and unwanted-range choices.");
-                    Assert(amazonFilter.Parent is FlowLayoutPanel
-                        && amazonFilter.Parent.Controls.IndexOf(amazonFilter) == 0
-                        && amazonFilter.Parent.Controls.Count == 2
-                        && amazonFilter.Parent.Controls[1] is Label,
-                        "Artwork Filter counts are not compactly positioned beside their names.");
+                    TableLayoutPanel sourceFilterColumn = amazonFilter.Parent as TableLayoutPanel;
+                    TableLayoutPanelCellPosition amazonPosition = sourceFilterColumn == null
+                        ? new TableLayoutPanelCellPosition(-1, -1)
+                        : sourceFilterColumn.GetPositionFromControl(amazonFilter);
+                    Control amazonCount = sourceFilterColumn == null ? null
+                        : sourceFilterColumn.GetControlFromPosition(1, amazonPosition.Row);
+                    Assert(sourceFilterColumn != null && sourceFilterColumn.ColumnCount == 3
+                        && amazonPosition.Column == 0 && amazonCount is Label
+                        && amazonFilter.Text == "Amazon" && ((Label)amazonCount).AutoSize,
+                        "Artwork Filter names and adjacent counts are not aligned without truncation.");
                     amazonFilter.Checked = false;
                     Assert(candidateCards.Controls.Count == 0 && !upscaleFilter.Enabled && !upscaleFilter.Checked
                         && !rejectedFilter.Enabled && !rejectedFilter.Checked,
@@ -1023,6 +1034,7 @@ namespace Splined.WindowsGui
                     } });
                     showRunReport.Invoke(form, new object[] { "read", 1 });
                     Assert(activity.Text.StartsWith("S:P:L:I:N:E:D ALBUM RUN REPORT", StringComparison.Ordinal)
+                        && activity.Text.Contains("Albums reviewed: 1/1")
                         && activity.Text.Contains("[1/1] Report Artist - Report Album")
                         && activity.Text.Contains("2 evaluated") && activity.Text.Contains("2 policy-hidden")
                         && activity.Text.Contains("Outcome: ReadOnly") && activity.Text.Contains("Result: cover.jpg")
@@ -1033,10 +1045,11 @@ namespace Splined.WindowsGui
 
                     FlowLayoutPanel candidateActions = form.Controls.Find("candidateActionRow", true).OfType<FlowLayoutPanel>().Single();
                     candidateActions.PerformLayout();
-                    Assert(candidateActions.Padding.Bottom >= 7
+                    Assert(candidateActions.Parent is TableLayoutPanel
+                        && ((TableLayoutPanel)candidateActions.Parent).GetPositionFromControl(candidateActions).Row == 0
                         && candidateActions.Controls.OfType<Button>().Where(button => button.Visible)
                             .All(button => button.Bottom + button.Margin.Bottom <= candidateActions.ClientSize.Height),
-                        "A bottom candidate action button is still clipped by its row.");
+                        "Candidate actions were not moved into the Artwork Filter header or a header button is clipped.");
 
                     SplitContainer mainPanels = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     SplitContainer rightPanels = (SplitContainer)typeof(MainForm).GetField("rightSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
@@ -1057,7 +1070,7 @@ namespace Splined.WindowsGui
                         "Stacked layout did not preserve independent scrolling for all three work areas.");
                 }
 
-                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, relocated bottom-row LAUNCH, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, Config v5 and credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
+                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, Config v5 and credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
                 return 0;
             }
             catch (Exception error)
@@ -1227,13 +1240,15 @@ namespace Splined.WindowsGui
             CheckBox selectFiltered = form.Controls.Find("selectModeFiltered", true).OfType<CheckBox>().Single();
             CheckBox autoAll = form.Controls.Find("autoScanAll", true).OfType<CheckBox>().Single();
             CheckBox autoSelected = form.Controls.Find("autoScanSelected", true).OfType<CheckBox>().Single();
+            ConfigState formState = (ConfigState)typeof(MainForm).GetField("state", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
             Assert(scanRead.Text == "Launch [READ] Source Results" && scanWrite.Text == "Launch [LIVE WRITE] Choice Results"
+                && (formState.Mode.Equals("write", StringComparison.OrdinalIgnoreCase) ? scanWrite.Checked : scanRead.Checked)
                 && ((GroupBox)scanRead.Parent.Parent).Text == "Launch Mode"
                 && ((GroupBox)selectFiltered.Parent.Parent).Text.StartsWith("Select Mode [", StringComparison.Ordinal)
                 && ((GroupBox)autoAll.Parent.Parent).Text == "Album Scanning"
                 && autoAll.Text == "Auto Scan [All]" && autoSelected.Text == "Auto Scan [Selected]"
                 && selectAll.Text == "Select [ALL]" && selectNone.Text == "Select [NONE]" && selectFiltered.Text == "Select [FILTERED]",
-                "Select Mode or Launch Mode labels do not match the Windows v4 design.");
+                "Select/Launch labels are incorrect or Config v5 did not initialize the active launch mode.");
             foreach (GroupBox modeGroup in new[] { (GroupBox)selectFiltered.Parent.Parent, (GroupBox)autoAll.Parent.Parent, (GroupBox)scanRead.Parent.Parent })
             {
                 modeGroup.PerformLayout();
@@ -1246,8 +1261,9 @@ namespace Splined.WindowsGui
             foreach (CheckBox option in new[] { selectAll, selectNone, selectFiltered, autoAll, autoSelected, scanRead, scanWrite })
                 Assert(option.Width >= TextRenderer.MeasureText(option.Text, option.Font).Width + 28,
                     option.Text + " does not have enough themed checkbox width to render without ellipsis.");
-            Assert(scanRead.Checked && !scanWrite.Checked && !selectFiltered.Checked,
-                "Persisted Filtered Scan [READ] choice was not restored without selecting Auto Mode.");
+            Assert((formState.Mode.Equals("write", StringComparison.OrdinalIgnoreCase) ? scanWrite.Checked && !scanRead.Checked : scanRead.Checked && !scanWrite.Checked)
+                && !selectFiltered.Checked,
+                "Config v5 launch mode was not restored without selecting Auto Mode.");
             MethodInfo getLaunchAlbums = typeof(MainForm).GetMethod("GetLaunchAlbums", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert(!autoAll.Checked && !autoSelected.Checked,
                 "Auto Scan must remain opt-in so ordinary Select modes always use operator review.");
@@ -1264,6 +1280,7 @@ namespace Splined.WindowsGui
                 "Clearing Auto Scan did not restore the ordinary reviewed selection queue.");
             autoSelected.Checked = true;
             scanRead.Checked = false;
+            scanWrite.Checked = false;
             Assert(!primaryLaunch.Enabled, "The single primary LAUNCH must be disabled until a Launch Mode is chosen.");
             scanRead.Checked = true;
             Assert(scanRead.Checked && !scanWrite.Checked && !scanWrite.Enabled,

@@ -172,7 +172,7 @@ namespace Splined.WindowsGui
         private Button refineFallback;
         private Button retryMusicBrainz;
         private Button backToMusicBrainz;
-        private FlowLayoutPanel fallbackActions;
+        private FlowLayoutPanel candidateActionRow;
         private Button enableHover;
         private Button upscalePreview;
         private Label candidateContext;
@@ -506,7 +506,17 @@ namespace Splined.WindowsGui
 
         private Control BuildCandidateFilterHeader()
         {
-            FlowLayoutPanel row = new FlowLayoutPanel
+            TableLayoutPanel row = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = new Padding(0),
+                Padding = new Padding(0)
+            };
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 304));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            FlowLayoutPanel filterHeading = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
@@ -526,14 +536,81 @@ namespace Splined.WindowsGui
             };
             candidateFilterButton.Click += delegate
             {
+                if (candidates.Count == 0)
+                {
+                    SetCandidateFilterExpanded(false, false);
+                    return;
+                }
                 SetCandidateFilterExpanded(!uiState.CandidateFilterExpanded, true);
             };
-            row.Controls.Add(candidateFilterButton);
-            row.Controls.Add(new InfoButton("Filter only the candidates shown for the current album. Source order follows Artwork Source Priority. Filtering never changes provider ranking or the underlying result set.")
+            filterHeading.Controls.Add(candidateFilterButton);
+            filterHeading.Controls.Add(new InfoButton("Filter only the candidates shown for the current album. Source order follows Artwork Source Priority. Filtering never changes provider ranking or the underlying result set.")
             {
                 Margin = new Padding(ThemeManager.Space4, 1, 0, 0)
             });
+            row.Controls.Add(filterHeading, 0, 0);
+            candidateActionRow = BuildCandidateActionRow();
+            row.Controls.Add(candidateActionRow, 1, 0);
             return row;
+        }
+
+        private FlowLayoutPanel BuildCandidateActionRow()
+        {
+            FlowLayoutPanel actions = new FlowLayoutPanel
+            {
+                Name = "candidateActionRow",
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoScroll = true,
+                Padding = new Padding(ThemeManager.Space4, 1, 0, 1),
+                Margin = new Padding(0)
+            };
+            launch = new FluentButton { Text = "LAUNCH", Width = 145, Height = 34, Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold), Enabled = false, Tag = "launch" };
+            launch.Click += LaunchClicked;
+            launch.EnabledChanged += delegate { ThemeManager.StyleButton(launch, uiState.Theme); };
+            useSelected = new FluentButton { Text = "Use Selected", Width = 135, Height = 34, Enabled = false, Tag = "success" };
+            useSelected.EnabledChanged += delegate { ThemeManager.StyleButton(useSelected, uiState.Theme); };
+            keepLocal = new FluentButton { Text = "Keep Local", Width = 120, Height = 34, Enabled = false, Visible = false, Tag = "success" };
+            keepLocal.Click += KeepLocalClicked;
+            keepLocal.EnabledChanged += delegate { ThemeManager.StyleButton(keepLocal, uiState.Theme); };
+            compare = new FluentButton { Text = "Compare", Width = 115, Height = 34, Enabled = false };
+            skip = new FluentButton { Text = "Skip Album", Width = 120, Height = 34, Enabled = false };
+            useSelected.Click += UseSelectedClicked;
+            compare.Click += CompareClicked;
+            skip.Click += SkipClicked;
+            refineFallback = new FluentButton { Text = "Refine Fallback Search...", Width = 190, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
+            refineFallback.Click += RefineFallbackClicked;
+            refineFallback.EnabledChanged += delegate { ThemeManager.StyleButton(refineFallback, uiState.Theme); };
+            retryMusicBrainz = new FluentButton { Text = "MusicBrainz Matches...", Width = 185, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
+            retryMusicBrainz.Click += RetryMusicBrainzClicked;
+            retryMusicBrainz.EnabledChanged += delegate { ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme); };
+            backToMusicBrainz = new FluentButton { Text = "Back to MB Matches", Width = 155, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
+            backToMusicBrainz.Click += BackToMusicBrainzClicked;
+            enableHover = new FluentButton { Name = "enableHoverButton", Text = "Enable Hover", Width = 125, Height = 34, Enabled = false };
+            enableHover.Click += delegate
+            {
+                uiState.HoverEnabled = !uiState.HoverEnabled;
+                if (!uiState.HoverEnabled) CloseHoverPreview();
+                SaveUiState();
+                UpdateHoverButton();
+            };
+            upscalePreview = new FluentButton { Name = "upscalePreviewButton", Text = "Upscale Preview", Width = 135, Height = 34, Enabled = false, Visible = false };
+            upscalePreview.Click += UpscalePreviewClicked;
+            upscalePreview.EnabledChanged += delegate { ThemeManager.StyleButton(upscalePreview, uiState.Theme); };
+
+            actions.Controls.Add(launch);
+            actions.Controls.Add(useSelected);
+            actions.Controls.Add(keepLocal);
+            actions.Controls.Add(compare);
+            actions.Controls.Add(skip);
+            actions.Controls.Add(refineFallback);
+            actions.Controls.Add(retryMusicBrainz);
+            actions.Controls.Add(backToMusicBrainz);
+            actions.Controls.Add(enableHover);
+            actions.Controls.Add(upscalePreview);
+            actions.Controls.Add(new InfoButton("The recommended candidate is selected first. Activate one candidate to use it, activate several to compare them, or skip the Album. Processing continues after you confirm a choice."));
+            return actions;
         }
 
         private Control BuildCandidateFilterPanel()
@@ -542,15 +619,29 @@ namespace Splined.WindowsGui
             {
                 Name = "candidateFilterPanel",
                 Dock = DockStyle.Fill,
-                Padding = new Padding(1),
+                Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0, 0, 0, ThemeManager.Space4),
                 VisualRole = CardVisualRole.SpectrumNested
             };
+            frame.Resize += delegate { ApplyRoundedCandidateFilterRegion(frame); };
             return frame;
+        }
+
+        private static void ApplyRoundedCandidateFilterRegion(Control control)
+        {
+            if (control == null || control.Width < 2 || control.Height < 2) return;
+            using (System.Drawing.Drawing2D.GraphicsPath path = ThemeManager.RoundedPath(
+                new RectangleF(0, 0, control.Width - 1, control.Height - 1), ThemeManager.CardRadius))
+            {
+                Region previous = control.Region;
+                control.Region = new Region(path);
+                if (previous != null) previous.Dispose();
+            }
         }
 
         private void SetCandidateFilterExpanded(bool expanded, bool save)
         {
+            if (expanded && candidates.Count == 0) expanded = false;
             uiState.CandidateFilterExpanded = expanded;
             if (candidateFilterPanel != null) candidateFilterPanel.Visible = expanded;
             if (candidateLayout != null && candidateLayout.RowStyles.Count > 1)
@@ -785,7 +876,11 @@ namespace Splined.WindowsGui
             {
                 artistFilter.Text = uiState.MediaArtistFilter ?? "";
                 albumFilter.Text = uiState.MediaAlbumFilter ?? "";
-                string launchMode = String.IsNullOrWhiteSpace(uiState.FilteredScanMode) ? state.Mode : uiState.FilteredScanMode;
+                // Config v5 owns the launch mode at application start. A stale
+                // interface-state choice must not silently turn a saved WRITE
+                // configuration into a READ run on the next launch.
+                string launchMode = state.Mode;
+                uiState.FilteredScanMode = launchMode;
                 filteredScanRead.Checked = String.Equals(launchMode, "read", StringComparison.OrdinalIgnoreCase);
                 filteredScanWrite.Checked = String.Equals(launchMode, "write", StringComparison.OrdinalIgnoreCase);
                 filteredScanRead.Enabled = !filteredScanWrite.Checked;
@@ -1076,14 +1171,12 @@ namespace Splined.WindowsGui
             upper.Controls.Add(activityWorkspace, 0, 1);
             ApplyArtworkPanelVisibility();
 
-            TableLayoutPanel lower = new FluentCardTableLayoutPanel { Name = "artworkCandidatesCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(CandidatePanelMinimumWidth, CandidatePanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 6, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
+            TableLayoutPanel lower = new FluentCardTableLayoutPanel { Name = "artworkCandidatesCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(CandidatePanelMinimumWidth, CandidatePanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 4, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
             candidateLayout = lower;
-            lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+            lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
             lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             lower.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            lower.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
             rightSplit.Panel2.Controls.Add(lower);
             lower.Controls.Add(BuildCandidateFilterHeader(), 0, 0);
             candidateFilterPanel = BuildCandidateFilterPanel();
@@ -1093,50 +1186,6 @@ namespace Splined.WindowsGui
             candidateCards = new WatermarkFlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(ThemeManager.Space8) };
             candidateCards.Resize += delegate { ResizeCandidateCards(); };
             lower.Controls.Add(candidateCards, 0, 3);
-            fallbackActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Visible = false, Padding = new Padding(0, 3, 0, 3) };
-            refineFallback = new FluentButton { Text = "Refine Fallback Search...", Width = 190, Height = 32, Enabled = false, Tag = "primary" };
-            refineFallback.Click += RefineFallbackClicked;
-            refineFallback.EnabledChanged += delegate { ThemeManager.StyleButton(refineFallback, uiState.Theme); };
-            fallbackActions.Controls.Add(refineFallback);
-            retryMusicBrainz = new FluentButton { Text = "MusicBrainz Matches...", Width = 185, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
-            retryMusicBrainz.Click += RetryMusicBrainzClicked;
-            retryMusicBrainz.EnabledChanged += delegate { ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme); };
-            fallbackActions.Controls.Add(new InfoButton("Edit the tagged Artist and Album search values, then rerun the current album through SPLINED fallback. This does not change the music files or bypass history."));
-            lower.Controls.Add(fallbackActions, 0, 4);
-            FlowLayoutPanel actions = new FlowLayoutPanel { Name = "candidateActionRow", Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 5, 0, 7), Margin = new Padding(0) };
-            launch = new FluentButton { Text = "LAUNCH", Width = 145, Height = 34, Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold), Enabled = false, Tag = "launch" };
-            launch.Click += LaunchClicked;
-            launch.EnabledChanged += delegate { ThemeManager.StyleButton(launch, uiState.Theme); };
-            useSelected = new FluentButton { Text = "Use Selected", Width = 135, Height = 34, Enabled = false, Tag = "success" };
-            useSelected.EnabledChanged += delegate { ThemeManager.StyleButton(useSelected, uiState.Theme); };
-            keepLocal = new FluentButton { Text = "Keep Local", Width = 120, Height = 34, Enabled = false, Visible = false, Tag = "success" };
-            keepLocal.Click += KeepLocalClicked;
-            keepLocal.EnabledChanged += delegate { ThemeManager.StyleButton(keepLocal, uiState.Theme); };
-            compare = new FluentButton { Text = "Compare", Width = 115, Height = 34, Enabled = false };
-            skip = new FluentButton { Text = "Skip Album", Width = 120, Height = 34, Enabled = false };
-            useSelected.Click += UseSelectedClicked;
-            compare.Click += CompareClicked;
-            skip.Click += SkipClicked;
-            actions.Controls.Add(launch); actions.Controls.Add(useSelected); actions.Controls.Add(keepLocal); actions.Controls.Add(compare); actions.Controls.Add(skip);
-            actions.Controls.Add(retryMusicBrainz);
-            backToMusicBrainz = new FluentButton { Text = "Back to MB Matches", Width = 155, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
-            backToMusicBrainz.Click += BackToMusicBrainzClicked;
-            actions.Controls.Add(backToMusicBrainz);
-            enableHover = new FluentButton { Name = "enableHoverButton", Text = "Enable Hover", Width = 125, Height = 34, Enabled = false };
-            enableHover.Click += delegate
-            {
-                uiState.HoverEnabled = !uiState.HoverEnabled;
-                if (!uiState.HoverEnabled) CloseHoverPreview();
-                SaveUiState();
-                UpdateHoverButton();
-            };
-            actions.Controls.Add(enableHover);
-            upscalePreview = new FluentButton { Name = "upscalePreviewButton", Text = "Upscale Preview", Width = 135, Height = 34, Enabled = false, Visible = false };
-            upscalePreview.Click += UpscalePreviewClicked;
-            upscalePreview.EnabledChanged += delegate { ThemeManager.StyleButton(upscalePreview, uiState.Theme); };
-            actions.Controls.Add(upscalePreview);
-            actions.Controls.Add(new InfoButton("The recommended candidate is selected first. Activate one candidate to use it, activate several to compare them, or skip the Album. Processing continues after you confirm a choice."));
-            lower.Controls.Add(actions, 0, 5);
         }
 
         private Task ReloadLibraryAsync(bool preserveSelection)
@@ -1494,6 +1543,8 @@ namespace Splined.WindowsGui
                 : filteredScanWrite != null && filteredScanWrite.Checked
                     ? "write"
                     : state.Mode;
+            RuntimeLog.Write("info", "windows.batch.start mode=" + activeRunMode
+                + " configured_mode=" + state.Mode + " albums=" + selected.Count);
             try
             {
                 ConfigState runState = state.Clone();
@@ -1913,14 +1964,16 @@ namespace Splined.WindowsGui
             TableLayoutPanel columns = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 3,
+                ColumnCount = 5,
                 RowCount = 1,
-                Padding = new Padding(ThemeManager.Space8),
+                Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0)
             };
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
 
             TableLayoutPanel types = CandidateFilterColumn();
             candidateShowAll = new FluentCheckBox
@@ -1940,7 +1993,10 @@ namespace Splined.WindowsGui
                 excludedCandidateRanges.Clear();
                 ApplyCandidateFilters();
             };
-            types.Controls.Add(candidateShowAll);
+            int showAllRow = types.RowCount++;
+            types.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+            types.Controls.Add(candidateShowAll, 0, showAllRow);
+            types.SetColumnSpan(candidateShowAll, 3);
             AddCandidateFilterSection(types, "Image Type", "type", new[]
             {
                 new CandidateFilterOption("Recommended", candidates.Values.Any(candidate => candidate.Recommended), palette.Success),
@@ -1979,26 +2035,35 @@ namespace Splined.WindowsGui
                 CandidateRangeOption("BelowMinimum", palette.Error, "Below minimum")
             });
 
+            Panel firstDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
+            Panel secondDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
             columns.Controls.Add(types, 0, 0);
-            columns.Controls.Add(sources, 1, 0);
-            columns.Controls.Add(ranges, 2, 0);
+            columns.Controls.Add(firstDivider, 1, 0);
+            columns.Controls.Add(sources, 2, 0);
+            columns.Controls.Add(secondDivider, 3, 0);
+            columns.Controls.Add(ranges, 4, 0);
             candidateFilterPanel.Controls.Add(columns);
+            ApplyRoundedCandidateFilterRegion(candidateFilterPanel);
             ThemeManager.Apply(candidateFilterPanel, uiState.Theme);
             RefreshCandidateFilterDependencies();
         }
 
         private static TableLayoutPanel CandidateFilterColumn()
         {
-            return new TableLayoutPanel
+            TableLayoutPanel column = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 AutoScroll = true,
                 AutoSize = false,
-                ColumnCount = 1,
+                ColumnCount = 3,
                 RowCount = 0,
                 Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4),
                 Margin = new Padding(0)
             };
+            column.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            column.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            return column;
         }
 
         private CandidateFilterOption CandidateRangeOption(string key, Color color, string label = null)
@@ -2018,19 +2083,12 @@ namespace Splined.WindowsGui
                 Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
                 Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
             };
-            column.Controls.Add(heading);
+            int headingRow = column.RowCount++;
+            column.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+            column.Controls.Add(heading, 0, headingRow);
+            column.SetColumnSpan(heading, 3);
             foreach (CandidateFilterOption option in present)
             {
-                FlowLayoutPanel row = new FlowLayoutPanel
-                {
-                    Dock = DockStyle.Top,
-                    Height = 25,
-                    AutoSize = false,
-                    WrapContents = false,
-                    FlowDirection = FlowDirection.LeftToRight,
-                    Margin = new Padding(0),
-                    Padding = new Padding(0)
-                };
                 CheckBox check = new FluentCheckBox
                 {
                     Name = "candidateFilter_" + dimension + "_" + option.Key,
@@ -2038,7 +2096,7 @@ namespace Splined.WindowsGui
                     AutoSize = true,
                     ForeColor = option.Color,
                     Tag = option.Key,
-                    Margin = new Padding(0, 1, 2, 0)
+                    Margin = new Padding(0, 1, ThemeManager.Space4, 0)
                 };
                 Label count = new Label
                 {
@@ -2058,9 +2116,10 @@ namespace Splined.WindowsGui
                     else excluded.Add(option.Key);
                     ApplyCandidateFilters();
                 };
-                row.Controls.Add(check);
-                row.Controls.Add(count);
-                column.Controls.Add(row);
+                int optionRow = column.RowCount++;
+                column.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+                column.Controls.Add(check, 0, optionRow);
+                column.Controls.Add(count, 1, optionRow);
             }
         }
 
@@ -2154,6 +2213,7 @@ namespace Splined.WindowsGui
             if (candidateFilterButton == null) return;
             int active = CandidateActiveFilterCount();
             string stateText = active == 0 ? "All" : active + " active";
+            candidateFilterButton.Enabled = candidates.Count > 0;
             candidateFilterButton.Text = "Artwork Filter · " + stateText
                 + (uiState.CandidateFilterExpanded ? "  ▾" : "  ▸");
         }
@@ -2480,8 +2540,8 @@ namespace Splined.WindowsGui
 
         private void SetFallbackControls(bool visible)
         {
-            if (fallbackActions == null) return;
-            fallbackActions.Visible = visible;
+            if (refineFallback == null) return;
+            refineFallback.Visible = visible;
             refineFallback.Enabled = visible && awaitingDecision;
             retryMusicBrainz.Visible = musicBrainzRetryAvailable;
             retryMusicBrainz.Enabled = awaitingDecision && musicBrainzRetryAvailable;
@@ -2506,6 +2566,7 @@ namespace Splined.WindowsGui
                 foreach (Control child in candidateFilterPanel.Controls.Cast<Control>().ToArray()) child.Dispose();
                 candidateFilterPanel.Controls.Clear();
             }
+            SetCandidateFilterExpanded(false, false);
             UpdateCandidateFilterButtonText();
             compareCandidateIndexes.Clear();
             selectedCandidateIndex = -1;
@@ -3592,7 +3653,8 @@ namespace Splined.WindowsGui
             AppendActivity("Mode: ", ActivityTone.Muted);
             AppendActivity((runMode ?? state.Mode).ToUpperInvariant(),
                 String.Equals(runMode, "read", StringComparison.OrdinalIgnoreCase) ? ActivityTone.Accent : ActivityTone.Warning);
-            AppendActivity("  •  Albums processed: ", ActivityTone.Muted);
+            bool readReport = String.Equals(runMode, "read", StringComparison.OrdinalIgnoreCase);
+            AppendActivity(readReport ? "  •  Albums reviewed: " : "  •  Albums processed: ", ActivityTone.Muted);
             AppendActivity(runAlbumStatistics.Count + "/" + requestedAlbums + "\r\n\r\n", ActivityTone.Success);
 
             for (int index = 0; index < runAlbumStatistics.Count; index++)
