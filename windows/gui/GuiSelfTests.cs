@@ -700,11 +700,15 @@ namespace Splined.WindowsGui
                             || label.Text == "Live discovery, validation, provider results, and write/read outcomes appear here."
                             || label.Text == "Real provider candidates for the current album will appear below."),
                         "A removed panel helper sentence is still consuming visible layout space.");
-                    foreach (string titleText in new[] { "Media Library Selection", "Scan Activity and Decisions", "Artwork Candidates and Preview" })
+                    foreach (string titleText in new[] { "Media Library Selection", "Scan Activity and Decisions" })
                     {
                         Label titleLabel = Descendants(form).OfType<Label>().Single(label => label.Text == titleText);
                         Assert(titleLabel.Parent.Controls.OfType<InfoButton>().Any(), titleText + " does not have its replacement information tooltip beside the heading.");
                     }
+                    Button artworkFilter = form.Controls.Find("candidateFilterButton", true).OfType<Button>().Single();
+                    Assert(artworkFilter.Text.Contains("ARTWORK FILTER") && artworkFilter.Parent is FluentCardPanel
+                        && ((FluentCardPanel)artworkFilter.Parent).VisualRole == CardVisualRole.SpectrumNested,
+                        "Artwork Candidates did not replace the large heading with the compact spectrum FILTER control.");
                     FluentCardTableLayoutPanel libraryCard = form.Controls.Find("mediaLibrarySelectionCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel activityPanel = form.Controls.Find("scanActivityCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel candidatesPanel = form.Controls.Find("artworkCandidatesCard", true).Single() as FluentCardTableLayoutPanel;
@@ -766,8 +770,37 @@ namespace Splined.WindowsGui
                         && ((FluentCardPanel)candidateCards.Controls[2]).VisualRole == CardVisualRole.CandidateGlass,
                         "Candidate-only purple/green/clear glass roles were not assigned.");
                     PictureBox candidateThumb = candidateCards.Controls[0].Controls["candidateImage"] as PictureBox;
-                    Assert(candidateThumb != null && candidateThumb.Width == candidateThumb.Height,
-                        "Candidate thumbnails do not preserve square responsive geometry.");
+                    Assert(candidateThumb != null && candidateThumb.Width == candidateThumb.Height
+                        && candidateThumb.BackColor == ThemeManager.PaletteFor("Dark").SurfacePrimary,
+                        "Candidate thumbnails do not preserve square responsive geometry on an opaque, untinted surface.");
+                    Assert(!candidateCards.Controls[0].Controls.ContainsKey("candidateQuality")
+                        && !candidateCards.Controls[0].Controls.ContainsKey("candidateSource")
+                        && candidateCards.Controls[0].Controls["candidateUrl"].Tag is ToolTip,
+                        "Candidate status prose was not replaced by the compact hover information tip.");
+
+                    Dictionary<string, object> belowMinimum = CandidatePayload(10, "amazon", 600, 600, false, "");
+                    belowMinimum["source_range_class"] = "below-minimum";
+                    belowMinimum["range_class"] = "ideal";
+                    belowMinimum["projected_width"] = 1800;
+                    belowMinimum["projected_height"] = 1800;
+                    belowMinimum["upscaled"] = true;
+                    Dictionary<string, object> upscalable = CandidatePayload(11, "amazon", 1200, 1200, false, "");
+                    upscalable["source_range_class"] = "lower-range";
+                    upscalable["range_class"] = "ideal";
+                    upscalable["projected_width"] = 1800;
+                    upscalable["projected_height"] = 1800;
+                    upscalable["upscaled"] = true;
+                    showCandidates.Invoke(form, new object[] { new object[] { belowMinimum, upscalable } });
+                    Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
+                        && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
+                        "BelowMinimum and policy-qualified Minimum-to-Ideal candidates did not receive red and magenta backgrounds respectively.");
+                    typeof(MainForm).GetMethod("RebuildCandidateFilterMenu", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
+                    ContextMenuStrip candidateFilterMenu = (ContextMenuStrip)typeof(MainForm).GetField("candidateFilterMenu", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Image Type")
+                        && candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Source Selection")
+                        && !candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Wanted")
+                        && candidateFilterMenu.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Unwanted"),
+                        "Candidate FILTER did not expose only the result-backed type, source, wanted, and unwanted groups.");
                     FieldInfo selectionField = typeof(MainForm).GetField("selectionMode", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert((SelectionMode)selectionField.GetValue(form) == SelectionMode.Select, "Manual Select must be the default selection mode.");
                     VerifyMediaFilter(form);

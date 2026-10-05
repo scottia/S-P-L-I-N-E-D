@@ -94,6 +94,12 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view windows-dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/git/refs/tags/windows-dev" \
+              -f sha="$BUILD_COMMIT" \
+              -F force=true \
+              >/dev/null
             gh release edit windows-dev \
               --repo "$GITHUB_REPOSITORY" \
               --title "S:P:L:I:N:E:D Windows Dev Update" \
@@ -124,6 +130,7 @@ jobs:
           - Channel: ``dev``
           - Rust cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
-          - Release tag: ``windows-dev``
+          - Release tag: ``windows-dev`` → ``${{ steps.source.outputs.commit }}``
           - Manifest and executable: SHA-256 verified by the GUI
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+

@@ -120,14 +120,14 @@ pub fn running_as_setup_executable() -> Result<bool, String> {
 }
 
 fn install_final_executable_from(current_exe: &Path) -> Result<Option<PathBuf>, String> {
-    if !executable_path_is_setup(current_exe)? {
-        return Ok(None);
-    }
-
     let parent = current_exe
         .parent()
         .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
     cleanup_stale_upgrade_files(parent);
+
+    if !executable_path_is_setup(current_exe)? {
+        return Ok(None);
+    }
 
     let final_exe = parent.join(FINAL_EXECUTABLE_NAME);
     let stamp = unique_stamp();
@@ -216,7 +216,9 @@ fn schedule_file_cleanup(path: &Path) {
     let mut command = std::process::Command::new("cmd.exe");
     command
         .arg("/C")
-        .arg("ping 127.0.0.1 -n 6 >nul & del /F /Q \"%SPLINED_CLEANUP_FILE%\"")
+        .arg(
+            "for /L %i in (1,1,120) do @(del /F /Q \"%SPLINED_CLEANUP_FILE%\" 2>nul & if not exist \"%SPLINED_CLEANUP_FILE%\" exit /B 0 & ping 127.0.0.1 -n 2 >nul)",
+        )
         .env("SPLINED_CLEANUP_FILE", path)
         .creation_flags(CREATE_NO_WINDOW);
     if let Err(error) = command.spawn() {
@@ -491,6 +493,23 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_launch_prunes_stale_upgrade_files() {
+        let dir = TempDir::new().unwrap();
+        let installed = dir.path().join(FINAL_EXECUTABLE_NAME);
+        let stale_backup = dir.path().join(".splined-backup-stale");
+        let stale_install = dir.path().join(".splined-install-stale");
+
+        fs::write(&installed, b"current executable").unwrap();
+        fs::write(&stale_backup, b"previous executable").unwrap();
+        fs::write(&stale_install, b"abandoned staging executable").unwrap();
+
+        assert!(install_final_executable_from(&installed).unwrap().is_none());
+        assert!(!stale_backup.exists());
+        assert!(!stale_install.exists());
+        assert!(installed.exists());
+    }
+
+    #[test]
     fn setup_executable_upgrades_program_without_touching_persistent_data() {
         let dir = TempDir::new().unwrap();
         let layout = AppLayout::from_root(dir.path().to_path_buf());
@@ -534,3 +553,4 @@ mod tests {
         }));
     }
 }
+

@@ -764,6 +764,9 @@ pub async fn run_scan_library_read_report(
                     return None;
                 }
                 let projected = project_configured_artwork(candidate, &range, &config.output);
+                if projected.upscaled && candidate.short_side() < range.min {
+                    return None;
+                }
                 let policy = configured_candidate_policy(candidate, &projected, &range, config);
                 if policy.status == SourcePolicyStatus::Reject {
                     return None;
@@ -823,6 +826,11 @@ pub async fn run_scan_library_read_report(
                 .copied()
                 .filter(|index| {
                     result.candidates[*index].strict.preferred_eligible
+                        && candidate_meets_upscale_floor(
+                            &result.candidates[*index].downloaded.candidate,
+                            &range,
+                            config,
+                        )
                         && !matches!(
                             result.candidates[*index]
                                 .downloaded
@@ -1613,6 +1621,8 @@ fn emit_normal_source_results(event: NormalSourceResultsEvent<'_>) {
                 "index": *candidate_index + 1, "source": candidate.source,
                 "width": candidate.width, "height": candidate.height,
                 "format": format!("{:?}", candidate.format).to_ascii_lowercase(),
+                "source_range_class": projected_range_class(candidate.short_side(), event.range),
+                "source_distance_from_ideal": candidate.short_side().abs_diff(event.range.ideal),
                 "range_class": projected_range_class(projected.width.min(projected.height), event.range),
                 "distance_from_ideal": projected.width.min(projected.height).abs_diff(event.range.ideal),
                 "square": candidate.is_square(),
@@ -1891,6 +1901,8 @@ async fn run_normal_musicbrainz_browser(
                 json!({ "index": candidate_index + 1, "source": candidate.source,
                     "width": candidate.width, "height": candidate.height,
                     "format": format!("{:?}", candidate.format).to_ascii_lowercase(),
+                    "source_range_class": projected_range_class(candidate.short_side(), range),
+                    "source_distance_from_ideal": candidate.short_side().abs_diff(range.ideal),
                     "range_class": projected_range_class(projected.width.min(projected.height), range),
                     "distance_from_ideal": projected.width.min(projected.height).abs_diff(range.ideal),
                     "square": candidate.is_square(), "acceptable": policy.status != SourcePolicyStatus::Reject,
@@ -2290,6 +2302,8 @@ async fn run_compilation_album(
                 let policy = configured_candidate_policy(candidate, &projected, range, config);
                 json!({ "index": candidate_index + 1, "source": candidate.source, "width": candidate.width,
                     "height": candidate.height, "format": format!("{:?}", candidate.format).to_ascii_lowercase(),
+                    "source_range_class": projected_range_class(candidate.short_side(), range),
+                    "source_distance_from_ideal": candidate.short_side().abs_diff(range.ideal),
                     "range_class": projected_range_class(projected.width.min(projected.height), range),
                     "distance_from_ideal": projected.width.min(projected.height).abs_diff(range.ideal),
                     "square": candidate.is_square(), "acceptable": policy.status != SourcePolicyStatus::Reject,
@@ -2681,7 +2695,13 @@ fn candidate_is_auto_ideal(candidate: &Candidate, range: &Range, config: &Config
     let projected = project_configured_artwork(candidate, range, &config.output);
     let policy = configured_candidate_policy(candidate, &projected, range, config);
     policy.status == SourcePolicyStatus::Accept
+        && candidate_meets_upscale_floor(candidate, range, config)
         && range.classify(projected.width.min(projected.height)) == RangeClass::Ideal
+}
+
+fn candidate_meets_upscale_floor(candidate: &Candidate, range: &Range, config: &Config) -> bool {
+    let projected = project_configured_artwork(candidate, range, &config.output);
+    !projected.upscaled || candidate.short_side() >= range.min
 }
 
 fn target_format_for_candidate(
@@ -3254,6 +3274,34 @@ mod tests {
 
         assert!(!candidate_is_auto_ideal(&lower, &range, &config));
         assert!(candidate_is_auto_ideal(&ideal, &range, &config));
+    }
+
+    #[test]
+    fn upscaling_never_promotes_a_source_below_global_minimum() {
+        let range = Range::default();
+        let mut config = Config::default();
+        config.output.upscale_below_ideal = true;
+        let below_minimum = Candidate {
+            source: "itunes".to_string(),
+            width: range.min - 1,
+            height: range.min - 1,
+            format: StaticFormat::Jpeg,
+            source_priority: 0,
+        };
+        let at_minimum = Candidate {
+            width: range.min,
+            height: range.min,
+            ..below_minimum.clone()
+        };
+
+        assert!(!candidate_meets_upscale_floor(
+            &below_minimum,
+            &range,
+            &config
+        ));
+        assert!(!candidate_is_auto_ideal(&below_minimum, &range, &config));
+        assert!(candidate_meets_upscale_floor(&at_minimum, &range, &config));
+        assert!(candidate_is_auto_ideal(&at_minimum, &range, &config));
     }
 
     #[test]

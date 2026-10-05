@@ -77,6 +77,11 @@ GPU execution fails, SPLINED immediately uses its existing in-memory CPU
 Lanczos-3 implementation. The final diagnostic reports
 `upscale_backend=gpu-lanczos3`, `cpu-lanczos3`, or `none`.
 
+The original source short side must meet the configured global `range.min`
+before an enlargement may become Preferred or Auto eligible. A projected
+1800px output does not convert an original `BelowMinimum` source into an Ideal
+automatic choice. Such candidates remain visible for manual review.
+
 This backend is ordinary deterministic resampling, not AI super-resolution.
 It provides the replaceable GPU boundary that future AISPLINED validation and
 enhancement models can reuse without changing Config v5 behavior.

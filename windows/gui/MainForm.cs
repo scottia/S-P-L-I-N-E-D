@@ -78,6 +78,7 @@ namespace Splined.WindowsGui
     internal sealed class MainForm : FluentForm
     {
         private const string EventPrefix = "@@SPLINED_GUI@@";
+        private static readonly Color CandidateMagenta = Color.FromArgb(242, 72, 171);
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private ConfigState state;
         private UiState uiState;
@@ -154,6 +155,12 @@ namespace Splined.WindowsGui
         private int recommendedCandidateIndex = -1;
         private readonly Dictionary<int, CandidateView> candidates = new Dictionary<int, CandidateView>();
         private readonly HashSet<int> compareCandidateIndexes = new HashSet<int>();
+        private Button candidateFilterButton;
+        private ContextMenuStrip candidateFilterMenu;
+        private readonly HashSet<string> excludedCandidateSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> excludedCandidateTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> excludedCandidatePolicies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> excludedCandidateRanges = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<AlbumRunStatistics> runAlbumStatistics = new List<AlbumRunStatistics>();
         private AlbumRunStatistics activeAlbumStatistics;
         private AlbumInfo activeLaunchAlbum;
@@ -411,6 +418,46 @@ namespace Splined.WindowsGui
                 Margin = new Padding(0, 4, 6, 0)
             });
             row.Controls.Add(new InfoButton(tooltip) { Margin = new Padding(0, 1, 0, 0) });
+            return row;
+        }
+
+        private Control BuildCandidateFilterHeader()
+        {
+            FlowLayoutPanel row = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(0),
+                Padding = new Padding(0)
+            };
+            Panel spectrum = new FluentCardPanel
+            {
+                Width = 225,
+                Height = 29,
+                Padding = new Padding(1),
+                Margin = new Padding(0),
+                VisualRole = CardVisualRole.SpectrumNested
+            };
+            candidateFilterButton = new FluentButton
+            {
+                Name = "candidateFilterButton",
+                Text = "ARTWORK FILTER · ALL  ▾",
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                Margin = new Padding(0)
+            };
+            candidateFilterButton.Click += delegate
+            {
+                RebuildCandidateFilterMenu();
+                candidateFilterMenu.Show(candidateFilterButton, new Point(0, candidateFilterButton.Height));
+            };
+            spectrum.Controls.Add(candidateFilterButton);
+            row.Controls.Add(spectrum);
+            row.Controls.Add(new InfoButton("Filter only the candidates shown for the current album. Source order follows Artwork Source Priority. Filtering never changes provider ranking or the underlying result set.")
+            {
+                Margin = new Padding(ThemeManager.Space4, 1, 0, 0)
+            });
             return row;
         }
 
@@ -938,8 +985,7 @@ namespace Splined.WindowsGui
             lower.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
             rightSplit.Panel2.Controls.Add(lower);
-            lower.Controls.Add(BuildPanelTitle("Artwork Candidates and Preview",
-                "Real provider candidates for the current album will appear below."), 0, 0);
+            lower.Controls.Add(BuildCandidateFilterHeader(), 0, 0);
             candidateContext = new Label { Text = "", Dock = DockStyle.Fill, AutoEllipsis = true };
             lower.Controls.Add(candidateContext, 0, 1);
             candidateCards = new WatermarkFlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(ThemeManager.Space8) };
@@ -1735,11 +1781,154 @@ namespace Splined.WindowsGui
             }
         }
 
+        private void RebuildCandidateFilterMenu()
+        {
+            if (candidateFilterMenu != null) candidateFilterMenu.Dispose();
+            ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
+            candidateFilterMenu = new ContextMenuStrip
+            {
+                BackColor = palette.SurfaceRaised,
+                ForeColor = palette.TextPrimary,
+                Renderer = new FluentMenuRenderer(palette),
+                ShowCheckMargin = true,
+                ShowImageMargin = false,
+                Padding = new Padding(ThemeManager.Space4)
+            };
+
+            ToolStripMenuItem reset = new ToolStripMenuItem("Show All Results") { ForeColor = palette.TextPrimary };
+            reset.Click += delegate
+            {
+                excludedCandidateSources.Clear();
+                excludedCandidateTypes.Clear();
+                excludedCandidatePolicies.Clear();
+                excludedCandidateRanges.Clear();
+                ApplyCandidateFilters();
+            };
+            candidateFilterMenu.Items.Add(reset);
+            candidateFilterMenu.Items.Add(new ToolStripSeparator());
+
+            List<CandidateView> sourceFiltered = candidates.Values
+                .Where(candidate => !excludedCandidateSources.Contains(candidate.SourceKey)).ToList();
+
+            AddCandidateFilterGroup("Image Type", new[]
+            {
+                new CandidateFilterOption("Recommended", sourceFiltered.Any(candidate => candidate.Recommended), palette.Success),
+                new CandidateFilterOption("Upscalable", sourceFiltered.Any(candidate => candidate.UpscaleEligible), CandidateMagenta),
+                new CandidateFilterOption("Rejected", sourceFiltered.Any(candidate => candidate.IsNegative), palette.Error),
+                new CandidateFilterOption("Local", sourceFiltered.Any(candidate => candidate.IsLocal), palette.StatusPurple)
+            }, excludedCandidateTypes);
+
+            List<CandidateFilterOption> sourceOptions = new List<CandidateFilterOption>();
+            IEnumerable<string> sourceOrder = state.Sources
+                .Where(source => candidates.Values.Any(candidate => candidate.SourceKey.Equals(source, StringComparison.OrdinalIgnoreCase)))
+                .Concat(candidates.Values.Select(candidate => candidate.SourceKey)
+                    .Where(source => !state.Sources.Contains(source, StringComparer.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+            foreach (string source in sourceOrder.Distinct(StringComparer.OrdinalIgnoreCase))
+                sourceOptions.Add(new CandidateFilterOption(CandidateSourceName(source), true, CandidateSourceColor(source, palette), source));
+            AddCandidateFilterGroup("Source Selection", sourceOptions, excludedCandidateSources);
+
+            AddCandidateFilterGroup("Policy", new[]
+            {
+                new CandidateFilterOption("Acceptable", sourceFiltered.Any(candidate => candidate.Acceptable), palette.Success),
+                new CandidateFilterOption("Strict", sourceFiltered.Any(candidate => candidate.StrictOverrideActive), palette.StatusPurple)
+            }, excludedCandidatePolicies);
+
+            AddCandidateFilterGroup("Wanted", new[]
+            {
+                RangeOption("Ideal", sourceFiltered, palette.Success),
+                RangeOption("UpperRange", sourceFiltered, palette.AccentPrimary, "Upper range"),
+                RangeOption("Ladder", sourceFiltered, palette.Warning),
+                RangeOption("AboveLadder", sourceFiltered, palette.StatusOrange, "Above ladder")
+            }, excludedCandidateRanges);
+            AddCandidateFilterGroup("Unwanted", new[]
+            {
+                RangeOption("LowerRange", sourceFiltered, palette.Warning, "Lower range"),
+                RangeOption("BelowMinimum", sourceFiltered, palette.Error, "Below minimum")
+            }, excludedCandidateRanges);
+        }
+
+        private CandidateFilterOption RangeOption(string key, IEnumerable<CandidateView> views, Color color, string label = null)
+        {
+            return new CandidateFilterOption(label ?? key, views.Any(candidate => candidate.SourceRangeKey.Equals(key, StringComparison.OrdinalIgnoreCase)), color, key);
+        }
+
+        private void AddCandidateFilterGroup(string title, IEnumerable<CandidateFilterOption> options, HashSet<string> excluded)
+        {
+            List<CandidateFilterOption> present = options.Where(option => option.Present).ToList();
+            if (present.Count == 0) return;
+            ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
+            ToolStripMenuItem group = new ToolStripMenuItem(title)
+            {
+                ForeColor = palette.TextPrimary,
+                BackColor = palette.SurfaceRaised
+            };
+            group.DropDown.Renderer = new FluentMenuRenderer(palette);
+            group.DropDown.BackColor = palette.SurfaceRaised;
+            foreach (CandidateFilterOption option in present)
+            {
+                ToolStripMenuItem item = new ToolStripMenuItem(option.Label)
+                {
+                    CheckOnClick = true,
+                    Checked = !excluded.Contains(option.Key),
+                    ForeColor = option.Color,
+                    BackColor = palette.SurfaceRaised,
+                    Tag = option.Key
+                };
+                item.Click += delegate
+                {
+                    if (item.Checked) excluded.Remove(option.Key);
+                    else excluded.Add(option.Key);
+                    ApplyCandidateFilters();
+                };
+                group.DropDownItems.Add(item);
+            }
+            candidateFilterMenu.Items.Add(group);
+        }
+
+        private void ApplyCandidateFilters()
+        {
+            DisposeCandidateCards();
+            foreach (CandidateView view in SortedCandidateViews().Where(CandidatePassesFilters))
+                candidateCards.Controls.Add(BuildCandidateCard(view));
+            int activeFilters = excludedCandidateSources.Count + excludedCandidateTypes.Count
+                + excludedCandidatePolicies.Count + excludedCandidateRanges.Count;
+            if (candidateFilterButton != null)
+                candidateFilterButton.Text = activeFilters == 0 ? "ARTWORK FILTER · ALL  ▾" : "ARTWORK FILTER · " + activeFilters + " ACTIVE  ▾";
+            ResizeCandidateCards();
+            UpdateHoverButton();
+            UpdateCandidateActions();
+        }
+
+        private IEnumerable<CandidateView> SortedCandidateViews()
+        {
+            return candidates.Values
+                .OrderBy(candidate => candidate.IsLocal ? 0 : candidate.Recommended ? 1 : 2)
+                .ThenByDescending(candidate => (long)candidate.PixelWidth * candidate.PixelHeight)
+                .ThenByDescending(candidate => Math.Min(candidate.PixelWidth, candidate.PixelHeight))
+                .ThenBy(candidate => candidate.Index);
+        }
+
+        private bool CandidatePassesFilters(CandidateView view)
+        {
+            if (excludedCandidateSources.Contains(view.SourceKey)) return false;
+            if (view.Recommended && excludedCandidateTypes.Contains("Recommended")) return false;
+            if (view.UpscaleEligible && excludedCandidateTypes.Contains("Upscalable")) return false;
+            if (view.IsNegative && excludedCandidateTypes.Contains("Rejected")) return false;
+            if (view.IsLocal && excludedCandidateTypes.Contains("Local")) return false;
+            if (view.Acceptable && excludedCandidatePolicies.Contains("Acceptable")) return false;
+            if (view.StrictOverrideActive && excludedCandidatePolicies.Contains("Strict")) return false;
+            return !excludedCandidateRanges.Contains(view.SourceRangeKey);
+        }
+
         private void ShowCandidates(object[] items)
         {
             ClearCandidates();
+            excludedCandidateSources.Clear();
+            excludedCandidateTypes.Clear();
+            excludedCandidatePolicies.Clear();
+            excludedCandidateRanges.Clear();
             int index = 0;
-            List<CandidateView> parsed = new List<CandidateView>();
             foreach (object item in items)
             {
                 Dictionary<string, object> candidate = item as Dictionary<string, object>;
@@ -1752,7 +1941,14 @@ namespace Splined.WindowsGui
                 view.PixelWidth = ReadInt(candidate, "width", 0);
                 view.PixelHeight = ReadInt(candidate, "height", 0);
                 view.Resolution = view.PixelWidth + " x " + view.PixelHeight;
+                view.Format = ReadString(candidate, "format");
+                view.SourceRange = ReadString(candidate, "source_range_class");
                 view.Range = ReadString(candidate, "range_class");
+                view.ProjectedWidth = ReadInt(candidate, "projected_width", view.PixelWidth);
+                view.ProjectedHeight = ReadInt(candidate, "projected_height", view.PixelHeight);
+                view.Upscaled = ReadBool(candidate, "upscaled");
+                view.Approved = ReadBool(candidate, "approved");
+                view.Square = ReadBool(candidate, "square");
                 view.Acceptable = ReadBool(candidate, "acceptable");
                 view.PolicyStatus = ReadString(candidate, "policy_status");
                 view.PolicyReason = ReadString(candidate, "policy_reason");
@@ -1767,6 +1963,11 @@ namespace Splined.WindowsGui
                 view.Url = ReadString(candidate, "url");
                 view.LocalOrigin = ReadString(candidate, "local_origin");
                 view.LocalReference = ReadString(candidate, "local_reference");
+                if (String.IsNullOrWhiteSpace(view.SourceRange)) view.SourceRange = CandidateRangeKey(Math.Min(view.PixelWidth, view.PixelHeight));
+                if (String.IsNullOrWhiteSpace(view.Range)) view.Range = CandidateRangeKey(Math.Min(view.ProjectedWidth, view.ProjectedHeight));
+                view.UpscaleEligible = view.Upscaled && view.Acceptable && !view.IsRejected
+                    && Math.Min(view.PixelWidth, view.PixelHeight) >= state.RangeMin
+                    && Math.Min(view.PixelWidth, view.PixelHeight) < state.RangeIdeal;
                 candidates[candidateIndex] = view;
                 if (recommended)
                 {
@@ -1774,44 +1975,51 @@ namespace Splined.WindowsGui
                     compareCandidateIndexes.Add(candidateIndex);
                     selectedCandidateIndex = candidateIndex;
                 }
-                parsed.Add(view);
             }
-            foreach (CandidateView view in parsed
-                .OrderBy(candidate => candidate.IsLocal ? 0 : candidate.Recommended ? 1 : 2)
-                .ThenByDescending(candidate => (long)candidate.PixelWidth * candidate.PixelHeight)
-                .ThenByDescending(candidate => Math.Min(candidate.PixelWidth, candidate.PixelHeight))
-                .ThenBy(candidate => candidate.Index))
-                candidateCards.Controls.Add(BuildCandidateCard(view));
-            ResizeCandidateCards();
-            UpdateHoverButton();
-            UpdateCandidateActions();
+            ApplyCandidateFilters();
+        }
+
+        private string CandidateRangeKey(int shortSide)
+        {
+            if (shortSide < state.RangeMin) return "BelowMinimum";
+            if (shortSide < state.RangeIdeal) return "LowerRange";
+            if (shortSide == state.RangeIdeal) return "Ideal";
+            if (shortSide <= state.RangeMax) return "UpperRange";
+            if (shortSide <= state.RangeLadder) return "Ladder";
+            return "AboveLadder";
         }
 
         private Control BuildCandidateCard(CandidateView view)
         {
+            ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
+            bool sourceRejected = view.SourceOverrideActive
+                && view.PolicyStatus.Equals("reject", StringComparison.OrdinalIgnoreCase);
+            CardVisualRole role = view.IsLocal ? CardVisualRole.LocalCandidateGlass
+                : view.UpscaleEligible ? CardVisualRole.UpscaleCandidateGlass
+                : view.IsNegative
+                    ? CardVisualRole.RejectedCandidateGlass
+                    : view.Recommended ? CardVisualRole.Recommended
+                    : CardVisualRole.CandidateGlass;
             Panel card = new FluentCardPanel
             {
                 Width = 196,
-                Height = 260,
+                Height = 234,
                 Margin = new Padding(ThemeManager.Space4),
                 Padding = new Padding(1),
                 Tag = view.Index,
-                VisualRole = view.IsLocal ? CardVisualRole.LocalCandidateGlass
-                    : view.Recommended ? CardVisualRole.Recommended
-                    : CardVisualRole.CandidateGlass
+                VisualRole = role
             };
-            bool sourceRejected = view.SourceOverrideActive
-                && view.PolicyStatus.Equals("reject", StringComparison.OrdinalIgnoreCase);
             CheckBox choose = new FluentCheckBox
             {
                 Left = 8,
                 Top = 6,
                 Width = 176,
                 Height = 24,
-                Text = view.IsLocal ? "[LOCAL]" : view.Recommended ? "Recommended" : "Candidate " + view.Index,
+                Text = CandidateHeading(view),
                 Checked = !sourceRejected && compareCandidateIndexes.Contains(view.Index),
                 Enabled = !sourceRejected,
-                Tag = view.Index
+                Tag = view.Index,
+                ForeColor = CandidateSourceColor(view.SourceKey, palette)
             };
             choose.Name = "candidateChoice";
             choose.CheckedChanged += delegate
@@ -1822,48 +2030,126 @@ namespace Splined.WindowsGui
                 UpdateCandidateActions();
             };
             card.Controls.Add(choose);
-            PictureBox image = new PictureBox { Name = "candidateImage", Left = 17, Top = 34, Width = 160, Height = 150, SizeMode = PictureBoxSizeMode.Zoom, BorderStyle = BorderStyle.None };
+            PictureBox image = new PictureBox
+            {
+                Name = "candidateImage",
+                Left = 17,
+                Top = 34,
+                Width = 160,
+                Height = 160,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BorderStyle = BorderStyle.None,
+                BackColor = palette.SurfacePrimary
+            };
             image.Image = LoadImageCopy(view.CachePath);
             image.Cursor = Cursors.Hand;
             image.MouseEnter += delegate { if (uiState.HoverEnabled) ShowHoverPreview(view); };
             image.MouseLeave += delegate { if (uiState.HoverEnabled) CloseHoverPreview(); };
             card.Controls.Add(image);
-            Label source = new Label { Name = "candidateSource", Left = 8, Top = 188, Width = 180, Height = 20, Text = view.DisplaySource, AutoEllipsis = true };
-            card.Controls.Add(source);
-            LinkLabel sourceLink = CandidateUrlUi.Create(view.Resolution, view.Url, uiState.Theme,
+            LinkLabel sourceLink = CandidateUrlUi.Create("ⓘ", view.Url, uiState.Theme,
                 delegate { if (uiState.ShowArtwork) ShowArtworkCandidate(view); },
                 delegate { if (uiState.HoverEnabled) ShowHoverPreview(view); },
                 delegate { if (uiState.HoverEnabled) CloseHoverPreview(); });
-            sourceLink.Left = 8; sourceLink.Top = 208; sourceLink.Width = 180; sourceLink.Height = 20;
+            sourceLink.Left = 8; sourceLink.Top = 202; sourceLink.Width = 180; sourceLink.Height = 24;
             sourceLink.Name = "candidateUrl";
+            sourceLink.TextAlign = ContentAlignment.MiddleLeft;
             card.Controls.Add(sourceLink);
-            bool fallbackOnly = view.PolicyStatus.Equals("fallback", StringComparison.OrdinalIgnoreCase);
-            bool strictManualOnly = view.StrictOverrideActive && !view.StrictPreferredEligible;
-            string qualityText = strictManualOnly
-                ? "Strict " + view.StrictStatus + " - Manual only"
-                : fallbackOnly
-                ? view.Range + " - Fallback only"
-                : sourceRejected
-                    ? view.Range + " - Source policy reject"
-                    : view.Range + (view.Acceptable ? " - Acceptable" : " - Outside range");
-            ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
-            Color qualityColor = strictManualOnly || fallbackOnly ? palette.Warning : view.Acceptable ? palette.Success : palette.Error;
-            Label quality = new Label { Name = "candidateQuality", Left = 8, Top = 228, Width = 180, Height = 20, Text = qualityText, ForeColor = qualityColor, AutoEllipsis = true };
-            card.Controls.Add(quality);
-            string decisionReason = view.StrictOverrideActive && !String.IsNullOrWhiteSpace(view.StrictReason)
-                ? view.StrictReason
-                : view.PolicyReason;
-            if (!String.IsNullOrWhiteSpace(decisionReason))
-            {
-                ToolTip policyTip = ThemeManager.CreateToolTip();
-                policyTip.SetToolTip(quality, decisionReason);
-                quality.Tag = policyTip;
-            }
+            ToolTip details = ThemeManager.CreateToolTip();
+            string detailText = CandidateDetails(view);
+            details.SetToolTip(card, detailText);
+            details.SetToolTip(choose, detailText);
+            details.SetToolTip(image, detailText);
+            details.SetToolTip(sourceLink, detailText);
+            sourceLink.Tag = details;
             card.Click += delegate { if (choose.Enabled) choose.Checked = !choose.Checked; };
             card.Resize += delegate { LayoutCandidateCard(card); };
             ThemeManager.Apply(card, uiState.Theme);
+            choose.ForeColor = CandidateSourceColor(view.SourceKey, palette);
+            image.BackColor = palette.SurfacePrimary;
             LayoutCandidateCard(card);
             return card;
+        }
+
+        private static string CandidateHeading(CandidateView view)
+        {
+            string marker = view.IsLocal ? "⌂" : "";
+            if (!view.IsLocal && view.Recommended) marker += "★";
+            if (!view.IsLocal && view.UpscaleEligible) marker += "⇧";
+            else if (!view.IsLocal && view.IsNegative) marker += "×";
+            if (marker.Length > 0) marker += " ";
+            return marker + CandidateSourceName(view.SourceKey);
+        }
+
+        private static string CandidateSourceName(string source)
+        {
+            if (String.IsNullOrWhiteSpace(source)) return "Unknown";
+            switch (source.Trim().ToLowerInvariant())
+            {
+                case "local": return "Local";
+                case "itunes": return "iTunes";
+                case "coverartarchive": return "CAA Cover";
+                case "musicbrainz": return "MusicBrainz";
+                case "fanarttv": return "FanArtTV";
+                case "amazon": return "Amazon";
+                case "discogs": return "Discogs";
+                case "lastfm": return "Last.fm";
+                case "deezer": return "Deezer";
+                case "webpstill": return "Local";
+                default: return source;
+            }
+        }
+
+        private static Color CandidateSourceColor(string source, ThemePalette palette)
+        {
+            switch ((source ?? "").Trim().ToLowerInvariant())
+            {
+                case "local":
+                case "webpstill": return palette.StatusPurple;
+                case "itunes": return palette.AccentPrimary;
+                case "coverartarchive": return palette.Warning;
+                case "musicbrainz": return palette.Link;
+                case "fanarttv": return palette.Success;
+                case "amazon": return palette.StatusOrange;
+                case "discogs": return palette.StatusPurple;
+                case "lastfm": return palette.Error;
+                case "deezer": return palette.StatusBlue;
+                default: return palette.TextPrimary;
+            }
+        }
+
+        private static string CandidateDetails(CandidateView view)
+        {
+            StringBuilder detail = new StringBuilder();
+            detail.AppendLine("Source: " + view.DisplaySource);
+            detail.AppendLine("Source image: " + view.Resolution + " · " + DisplayRange(view.SourceRangeKey));
+            if (view.ProjectedWidth > 0 && view.ProjectedHeight > 0
+                && (view.ProjectedWidth != view.PixelWidth || view.ProjectedHeight != view.PixelHeight))
+                detail.AppendLine("Projected result: " + view.ProjectedWidth + " x " + view.ProjectedHeight + " · " + DisplayRange(view.ProjectedRangeKey));
+            detail.AppendLine("Format: " + (String.IsNullOrWhiteSpace(view.Format) ? "unknown" : view.Format.ToUpperInvariant())
+                + " · Square: " + (view.Square ? "yes" : "no"));
+            detail.AppendLine("Approved: " + (view.Approved ? "yes" : "no")
+                + " · Acceptable: " + (view.Acceptable ? "yes" : "no"));
+            if (view.Upscaled)
+                detail.AppendLine("Upscale: " + (view.UpscaleEligible ? "eligible after policy and Minimum checks" : "not eligible for Preferred/Auto"));
+            if (view.StrictOverrideActive)
+                detail.AppendLine("Strict: " + view.StrictStatus + " · Preferred " + (view.StrictPreferredEligible ? "yes" : "no")
+                    + " · Auto " + (view.StrictAutoEligible ? "yes" : "no"));
+            string reason = view.StrictOverrideActive && !String.IsNullOrWhiteSpace(view.StrictReason) ? view.StrictReason : view.PolicyReason;
+            if (!String.IsNullOrWhiteSpace(reason)) detail.AppendLine("Policy: " + reason);
+            if (view.Recommended) detail.Append("SPLINED recommended result");
+            return detail.ToString().TrimEnd();
+        }
+
+        private static string DisplayRange(string key)
+        {
+            switch (key)
+            {
+                case "BelowMinimum": return "Below minimum";
+                case "LowerRange": return "Lower range";
+                case "UpperRange": return "Upper range";
+                case "AboveLadder": return "Above ladder";
+                default: return key;
+            }
         }
 
         private void ResizeCandidateCards()
@@ -1875,7 +2161,7 @@ namespace Splined.WindowsGui
             int width = Math.Max(156, Math.Min(240, (available - gap * columns) / columns));
             foreach (Control card in candidateCards.Controls)
             {
-                card.Size = new Size(width, width + 72);
+                card.Size = new Size(width, width + 44);
                 LayoutCandidateCard(card);
             }
             candidateCards.PerformLayout();
@@ -1885,18 +2171,14 @@ namespace Splined.WindowsGui
         {
             if (card == null) return;
             int contentWidth = Math.Max(120, card.ClientSize.Width - 16);
-            int imageSize = Math.Max(100, Math.Min(contentWidth, card.ClientSize.Height - 106));
+            int imageSize = Math.Max(100, Math.Min(contentWidth, card.ClientSize.Height - 66));
             Control choice = card.Controls["candidateChoice"];
             Control image = card.Controls["candidateImage"];
-            Control source = card.Controls["candidateSource"];
             Control url = card.Controls["candidateUrl"];
-            Control quality = card.Controls["candidateQuality"];
             if (choice != null) choice.SetBounds(8, 6, contentWidth, 24);
             if (image != null) image.SetBounds(8 + Math.Max(0, (contentWidth - imageSize) / 2), 34, imageSize, imageSize);
             int metadataTop = 38 + imageSize;
-            if (source != null) source.SetBounds(8, metadataTop, contentWidth, 20);
-            if (url != null) url.SetBounds(8, metadataTop + 20, contentWidth, 20);
-            if (quality != null) quality.SetBounds(8, metadataTop + 40, contentWidth, 20);
+            if (url != null) url.SetBounds(8, metadataTop, contentWidth, 22);
         }
 
         private void UpdateCandidateActions()
@@ -1935,12 +2217,7 @@ namespace Splined.WindowsGui
         {
             CloseHoverPreview();
             CloseMusicBrainzMatchesWorkspace();
-            foreach (Control control in candidateCards.Controls)
-            {
-                foreach (PictureBox picture in control.Controls.OfType<PictureBox>()) if (picture.Image != null) picture.Image.Dispose();
-                control.Dispose();
-            }
-            candidateCards.Controls.Clear();
+            DisposeCandidateCards();
             candidateCards.AutoScrollPosition = Point.Empty;
             candidates.Clear();
             compareCandidateIndexes.Clear();
@@ -1956,6 +2233,16 @@ namespace Splined.WindowsGui
             if (backToMusicBrainz != null) { backToMusicBrainz.Visible = false; backToMusicBrainz.Enabled = false; }
             UpdateHoverButton();
             UpdateSelectionControls();
+        }
+
+        private void DisposeCandidateCards()
+        {
+            foreach (Control control in candidateCards.Controls)
+            {
+                foreach (PictureBox picture in control.Controls.OfType<PictureBox>()) if (picture.Image != null) picture.Image.Dispose();
+                control.Dispose();
+            }
+            candidateCards.Controls.Clear();
         }
 
         private void UpdateHoverButton()
@@ -2724,6 +3011,16 @@ namespace Splined.WindowsGui
                 ApplyModeActivityAppearance();
                 ThemePalette palette = ThemeManager.CurrentPalette;
                 candidateCards.BackColor = palette.PanelSurface;
+                foreach (Control card in candidateCards.Controls)
+                {
+                    int candidateIndex = card.Tag is int ? (int)card.Tag : -1;
+                    CandidateView candidate;
+                    PictureBox thumb = card.Controls["candidateImage"] as PictureBox;
+                    if (thumb != null) thumb.BackColor = palette.SurfacePrimary;
+                    CheckBox heading = card.Controls["candidateChoice"] as CheckBox;
+                    if (heading != null && candidates.TryGetValue(candidateIndex, out candidate))
+                        heading.ForeColor = CandidateSourceColor(candidate.SourceKey, palette);
+                }
                 statusStrip.BackColor = palette.TopNavigationSurface;
                 statusStrip.ForeColor = palette.TextSecondary;
                 UpdateMediaFilterColors();
@@ -3014,11 +3311,19 @@ namespace Splined.WindowsGui
     internal sealed class CandidateView
     {
         public int Index;
-        public string Source;
+        public string Source = "";
         public string Resolution;
         public int PixelWidth;
         public int PixelHeight;
-        public string Range;
+        public int ProjectedWidth;
+        public int ProjectedHeight;
+        public string Format = "";
+        public string SourceRange = "";
+        public string Range = "";
+        public bool Upscaled;
+        public bool UpscaleEligible;
+        public bool Approved;
+        public bool Square;
         public bool Acceptable;
         public string PolicyStatus = "";
         public string PolicyReason = "";
@@ -3029,16 +3334,36 @@ namespace Splined.WindowsGui
         public bool StrictPreferredEligible = true;
         public bool StrictAutoEligible = true;
         public bool Recommended;
-        public string CachePath;
-        public string Url;
+        public string CachePath = "";
+        public string Url = "";
         public string LocalOrigin = "";
         public string LocalReference = "";
+        public string SourceKey
+        {
+            get { return IsLocal ? "local" : (Source ?? "").Trim().ToLowerInvariant(); }
+        }
+        public string SourceRangeKey
+        {
+            get { return NormalizeRange(SourceRange); }
+        }
+        public string ProjectedRangeKey
+        {
+            get { return NormalizeRange(Range); }
+        }
+        public bool IsRejected
+        {
+            get { return !Acceptable || PolicyStatus.Equals("reject", StringComparison.OrdinalIgnoreCase); }
+        }
+        public bool IsNegative
+        {
+            get { return IsRejected || SourceRangeKey.Equals("BelowMinimum", StringComparison.OrdinalIgnoreCase); }
+        }
         public bool IsLocal
         {
             get
             {
-                return Source.Equals("local", StringComparison.OrdinalIgnoreCase)
-                    || Source.Equals("webpstill", StringComparison.OrdinalIgnoreCase)
+                return (Source ?? "").Equals("local", StringComparison.OrdinalIgnoreCase)
+                    || (Source ?? "").Equals("webpstill", StringComparison.OrdinalIgnoreCase)
                     || !String.IsNullOrWhiteSpace(LocalOrigin);
             }
         }
@@ -3052,6 +3377,34 @@ namespace Splined.WindowsGui
                     return "Cover file" + (String.IsNullOrWhiteSpace(LocalReference) ? "" : " · " + LocalReference);
                 return Source;
             }
+        }
+
+        private static string NormalizeRange(string value)
+        {
+            string compact = (value ?? "").Replace("-", "").Replace("_", "").Replace(" ", "").ToLowerInvariant();
+            if (compact == "belowminimum") return "BelowMinimum";
+            if (compact == "lowerrange") return "LowerRange";
+            if (compact == "ideal") return "Ideal";
+            if (compact == "upperrange") return "UpperRange";
+            if (compact == "ladder") return "Ladder";
+            if (compact == "aboveladder") return "AboveLadder";
+            return value ?? "";
+        }
+    }
+
+    internal sealed class CandidateFilterOption
+    {
+        public readonly string Label;
+        public readonly string Key;
+        public readonly bool Present;
+        public readonly Color Color;
+
+        public CandidateFilterOption(string label, bool present, Color color, string key = null)
+        {
+            Label = label;
+            Key = key ?? label;
+            Present = present;
+            Color = color;
         }
     }
 
