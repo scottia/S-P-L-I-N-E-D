@@ -4,6 +4,7 @@ use lofty::config::ParseOptions;
 use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
 use lofty::id3::v2::{Frame, Id3v2Tag};
 use lofty::mpeg::MpegFile;
+use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use std::fs::File;
 use std::path::Path;
@@ -24,7 +25,7 @@ pub struct AlbumIndexTags {
 /// Read only the representative-track fields that define the media index.
 /// Normal Select Media indexing must continue to call this once per Album.
 pub fn read_album_index_tags(path: &Path) -> Result<AlbumIndexTags, String> {
-    let tagged_file = lofty::read_from_path(path).map_err(|error| {
+    let tagged_file = read_tags_only(path).map_err(|error| {
         format!(
             "Unable to read SPLINED representative tags from {}: {error}",
             path.display()
@@ -88,7 +89,7 @@ pub fn read_album_track_evidence(
 }
 
 pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, String> {
-    let tagged_file = lofty::read_from_path(path).map_err(|error| {
+    let tagged_file = read_tags_only(path).map_err(|error| {
         format!(
             "Unable to read SPLINED audio tags from {}: {error}",
             path.display()
@@ -96,6 +97,20 @@ pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, Stri
     })?;
 
     evidence_from_tagged_file(path, &tagged_file)
+}
+
+/// Album identity needs tags only. Lofty's default path reader also reads
+/// audio properties and cover art; on an SMB library that can turn a large
+/// box set into minutes of avoidable network I/O. Keep the same authoritative
+/// per-track evidence while limiting reads to tag blocks.
+fn read_tags_only(path: &Path) -> Result<TaggedFile, lofty::error::FileParseError> {
+    Probe::open(path)?
+        .options(
+            ParseOptions::new()
+                .read_properties(false)
+                .read_cover_art(false),
+        )
+        .read()
 }
 
 fn evidence_from_tagged_file(

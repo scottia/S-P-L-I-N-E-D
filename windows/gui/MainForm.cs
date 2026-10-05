@@ -192,6 +192,10 @@ namespace Splined.WindowsGui
         private readonly SemaphoreSlim musicBrainzPreviewGate = new SemaphoreSlim(1, 1);
         private readonly Dictionary<string, byte[]> musicBrainzPreviewCache = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         private readonly Queue<string> musicBrainzPreviewCacheOrder = new Queue<string>();
+        private const long CandidateImageMemoryCacheLimit = 256L * 1024L * 1024L;
+        private readonly Dictionary<string, byte[]> candidateImageMemoryCache = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        private readonly Queue<string> candidateImageMemoryCacheOrder = new Queue<string>();
+        private long candidateImageMemoryCacheBytes;
         private FlowLayoutPanel candidateCards;
         private Button useSelected;
         private Button keepLocal;
@@ -306,6 +310,9 @@ namespace Splined.WindowsGui
                 RuntimeLog.Write("info", "windows.gui.closed");
                 if (treeToolTip != null) treeToolTip.Dispose();
                 DisposeArtworkPreviewImage();
+                candidateImageMemoryCache.Clear();
+                candidateImageMemoryCacheOrder.Clear();
+                candidateImageMemoryCacheBytes = 0;
             };
         }
 
@@ -660,6 +667,7 @@ namespace Splined.WindowsGui
             {
                 Name = "candidateFilterPanel",
                 Dock = DockStyle.Fill,
+                AutoScroll = true,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0, 0, 0, ThemeManager.Space4),
                 VisualRole = CardVisualRole.SpectrumNested
@@ -724,6 +732,8 @@ namespace Splined.WindowsGui
             }
             ApplyArtworkPanelVisibility();
             UpdateArtworkSquareLayout(false);
+            if (visible && IsHandleCreated)
+                BeginInvoke((MethodInvoker)delegate { UpdateArtworkSquareLayout(false); });
         }
 
         private Control BuildMediaFilterPanel()
@@ -2041,19 +2051,22 @@ namespace Splined.WindowsGui
             ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
             TableLayoutPanel columns = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                AutoSize = false,
+                Height = 400,
                 ColumnCount = 7,
                 RowCount = 1,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0)
             };
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 285));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 255));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 720));
+            columns.Width = 1547;
 
             TableLayoutPanel types = CandidateFilterColumn();
             candidateShowAll = new FluentCheckBox
@@ -2074,8 +2087,7 @@ namespace Splined.WindowsGui
                 SaveCandidateFilterState();
                 ApplyCandidateFilters();
             };
-            int showAllRow = types.RowCount++;
-            types.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+            int showAllRow = AddCandidateFilterRow(types, 27);
             types.Controls.Add(candidateShowAll, 0, showAllRow);
             types.SetColumnSpan(candidateShowAll, 3);
             AddCandidateFilterSection(types, "Image Type", "type", new[]
@@ -2155,6 +2167,16 @@ namespace Splined.WindowsGui
             column.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
             column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             return column;
+        }
+
+        private static int AddCandidateFilterRow(TableLayoutPanel column, float height)
+        {
+            int row = column.RowCount;
+            column.RowCount = row + 1;
+            while (column.RowStyles.Count <= row) column.RowStyles.Add(new RowStyle());
+            column.RowStyles[row].SizeType = SizeType.Absolute;
+            column.RowStyles[row].Height = height;
+            return row;
         }
 
         private TableLayoutPanel BuildUpscaleFilterColumn()
@@ -2245,14 +2267,13 @@ namespace Splined.WindowsGui
             advanced.Controls.Add(BuildUpscaleProfileControl("brightness", "Brightness", -20, 20, state.UpscaleBrightnessPercent));
             advanced.Controls.Add(BuildUpscaleProfileControl("gamma", "Gamma", -20, 20, state.UpscaleGammaPercent));
             advanced.Controls.Add(BuildUpscaleProfileControl("temperature", "Color", -100, 100, state.UpscaleColorTemperature));
-            AddUpscaleFilterRow(column, advanced, 220);
+            AddUpscaleFilterRow(column, advanced, 240);
             return column;
         }
 
         private static void AddUpscaleFilterRow(TableLayoutPanel column, Control control, float height)
         {
-            int row = column.RowCount++;
-            column.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            int row = AddCandidateFilterRow(column, height);
             column.Controls.Add(control, 0, row);
         }
 
@@ -2261,20 +2282,20 @@ namespace Splined.WindowsGui
             TableLayoutPanel control = new TableLayoutPanel
             {
                 Name = "upscaleProfileControl_" + key,
-                Width = 68,
-                Height = 196,
+                Width = 84,
+                Height = 224,
                 ColumnCount = 1,
                 RowCount = 4,
                 Margin = new Padding(0, 0, ThemeManager.Space4, 0),
                 Padding = new Padding(2)
             };
-            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             control.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
             control.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             control.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
             Label heading = new Label
             {
-                Text = label,
+                Text = UpscaleProfileIcon(key) + " " + label,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
                 AutoEllipsis = true,
@@ -2336,7 +2357,7 @@ namespace Splined.WindowsGui
                 {
                     slider.Value = delta == 0 ? 0 : Math.Max(slider.Minimum, Math.Min(slider.Maximum, slider.Value + delta));
                 };
-                buttons.Controls.Add(button);
+                buttons.Controls.Add(button, action.Value + 1, 0);
             }
             slider.ValueChanged += delegate
             {
@@ -2356,6 +2377,18 @@ namespace Splined.WindowsGui
             if (key.Equals("temperature", StringComparison.OrdinalIgnoreCase))
                 return value == 0 ? "<Middle>" : value < 0 ? "<Cool " + Math.Abs(value) + ">" : "<Warm " + value + ">";
             return "<" + value.ToString("+0;-0;0") + "%>";
+        }
+
+        private static string UpscaleProfileIcon(string key)
+        {
+            if (key.Equals("picture", StringComparison.OrdinalIgnoreCase)) return "▣";
+            if (key.Equals("sharpen", StringComparison.OrdinalIgnoreCase)) return "◆";
+            if (key.Equals("softness", StringComparison.OrdinalIgnoreCase)) return "◌";
+            if (key.Equals("contrast", StringComparison.OrdinalIgnoreCase)) return "◐";
+            if (key.Equals("exposure", StringComparison.OrdinalIgnoreCase)) return "☀";
+            if (key.Equals("brightness", StringComparison.OrdinalIgnoreCase)) return "✦";
+            if (key.Equals("gamma", StringComparison.OrdinalIgnoreCase)) return "γ";
+            return "🌡";
         }
 
         private void SetUpscaleProfileValue(string key, int value)
@@ -2430,8 +2463,7 @@ namespace Splined.WindowsGui
                 Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
                 Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
             };
-            int headingRow = column.RowCount++;
-            column.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+            int headingRow = AddCandidateFilterRow(column, 27);
             column.Controls.Add(heading, 0, headingRow);
             column.SetColumnSpan(heading, 3);
             foreach (CandidateFilterOption option in present)
@@ -2468,8 +2500,7 @@ namespace Splined.WindowsGui
                     SaveCandidateFilterState();
                     ApplyCandidateFilters();
                 };
-                int optionRow = column.RowCount++;
-                column.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+                int optionRow = AddCandidateFilterRow(column, 25);
                 column.Controls.Add(check, 0, optionRow);
                 column.Controls.Add(count, 1, optionRow);
             }
@@ -2662,6 +2693,15 @@ namespace Splined.WindowsGui
                 }
             }
             RebuildCandidateFilterPanel();
+            if (selectedCandidateIndex < 0)
+            {
+                CandidateView editableLocal = candidates.Values.FirstOrDefault(candidate => candidate.IsLocal && CandidateCanEdit(candidate));
+                if (editableLocal != null)
+                {
+                    compareCandidateIndexes.Add(editableLocal.Index);
+                    selectedCandidateIndex = editableLocal.Index;
+                }
+            }
             ApplyCandidateFilters();
             SetCandidateFilterExpanded(uiState.CandidateFilterExpanded, false);
         }
@@ -4424,11 +4464,34 @@ namespace Splined.WindowsGui
             return list == null ? new object[0] : list.ToArray();
         }
 
-        private static Image LoadImageCopy(string path)
+        private Image LoadImageCopy(string path)
         {
             try
             {
-                byte[] bytes = File.ReadAllBytes(path);
+                if (String.IsNullOrWhiteSpace(path)) return null;
+                string key = Path.GetFullPath(path);
+                byte[] bytes;
+                if (!candidateImageMemoryCache.TryGetValue(key, out bytes))
+                {
+                    bytes = File.ReadAllBytes(path);
+                    if (bytes.LongLength <= CandidateImageMemoryCacheLimit)
+                    {
+                        candidateImageMemoryCache[key] = bytes;
+                        candidateImageMemoryCacheOrder.Enqueue(key);
+                        candidateImageMemoryCacheBytes += bytes.LongLength;
+                        while (candidateImageMemoryCacheBytes > CandidateImageMemoryCacheLimit
+                            && candidateImageMemoryCacheOrder.Count > 0)
+                        {
+                            string oldest = candidateImageMemoryCacheOrder.Dequeue();
+                            byte[] removed;
+                            if (candidateImageMemoryCache.TryGetValue(oldest, out removed))
+                            {
+                                candidateImageMemoryCache.Remove(oldest);
+                                candidateImageMemoryCacheBytes -= removed.LongLength;
+                            }
+                        }
+                    }
+                }
                 using (MemoryStream stream = new MemoryStream(bytes))
                 using (Image source = Image.FromStream(stream)) return new Bitmap(source);
             }
