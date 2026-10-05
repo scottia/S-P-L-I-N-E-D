@@ -240,9 +240,12 @@ Candidates pane displays every manually reviewable strict candidate.
 An unverified strict candidate is marked **Manual only**: its image and URL stay
 available, but it cannot become Recommended or be accepted by Auto Scan.
 
-The spectrum-framed **Artwork Filter** uses the same inline dropdown pattern as
-**Select Media**. Filtering does not rerank providers or change the underlying
-result set. The expanded four-column surface is built from the current Album:
+The spectrum-framed **Artwork Filter** activation button remains above the
+candidate cards. Opening it uses the same workspace-swap pattern as
+MusicBrainz Matches: the four-column filter replaces **Scan Activity and
+Decisions** beside **Selected Album Artwork**, so it never drops over or moves
+the source thumbnails. Filtering does not rerank providers or change the
+underlying result set. The expanded surface is built from the current Album:
 
 - **Source Selection** follows enabled Artwork Source Priority and lists only
   sources that actually returned a result;
@@ -284,8 +287,15 @@ filter after a batch completes. **Show all results** clears explicit exclusions.
 LAUNCH and the ordinary candidate actions occupy the same header row immediately to the
 right of **Artwork Filter**. There is no separate bottom action bar. Conditional
 actions such as Keep Local, Refine Fallback, MusicBrainz Matches, and Back to MB
-Matches appear in that row only when applicable. **Upscale Preview** lives in
-the filter's Upscale / Advanced column.
+Matches appear in that row only when applicable. **Upscale Preview** and
+**Apply default upscale** live in the filter's Upscale / Advanced column.
+
+The eight advanced values use compact vertical controls: the current value is
+shown above the adjustment, with square decrement, reset, and increment buttons
+below it. They are Picture (color intensity), Sharpen, Softness, Contrast,
+Exposure, Brightness, Gamma Correction, and Color Correction (Cool through
+Middle to Warm). Numeric defaults are `0%`; Color Correction defaults to
+`Middle`. The live Artwork preview updates as values change.
 
 Candidate order remains deterministic. Local evidence is displayed first,
 the recommended result follows, and remaining results are ordered by descending
@@ -428,11 +438,19 @@ passwords, authorization headers, client secrets, or provider filenames.
 
 **Artwork Options** is arranged as Image Processing, **Default Upscale /
 Advanced**, and Output Formats. The middle section owns Upscale below ideal,
-Maximum upscale, Apply adaptive defaults, and the five advanced values also
+Maximum upscale, Apply adaptive defaults, and the eight advanced values also
 shown in Artwork Filter. Both surfaces edit the same saved Config v5 profile.
-The profile is applied only when an eligible source below Ideal is enlarged;
-Ideal and higher-resolution validated artwork is never reduced or modified by
-the upscale profile.
+The profile is applied when an eligible source below Ideal is enlarged. Ideal
+and higher-resolution validated artwork is never reduced automatically.
+
+An existing local `cover.*` is also always available for explicit editing,
+regardless of its resolution or whether it was previously upscaled. Selecting
+it and using Upscale Preview or changing an advanced value marks that local
+cover for editing at its native/projected resolution; simply choosing Keep
+Local still leaves its bytes untouched. Manual review carries an existing
+Ideal cover into candidate results instead of ending at local preflight; Auto
+mode retains the fast local-Ideal acceptance path. This does not require
+resetting or lowering the Album's completed status.
 
 Each provider in **Sources & Matching** exposes **Strict Override**. When on,
 Windows compares the decoded complete image with exact-release CAA Front art,

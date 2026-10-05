@@ -128,21 +128,26 @@ See [SPLINED media database](splined-media-database.md).
 | `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
 | `upscale_max_percent` | `200` | Maximum enlargement relative to the original short side; `200` permits 2×, and candidates exceeding the limit remain manual-only |
 | `upscale_adaptive_defaults` | `true` | Analyze exposure/contrast and apply only SPLINED's bounded correction when the source demonstrably needs it |
-| `upscale_sharpen_percent` | `0` | Explicit upscale-only sharpening, `0`–`20`; the default pipeline never sharpens |
-| `upscale_contrast_percent` | `0` | Explicit upscale-only contrast override, `-20`–`20` percent |
-| `upscale_exposure_percent` | `0` | Explicit upscale-only exposure override, `-20`–`20` percent |
-| `upscale_brightness_percent` | `0` | Explicit upscale-only brightness override, `-20`–`20` percent |
-| `upscale_color_temperature` | `0` | Explicit upscale-only color correction, `-100` Cool through `100` Warm |
+| `upscale_picture_percent` | `0` | Color-intensity/saturation adjustment, `-20`–`20` percent |
+| `upscale_sharpen_percent` | `0` | Explicit artwork-profile sharpening, `0`–`20`; the default pipeline never sharpens |
+| `upscale_softness_percent` | `0` | Explicit edge-softening adjustment, `0`–`20` percent |
+| `upscale_contrast_percent` | `0` | Explicit artwork-profile contrast override, `-20`–`20` percent |
+| `upscale_exposure_percent` | `0` | Explicit artwork-profile exposure override, `-20`–`20` percent |
+| `upscale_brightness_percent` | `0` | Explicit artwork-profile brightness override, `-20`–`20` percent |
+| `upscale_gamma_percent` | `0` | Gamma correction, `-20`–`20` percent |
+| `upscale_color_temperature` | `0` | Explicit artwork-profile color correction, `-100` Cool through `100` Warm |
 | `evaluate_final_image` | `true` | Rank the image SPLINED would actually write |
 
 Upscaling preserves aspect ratio. By default it does not sharpen. Before enlargement,
 SPLINED measures luminance, shadow/highlight clipping, and contrast. It applies
 no correction to balanced artwork; a demonstrably flat or under/overexposed
 source may receive at most plus or minus 5 percent brightness and plus 8
-percent contrast. Explicit Advanced values are added only when an eligible
-below-Ideal source is enlarged; setting Apply adaptive defaults false disables
-the analyze-first correction but retains those explicit values. The Windows
-Upscale Preview reports the effective corrections.
+percent contrast. Explicit Advanced values are added when an eligible
+below-Ideal source is enlarged or when the operator explicitly previews/edits
+an existing local cover at native resolution. Merely keeping the local cover
+does not rewrite it. Setting Apply adaptive defaults false disables the
+analyze-first correction but retains explicit values. The Windows Upscale
+Preview reports the effective corrections.
 
 Enlargement capability is not Preferred/Auto authority. An upscaled candidate
 must still pass the configured range and source policy, strict image-content

@@ -202,10 +202,13 @@ pub struct OutputConfig {
     pub upscale_below_ideal: bool,
     pub upscale_max_percent: u32,
     pub upscale_adaptive_defaults: bool,
+    pub upscale_picture_percent: i32,
     pub upscale_sharpen_percent: i32,
+    pub upscale_softness_percent: i32,
     pub upscale_contrast_percent: i32,
     pub upscale_exposure_percent: i32,
     pub upscale_brightness_percent: i32,
+    pub upscale_gamma_percent: i32,
     pub upscale_color_temperature: i32,
     pub evaluate_final_image: bool,
 }
@@ -379,10 +382,13 @@ impl Default for OutputConfig {
             upscale_below_ideal: false,
             upscale_max_percent: 200,
             upscale_adaptive_defaults: true,
+            upscale_picture_percent: 0,
             upscale_sharpen_percent: 0,
+            upscale_softness_percent: 0,
             upscale_contrast_percent: 0,
             upscale_exposure_percent: 0,
             upscale_brightness_percent: 0,
+            upscale_gamma_percent: 0,
             upscale_color_temperature: 0,
             evaluate_final_image: true,
         }
@@ -540,10 +546,25 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     if !(100..=800).contains(&config.output.upscale_max_percent) {
         return Err("SPLINED output upscale_max_percent must be between 100 and 800.".to_string());
     }
-    if !(0..=20).contains(&config.output.upscale_sharpen_percent) {
-        return Err("SPLINED output upscale_sharpen_percent must be between 0 and 20.".to_string());
+    for (name, value) in [
+        (
+            "upscale_sharpen_percent",
+            config.output.upscale_sharpen_percent,
+        ),
+        (
+            "upscale_softness_percent",
+            config.output.upscale_softness_percent,
+        ),
+    ] {
+        if !(0..=20).contains(&value) {
+            return Err(format!("SPLINED output {name} must be between 0 and 20."));
+        }
     }
     for (name, value) in [
+        (
+            "upscale_picture_percent",
+            config.output.upscale_picture_percent,
+        ),
         (
             "upscale_contrast_percent",
             config.output.upscale_contrast_percent,
@@ -556,6 +577,7 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             "upscale_brightness_percent",
             config.output.upscale_brightness_percent,
         ),
+        ("upscale_gamma_percent", config.output.upscale_gamma_percent),
     ] {
         if !(-20..=20).contains(&value) {
             return Err(format!("SPLINED output {name} must be between -20 and 20."));

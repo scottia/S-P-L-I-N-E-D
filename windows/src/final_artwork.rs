@@ -61,7 +61,10 @@ pub struct PreparedArtworkInfo {
     pub brightness_percent: i8,
     pub contrast_percent: i8,
     pub exposure_percent: i8,
+    pub picture_percent: i8,
     pub sharpen_percent: u8,
+    pub softness_percent: u8,
+    pub gamma_percent: i8,
     pub color_temperature: i16,
     pub adaptive_defaults: bool,
     pub quality_eligible: bool,
@@ -143,6 +146,45 @@ pub fn prepare_configured_artwork(
     output: &OutputConfig,
     allow_outside_range: bool,
 ) -> Result<PreparedArtwork, String> {
+    prepare_configured_artwork_inner(
+        candidate,
+        source_path,
+        range,
+        target_format,
+        output,
+        allow_outside_range,
+        false,
+    )
+}
+
+pub fn prepare_existing_cover_edit(
+    candidate: &Candidate,
+    source_path: &Path,
+    range: &Range,
+    target_format: StaticFormat,
+    output: &OutputConfig,
+    allow_outside_range: bool,
+) -> Result<PreparedArtwork, String> {
+    prepare_configured_artwork_inner(
+        candidate,
+        source_path,
+        range,
+        target_format,
+        output,
+        allow_outside_range,
+        true,
+    )
+}
+
+fn prepare_configured_artwork_inner(
+    candidate: &Candidate,
+    source_path: &Path,
+    range: &Range,
+    target_format: StaticFormat,
+    output: &OutputConfig,
+    allow_outside_range: bool,
+    edit_existing_cover: bool,
+) -> Result<PreparedArtwork, String> {
     let (target_width, target_height, crop_square, resized) =
         projected_dimensions(candidate, range, output);
     let projected_short_side = target_width.min(target_height);
@@ -172,9 +214,11 @@ pub fn prepare_configured_artwork(
     }
 
     let converted = candidate.format != target_format;
+    let projected_upscale = target_width > candidate.width || target_height > candidate.height;
+    let profile_applied = projected_upscale || edit_existing_cover;
     let mut upscale_backend = UpscaleBackend::None;
     let mut quality = ArtworkQualityAssessment::balanced();
-    let bytes = if !crop_square && !resized && !converted {
+    let bytes = if !crop_square && !resized && !converted && !edit_existing_cover {
         fs::read(source_path).map_err(|error| {
             format!(
                 "Unable to read selected artwork {}: {error}",
@@ -210,8 +254,7 @@ pub fn prepare_configured_artwork(
             let top = (image.height() - side) / 2;
             image = image.crop_imm(left, top, side, side);
         }
-        let is_upscale = target_width > image.width() || target_height > image.height();
-        if is_upscale {
+        if profile_applied {
             quality = assess_dynamic_image_quality(&image);
             if !output.upscale_adaptive_defaults {
                 quality.brightness_adjustment = 0.0;
@@ -225,7 +268,7 @@ pub fn prepare_configured_artwork(
             image = resized_output.0;
             upscale_backend = resized_output.1;
         }
-        if is_upscale {
+        if profile_applied {
             image = apply_upscale_corrections(image, quality, output);
         }
         let mut encoded = encode_image(&image, target_format)?;
@@ -241,9 +284,6 @@ pub fn prepare_configured_artwork(
         encoded
     };
 
-    let profile_applied = resized
-        && candidate.width.min(candidate.height) < range.ideal
-        && output.upscale_below_ideal;
     let info = PreparedArtworkInfo {
         width: target_width,
         height: target_height,
@@ -258,8 +298,23 @@ pub fn prepare_configured_artwork(
         } else {
             0
         },
+        picture_percent: if profile_applied {
+            output.upscale_picture_percent as i8
+        } else {
+            0
+        },
         sharpen_percent: if profile_applied {
             output.upscale_sharpen_percent as u8
+        } else {
+            0
+        },
+        softness_percent: if profile_applied {
+            output.upscale_softness_percent as u8
+        } else {
+            0
+        },
+        gamma_percent: if profile_applied {
+            output.upscale_gamma_percent as i8
         } else {
             0
         },
@@ -410,7 +465,10 @@ fn apply_upscale_corrections(
     if quality.brightness_adjustment.abs() < f32::EPSILON
         && quality.contrast_adjustment.abs() < f32::EPSILON
         && output.upscale_exposure_percent == 0
+        && output.upscale_picture_percent == 0
         && output.upscale_sharpen_percent == 0
+        && output.upscale_softness_percent == 0
+        && output.upscale_gamma_percent == 0
         && output.upscale_color_temperature == 0
     {
         return image;
@@ -421,25 +479,73 @@ fn apply_upscale_corrections(
     let temperature = output.upscale_color_temperature as f32 / 100.0;
     let red_scale = 1.0 + temperature * 0.10;
     let blue_scale = 1.0 - temperature * 0.10;
+    let saturation = 1.0 + output.upscale_picture_percent as f32 / 100.0;
+    let gamma_adjustment = output.upscale_gamma_percent as f32 / 100.0;
+    let gamma_exponent = if gamma_adjustment >= 0.0 {
+        1.0 / (1.0 + gamma_adjustment)
+    } else {
+        1.0 - gamma_adjustment
+    };
     for pixel in pixels.pixels_mut() {
-        for (index, channel) in pixel.0[..3].iter_mut().enumerate() {
+        let mut corrected_channels = [0.0_f32; 3];
+        for (index, channel) in pixel.0[..3].iter().enumerate() {
             let normalized = f32::from(*channel) / 255.0;
             let temperature_scale = match index {
                 0 => red_scale,
                 2 => blue_scale,
                 _ => 1.0,
             };
-            let corrected = (((normalized - 0.5) * contrast + 0.5 + quality.brightness_adjustment)
-                * exposure
-                * temperature_scale)
-                .clamp(0.0, 1.0);
-            *channel = (corrected * 255.0).round() as u8;
+            corrected_channels[index] =
+                (((normalized - 0.5) * contrast + 0.5 + quality.brightness_adjustment)
+                    * exposure
+                    * temperature_scale)
+                    .clamp(0.0, 1.0);
         }
+        let luminance = 0.2126 * corrected_channels[0]
+            + 0.7152 * corrected_channels[1]
+            + 0.0722 * corrected_channels[2];
+        for (index, channel) in pixel.0[..3].iter_mut().enumerate() {
+            let saturated =
+                (luminance + (corrected_channels[index] - luminance) * saturation).clamp(0.0, 1.0);
+            *channel = (saturated.powf(gamma_exponent) * 255.0).round() as u8;
+        }
+    }
+    if output.upscale_softness_percent > 0 {
+        pixels = soften_rgba(&pixels, output.upscale_softness_percent as f32 / 100.0);
     }
     if output.upscale_sharpen_percent > 0 {
         pixels = sharpen_rgba(&pixels, output.upscale_sharpen_percent as f32 / 100.0);
     }
     DynamicImage::ImageRgba8(pixels)
+}
+
+fn soften_rgba(source: &RgbaImage, amount: f32) -> RgbaImage {
+    if source.width() < 3 || source.height() < 3 || amount <= 0.0 {
+        return source.clone();
+    }
+    let mut output = source.clone();
+    let blend = amount.clamp(0.0, 0.20);
+    for y in 1..source.height() - 1 {
+        for x in 1..source.width() - 1 {
+            let center = source.get_pixel(x, y);
+            let left = source.get_pixel(x - 1, y);
+            let right = source.get_pixel(x + 1, y);
+            let top = source.get_pixel(x, y - 1);
+            let bottom = source.get_pixel(x, y + 1);
+            let target = output.get_pixel_mut(x, y);
+            for channel in 0..3 {
+                let average = (f32::from(left[channel])
+                    + f32::from(right[channel])
+                    + f32::from(top[channel])
+                    + f32::from(bottom[channel]))
+                    / 4.0;
+                target[channel] = (f32::from(center[channel]) * (1.0 - blend) + average * blend)
+                    .clamp(0.0, 255.0)
+                    .round() as u8;
+            }
+        }
+    }
+    output
 }
 
 fn sharpen_rgba(source: &RgbaImage, amount: f32) -> RgbaImage {
@@ -702,7 +808,10 @@ fn prepare_final_artwork_inner(
         brightness_percent: 0,
         contrast_percent: 0,
         exposure_percent: 0,
+        picture_percent: 0,
         sharpen_percent: 0,
+        softness_percent: 0,
+        gamma_percent: 0,
         color_temperature: 0,
         adaptive_defaults: false,
         quality_eligible: true,
@@ -1012,10 +1121,13 @@ mod tests {
         let output = OutputConfig {
             upscale_below_ideal: true,
             upscale_adaptive_defaults: false,
+            upscale_picture_percent: 6,
             upscale_sharpen_percent: 4,
+            upscale_softness_percent: 2,
             upscale_contrast_percent: 7,
             upscale_exposure_percent: -3,
             upscale_brightness_percent: 5,
+            upscale_gamma_percent: -2,
             upscale_color_temperature: -25,
             ..OutputConfig::default()
         };
@@ -1030,10 +1142,13 @@ mod tests {
         .unwrap();
         assert_eq!((enlarged.info.width, enlarged.info.height), (18, 18));
         assert!(!enlarged.info.adaptive_defaults);
+        assert_eq!(enlarged.info.picture_percent, 6);
         assert_eq!(enlarged.info.sharpen_percent, 4);
+        assert_eq!(enlarged.info.softness_percent, 2);
         assert_eq!(enlarged.info.contrast_percent, 7);
         assert_eq!(enlarged.info.exposure_percent, -3);
         assert_eq!(enlarged.info.brightness_percent, 5);
+        assert_eq!(enlarged.info.gamma_percent, -2);
         assert_eq!(enlarged.info.color_temperature, -25);
 
         let ideal_source = dir.path().join("ideal.png");
@@ -1050,11 +1165,44 @@ mod tests {
         .unwrap();
         assert_eq!((unchanged.info.width, unchanged.info.height), (20, 20));
         assert!(!unchanged.info.resized);
+        assert_eq!(unchanged.info.picture_percent, 0);
         assert_eq!(unchanged.info.sharpen_percent, 0);
+        assert_eq!(unchanged.info.softness_percent, 0);
         assert_eq!(unchanged.info.contrast_percent, 0);
         assert_eq!(unchanged.info.exposure_percent, 0);
         assert_eq!(unchanged.info.brightness_percent, 0);
+        assert_eq!(unchanged.info.gamma_percent, 0);
         assert_eq!(unchanged.info.color_temperature, 0);
+    }
+
+    #[test]
+    fn existing_ideal_cover_can_be_edited_without_resizing() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("cover.png");
+        write_image(&source, 20, 20, ImageFormat::Png);
+        let local = candidate(&source);
+        let original = fs::read(&source).unwrap();
+        let output = OutputConfig {
+            upscale_adaptive_defaults: false,
+            upscale_picture_percent: 5,
+            upscale_gamma_percent: 3,
+            ..OutputConfig::default()
+        };
+
+        let prepared = prepare_existing_cover_edit(
+            &local,
+            &source,
+            &test_range(),
+            StaticFormat::Png,
+            &output,
+            false,
+        )
+        .unwrap();
+        assert_eq!((prepared.info.width, prepared.info.height), (20, 20));
+        assert!(!prepared.info.resized);
+        assert_eq!(prepared.info.picture_percent, 5);
+        assert_eq!(prepared.info.gamma_percent, 3);
+        assert_ne!(prepared.bytes, original);
     }
 
     #[test]

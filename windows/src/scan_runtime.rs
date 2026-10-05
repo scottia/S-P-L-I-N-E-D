@@ -8,7 +8,7 @@ use crate::embedded_artwork::replace_embedded_front;
 use crate::final_artwork::{
     FinalArtworkAction, FinalArtworkResult, PreparedArtwork, PreparedArtworkInfo,
     assess_artwork_quality, destination_matches_prepared, install_prepared_artwork,
-    prepare_configured_artwork, project_configured_artwork,
+    prepare_configured_artwork, prepare_existing_cover_edit, project_configured_artwork,
 };
 use crate::gui_events;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
@@ -370,10 +370,17 @@ pub async fn run_scan_library_read_report(
             }));
         }
 
+        let review_existing_cover = should_offer_existing_cover_for_review(
+            local_preflight.action,
+            gui_events::review_required(),
+            gui_events::auto_ideal_enabled(),
+        );
+
         if matches!(
             local_preflight.action,
             LocalPreflightAction::LocalIdeal | LocalPreflightAction::EmbeddedIdeal
-        ) {
+        ) && !review_existing_cover
+        {
             let Some(best) = local_preflight.candidate.take() else {
                 summary.failed += 1;
                 println!("  ERROR: local artwork preflight did not return its selected candidate.");
@@ -434,6 +441,7 @@ pub async fn run_scan_library_read_report(
                 FinalizationOptions {
                     preserve_file: false,
                     explicit_manual_selection: false,
+                    edit_existing_cover: false,
                     output: &config.output,
                 },
             ) {
@@ -503,12 +511,12 @@ pub async fn run_scan_library_read_report(
             continue;
         }
 
-        let local_comparison_candidate = if local_preflight.action == LocalPreflightAction::Compare
-        {
-            local_preflight.candidate.take()
-        } else {
-            None
-        };
+        let local_comparison_candidate =
+            if local_preflight.action == LocalPreflightAction::Compare || review_existing_cover {
+                local_preflight.candidate.take()
+            } else {
+                None
+            };
 
         if mbid_audit.valid.len() != 1
             || !mbid_audit.missing.is_empty()
@@ -870,6 +878,7 @@ pub async fn run_scan_library_read_report(
         result.best_index = suggested_index;
         let mut manually_selected = false;
         let mut selected_output = config.output.clone();
+        let mut edit_existing_cover = false;
 
         emit_normal_source_results(NormalSourceResultsEvent {
             album,
@@ -907,12 +916,14 @@ pub async fn run_scan_library_read_report(
                     Ok(gui_events::CandidateDecision::Use { index, upscale })
                         if index < result.candidates.len() =>
                     {
-                        if let Some(upscale) = upscale
-                            && let Err(error) =
+                        if let Some(upscale) = upscale {
+                            if let Err(error) =
                                 apply_upscale_overrides(&mut selected_output, &upscale)
-                        {
-                            println!("  {}", format!("ERROR: {error}").red().bold());
-                            continue 'candidate_review;
+                            {
+                                println!("  {}", format!("ERROR: {error}").red().bold());
+                                continue 'candidate_review;
+                            }
+                            edit_existing_cover = upscale.edit_existing_cover;
                         }
                         let candidate = &result.candidates[index].downloaded.candidate;
                         if !candidate_visible_for_review(candidate, &range, config) {
@@ -1182,7 +1193,9 @@ pub async fn run_scan_library_read_report(
                     }
                 }
 
-                if matches!(candidate.source.as_str(), "local" | "webpstill") {
+                if matches!(candidate.source.as_str(), "local" | "webpstill")
+                    && !edit_existing_cover
+                {
                     let post_cover_started = Instant::now();
                     summary.unchanged += 1;
                     record_runtime_completion(
@@ -1244,7 +1257,7 @@ pub async fn run_scan_library_read_report(
                     &range,
                     target_format,
                     FinalizationOptions {
-                        preserve_file: selected_output.preserve_file,
+                        preserve_file: selected_output.preserve_file && !edit_existing_cover,
                         explicit_manual_selection: manually_selected
                             || active_policy(&config.source_policies, &candidate.source).is_some()
                             || configured_candidate_policy(
@@ -1256,6 +1269,7 @@ pub async fn run_scan_library_read_report(
                             .status
                                 == SourcePolicyStatus::Fallback
                             || result.best_index.is_none(),
+                        edit_existing_cover,
                         output: &selected_output,
                     },
                 ) {
@@ -1290,7 +1304,7 @@ pub async fn run_scan_library_read_report(
 
                         if let Some(info) = final_result.info {
                             println!(
-                                "  Final:       {}x{} {:?} resized={} converted={} upscale_backend={} adaptive={} brightness={:+}% contrast={:+}% exposure={:+}% sharpen={} color_temperature={:+} quality_eligible={}",
+                                "  Final:       {}x{} {:?} resized={} converted={} upscale_backend={} adaptive={} picture={:+}% brightness={:+}% contrast={:+}% exposure={:+}% sharpen={} softness={} gamma={:+}% color_temperature={:+} quality_eligible={}",
                                 info.width,
                                 info.height,
                                 info.format,
@@ -1298,10 +1312,13 @@ pub async fn run_scan_library_read_report(
                                 info.converted,
                                 info.upscale_backend.as_str(),
                                 info.adaptive_defaults,
+                                info.picture_percent,
                                 info.brightness_percent,
                                 info.contrast_percent,
                                 info.exposure_percent,
                                 info.sharpen_percent,
+                                info.softness_percent,
+                                info.gamma_percent,
                                 info.color_temperature,
                                 info.quality_eligible,
                             );
@@ -1353,7 +1370,9 @@ pub async fn run_scan_library_read_report(
                             )?;
                             // Python's chosen-source history is count-only and
                             // intentionally excludes every fallback choice.
-                            if fallback_reason.is_none() {
+                            if fallback_reason.is_none()
+                                && !matches!(candidate.source.as_str(), "local" | "webpstill")
+                            {
                                 let _ = record_source_selection(
                                     config,
                                     &mut source_history,
@@ -1383,7 +1402,10 @@ pub async fn run_scan_library_read_report(
                             "brightness_percent": final_result.info.map(|info| info.brightness_percent).unwrap_or(0),
                             "contrast_percent": final_result.info.map(|info| info.contrast_percent).unwrap_or(0),
                             "exposure_percent": final_result.info.map(|info| info.exposure_percent).unwrap_or(0),
+                            "picture_percent": final_result.info.map(|info| info.picture_percent).unwrap_or(0),
                             "sharpen_percent": final_result.info.map(|info| info.sharpen_percent).unwrap_or(0),
+                            "softness_percent": final_result.info.map(|info| info.softness_percent).unwrap_or(0),
+                            "gamma_percent": final_result.info.map(|info| info.gamma_percent).unwrap_or(0),
                             "color_temperature": final_result.info.map(|info| info.color_temperature).unwrap_or(0),
                             "upscale_adaptive_defaults": final_result.info.is_some_and(|info| info.adaptive_defaults),
                             "quality_eligible": final_result.info.is_some_and(|info| info.quality_eligible),
@@ -2514,6 +2536,7 @@ fn emit_musicbrainz_matches(
 struct FinalizationOptions<'a> {
     preserve_file: bool,
     explicit_manual_selection: bool,
+    edit_existing_cover: bool,
     output: &'a OutputConfig,
 }
 
@@ -2526,14 +2549,25 @@ fn finalize_selected_with_preserve(
     target_format: StaticFormat,
     options: FinalizationOptions<'_>,
 ) -> Result<(FinalArtworkResult, PathBuf), String> {
-    let prepared = prepare_configured_artwork(
-        candidate,
-        source_path,
-        range,
-        target_format,
-        options.output,
-        options.explicit_manual_selection,
-    )?;
+    let prepared = if options.edit_existing_cover {
+        prepare_existing_cover_edit(
+            candidate,
+            source_path,
+            range,
+            target_format,
+            options.output,
+            options.explicit_manual_selection,
+        )?
+    } else {
+        prepare_configured_artwork(
+            candidate,
+            source_path,
+            range,
+            target_format,
+            options.output,
+            options.explicit_manual_selection,
+        )?
+    };
 
     if !options.preserve_file {
         let destination = canonical_destination.to_path_buf();
@@ -2739,6 +2773,14 @@ fn candidate_visible_for_review(candidate: &Candidate, range: &Range, config: &C
     }
 }
 
+fn should_offer_existing_cover_for_review(
+    action: LocalPreflightAction,
+    review_required: bool,
+    auto_ideal_enabled: bool,
+) -> bool {
+    review_required && !auto_ideal_enabled && action == LocalPreflightAction::LocalIdeal
+}
+
 fn candidate_is_auto_ideal(candidate: &Candidate, range: &Range, config: &Config) -> bool {
     let projected = project_configured_artwork(candidate, range, &config.output);
     let policy = configured_candidate_policy(candidate, &projected, range, config);
@@ -2758,13 +2800,20 @@ fn apply_upscale_overrides(
     output: &mut OutputConfig,
     overrides: &gui_events::UpscaleOverrides,
 ) -> Result<(), String> {
-    if !(0..=20).contains(&overrides.sharpen_percent) {
-        return Err("Upscale sharpen override must be between 0 and 20.".to_string());
+    for (name, value) in [
+        ("sharpen", overrides.sharpen_percent),
+        ("softness", overrides.softness_percent),
+    ] {
+        if !(0..=20).contains(&value) {
+            return Err(format!("Upscale {name} override must be between 0 and 20."));
+        }
     }
     for (name, value) in [
+        ("picture", overrides.picture_percent),
         ("contrast", overrides.contrast_percent),
         ("exposure", overrides.exposure_percent),
         ("brightness", overrides.brightness_percent),
+        ("gamma", overrides.gamma_percent),
     ] {
         if !(-20..=20).contains(&value) {
             return Err(format!(
@@ -2776,10 +2825,13 @@ fn apply_upscale_overrides(
         return Err("Upscale color correction override must be between -100 and 100.".to_string());
     }
     output.upscale_adaptive_defaults = overrides.adaptive_defaults;
+    output.upscale_picture_percent = overrides.picture_percent;
     output.upscale_sharpen_percent = overrides.sharpen_percent;
+    output.upscale_softness_percent = overrides.softness_percent;
     output.upscale_contrast_percent = overrides.contrast_percent;
     output.upscale_exposure_percent = overrides.exposure_percent;
     output.upscale_brightness_percent = overrides.brightness_percent;
+    output.upscale_gamma_percent = overrides.gamma_percent;
     output.upscale_color_temperature = overrides.color_temperature;
     Ok(())
 }
@@ -3231,6 +3283,30 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn manual_gui_review_keeps_existing_ideal_cover_in_candidate_results() {
+        assert!(should_offer_existing_cover_for_review(
+            LocalPreflightAction::LocalIdeal,
+            true,
+            false,
+        ));
+        assert!(!should_offer_existing_cover_for_review(
+            LocalPreflightAction::EmbeddedIdeal,
+            true,
+            false,
+        ));
+        assert!(!should_offer_existing_cover_for_review(
+            LocalPreflightAction::LocalIdeal,
+            true,
+            true,
+        ));
+        assert!(!should_offer_existing_cover_for_review(
+            LocalPreflightAction::LocalIdeal,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
     fn configured_output_formats_preserve_configured_order() {
         assert_eq!(
             configured_output_formats(&["jpeg".to_string(), "png".to_string()]),
@@ -3408,18 +3484,25 @@ mod tests {
         let mut output = OutputConfig::default();
         let overrides = gui_events::UpscaleOverrides {
             adaptive_defaults: false,
+            picture_percent: 6,
             sharpen_percent: 4,
+            softness_percent: 2,
             contrast_percent: 7,
             exposure_percent: -3,
             brightness_percent: 5,
+            gamma_percent: -2,
             color_temperature: -25,
+            edit_existing_cover: true,
         };
         apply_upscale_overrides(&mut output, &overrides).unwrap();
         assert!(!output.upscale_adaptive_defaults);
+        assert_eq!(output.upscale_picture_percent, 6);
         assert_eq!(output.upscale_sharpen_percent, 4);
+        assert_eq!(output.upscale_softness_percent, 2);
         assert_eq!(output.upscale_contrast_percent, 7);
         assert_eq!(output.upscale_exposure_percent, -3);
         assert_eq!(output.upscale_brightness_percent, 5);
+        assert_eq!(output.upscale_gamma_percent, -2);
         assert_eq!(output.upscale_color_temperature, -25);
 
         let invalid = gui_events::UpscaleOverrides {

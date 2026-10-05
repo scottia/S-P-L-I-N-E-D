@@ -83,12 +83,21 @@ that limit stays visible for manual review but cannot become Preferred or Auto
 eligible through enlargement.
 
 `output.upscale_adaptive_defaults` keeps the bounded analyze-first correction.
-The optional `upscale_sharpen_percent`, `upscale_contrast_percent`,
-`upscale_exposure_percent`, `upscale_brightness_percent`, and
-`upscale_color_temperature` values form one saved advanced profile shared by
-Settings and the Artwork Filter. Zero leaves that property unchanged. These
-values are applied only during an eligible enlargement below Ideal; changing
-them never downscales or modifies Ideal and higher-resolution artwork.
+The optional `upscale_picture_percent`, `upscale_sharpen_percent`,
+`upscale_softness_percent`, `upscale_contrast_percent`,
+`upscale_exposure_percent`, `upscale_brightness_percent`,
+`upscale_gamma_percent`, and `upscale_color_temperature` values form one saved
+advanced profile shared by Settings and the Artwork Filter. Zero leaves that
+property unchanged. These values are applied during an eligible enlargement
+below Ideal or an explicit existing-cover edit. Automatic processing never
+downscales or modifies Ideal and higher-resolution artwork.
+
+The Artwork Filter opens in the Scan Activity workspace beside Selected Album
+Artwork rather than over candidate thumbnails. Its eight profile controls are
+compact vertical adjustments with live values and square decrement, reset, and
+increment buttons. Existing local `cover.*` candidates remain previewable and
+editable at any resolution without resetting Album status. Manual review keeps
+an Ideal local cover in candidate results; Auto mode retains fast preflight.
 
 Ideal is an enlargement target, not a maximum output size. SPLINED preserves an
 accepted source above Ideal at its native resolution; it does not reduce a

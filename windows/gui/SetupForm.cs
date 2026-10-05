@@ -29,10 +29,13 @@ namespace Splined.WindowsGui
         private NumericUpDown rangeLadder;
         private NumericUpDown squareRound;
         private NumericUpDown upscaleMaxPercent;
+        private NumericUpDown upscalePicturePercent;
         private NumericUpDown upscaleSharpenPercent;
+        private NumericUpDown upscaleSoftnessPercent;
         private NumericUpDown upscaleContrastPercent;
         private NumericUpDown upscaleExposurePercent;
         private NumericUpDown upscaleBrightnessPercent;
+        private NumericUpDown upscaleGammaPercent;
         private NumericUpDown upscaleColorTemperature;
         private Control upscaleMaxRow;
         private Dictionary<string, Button> optionButtons;
@@ -591,12 +594,15 @@ namespace Splined.WindowsGui
             upscaleMaxRow.Controls.Add(new InfoButton("Maximum enlargement from the original short side to Ideal. For example, 200% permits at most 2× enlargement. Candidates beyond this limit remain available for manual review."));
             upscaleFlow.Controls.Add(upscaleMaxRow);
             upscaleFlow.Controls.Add(CreateToggle("Apply adaptive defaults", "upscaleAdaptive", optionButtons));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Picture", "upscalePicturePercent", -20, 20, 1, "%", out upscalePicturePercent));
             upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Sharpen", "upscaleSharpenPercent", 0, 20, 1, "%", out upscaleSharpenPercent));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Softness", "upscaleSoftnessPercent", 0, 20, 1, "%", out upscaleSoftnessPercent));
             upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Contrast", "upscaleContrastPercent", -20, 20, 1, "%", out upscaleContrastPercent));
             upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Exposure", "upscaleExposurePercent", -20, 20, 1, "%", out upscaleExposurePercent));
             upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Brightness", "upscaleBrightnessPercent", -20, 20, 1, "%", out upscaleBrightnessPercent));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Gamma correction", "upscaleGammaPercent", -20, 20, 1, "%", out upscaleGammaPercent));
             upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Color correction", "upscaleColorTemperature", -100, 100, 5, "Cool ↔ Warm", out upscaleColorTemperature));
-            upscaleFlow.Controls.Add(new InfoButton("Adaptive defaults preserve SPLINED's analyze-first brightness/contrast corrections. Advanced values are persistent explicit overrides; zero leaves that property unchanged. Sharpen defaults to 0%."));
+            upscaleFlow.Controls.Add(new InfoButton("Adaptive defaults preserve SPLINED's analyze-first brightness/contrast corrections. Picture adjusts color intensity. Advanced values are persistent explicit overrides; zero leaves that property unchanged."));
 
             formatButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
             FlowLayoutPanel formatFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(12, 10, 12, 10) };
@@ -1618,8 +1624,9 @@ namespace Splined.WindowsGui
             upscaleMaxPercent.Enabled = enabled;
             Button adaptive;
             if (optionButtons.TryGetValue("upscaleAdaptive", out adaptive)) adaptive.Enabled = enabled;
-            foreach (NumericUpDown input in new[] { upscaleSharpenPercent, upscaleContrastPercent,
-                upscaleExposurePercent, upscaleBrightnessPercent, upscaleColorTemperature })
+            foreach (NumericUpDown input in new[] { upscalePicturePercent, upscaleSharpenPercent,
+                upscaleSoftnessPercent, upscaleContrastPercent, upscaleExposurePercent,
+                upscaleBrightnessPercent, upscaleGammaPercent, upscaleColorTemperature })
                 if (input != null) input.Enabled = enabled;
         }
 
@@ -1653,10 +1660,13 @@ namespace Splined.WindowsGui
             SetToggle(optionButtons, "upscale", state.UpscaleBelowIdeal);
             upscaleMaxPercent.Value = Clamp(state.UpscaleMaxPercent, upscaleMaxPercent.Minimum, upscaleMaxPercent.Maximum);
             SetToggle(optionButtons, "upscaleAdaptive", state.UpscaleAdaptiveDefaults);
+            upscalePicturePercent.Value = Clamp(state.UpscalePicturePercent, upscalePicturePercent.Minimum, upscalePicturePercent.Maximum);
             upscaleSharpenPercent.Value = Clamp(state.UpscaleSharpenPercent, upscaleSharpenPercent.Minimum, upscaleSharpenPercent.Maximum);
+            upscaleSoftnessPercent.Value = Clamp(state.UpscaleSoftnessPercent, upscaleSoftnessPercent.Minimum, upscaleSoftnessPercent.Maximum);
             upscaleContrastPercent.Value = Clamp(state.UpscaleContrastPercent, upscaleContrastPercent.Minimum, upscaleContrastPercent.Maximum);
             upscaleExposurePercent.Value = Clamp(state.UpscaleExposurePercent, upscaleExposurePercent.Minimum, upscaleExposurePercent.Maximum);
             upscaleBrightnessPercent.Value = Clamp(state.UpscaleBrightnessPercent, upscaleBrightnessPercent.Minimum, upscaleBrightnessPercent.Maximum);
+            upscaleGammaPercent.Value = Clamp(state.UpscaleGammaPercent, upscaleGammaPercent.Minimum, upscaleGammaPercent.Maximum);
             upscaleColorTemperature.Value = Clamp(state.UpscaleColorTemperature, upscaleColorTemperature.Minimum, upscaleColorTemperature.Maximum);
             UpdateUpscaleMaximumVisibility();
             SetToggle(optionButtons, "evaluate", state.EvaluateFinalImage);
@@ -1750,10 +1760,13 @@ namespace Splined.WindowsGui
                 state.UpscaleBelowIdeal = ToggleEnabled(optionButtons, "upscale");
                 state.UpscaleMaxPercent = (int)upscaleMaxPercent.Value;
                 state.UpscaleAdaptiveDefaults = ToggleEnabled(optionButtons, "upscaleAdaptive");
+                state.UpscalePicturePercent = (int)upscalePicturePercent.Value;
                 state.UpscaleSharpenPercent = (int)upscaleSharpenPercent.Value;
+                state.UpscaleSoftnessPercent = (int)upscaleSoftnessPercent.Value;
                 state.UpscaleContrastPercent = (int)upscaleContrastPercent.Value;
                 state.UpscaleExposurePercent = (int)upscaleExposurePercent.Value;
                 state.UpscaleBrightnessPercent = (int)upscaleBrightnessPercent.Value;
+                state.UpscaleGammaPercent = (int)upscaleGammaPercent.Value;
                 state.UpscaleColorTemperature = (int)upscaleColorTemperature.Value;
                 state.EvaluateFinalImage = ToggleEnabled(optionButtons, "evaluate");
                 state.Formats = formatButtons.Where(pair => ((ToggleTag)pair.Value.Tag).Enabled).Select(pair => pair.Key).ToList();

@@ -154,10 +154,13 @@ namespace Splined.WindowsGui
                 optionCoverage.UpscaleBelowIdeal = true;
                 optionCoverage.UpscaleMaxPercent = 175;
                 optionCoverage.UpscaleAdaptiveDefaults = false;
+                optionCoverage.UpscalePicturePercent = 6;
                 optionCoverage.UpscaleSharpenPercent = 4;
+                optionCoverage.UpscaleSoftnessPercent = 2;
                 optionCoverage.UpscaleContrastPercent = 7;
                 optionCoverage.UpscaleExposurePercent = -3;
                 optionCoverage.UpscaleBrightnessPercent = 5;
+                optionCoverage.UpscaleGammaPercent = -2;
                 optionCoverage.UpscaleColorTemperature = -25;
                 optionCoverage.EvaluateFinalImage = false;
                 optionCoverage.RangeMin = 1000;
@@ -195,9 +198,11 @@ namespace Splined.WindowsGui
                     && !optionReopened.SampleWrite && optionReopened.FileName == "folder" && !optionReopened.PreserveFile
                     && !optionReopened.Square && optionReopened.SquareMode == "off" && optionReopened.SquareRoundTo == 8
                     && optionReopened.UpscaleBelowIdeal && optionReopened.UpscaleMaxPercent == 175
-                    && !optionReopened.UpscaleAdaptiveDefaults && optionReopened.UpscaleSharpenPercent == 4
+                    && !optionReopened.UpscaleAdaptiveDefaults && optionReopened.UpscalePicturePercent == 6
+                    && optionReopened.UpscaleSharpenPercent == 4 && optionReopened.UpscaleSoftnessPercent == 2
                     && optionReopened.UpscaleContrastPercent == 7 && optionReopened.UpscaleExposurePercent == -3
-                    && optionReopened.UpscaleBrightnessPercent == 5 && optionReopened.UpscaleColorTemperature == -25
+                    && optionReopened.UpscaleBrightnessPercent == 5 && optionReopened.UpscaleGammaPercent == -2
+                    && optionReopened.UpscaleColorTemperature == -25
                     && !optionReopened.EvaluateFinalImage,
                     "Python output/sample or Config v5 retention options did not round-trip.");
                 Assert(optionReopened.RangeMin == 1000 && optionReopened.RangeIdeal == 1700
@@ -393,6 +398,13 @@ namespace Splined.WindowsGui
                     Application.DoEvents();
                     Assert(maximumUpscale.Enabled && maximumUpscaleRow.Visible,
                         "Maximum Upscale did not appear when Upscale below ideal was activated.");
+                    string[] advancedUpscaleInputs = { "upscalePicturePercent", "upscaleSharpenPercent",
+                        "upscaleSoftnessPercent", "upscaleContrastPercent", "upscaleExposurePercent",
+                        "upscaleBrightnessPercent", "upscaleGammaPercent", "upscaleColorTemperature" };
+                    Control defaultUpscaleGroup = setup.Controls.Find("defaultUpscaleGroup", true).Single();
+                    Assert(advancedUpscaleInputs.All(name => setup.Controls.Find(name, true).OfType<NumericUpDown>().Count() == 1)
+                        && advancedUpscaleInputs.All(name => IsDescendant(defaultUpscaleGroup, setup.Controls.Find(name, true).Single())),
+                        "Default Upscale / Advanced does not expose the same eight persistent controls as Artwork Filter.");
                     ComboBox existingArtwork = setup.Controls.Find("existingArtworkAction", true).OfType<ComboBox>().Single();
                     Assert(existingArtwork is FluentComboBox && existingArtwork.Items.Count == 2 && existingArtwork.SelectedIndex == 1
                         && Convert.ToString(existingArtwork.Items[0]).Contains("no numbered copies"),
@@ -752,14 +764,14 @@ namespace Splined.WindowsGui
                         Assert(titleLabel.Parent.Controls.OfType<InfoButton>().Any(), titleText + " does not have its replacement information tooltip beside the heading.");
                     }
                     Button artworkFilter = form.Controls.Find("candidateFilterButton", true).OfType<Button>().Single();
-                    FluentCardPanel artworkFilterPanel = form.Controls.Find("candidateFilterPanel", true).OfType<FluentCardPanel>().Single();
+                    FluentCardPanel artworkFilterPanel = (FluentCardPanel)typeof(MainForm)
+                        .GetField("candidateFilterPanel", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     Assert(artworkFilter is SpectrumToggleButton && artworkFilter.Text.Contains("Artwork Filter")
                         && artworkFilterPanel.VisualRole == CardVisualRole.SpectrumNested,
                         "Artwork Candidates did not use the Media Selection-style dropdown and spectrum filter frame.");
-                    TableLayoutPanel candidateLayout = (TableLayoutPanel)typeof(MainForm).GetField("candidateLayout", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     MethodInfo invokeArtworkFilter = typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
-                    Assert(candidateLayout.RowStyles[1].Height == 0 && artworkFilter.Text.Contains("▸") && !artworkFilter.Enabled,
+                    Assert(artworkFilterPanel.Parent == null && artworkFilter.Text.Contains("▸") && !artworkFilter.Enabled,
                         "Artwork Filter opened a blank expanded surface before candidate results existed.");
                     FluentCardTableLayoutPanel libraryCard = form.Controls.Find("mediaLibrarySelectionCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel activityPanel = form.Controls.Find("scanActivityCard", true).Single() as FluentCardTableLayoutPanel;
@@ -859,16 +871,22 @@ namespace Splined.WindowsGui
                     showCandidates.Invoke(form, new object[] { upscaleCandidates });
                     Assert(artworkFilter.Enabled, "Artwork Filter did not become available with candidate results.");
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
-                    Assert(candidateLayout.RowStyles[1].Height > 0 && artworkFilter.Text.Contains("▾"),
-                        "Artwork Filter did not expand inline after candidate results were available.");
+                    Panel activityHost = form.Controls.Find("activityContentHost", true).OfType<Panel>().Single();
+                    Label activityTitle = form.Controls.Find("scanActivityTitle", true).OfType<Label>().Single();
+                    Assert(activityHost.Controls.Contains(artworkFilterPanel) && artworkFilter.Text.Contains("▾")
+                        && activityTitle.Text == "Candidate Findings | Upscale & Artwork Editing",
+                        "Artwork Filter did not replace Scan Activity beside Selected Album Artwork.");
                     TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
                     Assert(filterColumns.ColumnCount == 7
                         && filterColumns.ColumnStyles.Count == 7
                         && filterColumns.ColumnStyles.Cast<ColumnStyle>().Count(style => style.SizeType == SizeType.Absolute && style.Width == 1) == 3,
                         "Artwork Filter is not rendered as four aligned columns with three vertical dividers.");
                     Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
+                        && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
+                            .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Orientation == Orientation.Vertical)
                         && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<TrackBar>().Single().Value == 0
-                        && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<TrackBar>().Single().Value == 0,
+                        && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<TrackBar>().Single().Value == 0
+                        && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<Button>().Single().Text == "↺",
                         "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
@@ -939,6 +957,23 @@ namespace Splined.WindowsGui
                     Assert(artworkCaption.Text.Contains("brightness +3%") && artworkCaption.Text.Contains("contrast")
                         && artworkCaption.Text.Contains("preview only"),
                         "Upscale Preview did not disclose the live saved profile correction.");
+                    Dictionary<string, object> existingIdeal = CandidatePayload(12, "local", 1800, 1800, false, "cover-file");
+                    existingIdeal["cache_path"] = upscalePreviewPath;
+                    existingIdeal["local_reference"] = "cover.jpg";
+                    showCandidates.Invoke(form, new object[] { new object[] { existingIdeal } });
+                    Control existingIdealCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 12);
+                    ((CheckBox)existingIdealCard.Controls["candidateChoice"]).Checked = true;
+                    Assert(upscalePreviewButton.Enabled,
+                        "An existing ideal cover was not kept directly editable without reprocessing the album.");
+                    TrackBar pictureProfile = form.Controls.Find("upscaleProfileSlider_picture", true).OfType<TrackBar>().Single();
+                    pictureProfile.Value = 2;
+                    typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
+                    Label artworkPreviewTitle = (Label)typeof(MainForm)
+                        .GetField("artworkPreviewTitle", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(artworkPreviewTitle.Text == "Existing Cover Edit Preview"
+                        && artworkCaption.Text.Contains("picture +2%"),
+                        "Existing cover edits were not rendered through the live preview path.");
                     FieldInfo selectionField = typeof(MainForm).GetField("selectionMode", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert((SelectionMode)selectionField.GetValue(form) == SelectionMode.Select, "Manual Select must be the default selection mode.");
                     VerifyMediaFilter(form);
@@ -984,14 +1019,14 @@ namespace Splined.WindowsGui
                         { "compilation_track", false }, { "items", matchFixture }
                     } });
                     Control embeddedMatches = form.Controls.Find("musicBrainzMatchesPanel", true).Single();
-                    Label activityTitle = form.Controls.Find("scanActivityTitle", true).OfType<Label>().Single();
-                    Panel activityHost = form.Controls.Find("activityContentHost", true).OfType<Panel>().Single();
                     Assert(activityHost.Controls.Contains(embeddedMatches) && activityTitle.Text == "MusicBrainz Matches"
                         && artworkWorkspace.ColumnStyles[1].Width > 0,
                         "MusicBrainz Matches did not replace Scan Activity while forcing the shared Artwork panel visible.");
-                    typeof(MainForm).GetMethod("CloseMusicBrainzMatchesWorkspace", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
-                    Assert(activityTitle.Text == "Scan Activity and Decisions" && activityHost.Controls.Find("musicBrainzMatchesPanel", true).Length == 0,
-                        "Returning from MusicBrainz Matches did not restore the Scan Activity workspace.");
+                    typeof(MainForm).GetMethod("CloseMusicBrainzMatchesWorkspace", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { true });
+                    Assert(activityTitle.Text == "Scan Activity and Decisions"
+                        && activityHost.Controls.Find("musicBrainzMatchesPanel", true).Length == 0,
+                        "Returning from MusicBrainz Matches did not restore Scan Activity when no candidate results remained.");
                     formUi.ShowArtwork = true;
                     typeof(MainForm).GetMethod("ApplyArtworkPanelVisibility", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                     FieldInfo runningField = typeof(MainForm).GetField("running", BindingFlags.Instance | BindingFlags.NonPublic);

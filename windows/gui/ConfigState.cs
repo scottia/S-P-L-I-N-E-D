@@ -193,10 +193,13 @@ namespace Splined.WindowsGui
         public bool UpscaleBelowIdeal;
         public int UpscaleMaxPercent = 200;
         public bool UpscaleAdaptiveDefaults = true;
+        public int UpscalePicturePercent;
         public int UpscaleSharpenPercent;
+        public int UpscaleSoftnessPercent;
         public int UpscaleContrastPercent;
         public int UpscaleExposurePercent;
         public int UpscaleBrightnessPercent;
+        public int UpscaleGammaPercent;
         public int UpscaleColorTemperature;
         public bool EvaluateFinalImage = true;
         public int RangeMin = 1200;
@@ -438,10 +441,13 @@ namespace Splined.WindowsGui
             state.UpscaleBelowIdeal = ReadBool(text, "output", "upscale_below_ideal", false);
             state.UpscaleMaxPercent = ReadInt(text, "output", "upscale_max_percent", 200);
             state.UpscaleAdaptiveDefaults = ReadBool(text, "output", "upscale_adaptive_defaults", true);
+            state.UpscalePicturePercent = ReadInt(text, "output", "upscale_picture_percent", 0);
             state.UpscaleSharpenPercent = ReadInt(text, "output", "upscale_sharpen_percent", 0);
+            state.UpscaleSoftnessPercent = ReadInt(text, "output", "upscale_softness_percent", 0);
             state.UpscaleContrastPercent = ReadInt(text, "output", "upscale_contrast_percent", 0);
             state.UpscaleExposurePercent = ReadInt(text, "output", "upscale_exposure_percent", 0);
             state.UpscaleBrightnessPercent = ReadInt(text, "output", "upscale_brightness_percent", 0);
+            state.UpscaleGammaPercent = ReadInt(text, "output", "upscale_gamma_percent", 0);
             state.UpscaleColorTemperature = ReadInt(text, "output", "upscale_color_temperature", 0);
             state.EvaluateFinalImage = ReadBool(text, "output", "evaluate_final_image", true);
             state.RangeMin = ReadInt(text, "range", "min", 1200);
@@ -565,11 +571,13 @@ namespace Splined.WindowsGui
                 throw new InvalidOperationException("Scan timeout cannot be negative.");
             if (state.UpscaleMaxPercent < 100 || state.UpscaleMaxPercent > 800)
                 throw new InvalidOperationException("Maximum upscale must be between 100% and 800%.");
-            if (state.UpscaleSharpenPercent < 0 || state.UpscaleSharpenPercent > 20)
-                throw new InvalidOperationException("Upscale sharpen must be between 0% and 20%.");
-            foreach (int value in new[] { state.UpscaleContrastPercent, state.UpscaleExposurePercent, state.UpscaleBrightnessPercent })
+            foreach (int value in new[] { state.UpscaleSharpenPercent, state.UpscaleSoftnessPercent })
+                if (value < 0 || value > 20)
+                    throw new InvalidOperationException("Upscale sharpen and softness must be between 0% and 20%.");
+            foreach (int value in new[] { state.UpscalePicturePercent, state.UpscaleContrastPercent,
+                state.UpscaleExposurePercent, state.UpscaleBrightnessPercent, state.UpscaleGammaPercent })
                 if (value < -20 || value > 20)
-                    throw new InvalidOperationException("Upscale contrast, exposure, and brightness must be between -20% and +20%.");
+                    throw new InvalidOperationException("Upscale picture, contrast, exposure, brightness, and gamma must be between -20% and +20%.");
             if (state.UpscaleColorTemperature < -100 || state.UpscaleColorTemperature > 100)
                 throw new InvalidOperationException("Upscale color correction must be between Cool -100 and Warm +100.");
             if (state.AiSplinedMinimumShortSide <= 0)
@@ -812,10 +820,13 @@ namespace Splined.WindowsGui
             text.AppendLine("upscale_below_ideal = " + Bool(state.UpscaleBelowIdeal));
             text.AppendLine("upscale_max_percent = " + state.UpscaleMaxPercent);
             text.AppendLine("upscale_adaptive_defaults = " + Bool(state.UpscaleAdaptiveDefaults));
+            text.AppendLine("upscale_picture_percent = " + state.UpscalePicturePercent);
             text.AppendLine("upscale_sharpen_percent = " + state.UpscaleSharpenPercent);
+            text.AppendLine("upscale_softness_percent = " + state.UpscaleSoftnessPercent);
             text.AppendLine("upscale_contrast_percent = " + state.UpscaleContrastPercent);
             text.AppendLine("upscale_exposure_percent = " + state.UpscaleExposurePercent);
             text.AppendLine("upscale_brightness_percent = " + state.UpscaleBrightnessPercent);
+            text.AppendLine("upscale_gamma_percent = " + state.UpscaleGammaPercent);
             text.AppendLine("upscale_color_temperature = " + state.UpscaleColorTemperature);
             text.AppendLine("evaluate_final_image = " + Bool(state.EvaluateFinalImage));
             text.AppendLine();
