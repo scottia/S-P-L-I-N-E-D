@@ -244,8 +244,11 @@ The spectrum-framed **Artwork Filter** activation button remains above the
 candidate cards. Opening it uses the same workspace-swap pattern as
 MusicBrainz Matches: the four-column filter replaces **Scan Activity and
 Decisions** beside **Selected Album Artwork**, so it never drops over or moves
-the source thumbnails. Filtering does not rerank providers or change the
-underlying result set. The expanded surface is built from the current Album:
+the source thumbnails. The four compact columns use the same framed-group
+structure, headings, padding, and row spacing as **Select Media**, rather than
+stretching loose controls across the window. Filtering does not rerank
+providers or change the underlying result set. The expanded surface is built
+from the current Album:
 
 - **Source Selection** follows enabled Artwork Source Priority and lists only
   sources that actually returned a result;
@@ -273,11 +276,16 @@ Windows Interface Settings. They therefore remain unchanged for later Albums,
 concurrent batches, and application restarts until the operator changes them;
 Interface Settings export also includes them in a `.spl` backup. Counts sit
 directly beside their option names so the expanded filter
-uses only the width its current results require. The dropdown disables and
-collapses whenever candidate results are cleared, preventing an empty expanded
-filter after a batch completes. **Show all results** clears explicit exclusions.
+uses only the width its current results require. When an Album with an existing
+`cover.*` has focus, that local file is loaded as an editable result immediately;
+the filter therefore remains available without launching provider discovery or
+changing Album history. With no focused local cover and no active provider
+results, the dropdown disables and collapses instead of opening an empty
+surface. **Show all results** clears explicit exclusions.
 
-- **Use Selected** approves one active candidate.
+- **Use Selected** approves one active provider candidate. For a focused
+  existing cover it becomes **Save Existing** and applies the previewed profile
+  directly through the native safe-write pipeline in Write mode.
 - **Compare** compares multiple active candidates.
 - **Skip Album** leaves the current Album unchanged and applies the selected
   bypass behavior.
@@ -292,9 +300,10 @@ actions such as Keep Local, Refine Fallback, MusicBrainz Matches, and Back to MB
 Matches appear in that row only when applicable. **Upscale Preview** and
 **Apply default upscale** live in the filter's Upscale / Advanced column.
 
-The eight advanced values use compact vertical controls: the current value and
-a distinct symbol/name are shown above the adjustment, with three separately
-addressable square decrement, reset, and increment buttons below it. They are
+The eight advanced values use a compact four-by-two grid of vertical controls,
+so the filter does not stretch across a wide screen. Every full control name,
+symbol, and current value remains visible above the adjustment, with three
+separately addressable square decrement, reset, and increment buttons below it. They are
 Picture (color intensity), Sharpen, Softness, Contrast,
 Exposure, Brightness, Gamma Correction, and Color Correction (Cool through
 Middle to Warm). Numeric defaults are `0%`; Color Correction defaults to
@@ -321,9 +330,10 @@ shrink with the candidate pane. The shared Artwork preview,
 MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
 
 When exactly one Upscalable result is active, **Upscale Preview** becomes
-available in the fourth filter column. If no provider candidate is recommended,
-an existing local cover is preselected so its editing controls and live preview
-are immediately available without committing a choice. The preview renders the
+available in the fourth filter column. Selecting an Album with an existing
+local cover exposes and preselects it before any scan; provider results are not
+required. The editing controls and live preview therefore remain available at
+any resolution or prior processing state. The preview renders the
 projected Ideal-size image in memory in the shared Artwork pane without writing
 the Album or changing candidate ranking.
 The preview uses the same final-art pipeline as selection and preserves aspect
@@ -350,10 +360,12 @@ Upscale possibility alone never grants Preferred or Auto eligibility. An
 enlarged candidate must still satisfy range, source, strict-content, and image
 quality validation. A flat or badly clipped image stays visible for manual
 review but cannot be selected automatically. Album processing still audits
-authoritative tags on every track, but the Windows core uses tag-only parsing:
-audio properties and embedded artwork are disabled for identity reads. This
-preserves MusicBrainz release, compilation, title, and artist validation while
-avoiding full-file NAS reads on large albums and box sets. Untouched same-format
+authoritative tags on every track. MP3 authority reads are bounded to the
+leading ID3v2 block and never seek across the MPEG container for ID3v1, Lyrics3,
+APE, audio properties, or embedded artwork. Other formats use Lofty with audio
+properties and cover art disabled. This preserves MusicBrainz release,
+compilation, title, and artist validation while avoiding per-track end-of-file
+SMB round trips on large albums and box sets. Untouched same-format
 artwork is preserved byte-for-byte. Processed JPEG and PNG output carries its
 embedded ICC profile when present; decoded WebP or cross-format conversion
 preserves the visible color values but may normalize container metadata.

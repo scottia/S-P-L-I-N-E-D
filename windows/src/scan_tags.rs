@@ -1,13 +1,31 @@
 use crate::scan::AlbumDirectory;
 use crate::scan_musicbrainz::LocalTrackEvidence;
 use lofty::config::ParseOptions;
-use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
-use lofty::id3::v2::{Frame, Id3v2Tag};
-use lofty::mpeg::MpegFile;
+use lofty::file::{TaggedFile, TaggedFileExt};
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use std::fs::File;
+use std::io::Read;
 use std::path::Path;
+
+const MAX_ID3V2_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Id3v2Fields {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    album_artist: Option<String>,
+    artist_sort: Option<String>,
+    album_sort: Option<String>,
+    release_date: Option<String>,
+    musicbrainz_album_id: Option<String>,
+    musicbrainz_release_group_id: Option<String>,
+    musicbrainz_album_artist_id: Option<String>,
+    musicbrainz_track_id: Option<String>,
+    musicbrainz_artist_id: Option<String>,
+    compilation: Option<String>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AlbumIndexTags {
@@ -25,6 +43,12 @@ pub struct AlbumIndexTags {
 /// Read only the representative-track fields that define the media index.
 /// Normal Select Media indexing must continue to call this once per Album.
 pub fn read_album_index_tags(path: &Path) -> Result<AlbumIndexTags, String> {
+    if is_mpeg_path(path)
+        && let Some(fields) = read_id3v2_fields(path)?
+    {
+        return Ok(album_index_from_id3(fields));
+    }
+
     let tagged_file = read_tags_only(path).map_err(|error| {
         format!(
             "Unable to read SPLINED representative tags from {}: {error}",
@@ -44,9 +68,8 @@ pub fn read_album_index_tags(path: &Path) -> Result<AlbumIndexTags, String> {
         .find(|value| value.iter().all(u8::is_ascii_digit))
         .map(|value| String::from_utf8_lossy(value).into_owned())
         .unwrap_or_default();
-    let musicbrainz_album_id = read_optional(&tagged_file, &ItemKey::MusicBrainzReleaseId)
-        .or_else(|| read_mpeg_txxx_album_id(path, tagged_file.file_type()))
-        .unwrap_or_default();
+    let musicbrainz_album_id =
+        read_optional(&tagged_file, &ItemKey::MusicBrainzReleaseId).unwrap_or_default();
     let compilation = read_optional(&tagged_file, &ItemKey::FlagCompilation).is_some_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -89,6 +112,12 @@ pub fn read_album_track_evidence(
 }
 
 pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, String> {
+    if is_mpeg_path(path)
+        && let Some(fields) = read_id3v2_fields(path)?
+    {
+        return evidence_from_id3(path, fields);
+    }
+
     let tagged_file = read_tags_only(path).map_err(|error| {
         format!(
             "Unable to read SPLINED audio tags from {}: {error}",
@@ -119,8 +148,7 @@ fn evidence_from_tagged_file(
 ) -> Result<LocalTrackEvidence, String> {
     let title = read_required(tagged_file, &ItemKey::TrackTitle, "TITLE", path)?;
     let artist = read_required(tagged_file, &ItemKey::TrackArtist, "ARTIST", path)?;
-    let musicbrainz_album_id = read_optional(tagged_file, &ItemKey::MusicBrainzReleaseId)
-        .or_else(|| read_mpeg_txxx_album_id(path, tagged_file.file_type()));
+    let musicbrainz_album_id = read_optional(tagged_file, &ItemKey::MusicBrainzReleaseId);
 
     Ok(LocalTrackEvidence {
         path: path.to_path_buf(),
@@ -135,49 +163,264 @@ fn evidence_from_tagged_file(
     })
 }
 
-// Mp3tag and other taggers commonly store the release MBID in an ID3v2 TXXX
-// frame named MUSICBRAINZ_ALBUMID. Lofty's generic ID3 mapping recognizes the
-// canonical spaced name, but intentionally discards unmapped TXXX frames while
-// converting to TaggedFile. Read the concrete ID3 tag as a compatibility
-// fallback so the native Windows core matches SPLINED's Python behavior.
-fn read_mpeg_txxx_album_id(path: &Path, file_type: FileType) -> Option<String> {
-    if file_type != FileType::Mpeg {
-        return None;
-    }
-
-    let mut file = File::open(path).ok()?;
-    let mpeg = MpegFile::read_from(
-        &mut file,
-        ParseOptions::new()
-            .read_properties(false)
-            .read_cover_art(false),
-    )
-    .ok()?;
-
-    musicbrainz_album_id_from_id3v2(mpeg.id3v2()?)
+fn is_mpeg_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("mp3"))
 }
 
-fn musicbrainz_album_id_from_id3v2(tag: &Id3v2Tag) -> Option<String> {
-    tag.into_iter().find_map(|frame| match frame {
-        Frame::UserText(frame) if is_musicbrainz_album_id_description(&frame.description) => frame
-            .content
-            .split('\0')
-            .find_map(|value| clean_value(Some(value))),
-        _ => None,
+fn album_index_from_id3(fields: Id3v2Fields) -> AlbumIndexTags {
+    let date = fields.release_date.unwrap_or_default();
+    let year = date
+        .as_bytes()
+        .windows(4)
+        .find(|value| value.iter().all(u8::is_ascii_digit))
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+        .unwrap_or_default();
+    let compilation = fields.compilation.as_deref().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "y"
+        )
+    });
+
+    AlbumIndexTags {
+        album: fields.album.unwrap_or_default(),
+        album_artist: fields.album_artist.or(fields.artist).unwrap_or_default(),
+        artist_sort: fields.artist_sort.unwrap_or_default(),
+        album_sort: fields.album_sort.unwrap_or_default(),
+        musicbrainz_album_id: fields.musicbrainz_album_id.unwrap_or_default(),
+        musicbrainz_release_group_id: fields.musicbrainz_release_group_id.unwrap_or_default(),
+        musicbrainz_album_artist_id: fields.musicbrainz_album_artist_id.unwrap_or_default(),
+        year,
+        compilation,
+    }
+}
+
+fn evidence_from_id3(path: &Path, fields: Id3v2Fields) -> Result<LocalTrackEvidence, String> {
+    let title = required_id3_value(fields.title, "TITLE", path)?;
+    let artist = required_id3_value(fields.artist, "ARTIST", path)?;
+    Ok(LocalTrackEvidence {
+        path: path.to_path_buf(),
+        title,
+        artist,
+        album: fields.album,
+        album_artist: fields.album_artist,
+        musicbrainz_album_id: fields.musicbrainz_album_id,
+        musicbrainz_track_id: fields.musicbrainz_track_id,
+        musicbrainz_artist_id: fields.musicbrainz_artist_id,
+        compilation: fields.compilation,
     })
 }
 
-fn is_musicbrainz_album_id_description(description: &str) -> bool {
-    let normalized: String = description
+fn required_id3_value(value: Option<String>, field: &str, path: &Path) -> Result<String, String> {
+    value.ok_or_else(|| {
+        format!(
+            "SPLINED scan requires {field} in actual file tags: {}",
+            path.display()
+        )
+    })
+}
+
+/// Read only the leading ID3v2 tag. Unlike a whole MPEG container parse this
+/// never seeks to the end of an MP3 for ID3v1, Lyrics3 or APE tags. That keeps
+/// the all-track authority audit bounded to one small sequential SMB read per
+/// track, matching Mutagen's ID3-only behavior without shipping Python in the
+/// native Windows package.
+fn read_id3v2_fields(path: &Path) -> Result<Option<Id3v2Fields>, String> {
+    let mut file = File::open(path).map_err(|error| {
+        format!(
+            "Unable to open SPLINED audio tags {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut header = [0_u8; 10];
+    file.read_exact(&mut header).map_err(|error| {
+        format!(
+            "Unable to read SPLINED ID3 header {}: {error}",
+            path.display()
+        )
+    })?;
+    if &header[..3] != b"ID3" {
+        return Ok(None);
+    }
+    let version = header[3];
+    if !(2..=4).contains(&version) {
+        return Err(format!(
+            "Unsupported ID3v2.{version} tag in {}",
+            path.display()
+        ));
+    }
+    // Rare globally-unsynchronised tags need Lofty's full parser. Do not risk
+    // frame-boundary drift in the bounded fast path.
+    if header[5] & 0x80 != 0 {
+        return Ok(None);
+    }
+    let size = syncsafe_u32(&header[6..10]) as usize;
+    if size > MAX_ID3V2_BYTES {
+        return Err(format!(
+            "ID3v2 tag in {} exceeds the {} byte safety limit",
+            path.display(),
+            MAX_ID3V2_BYTES
+        ));
+    }
+    let mut bytes = vec![0_u8; size];
+    file.read_exact(&mut bytes).map_err(|error| {
+        format!(
+            "Unable to read SPLINED ID3v2 tag {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(Some(parse_id3v2_frames(version, header[5], &bytes)))
+}
+
+fn parse_id3v2_frames(version: u8, flags: u8, bytes: &[u8]) -> Id3v2Fields {
+    let mut result = Id3v2Fields::default();
+    let mut offset = extended_header_size(version, flags, bytes).min(bytes.len());
+    let header_size = if version == 2 { 6 } else { 10 };
+    while offset + header_size <= bytes.len() {
+        let (id, frame_size, content_offset) = if version == 2 {
+            let id = &bytes[offset..offset + 3];
+            if id.iter().all(|value| *value == 0) {
+                break;
+            }
+            let size = ((bytes[offset + 3] as usize) << 16)
+                | ((bytes[offset + 4] as usize) << 8)
+                | bytes[offset + 5] as usize;
+            (String::from_utf8_lossy(id).into_owned(), size, offset + 6)
+        } else {
+            let id = &bytes[offset..offset + 4];
+            if id.iter().all(|value| *value == 0) {
+                break;
+            }
+            let size = if version == 4 {
+                syncsafe_u32(&bytes[offset + 4..offset + 8]) as usize
+            } else {
+                u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize
+            };
+            (String::from_utf8_lossy(id).into_owned(), size, offset + 10)
+        };
+        let Some(end) = content_offset.checked_add(frame_size) else {
+            break;
+        };
+        if frame_size == 0 || end > bytes.len() {
+            break;
+        }
+        apply_id3_frame(&mut result, &id, &bytes[content_offset..end]);
+        offset = end;
+    }
+    result
+}
+
+fn extended_header_size(version: u8, flags: u8, bytes: &[u8]) -> usize {
+    if flags & 0x40 == 0 || bytes.len() < 4 {
+        return 0;
+    }
+    if version == 3 {
+        4_usize.saturating_add(u32::from_be_bytes(bytes[..4].try_into().unwrap()) as usize)
+    } else if version == 4 {
+        syncsafe_u32(&bytes[..4]) as usize
+    } else {
+        0
+    }
+}
+
+fn apply_id3_frame(fields: &mut Id3v2Fields, id: &str, payload: &[u8]) {
+    match id {
+        "TIT2" | "TT2" => fields.title = decode_text_frame(payload),
+        "TPE1" | "TP1" => fields.artist = decode_text_frame(payload),
+        "TALB" | "TAL" => fields.album = decode_text_frame(payload),
+        "TPE2" | "TP2" => fields.album_artist = decode_text_frame(payload),
+        "TSOP" | "TSP" => fields.artist_sort = decode_text_frame(payload),
+        "TSO2" => fields.artist_sort = decode_text_frame(payload),
+        "TSOA" | "TSA" => fields.album_sort = decode_text_frame(payload),
+        "TDRC" | "TYER" | "TYE" => fields.release_date = decode_text_frame(payload),
+        "TCMP" | "TCP" => fields.compilation = decode_text_frame(payload),
+        "TXXX" | "TXX" => apply_user_text(fields, payload),
+        "UFID" | "UFI" => apply_unique_file_id(fields, payload),
+        _ => {}
+    }
+}
+
+fn apply_user_text(fields: &mut Id3v2Fields, payload: &[u8]) {
+    let Some(text) = decode_text_frame(payload) else {
+        return;
+    };
+    let mut parts = text.splitn(2, '\0');
+    let description = normalize_description(parts.next().unwrap_or_default());
+    let value = parts.next().and_then(|value| clean_value(Some(value)));
+    match description.as_str() {
+        "musicbrainzalbumid" | "musicbrainzreleaseid" => fields.musicbrainz_album_id = value,
+        "musicbrainzreleasegroupid" => fields.musicbrainz_release_group_id = value,
+        "musicbrainzalbumartistid" | "musicbrainzreleaseartistid" => {
+            fields.musicbrainz_album_artist_id = value
+        }
+        "musicbrainztrackid" | "musicbrainzrecordingid" => fields.musicbrainz_track_id = value,
+        "musicbrainzartistid" => fields.musicbrainz_artist_id = value,
+        "compilation" => fields.compilation = value,
+        _ => {}
+    }
+}
+
+fn apply_unique_file_id(fields: &mut Id3v2Fields, payload: &[u8]) {
+    let Some(separator) = payload.iter().position(|value| *value == 0) else {
+        return;
+    };
+    let owner = String::from_utf8_lossy(&payload[..separator]);
+    if owner.eq_ignore_ascii_case("http://musicbrainz.org") {
+        fields.musicbrainz_track_id = clean_value(Some(
+            String::from_utf8_lossy(&payload[separator + 1..]).as_ref(),
+        ));
+    }
+}
+
+fn decode_text_frame(payload: &[u8]) -> Option<String> {
+    let (&encoding, content) = payload.split_first()?;
+    let decoded = match encoding {
+        0 => content.iter().map(|value| char::from(*value)).collect(),
+        1 => decode_utf16(content, None),
+        2 => decode_utf16(content, Some(true)),
+        3 => String::from_utf8_lossy(content).into_owned(),
+        _ => return None,
+    };
+    clean_value(Some(decoded.trim_end_matches('\0')))
+}
+
+fn decode_utf16(bytes: &[u8], forced_big_endian: Option<bool>) -> String {
+    let (big_endian, content) = if let Some(value) = forced_big_endian {
+        (value, bytes)
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        (true, &bytes[2..])
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        (false, &bytes[2..])
+    } else {
+        (false, bytes)
+    };
+    let units = content.chunks_exact(2).map(|pair| {
+        if big_endian {
+            u16::from_be_bytes([pair[0], pair[1]])
+        } else {
+            u16::from_le_bytes([pair[0], pair[1]])
+        }
+    });
+    char::decode_utf16(units)
+        .map(|value| value.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
+}
+
+fn syncsafe_u32(bytes: &[u8]) -> u32 {
+    bytes
+        .iter()
+        .take(4)
+        .fold(0_u32, |value, byte| (value << 7) | u32::from(byte & 0x7F))
+}
+
+fn normalize_description(description: &str) -> String {
+    description
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
         .map(|character| character.to_ascii_lowercase())
-        .collect();
-
-    matches!(
-        normalized.as_str(),
-        "musicbrainzalbumid" | "musicbrainzreleaseid"
-    )
+        .collect()
 }
 
 fn read_required(
@@ -218,11 +461,57 @@ fn clean_value(value: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use lofty::file::FileType;
-    use lofty::id3::v2::Id3v2Tag;
     use lofty::tag::{ItemKey, Tag, TagType};
+    use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const RELEASE_ID: &str = "11111111-1111-1111-1111-111111111111";
     const RECORDING_ID: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn id3_text_frame(id: &str, value: &str) -> Vec<u8> {
+        let mut payload = vec![3];
+        payload.extend_from_slice(value.as_bytes());
+        let mut frame = Vec::new();
+        frame.extend_from_slice(id.as_bytes());
+        let size = payload.len() as u32;
+        frame.extend_from_slice(&[
+            ((size >> 21) & 0x7F) as u8,
+            ((size >> 14) & 0x7F) as u8,
+            ((size >> 7) & 0x7F) as u8,
+            (size & 0x7F) as u8,
+        ]);
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    fn id3_user_text_frame(description: &str, value: &str) -> Vec<u8> {
+        id3_text_frame("TXXX", &format!("{description}\0{value}"))
+    }
+
+    fn write_id3_fixture(frames: &[Vec<u8>]) -> std::path::PathBuf {
+        let body = frames.iter().flatten().copied().collect::<Vec<_>>();
+        let size = body.len() as u32;
+        let mut bytes = b"ID3\x04\x00\x00".to_vec();
+        bytes.extend_from_slice(&[
+            ((size >> 21) & 0x7F) as u8,
+            ((size >> 14) & 0x7F) as u8,
+            ((size >> 7) & 0x7F) as u8,
+            (size & 0x7F) as u8,
+        ]);
+        bytes.extend_from_slice(&body);
+        // A large-looking audio tail proves the reader only needs the leading
+        // ID3 block; its contents are deliberately not a valid MPEG stream.
+        bytes.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x64]);
+        let path = std::env::temp_dir().join(format!(
+            "splined-id3-prefix-{}-{}.mp3",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, bytes).unwrap();
+        path
+    }
 
     fn populated_tag(tag_type: TagType) -> Tag {
         let mut tag = Tag::new(tag_type);
@@ -271,14 +560,25 @@ mod tests {
     }
 
     #[test]
-    fn maps_mp3tag_musicbrainz_albumid_txxx_variant() {
-        let mut tag = Id3v2Tag::new();
-        tag.insert_user_text("MUSICBRAINZ_ALBUMID".to_string(), RELEASE_ID.to_string());
-
-        assert_eq!(
-            musicbrainz_album_id_from_id3v2(&tag).as_deref(),
-            Some(RELEASE_ID)
-        );
+    fn reads_required_mp3_evidence_from_the_leading_id3_tag_only() {
+        let path = write_id3_fixture(&[
+            id3_text_frame("TIT2", "Track Title"),
+            id3_text_frame("TPE1", "Track Artist"),
+            id3_text_frame("TALB", "Album Title"),
+            id3_text_frame("TPE2", "Album Artist"),
+            id3_user_text_frame("MUSICBRAINZ_ALBUMID", RELEASE_ID),
+            id3_user_text_frame("MusicBrainz Track Id", RECORDING_ID),
+            id3_text_frame("TCMP", "1"),
+        ]);
+        let evidence = read_local_track_evidence(&path).unwrap();
+        assert_eq!(evidence.title, "Track Title");
+        assert_eq!(evidence.artist, "Track Artist");
+        assert_eq!(evidence.album.as_deref(), Some("Album Title"));
+        assert_eq!(evidence.album_artist.as_deref(), Some("Album Artist"));
+        assert_eq!(evidence.musicbrainz_album_id.as_deref(), Some(RELEASE_ID));
+        assert_eq!(evidence.musicbrainz_track_id.as_deref(), Some(RECORDING_ID));
+        assert_eq!(evidence.compilation.as_deref(), Some("1"));
+        fs::remove_file(path).ok();
     }
 
     #[test]
@@ -289,21 +589,24 @@ mod tests {
             "musicbrainz_albumid",
             "MUSICBRAINZ-RELEASE-ID",
         ] {
-            let mut tag = Id3v2Tag::new();
-            tag.insert_user_text(description.to_string(), RELEASE_ID.to_string());
+            let parsed = parse_id3v2_frames(4, 0, &id3_user_text_frame(description, RELEASE_ID));
             assert_eq!(
-                musicbrainz_album_id_from_id3v2(&tag).as_deref(),
+                parsed.musicbrainz_album_id.as_deref(),
                 Some(RELEASE_ID),
                 "description {description:?} should be recognized"
             );
         }
 
-        let mut release_group = Id3v2Tag::new();
-        release_group.insert_user_text(
-            "MUSICBRAINZ_RELEASEGROUPID".to_string(),
-            RELEASE_ID.to_string(),
+        let release_group = parse_id3v2_frames(
+            4,
+            0,
+            &id3_user_text_frame("MUSICBRAINZ_RELEASEGROUPID", RELEASE_ID),
         );
-        assert_eq!(musicbrainz_album_id_from_id3v2(&release_group), None);
+        assert_eq!(release_group.musicbrainz_album_id, None);
+        assert_eq!(
+            release_group.musicbrainz_release_group_id.as_deref(),
+            Some(RELEASE_ID)
+        );
     }
 
     #[test]

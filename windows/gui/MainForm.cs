@@ -221,6 +221,7 @@ namespace Splined.WindowsGui
         private int recommendedCandidateIndex = -1;
         private readonly Dictionary<int, CandidateView> candidates = new Dictionary<int, CandidateView>();
         private readonly HashSet<int> compareCandidateIndexes = new HashSet<int>();
+        private bool standaloneExistingCoverEdit;
         private Button candidateFilterButton;
         private TableLayoutPanel candidateLayout;
         private Control candidateFilterPanel;
@@ -2053,20 +2054,21 @@ namespace Splined.WindowsGui
             {
                 Dock = DockStyle.Top,
                 AutoSize = false,
-                Height = 400,
+                Height = 450,
                 ColumnCount = 7,
                 RowCount = 1,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0)
             };
+            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 438));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 285));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 255));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 720));
-            columns.Width = 1547;
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 620));
+            columns.Width = 1394;
 
             TableLayoutPanel types = CandidateFilterColumn();
             candidateShowAll = new FluentCheckBox
@@ -2112,7 +2114,7 @@ namespace Splined.WindowsGui
                     .Distinct(StringComparer.OrdinalIgnoreCase));
             foreach (string source in sourceOrder.Distinct(StringComparer.OrdinalIgnoreCase))
                 sourceOptions.Add(new CandidateFilterOption(CandidateSourceName(source), true, CandidateSourceColor(source, palette), source));
-            AddCandidateFilterSection(sources, "Source Selection", "source", sourceOptions);
+            AddCandidateFilterSection(sources, "Source Selection", "source", sourceOptions, false);
 
             TableLayoutPanel ranges = CandidateFilterColumn();
             AddCandidateFilterSection(ranges, "Wanted", "range", new[]
@@ -2130,29 +2132,39 @@ namespace Splined.WindowsGui
 
             TableLayoutPanel upscale = BuildUpscaleFilterColumn();
 
-            Panel firstDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
-            Panel secondDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
-            Panel thirdDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
-            columns.Controls.Add(types, 0, 0);
-            columns.Controls.Add(firstDivider, 1, 0);
-            columns.Controls.Add(sources, 2, 0);
-            columns.Controls.Add(secondDivider, 3, 0);
-            columns.Controls.Add(ranges, 4, 0);
-            columns.Controls.Add(thirdDivider, 5, 0);
-            columns.Controls.Add(upscale, 6, 0);
+            columns.Controls.Add(WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types), 0, 0);
+            columns.Controls.Add(WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources), 2, 0);
+            columns.Controls.Add(WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges), 4, 0);
+            columns.Controls.Add(WrapCandidateFilterGroup("candidateUpscaleGroup", "Upscale / Advanced", upscale), 6, 0);
             candidateFilterPanel.Controls.Add(columns);
             ApplyRoundedCandidateFilterRegion(candidateFilterPanel);
             ThemeManager.Apply(candidateFilterPanel, uiState.Theme);
             RefreshCandidateFilterDependencies();
         }
 
+        private static GroupBox WrapCandidateFilterGroup(string name, string title, Control content)
+        {
+            GroupBox group = new FluentGroupBox
+            {
+                Name = name,
+                Text = title,
+                Dock = DockStyle.Fill,
+                Padding = new Padding(ThemeManager.Space8, ThemeManager.Space12, ThemeManager.Space8, ThemeManager.Space8),
+                Margin = new Padding(0)
+            };
+            content.Dock = DockStyle.Top;
+            group.Controls.Add(content);
+            return group;
+        }
+
         private static TableLayoutPanel CandidateFilterColumn()
         {
             TableLayoutPanel column = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
-                AutoScroll = true,
-                AutoSize = false,
+                Dock = DockStyle.Top,
+                AutoScroll = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 3,
                 RowCount = 0,
                 Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4),
@@ -2186,21 +2198,15 @@ namespace Splined.WindowsGui
             upscaleProfileValues.Clear();
             TableLayoutPanel column = new TableLayoutPanel
             {
-                Dock = DockStyle.Fill,
-                AutoScroll = true,
+                Dock = DockStyle.Top,
+                AutoScroll = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 1,
                 RowCount = 0,
                 Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4),
                 Margin = new Padding(0)
             };
-            Label heading = new Label
-            {
-                Text = "Upscale / Advanced",
-                AutoSize = true,
-                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
-                Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
-            };
-            AddUpscaleFilterRow(column, heading, 27);
             upscaleAdaptiveDefaults = new FluentCheckBox
             {
                 Name = "upscaleAdaptiveDefaults",
@@ -2254,8 +2260,8 @@ namespace Splined.WindowsGui
                 Name = "upscaleAdvancedControls",
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = false,
-                AutoScroll = true,
+                WrapContents = true,
+                AutoScroll = false,
                 Margin = new Padding(0),
                 Padding = new Padding(0, 0, 0, ThemeManager.Space4)
             };
@@ -2267,7 +2273,7 @@ namespace Splined.WindowsGui
             advanced.Controls.Add(BuildUpscaleProfileControl("brightness", "Brightness", -20, 20, state.UpscaleBrightnessPercent));
             advanced.Controls.Add(BuildUpscaleProfileControl("gamma", "Gamma", -20, 20, state.UpscaleGammaPercent));
             advanced.Controls.Add(BuildUpscaleProfileControl("temperature", "Color", -100, 100, state.UpscaleColorTemperature));
-            AddUpscaleFilterRow(column, advanced, 240);
+            AddUpscaleFilterRow(column, advanced, 292);
             return column;
         }
 
@@ -2282,23 +2288,23 @@ namespace Splined.WindowsGui
             TableLayoutPanel control = new TableLayoutPanel
             {
                 Name = "upscaleProfileControl_" + key,
-                Width = 84,
-                Height = 224,
+                Width = 142,
+                Height = 142,
                 ColumnCount = 1,
                 RowCount = 4,
                 Margin = new Padding(0, 0, ThemeManager.Space4, 0),
                 Padding = new Padding(2)
             };
-            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
-            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
+            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             control.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
+            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 29));
             Label heading = new Label
             {
                 Text = UpscaleProfileIcon(key) + " " + label,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
-                AutoEllipsis = true,
+                AutoEllipsis = false,
                 Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
                 Margin = new Padding(0)
             };
@@ -2323,7 +2329,7 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
                 TickStyle = TickStyle.Both,
-                Margin = new Padding(8, 0, 8, 0)
+                Margin = new Padding(18, 0, 18, 0)
             };
             upscaleProfileSliders[key] = slider;
             upscaleProfileValues[key] = current;
@@ -2444,7 +2450,8 @@ namespace Splined.WindowsGui
                 candidates.Values.Any(candidate => candidate.SourceRangeKey.Equals(key, StringComparison.OrdinalIgnoreCase)), color, key);
         }
 
-        private void AddCandidateFilterSection(TableLayoutPanel column, string title, string dimension, IEnumerable<CandidateFilterOption> options)
+        private void AddCandidateFilterSection(TableLayoutPanel column, string title, string dimension,
+            IEnumerable<CandidateFilterOption> options, bool showHeading = true)
         {
             List<CandidateFilterOption> present = options.Where(option => option.Present).ToList();
             if (present.Count == 0) return;
@@ -2456,16 +2463,19 @@ namespace Splined.WindowsGui
                 new Size(Int32.MaxValue, Int32.MaxValue), measureFlags).Width + ThemeManager.Space8;
             column.ColumnStyles[0].Width = Math.Max(column.ColumnStyles[0].Width, optionWidth);
             column.ColumnStyles[1].Width = Math.Max(column.ColumnStyles[1].Width, countWidth);
-            Label heading = new Label
+            if (showHeading)
             {
-                Text = title,
-                AutoSize = true,
-                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
-                Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
-            };
-            int headingRow = AddCandidateFilterRow(column, 27);
-            column.Controls.Add(heading, 0, headingRow);
-            column.SetColumnSpan(heading, 3);
+                Label heading = new Label
+                {
+                    Text = title,
+                    AutoSize = true,
+                    Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
+                    Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
+                };
+                int headingRow = AddCandidateFilterRow(column, 27);
+                column.Controls.Add(heading, 0, headingRow);
+                column.SetColumnSpan(heading, 3);
+            }
             foreach (CandidateFilterOption option in present)
             {
                 CheckBox check = new FluentCheckBox
@@ -2911,7 +2921,10 @@ namespace Splined.WindowsGui
         private void UpdateCandidateActions()
         {
             selectedCandidateIndex = compareCandidateIndexes.Count == 1 ? compareCandidateIndexes.First() : -1;
-            useSelected.Enabled = awaitingDecision && selectedCandidateIndex >= 0;
+            bool standaloneSelection = standaloneExistingCoverEdit && selectedCandidateIndex >= 0
+                && candidates.ContainsKey(selectedCandidateIndex) && candidates[selectedCandidateIndex].IsLocal;
+            useSelected.Text = standaloneExistingCoverEdit ? "Save Existing" : "Use Selected";
+            useSelected.Enabled = (awaitingDecision || standaloneSelection) && selectedCandidateIndex >= 0;
             bool hasLocal = candidates.Values.Any(candidate => candidate.Source.Equals("local", StringComparison.OrdinalIgnoreCase) || candidate.Source.Equals("webpstill", StringComparison.OrdinalIgnoreCase));
             keepLocal.Visible = hasLocal;
             keepLocal.Enabled = awaitingDecision && hasLocal;
@@ -2985,6 +2998,7 @@ namespace Splined.WindowsGui
             DisposeCandidateCards();
             candidateCards.AutoScrollPosition = Point.Empty;
             candidates.Clear();
+            standaloneExistingCoverEdit = false;
             candidateFilterBindings.Clear();
             if (candidateFilterPanel != null)
             {
@@ -2998,6 +3012,7 @@ namespace Splined.WindowsGui
             recommendedCandidateIndex = -1;
             awaitingDecision = false;
             useSelected.Enabled = false;
+            useSelected.Text = "Use Selected";
             keepLocal.Enabled = false;
             keepLocal.Visible = false;
             compare.Enabled = false;
@@ -3149,10 +3164,122 @@ namespace Splined.WindowsGui
             return current;
         }
 
-        private void UseSelectedClicked(object sender, EventArgs e)
+        private async void UseSelectedClicked(object sender, EventArgs e)
         {
-            if (selectedCandidateIndex < 0 || currentProcess == null) return;
+            if (selectedCandidateIndex < 0) return;
+            if (standaloneExistingCoverEdit && currentProcess == null)
+            {
+                await SaveStandaloneExistingCoverAsync();
+                return;
+            }
+            if (currentProcess == null) return;
             ConfirmAndUseCandidate(selectedCandidateIndex);
+        }
+
+        private async Task SaveStandaloneExistingCoverAsync()
+        {
+            CandidateView candidate;
+            if (!standaloneExistingCoverEdit || selectedCandidateIndex < 0
+                || !candidates.TryGetValue(selectedCandidateIndex, out candidate)
+                || !candidate.IsLocal || String.IsNullOrWhiteSpace(candidate.CachePath)) return;
+            if (!state.Mode.Equals("write", StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show(this,
+                    "Existing-cover preview is available in Read mode, but saving requires Write mode.",
+                    "SPLINED existing cover", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (uiState.ShowConfirmations)
+            {
+                DialogResult answer = MessageBox.Show(this,
+                    "Apply the current Upscale / Advanced profile directly to this existing cover?\r\n\r\n"
+                    + candidate.CachePath,
+                    "Save existing cover edit", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2);
+                if (answer != DialogResult.Yes) return;
+            }
+            string core = FindCoreExecutable();
+            if (core == null)
+            {
+                MessageBox.Show(this, "The SPLINED processing core was not found beside the GUI.",
+                    "SPLINED core missing", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            useSelected.Enabled = false;
+            progress.Visible = true;
+            progress.Style = ProgressBarStyle.Marquee;
+            SetStatus("Saving existing cover edit...");
+            string output = "";
+            string error = "";
+            int exitCode = -1;
+            try
+            {
+                ConfigState editState = state.Clone();
+                editState.Mode = "write";
+                ProcessStartInfo start = new ProcessStartInfo
+                {
+                    FileName = core,
+                    Arguments = "--edit-existing-cover " + QuoteArgument(candidate.CachePath),
+                    WorkingDirectory = ConfigStore.AppRoot,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = new UTF8Encoding(false),
+                    StandardErrorEncoding = new UTF8Encoding(false)
+                };
+                start.EnvironmentVariables["SPLINED_CONFIG_TOML"] = ConfigStore.ExportConfigText(editState);
+                await Task.Run(delegate
+                {
+                    using (Process process = Process.Start(start))
+                    {
+                        output = process.StandardOutput.ReadToEnd();
+                        error = process.StandardError.ReadToEnd();
+                        process.WaitForExit();
+                        exitCode = process.ExitCode;
+                    }
+                });
+                RuntimeLog.Write(exitCode == 0 ? "info" : "error",
+                    "existing_cover.edit exit=" + exitCode + " path=" + candidate.CachePath
+                    + " stderr=" + (String.IsNullOrWhiteSpace(error) ? "none" : error.Trim()));
+                if (exitCode != 0)
+                    throw new InvalidOperationException(String.IsNullOrWhiteSpace(error)
+                        ? "The SPLINED core did not save the existing cover edit."
+                        : error.Trim());
+
+                InvalidateCandidateImage(candidate.CachePath);
+                using (Image updated = LoadImageCopy(candidate.CachePath))
+                {
+                    if (updated != null && displayedAlbum != null)
+                    {
+                        displayedAlbum.CoverWidth = updated.Width;
+                        displayedAlbum.CoverHeight = updated.Height;
+                    }
+                }
+                editedLocalCandidateIndexes.Clear();
+                candidatePreviewActive = false;
+                RenderDisplayedAlbum();
+                ShowStandaloneExistingCoverEditor(displayedAlbum);
+                SetStatus("Existing cover edit saved without running provider discovery.");
+                if (!String.IsNullOrWhiteSpace(output))
+                    RuntimeLog.Write("debug", "existing_cover.edit.result " + output.Trim());
+            }
+            catch (Exception saveError)
+            {
+                RuntimeLog.Write("error", "existing_cover.edit.failed path=" + candidate.CachePath
+                    + " error=" + saveError.Message);
+                MessageBox.Show(this, "Unable to save the existing cover edit.\r\n\r\n" + saveError.Message,
+                    "SPLINED existing cover", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                SetStatus("Existing cover edit was not saved.");
+            }
+            finally
+            {
+                progress.Visible = false;
+                progress.Style = ProgressBarStyle.Blocks;
+                UpdateCandidateActions();
+            }
         }
 
         private void KeepLocalClicked(object sender, EventArgs e)
@@ -3781,6 +3908,77 @@ namespace Splined.WindowsGui
             displayedAlbum = running && activeLaunchAlbum != null ? activeLaunchAlbum : album;
             candidatePreviewActive = false;
             RenderDisplayedAlbum();
+            if (!running)
+                ShowStandaloneExistingCoverEditor(displayedAlbum);
+        }
+
+        private void ShowStandaloneExistingCoverEditor(AlbumInfo album)
+        {
+            ClearCandidates();
+            if (album == null) return;
+            string coverPath = album.CoverPath;
+            if (String.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
+                coverPath = album.LocalArtworkFiles.FirstOrDefault(File.Exists) ?? "";
+            if (String.IsNullOrWhiteSpace(coverPath)) return;
+
+            int width = album.CoverWidth;
+            int height = album.CoverHeight;
+            if (width <= 0 || height <= 0)
+            {
+                using (Image image = LoadImageCopy(coverPath))
+                {
+                    if (image == null) return;
+                    width = image.Width;
+                    height = image.Height;
+                }
+            }
+            int projectedWidth = width;
+            int projectedHeight = height;
+            int shortSide = Math.Min(width, height);
+            bool withinUpscaleLimit = shortSide > 0
+                && (long)state.RangeIdeal * 100L <= (long)shortSide * state.UpscaleMaxPercent;
+            bool upscale = state.UpscaleBelowIdeal && shortSide < state.RangeIdeal && withinUpscaleLimit;
+            if (upscale)
+            {
+                double scale = state.RangeIdeal / (double)shortSide;
+                projectedWidth = Math.Max(1, (int)Math.Round(width * scale));
+                projectedHeight = Math.Max(1, (int)Math.Round(height * scale));
+            }
+
+            CandidateView local = new CandidateView
+            {
+                Index = 1,
+                Source = "local",
+                PixelWidth = width,
+                PixelHeight = height,
+                Resolution = width + " x " + height,
+                Format = String.IsNullOrWhiteSpace(album.CoverFormat) ? Path.GetExtension(coverPath).TrimStart('.') : album.CoverFormat,
+                SourceRange = CandidateRangeKey(shortSide),
+                Range = CandidateRangeKey(Math.Min(projectedWidth, projectedHeight)),
+                ProjectedWidth = projectedWidth,
+                ProjectedHeight = projectedHeight,
+                Upscaled = upscale,
+                UpscaleEligible = upscale,
+                Approved = true,
+                Square = width == height,
+                Acceptable = true,
+                PolicyStatus = "accept",
+                PolicyReason = "Existing local artwork remains directly editable",
+                StrictStatus = "validated-local",
+                StrictPreferredEligible = true,
+                StrictAutoEligible = true,
+                CachePath = coverPath,
+                LocalOrigin = "cover-file",
+                LocalReference = Path.GetFileName(coverPath)
+            };
+            candidates[local.Index] = local;
+            standaloneExistingCoverEdit = true;
+            compareCandidateIndexes.Add(local.Index);
+            selectedCandidateIndex = local.Index;
+            RebuildCandidateFilterPanel();
+            ApplyCandidateFilters();
+            candidateContext.Text = "Existing cover ready for direct preview and editing — no provider scan required.";
+            SetCandidateFilterExpanded(uiState.CandidateFilterExpanded, false);
         }
 
         private void RenderDisplayedAlbum()
@@ -4496,6 +4694,20 @@ namespace Splined.WindowsGui
                 using (Image source = Image.FromStream(stream)) return new Bitmap(source);
             }
             catch { return null; }
+        }
+
+        private void InvalidateCandidateImage(string path)
+        {
+            if (String.IsNullOrWhiteSpace(path)) return;
+            string key;
+            try { key = Path.GetFullPath(path); }
+            catch { return; }
+            byte[] removed;
+            if (candidateImageMemoryCache.TryGetValue(key, out removed))
+            {
+                candidateImageMemoryCache.Remove(key);
+                candidateImageMemoryCacheBytes -= removed.LongLength;
+            }
         }
 
         private sealed class ArtistNodeInfo

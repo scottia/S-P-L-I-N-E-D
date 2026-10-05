@@ -26,6 +26,10 @@ pub struct Cli {
     #[arg(long, hide = true, requires = "media_snapshot")]
     pub refresh_media_index: bool,
 
+    /// Apply the configured editing profile directly to one existing cover
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub edit_existing_cover: Option<PathBuf>,
+
     /// Open SPLINED configuration
     #[arg(long)]
     pub config: bool,
