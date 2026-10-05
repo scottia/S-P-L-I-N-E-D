@@ -2060,8 +2060,13 @@ namespace Splined.WindowsGui
                 Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4),
                 Margin = new Padding(0)
             };
-            column.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            column.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            // Do not use AutoSize for the option and count cells here. In a
+            // percent-sized parent TableLayoutPanel, WinForms can resolve the
+            // trailing 100% column first and collapse both AutoSize columns to
+            // their minimum widths. The checkbox then paints every label with
+            // an ellipsis even though the outer third has ample room.
+            column.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+            column.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
             column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             return column;
         }
@@ -2076,6 +2081,14 @@ namespace Splined.WindowsGui
         {
             List<CandidateFilterOption> present = options.Where(option => option.Present).ToList();
             if (present.Count == 0) return;
+            Font optionFont = ThemeManager.UiFont(ThemeFontRole.Control);
+            TextFormatFlags measureFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix;
+            int optionWidth = present.Max(option => TextRenderer.MeasureText(option.Label, optionFont,
+                new Size(Int32.MaxValue, Int32.MaxValue), measureFlags).Width) + 34;
+            int countWidth = TextRenderer.MeasureText("[9999]", optionFont,
+                new Size(Int32.MaxValue, Int32.MaxValue), measureFlags).Width + ThemeManager.Space8;
+            column.ColumnStyles[0].Width = Math.Max(column.ColumnStyles[0].Width, optionWidth);
+            column.ColumnStyles[1].Width = Math.Max(column.ColumnStyles[1].Width, countWidth);
             Label heading = new Label
             {
                 Text = title,
@@ -2093,7 +2106,9 @@ namespace Splined.WindowsGui
                 {
                     Name = "candidateFilter_" + dimension + "_" + option.Key,
                     Text = option.Label,
-                    AutoSize = true,
+                    AutoSize = false,
+                    Dock = DockStyle.Fill,
+                    Font = optionFont,
                     ForeColor = option.Color,
                     Tag = option.Key,
                     Margin = new Padding(0, 1, ThemeManager.Space4, 0)
@@ -2101,7 +2116,9 @@ namespace Splined.WindowsGui
                 Label count = new Label
                 {
                     Text = "[0]",
-                    AutoSize = true,
+                    AutoSize = false,
+                    Dock = DockStyle.Fill,
+                    Font = optionFont,
                     TextAlign = ContentAlignment.MiddleLeft,
                     ForeColor = option.Color,
                     Margin = new Padding(0, 4, 0, 0)

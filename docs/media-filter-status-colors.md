@@ -282,6 +282,14 @@ S:P:L:I:N:E:D LAUNCH
 
 The lower Selected Album Statistics panel remains scrollable.
 
+## Artwork result filter
+
+The expanded Windows Artwork Filter uses three equal result columns. Within
+each column, the complete option name receives a measured fixed-width cell and
+the live count follows immediately in its own cell. Remaining space stays
+after the count. Percentage layout must not collapse option names into
+ellipses, including at supported DPI scales.
+
 ## Performance contract
 
 Expected warm behavior:

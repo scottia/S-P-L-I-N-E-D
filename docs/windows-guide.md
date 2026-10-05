@@ -253,9 +253,11 @@ from the current Album only:
 - **Wanted** and **Unwanted** classify the original downloaded short side,
   before crop or enlargement.
 
-The three equal result columns are separated by vertical rules. Full option
-names occupy an auto-sized name column and their counts align immediately to
-the right; labels are not ellipsized. The expanded surface and its clipped
+The three equal result columns are separated by vertical rules. Each result
+column reserves a measured, fixed-width option-name cell before its adjacent
+count cell, leaving any unused width after the count. This prevents WinForms
+from collapsing the labels when the outer columns use percentage sizing, so
+full names remain readable without separating them from their counts. The expanded surface and its clipped
 contents share one rounded spectrum frame. Every option has a live candidate count. Changing a source, type, policy, or
 range immediately updates the visible cards and recalculates the other
 dimensions. Choices with no possible result are automatically unchecked and

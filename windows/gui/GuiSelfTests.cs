@@ -855,9 +855,20 @@ namespace Splined.WindowsGui
                         : sourceFilterColumn.GetPositionFromControl(amazonFilter);
                     Control amazonCount = sourceFilterColumn == null ? null
                         : sourceFilterColumn.GetControlFromPosition(1, amazonPosition.Row);
+                    filterColumns.PerformLayout();
+                    foreach (TableLayoutPanel filterColumn in filterColumns.Controls.OfType<TableLayoutPanel>())
+                        filterColumn.PerformLayout();
+                    CheckBox[] visibleFilterOptions = Descendants(artworkFilterPanel)
+                        .OfType<CheckBox>()
+                        .Where(check => check.Name.StartsWith("candidateFilter_", StringComparison.Ordinal))
+                        .ToArray();
                     Assert(sourceFilterColumn != null && sourceFilterColumn.ColumnCount == 3
                         && amazonPosition.Column == 0 && amazonCount is Label
-                        && amazonFilter.Text == "Amazon" && ((Label)amazonCount).AutoSize,
+                        && sourceFilterColumn.ColumnStyles[0].SizeType == SizeType.Absolute
+                        && sourceFilterColumn.ColumnStyles[1].SizeType == SizeType.Absolute
+                        && amazonFilter.Text == "Amazon" && !((Label)amazonCount).AutoSize
+                        && visibleFilterOptions.All(check => check.Width >= TextRenderer.MeasureText(check.Text, check.Font,
+                            new Size(Int32.MaxValue, Int32.MaxValue), TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width + 30),
                         "Artwork Filter names and adjacent counts are not aligned without truncation.");
                     amazonFilter.Checked = false;
                     Assert(candidateCards.Controls.Count == 0 && !upscaleFilter.Enabled && !upscaleFilter.Checked
