@@ -153,6 +153,12 @@ namespace Splined.WindowsGui
                 optionCoverage.SquareRoundTo = 8;
                 optionCoverage.UpscaleBelowIdeal = true;
                 optionCoverage.UpscaleMaxPercent = 175;
+                optionCoverage.UpscaleAdaptiveDefaults = false;
+                optionCoverage.UpscaleSharpenPercent = 4;
+                optionCoverage.UpscaleContrastPercent = 7;
+                optionCoverage.UpscaleExposurePercent = -3;
+                optionCoverage.UpscaleBrightnessPercent = 5;
+                optionCoverage.UpscaleColorTemperature = -25;
                 optionCoverage.EvaluateFinalImage = false;
                 optionCoverage.RangeMin = 1000;
                 optionCoverage.RangeIdeal = 1700;
@@ -189,6 +195,9 @@ namespace Splined.WindowsGui
                     && !optionReopened.SampleWrite && optionReopened.FileName == "folder" && !optionReopened.PreserveFile
                     && !optionReopened.Square && optionReopened.SquareMode == "off" && optionReopened.SquareRoundTo == 8
                     && optionReopened.UpscaleBelowIdeal && optionReopened.UpscaleMaxPercent == 175
+                    && !optionReopened.UpscaleAdaptiveDefaults && optionReopened.UpscaleSharpenPercent == 4
+                    && optionReopened.UpscaleContrastPercent == 7 && optionReopened.UpscaleExposurePercent == -3
+                    && optionReopened.UpscaleBrightnessPercent == 5 && optionReopened.UpscaleColorTemperature == -25
                     && !optionReopened.EvaluateFinalImage,
                     "Python output/sample or Config v5 retention options did not round-trip.");
                 Assert(optionReopened.RangeMin == 1000 && optionReopened.RangeIdeal == 1700
@@ -264,6 +273,17 @@ namespace Splined.WindowsGui
                     && loadedUi.MainWidth == 1320 && loadedUi.MainSplitterDistance == 455
                     && loadedUi.SetupWidth == 1040 && loadedUi.SetupAdvancedTab == 2
                     && loadedUi.CompareWidth == 1110 && loadedUi.PreviewHeight == 650, "Internal Windows interface settings did not round-trip.");
+                loadedUi.CandidateExcludedSources = new List<string> { "amazon" };
+                loadedUi.CandidateExcludedTypes = new List<string> { "Rejected" };
+                loadedUi.CandidateExcludedPolicies = new List<string> { "Strict" };
+                loadedUi.CandidateExcludedRanges = new List<string> { "BelowMinimum" };
+                ConfigStore.SaveUi(loadedUi);
+                UiState filteredUi = ConfigStore.LoadUi();
+                Assert(filteredUi.CandidateExcludedSources.SequenceEqual(new[] { "amazon" })
+                    && filteredUi.CandidateExcludedTypes.SequenceEqual(new[] { "Rejected" })
+                    && filteredUi.CandidateExcludedPolicies.SequenceEqual(new[] { "Strict" })
+                    && filteredUi.CandidateExcludedRanges.SequenceEqual(new[] { "BelowMinimum" }),
+                    "Artwork Filter choices did not persist in Interface Settings.");
                 string backupPath = Path.Combine(internalSettings, "portable-settings.spl");
                 BackupSelection backupSelection = new BackupSelection
                 {
@@ -273,12 +293,19 @@ namespace Splined.WindowsGui
                     Database = false,
                     Diagnostics = false
                 };
-                BackupService.Export(backupPath, loaded, loadedUi, backupSelection, "fixture-password");
+                BackupService.Export(backupPath, loaded, filteredUi, backupSelection, "fixture-password");
                 SplinedBackupPayload protectedBackup = BackupService.Read(backupPath, "fixture-password");
                 Assert(protectedBackup.settings.Contains("config_version = 5")
                     && protectedBackup.interface_settings.Contains("[ui]")
+                    && protectedBackup.interface_settings.Contains("candidate_excluded_sources = [")
+                    && protectedBackup.interface_settings.Contains("    \"amazon\",")
                     && protectedBackup.credentials.Count == 0 && protectedBackup.database == null,
                     "Selective password-protected .spl export did not preserve its chosen sections.");
+                loadedUi.CandidateExcludedSources.Clear();
+                loadedUi.CandidateExcludedTypes.Clear();
+                loadedUi.CandidateExcludedPolicies.Clear();
+                loadedUi.CandidateExcludedRanges.Clear();
+                ConfigStore.SaveUi(loadedUi);
                 bool wrongPasswordRejected = false;
                 try { BackupService.Read(backupPath, "wrong-password"); }
                 catch (InvalidOperationException) { wrongPasswordRejected = true; }
@@ -828,16 +855,21 @@ namespace Splined.WindowsGui
                     string upscalePreviewPath = Path.Combine(internalSettings, "upscale-preview.jpg");
                     using (Bitmap fixture = new Bitmap(12, 12)) fixture.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
                     upscalable["cache_path"] = upscalePreviewPath;
-                    showCandidates.Invoke(form, new object[] { new object[] { belowMinimum, upscalable } });
+                    object[] upscaleCandidates = { belowMinimum, upscalable };
+                    showCandidates.Invoke(form, new object[] { upscaleCandidates });
                     Assert(artworkFilter.Enabled, "Artwork Filter did not become available with candidate results.");
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
                     Assert(candidateLayout.RowStyles[1].Height > 0 && artworkFilter.Text.Contains("▾"),
                         "Artwork Filter did not expand inline after candidate results were available.");
                     TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
-                    Assert(filterColumns.ColumnCount == 5
-                        && filterColumns.ColumnStyles.Count == 5
-                        && filterColumns.ColumnStyles.Cast<ColumnStyle>().Count(style => style.SizeType == SizeType.Absolute && style.Width == 1) == 2,
-                        "Artwork Filter is not rendered as three aligned columns with two vertical dividers.");
+                    Assert(filterColumns.ColumnCount == 7
+                        && filterColumns.ColumnStyles.Count == 7
+                        && filterColumns.ColumnStyles.Cast<ColumnStyle>().Count(style => style.SizeType == SizeType.Absolute && style.Width == 1) == 3,
+                        "Artwork Filter is not rendered as four aligned columns with three vertical dividers.");
+                    Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
+                        && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<TrackBar>().Single().Value == 0
+                        && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<TrackBar>().Single().Value == 0,
+                        "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
                         "BelowMinimum and policy-qualified Minimum-to-Ideal candidates did not receive red and magenta backgrounds respectively.");
@@ -874,24 +906,39 @@ namespace Splined.WindowsGui
                     Assert(candidateCards.Controls.Count == 0 && !upscaleFilter.Enabled && !upscaleFilter.Checked
                         && !rejectedFilter.Enabled && !rejectedFilter.Checked,
                         "Source filtering did not auto-unselect and gray dependent Image Type choices.");
+                    Assert(ConfigStore.LoadUi().CandidateExcludedSources.Contains("amazon"),
+                        "Artwork Filter source choice was not saved immediately for later albums and runs.");
+                    showCandidates.Invoke(form, new object[] { upscaleCandidates });
+                    amazonFilter = form.Controls.Find("candidateFilter_source_amazon", true).OfType<CheckBox>().Single();
+                    Assert(!amazonFilter.Checked && candidateCards.Controls.Count == 0,
+                        "Artwork Filter source exclusion did not survive the next Album candidate set.");
                     amazonFilter.Checked = true;
+                    upscaleFilter = form.Controls.Find("candidateFilter_type_Upscalable", true).OfType<CheckBox>().Single();
+                    rejectedFilter = form.Controls.Find("candidateFilter_type_Rejected", true).OfType<CheckBox>().Single();
                     Assert(candidateCards.Controls.Count == 2 && upscaleFilter.Enabled && upscaleFilter.Checked
                         && rejectedFilter.Enabled && rejectedFilter.Checked,
                         "Dependent Candidate FILTER choices did not restore automatically with their source.");
+                    Assert(!ConfigStore.LoadUi().CandidateExcludedSources.Contains("amazon"),
+                        "Restored Artwork Filter source choice remained excluded in saved Interface Settings.");
                     Control upscalableCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11);
                     ((CheckBox)upscalableCard.Controls["candidateChoice"]).Checked = true;
                     Button upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
                     Assert(upscalePreviewButton.Enabled,
                         "Upscale Preview did not activate for the single eligible candidate.");
+                    TrackBar brightnessProfile = form.Controls.Find("upscaleProfileSlider_brightness", true).OfType<TrackBar>().Single();
+                    brightnessProfile.Value = 3;
+                    Assert(ConfigStore.Load().UpscaleBrightnessPercent == 3
+                        && form.Controls.Find("upscaleProfileValue_brightness", true).OfType<Label>().Single().Text == "<+3%>",
+                        "Artwork Filter advanced profile did not update its value or save to Config v5.");
                     typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
                     PictureBox projectedPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
                     Assert(projectedPreview.Image != null && projectedPreview.Image.Width == 1800
                         && projectedPreview.Image.Height == 1800,
                         "Upscale Preview did not render the projected Ideal-size image in memory.");
-                    Assert(artworkCaption.Text.Contains("brightness") && artworkCaption.Text.Contains("contrast")
+                    Assert(artworkCaption.Text.Contains("brightness +3%") && artworkCaption.Text.Contains("contrast")
                         && artworkCaption.Text.Contains("preview only"),
-                        "Upscale Preview did not disclose its bounded adaptive tone correction.");
+                        "Upscale Preview did not disclose the live saved profile correction.");
                     FieldInfo selectionField = typeof(MainForm).GetField("selectionMode", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert((SelectionMode)selectionField.GetValue(form) == SelectionMode.Select, "Manual Select must be the default selection mode.");
                     VerifyMediaFilter(form);

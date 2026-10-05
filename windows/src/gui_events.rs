@@ -84,10 +84,26 @@ pub fn auto_ideal_enabled() -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpscaleOverrides {
+    pub adaptive_defaults: bool,
+    pub sharpen_percent: i32,
+    pub contrast_percent: i32,
+    pub exposure_percent: i32,
+    pub brightness_percent: i32,
+    pub color_temperature: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateDecision {
-    Use(usize),
+    Use {
+        index: usize,
+        upscale: Option<UpscaleOverrides>,
+    },
     Bypass,
-    Retry { artist: String, album: String },
+    Retry {
+        artist: String,
+        album: String,
+    },
     RetryMusicBrainz,
     BackToMusicBrainz,
 }
@@ -190,7 +206,44 @@ pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
                     if index == 0 {
                         return Err("Artwork candidate indexes start at 1.".to_string());
                     }
-                    return Ok(CandidateDecision::Use(index as usize - 1));
+                    let upscale =
+                        value
+                            .get("upscale_adaptive_defaults")
+                            .map(|_| UpscaleOverrides {
+                                adaptive_defaults: value
+                                    .get("upscale_adaptive_defaults")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(true),
+                                sharpen_percent: value
+                                    .get("upscale_sharpen_percent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
+                                contrast_percent: value
+                                    .get("upscale_contrast_percent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
+                                exposure_percent: value
+                                    .get("upscale_exposure_percent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
+                                brightness_percent: value
+                                    .get("upscale_brightness_percent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
+                                color_temperature: value
+                                    .get("upscale_color_temperature")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
+                            });
+                    return Ok(CandidateDecision::Use {
+                        index: index as usize - 1,
+                        upscale,
+                    });
                 }
                 "bypass" | "skip" => return Ok(CandidateDecision::Bypass),
                 "retry_musicbrainz" => return Ok(CandidateDecision::RetryMusicBrainz),
@@ -224,7 +277,10 @@ pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
                 if let Ok(index) = value.parse::<usize>()
                     && index > 0
                 {
-                    return Ok(CandidateDecision::Use(index - 1));
+                    return Ok(CandidateDecision::Use {
+                        index: index - 1,
+                        upscale: None,
+                    });
                 }
             }
         }

@@ -869,6 +869,7 @@ pub async fn run_scan_library_read_report(
         };
         result.best_index = suggested_index;
         let mut manually_selected = false;
+        let mut selected_output = config.output.clone();
 
         emit_normal_source_results(NormalSourceResultsEvent {
             album,
@@ -903,9 +904,16 @@ pub async fn run_scan_library_read_report(
             }
             'candidate_review: loop {
                 match gui_events::wait_for_candidate_decision() {
-                    Ok(gui_events::CandidateDecision::Use(index))
+                    Ok(gui_events::CandidateDecision::Use { index, upscale })
                         if index < result.candidates.len() =>
                     {
+                        if let Some(upscale) = upscale
+                            && let Err(error) =
+                                apply_upscale_overrides(&mut selected_output, &upscale)
+                        {
+                            println!("  {}", format!("ERROR: {error}").red().bold());
+                            continue 'candidate_review;
+                        }
                         let candidate = &result.candidates[index].downloaded.candidate;
                         if !candidate_visible_for_review(candidate, &range, config) {
                             summary.failed += 1;
@@ -926,7 +934,7 @@ pub async fn run_scan_library_read_report(
                         manually_selected = true;
                         break 'candidate_review;
                     }
-                    Ok(gui_events::CandidateDecision::Use(index)) => {
+                    Ok(gui_events::CandidateDecision::Use { index, .. }) => {
                         summary.failed += 1;
                         println!("  ERROR: candidate {} does not exist.", index + 1);
                         continue 'album_loop;
@@ -1216,7 +1224,7 @@ pub async fn run_scan_library_read_report(
 
                 let canonical_destination = match output_destination(
                     &album.path,
-                    &config.output.file_name,
+                    &selected_output.file_name,
                     target_format,
                 ) {
                     Ok(destination) => destination,
@@ -1236,19 +1244,19 @@ pub async fn run_scan_library_read_report(
                     &range,
                     target_format,
                     FinalizationOptions {
-                        preserve_file: config.output.preserve_file,
+                        preserve_file: selected_output.preserve_file,
                         explicit_manual_selection: manually_selected
                             || active_policy(&config.source_policies, &candidate.source).is_some()
                             || configured_candidate_policy(
                                 candidate,
-                                &project_configured_artwork(candidate, &range, &config.output),
+                                &project_configured_artwork(candidate, &range, &selected_output),
                                 &range,
                                 config,
                             )
                             .status
                                 == SourcePolicyStatus::Fallback
                             || result.best_index.is_none(),
-                        output: &config.output,
+                        output: &selected_output,
                     },
                 ) {
                     Ok((final_result, destination)) => {
@@ -1256,10 +1264,10 @@ pub async fn run_scan_library_read_report(
                         if final_result.action == FinalArtworkAction::Installed {
                             match cleanup_replaced_static_covers(
                                 &album.path,
-                                &config.output.file_name,
+                                &selected_output.file_name,
                                 &destination,
                                 config.mode,
-                                config.output.preserve_file,
+                                selected_output.preserve_file,
                             ) {
                                 Ok(removed) => {
                                     for removed_path in removed {
@@ -1282,15 +1290,19 @@ pub async fn run_scan_library_read_report(
 
                         if let Some(info) = final_result.info {
                             println!(
-                                "  Final:       {}x{} {:?} resized={} converted={} upscale_backend={} brightness={:+}% contrast=+{}% quality_eligible={}",
+                                "  Final:       {}x{} {:?} resized={} converted={} upscale_backend={} adaptive={} brightness={:+}% contrast={:+}% exposure={:+}% sharpen={} color_temperature={:+} quality_eligible={}",
                                 info.width,
                                 info.height,
                                 info.format,
                                 info.resized,
                                 info.converted,
                                 info.upscale_backend.as_str(),
+                                info.adaptive_defaults,
                                 info.brightness_percent,
                                 info.contrast_percent,
+                                info.exposure_percent,
+                                info.sharpen_percent,
+                                info.color_temperature,
                                 info.quality_eligible,
                             );
                         }
@@ -1370,6 +1382,10 @@ pub async fn run_scan_library_read_report(
                                 .unwrap_or("none"),
                             "brightness_percent": final_result.info.map(|info| info.brightness_percent).unwrap_or(0),
                             "contrast_percent": final_result.info.map(|info| info.contrast_percent).unwrap_or(0),
+                            "exposure_percent": final_result.info.map(|info| info.exposure_percent).unwrap_or(0),
+                            "sharpen_percent": final_result.info.map(|info| info.sharpen_percent).unwrap_or(0),
+                            "color_temperature": final_result.info.map(|info| info.color_temperature).unwrap_or(0),
+                            "upscale_adaptive_defaults": final_result.info.is_some_and(|info| info.adaptive_defaults),
                             "quality_eligible": final_result.info.is_some_and(|info| info.quality_eligible),
                         }));
                     }
@@ -1958,7 +1974,9 @@ async fn run_normal_musicbrainz_browser(
         );
 
         match gui_events::wait_for_candidate_decision()? {
-            gui_events::CandidateDecision::Use(index) if index < pipeline.candidates.len() => {
+            gui_events::CandidateDecision::Use { index, .. }
+                if index < pipeline.candidates.len() =>
+            {
                 if !candidate_visible_for_review(
                     &pipeline.candidates[index].downloaded.candidate,
                     range,
@@ -2357,7 +2375,9 @@ async fn run_compilation_album(
             );
 
             let chosen_index = match gui_events::wait_for_candidate_decision()? {
-                gui_events::CandidateDecision::Use(index) if index < pipeline.candidates.len() => {
+                gui_events::CandidateDecision::Use { index, .. }
+                    if index < pipeline.candidates.len() =>
+                {
                     index
                 }
                 gui_events::CandidateDecision::BackToMusicBrainz if local_candidate.is_none() => {
@@ -2732,6 +2752,36 @@ fn candidate_meets_upscale_limit(candidate: &Candidate, range: &Range, config: &
     candidate.short_side() >= range.ideal
         || !config.output.upscale_below_ideal
         || projected.upscaled
+}
+
+fn apply_upscale_overrides(
+    output: &mut OutputConfig,
+    overrides: &gui_events::UpscaleOverrides,
+) -> Result<(), String> {
+    if !(0..=20).contains(&overrides.sharpen_percent) {
+        return Err("Upscale sharpen override must be between 0 and 20.".to_string());
+    }
+    for (name, value) in [
+        ("contrast", overrides.contrast_percent),
+        ("exposure", overrides.exposure_percent),
+        ("brightness", overrides.brightness_percent),
+    ] {
+        if !(-20..=20).contains(&value) {
+            return Err(format!(
+                "Upscale {name} override must be between -20 and 20."
+            ));
+        }
+    }
+    if !(-100..=100).contains(&overrides.color_temperature) {
+        return Err("Upscale color correction override must be between -100 and 100.".to_string());
+    }
+    output.upscale_adaptive_defaults = overrides.adaptive_defaults;
+    output.upscale_sharpen_percent = overrides.sharpen_percent;
+    output.upscale_contrast_percent = overrides.contrast_percent;
+    output.upscale_exposure_percent = overrides.exposure_percent;
+    output.upscale_brightness_percent = overrides.brightness_percent;
+    output.upscale_color_temperature = overrides.color_temperature;
+    Ok(())
 }
 
 fn candidate_quality_eligible_for_preferred(
@@ -3351,6 +3401,32 @@ mod tests {
             &config
         ));
         assert!(!candidate_is_auto_ideal(&exceeds_limit, &range, &config));
+    }
+
+    #[test]
+    fn candidate_decision_profile_overrides_the_current_album_output() {
+        let mut output = OutputConfig::default();
+        let overrides = gui_events::UpscaleOverrides {
+            adaptive_defaults: false,
+            sharpen_percent: 4,
+            contrast_percent: 7,
+            exposure_percent: -3,
+            brightness_percent: 5,
+            color_temperature: -25,
+        };
+        apply_upscale_overrides(&mut output, &overrides).unwrap();
+        assert!(!output.upscale_adaptive_defaults);
+        assert_eq!(output.upscale_sharpen_percent, 4);
+        assert_eq!(output.upscale_contrast_percent, 7);
+        assert_eq!(output.upscale_exposure_percent, -3);
+        assert_eq!(output.upscale_brightness_percent, 5);
+        assert_eq!(output.upscale_color_temperature, -25);
+
+        let invalid = gui_events::UpscaleOverrides {
+            sharpen_percent: 21,
+            ..overrides
+        };
+        assert!(apply_upscale_overrides(&mut output, &invalid).is_err());
     }
 
     #[test]
