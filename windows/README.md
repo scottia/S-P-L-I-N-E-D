@@ -95,23 +95,26 @@ downscales or modifies Ideal and higher-resolution artwork.
 The Artwork Filter opens in the Scan Activity workspace beside Selected Album
 Artwork rather than over candidate thumbnails. Its four columns keep compact
 fixed widths and top-aligned rows instead of stretching their contents across
-the workspace. Its eight profile controls are compact vertical adjustments
-with a distinct symbol/name, live value, and three separate square decrement,
-reset, and increment buttons. Existing local `cover.*` candidates remain
-previewable and editable at any resolution without resetting Album status; a
-local cover is preselected for editing when no provider result is recommended.
-Manual review keeps an Ideal local cover in candidate results; Auto mode
-retains fast preflight.
+the workspace. Each column uses the same framed-group treatment, headings,
+padding, and row spacing as Select Media. Its eight profile controls use a compact four-by-two grid of
+vertical adjustments with readable full names, distinct symbols, live values,
+and three separate square decrement, reset, and increment buttons. Existing local `cover.*` candidates remain
+previewable and editable at any resolution without resetting Album status.
+Selecting an Album exposes its local cover in Artwork Filter immediately,
+without provider discovery. **Save Existing** applies the previewed profile
+through the native safe-write pipeline in Write mode. Manual review keeps an
+Ideal local cover in candidate results; Auto mode retains fast preflight.
 
 Candidate image bytes are cached in RAM after their first read, with a fixed
 256 MB FIFO limit, so thumbnails and repeated previews do not reread the same
 Temporary Run Cache file from NAS. The cache is cleared on application exit and
 never contains or copies `splined.db`.
 
-Per-track release validation uses Lofty in tag-only mode. Audio properties and
-embedded cover art are not read while collecting title, artist, compilation,
-and MusicBrainz evidence, avoiding full-file SMB traffic on large albums while
-retaining the all-track authority audit.
+Per-track release validation reads MP3 authority directly from the leading
+ID3v2 block. It does not seek to ID3v1, Lyrics3, APE, audio properties, or
+embedded artwork at the end of every MP3. Other formats use Lofty with audio
+properties and cover art disabled. This retains the all-track authority audit
+without the repeated end-of-file SMB round trips that delayed large box sets.
 
 Ideal is an enlargement target, not a maximum output size. SPLINED preserves an
 accepted source above Ideal at its native resolution; it does not reduce a

@@ -866,6 +866,20 @@ namespace Splined.WindowsGui
                     upscalable["upscaled"] = true;
                     string upscalePreviewPath = Path.Combine(internalSettings, "upscale-preview.jpg");
                     using (Bitmap fixture = new Bitmap(12, 12)) fixture.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    previewAlbum.CoverPath = upscalePreviewPath;
+                    previewAlbum.LocalArtworkFiles.Add(upscalePreviewPath);
+                    previewAlbum.HasLocalArtwork = true;
+                    showSelectedAlbum.Invoke(form, new object[] { previewAlbum });
+                    Button directSaveExisting = (Button)typeof(MainForm)
+                        .GetField("useSelected", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Button directUpscalePreview = (Button)typeof(MainForm)
+                        .GetField("upscalePreview", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Dictionary<int, CandidateView> directCandidates = (Dictionary<int, CandidateView>)typeof(MainForm)
+                        .GetField("candidates", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(artworkFilter.Enabled && directCandidates.Count == 1
+                        && directCandidates.Values.Single().IsLocal && directUpscalePreview.Enabled
+                        && directSaveExisting.Text == "Save Existing" && directSaveExisting.Enabled,
+                        "Selecting an Album with cover.* did not expose direct Artwork Filter editing before a provider run.");
                     upscalable["cache_path"] = upscalePreviewPath;
                     object[] upscaleCandidates = { belowMinimum, upscalable };
                     showCandidates.Invoke(form, new object[] { upscaleCandidates });
@@ -879,9 +893,10 @@ namespace Splined.WindowsGui
                     TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
                     Assert(filterColumns.ColumnCount == 7
                         && filterColumns.ColumnStyles.Count == 7
-                        && filterColumns.Dock == DockStyle.Top && filterColumns.Height == 400
-                        && filterColumns.ColumnStyles.Cast<ColumnStyle>().Count(style => style.SizeType == SizeType.Absolute && style.Width == 1) == 3,
-                        "Artwork Filter is not rendered as four compact aligned columns with three vertical dividers.");
+                        && filterColumns.Dock == DockStyle.Top && filterColumns.Height == 450
+                        && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
+                            .All(name => form.Controls.Find(name, true).Single() is FluentGroupBox),
+                        "Artwork Filter is not rendered as four compact Select Media-style framed groups.");
                     Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Orientation == Orientation.Vertical)
@@ -889,6 +904,7 @@ namespace Splined.WindowsGui
                         && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<TrackBar>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<Button>().Single().Text == "↺"
                         && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<Label>().Any(label => label.Text.Contains("Brightness"))
+                        && form.Controls.Find("upscaleProfileControl_temperature", true).Single().Width >= 140
                         && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<Button>().Count() == 3,
                         "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass

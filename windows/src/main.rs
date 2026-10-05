@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use sha2::{Digest, Sha256};
-use splined::candidate::StaticFormat;
+use splined::candidate::{Candidate, StaticFormat};
 use splined::config::{
     Config, Mode, Verbosity, config_path, load_config, load_config_from, load_config_text,
     resolve_sources, samples_dir,
@@ -12,6 +12,7 @@ use splined::credentials::{
     FanartTvCredential, LastFmCredential, resolve_credential_path, save_fanarttv_credential,
     save_lastfm_credential,
 };
+use splined::final_artwork::{install_prepared_artwork, prepare_existing_cover_edit};
 use splined::media_database::media_snapshot;
 use splined::musicbrainz::{
     MusicBrainzClient, OAuthCredential, load_credential as load_musicbrainz_credential,
@@ -1001,6 +1002,63 @@ async fn main() {
 
     if let Some(preserve_file) = cli.preserve_file {
         config.output.preserve_file = preserve_file;
+    }
+
+    if let Some(path) = cli.edit_existing_cover.as_deref() {
+        if config.mode != Mode::Write {
+            eprintln!("Existing-cover editing requires SPLINED Write mode.");
+            std::process::exit(2);
+        }
+        let candidate = match Candidate::from_file("local", path, 0) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        };
+        let range = Range {
+            min: config.range.min,
+            ideal: config.range.ideal,
+            max: config.range.max,
+            ladder: config.range.ladder,
+        };
+        let prepared = match prepare_existing_cover_edit(
+            &candidate,
+            path,
+            &range,
+            candidate.format,
+            &config.output,
+            true,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        };
+        if let Err(error) = install_prepared_artwork(path, &prepared) {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "existing_cover_edited",
+                "path": path,
+                "width": prepared.info.width,
+                "height": prepared.info.height,
+                "upscale_backend": prepared.info.upscale_backend.as_str(),
+                "picture_percent": prepared.info.picture_percent,
+                "brightness_percent": prepared.info.brightness_percent,
+                "contrast_percent": prepared.info.contrast_percent,
+                "exposure_percent": prepared.info.exposure_percent,
+                "sharpen_percent": prepared.info.sharpen_percent,
+                "softness_percent": prepared.info.softness_percent,
+                "gamma_percent": prepared.info.gamma_percent,
+                "color_temperature": prepared.info.color_temperature,
+            })
+        );
+        return;
     }
 
     if cli.lastfm_credentials {
