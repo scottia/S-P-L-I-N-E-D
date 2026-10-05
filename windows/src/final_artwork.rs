@@ -176,6 +176,28 @@ pub fn prepare_existing_cover_edit(
     )
 }
 
+/// Prepare an explicitly edited manual selection at its configured projected
+/// dimensions. Unlike automatic selection, this applies the saved editing
+/// profile even when the source is already Ideal, Ladder, or Above Ladder.
+pub fn prepare_selected_artwork_edit(
+    candidate: &Candidate,
+    source_path: &Path,
+    range: &Range,
+    target_format: StaticFormat,
+    output: &OutputConfig,
+    allow_outside_range: bool,
+) -> Result<PreparedArtwork, String> {
+    prepare_configured_artwork_inner(
+        candidate,
+        source_path,
+        range,
+        target_format,
+        output,
+        allow_outside_range,
+        true,
+    )
+}
+
 fn prepare_configured_artwork_inner(
     candidate: &Candidate,
     source_path: &Path,
@@ -183,7 +205,7 @@ fn prepare_configured_artwork_inner(
     target_format: StaticFormat,
     output: &OutputConfig,
     allow_outside_range: bool,
-    edit_existing_cover: bool,
+    apply_edit_profile: bool,
 ) -> Result<PreparedArtwork, String> {
     let (target_width, target_height, crop_square, resized) =
         projected_dimensions(candidate, range, output);
@@ -215,10 +237,10 @@ fn prepare_configured_artwork_inner(
 
     let converted = candidate.format != target_format;
     let projected_upscale = target_width > candidate.width || target_height > candidate.height;
-    let profile_applied = projected_upscale || edit_existing_cover;
+    let profile_applied = projected_upscale || apply_edit_profile;
     let mut upscale_backend = UpscaleBackend::None;
     let mut quality = ArtworkQualityAssessment::balanced();
-    let bytes = if !crop_square && !resized && !converted && !edit_existing_cover {
+    let bytes = if !crop_square && !resized && !converted && !apply_edit_profile {
         fs::read(source_path).map_err(|error| {
             format!(
                 "Unable to read selected artwork {}: {error}",
@@ -1203,6 +1225,34 @@ mod tests {
         assert_eq!(prepared.info.picture_percent, 5);
         assert_eq!(prepared.info.gamma_percent, 3);
         assert_ne!(prepared.bytes, original);
+    }
+
+    #[test]
+    fn manually_selected_ladder_artwork_applies_profile_without_resizing() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("ladder.png");
+        write_image(&source, 30, 30, ImageFormat::Png);
+        let ladder = candidate(&source);
+        let output = OutputConfig {
+            upscale_adaptive_defaults: false,
+            upscale_picture_percent: 5,
+            upscale_brightness_percent: 3,
+            ..OutputConfig::default()
+        };
+
+        let prepared = prepare_selected_artwork_edit(
+            &ladder,
+            &source,
+            &test_range(),
+            StaticFormat::Png,
+            &output,
+            true,
+        )
+        .unwrap();
+        assert_eq!((prepared.info.width, prepared.info.height), (30, 30));
+        assert!(!prepared.info.resized);
+        assert_eq!(prepared.info.picture_percent, 5);
+        assert_eq!(prepared.info.brightness_percent, 3);
     }
 
     #[test]

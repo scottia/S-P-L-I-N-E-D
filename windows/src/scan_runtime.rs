@@ -8,7 +8,8 @@ use crate::embedded_artwork::replace_embedded_front;
 use crate::final_artwork::{
     FinalArtworkAction, FinalArtworkResult, PreparedArtwork, PreparedArtworkInfo,
     assess_artwork_quality, destination_matches_prepared, install_prepared_artwork,
-    prepare_configured_artwork, prepare_existing_cover_edit, project_configured_artwork,
+    prepare_configured_artwork, prepare_existing_cover_edit, prepare_selected_artwork_edit,
+    project_configured_artwork,
 };
 use crate::gui_events;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
@@ -441,6 +442,7 @@ pub async fn run_scan_library_read_report(
                 FinalizationOptions {
                     preserve_file: false,
                     explicit_manual_selection: false,
+                    apply_edit_profile: false,
                     edit_existing_cover: false,
                     output: &config.output,
                 },
@@ -878,6 +880,7 @@ pub async fn run_scan_library_read_report(
         result.best_index = suggested_index;
         let mut manually_selected = false;
         let mut selected_output = config.output.clone();
+        let mut apply_edit_profile = false;
         let mut edit_existing_cover = false;
 
         emit_normal_source_results(NormalSourceResultsEvent {
@@ -923,6 +926,7 @@ pub async fn run_scan_library_read_report(
                                 println!("  {}", format!("ERROR: {error}").red().bold());
                                 continue 'candidate_review;
                             }
+                            apply_edit_profile = upscale.apply_edit_profile;
                             edit_existing_cover = upscale.edit_existing_cover;
                         }
                         let candidate = &result.candidates[index].downloaded.candidate;
@@ -1269,6 +1273,7 @@ pub async fn run_scan_library_read_report(
                             .status
                                 == SourcePolicyStatus::Fallback
                             || result.best_index.is_none(),
+                        apply_edit_profile,
                         edit_existing_cover,
                         output: &selected_output,
                     },
@@ -2536,6 +2541,7 @@ fn emit_musicbrainz_matches(
 struct FinalizationOptions<'a> {
     preserve_file: bool,
     explicit_manual_selection: bool,
+    apply_edit_profile: bool,
     edit_existing_cover: bool,
     output: &'a OutputConfig,
 }
@@ -2551,6 +2557,15 @@ fn finalize_selected_with_preserve(
 ) -> Result<(FinalArtworkResult, PathBuf), String> {
     let prepared = if options.edit_existing_cover {
         prepare_existing_cover_edit(
+            candidate,
+            source_path,
+            range,
+            target_format,
+            options.output,
+            options.explicit_manual_selection,
+        )?
+    } else if options.apply_edit_profile {
+        prepare_selected_artwork_edit(
             candidate,
             source_path,
             range,
@@ -3492,6 +3507,7 @@ mod tests {
             brightness_percent: 5,
             gamma_percent: -2,
             color_temperature: -25,
+            apply_edit_profile: true,
             edit_existing_cover: true,
         };
         apply_upscale_overrides(&mut output, &overrides).unwrap();

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Web.Script.Serialization;
@@ -907,19 +908,22 @@ namespace Splined.WindowsGui
                             .All(name => form.Controls.Find(name, true).Single() is FluentGroupBox),
                         "Artwork Filter is not rendered as four compact Select Media-style framed groups.");
                     TableLayoutPanel previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
-                    FlowLayoutPanel advancedControls = form.Controls.Find("upscaleAdvancedControls", true).OfType<FlowLayoutPanel>().Single();
+                    Panel advancedControls = form.Controls.Find("upscaleAdvancedControls", true).OfType<Panel>().Single();
+                    TableLayoutPanel advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
                     Button compactPreview = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
+                    Button showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
                     Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Orientation == Orientation.Vertical)
                         && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<TrackBar>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<TrackBar>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<Button>().Single().Text == "↺"
-                        && form.Controls.Find("upscaleAdvancedLegend", true).OfType<Label>().Single().Text.Contains("Brightness")
-                        && form.Controls.Find("upscaleAdvancedLegend", true).OfType<Label>().Single().Text.Contains("Color")
-                        && form.Controls.Find("upscaleProfileControl_temperature", true).Single().Height >= 205
-                        && !advancedControls.WrapContents && advancedControls.AutoScroll
+                        && form.Controls.Find("upscaleProfileFrame_brightness", true).OfType<GroupBox>().Single().Text.Contains("Brightness")
+                        && form.Controls.Find("upscaleProfileFrame_temperature", true).OfType<GroupBox>().Single().Text.Contains("Color")
+                        && advancedControls.AutoScroll && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
+                        && Enumerable.Range(0, 8).All(index => advancedGrid.GetControlFromPosition(index, 0) is GroupBox)
                         && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<Button>().Count() == 1
+                        && previewLine.ColumnCount == 3 && previewLine.GetPositionFromControl(showFullPreview).Column == 1
                         && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
                         && previewLine.ColumnStyles[0].Width == 168 && compactPreview.Width <= 170,
                         "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
@@ -979,12 +983,15 @@ namespace Splined.WindowsGui
                     Control upscalableCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11);
                     ((CheckBox)upscalableCard.Controls["candidateChoice"]).Checked = true;
                     Button upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
+                    showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
                     PictureBox projectedPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
                     Label selectedCandidatePreviewTitle = (Label)typeof(MainForm)
                         .GetField("artworkPreviewTitle", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     Assert(upscalePreviewButton.Enabled && selectedCandidatePreviewTitle.Text == "Selected Candidate Artwork"
                         && projectedPreview.Image != null,
                         "Selecting one result did not focus its artwork preview and activate editing.");
+                    Assert(showFullPreview.Enabled,
+                        "Upscale Show Full did not activate beside Upscale Preview for the selected result.");
                     TrackBar brightnessProfile = form.Controls.Find("upscaleProfileSlider_brightness", true).OfType<TrackBar>().Single();
                     brightnessProfile.Value = 3;
                     Assert(ConfigStore.Load().UpscaleBrightnessPercent == 3
@@ -998,6 +1005,51 @@ namespace Splined.WindowsGui
                     Assert(artworkCaption.Text.Contains("brightness +3%") && artworkCaption.Text.Contains("contrast")
                         && artworkCaption.Text.Contains("preview only"),
                         "Upscale Preview did not disclose the live saved profile correction.");
+                    typeof(MainForm).GetMethod("UpscaleShowFullClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { showFullPreview, EventArgs.Empty });
+                    FullSizeArtworkPreviewForm fullPreview = (FullSizeArtworkPreviewForm)typeof(MainForm)
+                        .GetField("fullUpscalePreview", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    PictureBox fullPreviewImage = Descendants(fullPreview).OfType<PictureBox>().Single();
+                    Assert(fullPreview.Visible && fullPreviewImage.SizeMode == PictureBoxSizeMode.Normal
+                        && fullPreviewImage.Image.Width == 1800 && fullPreviewImage.Image.Height == 1800
+                        && fullPreviewImage.Size == fullPreviewImage.Image.Size,
+                        "Upscale Show Full did not open the upscaled edit at 100% actual pixel size.");
+                    fullPreview.Close();
+                    Dictionary<string, object> ladderEdit = CandidatePayload(13, "itunes", 3000, 3000, false, "");
+                    ladderEdit["source_range_class"] = "ladder";
+                    ladderEdit["range_class"] = "ladder";
+                    ladderEdit["projected_width"] = 3000;
+                    ladderEdit["projected_height"] = 3000;
+                    ladderEdit["cache_path"] = upscalePreviewPath;
+                    showCandidates.Invoke(form, new object[] { new object[] { ladderEdit } });
+                    Control ladderCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 13);
+                    ((CheckBox)ladderCard.Controls["candidateChoice"]).Checked = true;
+                    upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
+                    showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
+                    Assert(upscalePreviewButton.Enabled && showFullPreview.Enabled,
+                        "A Ladder candidate was incorrectly blocked from manual editing and full-size preview.");
+                    typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
+                    HashSet<int> editedCandidates = (HashSet<int>)typeof(MainForm)
+                        .GetField("editedCandidateIndexes", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(editedCandidates.Contains(13) && projectedPreview.Image.Width == 3000
+                        && projectedPreview.Image.Height == 3000,
+                        "Manual editing did not retain a non-upscaled Ladder result at native resolution.");
+                    FieldInfo candidateProcessField = typeof(MainForm).GetField("currentProcess", BindingFlags.Instance | BindingFlags.NonPublic);
+                    FieldInfo candidateAwaitingField = typeof(MainForm).GetField("awaitingDecision", BindingFlags.Instance | BindingFlags.NonPublic);
+                    Button candidateUseSelected = (Button)typeof(MainForm)
+                        .GetField("useSelected", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    using (Process liveProcess = Process.GetCurrentProcess())
+                    {
+                        candidateProcessField.SetValue(form, liveProcess);
+                        candidateAwaitingField.SetValue(form, false);
+                        typeof(MainForm).GetMethod("UpdateCandidateActions", BindingFlags.Instance | BindingFlags.NonPublic)
+                            .Invoke(form, null);
+                        Assert(candidateUseSelected.Enabled,
+                            "Use Selected remained disabled while alternate MusicBrainz candidates were live before decision_required arrived.");
+                        candidateProcessField.SetValue(form, null);
+                    }
+                    candidateAwaitingField.SetValue(form, true);
                     Dictionary<string, object> existingIdeal = CandidatePayload(12, "local", 1800, 1800, false, "cover-file");
                     existingIdeal["cache_path"] = upscalePreviewPath;
                     existingIdeal["local_reference"] = "cover.jpg";
