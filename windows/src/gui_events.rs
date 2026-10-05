@@ -86,11 +86,15 @@ pub fn auto_ideal_enabled() -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpscaleOverrides {
     pub adaptive_defaults: bool,
+    pub picture_percent: i32,
     pub sharpen_percent: i32,
+    pub softness_percent: i32,
     pub contrast_percent: i32,
     pub exposure_percent: i32,
     pub brightness_percent: i32,
+    pub gamma_percent: i32,
     pub color_temperature: i32,
+    pub edit_existing_cover: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,8 +218,18 @@ pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
                                     .get("upscale_adaptive_defaults")
                                     .and_then(Value::as_bool)
                                     .unwrap_or(true),
+                                picture_percent: value
+                                    .get("upscale_picture_percent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
                                 sharpen_percent: value
                                     .get("upscale_sharpen_percent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
+                                softness_percent: value
+                                    .get("upscale_softness_percent")
                                     .and_then(Value::as_i64)
                                     .unwrap_or(0)
                                     as i32,
@@ -234,11 +248,20 @@ pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
                                     .and_then(Value::as_i64)
                                     .unwrap_or(0)
                                     as i32,
+                                gamma_percent: value
+                                    .get("upscale_gamma_percent")
+                                    .and_then(Value::as_i64)
+                                    .unwrap_or(0)
+                                    as i32,
                                 color_temperature: value
                                     .get("upscale_color_temperature")
                                     .and_then(Value::as_i64)
                                     .unwrap_or(0)
                                     as i32,
+                                edit_existing_cover: value
+                                    .get("edit_existing_cover")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false),
                             });
                     return Ok(CandidateDecision::Use {
                         index: index as usize - 1,

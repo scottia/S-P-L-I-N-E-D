@@ -35,10 +35,13 @@ square_round_to = 16
 upscale_below_ideal = false
 upscale_max_percent = 200
 upscale_adaptive_defaults = true
+upscale_picture_percent = 0
 upscale_sharpen_percent = 0
+upscale_softness_percent = 0
 upscale_contrast_percent = 0
 upscale_exposure_percent = 0
 upscale_brightness_percent = 0
+upscale_gamma_percent = 0
 upscale_color_temperature = 0
 evaluate_final_image = true
 

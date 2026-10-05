@@ -284,9 +284,10 @@ The lower Selected Album Statistics panel remains scrollable.
 
 ## Artwork result filter
 
-The expanded Windows Artwork Filter uses four aligned columns separated by
-three vertical rules: Image Type/Policy, Source Selection, Wanted/Unwanted,
-and Upscale/Advanced. Within each filter column, the complete option name
+The expanded Windows Artwork Filter replaces the Scan Activity workspace beside
+Selected Album Artwork while its activation button remains above the candidate
+cards. It uses four aligned columns separated by three vertical rules: Image
+Type/Policy, Source Selection, Wanted/Unwanted, and Upscale/Advanced. Within each filter column, the complete option name
 receives a measured fixed-width cell and the live count follows immediately in
 its own cell. Remaining space stays after the count. Percentage layout must not
 collapse option names into ellipses, including at supported DPI scales.
@@ -296,6 +297,10 @@ state. They survive candidate clearing, later Albums, concurrent batches, and
 application restart, and are included when Interface Settings are selected in
 a `.spl` backup. Controls may be temporarily disabled when the current result
 set cannot satisfy them; this does not discard the saved operator preference.
+The Upscale/Advanced column uses eight compact vertical controls with values at
+the top and square decrement/reset/increment controls at the bottom. Existing
+local covers remain eligible for explicit preview/edit even when already Ideal
+or above Ideal; their dimensions are not reduced automatically.
 
 ## Performance contract
 
