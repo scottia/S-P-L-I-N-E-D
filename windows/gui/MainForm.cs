@@ -213,9 +213,12 @@ namespace Splined.WindowsGui
         private readonly Dictionary<string, TrackBar> upscaleProfileSliders = new Dictionary<string, TrackBar>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Label> upscaleProfileValues = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
         private readonly System.Windows.Forms.Timer upscalePreviewTimer = new System.Windows.Forms.Timer();
+        private readonly System.Windows.Forms.Timer candidateHoverExitTimer = new System.Windows.Forms.Timer();
         private readonly HashSet<int> editedLocalCandidateIndexes = new HashSet<int>();
         private readonly HashSet<int> editedCandidateIndexes = new HashSet<int>();
         private FullSizeArtworkPreviewForm fullUpscalePreview;
+        private int hoveredCandidateIndex = -1;
+        private bool candidateHoverPreviewActive;
         private Label candidateContext;
         private StatusStrip statusStrip;
         private ToolStripStatusLabel statusLabel;
@@ -285,7 +288,19 @@ namespace Splined.WindowsGui
                 upscalePreviewTimer.Stop();
                 RenderUpscalePreview();
             };
-            FormClosed += delegate { upscalePreviewTimer.Stop(); upscalePreviewTimer.Dispose(); };
+            candidateHoverExitTimer.Interval = 90;
+            candidateHoverExitTimer.Tick += delegate
+            {
+                candidateHoverExitTimer.Stop();
+                CloseHoverPreview();
+            };
+            FormClosed += delegate
+            {
+                upscalePreviewTimer.Stop();
+                upscalePreviewTimer.Dispose();
+                candidateHoverExitTimer.Stop();
+                candidateHoverExitTimer.Dispose();
+            };
             ThemeManager.EnsureInitialized(uiState.Theme);
             ThemeManager.PrepareForm(this);
             Text = ReleaseInfo.WindowTitle;
@@ -530,13 +545,14 @@ namespace Splined.WindowsGui
                 Padding = new Padding(0)
             };
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 56));
             row.Controls.Add(BuildPanelTitle("Media Library Selection",
                 "Select Media expands the Artist, Album, folder-status, selection-mode, and scan-mode controls. Select [ALL] replaces selection with the active Artist's unprocessed Albums, Select [NONE] clears selection, and Select [FILTERED] requires Artist or Album filter text. LAUNCH processes selected Albums only."), 0, 0);
             mediaSelectorVisibilityToggle = new FluentButton
             {
                 Name = "mediaSelectorVisibilityToggle",
-                Text = "🔛",
+                Text = "",
+                DirectionGlyph = true,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(2, 0, 0, 2),
                 AccessibleName = "Hide Media Album Selector"
@@ -547,6 +563,16 @@ namespace Splined.WindowsGui
             mediaSelectorVisibilityToggle.Click += delegate { SetMediaSelectorVisible(false, true); };
             row.Controls.Add(mediaSelectorVisibilityToggle, 1, 0);
             return row;
+        }
+
+        private void StyleMediaSelectorVisibilityToggle()
+        {
+            if (mediaSelectorVisibilityToggle == null) return;
+            object metadata = mediaSelectorVisibilityToggle.Tag;
+            mediaSelectorVisibilityToggle.Tag = "primary";
+            ThemeManager.StyleButton(mediaSelectorVisibilityToggle, uiState.Theme);
+            mediaSelectorVisibilityToggle.Tag = metadata;
+            mediaSelectorVisibilityToggle.Padding = new Padding(0);
         }
 
         private void SetMediaSelectorVisible(bool visible, bool save)
@@ -673,7 +699,7 @@ namespace Splined.WindowsGui
             {
                 Name = "candidateFilterPanel",
                 Dock = DockStyle.Fill,
-                AutoScroll = true,
+                AutoScroll = false,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0, 0, 0, ThemeManager.Space4),
                 VisualRole = CardVisualRole.SpectrumNested
@@ -2092,17 +2118,16 @@ namespace Splined.WindowsGui
             ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
             TableLayoutPanel columns = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,
+                Dock = DockStyle.Fill,
                 AutoSize = false,
-                Height = 620,
                 ColumnCount = 5,
                 RowCount = 3,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0)
             };
-            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 270));
+            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 44));
             columns.RowStyles.Add(new RowStyle(SizeType.Absolute, ThemeManager.Space8));
-            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 326));
+            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 56));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
@@ -2189,6 +2214,7 @@ namespace Splined.WindowsGui
             {
                 Name = name,
                 Text = title,
+                SpectrumBorder = true,
                 Dock = DockStyle.Fill,
                 Padding = new Padding(ThemeManager.Space8, ThemeManager.Space12, ThemeManager.Space8, ThemeManager.Space8),
                 Margin = new Padding(0)
@@ -2326,7 +2352,7 @@ namespace Splined.WindowsGui
             {
                 Name = "upscaleAdvancedControls",
                 Dock = DockStyle.Fill,
-                AutoScroll = true,
+                AutoScroll = false,
                 Margin = new Padding(0),
                 Padding = new Padding(0, 0, 0, ThemeManager.Space4)
             };
@@ -2335,13 +2361,11 @@ namespace Splined.WindowsGui
                 Name = "upscaleAdvancedGrid",
                 ColumnCount = 8,
                 RowCount = 1,
-                Width = 880,
-                Height = 212,
-                Location = Point.Empty,
+                Dock = DockStyle.Fill,
                 Margin = new Padding(0),
                 Padding = new Padding(0)
             };
-            advancedGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 212));
+            advancedGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             for (int index = 0; index < 8; index++)
                 advancedGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12.5f));
             advancedGrid.Controls.Add(BuildUpscaleProfileControl("picture", "Picture", -20, 20, state.UpscalePicturePercent), 0, 0);
@@ -2353,12 +2377,6 @@ namespace Splined.WindowsGui
             advancedGrid.Controls.Add(BuildUpscaleProfileControl("gamma", "Gamma", -20, 20, state.UpscaleGammaPercent), 6, 0);
             advancedGrid.Controls.Add(BuildUpscaleProfileControl("temperature", "Color", -100, 100, state.UpscaleColorTemperature), 7, 0);
             advanced.Controls.Add(advancedGrid);
-            advanced.AutoScrollMinSize = new Size(880, 212);
-            advanced.Resize += delegate
-            {
-                int available = Math.Max(0, advanced.ClientSize.Width - ThemeManager.Space4);
-                advancedGrid.Width = Math.Max(880, available);
-            };
             AddUpscaleFilterRow(column, advanced, 220);
             return column;
         }
@@ -2375,6 +2393,7 @@ namespace Splined.WindowsGui
             {
                 Name = "upscaleProfileFrame_" + key,
                 Text = UpscaleProfileIcon(key) + " " + label,
+                SpectrumBorder = true,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(ThemeManager.Space4),
                 Padding = new Padding(ThemeManager.Space4, ThemeManager.Space12, ThemeManager.Space4, ThemeManager.Space4)
@@ -2410,10 +2429,12 @@ namespace Splined.WindowsGui
                 SmallChange = 1,
                 LargeChange = key.Equals("temperature", StringComparison.OrdinalIgnoreCase) ? 10 : 5,
                 Value = Math.Max(minimum, Math.Min(maximum, value)),
-                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.None,
+                Width = 48,
+                Height = 118,
                 Orientation = Orientation.Vertical,
                 TickStyle = TickStyle.Both,
-                Margin = new Padding(22, 2, 22, 2)
+                Margin = new Padding(0)
             };
             upscaleProfileSliders[key] = slider;
             upscaleProfileValues[key] = current;
@@ -2863,12 +2884,12 @@ namespace Splined.WindowsGui
             image.Image = LoadImageCopy(view.CachePath);
             image.Cursor = Cursors.Hand;
             image.MouseEnter += delegate { if (uiState.HoverEnabled) ShowHoverPreview(view); };
-            image.MouseLeave += delegate { if (uiState.HoverEnabled) CloseHoverPreview(); };
+            image.MouseLeave += delegate { if (uiState.HoverEnabled) ScheduleCloseHoverPreview(); };
             card.Controls.Add(image);
             LinkLabel sourceLink = CandidateUrlUi.Create("ⓘ", view.Url, uiState.Theme,
                 delegate { if (uiState.ShowArtwork) ShowArtworkCandidate(view); },
                 delegate { if (uiState.HoverEnabled) ShowHoverPreview(view); },
-                delegate { if (uiState.HoverEnabled) CloseHoverPreview(); });
+                delegate { if (uiState.HoverEnabled) ScheduleCloseHoverPreview(); });
             sourceLink.Left = 8; sourceLink.Top = 202; sourceLink.Width = 180; sourceLink.Height = 24;
             sourceLink.Name = "candidateUrl";
             sourceLink.TextAlign = ContentAlignment.MiddleLeft;
@@ -3091,6 +3112,10 @@ namespace Splined.WindowsGui
 
         private void ClearCandidates()
         {
+            candidateFilterWorkspaceActive = false;
+            if (candidateFilterPanel != null) candidateFilterPanel.Visible = false;
+            candidateHoverPreviewActive = false;
+            hoveredCandidateIndex = -1;
             CloseHoverPreview();
             CloseMusicBrainzMatchesWorkspace(false);
             DisposeCandidateCards();
@@ -3128,6 +3153,12 @@ namespace Splined.WindowsGui
             fullUpscalePreview = null;
             musicBrainzBackAvailable = false;
             if (backToMusicBrainz != null) { backToMusicBrainz.Visible = false; backToMusicBrainz.Enabled = false; }
+            if (activityColumn != null)
+            {
+                activityColumn.Visible = true;
+                activityColumn.BringToFront();
+            }
+            if (scanActivityTitle != null) scanActivityTitle.Text = "Scan Activity and Decisions";
             UpdateHoverButton();
             UpdateSelectionControls();
         }
@@ -3695,7 +3726,15 @@ namespace Splined.WindowsGui
 
         private void ShowHoverPreview(CandidateView candidate)
         {
-            CloseHoverPreview();
+            candidateHoverExitTimer.Stop();
+            if (candidate == null) return;
+            if (candidateHoverPreviewActive && hoveredCandidateIndex == candidate.Index) return;
+            if (hoverPreview != null && !hoverPreview.IsDisposed) hoverPreview.Close();
+            hoverPreview = null;
+            candidateHoverPreviewActive = false;
+            hoveredCandidateIndex = -1;
+            hoveredCandidateIndex = candidate.Index;
+            candidateHoverPreviewActive = true;
             if (uiState.ShowArtwork)
             {
                 ShowArtworkCandidate(candidate);
@@ -3706,18 +3745,28 @@ namespace Splined.WindowsGui
             hoverPreview.Show(this);
         }
 
+        private void ScheduleCloseHoverPreview()
+        {
+            candidateHoverExitTimer.Stop();
+            candidateHoverExitTimer.Start();
+        }
+
         private void CloseHoverPreview()
         {
+            candidateHoverExitTimer.Stop();
             if (hoverPreview != null && !hoverPreview.IsDisposed) hoverPreview.Close();
             hoverPreview = null;
-            if (candidatePreviewActive)
+            bool restoreArtwork = candidateHoverPreviewActive;
+            candidateHoverPreviewActive = false;
+            hoveredCandidateIndex = -1;
+            if (restoreArtwork)
             {
                 candidatePreviewActive = false;
-                if (!FocusSelectedCandidatePreview()) RenderDisplayedAlbum();
+                if (!FocusSelectedCandidatePreview(false)) RenderDisplayedAlbum();
             }
         }
 
-        private bool FocusSelectedCandidatePreview()
+        private bool FocusSelectedCandidatePreview(bool updateLayout = true)
         {
             if (musicBrainzMatchesPanel != null || selectedCandidateIndex < 0) return false;
             CandidateView candidate;
@@ -3728,7 +3777,7 @@ namespace Splined.WindowsGui
             artworkPreviewTitle.Text = candidate.IsLocal ? "Existing Cover Editing" : "Selected Candidate Artwork";
             SetArtworkPreview(candidate.CachePath,
                 candidate.DisplaySource + " · " + candidate.Resolution + " · " + DisplayRange(candidate.SourceRangeKey));
-            ApplyArtworkPanelVisibility();
+            if (updateLayout) ApplyArtworkPanelVisibility();
             return true;
         }
 
@@ -4466,6 +4515,7 @@ namespace Splined.WindowsGui
                 else RefreshCandidateFilterDependencies();
                 UpdateHoverButton();
                 UpdateSelectionControls();
+                StyleMediaSelectorVisibilityToggle();
                 RenderDisplayedAlbum();
                 if (showMediaSelectorMenuItem != null) showMediaSelectorMenuItem.Checked = uiState.ShowMediaSelector;
                 if (rebuildTree) BuildTree();

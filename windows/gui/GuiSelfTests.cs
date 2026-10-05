@@ -780,6 +780,28 @@ namespace Splined.WindowsGui
                     Assert(libraryCard != null && activityPanel != null && candidatesPanel != null,
                         "The three major work areas do not use the shared rounded panel surface.");
                     Button selectorVisibility = form.Controls.Find("mediaSelectorVisibilityToggle", true).OfType<Button>().Single();
+                    ThemePalette selectorPalette = ThemeManager.PaletteFor("Dark");
+                    Assert(selectorVisibility is FluentButton && ((FluentButton)selectorVisibility).DirectionGlyph
+                        && selectorVisibility.Width >= 50
+                        && selectorVisibility.Padding.All == 0
+                        && selectorVisibility.ForeColor.ToArgb() == selectorPalette.PrimaryActionForeground.ToArgb()
+                        && selectorVisibility.BackColor.ToArgb() == selectorPalette.PrimaryAction.ToArgb(),
+                        "The Media Library Selection show/hide glyph is not visible in its active themed button.");
+                    int selectorGlyphPixels = 0;
+                    using (Bitmap selectorCapture = new Bitmap(selectorVisibility.Width, selectorVisibility.Height))
+                    {
+                        selectorVisibility.DrawToBitmap(selectorCapture, new Rectangle(Point.Empty, selectorCapture.Size));
+                        for (int y = 0; y < selectorCapture.Height; y++)
+                            for (int x = 0; x < selectorCapture.Width; x++)
+                            {
+                                Color pixel = selectorCapture.GetPixel(x, y);
+                                if (Math.Abs(pixel.R - selectorVisibility.ForeColor.R) < 18
+                                    && Math.Abs(pixel.G - selectorVisibility.ForeColor.G) < 18
+                                    && Math.Abs(pixel.B - selectorVisibility.ForeColor.B) < 18) selectorGlyphPixels++;
+                            }
+                    }
+                    Assert(selectorGlyphPixels >= 12,
+                        "The Media Library Selection show/hide direction glyph did not render in its button.");
                     SplitContainer selectorSplit = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     ToolStripMenuItem showMediaSelector = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
                         .Single(item => item.Text == "Show Media Album Selector");
@@ -901,12 +923,12 @@ namespace Splined.WindowsGui
                     GroupBox upscaleGroup = form.Controls.Find("candidateUpscaleGroup", true).OfType<GroupBox>().Single();
                     Assert(filterColumns.ColumnCount == 5
                         && filterColumns.ColumnStyles.Count == 5 && filterColumns.RowCount == 3
-                        && filterColumns.Dock == DockStyle.Top && filterColumns.Height == 620
+                        && filterColumns.Dock == DockStyle.Fill && !artworkFilterPanel.AutoScroll
                         && filterColumns.GetPositionFromControl(upscaleGroup).Row == 2
                         && filterColumns.GetColumnSpan(upscaleGroup) == 5
                         && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
-                            .All(name => form.Controls.Find(name, true).Single() is FluentGroupBox),
-                        "Artwork Filter is not rendered as four compact Select Media-style framed groups.");
+                            .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
+                        "Artwork Filter is not rendered as four compact spectrum-framed groups without nested scrolling.");
                     TableLayoutPanel previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
                     Panel advancedControls = form.Controls.Find("upscaleAdvancedControls", true).OfType<Panel>().Single();
                     TableLayoutPanel advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
@@ -920,8 +942,11 @@ namespace Splined.WindowsGui
                         && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<Button>().Single().Text == "↺"
                         && form.Controls.Find("upscaleProfileFrame_brightness", true).OfType<GroupBox>().Single().Text.Contains("Brightness")
                         && form.Controls.Find("upscaleProfileFrame_temperature", true).OfType<GroupBox>().Single().Text.Contains("Color")
-                        && advancedControls.AutoScroll && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
-                        && Enumerable.Range(0, 8).All(index => advancedGrid.GetControlFromPosition(index, 0) is GroupBox)
+                        && !advancedControls.AutoScroll && advancedGrid.Dock == DockStyle.Fill
+                        && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
+                        && Enumerable.Range(0, 8).All(index => ((FluentGroupBox)advancedGrid.GetControlFromPosition(index, 0)).SpectrumBorder)
+                        && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
+                            .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Anchor == AnchorStyles.None)
                         && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<Button>().Count() == 1
                         && previewLine.ColumnCount == 3 && previewLine.GetPositionFromControl(showFullPreview).Column == 1
                         && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
@@ -992,6 +1017,23 @@ namespace Splined.WindowsGui
                         "Selecting one result did not focus its artwork preview and activate editing.");
                     Assert(showFullPreview.Enabled,
                         "Upscale Show Full did not activate beside Upscale Preview for the selected result.");
+                    UiState hoverUi = (UiState)typeof(MainForm)
+                        .GetField("uiState", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    hoverUi.HoverEnabled = true;
+                    hoverUi.ShowArtwork = true;
+                    Dictionary<int, CandidateView> hoverCandidates = (Dictionary<int, CandidateView>)typeof(MainForm)
+                        .GetField("candidates", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    MethodInfo showHoverPreview = typeof(MainForm).GetMethod("ShowHoverPreview", BindingFlags.Instance | BindingFlags.NonPublic);
+                    advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
+                    showHoverPreview.Invoke(form, new object[] { hoverCandidates[11] });
+                    Image firstHoverImage = projectedPreview.Image;
+                    showHoverPreview.Invoke(form, new object[] { hoverCandidates[11] });
+                    Assert(Object.ReferenceEquals(firstHoverImage, projectedPreview.Image),
+                        "Repeated hover over one result reloaded the same artwork.");
+                    Assert(!advancedGrid.IsDisposed,
+                        "Result hover disturbed the Artwork Filter workspace.");
+                    typeof(MainForm).GetMethod("CloseHoverPreview", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
+                    hoverUi.HoverEnabled = false;
                     TrackBar brightnessProfile = form.Controls.Find("upscaleProfileSlider_brightness", true).OfType<TrackBar>().Single();
                     brightnessProfile.Value = 3;
                     Assert(ConfigStore.Load().UpscaleBrightnessPercent == 3
@@ -1162,6 +1204,7 @@ namespace Splined.WindowsGui
                     candidateMap.Clear();
                     candidateMap[1] = new CandidateView { Index = 1 };
                     candidateCards.Controls.Add(new Panel());
+                    RichTextBox activity = (RichTextBox)typeof(MainForm).GetField("activity", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
                     {
                         { "event", "album_completed" }, { "album_path", "fixture" },
@@ -1169,8 +1212,15 @@ namespace Splined.WindowsGui
                     } });
                     Assert(candidateMap.Count == 0 && candidateCards.Controls.Count == 0 && !(bool)awaitingField.GetValue(form),
                         "Completed artwork decisions must clear the visible candidate search.");
+                    TableLayoutPanel reportColumn = (TableLayoutPanel)typeof(MainForm)
+                        .GetField("activityColumn", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    bool filterWorkspaceActive = (bool)typeof(MainForm)
+                        .GetField("candidateFilterWorkspaceActive", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(activityTitle.Text == "Scan Activity and Decisions" && activityHost.Controls.Contains(reportColumn)
+                        && Descendants(reportColumn).Contains(activity) && !filterWorkspaceActive
+                        && activityHost.Controls.Find("musicBrainzMatchesPanel", true).Length == 0,
+                        "Completed artwork decisions did not close review workspaces and restore the final Album report.");
                     Assert(launch.Enabled && launch.Text == "STOP", "STOP must remain enabled while processing.");
-                    RichTextBox activity = (RichTextBox)typeof(MainForm).GetField("activity", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     MethodInfo appendColored = typeof(MainForm).GetMethod("AppendActivity", BindingFlags.Instance | BindingFlags.NonPublic, null,
                         new[] { typeof(string), typeof(ActivityTone) }, null);
                     int colorStart = activity.TextLength;
