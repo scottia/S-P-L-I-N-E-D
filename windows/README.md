@@ -93,17 +93,24 @@ below Ideal or an explicit existing-cover edit. Automatic processing never
 downscales or modifies Ideal and higher-resolution artwork.
 
 The Artwork Filter opens in the Scan Activity workspace beside Selected Album
-Artwork rather than over candidate thumbnails. Its four columns keep compact
-fixed widths and top-aligned rows instead of stretching their contents across
-the workspace. Each column uses the same framed-group treatment, headings,
-padding, and row spacing as Select Media. Its eight profile controls use a compact four-by-two grid of
-vertical adjustments with readable full names, distinct symbols, live values,
-and three separate square decrement, reset, and increment buttons. Existing local `cover.*` candidates remain
+Artwork rather than over candidate thumbnails. Its four framed groups keep compact
+top-aligned rows instead of stretching their contents across the workspace:
+Candidate Findings, Source Selection, and Resolution sit above one full-width
+Upscale / Advanced group. Each group uses the same framed treatment, headings,
+padding, and row spacing as Select Media. Zero-count Image Type, Policy, Wanted,
+and Unwanted choices stay visible but disabled, so categories do not disappear
+between Albums. Upscale Preview is a compact fixed-width action beside the
+active resolution. Its eight profile controls use one contained row of long
+vertical adjustments with a readable full-name legend, matching symbols, live
+values, and one square reset button each. Opening the filter temporarily expands
+the Activity pane, then restores the previous divider when it closes. Existing local `cover.*` candidates remain
 previewable and editable at any resolution without resetting Album status.
 Selecting an Album exposes its local cover in Artwork Filter immediately,
 without provider discovery. **Save Existing** applies the previewed profile
 through the native safe-write pipeline in Write mode. Manual review keeps an
 Ideal local cover in candidate results; Auto mode retains fast preflight.
+Selecting one candidate immediately focuses that exact image in Selected Album
+Artwork for editing; multiple selections retain Compare behavior.
 
 Candidate image bytes are cached in RAM after their first read, with a fixed
 256 MB FIFO limit, so thumbnails and repeated previews do not reread the same

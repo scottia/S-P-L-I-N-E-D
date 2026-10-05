@@ -136,6 +136,16 @@ namespace Splined.WindowsGui
                             typeof(MainForm).GetField("awaitingDecision", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, true);
                             typeof(MainForm).GetMethod("UpdateSelectionControls", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-candidates-qa.png"));
+                            Size candidateSize = form.Size;
+                            form.Size = new Size(2400, 1000);
+                            Button artworkFilter = form.Controls.Find("candidateFilterButton", true)[0] as Button;
+                            if (artworkFilter != null) artworkFilter.PerformClick();
+                            form.PerformLayout();
+                            Application.DoEvents();
+                            CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-qa.png"));
+                            if (artworkFilter != null) artworkFilter.PerformClick();
+                            form.Size = candidateSize;
+                            form.PerformLayout();
                             CaptureAppearanceMenu(form, Path.Combine(ConfigStore.AppRoot, "appearance-menu-qa.png"));
                             apply.Invoke(form, new object[] { new Dictionary<string, object>
                             {

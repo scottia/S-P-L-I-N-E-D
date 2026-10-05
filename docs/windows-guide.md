@@ -252,9 +252,8 @@ from the current Album:
 
 - **Source Selection** follows enabled Artwork Source Priority and lists only
   sources that actually returned a result;
-- **Image Type** lists only types present: Recommended, Upscalable, Rejected,
-  and Local;
-- **Policy** lists Acceptable and Strict only when represented;
+- **Image Type** keeps Recommended, Upscalable, Rejected, and Local visible;
+- **Policy** keeps Acceptable and Strict visible;
 - **Wanted** and **Unwanted** classify the original downloaded short side,
   before crop or enlargement.
 - **Upscale / Advanced** holds the saved enlargement preview and processing
@@ -266,8 +265,12 @@ filter result column reserves a measured option-name cell immediately before
 its count. Explicit absolute row heights keep every available choice together
 at the top instead of distributing the final choices down the full panel. The
 expanded surface and its contents share one rounded spectrum frame and scroll
-when the window is narrower than the compact four-column layout. Every option
-has a live candidate count. Changing a source, type, policy, or
+when the window is narrower than the compact layout. Candidate Findings, Source
+Selection, and Resolution form the top row; Upscale / Advanced uses the full
+row beneath them. Every category
+and option remains in its expected location with a live candidate count;
+zero-count choices are disabled and gray rather than removing Wanted or
+changing the panel structure between Albums. Changing a source, type, policy, or
 range immediately updates the visible cards and recalculates the other
 dimensions. Choices with no possible result are automatically unchecked and
 grayed; they restore automatically when another selection makes them possible
@@ -300,14 +303,19 @@ actions such as Keep Local, Refine Fallback, MusicBrainz Matches, and Back to MB
 Matches appear in that row only when applicable. **Upscale Preview** and
 **Apply default upscale** live in the filter's Upscale / Advanced column.
 
-The eight advanced values use a compact four-by-two grid of vertical controls,
-so the filter does not stretch across a wide screen. Every full control name,
-symbol, and current value remains visible above the adjustment, with three
-separately addressable square decrement, reset, and increment buttons below it. They are
+Opening Artwork Filter temporarily gives the Scan Activity pane enough height
+for the editing workspace and restores the user's previous Activity/Candidate
+divider when the filter closes. **Upscale Preview** is a fixed-width action
+beside the active aspect ratio and resolution, not a full-column bar. The eight
+advanced values use one contained row of long vertical controls. A readable
+legend names every control, with its matching symbol and current value directly
+above the adjustment and one square reset control below it. They are
 Picture (color intensity), Sharpen, Softness, Contrast,
 Exposure, Brightness, Gamma Correction, and Color Correction (Cool through
 Middle to Warm). Numeric defaults are `0%`; Color Correction defaults to
-`Middle`. The live Artwork preview updates as values change.
+`Middle`. Selecting exactly one result, including local `cover.*`, immediately
+focuses that image in Selected Album Artwork as the editing target. The live
+Artwork preview then updates as values change.
 
 Candidate order remains deterministic. Local evidence is displayed first,
 the recommended result follows, and remaining results are ordered by descending

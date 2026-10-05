@@ -884,28 +884,44 @@ namespace Splined.WindowsGui
                     object[] upscaleCandidates = { belowMinimum, upscalable };
                     showCandidates.Invoke(form, new object[] { upscaleCandidates });
                     Assert(artworkFilter.Enabled, "Artwork Filter did not become available with candidate results.");
+                    SplitContainer filterSplit = (SplitContainer)typeof(MainForm)
+                        .GetField("rightSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    int filterClosedDistance = filterSplit.SplitterDistance;
+                    int filterClosedPanel2Minimum = filterSplit.Panel2MinSize;
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
                     Panel activityHost = form.Controls.Find("activityContentHost", true).OfType<Panel>().Single();
                     Label activityTitle = form.Controls.Find("scanActivityTitle", true).OfType<Label>().Single();
                     Assert(activityHost.Controls.Contains(artworkFilterPanel) && artworkFilter.Text.Contains("▾")
-                        && activityTitle.Text == "Candidate Findings | Upscale & Artwork Editing",
+                        && activityTitle.Text == "Candidate Findings | Upscale & Artwork Editing"
+                        && filterSplit.SplitterDistance > filterClosedDistance
+                        && filterSplit.Panel2MinSize < filterClosedPanel2Minimum,
                         "Artwork Filter did not replace Scan Activity beside Selected Album Artwork.");
                     TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
-                    Assert(filterColumns.ColumnCount == 7
-                        && filterColumns.ColumnStyles.Count == 7
-                        && filterColumns.Dock == DockStyle.Top && filterColumns.Height == 450
+                    GroupBox upscaleGroup = form.Controls.Find("candidateUpscaleGroup", true).OfType<GroupBox>().Single();
+                    Assert(filterColumns.ColumnCount == 5
+                        && filterColumns.ColumnStyles.Count == 5 && filterColumns.RowCount == 3
+                        && filterColumns.Dock == DockStyle.Top && filterColumns.Height == 620
+                        && filterColumns.GetPositionFromControl(upscaleGroup).Row == 2
+                        && filterColumns.GetColumnSpan(upscaleGroup) == 5
                         && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
                             .All(name => form.Controls.Find(name, true).Single() is FluentGroupBox),
                         "Artwork Filter is not rendered as four compact Select Media-style framed groups.");
+                    TableLayoutPanel previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
+                    FlowLayoutPanel advancedControls = form.Controls.Find("upscaleAdvancedControls", true).OfType<FlowLayoutPanel>().Single();
+                    Button compactPreview = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
                     Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Orientation == Orientation.Vertical)
                         && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<TrackBar>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<TrackBar>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<Button>().Single().Text == "↺"
-                        && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<Label>().Any(label => label.Text.Contains("Brightness"))
-                        && form.Controls.Find("upscaleProfileControl_temperature", true).Single().Width >= 140
-                        && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<Button>().Count() == 3,
+                        && form.Controls.Find("upscaleAdvancedLegend", true).OfType<Label>().Single().Text.Contains("Brightness")
+                        && form.Controls.Find("upscaleAdvancedLegend", true).OfType<Label>().Single().Text.Contains("Color")
+                        && form.Controls.Find("upscaleProfileControl_temperature", true).Single().Height >= 205
+                        && !advancedControls.WrapContents && advancedControls.AutoScroll
+                        && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<Button>().Count() == 1
+                        && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
+                        && previewLine.ColumnStyles[0].Width == 168 && compactPreview.Width <= 170,
                         "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
@@ -913,10 +929,13 @@ namespace Splined.WindowsGui
                     CheckBox amazonFilter = form.Controls.Find("candidateFilter_source_amazon", true).OfType<CheckBox>().Single();
                     CheckBox upscaleFilter = form.Controls.Find("candidateFilter_type_Upscalable", true).OfType<CheckBox>().Single();
                     CheckBox rejectedFilter = form.Controls.Find("candidateFilter_type_Rejected", true).OfType<CheckBox>().Single();
+                    CheckBox idealFilter = form.Controls.Find("candidateFilter_range_Ideal", true).OfType<CheckBox>().Single();
                     CheckBox lowerFilter = form.Controls.Find("candidateFilter_range_LowerRange", true).OfType<CheckBox>().Single();
                     CheckBox belowFilter = form.Controls.Find("candidateFilter_range_BelowMinimum", true).OfType<CheckBox>().Single();
                     Assert(amazonFilter.Checked && upscaleFilter.Checked && rejectedFilter.Checked
-                        && lowerFilter.Checked && belowFilter.Checked,
+                        && lowerFilter.Checked && belowFilter.Checked
+                        && !idealFilter.Enabled && !idealFilter.Checked
+                        && Descendants(artworkFilterPanel).OfType<Label>().Any(label => label.Text == "Wanted"),
                         "Inline Candidate FILTER did not expose the result-backed source, type, and unwanted-range choices.");
                     TableLayoutPanel sourceFilterColumn = amazonFilter.Parent as TableLayoutPanel;
                     TableLayoutPanelCellPosition amazonPosition = sourceFilterColumn == null
@@ -960,8 +979,12 @@ namespace Splined.WindowsGui
                     Control upscalableCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11);
                     ((CheckBox)upscalableCard.Controls["candidateChoice"]).Checked = true;
                     Button upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
-                    Assert(upscalePreviewButton.Enabled,
-                        "Upscale Preview did not activate for the single eligible candidate.");
+                    PictureBox projectedPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
+                    Label selectedCandidatePreviewTitle = (Label)typeof(MainForm)
+                        .GetField("artworkPreviewTitle", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(upscalePreviewButton.Enabled && selectedCandidatePreviewTitle.Text == "Selected Candidate Artwork"
+                        && projectedPreview.Image != null,
+                        "Selecting one result did not focus its artwork preview and activate editing.");
                     TrackBar brightnessProfile = form.Controls.Find("upscaleProfileSlider_brightness", true).OfType<TrackBar>().Single();
                     brightnessProfile.Value = 3;
                     Assert(ConfigStore.Load().UpscaleBrightnessPercent == 3
@@ -969,7 +992,6 @@ namespace Splined.WindowsGui
                         "Artwork Filter advanced profile did not update its value or save to Config v5.");
                     typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
-                    PictureBox projectedPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
                     Assert(projectedPreview.Image != null && projectedPreview.Image.Width == 1800
                         && projectedPreview.Image.Height == 1800,
                         "Upscale Preview did not render the projected Ideal-size image in memory.");
@@ -980,11 +1002,15 @@ namespace Splined.WindowsGui
                     existingIdeal["cache_path"] = upscalePreviewPath;
                     existingIdeal["local_reference"] = "cover.jpg";
                     showCandidates.Invoke(form, new object[] { new object[] { existingIdeal } });
+                    upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
                     Control existingIdealCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 12);
                     Assert(((CheckBox)existingIdealCard.Controls["candidateChoice"]).Checked,
                         "An existing local cover was not preselected for immediate preview and editing.");
                     Assert(upscalePreviewButton.Enabled,
-                        "An existing ideal cover was not kept directly editable without reprocessing the album.");
+                        "An existing ideal cover did not keep its direct editing action enabled.");
+                    Assert(selectedCandidatePreviewTitle.Text == "Existing Cover Editing",
+                        "Selecting an existing local cover did not focus it in Selected Album Artwork; title was '"
+                        + selectedCandidatePreviewTitle.Text + "'.");
                     TrackBar pictureProfile = form.Controls.Find("upscaleProfileSlider_picture", true).OfType<TrackBar>().Single();
                     pictureProfile.Value = 2;
                     typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -994,6 +1020,10 @@ namespace Splined.WindowsGui
                     Assert(artworkPreviewTitle.Text == "Existing Cover Edit Preview"
                         && artworkCaption.Text.Contains("picture +2%"),
                         "Existing cover edits were not rendered through the live preview path.");
+                    invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
+                    Assert(!artworkFilterPanel.Visible && filterSplit.SplitterDistance == filterClosedDistance
+                        && filterSplit.Panel2MinSize == filterClosedPanel2Minimum,
+                        "Closing Artwork Filter did not restore the previous Activity/Candidate divider.");
                     FieldInfo selectionField = typeof(MainForm).GetField("selectionMode", BindingFlags.Instance | BindingFlags.NonPublic);
                     Assert((SelectionMode)selectionField.GetValue(form) == SelectionMode.Select, "Manual Select must be the default selection mode.");
                     VerifyMediaFilter(form);
