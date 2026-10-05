@@ -93,11 +93,25 @@ below Ideal or an explicit existing-cover edit. Automatic processing never
 downscales or modifies Ideal and higher-resolution artwork.
 
 The Artwork Filter opens in the Scan Activity workspace beside Selected Album
-Artwork rather than over candidate thumbnails. Its eight profile controls are
-compact vertical adjustments with live values and square decrement, reset, and
-increment buttons. Existing local `cover.*` candidates remain previewable and
-editable at any resolution without resetting Album status. Manual review keeps
-an Ideal local cover in candidate results; Auto mode retains fast preflight.
+Artwork rather than over candidate thumbnails. Its four columns keep compact
+fixed widths and top-aligned rows instead of stretching their contents across
+the workspace. Its eight profile controls are compact vertical adjustments
+with a distinct symbol/name, live value, and three separate square decrement,
+reset, and increment buttons. Existing local `cover.*` candidates remain
+previewable and editable at any resolution without resetting Album status; a
+local cover is preselected for editing when no provider result is recommended.
+Manual review keeps an Ideal local cover in candidate results; Auto mode
+retains fast preflight.
+
+Candidate image bytes are cached in RAM after their first read, with a fixed
+256 MB FIFO limit, so thumbnails and repeated previews do not reread the same
+Temporary Run Cache file from NAS. The cache is cleared on application exit and
+never contains or copies `splined.db`.
+
+Per-track release validation uses Lofty in tag-only mode. Audio properties and
+embedded cover art are not read while collecting title, artist, compilation,
+and MusicBrainz evidence, avoiding full-file SMB traffic on large albums while
+retaining the all-track authority audit.
 
 Ideal is an enlargement target, not a maximum output size. SPLINED preserves an
 accepted source above Ideal at its native resolution; it does not reduce a

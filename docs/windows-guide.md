@@ -257,12 +257,14 @@ underlying result set. The expanded surface is built from the current Album:
 - **Upscale / Advanced** holds the saved enlargement preview and processing
   profile.
 
-The four result columns are separated by vertical rules. Each filter result
-column reserves a measured, fixed-width option-name cell before its adjacent
-count cell, leaving any unused width after the count. This prevents WinForms
-from collapsing the labels when the outer columns use percentage sizing, so
-full names remain readable without separating them from their counts. The expanded surface and its clipped
-contents share one rounded spectrum frame. Every option has a live candidate count. Changing a source, type, policy, or
+The four result columns are separated by vertical rules and use compact fixed
+widths rather than stretching across the entire Activity workspace. Each
+filter result column reserves a measured option-name cell immediately before
+its count. Explicit absolute row heights keep every available choice together
+at the top instead of distributing the final choices down the full panel. The
+expanded surface and its contents share one rounded spectrum frame and scroll
+when the window is narrower than the compact four-column layout. Every option
+has a live candidate count. Changing a source, type, policy, or
 range immediately updates the visible cards and recalculates the other
 dimensions. Choices with no possible result are automatically unchecked and
 grayed; they restore automatically when another selection makes them possible
@@ -290,9 +292,10 @@ actions such as Keep Local, Refine Fallback, MusicBrainz Matches, and Back to MB
 Matches appear in that row only when applicable. **Upscale Preview** and
 **Apply default upscale** live in the filter's Upscale / Advanced column.
 
-The eight advanced values use compact vertical controls: the current value is
-shown above the adjustment, with square decrement, reset, and increment buttons
-below it. They are Picture (color intensity), Sharpen, Softness, Contrast,
+The eight advanced values use compact vertical controls: the current value and
+a distinct symbol/name are shown above the adjustment, with three separately
+addressable square decrement, reset, and increment buttons below it. They are
+Picture (color intensity), Sharpen, Softness, Contrast,
 Exposure, Brightness, Gamma Correction, and Color Correction (Cool through
 Middle to Warm). Numeric defaults are `0%`; Color Correction defaults to
 `Middle`. The live Artwork preview updates as values change.
@@ -318,8 +321,11 @@ shrink with the candidate pane. The shared Artwork preview,
 MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
 
 When exactly one Upscalable result is active, **Upscale Preview** becomes
-available in the fourth filter column. It renders the projected Ideal-size image in memory in the
-shared Artwork pane without writing the Album or changing candidate ranking.
+available in the fourth filter column. If no provider candidate is recommended,
+an existing local cover is preselected so its editing controls and live preview
+are immediately available without committing a choice. The preview renders the
+projected Ideal-size image in memory in the shared Artwork pane without writing
+the Album or changing candidate ranking.
 The preview uses the same final-art pipeline as selection and preserves aspect
 ratio and the color profile where the output format permits it. **Apply default
 upscale** keeps the analyze-first profile: no sharpening, bounded adaptive
@@ -330,6 +336,12 @@ immediately, and an active preview is regenerated after the value changes.
 Advanced values are persistent Config v5 defaults, not one-card transient
 effects. Brightness, contrast, and exposure are bounded to ±20%, sharpen to
 0–20%, and color correction to -100 Cool through +100 Warm.
+
+Candidate image bytes are retained in a bounded 256 MB process-memory cache
+after their first read. Candidate cards, the shared preview, and repeated edit
+previews therefore reuse RAM rather than rereading the same Temporary Run Cache
+file from NAS. The cache is disposable, uses FIFO eviction at its fixed limit,
+and is cleared when SPLINED closes; `splined.db` is never copied into it.
 Concurrent provider work may reduce
 waiting time, but configured source order, source policy, Range Type, geometry,
 distance, and tie-breaking still determine the displayed ranking.
@@ -337,10 +349,14 @@ distance, and tie-breaking still determine the displayed ranking.
 Upscale possibility alone never grants Preferred or Auto eligibility. An
 enlarged candidate must still satisfy range, source, strict-content, and image
 quality validation. A flat or badly clipped image stays visible for manual
-review but cannot be selected automatically. Untouched same-format artwork is
-preserved byte-for-byte. Processed JPEG and PNG output carries its embedded ICC
-profile when present; decoded WebP or cross-format conversion preserves the
-visible color values but may normalize container metadata.
+review but cannot be selected automatically. Album processing still audits
+authoritative tags on every track, but the Windows core uses tag-only parsing:
+audio properties and embedded artwork are disabled for identity reads. This
+preserves MusicBrainz release, compilation, title, and artist validation while
+avoiding full-file NAS reads on large albums and box sets. Untouched same-format
+artwork is preserved byte-for-byte. Processed JPEG and PNG output carries its
+embedded ICC profile when present; decoded WebP or cross-format conversion
+preserves the visible color values but may normalize container metadata.
 
 At batch completion, the Album Run Report records the selected provider,
 original and final resolution, resize/conversion state, and the actual upscale
