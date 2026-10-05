@@ -82,6 +82,14 @@ side. The default `200` permits at most 2× enlargement to Ideal. A source beyon
 that limit stays visible for manual review but cannot become Preferred or Auto
 eligible through enlargement.
 
+`output.upscale_adaptive_defaults` keeps the bounded analyze-first correction.
+The optional `upscale_sharpen_percent`, `upscale_contrast_percent`,
+`upscale_exposure_percent`, `upscale_brightness_percent`, and
+`upscale_color_temperature` values form one saved advanced profile shared by
+Settings and the Artwork Filter. Zero leaves that property unchanged. These
+values are applied only during an eligible enlargement below Ideal; changing
+them never downscales or modifies Ideal and higher-resolution artwork.
+
 Ideal is an enlargement target, not a maximum output size. SPLINED preserves an
 accepted source above Ideal at its native resolution; it does not reduce a
 validated 3000×3000 selection to an 1800×1800 file.

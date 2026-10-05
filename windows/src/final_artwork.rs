@@ -45,8 +45,8 @@ impl ArtworkQualityAssessment {
         (self.brightness_adjustment * 100.0).round() as i8
     }
 
-    pub fn contrast_percent(self) -> u8 {
-        (self.contrast_adjustment * 100.0).round().max(0.0) as u8
+    pub fn contrast_percent(self) -> i8 {
+        (self.contrast_adjustment * 100.0).round() as i8
     }
 }
 
@@ -59,7 +59,11 @@ pub struct PreparedArtworkInfo {
     pub converted: bool,
     pub upscale_backend: UpscaleBackend,
     pub brightness_percent: i8,
-    pub contrast_percent: u8,
+    pub contrast_percent: i8,
+    pub exposure_percent: i8,
+    pub sharpen_percent: u8,
+    pub color_temperature: i16,
+    pub adaptive_defaults: bool,
     pub quality_eligible: bool,
 }
 
@@ -209,6 +213,12 @@ pub fn prepare_configured_artwork(
         let is_upscale = target_width > image.width() || target_height > image.height();
         if is_upscale {
             quality = assess_dynamic_image_quality(&image);
+            if !output.upscale_adaptive_defaults {
+                quality.brightness_adjustment = 0.0;
+                quality.contrast_adjustment = 0.0;
+            }
+            quality.brightness_adjustment += output.upscale_brightness_percent as f32 / 100.0;
+            quality.contrast_adjustment += output.upscale_contrast_percent as f32 / 100.0;
         }
         if image.width() != target_width || image.height() != target_height {
             let resized_output = resize_output_image(image, target_width, target_height);
@@ -216,7 +226,7 @@ pub fn prepare_configured_artwork(
             upscale_backend = resized_output.1;
         }
         if is_upscale {
-            image = apply_adaptive_tone_correction(image, quality);
+            image = apply_upscale_corrections(image, quality, output);
         }
         let mut encoded = encode_image(&image, target_format)?;
         if candidate.format == target_format {
@@ -231,6 +241,9 @@ pub fn prepare_configured_artwork(
         encoded
     };
 
+    let profile_applied = resized
+        && candidate.width.min(candidate.height) < range.ideal
+        && output.upscale_below_ideal;
     let info = PreparedArtworkInfo {
         width: target_width,
         height: target_height,
@@ -240,6 +253,22 @@ pub fn prepare_configured_artwork(
         upscale_backend,
         brightness_percent: quality.brightness_percent(),
         contrast_percent: quality.contrast_percent(),
+        exposure_percent: if profile_applied {
+            output.upscale_exposure_percent as i8
+        } else {
+            0
+        },
+        sharpen_percent: if profile_applied {
+            output.upscale_sharpen_percent as u8
+        } else {
+            0
+        },
+        color_temperature: if profile_applied {
+            output.upscale_color_temperature as i16
+        } else {
+            0
+        },
+        adaptive_defaults: profile_applied && output.upscale_adaptive_defaults,
         quality_eligible: quality.automatic_eligible,
     };
     validate_prepared_bytes(&bytes, info)?;
@@ -373,26 +402,72 @@ fn assess_dynamic_image_quality(image: &DynamicImage) -> ArtworkQualityAssessmen
     }
 }
 
-fn apply_adaptive_tone_correction(
+fn apply_upscale_corrections(
     image: DynamicImage,
     quality: ArtworkQualityAssessment,
+    output: &OutputConfig,
 ) -> DynamicImage {
     if quality.brightness_adjustment.abs() < f32::EPSILON
         && quality.contrast_adjustment.abs() < f32::EPSILON
+        && output.upscale_exposure_percent == 0
+        && output.upscale_sharpen_percent == 0
+        && output.upscale_color_temperature == 0
     {
         return image;
     }
     let mut pixels: RgbaImage = image.to_rgba8();
     let contrast = 1.0 + quality.contrast_adjustment;
+    let exposure = 1.0 + output.upscale_exposure_percent as f32 / 100.0;
+    let temperature = output.upscale_color_temperature as f32 / 100.0;
+    let red_scale = 1.0 + temperature * 0.10;
+    let blue_scale = 1.0 - temperature * 0.10;
     for pixel in pixels.pixels_mut() {
-        for channel in &mut pixel.0[..3] {
+        for (index, channel) in pixel.0[..3].iter_mut().enumerate() {
             let normalized = f32::from(*channel) / 255.0;
-            let corrected = ((normalized - 0.5) * contrast + 0.5 + quality.brightness_adjustment)
+            let temperature_scale = match index {
+                0 => red_scale,
+                2 => blue_scale,
+                _ => 1.0,
+            };
+            let corrected = (((normalized - 0.5) * contrast + 0.5 + quality.brightness_adjustment)
+                * exposure
+                * temperature_scale)
                 .clamp(0.0, 1.0);
             *channel = (corrected * 255.0).round() as u8;
         }
     }
+    if output.upscale_sharpen_percent > 0 {
+        pixels = sharpen_rgba(&pixels, output.upscale_sharpen_percent as f32 / 100.0);
+    }
     DynamicImage::ImageRgba8(pixels)
+}
+
+fn sharpen_rgba(source: &RgbaImage, amount: f32) -> RgbaImage {
+    if source.width() < 3 || source.height() < 3 || amount <= 0.0 {
+        return source.clone();
+    }
+    let mut output = source.clone();
+    let edge = amount.clamp(0.0, 0.20) * 0.25;
+    for y in 1..source.height() - 1 {
+        for x in 1..source.width() - 1 {
+            let center = source.get_pixel(x, y);
+            let left = source.get_pixel(x - 1, y);
+            let right = source.get_pixel(x + 1, y);
+            let top = source.get_pixel(x, y - 1);
+            let bottom = source.get_pixel(x, y + 1);
+            let target = output.get_pixel_mut(x, y);
+            for channel in 0..3 {
+                let value = f32::from(center[channel]) * (1.0 + 4.0 * edge)
+                    - edge
+                        * (f32::from(left[channel])
+                            + f32::from(right[channel])
+                            + f32::from(top[channel])
+                            + f32::from(bottom[channel]));
+                target[channel] = value.clamp(0.0, 255.0).round() as u8;
+            }
+        }
+    }
+    output
 }
 
 fn preserve_same_format_color_profile(source: &[u8], encoded: &mut Vec<u8>, format: StaticFormat) {
@@ -626,6 +701,10 @@ fn prepare_final_artwork_inner(
         upscale_backend: UpscaleBackend::None,
         brightness_percent: 0,
         contrast_percent: 0,
+        exposure_percent: 0,
+        sharpen_percent: 0,
+        color_temperature: 0,
+        adaptive_defaults: false,
         quality_eligible: true,
     };
 
@@ -922,6 +1001,60 @@ mod tests {
 
         output.upscale_max_percent = 200;
         assert!(project_configured_artwork(&over_limit, &range, &output).upscaled);
+    }
+
+    #[test]
+    fn advanced_profile_applies_only_to_below_ideal_enlargement() {
+        let dir = TempDir::new().unwrap();
+        let lower_source = dir.path().join("lower.png");
+        write_image(&lower_source, 14, 14, ImageFormat::Png);
+        let lower = candidate(&lower_source);
+        let output = OutputConfig {
+            upscale_below_ideal: true,
+            upscale_adaptive_defaults: false,
+            upscale_sharpen_percent: 4,
+            upscale_contrast_percent: 7,
+            upscale_exposure_percent: -3,
+            upscale_brightness_percent: 5,
+            upscale_color_temperature: -25,
+            ..OutputConfig::default()
+        };
+        let enlarged = prepare_configured_artwork(
+            &lower,
+            &lower_source,
+            &test_range(),
+            StaticFormat::Png,
+            &output,
+            false,
+        )
+        .unwrap();
+        assert_eq!((enlarged.info.width, enlarged.info.height), (18, 18));
+        assert!(!enlarged.info.adaptive_defaults);
+        assert_eq!(enlarged.info.sharpen_percent, 4);
+        assert_eq!(enlarged.info.contrast_percent, 7);
+        assert_eq!(enlarged.info.exposure_percent, -3);
+        assert_eq!(enlarged.info.brightness_percent, 5);
+        assert_eq!(enlarged.info.color_temperature, -25);
+
+        let ideal_source = dir.path().join("ideal.png");
+        write_image(&ideal_source, 20, 20, ImageFormat::Png);
+        let ideal = candidate(&ideal_source);
+        let unchanged = prepare_configured_artwork(
+            &ideal,
+            &ideal_source,
+            &test_range(),
+            StaticFormat::Png,
+            &output,
+            false,
+        )
+        .unwrap();
+        assert_eq!((unchanged.info.width, unchanged.info.height), (20, 20));
+        assert!(!unchanged.info.resized);
+        assert_eq!(unchanged.info.sharpen_percent, 0);
+        assert_eq!(unchanged.info.contrast_percent, 0);
+        assert_eq!(unchanged.info.exposure_percent, 0);
+        assert_eq!(unchanged.info.brightness_percent, 0);
+        assert_eq!(unchanged.info.color_temperature, 0);
     }
 
     #[test]

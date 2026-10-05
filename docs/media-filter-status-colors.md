@@ -284,11 +284,18 @@ The lower Selected Album Statistics panel remains scrollable.
 
 ## Artwork result filter
 
-The expanded Windows Artwork Filter uses three equal result columns. Within
-each column, the complete option name receives a measured fixed-width cell and
-the live count follows immediately in its own cell. Remaining space stays
-after the count. Percentage layout must not collapse option names into
-ellipses, including at supported DPI scales.
+The expanded Windows Artwork Filter uses four aligned columns separated by
+three vertical rules: Image Type/Policy, Source Selection, Wanted/Unwanted,
+and Upscale/Advanced. Within each filter column, the complete option name
+receives a measured fixed-width cell and the live count follows immediately in
+its own cell. Remaining space stays after the count. Percentage layout must not
+collapse option names into ellipses, including at supported DPI scales.
+
+Filter exclusions are persistent interface state rather than per-Album scratch
+state. They survive candidate clearing, later Albums, concurrent batches, and
+application restart, and are included when Interface Settings are selected in
+a `.spl` backup. Controls may be temporarily disabled when the current result
+set cannot satisfy them; this does not discard the saved operator preference.
 
 ## Performance contract
 

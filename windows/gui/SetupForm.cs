@@ -29,6 +29,11 @@ namespace Splined.WindowsGui
         private NumericUpDown rangeLadder;
         private NumericUpDown squareRound;
         private NumericUpDown upscaleMaxPercent;
+        private NumericUpDown upscaleSharpenPercent;
+        private NumericUpDown upscaleContrastPercent;
+        private NumericUpDown upscaleExposurePercent;
+        private NumericUpDown upscaleBrightnessPercent;
+        private NumericUpDown upscaleColorTemperature;
         private Control upscaleMaxRow;
         private Dictionary<string, Button> optionButtons;
         private Dictionary<string, Button> formatButtons;
@@ -525,9 +530,10 @@ namespace Splined.WindowsGui
             options.Name = "artworkOptionsGroup";
             options.Text = "Artwork Options";
             options.Dock = DockStyle.Fill;
-            TableLayoutPanel optionColumns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(8) };
-            optionColumns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+            TableLayoutPanel optionColumns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Padding = new Padding(8) };
+            optionColumns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 31));
             optionColumns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+            optionColumns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27));
             optionButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
             FlowLayoutPanel optionFlow = new FlowLayoutPanel();
             optionFlow.Dock = DockStyle.Fill;
@@ -536,16 +542,26 @@ namespace Splined.WindowsGui
             optionFlow.Padding = new Padding(12, 10, 12, 10);
             optionFlow.Controls.Add(CreateToggle("Square artwork", "square", optionButtons));
             optionFlow.Controls.Add(CreateToggle("Crop to square when required", "crop", optionButtons));
+            optionFlow.Controls.Add(CreateToggle("Evaluate final image", "evaluate", optionButtons));
+
+            FlowLayoutPanel upscaleFlow = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                Padding = new Padding(12, 10, 12, 10)
+            };
             Button upscaleToggle = CreateToggle("Upscale below ideal", "upscale", optionButtons);
             upscaleToggle.Click += delegate { UpdateUpscaleMaximumVisibility(); };
-            optionFlow.Controls.Add(upscaleToggle);
+            upscaleFlow.Controls.Add(upscaleToggle);
             upscaleMaxRow = new FlowLayoutPanel
             {
                 Name = "upscaleMaxRow",
-                Width = 310,
+                Width = 355,
                 Height = 34,
                 WrapContents = false,
-                Margin = new Padding(20, 0, 2, 2)
+                Margin = new Padding(0, 0, 2, 2)
             };
             upscaleMaxRow.Controls.Add(new Label
             {
@@ -573,8 +589,14 @@ namespace Splined.WindowsGui
                 TextAlign = ContentAlignment.MiddleLeft
             });
             upscaleMaxRow.Controls.Add(new InfoButton("Maximum enlargement from the original short side to Ideal. For example, 200% permits at most 2× enlargement. Candidates beyond this limit remain available for manual review."));
-            optionFlow.Controls.Add(upscaleMaxRow);
-            optionFlow.Controls.Add(CreateToggle("Evaluate final image", "evaluate", optionButtons));
+            upscaleFlow.Controls.Add(upscaleMaxRow);
+            upscaleFlow.Controls.Add(CreateToggle("Apply adaptive defaults", "upscaleAdaptive", optionButtons));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Sharpen", "upscaleSharpenPercent", 0, 20, 1, "%", out upscaleSharpenPercent));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Contrast", "upscaleContrastPercent", -20, 20, 1, "%", out upscaleContrastPercent));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Exposure", "upscaleExposurePercent", -20, 20, 1, "%", out upscaleExposurePercent));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Brightness", "upscaleBrightnessPercent", -20, 20, 1, "%", out upscaleBrightnessPercent));
+            upscaleFlow.Controls.Add(BuildUpscaleNumericRow("Color correction", "upscaleColorTemperature", -100, 100, 5, "Cool ↔ Warm", out upscaleColorTemperature));
+            upscaleFlow.Controls.Add(new InfoButton("Adaptive defaults preserve SPLINED's analyze-first brightness/contrast corrections. Advanced values are persistent explicit overrides; zero leaves that property unchanged. Sharpen defaults to 0%."));
 
             formatButtons = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
             FlowLayoutPanel formatFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(12, 10, 12, 10) };
@@ -592,13 +614,55 @@ namespace Splined.WindowsGui
 
             GroupBox processing = new FluentGroupBox { Text = "Image Processing", Dock = DockStyle.Fill };
             processing.Controls.Add(optionFlow);
+            GroupBox defaultUpscale = new FluentGroupBox { Name = "defaultUpscaleGroup", Text = "Default Upscale / Advanced", Dock = DockStyle.Fill };
+            defaultUpscale.Controls.Add(upscaleFlow);
             GroupBox formats = new FluentGroupBox { Text = "Output Formats", Dock = DockStyle.Fill };
             formats.Controls.Add(formatFlow);
             optionColumns.Controls.Add(processing, 0, 0);
-            optionColumns.Controls.Add(formats, 1, 0);
+            optionColumns.Controls.Add(defaultUpscale, 1, 0);
+            optionColumns.Controls.Add(formats, 2, 0);
             options.Controls.Add(optionColumns);
             root.Controls.Add(options, 0, 2);
             return page;
+        }
+
+        private static Control BuildUpscaleNumericRow(string label, string name, int minimum, int maximum,
+            int increment, string suffix, out NumericUpDown input)
+        {
+            FlowLayoutPanel row = new FlowLayoutPanel
+            {
+                Name = name + "Row",
+                Width = 355,
+                Height = 32,
+                WrapContents = false,
+                Margin = new Padding(0, 0, 2, 1)
+            };
+            row.Controls.Add(new Label
+            {
+                Text = label,
+                Width = 145,
+                Height = 27,
+                TextAlign = ContentAlignment.MiddleLeft
+            });
+            input = new FluentNumericUpDown
+            {
+                Name = name,
+                Minimum = minimum,
+                Maximum = maximum,
+                Increment = increment,
+                Value = 0,
+                Width = 72,
+                ThousandsSeparator = false
+            };
+            row.Controls.Add(input);
+            row.Controls.Add(new Label
+            {
+                Text = suffix,
+                Width = suffix.Length > 3 ? 100 : 24,
+                Height = 27,
+                TextAlign = ContentAlignment.MiddleLeft
+            });
+            return row;
         }
 
         private Control BuildArtworkResolutionRangeGroup()
@@ -1550,8 +1614,13 @@ namespace Splined.WindowsGui
         {
             if (upscaleMaxRow == null || upscaleMaxPercent == null || optionButtons == null) return;
             bool enabled = ToggleEnabled(optionButtons, "upscale");
-            upscaleMaxRow.Visible = enabled;
+            upscaleMaxRow.Visible = true;
             upscaleMaxPercent.Enabled = enabled;
+            Button adaptive;
+            if (optionButtons.TryGetValue("upscaleAdaptive", out adaptive)) adaptive.Enabled = enabled;
+            foreach (NumericUpDown input in new[] { upscaleSharpenPercent, upscaleContrastPercent,
+                upscaleExposurePercent, upscaleBrightnessPercent, upscaleColorTemperature })
+                if (input != null) input.Enabled = enabled;
         }
 
         private void RefreshToggleVisuals()
@@ -1583,6 +1652,12 @@ namespace Splined.WindowsGui
             SetToggle(optionButtons, "crop", state.SquareMode.Equals("crop", StringComparison.OrdinalIgnoreCase));
             SetToggle(optionButtons, "upscale", state.UpscaleBelowIdeal);
             upscaleMaxPercent.Value = Clamp(state.UpscaleMaxPercent, upscaleMaxPercent.Minimum, upscaleMaxPercent.Maximum);
+            SetToggle(optionButtons, "upscaleAdaptive", state.UpscaleAdaptiveDefaults);
+            upscaleSharpenPercent.Value = Clamp(state.UpscaleSharpenPercent, upscaleSharpenPercent.Minimum, upscaleSharpenPercent.Maximum);
+            upscaleContrastPercent.Value = Clamp(state.UpscaleContrastPercent, upscaleContrastPercent.Minimum, upscaleContrastPercent.Maximum);
+            upscaleExposurePercent.Value = Clamp(state.UpscaleExposurePercent, upscaleExposurePercent.Minimum, upscaleExposurePercent.Maximum);
+            upscaleBrightnessPercent.Value = Clamp(state.UpscaleBrightnessPercent, upscaleBrightnessPercent.Minimum, upscaleBrightnessPercent.Maximum);
+            upscaleColorTemperature.Value = Clamp(state.UpscaleColorTemperature, upscaleColorTemperature.Minimum, upscaleColorTemperature.Maximum);
             UpdateUpscaleMaximumVisibility();
             SetToggle(optionButtons, "evaluate", state.EvaluateFinalImage);
             sourceEnabledStates.Clear();
@@ -1674,6 +1749,12 @@ namespace Splined.WindowsGui
                 state.SquareMode = ToggleEnabled(optionButtons, "crop") ? "crop" : "off";
                 state.UpscaleBelowIdeal = ToggleEnabled(optionButtons, "upscale");
                 state.UpscaleMaxPercent = (int)upscaleMaxPercent.Value;
+                state.UpscaleAdaptiveDefaults = ToggleEnabled(optionButtons, "upscaleAdaptive");
+                state.UpscaleSharpenPercent = (int)upscaleSharpenPercent.Value;
+                state.UpscaleContrastPercent = (int)upscaleContrastPercent.Value;
+                state.UpscaleExposurePercent = (int)upscaleExposurePercent.Value;
+                state.UpscaleBrightnessPercent = (int)upscaleBrightnessPercent.Value;
+                state.UpscaleColorTemperature = (int)upscaleColorTemperature.Value;
                 state.EvaluateFinalImage = ToggleEnabled(optionButtons, "evaluate");
                 state.Formats = formatButtons.Where(pair => ((ToggleTag)pair.Value.Tag).Enabled).Select(pair => pair.Key).ToList();
                 state.Sources = sourcePriority.Items.Cast<SourceChoice>().Select(choice => choice.Key).ToList();

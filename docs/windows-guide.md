@@ -241,9 +241,8 @@ An unverified strict candidate is marked **Manual only**: its image and URL stay
 available, but it cannot become Recommended or be accepted by Auto Scan.
 
 The spectrum-framed **Artwork Filter** uses the same inline dropdown pattern as
-**Select Media**. It is a display-only filter and does not rerank providers or
-change the underlying result set. The expanded three-column surface is built
-from the current Album only:
+**Select Media**. Filtering does not rerank providers or change the underlying
+result set. The expanded four-column surface is built from the current Album:
 
 - **Source Selection** follows enabled Artwork Source Priority and lists only
   sources that actually returned a result;
@@ -252,8 +251,10 @@ from the current Album only:
 - **Policy** lists Acceptable and Strict only when represented;
 - **Wanted** and **Unwanted** classify the original downloaded short side,
   before crop or enlargement.
+- **Upscale / Advanced** holds the saved enlargement preview and processing
+  profile.
 
-The three equal result columns are separated by vertical rules. Each result
+The four result columns are separated by vertical rules. Each filter result
 column reserves a measured, fixed-width option-name cell before its adjacent
 count cell, leaving any unused width after the count. This prevents WinForms
 from collapsing the labels when the outer columns use percentage sizing, so
@@ -262,7 +263,11 @@ contents share one rounded spectrum frame. Every option has a live candidate cou
 range immediately updates the visible cards and recalculates the other
 dimensions. Choices with no possible result are automatically unchecked and
 grayed; they restore automatically when another selection makes them possible
-again. Counts sit directly beside their option names so the expanded filter
+again. Source, type, policy, and range exclusions are saved immediately in
+Windows Interface Settings. They therefore remain unchanged for later Albums,
+concurrent batches, and application restarts until the operator changes them;
+Interface Settings export also includes them in a `.spl` backup. Counts sit
+directly beside their option names so the expanded filter
 uses only the width its current results require. The dropdown disables and
 collapses whenever candidate results are cleared, preventing an empty expanded
 filter after a batch completes. **Show all results** clears explicit exclusions.
@@ -276,10 +281,11 @@ filter after a batch completes. **Show all results** clears explicit exclusions.
 - Provider and candidate URLs open the corresponding artwork or authority page
   for inspection before approval.
 
-LAUNCH and every candidate action occupy the same header row immediately to the
+LAUNCH and the ordinary candidate actions occupy the same header row immediately to the
 right of **Artwork Filter**. There is no separate bottom action bar. Conditional
-actions such as Keep Local, Refine Fallback, MusicBrainz Matches, Back to MB
-Matches, and Upscale Preview appear in that row only when applicable.
+actions such as Keep Local, Refine Fallback, MusicBrainz Matches, and Back to MB
+Matches appear in that row only when applicable. **Upscale Preview** lives in
+the filter's Upscale / Advanced column.
 
 Candidate order remains deterministic. Local evidence is displayed first,
 the recommended result follows, and remaining results are ordered by descending
@@ -301,15 +307,19 @@ three lines of repeated card metadata. Thumbnails remain square and grow or
 shrink with the candidate pane. The shared Artwork preview,
 MusicBrainz Matches, and Compare surfaces do not inherit candidate glass.
 
-When exactly one Upscalable result is active, **Upscale Preview** appears beside
-**Enable Hover**. It renders the projected Ideal-size image in memory in the
+When exactly one Upscalable result is active, **Upscale Preview** becomes
+available in the fourth filter column. It renders the projected Ideal-size image in memory in the
 shared Artwork pane without writing the Album or changing candidate ranking.
-The preview uses the same final-art pipeline as selection: it preserves aspect
-ratio, applies no sharpening, analyzes exposure and contrast, and changes tone
-only when the decoded image is demonstrably flat, underexposed, or
-overexposed. Brightness is capped at plus or minus 5 percent and contrast at
-plus 8 percent. Already balanced artwork receives no tone adjustment. The
-preview caption reports the actual brightness and contrast corrections.
+The preview uses the same final-art pipeline as selection and preserves aspect
+ratio and the color profile where the output format permits it. **Apply default
+upscale** keeps the analyze-first profile: no sharpening, bounded adaptive
+brightness/contrast, and no change to balanced artwork. The Advanced controls
+can explicitly add Sharpen, Contrast, Exposure, Brightness, or Cool/Warm color
+correction. Each `↕` control expands its slider, the `<value>` label changes
+immediately, and an active preview is regenerated after the value changes.
+Advanced values are persistent Config v5 defaults, not one-card transient
+effects. Brightness, contrast, and exposure are bounded to ±20%, sharpen to
+0–20%, and color correction to -100 Cool through +100 Warm.
 Concurrent provider work may reduce
 waiting time, but configured source order, source policy, Range Type, geometry,
 distance, and tie-breaking still determine the displayed ranking.
@@ -324,7 +334,8 @@ visible color values but may normalize container metadata.
 
 At batch completion, the Album Run Report records the selected provider,
 original and final resolution, resize/conversion state, and the actual upscale
-backend. For an upscale it also records brightness, contrast, and whether the
+backend. For an upscale it also records adaptive-default state, brightness,
+contrast, exposure, sharpen, color temperature, and whether the
 source passed the automatic-quality gate. READ reports remain `ReadOnly`, but a successfully rendered preview is
 reported explicitly as `gpu-lanczos3` or `cpu-lanczos3` instead of being lost
 when the live activity panel is replaced. The GUI drains redirected core output
@@ -415,6 +426,14 @@ edit TOML. Provider credentials remain separate JSON files in the configured
 credential directory. Config v5 stores only that directory—not tokens,
 passwords, authorization headers, client secrets, or provider filenames.
 
+**Artwork Options** is arranged as Image Processing, **Default Upscale /
+Advanced**, and Output Formats. The middle section owns Upscale below ideal,
+Maximum upscale, Apply adaptive defaults, and the five advanced values also
+shown in Artwork Filter. Both surfaces edit the same saved Config v5 profile.
+The profile is applied only when an eligible source below Ideal is enlarged;
+Ideal and higher-resolution validated artwork is never reduced or modified by
+the upscale profile.
+
 Each provider in **Sources & Matching** exposes **Strict Override**. When on,
 Windows compares the decoded complete image with exact-release CAA Front art,
 a validated local cover, or independent front-art consensus. Strict Override
@@ -439,7 +458,7 @@ See [Credentials and provider setup](credentials-providers.md) and
 may include any combination of:
 
 - internal Config v5 settings;
-- interface state and panel layout;
+- interface state, panel layout, and Artwork Filter exclusions;
 - credential JSON files;
 - `splined.db`;
 - diagnostic metadata.

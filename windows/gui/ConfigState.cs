@@ -192,6 +192,12 @@ namespace Splined.WindowsGui
         public int SquareRoundTo = 16;
         public bool UpscaleBelowIdeal;
         public int UpscaleMaxPercent = 200;
+        public bool UpscaleAdaptiveDefaults = true;
+        public int UpscaleSharpenPercent;
+        public int UpscaleContrastPercent;
+        public int UpscaleExposurePercent;
+        public int UpscaleBrightnessPercent;
+        public int UpscaleColorTemperature;
         public bool EvaluateFinalImage = true;
         public int RangeMin = 1200;
         public int RangeIdeal = 1800;
@@ -227,6 +233,10 @@ namespace Splined.WindowsGui
         public bool ShowMediaSelector = true;
         public bool MediaFilterExpanded = true;
         public bool CandidateFilterExpanded;
+        public List<string> CandidateExcludedSources = new List<string>();
+        public List<string> CandidateExcludedTypes = new List<string>();
+        public List<string> CandidateExcludedPolicies = new List<string>();
+        public List<string> CandidateExcludedRanges = new List<string>();
         public string MediaArtistFilter = "";
         public string MediaAlbumFilter = "";
         public bool MediaShowWhite = true;
@@ -427,6 +437,12 @@ namespace Splined.WindowsGui
             state.SquareRoundTo = ReadInt(text, "output", "square_round_to", 16);
             state.UpscaleBelowIdeal = ReadBool(text, "output", "upscale_below_ideal", false);
             state.UpscaleMaxPercent = ReadInt(text, "output", "upscale_max_percent", 200);
+            state.UpscaleAdaptiveDefaults = ReadBool(text, "output", "upscale_adaptive_defaults", true);
+            state.UpscaleSharpenPercent = ReadInt(text, "output", "upscale_sharpen_percent", 0);
+            state.UpscaleContrastPercent = ReadInt(text, "output", "upscale_contrast_percent", 0);
+            state.UpscaleExposurePercent = ReadInt(text, "output", "upscale_exposure_percent", 0);
+            state.UpscaleBrightnessPercent = ReadInt(text, "output", "upscale_brightness_percent", 0);
+            state.UpscaleColorTemperature = ReadInt(text, "output", "upscale_color_temperature", 0);
             state.EvaluateFinalImage = ReadBool(text, "output", "evaluate_final_image", true);
             state.RangeMin = ReadInt(text, "range", "min", 1200);
             state.RangeIdeal = ReadInt(text, "range", "ideal", 1800);
@@ -547,6 +563,15 @@ namespace Splined.WindowsGui
                 throw new InvalidOperationException("Output file name must be a filename stem without an extension or directory.");
             if (state.ScanModeTimeout < 0)
                 throw new InvalidOperationException("Scan timeout cannot be negative.");
+            if (state.UpscaleMaxPercent < 100 || state.UpscaleMaxPercent > 800)
+                throw new InvalidOperationException("Maximum upscale must be between 100% and 800%.");
+            if (state.UpscaleSharpenPercent < 0 || state.UpscaleSharpenPercent > 20)
+                throw new InvalidOperationException("Upscale sharpen must be between 0% and 20%.");
+            foreach (int value in new[] { state.UpscaleContrastPercent, state.UpscaleExposurePercent, state.UpscaleBrightnessPercent })
+                if (value < -20 || value > 20)
+                    throw new InvalidOperationException("Upscale contrast, exposure, and brightness must be between -20% and +20%.");
+            if (state.UpscaleColorTemperature < -100 || state.UpscaleColorTemperature > 100)
+                throw new InvalidOperationException("Upscale color correction must be between Cool -100 and Warm +100.");
             if (state.AiSplinedMinimumShortSide <= 0)
                 throw new InvalidOperationException("AISPLINE minimum short side must be greater than zero.");
             foreach (KeyValuePair<string, SourcePolicyState> pair in state.SourcePolicies)
@@ -581,6 +606,10 @@ namespace Splined.WindowsGui
                 state.ShowMediaSelector = ReadBool(text, "ui", "show_media_selector", true);
                 state.MediaFilterExpanded = ReadBool(text, "ui", "media_filter_expanded", true);
                 state.CandidateFilterExpanded = ReadBool(text, "ui", "candidate_filter_expanded", false);
+                state.CandidateExcludedSources = ReadArray(text, "ui", "candidate_excluded_sources");
+                state.CandidateExcludedTypes = ReadArray(text, "ui", "candidate_excluded_types");
+                state.CandidateExcludedPolicies = ReadArray(text, "ui", "candidate_excluded_policies");
+                state.CandidateExcludedRanges = ReadArray(text, "ui", "candidate_excluded_ranges");
                 state.MediaArtistFilter = ReadString(text, "ui", "media_artist_filter", "");
                 state.MediaAlbumFilter = ReadString(text, "ui", "media_album_filter", "");
                 state.MediaShowWhite = ReadBool(text, "ui", "media_show_white", true);
@@ -646,6 +675,10 @@ namespace Splined.WindowsGui
                 + "theme = " + Quote(state.Theme) + Environment.NewLine
                 + "media_filter_expanded = " + Bool(state.MediaFilterExpanded) + Environment.NewLine
                 + "candidate_filter_expanded = " + Bool(state.CandidateFilterExpanded) + Environment.NewLine
+                + "candidate_excluded_sources = " + FormatArray(state.CandidateExcludedSources) + Environment.NewLine
+                + "candidate_excluded_types = " + FormatArray(state.CandidateExcludedTypes) + Environment.NewLine
+                + "candidate_excluded_policies = " + FormatArray(state.CandidateExcludedPolicies) + Environment.NewLine
+                + "candidate_excluded_ranges = " + FormatArray(state.CandidateExcludedRanges) + Environment.NewLine
                 + "media_artist_filter = " + Quote(state.MediaArtistFilter) + Environment.NewLine
                 + "media_album_filter = " + Quote(state.MediaAlbumFilter) + Environment.NewLine
                 + "media_show_white = " + Bool(state.MediaShowWhite) + Environment.NewLine
@@ -778,6 +811,12 @@ namespace Splined.WindowsGui
             text.AppendLine("square_round_to = " + state.SquareRoundTo);
             text.AppendLine("upscale_below_ideal = " + Bool(state.UpscaleBelowIdeal));
             text.AppendLine("upscale_max_percent = " + state.UpscaleMaxPercent);
+            text.AppendLine("upscale_adaptive_defaults = " + Bool(state.UpscaleAdaptiveDefaults));
+            text.AppendLine("upscale_sharpen_percent = " + state.UpscaleSharpenPercent);
+            text.AppendLine("upscale_contrast_percent = " + state.UpscaleContrastPercent);
+            text.AppendLine("upscale_exposure_percent = " + state.UpscaleExposurePercent);
+            text.AppendLine("upscale_brightness_percent = " + state.UpscaleBrightnessPercent);
+            text.AppendLine("upscale_color_temperature = " + state.UpscaleColorTemperature);
             text.AppendLine("evaluate_final_image = " + Bool(state.EvaluateFinalImage));
             text.AppendLine();
             text.AppendLine("[range]");

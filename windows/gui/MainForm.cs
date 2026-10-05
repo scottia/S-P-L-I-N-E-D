@@ -7,6 +7,7 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -61,6 +62,10 @@ namespace Splined.WindowsGui
         public string UpscaleBackend = "none";
         public int BrightnessPercent;
         public int ContrastPercent;
+        public int ExposurePercent;
+        public int SharpenPercent;
+        public int ColorTemperature;
+        public bool AdaptiveDefaults;
         public bool QualityEligible = true;
         public bool Resized;
         public bool Converted;
@@ -92,13 +97,23 @@ namespace Splined.WindowsGui
         {
             public readonly float Brightness;
             public readonly float Contrast;
+            public readonly float Exposure;
+            public readonly float Sharpen;
+            public readonly float Temperature;
             public int BrightnessPercent { get { return (int)Math.Round(Brightness * 100); } }
             public int ContrastPercent { get { return (int)Math.Round(Contrast * 100); } }
+            public int ExposurePercent { get { return (int)Math.Round(Exposure * 100); } }
+            public int SharpenPercent { get { return (int)Math.Round(Sharpen * 100); } }
+            public int TemperatureValue { get { return (int)Math.Round(Temperature * 100); } }
 
-            public ToneCorrection(float brightness, float contrast)
+            public ToneCorrection(float brightness, float contrast, float exposure = 0,
+                float sharpen = 0, float temperature = 0)
             {
                 Brightness = brightness;
                 Contrast = contrast;
+                Exposure = exposure;
+                Sharpen = sharpen;
+                Temperature = temperature;
             }
         }
 
@@ -175,6 +190,12 @@ namespace Splined.WindowsGui
         private FlowLayoutPanel candidateActionRow;
         private Button enableHover;
         private Button upscalePreview;
+        private CheckBox upscaleAdaptiveDefaults;
+        private Label upscaleCandidateDimensions;
+        private readonly Dictionary<string, TrackBar> upscaleProfileSliders = new Dictionary<string, TrackBar>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Label> upscaleProfileValues = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, RowStyle> upscaleProfileSliderRows = new Dictionary<string, RowStyle>(StringComparer.OrdinalIgnoreCase);
+        private readonly System.Windows.Forms.Timer upscalePreviewTimer = new System.Windows.Forms.Timer();
         private Label candidateContext;
         private StatusStrip statusStrip;
         private ToolStripStatusLabel statusLabel;
@@ -230,6 +251,17 @@ namespace Splined.WindowsGui
             this.state = state;
             RuntimeLog.Initialize(state);
             uiState = initialUiState ?? ConfigStore.LoadUi();
+            excludedCandidateSources.UnionWith(uiState.CandidateExcludedSources ?? new List<string>());
+            excludedCandidateTypes.UnionWith(uiState.CandidateExcludedTypes ?? new List<string>());
+            excludedCandidatePolicies.UnionWith(uiState.CandidateExcludedPolicies ?? new List<string>());
+            excludedCandidateRanges.UnionWith(uiState.CandidateExcludedRanges ?? new List<string>());
+            upscalePreviewTimer.Interval = 180;
+            upscalePreviewTimer.Tick += delegate
+            {
+                upscalePreviewTimer.Stop();
+                RenderUpscalePreview();
+            };
+            FormClosed += delegate { upscalePreviewTimer.Stop(); upscalePreviewTimer.Dispose(); };
             ThemeManager.EnsureInitialized(uiState.Theme);
             ThemeManager.PrepareForm(this);
             Text = ReleaseInfo.WindowTitle;
@@ -595,10 +627,6 @@ namespace Splined.WindowsGui
                 SaveUiState();
                 UpdateHoverButton();
             };
-            upscalePreview = new FluentButton { Name = "upscalePreviewButton", Text = "Upscale Preview", Width = 135, Height = 34, Enabled = false, Visible = false };
-            upscalePreview.Click += UpscalePreviewClicked;
-            upscalePreview.EnabledChanged += delegate { ThemeManager.StyleButton(upscalePreview, uiState.Theme); };
-
             actions.Controls.Add(launch);
             actions.Controls.Add(useSelected);
             actions.Controls.Add(keepLocal);
@@ -608,7 +636,6 @@ namespace Splined.WindowsGui
             actions.Controls.Add(retryMusicBrainz);
             actions.Controls.Add(backToMusicBrainz);
             actions.Controls.Add(enableHover);
-            actions.Controls.Add(upscalePreview);
             actions.Controls.Add(new InfoButton("The recommended candidate is selected first. Activate one candidate to use it, activate several to compare them, or skip the Album. Processing continues after you confirm a choice."));
             return actions;
         }
@@ -645,7 +672,7 @@ namespace Splined.WindowsGui
             uiState.CandidateFilterExpanded = expanded;
             if (candidateFilterPanel != null) candidateFilterPanel.Visible = expanded;
             if (candidateLayout != null && candidateLayout.RowStyles.Count > 1)
-                candidateLayout.RowStyles[1].Height = expanded ? 252 : 0;
+                candidateLayout.RowStyles[1].Height = expanded ? 340 : 0;
             UpdateCandidateFilterButtonText();
             if (save) SaveUiState();
         }
@@ -1593,6 +1620,9 @@ namespace Splined.WindowsGui
                 BeginAlbumRunStatistics(album);
                 AppendAlbumActivityHeader(index + 1, selected.Count, album.Artist, album.Title);
                 AppendActivity("  1. Reading local album and tag evidence...\r\n");
+                ConfigState albumRunState = state.Clone();
+                albumRunState.Mode = activeRunMode;
+                runConfigText = ConfigStore.ExportConfigText(albumRunState);
                 bool albumSucceeded = await RunCoreAlbum(core, album, runConfigText);
                 if (!albumSucceeded && !stopRequested)
                 {
@@ -1964,16 +1994,18 @@ namespace Splined.WindowsGui
             TableLayoutPanel columns = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 5,
+                ColumnCount = 7,
                 RowCount = 1,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0)
             };
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 34));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
 
             TableLayoutPanel types = CandidateFilterColumn();
             candidateShowAll = new FluentCheckBox
@@ -1991,6 +2023,7 @@ namespace Splined.WindowsGui
                 excludedCandidateTypes.Clear();
                 excludedCandidatePolicies.Clear();
                 excludedCandidateRanges.Clear();
+                SaveCandidateFilterState();
                 ApplyCandidateFilters();
             };
             int showAllRow = types.RowCount++;
@@ -2035,13 +2068,18 @@ namespace Splined.WindowsGui
                 CandidateRangeOption("BelowMinimum", palette.Error, "Below minimum")
             });
 
+            TableLayoutPanel upscale = BuildUpscaleFilterColumn();
+
             Panel firstDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
             Panel secondDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
+            Panel thirdDivider = new Panel { Dock = DockStyle.Fill, BackColor = palette.BorderSubtle, Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4) };
             columns.Controls.Add(types, 0, 0);
             columns.Controls.Add(firstDivider, 1, 0);
             columns.Controls.Add(sources, 2, 0);
             columns.Controls.Add(secondDivider, 3, 0);
             columns.Controls.Add(ranges, 4, 0);
+            columns.Controls.Add(thirdDivider, 5, 0);
+            columns.Controls.Add(upscale, 6, 0);
             candidateFilterPanel.Controls.Add(columns);
             ApplyRoundedCandidateFilterRegion(candidateFilterPanel);
             ThemeManager.Apply(candidateFilterPanel, uiState.Theme);
@@ -2069,6 +2107,217 @@ namespace Splined.WindowsGui
             column.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
             column.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             return column;
+        }
+
+        private TableLayoutPanel BuildUpscaleFilterColumn()
+        {
+            ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
+            upscaleProfileSliders.Clear();
+            upscaleProfileValues.Clear();
+            upscaleProfileSliderRows.Clear();
+            TableLayoutPanel column = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                AutoScroll = true,
+                ColumnCount = 1,
+                RowCount = 0,
+                Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4),
+                Margin = new Padding(0)
+            };
+            Label heading = new Label
+            {
+                Text = "Upscale / Advanced",
+                AutoSize = true,
+                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
+                Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
+            };
+            AddUpscaleFilterRow(column, heading, 27);
+            upscaleAdaptiveDefaults = new FluentCheckBox
+            {
+                Name = "upscaleAdaptiveDefaults",
+                Text = "Apply default upscale",
+                Checked = state.UpscaleAdaptiveDefaults,
+                Dock = DockStyle.Fill,
+                AutoSize = false,
+                ForeColor = palette.Success,
+                Margin = new Padding(0, 1, 0, 0)
+            };
+            upscaleAdaptiveDefaults.CheckedChanged += delegate
+            {
+                if (updatingCandidateFilters) return;
+                state.UpscaleAdaptiveDefaults = upscaleAdaptiveDefaults.Checked;
+                PersistUpscaleProfile();
+            };
+            AddUpscaleFilterRow(column, upscaleAdaptiveDefaults, 25);
+            upscalePreview = new FluentButton
+            {
+                Name = "upscalePreviewButton",
+                Text = "Upscale Preview",
+                Dock = DockStyle.Fill,
+                Height = 30,
+                Enabled = false,
+                Tag = "primary",
+                Margin = new Padding(0, 1, ThemeManager.Space8, 2)
+            };
+            upscalePreview.Click += UpscalePreviewClicked;
+            upscalePreview.EnabledChanged += delegate { ThemeManager.StyleButton(upscalePreview, uiState.Theme); };
+            AddUpscaleFilterRow(column, upscalePreview, 33);
+            upscaleCandidateDimensions = new Label
+            {
+                Name = "upscaleCandidateDimensions",
+                Text = "Aspect ratio / Resolution",
+                Dock = DockStyle.Fill,
+                AutoEllipsis = true,
+                ForeColor = palette.TextSecondary,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 0, 0, ThemeManager.Space4)
+            };
+            AddUpscaleFilterRow(column, upscaleCandidateDimensions, 25);
+            AddUpscaleFilterRow(column, new Label
+            {
+                Text = "Advanced",
+                AutoSize = true,
+                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
+                Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
+            }, 27);
+            AddUpscaleProfileControl(column, "sharpen", "Sharpen", 0, 20, state.UpscaleSharpenPercent);
+            AddUpscaleProfileControl(column, "contrast", "Contrast", -20, 20, state.UpscaleContrastPercent);
+            AddUpscaleProfileControl(column, "exposure", "Exposure", -20, 20, state.UpscaleExposurePercent);
+            AddUpscaleProfileControl(column, "brightness", "Brightness", -20, 20, state.UpscaleBrightnessPercent);
+            AddUpscaleProfileControl(column, "temperature", "Color correction", -100, 100, state.UpscaleColorTemperature);
+            return column;
+        }
+
+        private static void AddUpscaleFilterRow(TableLayoutPanel column, Control control, float height)
+        {
+            int row = column.RowCount++;
+            column.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            column.Controls.Add(control, 0, row);
+        }
+
+        private void AddUpscaleProfileControl(TableLayoutPanel column, string key, string label,
+            int minimum, int maximum, int value)
+        {
+            TableLayoutPanel header = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = new Padding(0)
+            };
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 30));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 74));
+            FluentCheckBox enabled = new FluentCheckBox
+            {
+                Name = "upscaleProfileEnabled_" + key,
+                Text = label,
+                Checked = value != 0,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 1, 0, 0)
+            };
+            FluentButton expand = new FluentButton
+            {
+                Name = "upscaleProfileExpand_" + key,
+                Text = "↕",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(1),
+                Tag = "compact"
+            };
+            Label current = new Label
+            {
+                Name = "upscaleProfileValue_" + key,
+                Text = UpscaleProfileDisplay(key, value),
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                Margin = new Padding(ThemeManager.Space4, 0, 0, 0)
+            };
+            header.Controls.Add(enabled, 0, 0);
+            header.Controls.Add(expand, 1, 0);
+            header.Controls.Add(current, 2, 0);
+            AddUpscaleFilterRow(column, header, 26);
+
+            TrackBar slider = new TrackBar
+            {
+                Name = "upscaleProfileSlider_" + key,
+                Minimum = minimum,
+                Maximum = maximum,
+                TickFrequency = key.Equals("temperature", StringComparison.OrdinalIgnoreCase) ? 20 : 5,
+                SmallChange = 1,
+                LargeChange = key.Equals("temperature", StringComparison.OrdinalIgnoreCase) ? 10 : 5,
+                Value = Math.Max(minimum, Math.Min(maximum, value)),
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0)
+            };
+            int sliderRow = column.RowCount++;
+            RowStyle sliderStyle = new RowStyle(SizeType.Absolute, 0);
+            column.RowStyles.Add(sliderStyle);
+            column.Controls.Add(slider, 0, sliderRow);
+            upscaleProfileSliders[key] = slider;
+            upscaleProfileValues[key] = current;
+            upscaleProfileSliderRows[key] = sliderStyle;
+            expand.Click += delegate
+            {
+                sliderStyle.Height = sliderStyle.Height > 0 ? 0 : 43;
+                column.PerformLayout();
+            };
+            enabled.CheckedChanged += delegate
+            {
+                if (!enabled.Checked && slider.Value != 0) slider.Value = 0;
+                if (enabled.Checked && sliderStyle.Height == 0) sliderStyle.Height = 43;
+            };
+            slider.ValueChanged += delegate
+            {
+                enabled.Checked = slider.Value != 0;
+                current.Text = UpscaleProfileDisplay(key, slider.Value);
+                SetUpscaleProfileValue(key, slider.Value);
+                PersistUpscaleProfile();
+            };
+        }
+
+        private static string UpscaleProfileDisplay(string key, int value)
+        {
+            if (key.Equals("temperature", StringComparison.OrdinalIgnoreCase))
+                return value == 0 ? "<Middle>" : value < 0 ? "<Cool " + Math.Abs(value) + ">" : "<Warm " + value + ">";
+            return "<" + value.ToString("+0;-0;0") + "%>";
+        }
+
+        private void SetUpscaleProfileValue(string key, int value)
+        {
+            if (key.Equals("sharpen", StringComparison.OrdinalIgnoreCase)) state.UpscaleSharpenPercent = value;
+            else if (key.Equals("contrast", StringComparison.OrdinalIgnoreCase)) state.UpscaleContrastPercent = value;
+            else if (key.Equals("exposure", StringComparison.OrdinalIgnoreCase)) state.UpscaleExposurePercent = value;
+            else if (key.Equals("brightness", StringComparison.OrdinalIgnoreCase)) state.UpscaleBrightnessPercent = value;
+            else if (key.Equals("temperature", StringComparison.OrdinalIgnoreCase)) state.UpscaleColorTemperature = value;
+        }
+
+        private void PersistUpscaleProfile()
+        {
+            try
+            {
+                ConfigStore.Save(state, false);
+                RuntimeLog.Write("info", "windows.upscale.profile adaptive=" + state.UpscaleAdaptiveDefaults
+                    + " sharpen=" + state.UpscaleSharpenPercent + " contrast=" + state.UpscaleContrastPercent
+                    + " exposure=" + state.UpscaleExposurePercent + " brightness=" + state.UpscaleBrightnessPercent
+                    + " temperature=" + state.UpscaleColorTemperature);
+            }
+            catch (Exception error)
+            {
+                SetStatus("Unable to save upscale profile: " + error.Message);
+                return;
+            }
+            ScheduleUpscalePreview();
+        }
+
+        private void ScheduleUpscalePreview()
+        {
+            CandidateView candidate;
+            if (selectedCandidateIndex < 0 || !candidates.TryGetValue(selectedCandidateIndex, out candidate)
+                || !candidate.UpscaleEligible) return;
+            upscalePreviewTimer.Stop();
+            upscalePreviewTimer.Start();
         }
 
         private CandidateFilterOption CandidateRangeOption(string key, Color color, string label = null)
@@ -2131,6 +2380,7 @@ namespace Splined.WindowsGui
                     HashSet<string> excluded = CandidateExcludedSet(dimension);
                     if (check.Checked) excluded.Remove(option.Key);
                     else excluded.Add(option.Key);
+                    SaveCandidateFilterState();
                     ApplyCandidateFilters();
                 };
                 int optionRow = column.RowCount++;
@@ -2169,6 +2419,15 @@ namespace Splined.WindowsGui
             if (dimension == "type") return excludedCandidateTypes;
             if (dimension == "policy") return excludedCandidatePolicies;
             return excludedCandidateRanges;
+        }
+
+        private void SaveCandidateFilterState()
+        {
+            uiState.CandidateExcludedSources = excludedCandidateSources.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
+            uiState.CandidateExcludedTypes = excludedCandidateTypes.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
+            uiState.CandidateExcludedPolicies = excludedCandidatePolicies.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
+            uiState.CandidateExcludedRanges = excludedCandidateRanges.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList();
+            ConfigStore.SaveUi(uiState);
         }
 
         private void RefreshCandidateFilterDependencies()
@@ -2270,10 +2529,6 @@ namespace Splined.WindowsGui
         private void ShowCandidates(object[] items)
         {
             ClearCandidates();
-            excludedCandidateSources.Clear();
-            excludedCandidateTypes.Clear();
-            excludedCandidatePolicies.Clear();
-            excludedCandidateRanges.Clear();
             int index = 0;
             foreach (object item in items)
             {
@@ -2541,18 +2796,49 @@ namespace Splined.WindowsGui
             retryMusicBrainz.Enabled = awaitingDecision && musicBrainzRetryAvailable;
             backToMusicBrainz.Visible = musicBrainzBackAvailable;
             backToMusicBrainz.Enabled = awaitingDecision && musicBrainzBackAvailable;
-            CandidateView previewCandidate;
+            CandidateView previewCandidate = null;
             bool canPreviewUpscale = selectedCandidateIndex >= 0
                 && candidates.TryGetValue(selectedCandidateIndex, out previewCandidate)
                 && previewCandidate.UpscaleEligible;
-            upscalePreview.Visible = canPreviewUpscale;
-            upscalePreview.Enabled = canPreviewUpscale;
+            if (upscalePreview != null)
+            {
+                upscalePreview.Visible = true;
+                upscalePreview.Enabled = canPreviewUpscale;
+            }
+            UpdateUpscaleCandidateContext(canPreviewUpscale ? previewCandidate : null);
             ThemeManager.StyleButton(useSelected, uiState.Theme);
             ThemeManager.StyleButton(keepLocal, uiState.Theme);
             ThemeManager.StyleButton(refineFallback, uiState.Theme);
             ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme);
             ThemeManager.StyleButton(backToMusicBrainz, uiState.Theme);
-            ThemeManager.StyleButton(upscalePreview, uiState.Theme);
+            if (upscalePreview != null) ThemeManager.StyleButton(upscalePreview, uiState.Theme);
+        }
+
+        private void UpdateUpscaleCandidateContext(CandidateView candidate)
+        {
+            if (upscaleCandidateDimensions == null) return;
+            if (candidate == null)
+            {
+                upscaleCandidateDimensions.Text = "Select one upscalable result";
+                return;
+            }
+            int divisor = GreatestCommonDivisor(Math.Max(1, candidate.PixelWidth), Math.Max(1, candidate.PixelHeight));
+            string ratio = (candidate.PixelWidth / divisor) + ":" + (candidate.PixelHeight / divisor);
+            int targetWidth = candidate.ProjectedWidth > 0 ? candidate.ProjectedWidth : state.RangeIdeal;
+            int targetHeight = candidate.ProjectedHeight > 0 ? candidate.ProjectedHeight : state.RangeIdeal;
+            upscaleCandidateDimensions.Text = ratio + "  /  " + candidate.PixelWidth + " × " + candidate.PixelHeight
+                + " → " + targetWidth + " × " + targetHeight;
+        }
+
+        private static int GreatestCommonDivisor(int left, int right)
+        {
+            while (right != 0)
+            {
+                int remainder = left % right;
+                left = right;
+                right = remainder;
+            }
+            return Math.Max(1, left);
         }
 
         private void SetFallbackControls(bool visible)
@@ -2573,10 +2859,6 @@ namespace Splined.WindowsGui
             DisposeCandidateCards();
             candidateCards.AutoScrollPosition = Point.Empty;
             candidates.Clear();
-            excludedCandidateSources.Clear();
-            excludedCandidateTypes.Clear();
-            excludedCandidatePolicies.Clear();
-            excludedCandidateRanges.Clear();
             candidateFilterBindings.Clear();
             if (candidateFilterPanel != null)
             {
@@ -2594,7 +2876,13 @@ namespace Splined.WindowsGui
             keepLocal.Visible = false;
             compare.Enabled = false;
             skip.Enabled = false;
-            if (upscalePreview != null) { upscalePreview.Visible = false; upscalePreview.Enabled = false; }
+            upscalePreviewTimer.Stop();
+            upscalePreview = null;
+            upscaleAdaptiveDefaults = null;
+            upscaleCandidateDimensions = null;
+            upscaleProfileSliders.Clear();
+            upscaleProfileValues.Clear();
+            upscaleProfileSliderRows.Clear();
             musicBrainzBackAvailable = false;
             if (backToMusicBrainz != null) { backToMusicBrainz.Visible = false; backToMusicBrainz.Enabled = false; }
             UpdateHoverButton();
@@ -2837,7 +3125,16 @@ namespace Splined.WindowsGui
                     "Confirm artwork selection", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
                 if (answer != DialogResult.Yes) return;
             }
-            SendDecision("{\"action\":\"use\",\"index\":" + index + "}");
+            Dictionary<string, object> command = new Dictionary<string, object>();
+            command["action"] = "use";
+            command["index"] = index;
+            command["upscale_adaptive_defaults"] = state.UpscaleAdaptiveDefaults;
+            command["upscale_sharpen_percent"] = state.UpscaleSharpenPercent;
+            command["upscale_contrast_percent"] = state.UpscaleContrastPercent;
+            command["upscale_exposure_percent"] = state.UpscaleExposurePercent;
+            command["upscale_brightness_percent"] = state.UpscaleBrightnessPercent;
+            command["upscale_color_temperature"] = state.UpscaleColorTemperature;
+            SendDecision(json.Serialize(command));
             candidateContext.Text = "Artwork selection confirmed. Moving to the next selected album...";
             ClearCandidates();
         }
@@ -3060,6 +3357,11 @@ namespace Splined.WindowsGui
 
         private void UpscalePreviewClicked(object sender, EventArgs e)
         {
+            RenderUpscalePreview();
+        }
+
+        private void RenderUpscalePreview()
+        {
             CandidateView candidate;
             if (selectedCandidateIndex < 0
                 || !candidates.TryGetValue(selectedCandidateIndex, out candidate)
@@ -3072,7 +3374,7 @@ namespace Splined.WindowsGui
                 if (source == null) return;
                 int targetWidth = candidate.ProjectedWidth > 0 ? candidate.ProjectedWidth : state.RangeIdeal;
                 int targetHeight = candidate.ProjectedHeight > 0 ? candidate.ProjectedHeight : state.RangeIdeal;
-                ToneCorrection correction = AnalyzeToneCorrection(source);
+                ToneCorrection correction = BuildUpscaleCorrection(source);
                 Bitmap resized = new Bitmap(targetWidth, targetHeight, PixelFormat.Format32bppArgb);
                 resized.SetResolution(source.HorizontalResolution > 0 ? source.HorizontalResolution : 96,
                     source.VerticalResolution > 0 ? source.VerticalResolution : 96);
@@ -3098,9 +3400,25 @@ namespace Splined.WindowsGui
                 SetArtworkPreviewImage(projected, candidate.DisplaySource + " · "
                     + candidate.Resolution + " → " + targetWidth + " x " + targetHeight
                     + " · brightness " + correction.BrightnessPercent.ToString("+0;-0;0") + "%"
-                    + " · contrast +" + correction.ContrastPercent + "%"
+                    + " · contrast " + correction.ContrastPercent.ToString("+0;-0;0") + "%"
+                    + " · exposure " + correction.ExposurePercent.ToString("+0;-0;0") + "%"
+                    + " · sharpen " + correction.SharpenPercent + "%"
+                    + " · color " + UpscaleProfileDisplay("temperature", correction.TemperatureValue)
                     + " · preview only");
             }
+        }
+
+        private ToneCorrection BuildUpscaleCorrection(Image source)
+        {
+            ToneCorrection automatic = state.UpscaleAdaptiveDefaults
+                ? AnalyzeToneCorrection(source)
+                : new ToneCorrection(0, 0);
+            return new ToneCorrection(
+                automatic.Brightness + state.UpscaleBrightnessPercent / 100f,
+                automatic.Contrast + state.UpscaleContrastPercent / 100f,
+                state.UpscaleExposurePercent / 100f,
+                state.UpscaleSharpenPercent / 100f,
+                state.UpscaleColorTemperature / 100f);
         }
 
         private static ToneCorrection AnalyzeToneCorrection(Image source)
@@ -3150,17 +3468,23 @@ namespace Splined.WindowsGui
 
         private static Bitmap ApplyToneCorrection(Bitmap resized, ToneCorrection correction)
         {
-            if (Math.Abs(correction.Brightness) < 0.0001f && Math.Abs(correction.Contrast) < 0.0001f)
+            if (Math.Abs(correction.Brightness) < 0.0001f && Math.Abs(correction.Contrast) < 0.0001f
+                && Math.Abs(correction.Exposure) < 0.0001f && Math.Abs(correction.Temperature) < 0.0001f
+                && Math.Abs(correction.Sharpen) < 0.0001f)
                 return new Bitmap(resized);
             Bitmap adjusted = new Bitmap(resized.Width, resized.Height, PixelFormat.Format32bppArgb);
             adjusted.SetResolution(resized.HorizontalResolution, resized.VerticalResolution);
-            float scale = 1f + correction.Contrast;
-            float translation = 0.5f * (1f - scale) + correction.Brightness;
+            float contrastScale = 1f + correction.Contrast;
+            float exposureScale = 1f + correction.Exposure;
+            float translation = (0.5f * (1f - contrastScale) + correction.Brightness) * exposureScale;
+            float redScale = contrastScale * exposureScale * (1f + correction.Temperature * 0.10f);
+            float greenScale = contrastScale * exposureScale;
+            float blueScale = contrastScale * exposureScale * (1f - correction.Temperature * 0.10f);
             ColorMatrix matrix = new ColorMatrix(new[]
             {
-                new[] { scale, 0f, 0f, 0f, 0f },
-                new[] { 0f, scale, 0f, 0f, 0f },
-                new[] { 0f, 0f, scale, 0f, 0f },
+                new[] { redScale, 0f, 0f, 0f, 0f },
+                new[] { 0f, greenScale, 0f, 0f, 0f },
+                new[] { 0f, 0f, blueScale, 0f, 0f },
                 new[] { 0f, 0f, 0f, 1f, 0f },
                 new[] { translation, translation, translation, 0f, 1f }
             });
@@ -3172,7 +3496,47 @@ namespace Splined.WindowsGui
                 graphics.DrawImage(resized, new Rectangle(0, 0, resized.Width, resized.Height),
                     0, 0, resized.Width, resized.Height, GraphicsUnit.Pixel, attributes);
             }
-            return adjusted;
+            if (correction.Sharpen <= 0.0001f) return adjusted;
+            Bitmap sharpened = ApplyPreviewSharpen(adjusted, correction.Sharpen);
+            adjusted.Dispose();
+            return sharpened;
+        }
+
+        private static Bitmap ApplyPreviewSharpen(Bitmap source, float amount)
+        {
+            Bitmap input = source.PixelFormat == PixelFormat.Format32bppArgb
+                ? new Bitmap(source)
+                : source.Clone(new Rectangle(0, 0, source.Width, source.Height), PixelFormat.Format32bppArgb);
+            Bitmap output = new Bitmap(input.Width, input.Height, PixelFormat.Format32bppArgb);
+            output.SetResolution(input.HorizontalResolution, input.VerticalResolution);
+            Rectangle bounds = new Rectangle(0, 0, input.Width, input.Height);
+            BitmapData sourceData = input.LockBits(bounds, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            BitmapData outputData = output.LockBits(bounds, ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            int bytes = Math.Abs(sourceData.Stride) * sourceData.Height;
+            byte[] original = new byte[bytes];
+            byte[] sharpened = new byte[bytes];
+            Marshal.Copy(sourceData.Scan0, original, 0, bytes);
+            Buffer.BlockCopy(original, 0, sharpened, 0, bytes);
+            float edge = Math.Max(0f, Math.Min(0.05f, amount * 0.25f));
+            for (int y = 1; y < input.Height - 1; y++)
+            {
+                for (int x = 1; x < input.Width - 1; x++)
+                {
+                    int offset = y * sourceData.Stride + x * 4;
+                    for (int channel = 0; channel < 3; channel++)
+                    {
+                        float value = original[offset + channel] * (1f + 4f * edge)
+                            - edge * (original[offset - 4 + channel] + original[offset + 4 + channel]
+                                + original[offset - sourceData.Stride + channel] + original[offset + sourceData.Stride + channel]);
+                        sharpened[offset + channel] = (byte)Math.Max(0, Math.Min(255, (int)Math.Round(value)));
+                    }
+                }
+            }
+            Marshal.Copy(sharpened, 0, outputData.Scan0, bytes);
+            input.UnlockBits(sourceData);
+            output.UnlockBits(outputData);
+            input.Dispose();
+            return output;
         }
 
         private void ShowSelectedAlbum(AlbumInfo album)
@@ -3639,6 +4003,10 @@ namespace Splined.WindowsGui
             report.UpscaleBackend = ReadString(payload, "upscale_backend");
             report.BrightnessPercent = ReadInt(payload, "brightness_percent", 0);
             report.ContrastPercent = ReadInt(payload, "contrast_percent", 0);
+            report.ExposurePercent = ReadInt(payload, "exposure_percent", 0);
+            report.SharpenPercent = ReadInt(payload, "sharpen_percent", 0);
+            report.ColorTemperature = ReadInt(payload, "color_temperature", 0);
+            report.AdaptiveDefaults = ReadBool(payload, "upscale_adaptive_defaults");
             report.QualityEligible = ReadBool(payload, "quality_eligible");
             report.Resized = ReadBool(payload, "resized");
             report.Converted = ReadBool(payload, "converted");
@@ -3720,7 +4088,15 @@ namespace Splined.WindowsGui
                     if (report.BrightnessPercent != 0)
                         AppendActivity("  •  brightness " + report.BrightnessPercent.ToString("+0;-0;0") + "%", ActivityTone.Muted);
                     if (report.ContrastPercent != 0)
-                        AppendActivity("  •  contrast +" + report.ContrastPercent + "%", ActivityTone.Muted);
+                        AppendActivity("  •  contrast " + report.ContrastPercent.ToString("+0;-0;0") + "%", ActivityTone.Muted);
+                    if (report.ExposurePercent != 0)
+                        AppendActivity("  •  exposure " + report.ExposurePercent.ToString("+0;-0;0") + "%", ActivityTone.Muted);
+                    if (report.SharpenPercent != 0)
+                        AppendActivity("  •  sharpen " + report.SharpenPercent + "%", ActivityTone.Muted);
+                    if (report.ColorTemperature != 0)
+                        AppendActivity("  •  color " + UpscaleProfileDisplay("temperature", report.ColorTemperature), ActivityTone.Muted);
+                    if (report.AdaptiveDefaults)
+                        AppendActivity("  •  adaptive defaults", ActivityTone.Muted);
                     if (!report.QualityEligible)
                         AppendActivity("  •  manual-only quality", ActivityTone.Warning);
                     AppendActivity(report.Converted ? "  •  format converted\r\n" : "\r\n", ActivityTone.Muted);
