@@ -223,7 +223,9 @@ namespace Splined.WindowsGui
         public bool ShowConfirmations = true;
         public bool HoverEnabled;
         public bool ShowArtwork = true;
+        public bool ShowMediaSelector = true;
         public bool MediaFilterExpanded = true;
+        public bool CandidateFilterExpanded;
         public string MediaArtistFilter = "";
         public string MediaAlbumFilter = "";
         public bool MediaShowWhite = true;
@@ -574,7 +576,9 @@ namespace Splined.WindowsGui
                 state.ShowConfirmations = ReadBool(text, "ui", "show_confirmations", true);
                 state.HoverEnabled = ReadBool(text, "ui", "hover_enabled", false);
                 state.ShowArtwork = ReadBool(text, "ui", "show_artwork", true);
+                state.ShowMediaSelector = ReadBool(text, "ui", "show_media_selector", true);
                 state.MediaFilterExpanded = ReadBool(text, "ui", "media_filter_expanded", true);
+                state.CandidateFilterExpanded = ReadBool(text, "ui", "candidate_filter_expanded", false);
                 state.MediaArtistFilter = ReadString(text, "ui", "media_artist_filter", "");
                 state.MediaAlbumFilter = ReadString(text, "ui", "media_album_filter", "");
                 state.MediaShowWhite = ReadBool(text, "ui", "media_show_white", true);
@@ -636,8 +640,10 @@ namespace Splined.WindowsGui
                 + "show_confirmations = " + Bool(state.ShowConfirmations) + Environment.NewLine
                 + "hover_enabled = " + Bool(state.HoverEnabled) + Environment.NewLine
                 + "show_artwork = " + Bool(state.ShowArtwork) + Environment.NewLine
+                + "show_media_selector = " + Bool(state.ShowMediaSelector) + Environment.NewLine
                 + "theme = " + Quote(state.Theme) + Environment.NewLine
                 + "media_filter_expanded = " + Bool(state.MediaFilterExpanded) + Environment.NewLine
+                + "candidate_filter_expanded = " + Bool(state.CandidateFilterExpanded) + Environment.NewLine
                 + "media_artist_filter = " + Quote(state.MediaArtistFilter) + Environment.NewLine
                 + "media_album_filter = " + Quote(state.MediaAlbumFilter) + Environment.NewLine
                 + "media_show_white = " + Bool(state.MediaShowWhite) + Environment.NewLine
