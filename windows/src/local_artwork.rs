@@ -377,7 +377,7 @@ fn webp_still_candidate(
     Ok((still, source, destination))
 }
 
-fn embedded_candidate(
+pub(crate) fn embedded_candidate(
     audio_path: &Path,
     cache_dir: &Path,
 ) -> Result<Option<DownloadedCandidate>, String> {

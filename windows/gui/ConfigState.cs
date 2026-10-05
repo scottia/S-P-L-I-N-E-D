@@ -249,6 +249,8 @@ namespace Splined.WindowsGui
         public bool MediaShowGreen = true;
         public bool MediaShowBlue = true;
         public bool MediaShowIncomplete = true;
+        public bool ShowTracks;
+        public string SelectedCompilationTrackPath = "";
         public string FilteredScanMode = "";
         public bool AutoScanEnabled;
         public string AutoScanScope = "selected";
@@ -627,6 +629,8 @@ namespace Splined.WindowsGui
                 state.MediaShowGreen = ReadBool(text, "ui", "media_show_green", true);
                 state.MediaShowBlue = ReadBool(text, "ui", "media_show_blue", true);
                 state.MediaShowIncomplete = ReadBool(text, "ui", "media_show_incomplete", true);
+                state.ShowTracks = ReadBool(text, "ui", "show_tracks", false);
+                state.SelectedCompilationTrackPath = ReadString(text, "ui", "selected_compilation_track_path", "");
                 state.FilteredScanMode = ReadString(text, "ui", "filtered_scan_mode", "");
                 state.AutoScanEnabled = ReadBool(text, "ui", "auto_scan_enabled", false);
                 state.AutoScanScope = ReadString(text, "ui", "auto_scan_scope", "selected");
@@ -696,6 +700,8 @@ namespace Splined.WindowsGui
                 + "media_show_green = " + Bool(state.MediaShowGreen) + Environment.NewLine
                 + "media_show_blue = " + Bool(state.MediaShowBlue) + Environment.NewLine
                 + "media_show_incomplete = " + Bool(state.MediaShowIncomplete) + Environment.NewLine
+                + "show_tracks = " + Bool(state.ShowTracks) + Environment.NewLine
+                + "selected_compilation_track_path = " + Quote(state.SelectedCompilationTrackPath) + Environment.NewLine
                 + "filtered_scan_mode = " + Quote(state.FilteredScanMode) + Environment.NewLine
                 + "auto_scan_enabled = " + Bool(state.AutoScanEnabled) + Environment.NewLine
                 + "auto_scan_scope = " + Quote(state.AutoScanScope) + Environment.NewLine

@@ -224,6 +224,13 @@ namespace Splined.WindowsGui
                             { "title", "Album One" }, { "path", firstAlbum },
                             { "representative_file", Path.Combine(firstAlbum, "track.mp3") }, { "status", "unprocessed" },
                             { "compilation", true }, { "compilation_track_art_eligible", true }, { "track_count", 1 },
+                            { "compilation_tracks", new object[] { new Dictionary<string, object>
+                                {
+                                    { "path", Path.Combine(firstAlbum, "track.mp3") },
+                                    { "title", "Fixture Track" },
+                                    { "embedded_artwork_recorded", true }
+                                }
+                            } },
                             { "release_year", "1998" },
                             { "has_local_artwork", false }, { "local_artwork_files", new string[0] },
                             { "cover_path", Path.Combine(firstAlbum, "cover.jpg") }, { "cover_name", "cover.jpg" },
@@ -236,6 +243,9 @@ namespace Splined.WindowsGui
                 Assert(albums.Length == 1 && albums[0].Title == "Album One" && albums[0].Key == "tag:album-one"
                     && albums[0].ReleaseYear == "1998" && albums[0].TrackCount == 1
                     && albums[0].Compilation && albums[0].CompilationTrackArtworkPending
+                    && albums[0].CompilationTracks.Count == 1
+                    && albums[0].CompilationTracks[0].Album == albums[0]
+                    && albums[0].CompilationTracks[0].EmbeddedArtworkRecorded
                     && albums[0].CoverName == "cover.jpg" && albums[0].CoverWidth == 1500
                     && albums[0].RootFiles == 12,
                     "SQLite snapshot did not populate the Album identity model.");
@@ -264,6 +274,7 @@ namespace Splined.WindowsGui
                     ShowMediaSelector = false, MediaFilterExpanded = false, CandidateFilterExpanded = true,
                     MediaArtistFilter = "Alpha", MediaAlbumFilter = "Fresh",
                     MediaShowRed = false, FilteredScanMode = "read",
+                    ShowTracks = true, SelectedCompilationTrackPath = Path.Combine(firstAlbum, "track.mp3"),
                     SelectedAlbumPaths = new List<string> { firstAlbum },
                     MainWidth = 1320, MainHeight = 860, MainX = 110, MainY = 90,
                     MainSplitterDistance = 455, RightSplitterDistance = 305,
@@ -276,10 +287,13 @@ namespace Splined.WindowsGui
                 Assert(loadedUi.Theme == "Dark" && !loadedUi.ShowStatusOnLaunch && !loadedUi.ShowConfirmations && loadedUi.HoverEnabled && loadedUi.ShowArtwork
                     && !loadedUi.ShowMediaSelector && !loadedUi.MediaFilterExpanded && loadedUi.CandidateFilterExpanded
                     && loadedUi.MediaArtistFilter == "Alpha" && !loadedUi.MediaShowRed
+                    && loadedUi.ShowTracks && loadedUi.SelectedCompilationTrackPath == Path.Combine(firstAlbum, "track.mp3")
                     && loadedUi.FilteredScanMode == "read" && loadedUi.SelectedAlbumPaths.SequenceEqual(new[] { firstAlbum })
                     && loadedUi.MainWidth == 1320 && loadedUi.MainSplitterDistance == 455
                     && loadedUi.SetupWidth == 1040 && loadedUi.SetupAdvancedTab == 2
                     && loadedUi.CompareWidth == 1110 && loadedUi.PreviewHeight == 650, "Internal Windows interface settings did not round-trip.");
+                loadedUi.ShowTracks = false;
+                loadedUi.SelectedCompilationTrackPath = "";
                 loadedUi.CandidateExcludedSources = new List<string> { "amazon" };
                 loadedUi.CandidateExcludedTypes = new List<string> { "Rejected" };
                 loadedUi.CandidateExcludedPolicies = new List<string> { "Strict" };
@@ -785,9 +799,14 @@ namespace Splined.WindowsGui
                     Assert(selectorVisibility is SpectrumToggleButton && selectorVisibility.Text == "«"
                         && selectorExpand is SpectrumToggleButton && selectorExpand.Text == "≫"
                         && selectorVisibility.Font.SizeInPoints == selectorExpand.Font.SizeInPoints
+                        && selectorVisibility.Font.SizeInPoints >= 13f
                         && selectorVisibility.Width >= 40
                         && selectorVisibility.Padding.All == 0,
                         "The Media Library Selection show/hide glyph is not visible at the panel-title font size.");
+                    CheckBox showTracksControl = form.Controls.Find("showTracks", true).OfType<CheckBox>().Single();
+                    Assert(showTracksControl.Text == "Show Tracks"
+                        && showTracksControl.Parent == form.Controls.Find("mediaStatusFilters", true).Single().Controls[0],
+                        "Show Tracks is not present in the Folder status selector.");
                     SplitContainer selectorSplit = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     ToolStripMenuItem showMediaSelector = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
                         .Single(item => item.Text == "Show Media Album Selector");

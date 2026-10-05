@@ -151,6 +151,7 @@ namespace Splined.WindowsGui
         private readonly Dictionary<MediaStatusFilter, CheckBox> mediaStatusFilters = new Dictionary<MediaStatusFilter, CheckBox>();
         private readonly Dictionary<MediaStatusFilter, Label> mediaStatusBullets = new Dictionary<MediaStatusFilter, Label>();
         private readonly Dictionary<MediaStatusFilter, Label> mediaStatusDescriptions = new Dictionary<MediaStatusFilter, Label>();
+        private CheckBox showTracks;
         private CheckBox filteredScanRead;
         private CheckBox filteredScanWrite;
         private CheckBox selectModeAll;
@@ -191,6 +192,7 @@ namespace Splined.WindowsGui
         private Label artworkPreviewCaption;
         private Label selectedAlbumInfo;
         private AlbumInfo displayedAlbum;
+        private CompilationTrackInfo selectedCompilationTrack;
         private bool candidatePreviewActive;
         private bool adjustingArtworkLayout;
         private int musicBrainzPreviewVersion;
@@ -272,6 +274,8 @@ namespace Splined.WindowsGui
         private const int AlbumActivityMinimumWidth = 340;
         private const int CandidatePanelMinimumWidth = 720;
         private const int CandidatePanelMinimumHeight = 420;
+
+        private sealed class TrackPlaceholderInfo { }
 
         public MainForm(ConfigState state)
             : this(state, ConfigStore.LoadUi())
@@ -524,7 +528,7 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 Margin = new Padding(0),
                 Padding = new Padding(0),
-                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Font = ThemeManager.UiFont(ThemeFontRole.AppTitle),
                 AccessibleName = "Show Media Album Selector"
             };
             ToolTip railTip = ThemeManager.CreateToolTip();
@@ -539,10 +543,11 @@ namespace Splined.WindowsGui
 
             layout.Controls.Add(BuildMediaFilterPanel(), 0, 1);
 
-            tree = new TreeView { Dock = DockStyle.Fill, CheckBoxes = true, ShowNodeToolTips = false, HideSelection = false, BorderStyle = BorderStyle.FixedSingle };
+            tree = new TreeView { Name = "mediaLibraryTree", Dock = DockStyle.Fill, CheckBoxes = true, ShowNodeToolTips = false, HideSelection = false, BorderStyle = BorderStyle.FixedSingle };
             treeToolTip = ThemeManager.CreateToolTip();
             tree.AfterCheck += TreeAfterCheck;
             tree.AfterSelect += TreeAfterSelect;
+            tree.BeforeExpand += TreeBeforeExpand;
             tree.NodeMouseClick += TreeNodeMouseClick;
             tree.NodeMouseHover += TreeNodeMouseHover;
             tree.MouseLeave += delegate { treeToolTip.Hide(tree); };
@@ -608,7 +613,7 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 Margin = new Padding(2),
                 Padding = new Padding(0),
-                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Font = ThemeManager.UiFont(ThemeFontRole.AppTitle),
                 AccessibleName = "Hide Media Album Selector"
             };
             ToolTip tip = ThemeManager.CreateToolTip();
@@ -945,6 +950,7 @@ namespace Splined.WindowsGui
             AddMediaStatusFilter(statusRows, 0, 1, MediaStatusFilter.Orange, "Processed");
             AddMediaStatusFilter(statusRows, 1, 1, MediaStatusFilter.Incomplete, "Incomplete");
             AddMediaStatusFilter(statusRows, 2, 1, MediaStatusFilter.Red, "Bypassed");
+            AddShowTracksToggle(statusRows, 3, 1);
             statuses.Controls.Add(statusRows);
             columns.Controls.Add(BuildFilteredAutomationPanel(), 0, 0);
             columns.Controls.Add(statuses, 0, 1);
@@ -1003,6 +1009,27 @@ namespace Splined.WindowsGui
             line.Controls.Add(bullet);
             line.Controls.Add(description);
             parent.Controls.Add(line, column, row);
+        }
+
+        private void AddShowTracksToggle(TableLayoutPanel parent, int row, int column)
+        {
+            showTracks = new FluentCheckBox
+            {
+                Name = "showTracks",
+                Text = "Show Tracks",
+                Checked = uiState.ShowTracks,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = Padding.Empty,
+                AccessibleName = "Show compilation tracks"
+            };
+            ToolTip tip = ThemeManager.CreateToolTip();
+            tip.SetToolTip(showTracks,
+                "Switch Select Media between the normal Album view and cached compilation tracks. Green-marked tracks have a recorded embedded-art write.");
+            showTracks.Tag = tip;
+            showTracks.CheckedChanged += ShowTracksChanged;
+            parent.Controls.Add(showTracks, column, row);
         }
 
         private Control BuildFilteredAutomationPanel()
@@ -1142,6 +1169,7 @@ namespace Splined.WindowsGui
                 autoScanEnabled = uiState.AutoScanEnabled;
                 autoScanAll.Checked = autoScanEnabled && autoScanScope == "all";
                 autoScanSelected.Checked = autoScanEnabled && autoScanScope == "selected";
+                if (showTracks != null) showTracks.Checked = uiState.ShowTracks;
             }
             finally { updatingFilteredControls = false; }
             SetMediaFilterExpanded(uiState.MediaFilterExpanded);
@@ -1191,6 +1219,23 @@ namespace Splined.WindowsGui
         {
             BuildTree();
             UpdateSelectionControlsCore(false);
+        }
+
+        private void ShowTracksChanged(object sender, EventArgs e)
+        {
+            if (updatingFilteredControls || showTracks == null) return;
+            uiState.ShowTracks = showTracks.Checked;
+            if (!uiState.ShowTracks)
+            {
+                selectedCompilationTrack = null;
+                uiState.SelectedCompilationTrackPath = "";
+            }
+            BuildTree();
+            if (uiState.ShowTracks && selectedCompilationTrack != null)
+                ShowSelectedCompilationTrack(selectedCompilationTrack);
+            else
+                ShowSelectedAlbum(displayedAlbum);
+            SaveUiState();
         }
 
         private void FilteredScanChoiceChanged(object sender, EventArgs e)
@@ -1481,11 +1526,23 @@ namespace Splined.WindowsGui
                 }
                 initialSelectionRestored = true;
                 selectionMode = SelectionMode.Select;
-                BuildTree();
                 displayedAlbum = String.IsNullOrWhiteSpace(displayedPath)
                     ? null
                     : albums.FirstOrDefault(album => SameAlbumPath(album.Path, displayedPath));
-                RenderDisplayedAlbum();
+                selectedCompilationTrack = String.IsNullOrWhiteSpace(uiState.SelectedCompilationTrackPath)
+                    ? null
+                    : albums.SelectMany(album => album.CompilationTracks)
+                        .FirstOrDefault(track => SameAlbumPath(track.Path, uiState.SelectedCompilationTrackPath));
+                if (selectedCompilationTrack != null)
+                {
+                    displayedAlbum = selectedCompilationTrack.Album;
+                    selectedCompilationTrack.Album.Selected = true;
+                }
+                BuildTree();
+                if (uiState.ShowTracks && selectedCompilationTrack != null)
+                    ShowSelectedCompilationTrack(selectedCompilationTrack);
+                else
+                    RenderDisplayedAlbum();
                 int selectedCount = albums.Count(album => album.Selected);
                 SetStatus(albums.Count + " album folders loaded. " + (selectedCount == 0
                     ? "Select is ready; no Albums are selected."
@@ -1519,6 +1576,15 @@ namespace Splined.WindowsGui
             suppressTreeEvents = true;
             tree.BeginUpdate();
             tree.Nodes.Clear();
+            if (uiState.ShowTracks)
+            {
+                BuildTrackTree();
+                tree.EndUpdate();
+                suppressTreeEvents = false;
+                UpdateMediaFilterCounts();
+                UpdateSelectionControlsCore(false);
+                return;
+            }
             string artistText = (artistFilter == null ? "" : artistFilter.Text).Trim();
             string albumText = (albumFilter == null ? "" : albumFilter.Text).Trim();
             bool dark = ThemeManager.IsDark(uiState.Theme);
@@ -1568,6 +1634,147 @@ namespace Splined.WindowsGui
             UpdateSelectionControlsCore(false);
         }
 
+        private void BuildTrackTree()
+        {
+            bool dark = ThemeManager.IsDark(uiState.Theme);
+            AlbumInfo focused = displayedAlbum != null && displayedAlbum.Compilation
+                ? displayedAlbum : selectedCompilationTrack == null ? null : selectedCompilationTrack.Album;
+            if (focused != null)
+            {
+                TreeNode albumNode = BuildCompilationAlbumNode(focused, dark, true);
+                tree.Nodes.Add(albumNode);
+                albumNode.Expand();
+                return;
+            }
+
+            string rootName = "music";
+            try
+            {
+                string configured = (state.MusicLibrary ?? "").TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (!String.IsNullOrWhiteSpace(configured))
+                    rootName = Path.GetFileName(configured);
+            }
+            catch { }
+            if (String.IsNullOrWhiteSpace(rootName)) rootName = "music";
+            TreeNode root = new TreeNode(rootName)
+            {
+                ToolTipText = state.MusicLibrary ?? ""
+            };
+            IEnumerable<IGrouping<string, AlbumInfo>> groups = albums
+                .Where(album => album.Compilation)
+                .GroupBy(album => album.Artist, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase);
+            foreach (IGrouping<string, AlbumInfo> group in groups)
+            {
+                List<AlbumInfo> values = group.OrderBy(album => album.Title, StringComparer.OrdinalIgnoreCase).ToList();
+                ArtistAggregateState aggregate = ArtistStateResolver.Aggregate(values);
+                TreeNode artistNode = new TreeNode(group.Key)
+                {
+                    Tag = new ArtistNodeInfo(group.Key, values, values, aggregate),
+                    ForeColor = ArtistStateResolver.StateColor(aggregate, dark),
+                    ToolTipText = ArtistStateResolver.ToolTip(aggregate)
+                };
+                foreach (AlbumInfo album in values)
+                    artistNode.Nodes.Add(BuildCompilationAlbumNode(album, dark, false));
+                root.Nodes.Add(artistNode);
+            }
+            tree.Nodes.Add(root);
+        }
+
+        private TreeNode BuildCompilationAlbumNode(AlbumInfo album, bool dark, bool ensureTracks)
+        {
+            TreeNode node = new TreeNode(album.Title)
+            {
+                Tag = album,
+                Checked = album.Selected && selectedCompilationTrack == null,
+                ForeColor = AlbumStatePresentation.StateColor(album.State, dark),
+                ToolTipText = album.ToolTip
+            };
+            PopulateCompilationTrackNodes(node, album, dark, ensureTracks);
+            return node;
+        }
+
+        private void PopulateCompilationTrackNodes(TreeNode node, AlbumInfo album, bool dark, bool ensureTracks)
+        {
+            if (ensureTracks) EnsureCompilationTracks(album);
+            node.Nodes.Clear();
+            foreach (CompilationTrackInfo track in album.CompilationTracks
+                .OrderBy(item => item.FileName, StringComparer.OrdinalIgnoreCase))
+            {
+                string fileName = track.FileName;
+                string shown = fileName.Length <= 75 ? fileName : fileName.Substring(0, 72) + "...";
+                bool selected = selectedCompilationTrack != null
+                    && SameAlbumPath(selectedCompilationTrack.Path, track.Path);
+                TreeNode trackNode = new TreeNode((track.EmbeddedArtworkRecorded ? "● " : "○ ") + shown)
+                {
+                    Tag = track,
+                    Checked = selected,
+                    ForeColor = track.EmbeddedArtworkRecorded
+                        ? ThemeManager.StatusColor(ThemeStatusColor.Green, dark ? "Dark" : "Light")
+                        : AlbumStatePresentation.StateColor(album.State, dark),
+                    ToolTipText = fileName + Environment.NewLine
+                        + (track.EmbeddedArtworkRecorded
+                            ? "Embedded artwork recorded by SPLINED. Check and launch to reopen this track for editing."
+                            : "No completed SPLINED embedded-art write is recorded for this track.")
+                };
+                node.Nodes.Add(trackNode);
+            }
+            if (!album.CompilationTracksLoaded)
+                node.Nodes.Add(new TreeNode("Loading tracks when expanded…") { Tag = new TrackPlaceholderInfo() });
+        }
+
+        private void EnsureCompilationTracks(AlbumInfo album)
+        {
+            if (album == null || album.CompilationTracksLoaded) return;
+            try
+            {
+                string physical = ResolveExistingAlbumPath(album.Path);
+                if (!Directory.Exists(physical)) return;
+                Dictionary<string, CompilationTrackInfo> known = album.CompilationTracks
+                    .Where(track => !String.IsNullOrWhiteSpace(track.Path))
+                    .ToDictionary(track => NormalizeAlbumPath(track.Path), track => track, StringComparer.OrdinalIgnoreCase);
+                foreach (string path in Directory.EnumerateFiles(physical, "*", SearchOption.TopDirectoryOnly)
+                    .Where(IsSupportedAudioPath)
+                    .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+                {
+                    string key = NormalizeAlbumPath(path);
+                    CompilationTrackInfo track;
+                    if (known.TryGetValue(key, out track)) continue;
+                    track = new CompilationTrackInfo
+                    {
+                        Album = album,
+                        Path = path,
+                        Title = Path.GetFileNameWithoutExtension(path),
+                        EmbeddedArtworkRecorded = false
+                    };
+                    album.CompilationTracks.Add(track);
+                    known[key] = track;
+                }
+                album.CompilationTracksLoaded = true;
+                RuntimeLog.Write("debug", "windows.show_tracks.loaded album=" + album.Path
+                    + " tracks=" + album.CompilationTracks.Count);
+            }
+            catch (Exception error)
+            {
+                RuntimeLog.Write("error", "windows.show_tracks.failed album=" + album.Path
+                    + " error=" + error.Message);
+            }
+        }
+
+        private static bool IsSupportedAudioPath(string path)
+        {
+            string extension = Path.GetExtension(path) ?? "";
+            return new[] { ".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif" }
+                .Any(value => extension.Equals(value, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void TreeBeforeExpand(object sender, TreeViewCancelEventArgs e)
+        {
+            AlbumInfo album = e.Node == null ? null : e.Node.Tag as AlbumInfo;
+            if (!uiState.ShowTracks || album == null || !album.Compilation) return;
+            PopulateCompilationTrackNodes(e.Node, album, ThemeManager.IsDark(uiState.Theme), true);
+        }
+
         private bool IsMediaStatusChecked(MediaStatusFilter filter)
         {
             CheckBox control;
@@ -1598,6 +1805,32 @@ namespace Splined.WindowsGui
             {
                 selectionMode = SelectionMode.Select;
                 UpdateSelectionControls();
+            }
+
+            CompilationTrackInfo trackItem = e.Node.Tag as CompilationTrackInfo;
+            if (trackItem != null)
+            {
+                foreach (AlbumInfo value in albums)
+                {
+                    value.Selected = false;
+                    value.BypassOverride = false;
+                }
+                selectedCompilationTrack = e.Node.Checked ? trackItem : null;
+                uiState.SelectedCompilationTrackPath = selectedCompilationTrack == null ? "" : selectedCompilationTrack.Path;
+                if (selectedCompilationTrack != null)
+                {
+                    trackItem.Album.Selected = true;
+                    trackItem.Album.BypassOverride = trackItem.Album.State == AlbumState.Bypassed;
+                    displayedAlbum = trackItem.Album;
+                    ShowSelectedCompilationTrack(trackItem);
+                }
+                RuntimeLog.Write("debug", "windows.selection.track path=" + trackItem.Path
+                    + " selected=" + (selectedCompilationTrack != null)
+                    + " embedded_recorded=" + trackItem.EmbeddedArtworkRecorded);
+                BuildTree();
+                UpdateSelectionControls();
+                SaveUiState();
+                return;
             }
 
             ArtistNodeInfo artist = e.Node.Tag as ArtistNodeInfo;
@@ -1635,6 +1868,11 @@ namespace Splined.WindowsGui
 
             AlbumInfo item = e.Node.Tag as AlbumInfo;
             if (item == null) return;
+            if (uiState.ShowTracks)
+            {
+                selectedCompilationTrack = null;
+                uiState.SelectedCompilationTrackPath = "";
+            }
             if (e.Node.Checked && item.State == AlbumState.TimeoutActive)
             {
                 suppressTreeEvents = true;
@@ -1672,16 +1910,42 @@ namespace Splined.WindowsGui
 
         private void TreeAfterSelect(object sender, TreeViewEventArgs e)
         {
-            AlbumInfo album = e.Node == null ? null : e.Node.Tag as AlbumInfo;
-            ShowSelectedAlbum(album);
+            ShowTreeNode(e.Node);
         }
 
         private void TreeNodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
-                ShowSelectedAlbum(e.Node == null ? null : e.Node.Tag as AlbumInfo);
+                ShowTreeNode(e.Node);
             if (e.Button == MouseButtons.Right && e.Node.ToolTipText.Length > 0)
                 SetStatus(e.Node.ToolTipText);
+        }
+
+        private void ShowTreeNode(TreeNode node)
+        {
+            CompilationTrackInfo track = node == null ? null : node.Tag as CompilationTrackInfo;
+            if (track != null)
+            {
+                ShowSelectedCompilationTrack(track);
+                return;
+            }
+            AlbumInfo album = node == null ? null : node.Tag as AlbumInfo;
+            if (album != null) ShowSelectedAlbum(album);
+        }
+
+        private void ShowSelectedCompilationTrack(CompilationTrackInfo track)
+        {
+            if (track == null) return;
+            selectedCompilationTrack = track;
+            uiState.SelectedCompilationTrackPath = track.Path ?? "";
+            displayedAlbum = track.Album;
+            candidatePreviewActive = false;
+            RenderDisplayedAlbum();
+            ClearCandidates();
+            candidateContext.Text = track.FileName + " · "
+                + (track.EmbeddedArtworkRecorded ? "embedded artwork available" : "embedded artwork not yet recorded")
+                + " · check this track and LAUNCH to review or edit only this file.";
+            SetStatus("Track focus: " + track.FileName + ". Check it and launch to reopen its embedded artwork.");
         }
 
         private void TreeNodeMouseHover(object sender, TreeNodeMouseHoverEventArgs e)
@@ -1725,7 +1989,9 @@ namespace Splined.WindowsGui
                 && (filteredScanRead.Checked || filteredScanWrite.Checked);
             launch.Enabled = running || (!loadingLibrary && count > 0 && launchModeChosen);
             launch.Tag = waiting ? "waiting" : "launch";
-            launch.Text = waiting ? "WAITING" : running ? "STOP" : (count > 0 ? "LAUNCH (" + count + ")" : "LAUNCH");
+            launch.Text = waiting ? "WAITING" : running ? "STOP"
+                : selectedCompilationTrack != null && count > 0 ? "LAUNCH (1 TRACK)"
+                : (count > 0 ? "LAUNCH (" + count + ")" : "LAUNCH");
             ThemeManager.StyleButton(launch, uiState.Theme);
             if (settingsMenuItem != null)
                 settingsMenuItem.Enabled = !running && !awaitingDecision && candidates.Count == 0;
@@ -1734,6 +2000,7 @@ namespace Splined.WindowsGui
             if (artistFilter != null) artistFilter.Enabled = filterActionsEnabled;
             if (albumFilter != null) albumFilter.Enabled = filterActionsEnabled;
             foreach (CheckBox filter in mediaStatusFilters.Values) filter.Enabled = filterActionsEnabled;
+            if (showTracks != null) showTracks.Enabled = filterActionsEnabled;
             if (filteredScanRead != null)
                 filteredScanRead.Enabled = filterActionsEnabled && (!filteredScanWrite.Checked || filteredScanRead.Checked);
             if (filteredScanWrite != null)
@@ -1976,6 +2243,12 @@ namespace Splined.WindowsGui
             start.EnvironmentVariables["NO_COLOR"] = "1";
             if (!String.IsNullOrWhiteSpace(retryArtist)) start.EnvironmentVariables["SPLINED_FALLBACK_ARTIST"] = retryArtist;
             if (!String.IsNullOrWhiteSpace(retryAlbum)) start.EnvironmentVariables["SPLINED_FALLBACK_ALBUM"] = retryAlbum;
+            if (selectedCompilationTrack != null && SameAlbumPath(selectedCompilationTrack.Album.Path, album.Path))
+            {
+                string trackPath = ResolveExistingTrackPath(album.Path, selectedCompilationTrack.Path, scanPath);
+                start.EnvironmentVariables["SPLINED_COMPILATION_TRACK_PATH"] = trackPath;
+                RuntimeLog.Write("debug", "album.core.target_track album=" + scanPath + " track=" + trackPath);
+            }
             if (album.BypassOverride || (album.State == AlbumState.Bypassed && album.CompilationTrackArtworkPending))
                 start.EnvironmentVariables["SPLINED_BYPASS_OVERRIDE"] = "1";
             Process process = new Process();
@@ -3328,6 +3601,11 @@ namespace Splined.WindowsGui
             bool changed = album.Selected || album.BypassOverride || persisted;
             album.Selected = false;
             album.BypassOverride = false;
+            if (selectedCompilationTrack != null && SameAlbumPath(selectedCompilationTrack.Album.Path, album.Path))
+            {
+                selectedCompilationTrack = null;
+                uiState.SelectedCompilationTrackPath = "";
+            }
             if (!changed) return;
             BuildTree();
             UpdateSelectionControls();
@@ -3348,6 +3626,23 @@ namespace Splined.WindowsGui
             try { normalized = Path.GetFullPath(normalized); }
             catch { }
             return normalized.Normalize(NormalizationForm.FormC);
+        }
+
+        private static string ResolveExistingTrackPath(string indexedAlbumPath, string indexedTrackPath, string physicalAlbumPath)
+        {
+            if (!String.IsNullOrWhiteSpace(indexedTrackPath) && File.Exists(indexedTrackPath))
+                return indexedTrackPath;
+            try
+            {
+                string relative = Path.GetFileName(indexedTrackPath);
+                if (!String.IsNullOrWhiteSpace(indexedAlbumPath))
+                    relative = indexedTrackPath.Substring(indexedAlbumPath.TrimEnd('\\', '/').Length)
+                        .TrimStart('\\', '/');
+                string translated = Path.Combine(physicalAlbumPath, relative);
+                if (File.Exists(translated)) return translated;
+            }
+            catch { }
+            return indexedTrackPath;
         }
 
         private static string ResolveExistingAlbumPath(string path)
@@ -4693,6 +4988,9 @@ namespace Splined.WindowsGui
             uiState.MediaShowGreen = IsMediaStatusChecked(MediaStatusFilter.Green);
             uiState.MediaShowBlue = IsMediaStatusChecked(MediaStatusFilter.Blue);
             uiState.MediaShowIncomplete = IsMediaStatusChecked(MediaStatusFilter.Incomplete);
+            uiState.ShowTracks = showTracks != null && showTracks.Checked;
+            uiState.SelectedCompilationTrackPath = selectedCompilationTrack == null
+                ? "" : selectedCompilationTrack.Path ?? "";
             uiState.AutoScanEnabled = autoScanEnabled;
             uiState.AutoScanScope = autoScanScope;
             uiState.FilteredScanMode = filteredScanRead != null && filteredScanRead.Checked
