@@ -233,6 +233,11 @@ Launch [LIVE WRITE] Choice Results
 Auto Scan without an explicit Launch choice prompts inside the Album Scanning
 panel rather than silently defaulting to READ.
 
+On each Windows application start, Config v5 `mode` initializes the Launch
+choice. A previously saved interface-only choice cannot override the configured
+mode. READ completion reports use **Albums reviewed** so a successful review is
+not confused with a durable Processed record.
+
 The launch payload remains path-exact. It contains only the checked Album set
 unless Auto Scan `[ALL]` is explicitly chosen, in which case it additionally
 contains every Unprocessed Album.
