@@ -319,10 +319,23 @@ already-indexed Album Artist ID to restrict local inspection to that Artist's
 Albums, stopping at the first exact Recording-ID/Artist-ID match. Only a local
 miss can proceed to MusicBrainz. Stale track rows cannot become artwork
 authority: file size and modification time are checked before reuse.
-The progress and track-artwork tables are read only when an eligible compilation starts.
-Normal discovery continues to inspect one representative track per Album.
+The Windows warm snapshot projects cached compilation track paths from `tracks`
+and joins the track-artwork ledger only to mark completed embedded-art writes in
+Show Tracks. This is SQLite-only: it does not walk the music share or reopen
+audio tags. For an older compilation whose full filename list was not cached,
+Windows fills the list only when that Album is expanded by enumerating that one
+folder non-recursively; no tag data is read. The compilation runtime reads the
+same progress and track-artwork tables when an eligible compilation starts.
+Normal discovery continues to
+inspect one representative track per Album.
 Resume accepts a prior completion only when the current local Recording and
 Artist IDs still match the ledger row.
+
+A targeted Windows edit passes one selected compilation track to the runtime.
+That explicit target bypasses the resume skip for that track only, extracts its
+current embedded front image into the run cache, and sends it through the same
+review/edit/write path. Other tracks in the Album are not processed and folder
+cover files remain untouched.
 
 LIVE WRITE creates or refreshes the progress row when compilation work starts, so
 an operator exit before the first approval is represented as `0/N incomplete`.

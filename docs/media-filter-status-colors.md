@@ -109,6 +109,13 @@ separate folder cover is untouched. Orange Albums may be deliberately selected
 for reprocessing. Ordinary Red Albums require an intentional temporary bypass
 override. Purple Albums remain protected while timeout is active.
 
+Windows **Show Tracks** is a view mode, not another Folder Status. It uses the
+cached compilation-track rows beneath the same physical library hierarchy.
+Green track markers mean SPLINED has a completed embedded-art ledger entry;
+unmarked tracks have no such completion record. Selecting one track deliberately
+reopens only that embedded image for review or replacement, even when the Album
+is otherwise Processed or Bypassed.
+
 READ mode may evaluate a candidate, but a no-cover Album does not become
 durably processed merely because a possible image was found. LIVE WRITE updates
 the database after the actual Album result and local `cover.*` state are known.

@@ -16,7 +16,7 @@ use crate::history::{AlbumHistoryState, album_history_status, load_completion_hi
 use crate::inspect::inspect_image;
 use crate::local_artwork::{
     LocalPreflightAction, cleanup_competing_static, cleanup_replaced_static_covers,
-    inspect_local_preflight,
+    embedded_candidate, inspect_local_preflight,
 };
 use crate::media_database::{
     CompilationArtworkApplication, RuntimeArtworkMaterial, completed_compilation_track_paths,
@@ -2077,10 +2077,38 @@ async fn run_compilation_album(
         format_order,
         cache_dir,
     } = context;
+    let requested_track = std::env::var_os("SPLINED_COMPILATION_TRACK_PATH").map(PathBuf::from);
+    let tracks = if let Some(requested) = requested_track.as_ref() {
+        let targeted = tracks
+            .iter()
+            .filter(|track| {
+                track
+                    .path
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&requested.to_string_lossy())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if targeted.is_empty() {
+            return Err(format!(
+                "The selected compilation track is not present in this Album: {}",
+                requested.display()
+            ));
+        }
+        targeted
+    } else {
+        tracks.to_vec()
+    };
+    let targeted_edit = requested_track.is_some();
     gui_events::emit(json!({
         "event": "compilation_started", "album_path": album.path,
         "total_tracks": tracks.len(),
-        "message": "Missing Album MBID + compilation=1: approved artwork will be embedded per track; folder cover files are untouched."
+        "targeted_track": requested_track,
+        "message": if targeted_edit {
+            "Reopening one selected compilation track for embedded-art review; folder cover files are untouched."
+        } else {
+            "Missing Album MBID + compilation=1: approved artwork will be embedded per track; folder cover files are untouched."
+        }
     }));
     let identities = tracks
         .iter()
@@ -2091,7 +2119,11 @@ async fn run_compilation_album(
                 .filter(|(_, _, artists)| !artists.is_empty())
         })
         .collect::<Vec<_>>();
-    let already_completed = completed_compilation_track_paths(config, &album.path, &identities)?;
+    let already_completed = if targeted_edit {
+        std::collections::HashSet::new()
+    } else {
+        completed_compilation_track_paths(config, &album.path, &identities)?
+    };
     let mut completed = already_completed.len();
     let mut result = CompilationRunResult::default();
     // Keep every inspected release available for the duration of this Album.
@@ -2117,10 +2149,17 @@ async fn run_compilation_album(
         );
 
         let (recording_mbid, artist_mbids) = track_authority(track);
+        let targeted_embedded = if targeted_edit {
+            embedded_candidate(&track.path, cache_dir)?
+                .map(|candidate| candidate.path().to_path_buf())
+        } else {
+            None
+        };
         let mut local_candidate = None;
-        if let Some(recording) = recording_mbid
-            .as_deref()
-            .filter(|_| !artist_mbids.is_empty())
+        if targeted_embedded.is_none()
+            && let Some(recording) = recording_mbid
+                .as_deref()
+                .filter(|_| !artist_mbids.is_empty())
         {
             local_candidate = find_local_compilation_artwork(
                 config,
@@ -2137,7 +2176,7 @@ async fn run_compilation_album(
         let mut matches = Vec::<MusicBrainzMatch>::new();
         let mut used_search = false;
 
-        if local_candidate.is_none() {
+        if local_candidate.is_none() && targeted_embedded.is_none() {
             matches = if let Some(recording) = recording_mbid
                 .as_deref()
                 .filter(|_| !artist_mbids.is_empty())
@@ -2181,7 +2220,8 @@ async fn run_compilation_album(
         }
 
         'match_selection: loop {
-            if local_candidate.is_none() && selected_match.is_none() {
+            if local_candidate.is_none() && targeted_embedded.is_none() && selected_match.is_none()
+            {
                 emit_musicbrainz_matches(
                     track,
                     &matches,
@@ -2269,7 +2309,36 @@ async fn run_compilation_album(
                 }
             }
 
-            let mut pipeline = if let Some(local) = local_candidate.as_ref() {
+            let mut pipeline = if let Some(embedded_path) = targeted_embedded.as_ref() {
+                let downloaded = DownloadedCandidate::from_existing_path(
+                    "local",
+                    embedded_path.clone(),
+                    0,
+                    track.path.to_string_lossy(),
+                )?;
+                PipelineResult {
+                    candidates: vec![PipelineCandidate {
+                        reference: ArtworkReference {
+                            source: "local".to_string(),
+                            id: track
+                                .path
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("embedded track")
+                                .to_string(),
+                            url: track.path.to_string_lossy().into_owned(),
+                            front: true,
+                            approved: true,
+                            types: vec!["EmbeddedTrack".to_string()],
+                        },
+                        downloaded,
+                        strict: StrictContentDecision::default(),
+                    }],
+                    best_index: Some(0),
+                    diagnostics: Vec::new(),
+                    provider_timings: Vec::new(),
+                }
+            } else if let Some(local) = local_candidate.as_ref() {
                 let downloaded = DownloadedCandidate::from_existing_path(
                     "local",
                     local.cover_path.clone(),
@@ -2357,11 +2426,12 @@ async fn run_compilation_album(
             });
             let display_indices = (0..pipeline.candidates.len())
                 .filter(|index| {
-                    candidate_visible_for_review(
-                        &pipeline.candidates[*index].downloaded.candidate,
-                        range,
-                        config,
-                    )
+                    targeted_embedded.is_some()
+                        || candidate_visible_for_review(
+                            &pipeline.candidates[*index].downloaded.candidate,
+                            range,
+                            config,
+                        )
                 })
                 .collect::<Vec<_>>();
             let gui_candidates = display_indices.iter().map(|candidate_index| {
@@ -2385,7 +2455,9 @@ async fn run_compilation_album(
                     "projected_width": projected.width, "projected_height": projected.height,
                     "cropped": projected.cropped, "resized": projected.resized, "upscaled": projected.upscaled,
                     "approved": item.reference.approved, "reference_id": item.reference.id,
-                    "local_origin": if candidate.source == "local" { "cover-file" } else { "" },
+                    "local_origin": if item.reference.types.iter().any(|value| value == "EmbeddedTrack") {
+                        "embedded-track"
+                    } else if candidate.source == "local" { "cover-file" } else { "" },
                     "local_reference": item.reference.id, "url": item.reference.url,
                     "cache_path": item.downloaded.path(), "recommended": Some(*candidate_index) == suggested_index })
             }).collect::<Vec<_>>();
@@ -2393,12 +2465,12 @@ async fn run_compilation_album(
                 json!({ "event": "candidates", "album_path": album.path, "track_path": track.path,
                 "items": gui_candidates, "recommended_index": suggested_index.map(|value| value + 1),
                 "hidden_by_source_policy": pipeline.candidates.len() - display_indices.len(), "fallback": false,
-                "compilation_track": true, "musicbrainz_back_available": local_candidate.is_none() }),
+                "compilation_track": true, "musicbrainz_back_available": local_candidate.is_none() && targeted_embedded.is_none() }),
             );
             gui_events::emit(
                 json!({ "event": "decision_required", "album_path": album.path, "track_path": track.path,
                 "reason": "compilation-track", "suggested_index": suggested_index.map(|value| value + 1),
-                "allow_bypass": true, "musicbrainz_back_available": local_candidate.is_none() }),
+                "allow_bypass": true, "musicbrainz_back_available": local_candidate.is_none() && targeted_embedded.is_none() }),
             );
 
             let chosen_index = match gui_events::wait_for_candidate_decision()? {
@@ -2407,7 +2479,9 @@ async fn run_compilation_album(
                 {
                     index
                 }
-                gui_events::CandidateDecision::BackToMusicBrainz if local_candidate.is_none() => {
+                gui_events::CandidateDecision::BackToMusicBrainz
+                    if local_candidate.is_none() && targeted_embedded.is_none() =>
+                {
                     if let Some(selected) = selected_match.take() {
                         visited_releases.insert(selected.release_mbid.clone());
                         current_release = Some(selected.release_mbid);

@@ -114,6 +114,25 @@ namespace Splined.WindowsGui
                                 new AlbumInfo { Artist = "QA Artist", Title = "Processed Album", Path = @"C:\QA\Processed", State = AlbumState.Processed },
                                 new AlbumInfo { Artist = "Bypass Artist", Title = "Bypassed Album", Path = @"C:\QA\Bypassed", State = AlbumState.Bypassed }
                             };
+                            AlbumInfo compilation = new AlbumInfo
+                            {
+                                Artist = "Various Artists", Title = "Compilation Track Editing",
+                                Path = @"C:\QA\Compilation", State = AlbumState.Processed,
+                                Compilation = true, CompilationTrackArtworkEligible = true,
+                                TrackCount = 2, CompilationTracksLoaded = true
+                            };
+                            compilation.CompilationTracks.Add(new CompilationTrackInfo
+                            {
+                                Album = compilation,
+                                Path = @"C:\QA\Compilation\01 - A deliberately long compilation filename used to verify the seventy-five character truncation rule.mp3",
+                                Title = "Long QA Track", EmbeddedArtworkRecorded = true
+                            });
+                            compilation.CompilationTracks.Add(new CompilationTrackInfo
+                            {
+                                Album = compilation, Path = @"C:\QA\Compilation\02 - Pending Track.mp3",
+                                Title = "Pending Track", EmbeddedArtworkRecorded = false
+                            });
+                            mediaAlbums.Add(compilation);
                             typeof(MainForm).GetField("albums", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, mediaAlbums);
                             typeof(MainForm).GetMethod("SetMediaFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { true });
                             form.Controls.Find("mediaArtistFilter", true)[0].Text = "";
@@ -127,6 +146,15 @@ namespace Splined.WindowsGui
                             typeof(MainForm).GetMethod("UpdateMediaFilterColors", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                             form.PerformLayout();
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-media-filter-idle-qa.png"));
+                            CheckBox showTracks = form.Controls.Find("showTracks", true)[0] as CheckBox;
+                            if (showTracks != null) showTracks.Checked = true;
+                            Control[] trackControls = form.Controls.Find("mediaLibraryTree", true);
+                            TreeView trackTree = trackControls.Length == 0 ? null : trackControls[0] as TreeView;
+                            if (trackTree != null && trackTree.Nodes.Count > 0) trackTree.Nodes[0].ExpandAll();
+                            form.PerformLayout();
+                            Application.DoEvents();
+                            CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-show-tracks-qa.png"));
+                            if (showTracks != null) showTracks.Checked = false;
                             typeof(MainForm).GetMethod("SetMediaSelectorVisible", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, new object[] { false, false });
                             form.PerformLayout();
                             Application.DoEvents();

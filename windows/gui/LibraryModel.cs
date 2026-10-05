@@ -42,6 +42,8 @@ namespace Splined.WindowsGui
         public string Outcome;
         public bool Compilation;
         public bool CompilationTrackArtworkEligible;
+        public List<CompilationTrackInfo> CompilationTracks = new List<CompilationTrackInfo>();
+        public bool CompilationTracksLoaded;
         public bool HasLocalArtwork;
         public List<string> LocalArtworkFiles = new List<string>();
         public int TrackCount;
@@ -106,6 +108,19 @@ namespace Splined.WindowsGui
             if (value.TotalDays >= 1) return ((int)value.TotalDays) + "d " + value.Hours + "h " + value.Minutes + "m";
             if (value.TotalHours >= 1) return ((int)value.TotalHours) + "h " + value.Minutes + "m";
             return Math.Max(0, value.Minutes) + "m " + value.Seconds + "s";
+        }
+    }
+
+    internal sealed class CompilationTrackInfo
+    {
+        public AlbumInfo Album;
+        public string Path;
+        public string Title;
+        public bool EmbeddedArtworkRecorded;
+
+        public string FileName
+        {
+            get { return System.IO.Path.GetFileName(Path ?? "") ?? ""; }
         }
     }
 
@@ -214,6 +229,7 @@ namespace Splined.WindowsGui
             public string status;
             public bool compilation;
             public bool compilation_track_art_eligible;
+            public SnapshotTrack[] compilation_tracks;
             public int track_count;
             public string release_year;
             public bool has_local_artwork;
@@ -228,6 +244,13 @@ namespace Splined.WindowsGui
             public string processed_at;
             public string timeout_until;
             public string selected_source;
+        }
+
+        private sealed class SnapshotTrack
+        {
+            public string path;
+            public string title;
+            public bool embedded_artwork_recorded;
         }
 #pragma warning restore 0649
 
@@ -281,32 +304,48 @@ namespace Splined.WindowsGui
             SnapshotPayload snapshot = Json.Deserialize<SnapshotPayload>(text);
             if (snapshot == null || snapshot.schema_version != 2)
                 throw new InvalidOperationException("SPLINED returned an incompatible SQLite media snapshot.");
-            return (snapshot.albums ?? new SnapshotAlbum[0]).Select(item => new AlbumInfo
+            return (snapshot.albums ?? new SnapshotAlbum[0]).Select(item =>
             {
-                Key = item.album_key,
-                Artist = item.artist,
-                Title = item.title,
-                Path = item.path,
-                AudioFiles = String.IsNullOrWhiteSpace(item.representative_file)
-                    ? new List<string>()
-                    : new List<string> { item.representative_file },
-                HasLocalArtwork = item.has_local_artwork,
-                LocalArtworkFiles = (item.local_artwork_files ?? new string[0]).ToList(),
-                TrackCount = item.track_count,
-                Compilation = item.compilation,
-                CompilationTrackArtworkEligible = item.compilation_track_art_eligible,
-                ReleaseYear = item.release_year,
-                CoverPath = item.cover_path,
-                CoverName = item.cover_name,
-                CoverFormat = item.cover_format,
-                CoverWidth = item.cover_width,
-                CoverHeight = item.cover_height,
-                RootFiles = item.root_files,
-                CoverFiles = item.cover_files,
-                State = ParseStatus(item.status),
-                CompletedUtc = ParseTimestamp(item.processed_at),
-                EligibleUtc = ParseTimestamp(item.timeout_until),
-                Outcome = item.selected_source
+                AlbumInfo album = new AlbumInfo
+                {
+                    Key = item.album_key,
+                    Artist = item.artist,
+                    Title = item.title,
+                    Path = item.path,
+                    AudioFiles = String.IsNullOrWhiteSpace(item.representative_file)
+                        ? new List<string>()
+                        : new List<string> { item.representative_file },
+                    HasLocalArtwork = item.has_local_artwork,
+                    LocalArtworkFiles = (item.local_artwork_files ?? new string[0]).ToList(),
+                    TrackCount = item.track_count,
+                    Compilation = item.compilation,
+                    CompilationTrackArtworkEligible = item.compilation_track_art_eligible,
+                    ReleaseYear = item.release_year,
+                    CoverPath = item.cover_path,
+                    CoverName = item.cover_name,
+                    CoverFormat = item.cover_format,
+                    CoverWidth = item.cover_width,
+                    CoverHeight = item.cover_height,
+                    RootFiles = item.root_files,
+                    CoverFiles = item.cover_files,
+                    State = ParseStatus(item.status),
+                    CompletedUtc = ParseTimestamp(item.processed_at),
+                    EligibleUtc = ParseTimestamp(item.timeout_until),
+                    Outcome = item.selected_source
+                };
+                album.CompilationTracks = (item.compilation_tracks ?? new SnapshotTrack[0])
+                    .Select(track => new CompilationTrackInfo
+                    {
+                        Album = album,
+                        Path = track.path,
+                        Title = track.title,
+                        EmbeddedArtworkRecorded = track.embedded_artwork_recorded
+                    })
+                    .OrderBy(track => track.FileName, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                album.CompilationTracksLoaded = album.TrackCount > 0
+                    && album.CompilationTracks.Count >= album.TrackCount;
+                return album;
             }).OrderBy(album => album.Path, StringComparer.OrdinalIgnoreCase).ToList();
         }
 

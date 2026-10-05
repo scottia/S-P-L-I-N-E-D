@@ -114,7 +114,7 @@ is used. Folder-tree selection uses the same round red/green states.
 The hollow double-left arrow at the upper right of the title reduces Media
 Library Selection to a narrow spectrum-framed rail instead of removing it.
 The double-right arrow on that rail restores the selector. Both arrows use the
-panel-title font size and remain visible in the dark theme.
+larger header font and remain visible in the dark theme.
 
 Select Media contains:
 
@@ -123,7 +123,29 @@ Select Media contains:
 - Auto Scan `[ALL]` or `[SELECTED]`;
 - exactly one launch mode: Filtered Scan `[READ]` or `[LIVE WRITE]`;
 - Folder Status filters and counts;
+- a persistent **Show Tracks** view switch below Bypassed;
 - the Artist/Album tree.
+
+**Show Tracks** leaves the normal Album view unchanged while off. When switched
+on after focusing an indexed compilation, the tree shows that Album and its
+tracks in filename order. With no compilation focused, the library root (for
+example, `music`) contains the physical Artist/Album hierarchy and can be
+expanded manually. Filenames longer than 75 characters are shortened in the
+tree; hovering always shows the complete filename. A green `●` identifies a
+track whose completed embedded-art write is recorded in SQLite; `○` identifies
+a track without that completion record.
+
+Checking a track selects only that track and changes the primary action to
+**LAUNCH (1 TRACK)**. Launching reopens the track's current embedded front image
+as the local candidate when present, including tracks already completed in an
+earlier run. The existing compilation editor, preview, and LIVE WRITE safety
+path are reused; no `cover.*` file is created or changed. The hierarchy and
+completion markers come from the warm SQLite index. If an older compilation
+does not yet have a complete cached filename list, expanding that Album performs
+one non-recursive directory listing for that folder only; it does not scan the
+library or open audio tags. The Show Tracks choice and focused track survive normal
+focus changes, closure, and interface-settings backup. Completing the targeted
+run consumes that one queued track while leaving Show Tracks enabled.
 
 The only control that starts or stops processing is the primary **LAUNCH**
 button beneath the Artwork Candidates pane. There is no second Launch button

@@ -56,6 +56,7 @@ pub struct MediaAlbumSnapshot {
     pub status: String,
     pub compilation: bool,
     pub compilation_track_art_eligible: bool,
+    pub compilation_tracks: Vec<MediaTrackSnapshot>,
     pub track_count: i64,
     pub release_year: String,
     pub has_local_artwork: bool,
@@ -70,6 +71,13 @@ pub struct MediaAlbumSnapshot {
     pub processed_at: Option<String>,
     pub timeout_until: Option<String>,
     pub selected_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaTrackSnapshot {
+    pub path: String,
+    pub title: String,
+    pub embedded_artwork_recorded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1874,6 +1882,61 @@ fn load_snapshot(
     db_path: &Path,
     mapper: &PathMapper,
 ) -> Result<MediaSnapshot, String> {
+    // Track rows are already maintained by the warm SQLite inventory. Load
+    // only compilation tracks so the Windows Show Tracks view never has to
+    // walk a network library or open audio tags merely to populate the tree.
+    let mut track_statement = connection
+        .prepare(
+            "SELECT tracks.album_key, tracks.path, tracks.title, \
+             CASE WHEN compilation_track_artwork.track_path IS NULL THEN 0 ELSE 1 END \
+             FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
+             LEFT JOIN compilation_track_artwork ON lower(compilation_track_artwork.track_path)=lower(tracks.path) \
+             AND compilation_track_artwork.outcome='embedded-replaced' \
+             WHERE albums.compilation=1 \
+             UNION \
+             SELECT albums.album_key, compilation_track_artwork.track_path, '', 1 \
+             FROM albums JOIN compilation_track_artwork \
+             ON lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '/%') \
+             OR lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '\\%') \
+             WHERE albums.compilation=1 AND compilation_track_artwork.outcome='embedded-replaced' \
+             ORDER BY 2 COLLATE NOCASE",
+        )
+        .map_err(db_error("prepare cached compilation tracks"))?;
+    let mut compilation_tracks = HashMap::<String, Vec<MediaTrackSnapshot>>::new();
+    for row in track_statement
+        .query_map([], |row| {
+            let canonical_path: String = row.get(1)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                MediaTrackSnapshot {
+                    path: mapper
+                        .to_local(&canonical_path)
+                        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?,
+                    title: row.get(2)?,
+                    embedded_artwork_recorded: row.get::<_, i64>(3)? != 0,
+                },
+            ))
+        })
+        .map_err(db_error("query cached compilation tracks"))?
+    {
+        let (album_key, track) = row.map_err(db_error("read cached compilation track"))?;
+        let values = compilation_tracks
+            .entry(album_key.to_ascii_lowercase())
+            .or_default();
+        if let Some(existing) = values
+            .iter_mut()
+            .find(|value| value.path.eq_ignore_ascii_case(&track.path))
+        {
+            existing.embedded_artwork_recorded |= track.embedded_artwork_recorded;
+            if existing.title.trim().is_empty() {
+                existing.title = track.title;
+            }
+        } else {
+            values.push(track);
+        }
+    }
+    drop(track_statement);
+
     let mut statement = connection.prepare(
         "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source, COALESCE(albums.musicbrainz_albumid,'') \
          FROM albums JOIN artists ON artists.artist_key=albums.artist_key ORDER BY albums.path COLLATE NOCASE",
@@ -1899,8 +1962,9 @@ fn load_snapshot(
             } else {
                 stored_status
             };
+            let album_key: String = row.get(0)?;
             Ok(MediaAlbumSnapshot {
-                album_key: row.get(0)?,
+                album_key: album_key.clone(),
                 artist: physical_artist,
                 tagged_artist: row.get(1)?,
                 title: row.get(2)?,
@@ -1909,6 +1973,10 @@ fn load_snapshot(
                 status,
                 compilation,
                 compilation_track_art_eligible: compilation && album_mbid.trim().is_empty(),
+                compilation_tracks: compilation_tracks
+                    .get(&album_key.to_ascii_lowercase())
+                    .cloned()
+                    .unwrap_or_default(),
                 track_count: row.get(7)?,
                 release_year: row.get(8)?,
                 has_local_artwork: row.get::<_, i64>(9)? != 0,
@@ -2639,6 +2707,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(builds, 1);
+    }
+
+    #[test]
+    fn snapshot_projects_cached_compilation_tracks_and_embedded_artwork_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Various Artists").join("Compilation");
+        let track = album.join("01 - Fixture.mp3");
+        let legacy_track = album.join("02 - Legacy ledger only.mp3");
+        fs::create_dir_all(&album).unwrap();
+        File::create(&track).unwrap();
+        File::create(&legacy_track).unwrap();
+        let db = temp.path().join("snapshot.db");
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let root = library.to_string_lossy().into_owned();
+        let album_path = album.to_string_lossy().into_owned();
+        let track_path = track.to_string_lossy().into_owned();
+        let legacy_track_path = legacy_track.to_string_lossy().into_owned();
+        connection.execute("INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Various Artists',?,?,?,?,'test')",
+            params![library.join("Various Artists").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,compilation,path,representative_file,tag_signature,track_count,status,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Compilation',1,?,?, 'tags',1,'processed',?,?,?,'test')",
+            params![album_path, track_path, now, now, now]).unwrap();
+        connection.execute("INSERT INTO tracks(track_key,album_key,path,title,artist_name,musicbrainz_recordingid,musicbrainz_artistid,file_size,file_mtime_ns,updated_at,splined_version) VALUES('track','album',?,'Fixture','Artist','recording','artist-mbid',0,0,?,'test')",
+            params![track_path, now]).unwrap();
+        connection.execute("INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,artwork_sha256,outcome,applied_at,splined_version) VALUES(?,'recording','artist-mbid','local','fixture','hash','embedded-replaced',?,'test')",
+            params![track_path, now]).unwrap();
+        connection.execute("INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,artwork_sha256,outcome,applied_at,splined_version) VALUES(?,'legacy-recording','artist-mbid','local','legacy','legacy-hash','embedded-replaced',?,'test')",
+            params![legacy_track_path, now]).unwrap();
+
+        let mapper = PathMapper::new(&root, &root).unwrap();
+        let snapshot = load_snapshot(&connection, &db, &mapper).unwrap();
+        assert_eq!(snapshot.albums.len(), 1);
+        assert_eq!(snapshot.albums[0].compilation_tracks.len(), 2);
+        assert_eq!(snapshot.albums[0].compilation_tracks[0].path, track_path);
+        assert!(snapshot.albums[0].compilation_tracks[0].embedded_artwork_recorded);
+        assert_eq!(
+            snapshot.albums[0].compilation_tracks[1].path,
+            legacy_track_path
+        );
+        assert!(snapshot.albums[0].compilation_tracks[1].embedded_artwork_recorded);
     }
 
     #[test]
