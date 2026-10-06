@@ -445,16 +445,20 @@ Every Album candidate review can open **MusicBrainz Matches...**, including an
 Album that already has a valid Album/Release MBID. Matches are integrated into
 the main decision workspace rather than opened as a separate modal window, so
 the shared Artwork panel remains available throughout authority review.
-Matches are grouped by newest-to-oldest decade and by populated official
-release type: Album, Single, EP, Soundtrack, Compilation, and any additional
-type returned by MusicBrainz.
+Ordinary rows have no decade grouping. Named Artists sort first A–Z, followed
+by the fixed special-family order Soundtrack, Compilation, and then `Various
+Artists`. Within each Artist or special family, dates sort newest to oldest
+with unknown dates last, then country sorts with US first, other named
+countries A–Z, and unknown last. Release title and Release MBID provide the
+final deterministic tie-breakers. Visible headings identify Release Type only.
 
 A yellow `[CURRENT ALBUM]` category and exactly one yellow `[*]` authority row
 remain first in the list. This row is separate from the ordinary MusicBrainz
 results and represents the queried track's Artist, Release, and Recording MBIDs
 shown in the authority fields. It is never derived from the first result and is
 never hidden by filtering. Selecting it and choosing **Open MB Page** opens its
-current Release MBID.
+current Release MBID. Its Release Type cell is blank so `[CURRENT ALBUM]`
+appears visually exactly once, in the category header.
 
 **Filter by Artist ▼** and **Filter by Release Type ▼** open Ctrl multi-select
 lists; press Enter to apply. Artist choices come from the ordinary result

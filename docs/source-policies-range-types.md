@@ -346,9 +346,9 @@ The compilation branch is explicit and per track:
    and skips that track instead of repeating local or remote discovery.
 9. If the ID-first path returns no useful authority, the operator opens the
    MusicBrainz Matches surface (`M` in Ratatui or **MusicBrainz Matches...** on
-   Windows). It shows matches by newest-to-oldest
-   decade (`Unknown` last), then populated Album, Single, EP, Compilation,
-   Soundtrack, and additional release types. Each row exposes the Cover Art
+   Windows). Ratatui shows matches by newest-to-oldest decade (`Unknown` last),
+   then populated Album, Single, EP, Compilation, Soundtrack, and additional
+   release types. Each row exposes the Cover Art
    Archive release-group front-image URL for Artwork preview, falling back to
    the exact-release endpoint when no group MBID is available. Selecting a
    match makes its Recording/Artist/Release IDs session authority and performs
@@ -369,6 +369,11 @@ The compilation branch is explicit and per track:
    approval, and fallback policy.
    In Windows, one separate yellow `[CURRENT ALBUM]` category and `[*]`
    authority row remain fixed first and outside Artist/Release-Type filtering.
+   The authority row's Release Type cell is blank, so the label appears only in
+   the category header. Ordinary rows have no decade grouping: named Artists
+   sort A–Z first, followed by Soundtrack, Compilation, and `Various Artists`;
+   date, country, Release title, and Release MBID provide the documented
+   deterministic ordering within each Artist or special family.
    The filters use ordinary Artist and Release Type column values, intersect,
    and rebuild only populated headings. The list replaces the Scan Activity
    surface while active and uses the existing right-side Artwork panel. Its `[URL]` hover is active

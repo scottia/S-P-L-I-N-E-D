@@ -357,15 +357,15 @@ namespace Splined.WindowsGui
             {
                 matches.Items.Clear();
                 AddAuthorityRows();
-                HashSet<string> groups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (Dictionary<string, object> item in resultItems)
+                string visibleReleaseType = null;
+                foreach (Dictionary<string, object> item in SortedVisibleResults())
                 {
-                    string artist = ArtistValue(item);
                     string releaseType = ReleaseTypeValue(item);
-                    if (!selectedArtists.Contains(artist) || !selectedReleaseTypes.Contains(releaseType)) continue;
-                    string decade = TextValue(item, "decade", "Unknown");
-                    string groupKey = decade + "|" + releaseType;
-                    if (groups.Add(groupKey)) AddResultCategory(decade, releaseType);
+                    if (!String.Equals(visibleReleaseType, releaseType, StringComparison.OrdinalIgnoreCase))
+                    {
+                        AddResultCategory(releaseType);
+                        visibleReleaseType = releaseType;
+                    }
                     matches.Items.Add(ResultRow(item));
                 }
                 ApplyRowColors();
@@ -393,17 +393,17 @@ namespace Splined.WindowsGui
             row.SubItems.Add(authorityArtist);
             row.SubItems.Add("");
             row.SubItems.Add("");
-            row.SubItems.Add("CURRENT ALBUM");
+            row.SubItems.Add("");
             row.SubItems.Add(authorityRelease);
             row.SubItems.Add("—");
             row.SubItems.Add(String.IsNullOrWhiteSpace(TextValue(authorityItem, "url", "")) ? "" : "[URL]");
             matches.Items.Add(row);
         }
 
-        private void AddResultCategory(string decade, string releaseType)
+        private void AddResultCategory(string releaseType)
         {
             ListViewItem category = new ListViewItem("") { Name = "musicBrainzResultCategory" };
-            category.SubItems.Add("[" + decade + "]  RELEASE TYPE [" + releaseType.ToUpperInvariant() + "]");
+            category.SubItems.Add("RELEASE TYPE [" + releaseType.ToUpperInvariant() + "]");
             while (category.SubItems.Count < matches.Columns.Count) category.SubItems.Add("");
             category.Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold);
             category.Tag = null;
@@ -549,6 +549,59 @@ namespace Splined.WindowsGui
             return DistinctValues(
                 resultItems.Where(item => selectedArtists.Contains(ArtistValue(item))),
                 ReleaseTypeValue);
+        }
+
+        private IEnumerable<Dictionary<string, object>> SortedVisibleResults()
+        {
+            return resultItems
+                .Where(item => selectedArtists.Contains(ArtistValue(item))
+                    && selectedReleaseTypes.Contains(ReleaseTypeValue(item)))
+                .OrderBy(ResultFamilyRank)
+                .ThenBy(item => ResultFamilyRank(item) == 0 ? ArtistValue(item) : "", StringComparer.OrdinalIgnoreCase)
+                .ThenByDescending(DateSortValue)
+                .ThenBy(CountrySortRank)
+                .ThenBy(CountrySortValue, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => TextValue(item, "release_title", ""), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(item => TextValue(item, "release_mbid", ""), StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static int ResultFamilyRank(Dictionary<string, object> item)
+        {
+            string releaseType = ReleaseTypeValue(item);
+            if (releaseType.Equals("soundtrack", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (releaseType.Equals("compilation", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (ArtistValue(item).Equals("Various Artists", StringComparison.OrdinalIgnoreCase)) return 3;
+            if (String.IsNullOrWhiteSpace(ArtistValue(item))) return 4;
+            return 0;
+        }
+
+        private static int DateSortValue(Dictionary<string, object> item)
+        {
+            string[] parts = TextValue(item, "release_date", "").Trim().Split('-');
+            int year;
+            if (parts.Length == 0 || !Int32.TryParse(parts[0], out year) || year <= 0) return -1;
+            int month = DatePart(parts, 1, 12);
+            int day = DatePart(parts, 2, 31);
+            return year * 10000 + month * 100 + day;
+        }
+
+        private static int DatePart(string[] parts, int index, int maximum)
+        {
+            int value;
+            return index < parts.Length && Int32.TryParse(parts[index], out value)
+                && value >= 0 && value <= maximum ? value : 0;
+        }
+
+        private static int CountrySortRank(Dictionary<string, object> item)
+        {
+            string country = TextValue(item, "country", "").Trim();
+            if (country.Equals("US", StringComparison.OrdinalIgnoreCase)) return 0;
+            return String.IsNullOrWhiteSpace(country) ? 2 : 1;
+        }
+
+        private static string CountrySortValue(Dictionary<string, object> item)
+        {
+            return TextValue(item, "country", "").Trim();
         }
 
         private string AuthorityToolTip()

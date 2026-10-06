@@ -456,6 +456,7 @@ namespace Splined.WindowsGui
                     {
                         { "index", 1 }, { "decade", "2010s" }, { "release_class", "album" },
                         { "release_artist", "Fixture Artist" }, { "release_title", "Fixture Album" },
+                        { "release_date", "2020-01-01" }, { "country", "GB" },
                         { "current", true },
                         { "recording_mbid", "59a0c68f-ec68-418d-a29a-fa54a7d9aea9" },
                         { "artist_mbids", new ArrayList { "291dcfb8-b31c-496a-905b-9955509d75b6" } },
@@ -467,6 +468,7 @@ namespace Splined.WindowsGui
                     {
                         { "index", 2 }, { "decade", "2000s" }, { "release_class", "ep" },
                         { "release_artist", "Various Artists" }, { "release_title", "Fixture EP" },
+                        { "release_date", "2024" }, { "country", "US" },
                         { "visited", true },
                         { "release_mbid", "9e8005ec-0ee4-4c64-8431-cb315c2c5742" },
                         { "url", "https://musicbrainz.org/release/9e8005ec-0ee4-4c64-8431-cb315c2c5742" }
@@ -475,8 +477,86 @@ namespace Splined.WindowsGui
                     {
                         { "index", 3 }, { "decade", "2000s" }, { "release_class", "album" },
                         { "release_artist", "Various Artists" }, { "release_title", "Fixture Compilation" },
+                        { "release_date", "2020" }, { "country", "GB" },
                         { "release_mbid", "0c9bcf05-ddb3-4377-aab5-1c0a2264d55a" },
                         { "url", "https://musicbrainz.org/release/0c9bcf05-ddb3-4377-aab5-1c0a2264d55a" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 4 }, { "decade", "2020s" }, { "release_class", "single" },
+                        { "release_artist", "Zed Artist" }, { "release_title", "Zed Single" },
+                        { "release_date", "2025" }, { "country", "US" },
+                        { "release_mbid", "11111111-1111-4111-8111-111111111111" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 5 }, { "decade", "Unknown" }, { "release_class", "ep" },
+                        { "release_artist", "Alpha Artist" }, { "release_title", "Unknown Date EP" },
+                        { "release_date", "" }, { "country", "" },
+                        { "release_mbid", "22222222-2222-4222-8222-222222222222" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 6 }, { "decade", "1990s" }, { "release_class", "soundtrack" },
+                        { "release_artist", "Various Artists" }, { "release_title", "Fixture Soundtrack" },
+                        { "release_date", "1998" }, { "country", "GB" },
+                        { "release_mbid", "33333333-3333-4333-8333-333333333333" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 7 }, { "decade", "2020s" }, { "release_class", "compilation" },
+                        { "release_artist", "Named Compilation Artist" }, { "release_title", "Fixture Compilation Family" },
+                        { "release_date", "2022" }, { "country", "CA" },
+                        { "release_mbid", "44444444-4444-4444-8444-444444444444" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 8 }, { "decade", "2020s" }, { "release_class", "single" },
+                        { "release_artist", "Fixture Artist" }, { "release_title", "Newest Fixture" },
+                        { "release_date", "2021" }, { "country", "" },
+                        { "release_mbid", "55555555-5555-4555-8555-555555555555" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 9 }, { "decade", "2020s" }, { "release_class", "ep" },
+                        { "release_artist", "Fixture Artist" }, { "release_title", "US Fixture" },
+                        { "release_date", "2020-01-01" }, { "country", "US" },
+                        { "release_mbid", "66666666-6666-4666-8666-666666666666" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 10 }, { "decade", "2020s" }, { "release_class", "album" },
+                        { "release_artist", "Fixture Artist" }, { "release_title", "Canada Fixture" },
+                        { "release_date", "2020-01-01" }, { "country", "CA" },
+                        { "release_mbid", "77777777-7777-4777-8777-777777777777" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 11 }, { "decade", "2010s" }, { "release_class", "album" },
+                        { "release_artist", "Alpha Artist" }, { "release_title", "Known Date Album" },
+                        { "release_date", "2010" }, { "country", "DE" },
+                        { "release_mbid", "88888888-8888-4888-8888-888888888888" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 12 }, { "decade", "2020s" }, { "release_class", "album" },
+                        { "release_artist", "Fixture Artist" }, { "release_title", "Unknown Country Fixture" },
+                        { "release_date", "2020-01-01" }, { "country", "" },
+                        { "release_mbid", "99999999-9999-4999-8999-999999999999" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 13 }, { "decade", "2020s" }, { "release_class", "album" },
+                        { "release_artist", "Fixture Artist" }, { "release_title", "Alpha Tie" },
+                        { "release_date", "2020-01-01" }, { "country", "CA" },
+                        { "release_mbid", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 14 }, { "decade", "2020s" }, { "release_class", "album" },
+                        { "release_artist", "Fixture Artist" }, { "release_title", "Alpha Tie" },
+                        { "release_date", "2020-01-01" }, { "country", "CA" },
+                        { "release_mbid", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }
                     }
                 };
                 using (FluentForm matchesHost = new FluentForm())
@@ -508,9 +588,24 @@ namespace Splined.WindowsGui
                     Assert(matchList.Items[0].Name == "musicBrainzCurrentAlbumCategory"
                         && matchList.Items[0].SubItems[1].Text == "[CURRENT ALBUM]"
                         && matchList.Items[1].Text == "[*]"
+                        && matchList.Items[1].SubItems[4].Text == ""
+                        && matchList.Items.Cast<ListViewItem>()
+                            .SelectMany(row => row.SubItems.Cast<ListViewItem.ListViewSubItem>())
+                            .Count(cell => cell.Text == "[CURRENT ALBUM]") == 1
                         && matchList.Items[0].ForeColor.ToArgb() == ThemeManager.CurrentPalette.Warning.ToArgb()
                         && matchList.Items[1].ForeColor.ToArgb() == ThemeManager.CurrentPalette.Warning.ToArgb(),
-                        "MusicBrainz Matches did not keep one yellow CURRENT ALBUM authority category and [*] row first.");
+                        "MusicBrainz Matches did not show CURRENT ALBUM exactly once while keeping its yellow [*] authority row first.");
+                    string[] sortedResultIndexes = matchList.Items.Cast<ListViewItem>()
+                        .Where(row => row.Tag is Dictionary<string, object> && row.Text != "[*]")
+                        .Select(row => row.Text)
+                        .ToArray();
+                    Assert(sortedResultIndexes.SequenceEqual(new[] { "11", "5", "8", "9", "14", "13", "10", "1", "12", "4", "6", "7", "2", "3" })
+                        && matchList.Items.Cast<ListViewItem>()
+                            .Where(row => row.Name == "musicBrainzResultCategory")
+                            .All(row => row.SubItems[1].Text.StartsWith("RELEASE TYPE [", StringComparison.Ordinal)
+                                && row.SubItems[1].Text.IndexOf("2010s", StringComparison.Ordinal) < 0
+                                && row.SubItems[1].Text.IndexOf("2020s", StringComparison.Ordinal) < 0),
+                        "MusicBrainz result rows were not sorted by Artist/family, Date, Country, title, and MBID with release-type-only headings.");
                     Assert(matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[0]
                         && row.ForeColor.ToArgb() == ThemeManager.CurrentPalette.Success.ToArgb())
                         && matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[1]
@@ -533,8 +628,8 @@ namespace Splined.WindowsGui
                             && !Object.ReferenceEquals(row.Tag, authorityRow)) == 1
                         && matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[1] && row.Selected)
                         && matchList.Items.Cast<ListViewItem>().Where(row => row.Name == "musicBrainzResultCategory")
-                            .All(row => row.SubItems[1].Text.Contains("[EP]"))
-                        && matches.ReleaseTypeFilterChoices.SequenceEqual(new[] { "ep", "album" }),
+                            .All(row => row.SubItems[1].Text == "RELEASE TYPE [EP]")
+                        && matches.ReleaseTypeFilterChoices.SequenceEqual(new[] { "ep", "album", "soundtrack" }),
                         "MusicBrainz Artist/Release Type filters did not combine actual row values, preserve selection, or rebuild headings.");
                     string[] previewUrls = MusicBrainzMatchesPanel.ArtworkPreviewUrls((Dictionary<string, object>)matchFixture[0]);
                     Assert(previewUrls.Length == 2
