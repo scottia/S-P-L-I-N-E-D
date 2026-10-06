@@ -2,7 +2,7 @@
 
 All supported S:P:L:I:N:E:D runtimes use Config v5 and the same
 credential-directory contract. Python/Docker `config.toml` and Windows'
-internal Config v5 record store only the directory:
+portable `data/config.toml` record stores only the directory:
 
 ```toml
 [credentials]
@@ -81,7 +81,10 @@ Account authorization is a separate workflow:
 3. exchange the authorized token with `auth.getSession`;
 4. retain `username`, `session_key`, and `subscriber` without losing the API key or shared secret.
 
-The native Windows worker command is `splined-core.exe --lastfm-login`; use `./splined --lastfm-login` on Linux/macOS. It polls the pending authorization for up to 60 seconds. Python/Docker exposes `splined --lastfm-login` and performs the same Last.fm API sequence after the user confirms browser authorization.
+The native Windows worker command is `runtime\splined-core.exe --lastfm-login`;
+use `./splined --lastfm-login` on Linux/macOS. It polls the pending authorization
+for up to 60 seconds. Python/Docker exposes `splined --lastfm-login` and performs
+the same Last.fm API sequence after the user confirms browser authorization.
 
 ## Discogs
 
@@ -147,7 +150,7 @@ Use **File > Credentials...** or **Settings > Advanced > Library, Paths & Proces
 The MusicBrainz GUI test validates an already-present access token through `/oauth2/userinfo`. It does not perform the browser authorization-code exchange. Use the core command:
 
 ```text
-splined-core.exe --mb-oauth-login
+runtime\splined-core.exe --mb-oauth-login
 ```
 
 The root native and Python/Docker commands expose the corresponding `--mb-oauth-login` option.

@@ -1,5 +1,6 @@
 @echo off
 setlocal
+set "SPLINED_INTERNAL_SETTINGS_TEST_DIR=%TEMP%\splined-windows-credential-tests-%RANDOM%-%RANDOM%"
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if not exist "%CSC%" set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if not exist "%CSC%" (

@@ -300,7 +300,7 @@ namespace Splined.WindowsGui
             GroupBox components = new FluentGroupBox { Text = import ? "Restore components" : "Include components", Dock = DockStyle.Fill, Padding = new Padding(12) };
             TableLayoutPanel choices = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3 };
             choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            settings = Choice("Internal application settings", true);
+            settings = Choice("Portable Config v5 settings", true);
             credentials = Choice("Provider credentials", true);
             database = Choice("SQLite media database", false);
             interfaceSettings = Choice("Interface preferences and layout", true);

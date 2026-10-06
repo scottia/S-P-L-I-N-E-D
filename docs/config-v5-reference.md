@@ -2,8 +2,8 @@
 
 This page documents the common Config v5 contract. The complete secret-free
 native example is [`config.example.toml`](../config.example.toml); it is also a
-field-value reference for the Windows Settings interface. Windows does not use
-that file during normal GUI operation. The Docker example uses the same schema
+field-value reference for the Windows Settings interface. Windows stores its
+live document at `data/config.toml`. The Docker example uses the same schema
 with container paths.
 
 Application release and configuration schema versions are separate:
@@ -17,14 +17,20 @@ All runtimes:        Config v5
 
 Config v5 is the common runtime contract, but its storage is runtime-specific.
 Python, Docker, Linux, and macOS read `config.toml`. Windows stores the same
-validated Config v5 document and its interface state in the current user's
-internal application settings. It does not create or depend on `config.toml`,
-`ui.toml`, or `config.location` during normal operation.
+validated document at `<portable root>/data/config.toml` and interface state at
+`<portable root>/data/ui.toml`. There is no Registry authority for either file.
+Moving the complete Windows folder carries both; deleting it removes them.
+
+If both files are absent, a compatible Windows build performs a one-time copy
+from the former per-path HKCU `ConfigV5` and `UiV4` values. It records completed
+migration but does not delete those legacy values. After migration, only the
+portable files are authoritative and missing files are not reconstructed from
+the Registry.
 
 On first Windows launch the library, SQL database, temporary run cache, log, and credential directories are
 mandatory choices. SPLINED creates only the selected database, run-cache, log, and credential
-directories after **Save and Continue**. The ZIP/setup extraction does not
-precreate `_cache`, `_logs`, `config`, `credentials`, or `docker_builds`.
+directories after **Save and Continue**. The ZIP does not precreate `data`,
+`_cache`, `_logs`, `credentials`, or `docker_builds`.
 Database, run-cache, log, and credential fields initially point beneath
 `%LOCALAPPDATA%\SPLINED`, not machine-wide `%PROGRAMDATA%`, and remain editable.
 Existing saved and UNC paths are not migrated automatically.
@@ -343,7 +349,7 @@ Select Media and stores completion, bypass, timeout, and source-selection state
 in that same database.
 
 Back up Python/Docker Config v5, credentials, and the authoritative database.
-On Windows use **File > Backup > Export Backup...** to choose internal settings,
+On Windows use **File > Backup > Export Backup...** to choose portable settings,
 interface state, credential JSON, SQLite, and diagnostic metadata separately.
 The `.spl` export may be password protected and can be opened with SPLINED for
 guided restore.
@@ -375,10 +381,10 @@ constitute a finalized companion-product requirement.
 Legacy `[splineai]` remains a compatibility concern for existing installations;
 `[aisplined]` is the canonical public name.
 
-## Windows internal interface settings
+## Windows portable interface settings
 
-Windows interface state is stored internally beside the internal Config v5
-record, not in `ui.toml`. It includes theme, window placement, filters,
+Windows interface state is stored in `data/ui.toml` beside the portable Config
+v5 record. It includes theme, window placement, filters,
 splitter positions, panel-layout preset, Show Artwork, hover behavior, and
 current selections. It also retains Artwork Filter expansion and Media Album
 Selector visibility. It does not change source policy, credentials, the media
@@ -390,14 +396,16 @@ restores the floating hover preview without changing artwork policy.
 ## Validation
 
 Windows Settings **Validate Saved Settings** and **Save and Continue** validate
-the internal Config v5 record before execution. The GUI passes the validated
+`data/config.toml` before execution. The GUI passes the validated
 document directly to its Rust child process through that process's private
-environment; it creates no runtime TOML or portable settings folder. Native and
+environment; it creates no worker-specific runtime TOML. Native and
 Python/Docker implementations also validate Config v5; use the Docker example
 for container-specific paths.
 
-The Windows Forms GUI is the fixed `splined.exe` release artifact and uses the
-fixed side-by-side `splined-core.exe` worker. Neither artifact is extracted or
-generated at runtime. `%LOCALAPPDATA%\SPLINED` remains data-only and may contain
-settings, credentials, SQLite/history, caches, and logs, but no runtime GUI or
-worker executable cache.
+The Windows Forms GUI is the fixed root `splined.exe` release artifact and uses
+the fixed `runtime\splined-core.exe` worker. Neither artifact is extracted or
+generated during ordinary startup or scanning. A user-approved update may
+stage and transactionally replace this verified pair through the separate
+temporary `splined-update.exe`; the updater is not part of Config v5 and never
+touches persistent data. `data/config.toml`, `data/ui.toml`, and configured
+credentials, SQLite/history, caches, and logs are never updater targets.

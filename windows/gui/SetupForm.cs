@@ -328,11 +328,11 @@ namespace Splined.WindowsGui
             workflow.Text = "1. Choose the music library and required runtime locations.\r\n2. Review artwork and provider settings.\r\n3. Save and open the library.\r\n4. Select artists or albums and launch.";
             layout.Controls.Add(workflow, 0, 1);
 
-            GroupBox defaults = new FluentGroupBox { Text = "Windows internal settings", Dock = DockStyle.Fill };
+            GroupBox defaults = new FluentGroupBox { Text = "Portable Config v5", Dock = DockStyle.Fill };
             Label summary = new Label();
             summary.Dock = DockStyle.Fill;
             summary.Padding = new Padding(12, 8, 12, 8);
-            summary.Text = "Configuration: saved internally by the Windows application\r\nLibrary, SQL database, temporary cache, logs, and credential locations are required and user-selected.\r\nMissing selected directories are created only after Save and Continue.";
+            summary.Text = "Configuration: data\\config.toml and data\\ui.toml beside SPLINED\r\nLibrary, SQL database, temporary cache, logs, and credential locations are required and user-selected.\r\nMissing selected directories are created only after Save and Continue.";
             defaults.Controls.Add(summary);
             layout.Controls.Add(defaults, 0, 2);
 
@@ -344,7 +344,7 @@ namespace Splined.WindowsGui
             advanced.Click += delegate { primaryTabs.SelectedIndex = 1; };
             choices.Controls.Add(setUp);
             choices.Controls.Add(advanced);
-            choices.Controls.Add(new InfoButton("Windows v4 stores settings internally. Advanced exposes every runtime option; Backup restores selected settings and credentials from a .spl file."));
+            choices.Controls.Add(new InfoButton("Windows stores settings in the portable data folder. Advanced exposes every runtime option; Backup restores selected settings and credentials from a .spl file."));
             layout.Controls.Add(choices, 0, 3);
 
             Label details = new Label { Text = "Created only after Save and Continue", Dock = DockStyle.Fill, TextAlign = ContentAlignment.BottomLeft };
@@ -356,7 +356,7 @@ namespace Splined.WindowsGui
             tree.ReadOnly = true;
             tree.ScrollBars = ScrollBars.Vertical;
             tree.Font = new Font("Consolas", 9.5f);
-            tree.Text = "Music library        <required user-selected location>\r\nSQL database         <required persistent location>\r\nTemporary run cache  <required disposable location>\r\nLogs                 <required user-selected location>\r\nCredentials          <required user-selected location>\r\n\r\nNo config folder, config.toml, ui.toml, or config.location file is created.";
+            tree.Text = "Portable settings    data\\config.toml + data\\ui.toml\r\nMusic library        <required user-selected location>\r\nSQL database         <required persistent location>\r\nTemporary run cache  <required disposable location>\r\nLogs                 <required user-selected location>\r\nCredentials          <required user-selected location>\r\n\r\nThe release ZIP contains no data folder; Save and Continue creates it.";
             layout.Controls.Add(tree, 0, 5);
 
             Label active = new Label();
@@ -1703,7 +1703,7 @@ namespace Splined.WindowsGui
             else if (state.HistoryRetentionDays == 365) historyRetention.SelectedIndex = 4;
             else historyRetention.SelectedIndex = 1;
             Label active = FindControl<Label>(primaryTabs, "activeConfigLabel");
-            if (active != null) active.Text = "Active configuration: Windows internal settings";
+            if (active != null) active.Text = "Active configuration: " + ConfigStore.DefaultConfigPath;
             loadingSourceEditor = true;
             int discogsIndex = -1;
             for (int index = 0; index < sourceSelector.Items.Count; index++)

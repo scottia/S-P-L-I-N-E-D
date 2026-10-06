@@ -8,17 +8,17 @@ not in the current product documentation.
 
 ## Portable application model
 
-The Windows release is distributed as a fixed `splined.exe` GUI with a fixed
-side-by-side `splined-core.exe` worker. The application can be extracted to any
+The Windows release is distributed as a fixed root `splined.exe` GUI with a
+fixed `runtime\splined-core.exe` worker. The application can be extracted to any
 writable final folder and that folder can later be moved or replaced without
 moving the media library or selected persistent data.
 
 | Data | Authority and location | Lifecycle |
 | --- | --- | --- |
-| GUI program | `splined.exe` in the selected portable folder | Replaced manually from an official release |
-| Processing worker | `splined-core.exe` beside the GUI | Replaced together with the GUI |
-| Config v5 | Current user's internal Windows application settings | Persists until reset or restored |
-| Interface state | Current user's internal Windows application settings | Persists theme, layout, filters, and selection |
+| GUI program | `splined.exe` in the selected portable folder | Replaced from a verified official release |
+| Processing worker | `runtime\splined-core.exe` | Shipped and replaced as one verified pair with the GUI |
+| Config v5 | `data\config.toml` beneath the portable root | Moves with the complete application folder |
+| Interface state | `data\ui.toml` beneath the portable root | Moves with the complete application folder |
 | SQL database | User-selected database directory; first-run default is `%LOCALAPPDATA%\SPLINED\cache` | Persistent; contains `splined.db` |
 | Temporary run cache | User-selected disposable directory; first-run default is `%LOCALAPPDATA%\SPLINED\run-cache` | Candidate and derived images are removed after the run |
 | Logs | User-selected log directory; first-run default is `%LOCALAPPDATA%\SPLINED\logs` | Diagnostic and disposable |
@@ -31,15 +31,22 @@ location. The database, temporary-cache, log, and credential fields remain edita
 UNC or mapped-drive locations. Existing saved paths are never moved
 automatically.
 
-The portable folder does not require or create `config.toml`, `ui.toml`,
-`config.location`, `config`, `credentials`, `_cache`, `_logs`, `docker_builds`,
-or a runtime configuration file. Python, Docker, Linux, and macOS still use a
-file-backed Config v5 document.
+The release ZIP contains no `data` folder. A true fresh extraction therefore
+opens first-run setup. **Save and Continue** creates `data\config.toml` and
+`data\ui.toml`; copying or moving the complete application folder carries those
+settings, while deleting the folder removes them. Python, Docker, Linux, and
+macOS also use file-backed Config v5 documents in their documented locations.
+
+When neither portable settings file exists, the first compatible launch checks
+the former per-path HKCU `ConfigV5` and `UiV4` values once. Existing values are
+copied into `data`, migration completion is recorded, and the legacy values are
+left intact for manual cleanup. They are never consulted again as runtime
+authority, so deleting the migrated portable files cannot resurrect them.
 
 ## First run
 
 1. Extract the complete Windows archive into its final folder, keeping
-   `splined.exe` and `splined-core.exe` together.
+   `splined.exe` and its `runtime` folder together.
 2. Run `splined.exe`.
 3. Choose the required music-library, SQL database, temporary run cache, log,
    and credential directories.
@@ -55,9 +62,9 @@ creates the selected database, temporary-cache, log, and credential directories 
 directories.
 
 Settings are later available from **File > Settings...**. **Validate Saved
-Settings** checks the internal Config v5 record without exporting it. The GUI
-passes a validated in-memory copy to each Rust snapshot or Album process; the
-display label `Windows internal settings` is never treated as a filename.
+Settings** checks `data\config.toml`. The GUI passes a validated in-memory copy
+to each Rust snapshot or Album process; the worker resolves relative values
+from the parent portable root, not from `runtime`.
 
 ## UNC, NAS, and mapped paths
 
@@ -591,7 +598,7 @@ See [Credentials and provider setup](credentials-providers.md) and
 **File > Backup** provides separate Import and Export commands. A `.spl` backup
 may include any combination of:
 
-- internal Config v5 settings;
+- portable Config v5 settings;
 - interface state, panel layout, and Artwork Filter exclusions;
 - credential JSON files;
 - `splined.db`;
@@ -606,6 +613,12 @@ restore dialog. No section is restored until the operator selects it and
 confirms. A backup created from an active shared database must still represent
 a consistent database copy; stop writers or use the database owner's backup
 procedure first.
+
+Restore is path-independent for the same selected sections. Restoring one
+`.spl` into clean portable folders at different filesystem locations produces
+equivalent Config v5 and interface state; absolute and UNC resources retain
+their configured identities. Unselected sections are not rewritten, and no
+Registry value or previous installation path participates in the result.
 
 ## Diagnostics
 
@@ -628,24 +641,51 @@ redacted and must never be logged.
 ## Updates
 
 **Help > Check for Update...** checks the newest official non-prerelease GitHub
-release containing the Windows portable archive and notification metadata. If
-the release differs from the installed build, SPLINED offers to open the
-official GitHub release page.
+release containing `windows-update.json`, `splined-windows-x86_64.zip`, and
+`splined-update.exe`. If it differs from the installed build, choose automatic
+update, open the release page, or install later.
 
-The portable application never downloads, stages, executes, installs,
-self-replaces, relaunches, or cleans up replacement executables. Close SPLINED,
-download the official archive in the browser, and replace `splined.exe` and
-`splined-core.exe` together. Internal settings and the configured database,
-temporary cache, logs, and credentials remain external and survive program-file
-replacement.
+Automatic update is the sole exception to the normal no-executable-management
+rule and requires explicit approval. The GUI verifies the archive and visible,
+consistently named temporary updater before launch. The updater waits for the
+exact GUI/core PIDs, verifies staged GUI/core hashes, performs transactional
+replacement with recovery copies and rollback, verifies the installed pair,
+and restarts. The new GUI revalidates its commit and the GUI/core hashes before
+removing the temporary updater and staging files. The updater is never embedded
+in or extracted from `splined.exe`, does not run hidden, and uses neither CMD
+nor PowerShell.
+
+The schema 2 manifest retains compatibility with notification-only builds:
+they ignore the added verification fields and can still direct the user to the
+release page. One manual upgrade enables the automatic-update path for later
+compatible releases. Notification validity does not imply installation
+validity: automatic installation additionally requires and validates the exact
+release version/commit, archive and updater URLs, payload sizes, and SHA-256
+digests for the archive, updater, GUI, and core. Nothing is inferred from a
+missing field.
+
+Portable `data\config.toml` and `data\ui.toml`, plus the configured
+database/history, temporary cache, logs, and credentials, are outside every
+executable-replacement target.
+
+Although the fixed worker is shipped under `runtime`, it treats the directory
+containing `splined.exe` as the portable root. Portable-relative config, cache,
+SQLite/history, log, and credential paths therefore resolve exactly as they did
+when the worker was at the top level. In particular, relocation never creates
+`runtime\_cache\splined.db`; configured absolute, mapped-drive, and UNC paths
+remain unchanged. A direct worker invocation uses the same
+`data\config.toml` default as the GUI and does not create a second
+`config\config.toml` authority. The updater stages only the release GUI/core pair and its
+readme, never any database, history, config, credential, cache, or log file.
 
 ## Troubleshooting
 
-### `Windows internal settings` reported as a missing file
+### Portable settings appear missing after moving the folder
 
-Current builds pass internal Config v5 in memory. They do not send the display
-label through `--config-path`. Update the Windows executable if an older build
-logs `Unable to read SPLINED configuration Windows internal settings`.
+Keep the `data` directory beside `splined.exe` when moving or copying SPLINED.
+If `data\config.toml` is absent, SPLINED correctly treats the folder as a fresh
+installation. The former Registry values are migration input only and are not
+ongoing settings authority.
 
 ### `SPLINED returned an incompatible SQLite media snapshot`
 

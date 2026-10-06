@@ -864,7 +864,7 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
 /// configuration, and the source text must never be written to diagnostics.
 pub fn load_config_text(text: &str) -> Result<Config, String> {
     if text.trim().is_empty() {
-        return Err("SPLINED received empty Windows internal settings.".to_string());
+        return Err("SPLINED received empty Windows Config v5 settings.".to_string());
     }
     let mut config = parse_config(text)?;
     let root = app_root()?;
@@ -1088,6 +1088,103 @@ mod tests {
         );
         assert!(config.library.music_library.is_empty());
         assert!(config.scan.scan_library_dir.is_empty());
+    }
+
+    #[test]
+    fn worker_relocation_preserves_sqlite_and_all_runtime_path_authority() {
+        use crate::media_database::database_path;
+        use crate::portable::{AppLayout, portable_root_from_executable};
+
+        let portable_root = PathBuf::from(r"C:\Portable\SPLINED");
+        let old_worker = portable_root.join("splined-core.exe");
+        let relocated_worker = portable_root.join("runtime").join("splined-core.exe");
+        let old_root = portable_root_from_executable(&old_worker).unwrap();
+        let relocated_root = portable_root_from_executable(&relocated_worker).unwrap();
+        assert_eq!(old_root, portable_root);
+        assert_eq!(relocated_root, portable_root);
+
+        let before_layout = AppLayout::from_root(old_root.clone());
+        let after_layout = AppLayout::from_root(relocated_root.clone());
+        assert_eq!(before_layout, after_layout);
+        assert_eq!(
+            after_layout.config_file,
+            portable_root.join("data").join("config.toml")
+        );
+        assert_eq!(after_layout.cache_dir, portable_root.join("_cache"));
+        assert_eq!(after_layout.logs_dir, portable_root.join("_logs"));
+        assert_eq!(
+            after_layout.credentials_dir,
+            portable_root.join("credentials")
+        );
+        assert!(
+            !after_layout
+                .config_file
+                .starts_with(portable_root.join("runtime"))
+        );
+        assert!(
+            !after_layout
+                .cache_dir
+                .starts_with(portable_root.join("runtime"))
+        );
+        assert!(
+            !after_layout
+                .logs_dir
+                .starts_with(portable_root.join("runtime"))
+        );
+        assert!(
+            !after_layout
+                .credentials_dir
+                .starts_with(portable_root.join("runtime"))
+        );
+
+        let source = parse_config(&default_toml().unwrap()).unwrap();
+        let mut before = source.clone();
+        let mut after = source;
+        resolve_runtime_paths(&mut before, &old_root);
+        resolve_runtime_paths(&mut after, &relocated_root);
+        assert_eq!(before, after);
+        let expected_database = portable_root.join("_cache").join("splined.db");
+        assert_eq!(database_path(&before.scan.cache_dir), expected_database);
+        assert_eq!(database_path(&after.scan.cache_dir), expected_database);
+        assert_ne!(
+            database_path(&after.scan.cache_dir),
+            portable_root
+                .join("runtime")
+                .join("_cache")
+                .join("splined.db")
+        );
+
+        let mut explicit = parse_config(&default_toml().unwrap()).unwrap();
+        explicit.scan.cache_dir = r"\\server\share\SPLINED database".to_string();
+        explicit.scan.temporary_cache_dir = r"D:\SPLINED run cache".to_string();
+        explicit.scan.log_dir = r"\\server\share\SPLINED logs".to_string();
+        explicit.credentials.credential_dir = r"D:\SPLINED credentials".to_string();
+        explicit.library.music_library = r"\\server\music".to_string();
+        explicit.scan.scan_library_dir = r"\\server\music".to_string();
+        let expected = explicit.clone();
+        resolve_runtime_paths(&mut explicit, &relocated_root);
+        assert_eq!(explicit.scan.cache_dir, expected.scan.cache_dir);
+        assert_eq!(
+            database_path(&explicit.scan.cache_dir),
+            PathBuf::from(r"\\server\share\SPLINED database\splined.db")
+        );
+        assert_eq!(
+            explicit.scan.temporary_cache_dir,
+            expected.scan.temporary_cache_dir
+        );
+        assert_eq!(explicit.scan.log_dir, expected.scan.log_dir);
+        assert_eq!(
+            explicit.credentials.credential_dir,
+            expected.credentials.credential_dir
+        );
+        assert_eq!(
+            explicit.library.music_library,
+            expected.library.music_library
+        );
+        assert_eq!(
+            explicit.scan.scan_library_dir,
+            expected.scan.scan_library_dir
+        );
     }
 
     #[test]

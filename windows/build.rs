@@ -42,6 +42,8 @@ fn main() {
     println!("cargo:rerun-if-changed=gui/app.manifest");
     println!("cargo:rerun-if-changed=gui/app.ico");
     println!("cargo:rerun-if-changed=gui/app.rc");
+    println!("cargo:rerun-if-changed=updater/app.manifest");
+    println!("cargo:rerun-if-changed=updater/Program.cs");
     println!("cargo:rerun-if-env-changed=SPLINED_BUILD_COMMIT");
     for source in GUI_SOURCES {
         println!("cargo:rerun-if-changed=gui/{source}");
@@ -61,8 +63,10 @@ fn main() {
         .nth(3)
         .unwrap_or_else(|| panic!("Unable to determine the Cargo profile output directory"));
     let gui_executable = profile_dir.join("splined.exe");
+    let updater_executable = profile_dir.join("splined-update.exe");
     let build_info = write_build_info(&manifest_dir, &out_dir);
     compile_gui(&gui_dir, &gui_executable, &build_info);
+    compile_updater(&manifest_dir.join("updater"), &gui_dir, &updater_executable);
     compile_native_resources(&gui_dir, &out_dir);
 }
 
@@ -94,6 +98,34 @@ fn compile_gui(gui_dir: &Path, output_path: &Path, build_info: &Path) {
     run_checked(
         Command::new(&csc).current_dir(gui_dir).args(&arguments),
         "SPLINED Windows GUI compilation failed",
+    );
+}
+
+fn compile_updater(updater_dir: &Path, gui_dir: &Path, output_path: &Path) {
+    let csc = locate_csc()
+        .unwrap_or_else(|| panic!("Microsoft .NET Framework C# compiler csc.exe was not found"));
+    let manifest = updater_dir.join("app.manifest");
+    let icon = gui_dir.join("app.ico");
+    let arguments = [
+        OsString::from("/nologo"),
+        OsString::from("/target:winexe"),
+        OsString::from("/main:Splined.WindowsUpdater.Program"),
+        OsString::from("/optimize+"),
+        option("/win32manifest:", &manifest),
+        option("/win32icon:", &icon),
+        option("/out:", output_path),
+        OsString::from("/reference:System.dll"),
+        OsString::from("/reference:System.Core.dll"),
+        OsString::from("/reference:System.Drawing.dll"),
+        OsString::from("/reference:System.IO.Compression.dll"),
+        OsString::from("/reference:System.IO.Compression.FileSystem.dll"),
+        OsString::from("/reference:System.Windows.Forms.dll"),
+        OsString::from("/reference:System.Web.Extensions.dll"),
+        OsString::from("Program.cs"),
+    ];
+    run_checked(
+        Command::new(&csc).current_dir(updater_dir).args(&arguments),
+        "SPLINED Windows update-helper compilation failed",
     );
 }
 

@@ -12,16 +12,20 @@ User-facing Windows behavior is documented in the
 build, packaging, and update implementation details.
 
 The Cargo manifest is the reproducible Windows build entry point. On Windows,
-the build script emits two fixed executable artifacts with stable roles:
+the build script emits the two permanent executable artifacts plus the
+separately published temporary update helper:
 
 ```text
 windows/target/release/splined.exe
 windows/target/release/splined-core.exe
+windows/target/release/splined-update.exe
 ```
 
 `splined.exe` is the C# Windows Forms GUI, including its watermark and icon
 resources. `splined-core.exe` is the Rust processing worker used for snapshots,
-Album scans, and direct core diagnostics.
+Album scans, and direct core diagnostics. The build-only
+`splined-update.exe` output is published separately for approved updates and is
+not a permanent archive component.
 
 Build and validate from the repository root:
 
@@ -34,28 +38,41 @@ cargo build --manifest-path windows/Cargo.toml --locked --release
 ```
 
 `gui/TEST-WINDOWS-GUI.cmd` runs the WinForms Config v5 and lifecycle regression
-suite. The release archive distributes both executables side by side. The GUI
-always invokes `splined-core.exe`; it never re-invokes itself as a worker.
+suite. The release archive places only `splined.exe` at its root and ships the
+fixed worker as `runtime\splined-core.exe`. The GUI always invokes that worker;
+it never re-invokes itself as a worker.
 Normal startup and scanning never extract, generate, rename, replace, or delete
 an executable. Generated build/QA outputs, local settings, credentials, cache,
 logs, and database files are intentionally excluded from version control.
 
-Windows stores the validated Config v5 document and interface preferences
-in the current user's internal application settings. First run requires the
+Windows stores the validated Config v5 document in `data\config.toml` and
+interface preferences in `data\ui.toml` beneath the portable root. First run requires the
 library, SQL database, temporary run cache, log, and credential paths and creates the selected runtime
 directories only after save. Database, run-cache, log, and credential fields initially point
 beneath `%LOCALAPPDATA%\SPLINED`, remain editable, and do not change existing
-saved or UNC paths. The distribution does not create `config.toml`,
-`ui.toml`, `config.location`, `_cache`, `_logs`, `config`, `credentials`, or
-`docker_builds`. **File > Backup** exports and restores selected internal
+saved or UNC paths. The release archive does not contain `data`, `_cache`,
+`_logs`, `credentials`, or `docker_builds`; first save creates the portable
+settings files. **File > Backup** exports and restores selected portable
 settings, interface state, credential JSON, SQLite, and diagnostics in an
-optionally password-protected `.spl` container.
+optionally password-protected `.spl` container. Restoring the same selected
+categories into independently clean portable folders is path-deterministic:
+Config/UI output is equivalent, absolute and UNC resources are unchanged, and
+unselected categories retain their pre-restore contents.
+
+The standalone worker uses that same `data\config.toml` default when it is
+invoked directly; it does not create or treat `config\config.toml` as a second
+Windows settings authority.
 
 The GUI serializes the validated Config v5 record directly into each Rust
 child process's private environment. Snapshot and Album runs do not create a
-runtime TOML and must never treat the display label `Windows internal settings`
-as a filesystem path. Configuration-load failures exit nonzero so the GUI can
+runtime TOML. Configuration-load failures exit nonzero so the GUI can
 surface the actual error instead of attempting to parse empty snapshot output.
+
+When both portable settings files are absent, the GUI performs a one-time copy
+from the legacy per-path HKCU `ConfigV5`/`UiV4` values, records completion, and
+leaves the legacy values intact. The Registry is never ongoing Config v5 or UI
+authority; moving the complete folder carries settings and deleting it cannot
+resurrect a completed migration.
 
 The Windows GUI clears prior `splined-*.log` files from
 `<configured log directory>\run` during the next startup and creates one
@@ -171,15 +188,26 @@ manifest or `gui/ReleaseInfo.cs`.
 
 ## Windows updates
 
-The GUI discovers the newest official, non-prerelease release containing both
-`windows-update.json` and `splined-windows-x86_64.zip`. Notification metadata
-contains the exact release commit and official GitHub release-page URL. A
-release for only another operating system is skipped during Windows update
-discovery.
+The GUI discovers the newest official, non-prerelease release containing
+`windows-update.json`, `splined-windows-x86_64.zip`, and the separate
+`splined-update.exe` asset. Backward-compatible schema 2 metadata binds the release URL and commit
+to the sizes and SHA-256 digests of the archive, temporary updater, GUI, and
+core. Releases for only another operating system are skipped.
 
-Update checking is notification-only. The GUI can open the validated official
-GitHub release page, but it never downloads, stages, executes, installs,
-self-replaces, relaunches, or cleans up executable files. The former rolling
-Windows executable updater workflow is removed. Users close SPLINED and replace
-both fixed program artifacts from the official archive; Config v5, credentials,
-cache/SQLite, history, and logs remain external and untouched.
+Notification validation intentionally accepts older schema 2 documents that
+contain only the established release identity. Automatic-install validation is
+separate and requires exact version/commit, archive/updater URLs, all four
+sizes, and all four SHA-256 digests. Missing integrity fields never receive
+defaults; such a release remains notification/open-page only.
+
+Only explicit user approval enters the executable-update path. The GUI
+downloads both release assets into the system temporary directory under the
+stable updater filename, verifies them, and launches the updater with a visible
+window plus the exact GUI/core PIDs. The helper stages the approved archive,
+verifies the GUI/core pair, preserves recovery copies, performs transactional
+replacement with rollback, verifies the installed pair, and restarts the GUI.
+The restarted GUI verifies its release commit and both installed hashes before
+removing the updater and staging directory. The helper is never embedded in or
+extracted from `splined.exe`, never uses a randomized executable filename, and
+uses no CMD, PowerShell, hidden window, or self-deletion loop. Portable Config v5/UI state,
+credentials, cache/SQLite/history, and logs are outside the replacement targets.

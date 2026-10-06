@@ -21,7 +21,7 @@ with the current product documentation.
 
 - [Installation and first run](installation-first-run.md) — Windows portable,
   Linux, macOS, Docker, initial indexing, and the first safe scan.
-- [Windows guide](windows-guide.md) — the native interface, internal settings,
+- [Windows guide](windows-guide.md) — the native interface, portable settings,
   candidate review, MusicBrainz Matches, backup, updates, and troubleshooting.
 - [Python Ratatui guide](ratatui-tui.md) — persistent Select Media, controls,
   candidate decisions, MusicBrainz review, reports, and terminal cleanup.
@@ -60,7 +60,7 @@ with the current product documentation.
 
 | Runtime | User interface | Configuration | Persistent state |
 | --- | --- | --- | --- |
-| Windows | Native Windows Forms | Config v5 stored in per-user internal settings | `splined.db` plus separately stored credentials |
+| Windows | Native Windows Forms | Portable `data/config.toml` plus `data/ui.toml` | `splined.db` plus separately stored credentials |
 | Python/Docker | Ratatui when attached to a terminal; plain CLI when redirected or disabled | File-backed Config v5 | `splined.db` plus separately stored credentials |
 | Linux/macOS native CLI | Command line | File-backed Config v5 | Runtime-selected cache and database paths |
 
@@ -75,7 +75,7 @@ differ by platform; the linked interface guides describe those differences.
 - The media-database guide owns SQLite, identity, inventory, and durable status
   behavior. The Select Media guide owns their visual projection and controls.
 - Provider credentials are documented separately from Config because secrets
-  never belong in `config.toml` or Windows internal settings.
+  never belong in `config.toml` or Windows interface settings.
 - GitHub Releases owns version history. Files in `/docs` describe only the
   currently supported behavior.
 

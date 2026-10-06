@@ -10,6 +10,7 @@ namespace Splined.WindowsGui
         {
             try
             {
+                args = WindowsUpdateService.CleanupCompletedUpdate(args);
                 UiState uiState = ConfigStore.LoadUi();
                 ThemeManager.Initialize(uiState.Theme);
                 Application.EnableVisualStyles();

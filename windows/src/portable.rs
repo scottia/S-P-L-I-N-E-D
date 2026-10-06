@@ -18,7 +18,7 @@ pub struct AppLayout {
 
 impl AppLayout {
     pub fn from_root(root: PathBuf) -> Self {
-        let config_dir = root.join("config");
+        let config_dir = root.join("data");
         let cache_dir = root.join("_cache");
         let logs_dir = root.join("_logs");
         let credentials_dir = root.join("credentials");
@@ -54,10 +54,29 @@ pub fn app_root() -> Result<PathBuf, String> {
 
     let executable = std::env::current_exe()
         .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
-    executable
+    portable_root_from_executable(&executable)
+}
+
+pub(crate) fn portable_root_from_executable(
+    executable: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let parent = executable
         .parent()
-        .map(PathBuf::from)
-        .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())
+        .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
+    let is_runtime_worker = parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("runtime"))
+        && executable
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("splined-core.exe"));
+    if is_runtime_worker {
+        return parent.parent().map(PathBuf::from).ok_or_else(|| {
+            "Unable to determine the SPLINED portable directory above runtime.".to_string()
+        });
+    }
+    Ok(parent.to_path_buf())
 }
 
 pub fn app_layout() -> Result<AppLayout, String> {
@@ -135,12 +154,25 @@ mod tests {
     fn layout_is_root_relative() {
         let root = PathBuf::from("portable-root");
         let layout = AppLayout::from_root(root.clone());
-        assert_eq!(layout.config_file, root.join("config").join("config.toml"));
+        assert_eq!(layout.config_file, root.join("data").join("config.toml"));
         assert_eq!(layout.cache_dir, root.join("_cache"));
         assert_eq!(layout.samples_dir, root.join("_cache").join("samples"));
         assert_eq!(layout.logs_dir, root.join("_logs"));
         assert_eq!(layout.credentials_dir, root.join("credentials"));
         assert_eq!(layout.docker_builds_dir, root.join("docker_builds"));
+    }
+
+    #[test]
+    fn packaged_runtime_worker_resolves_the_parent_portable_root() {
+        let root = PathBuf::from("portable-root");
+        let worker = root.join("runtime").join("splined-core.exe");
+        assert_eq!(portable_root_from_executable(&worker).unwrap(), root);
+
+        let direct = PathBuf::from("build").join("splined-core.exe");
+        assert_eq!(
+            portable_root_from_executable(&direct).unwrap(),
+            PathBuf::from("build")
+        );
     }
 
     #[test]

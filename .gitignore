@@ -17,6 +17,7 @@
 /windows/_cache/
 /windows/_logs/
 /windows/history/
+/windows/data/
 /windows/ui.toml
 /windows/config.location
 /windows/gui/qa-app/
@@ -27,6 +28,7 @@
 /windows/gui/_cache/
 /windows/gui/_logs/
 /windows/gui/history/
+/windows/gui/data/
 /windows/gui/ui.toml
 /windows/gui/config.location
 /windows/**/*.exe
@@ -41,6 +43,7 @@
 !.env.example
 /credentials/
 /secrets/
+/data/
 *.credential.json
 *credentials*.json
 *secret*.json

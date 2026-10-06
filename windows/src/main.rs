@@ -494,7 +494,7 @@ fn load_selected_config(cli: &Cli) -> Result<Config, String> {
             Ok(text) => load_config_text(&text),
             Err(std::env::VarError::NotPresent) => ensure_regular_config(),
             Err(std::env::VarError::NotUnicode(_)) => {
-                Err("Windows internal settings contain invalid Unicode.".to_string())
+                Err("Windows Config v5 settings contain invalid Unicode.".to_string())
             }
         },
     }
