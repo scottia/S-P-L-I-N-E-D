@@ -200,8 +200,8 @@ namespace Splined.WindowsGui
         private readonly Dictionary<string, byte[]> musicBrainzPreviewCache = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         private readonly Queue<string> musicBrainzPreviewCacheOrder = new Queue<string>();
         private const long CandidateImageMemoryCacheLimit = 256L * 1024L * 1024L;
-        private readonly Dictionary<string, byte[]> candidateImageMemoryCache = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
-        private readonly Queue<string> candidateImageMemoryCacheOrder = new Queue<string>();
+        private readonly Dictionary<string, CandidateImageCacheEntry> candidateImageMemoryCache = new Dictionary<string, CandidateImageCacheEntry>(StringComparer.OrdinalIgnoreCase);
+        private readonly Queue<CandidateImageCacheEntry> candidateImageMemoryCacheOrder = new Queue<CandidateImageCacheEntry>();
         private long candidateImageMemoryCacheBytes;
         private FlowLayoutPanel candidateCards;
         private Button useSelected;
@@ -2375,6 +2375,13 @@ namespace Splined.WindowsGui
                     ReadString(payload, "authority_release_mbid"),
                     ReadBool(payload, "compilation_track"));
             }
+            else if (eventName == "musicbrainz_authority_error")
+            {
+                string message = ReadString(payload, "message");
+                if (String.IsNullOrWhiteSpace(message)) message = "The edited MusicBrainz authority could not be loaded.";
+                AppendActivity("  MusicBrainz authority: " + message + "\r\n", ActivityTone.Warning);
+                MessageBox.Show(this, message, "MusicBrainz authority", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
             else if (eventName == "compilation_started")
             {
                 AppendActivity("  Curated compilation: per-track embedded artwork mode. Folder cover files will not be changed.\r\n", ActivityTone.Warning);
@@ -3972,6 +3979,16 @@ namespace Splined.WindowsGui
                 CloseMusicBrainzMatchesWorkspace();
                 SendDecision(json.Serialize(command));
             };
+            musicBrainzMatchesPanel.AuthorityApplyRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
+            {
+                Dictionary<string, object> command = new Dictionary<string, object>();
+                command["action"] = "use_musicbrainz_authority";
+                command["recording_mbid"] = ReadString(args.Item, "recording_mbid");
+                command["artist_mbids"] = ReadString(args.Item, "artist_mbids");
+                command["release_mbid"] = ReadString(args.Item, "release_mbid");
+                candidateContext.Text = "Loading source results for the edited CURRENT ALBUM authority...";
+                SendDecision(json.Serialize(command));
+            };
             musicBrainzMatchesPanel.LeaveRequested += delegate
             {
                 CloseMusicBrainzMatchesWorkspace();
@@ -4509,9 +4526,31 @@ namespace Splined.WindowsGui
         {
             displayedAlbum = running && activeLaunchAlbum != null ? activeLaunchAlbum : album;
             candidatePreviewActive = false;
+            if (!running) RefreshAlbumCoverFacts(displayedAlbum);
             RenderDisplayedAlbum();
             if (!running)
                 ShowStandaloneExistingCoverEditor(displayedAlbum);
+        }
+
+        private void RefreshAlbumCoverFacts(AlbumInfo album)
+        {
+            if (album == null) return;
+            string coverPath = album.CoverPath;
+            if (String.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
+                coverPath = album.LocalArtworkFiles.FirstOrDefault(File.Exists) ?? "";
+            if (String.IsNullOrWhiteSpace(coverPath)) return;
+            using (Image image = LoadImageCopy(coverPath))
+            {
+                if (image == null) return;
+                album.CoverPath = coverPath;
+                album.CoverName = Path.GetFileName(coverPath);
+                album.CoverFormat = Path.GetExtension(coverPath).TrimStart('.');
+                album.CoverWidth = image.Width;
+                album.CoverHeight = image.Height;
+                album.HasLocalArtwork = true;
+                if (!album.LocalArtworkFiles.Contains(coverPath, StringComparer.OrdinalIgnoreCase))
+                    album.LocalArtworkFiles.Insert(0, coverPath);
+            }
         }
 
         private void ShowStandaloneExistingCoverEditor(AlbumInfo album)
@@ -5262,29 +5301,52 @@ namespace Splined.WindowsGui
             {
                 if (String.IsNullOrWhiteSpace(path)) return null;
                 string key = Path.GetFullPath(path);
-                byte[] bytes;
-                if (!candidateImageMemoryCache.TryGetValue(key, out bytes))
+                FileInfo file = new FileInfo(key);
+                file.Refresh();
+                if (!file.Exists)
                 {
-                    bytes = File.ReadAllBytes(path);
+                    RemoveCandidateImageCacheEntry(key);
+                    return null;
+                }
+
+                CandidateImageCacheEntry entry;
+                if (candidateImageMemoryCache.TryGetValue(key, out entry)
+                    && (entry.FileLength != file.Length || entry.LastWriteTimeUtc != file.LastWriteTimeUtc))
+                {
+                    RemoveCandidateImageCacheEntry(key);
+                    entry = null;
+                }
+                if (entry == null)
+                {
+                    byte[] bytes = File.ReadAllBytes(key);
                     if (bytes.LongLength <= CandidateImageMemoryCacheLimit)
                     {
-                        candidateImageMemoryCache[key] = bytes;
-                        candidateImageMemoryCacheOrder.Enqueue(key);
+                        file.Refresh();
+                        entry = new CandidateImageCacheEntry(key, bytes,
+                            file.Exists ? file.Length : bytes.LongLength,
+                            file.Exists ? file.LastWriteTimeUtc : DateTime.MinValue);
+                        candidateImageMemoryCache[key] = entry;
+                        candidateImageMemoryCacheOrder.Enqueue(entry);
                         candidateImageMemoryCacheBytes += bytes.LongLength;
                         while (candidateImageMemoryCacheBytes > CandidateImageMemoryCacheLimit
                             && candidateImageMemoryCacheOrder.Count > 0)
                         {
-                            string oldest = candidateImageMemoryCacheOrder.Dequeue();
-                            byte[] removed;
-                            if (candidateImageMemoryCache.TryGetValue(oldest, out removed))
+                            CandidateImageCacheEntry oldest = candidateImageMemoryCacheOrder.Dequeue();
+                            CandidateImageCacheEntry current;
+                            if (candidateImageMemoryCache.TryGetValue(oldest.Key, out current)
+                                && Object.ReferenceEquals(oldest, current))
                             {
-                                candidateImageMemoryCache.Remove(oldest);
-                                candidateImageMemoryCacheBytes -= removed.LongLength;
+                                candidateImageMemoryCache.Remove(oldest.Key);
+                                candidateImageMemoryCacheBytes -= oldest.Bytes.LongLength;
                             }
                         }
                     }
+                    else
+                    {
+                        entry = new CandidateImageCacheEntry(key, bytes, file.Length, file.LastWriteTimeUtc);
+                    }
                 }
-                using (MemoryStream stream = new MemoryStream(bytes))
+                using (MemoryStream stream = new MemoryStream(entry.Bytes))
                 using (Image source = Image.FromStream(stream)) return new Bitmap(source);
             }
             catch { return null; }
@@ -5296,11 +5358,32 @@ namespace Splined.WindowsGui
             string key;
             try { key = Path.GetFullPath(path); }
             catch { return; }
-            byte[] removed;
+            RemoveCandidateImageCacheEntry(key);
+        }
+
+        private void RemoveCandidateImageCacheEntry(string key)
+        {
+            CandidateImageCacheEntry removed;
             if (candidateImageMemoryCache.TryGetValue(key, out removed))
             {
                 candidateImageMemoryCache.Remove(key);
-                candidateImageMemoryCacheBytes -= removed.LongLength;
+                candidateImageMemoryCacheBytes -= removed.Bytes.LongLength;
+            }
+        }
+
+        private sealed class CandidateImageCacheEntry
+        {
+            public readonly string Key;
+            public readonly byte[] Bytes;
+            public readonly long FileLength;
+            public readonly DateTime LastWriteTimeUtc;
+
+            public CandidateImageCacheEntry(string key, byte[] bytes, long fileLength, DateTime lastWriteTimeUtc)
+            {
+                Key = key;
+                Bytes = bytes;
+                FileLength = fileLength;
+                LastWriteTimeUtc = lastWriteTimeUtc;
             }
         }
 

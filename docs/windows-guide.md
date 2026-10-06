@@ -236,7 +236,9 @@ and an Artwork surface on the right. Selecting any Album—including an orange
 Processed Album—shows the SQLite-indexed Artist, Album, year, track count,
 status, path, root-file count, current `cover.*` filename, and recorded
 resolution. The image is loaded from the indexed local cover path; selecting an
-Album does not rerun providers or rescan the Album directory.
+Album does not rerun providers or rescan the Album directory. The in-memory
+preview cache checks the file size and modification time, so artwork replaced
+at the same path by another supported runtime is reloaded on the next selection.
 
 The Album information follows the Album currently being processed, then returns
 to the Album focused manually in the tree. It clears when neither context has
@@ -496,9 +498,13 @@ and deterministic ordering without repeating provider discovery or image
 downloads. **Return to Source Results** restores the original Album results.
 
 The Matches workspace also has session-only Artist, Release, and Recording MBID
-fields. **Apply IDs** requires canonical UUIDs and updates only the separate
-`[*]` authority row and its **Open MB Page** Release-ID target. Ordinary result
-rows, numbering, URLs, visited state, selection, and filter state are unchanged.
+fields. **Apply IDs** requires a canonical Release UUID and validates any
+supplied Artist or Recording UUIDs. It updates the separate `[*]` authority row
+and its **Open MB Page** Release-ID target, then loads artwork-source results for
+that exact session authority. The operator must still choose artwork through
+the normal candidate workflow; applying authority never writes MusicBrainz tags.
+Ordinary result rows, numbering, URLs, visited state, selection, and filter state
+are unchanged.
 The removed **Search Artist / Track** action no longer starts a second free-text
 result branch. Automatic MusicBrainz lookup/search used by compilation matching
 remains available when track authority is missing.
