@@ -212,12 +212,7 @@ namespace Splined.WindowsGui
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && activeFilter != null)
-            {
-                activeFilter.Close();
-                activeFilter.Dispose();
-                activeFilter = null;
-            }
+            if (disposing) CloseActiveFilter();
             base.Dispose(disposing);
         }
 
@@ -289,11 +284,7 @@ namespace Splined.WindowsGui
 
         private void ShowMultiSelectFilter(Button owner, string[] choices, HashSet<string> selected, Action<HashSet<string>> apply)
         {
-            if (activeFilter != null)
-            {
-                activeFilter.Close();
-                activeFilter.Dispose();
-            }
+            CloseActiveFilter();
             ListBox list = new ListBox
             {
                 BorderStyle = BorderStyle.None,
@@ -341,12 +332,37 @@ namespace Splined.WindowsGui
             dropDown.Closed += delegate
             {
                 if (ReferenceEquals(activeFilter, dropDown)) activeFilter = null;
-                dropDown.Dispose();
+                QueueFilterDisposal(dropDown);
             };
             activeFilter = dropDown;
             ThemeManager.Apply(list, theme);
             dropDown.Show(owner, new Point(0, owner.Height));
             list.Focus();
+        }
+
+        private void CloseActiveFilter()
+        {
+            ToolStripDropDown filter = activeFilter;
+            activeFilter = null;
+            if (filter == null || filter.IsDisposed) return;
+            filter.Close();
+            if (!filter.IsDisposed) filter.Dispose();
+        }
+
+        private void QueueFilterDisposal(ToolStripDropDown filter)
+        {
+            if (filter == null || filter.IsDisposed || IsDisposed || Disposing || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!filter.IsDisposed) filter.Dispose();
+                });
+            }
+            catch (InvalidOperationException)
+            {
+                // The panel is already closing; Dispose handles any active popup.
+            }
         }
 
         private void RebuildVisibleRows()
