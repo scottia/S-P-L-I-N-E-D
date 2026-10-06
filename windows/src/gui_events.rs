@@ -116,7 +116,56 @@ pub enum CandidateDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MusicBrainzMatchDecision {
     Use(usize),
+    UseAuthority {
+        recording_mbid: String,
+        artist_mbids: String,
+        release_mbid: String,
+    },
     LeaveUnchanged,
+}
+
+fn parse_musicbrainz_match_decision(
+    value: &Value,
+) -> Result<Option<MusicBrainzMatchDecision>, String> {
+    match value.get("action").and_then(Value::as_str).unwrap_or("") {
+        "use_musicbrainz_match" => {
+            let index = value.get("index").and_then(Value::as_u64).ok_or_else(|| {
+                "MusicBrainz match decision did not include an index.".to_string()
+            })?;
+            if index == 0 {
+                return Err("MusicBrainz match indexes start at 1.".to_string());
+            }
+            Ok(Some(MusicBrainzMatchDecision::Use(index as usize - 1)))
+        }
+        "use_musicbrainz_authority" => {
+            let release_mbid = value
+                .get("release_mbid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if release_mbid.is_empty() {
+                return Err("Edited MusicBrainz authority requires a Release ID.".to_string());
+            }
+            Ok(Some(MusicBrainzMatchDecision::UseAuthority {
+                recording_mbid: value
+                    .get("recording_mbid")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                artist_mbids: value
+                    .get("artist_mbids")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string(),
+                release_mbid,
+            }))
+        }
+        "leave_unchanged" | "bypass" | "skip" => Ok(Some(MusicBrainzMatchDecision::LeaveUnchanged)),
+        _ => Ok(None),
+    }
 }
 
 pub fn wait_for_musicbrainz_match_decision() -> Result<MusicBrainzMatchDecision, String> {
@@ -129,22 +178,10 @@ pub fn wait_for_musicbrainz_match_decision() -> Result<MusicBrainzMatchDecision,
             return Err("MusicBrainz match input closed before a choice was made.".to_string());
         }
         let trimmed = answer.trim();
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            match value.get("action").and_then(Value::as_str).unwrap_or("") {
-                "use_musicbrainz_match" => {
-                    let index = value.get("index").and_then(Value::as_u64).ok_or_else(|| {
-                        "MusicBrainz match decision did not include an index.".to_string()
-                    })?;
-                    if index == 0 {
-                        return Err("MusicBrainz match indexes start at 1.".to_string());
-                    }
-                    return Ok(MusicBrainzMatchDecision::Use(index as usize - 1));
-                }
-                "leave_unchanged" | "bypass" | "skip" => {
-                    return Ok(MusicBrainzMatchDecision::LeaveUnchanged);
-                }
-                _ => {}
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
+            && let Some(decision) = parse_musicbrainz_match_decision(&value)?
+        {
+            return Ok(decision);
         }
         match trimmed.to_ascii_lowercase().as_str() {
             "b" | "skip" => return Ok(MusicBrainzMatchDecision::LeaveUnchanged),
@@ -301,4 +338,30 @@ pub fn emit(value: Value) {
     }
     println!("{PREFIX}{value}");
     let _ = io::stdout().flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_edited_musicbrainz_authority_without_turning_it_into_a_result_index() {
+        let decision = parse_musicbrainz_match_decision(&json!({
+            "action": "use_musicbrainz_authority",
+            "recording_mbid": "7b0e3436-afe7-4da7-8d41-b793b8d84b51",
+            "artist_mbids": "5f9ee42f-84b1-42bb-a318-09a05b3fcde1",
+            "release_mbid": "4f725973-aaf1-4d0d-a775-0a90ed2a0757"
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            decision,
+            MusicBrainzMatchDecision::UseAuthority {
+                recording_mbid: "7b0e3436-afe7-4da7-8d41-b793b8d84b51".to_string(),
+                artist_mbids: "5f9ee42f-84b1-42bb-a318-09a05b3fcde1".to_string(),
+                release_mbid: "4f725973-aaf1-4d0d-a775-0a90ed2a0757".to_string(),
+            }
+        );
+    }
 }

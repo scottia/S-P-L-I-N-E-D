@@ -1809,6 +1809,38 @@ enum NormalBrowserOutcome {
     Bypass,
 }
 
+struct MusicBrainzSessionAuthority {
+    recording_mbid: Option<String>,
+    artist_mbids: Vec<String>,
+    release_mbid: String,
+}
+
+impl MusicBrainzSessionAuthority {
+    fn from_track(track: &LocalTrackEvidence) -> Self {
+        let (recording_mbid, artist_mbids) = track_authority(track);
+        Self {
+            recording_mbid,
+            artist_mbids,
+            release_mbid: track.musicbrainz_album_id.clone().unwrap_or_default(),
+        }
+    }
+
+    fn apply(&mut self, recording_mbid: &str, artist_mbids: &str, release_mbid: &str) {
+        let recording_mbid = recording_mbid.trim();
+        self.recording_mbid =
+            (!recording_mbid.is_empty()).then(|| recording_mbid.to_ascii_lowercase());
+        self.artist_mbids = artist_mbids
+            .split(|character: char| {
+                character == ',' || character == ';' || character.is_whitespace()
+            })
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        self.release_mbid = release_mbid.trim().to_ascii_lowercase();
+    }
+}
+
 async fn run_normal_musicbrainz_browser(
     context: &CompilationRunContext<'_>,
     match_cache: &mut CompilationMatchCache,
@@ -1825,6 +1857,7 @@ async fn run_normal_musicbrainz_browser(
         cache_dir,
     } = context;
     let (recording_mbid, artist_mbids) = track_authority(track);
+    let mut authority = MusicBrainzSessionAuthority::from_track(track);
     let use_search = recording_mbid.is_none();
     let matches = match_cache
         .browser_matches(
@@ -1848,18 +1881,52 @@ async fn run_normal_musicbrainz_browser(
             current_release.as_deref(),
             use_search,
             &resolutions,
+            &authority,
         );
-        let selected = match gui_events::wait_for_musicbrainz_match_decision()? {
-            gui_events::MusicBrainzMatchDecision::Use(index) if index < matches.len() => {
-                matches[index].clone()
-            }
-            gui_events::MusicBrainzMatchDecision::Use(_) => {
-                return Err("Selected MusicBrainz match does not exist.".to_string());
-            }
-            gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
-                return Ok(NormalBrowserOutcome::ReturnToSources);
-            }
-        };
+        let (selected, selected_from_authority) =
+            match gui_events::wait_for_musicbrainz_match_decision()? {
+                gui_events::MusicBrainzMatchDecision::Use(index) if index < matches.len() => {
+                    (matches[index].clone(), false)
+                }
+                gui_events::MusicBrainzMatchDecision::Use(_) => {
+                    return Err("Selected MusicBrainz match does not exist.".to_string());
+                }
+                gui_events::MusicBrainzMatchDecision::UseAuthority {
+                    recording_mbid,
+                    artist_mbids,
+                    release_mbid,
+                } => {
+                    let mut edited = match match_cache
+                        .edited_authority_matches(
+                            musicbrainz,
+                            &recording_mbid,
+                            &artist_mbids,
+                            &release_mbid,
+                            &track.artist,
+                            &track.title,
+                        )
+                        .await
+                    {
+                        Ok(items) if !items.is_empty() => items,
+                        Ok(_) => {
+                            gui_events::emit(json!({ "event": "musicbrainz_authority_error",
+                            "message": "The edited MusicBrainz authority returned no matching release." }));
+                            continue;
+                        }
+                        Err(error) => {
+                            gui_events::emit(
+                                json!({ "event": "musicbrainz_authority_error", "message": error }),
+                            );
+                            continue;
+                        }
+                    };
+                    authority.apply(&recording_mbid, &artist_mbids, &release_mbid);
+                    (edited.remove(0), true)
+                }
+                gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
+                    return Ok(NormalBrowserOutcome::ReturnToSources);
+                }
+            };
 
         let provider_context = ProviderContext {
             artist_credit: selected.release_artist.clone(),
@@ -1985,8 +2052,10 @@ async fn run_normal_musicbrainz_browser(
                 });
             }
             gui_events::CandidateDecision::BackToMusicBrainz => {
-                visited.insert(selected.release_mbid.clone());
-                current_release = Some(selected.release_mbid);
+                if !selected_from_authority {
+                    visited.insert(selected.release_mbid.clone());
+                    current_release = Some(selected.release_mbid);
+                }
             }
             gui_events::CandidateDecision::Bypass => {
                 return Ok(NormalBrowserOutcome::Bypass);
@@ -2003,8 +2072,8 @@ fn emit_normal_musicbrainz_matches(
     current_release: Option<&str>,
     searched: bool,
     resolutions: &std::collections::HashMap<String, String>,
+    authority: &MusicBrainzSessionAuthority,
 ) {
-    let (authority_recording, authority_artists) = track_authority(track);
     let items = matches
         .iter()
         .enumerate()
@@ -2026,9 +2095,9 @@ fn emit_normal_musicbrainz_matches(
         "artist": track.artist, "title": track.title, "searched": searched,
         "album_artist": track.album_artist.as_deref().unwrap_or(&track.artist),
         "album": track.album.as_deref().unwrap_or(""),
-        "authority_recording_mbid": authority_recording.as_deref().unwrap_or(""),
-        "authority_artist_mbids": authority_artists.join(", "),
-        "authority_release_mbid": track.musicbrainz_album_id.as_deref().unwrap_or(""),
+        "authority_recording_mbid": authority.recording_mbid.as_deref().unwrap_or(""),
+        "authority_artist_mbids": authority.artist_mbids.join(", "),
+        "authority_release_mbid": authority.release_mbid,
         "compilation_track": false, "items": items }),
     );
 }
@@ -2120,6 +2189,7 @@ async fn run_compilation_album(
         );
 
         let (recording_mbid, artist_mbids) = track_authority(track);
+        let mut authority = MusicBrainzSessionAuthority::from_track(track);
         let targeted_embedded = if targeted_edit {
             embedded_candidate(&track.path, cache_dir)?
                 .map(|candidate| candidate.path().to_path_buf())
@@ -2142,6 +2212,7 @@ async fn run_compilation_album(
         }
 
         let mut selected_match: Option<MusicBrainzMatch> = None;
+        let mut selected_from_authority = false;
         let mut visited_releases = std::collections::HashSet::<String>::new();
         let mut current_release: Option<String> = None;
         let mut matches = Vec::<MusicBrainzMatch>::new();
@@ -2199,13 +2270,48 @@ async fn run_compilation_album(
                     &visited_releases,
                     current_release.as_deref(),
                     used_search,
+                    &authority,
                 );
                 match gui_events::wait_for_musicbrainz_match_decision()? {
                     gui_events::MusicBrainzMatchDecision::Use(index) if index < matches.len() => {
                         selected_match = Some(matches[index].clone());
+                        selected_from_authority = false;
                     }
                     gui_events::MusicBrainzMatchDecision::Use(_) => {
                         return Err("Selected MusicBrainz match does not exist.".to_string());
+                    }
+                    gui_events::MusicBrainzMatchDecision::UseAuthority {
+                        recording_mbid,
+                        artist_mbids,
+                        release_mbid,
+                    } => {
+                        let mut edited = match match_cache
+                            .edited_authority_matches(
+                                musicbrainz,
+                                &recording_mbid,
+                                &artist_mbids,
+                                &release_mbid,
+                                &track.artist,
+                                &track.title,
+                            )
+                            .await
+                        {
+                            Ok(items) if !items.is_empty() => items,
+                            Ok(_) => {
+                                gui_events::emit(json!({ "event": "musicbrainz_authority_error",
+                                    "message": "The edited MusicBrainz authority returned no matching release." }));
+                                continue 'match_selection;
+                            }
+                            Err(error) => {
+                                gui_events::emit(
+                                    json!({ "event": "musicbrainz_authority_error", "message": error }),
+                                );
+                                continue 'match_selection;
+                            }
+                        };
+                        authority.apply(&recording_mbid, &artist_mbids, &release_mbid);
+                        selected_match = Some(edited.remove(0));
+                        selected_from_authority = true;
                     }
                     gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
                         result.unresolved += 1;
@@ -2319,8 +2425,11 @@ async fn run_compilation_album(
             }
             if pipeline.candidates.is_empty() {
                 if let Some(selected) = selected_match.take() {
-                    visited_releases.insert(selected.release_mbid.clone());
-                    current_release = Some(selected.release_mbid);
+                    if !selected_from_authority {
+                        visited_releases.insert(selected.release_mbid.clone());
+                        current_release = Some(selected.release_mbid);
+                    }
+                    selected_from_authority = false;
                     continue;
                 }
                 result.unresolved += 1;
@@ -2392,10 +2501,13 @@ async fn run_compilation_album(
                 gui_events::CandidateDecision::BackToMusicBrainz
                     if local_candidate.is_none() && targeted_embedded.is_none() =>
                 {
-                    if let Some(selected) = selected_match.take() {
+                    if let Some(selected) = selected_match.take()
+                        && !selected_from_authority
+                    {
                         visited_releases.insert(selected.release_mbid.clone());
                         current_release = Some(selected.release_mbid);
                     }
+                    selected_from_authority = false;
                     continue;
                 }
                 gui_events::CandidateDecision::Bypass => {
@@ -2501,8 +2613,8 @@ fn emit_musicbrainz_matches(
     visited_releases: &std::collections::HashSet<String>,
     current_release: Option<&str>,
     searched: bool,
+    authority: &MusicBrainzSessionAuthority,
 ) {
-    let (authority_recording, authority_artists) = track_authority(track);
     let items = matches.iter().enumerate().map(|(index, item)| json!({
         "index": index + 1, "recording_mbid": item.recording_mbid, "recording_title": item.recording_title,
         "recording_artist": item.recording_artist, "artist_mbids": item.artist_mbids,
@@ -2519,9 +2631,9 @@ fn emit_musicbrainz_matches(
         "artist": track.artist, "title": track.title, "searched": searched,
         "album_artist": track.album_artist.as_deref().unwrap_or(&track.artist),
         "album": track.album.as_deref().unwrap_or(""),
-        "authority_recording_mbid": authority_recording.as_deref().unwrap_or(""),
-        "authority_artist_mbids": authority_artists.join(", "),
-        "authority_release_mbid": track.musicbrainz_album_id.as_deref().unwrap_or(""),
+        "authority_recording_mbid": authority.recording_mbid.as_deref().unwrap_or(""),
+        "authority_artist_mbids": authority.artist_mbids.join(", "),
+        "authority_release_mbid": authority.release_mbid,
         "compilation_track": true, "items": items }),
     );
 }

@@ -45,6 +45,7 @@ namespace Splined.WindowsGui
         private int hoveredMatchIndex = -1;
 
         public event EventHandler<MusicBrainzMatchEventArgs> UseRequested;
+        public event EventHandler<MusicBrainzMatchEventArgs> AuthorityApplyRequested;
         public event EventHandler<MusicBrainzMatchEventArgs> ArtworkPreviewRequested;
         public event EventHandler ArtworkPreviewEnded;
         public event EventHandler LeaveRequested;
@@ -509,9 +510,10 @@ namespace Splined.WindowsGui
 
         private void ApplyAuthorityIds()
         {
-            if (!ValidSingleMbid(recordingId.Text) || !ValidSingleMbid(releaseId.Text) || !ValidMbidList(artistId.Text))
+            if (!ValidSingleMbid(recordingId.Text) || String.IsNullOrWhiteSpace(releaseId.Text)
+                || !ValidSingleMbid(releaseId.Text) || !ValidMbidList(artistId.Text))
             {
-                MessageBox.Show(this, "Recording and Release accept one MusicBrainz UUID. Artist accepts one or more UUIDs separated by commas.", "MusicBrainz authority", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Release requires one MusicBrainz UUID. Recording accepts one UUID, and Artist accepts one or more UUIDs separated by commas.", "MusicBrainz authority", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
             authorityItem["recording_mbid"] = recordingId.Text.Trim();
@@ -527,6 +529,9 @@ namespace Splined.WindowsGui
                 row.Selected = true;
             }
             SelectionChanged();
+            EventHandler<MusicBrainzMatchEventArgs> handler = AuthorityApplyRequested;
+            if (handler != null)
+                handler(this, new MusicBrainzMatchEventArgs(authorityItem, 0));
         }
 
         private void OpenSelectedMusicBrainzPage()

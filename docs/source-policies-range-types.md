@@ -391,8 +391,10 @@ The compilation branch is explicit and per track:
    search is reused for the active run unless the authority/search identity
    changes. The Windows Artist/Release/Recording fields describe only its
    separate current-Album authority row. **Apply IDs** updates that row and its
-   Release-ID page target without changing ordinary rows, URLs, numbering,
-   selection, filters, or visited state. Windows no longer exposes the separate
+   Release-ID page target, validates the edited session authority, and loads
+   source results for the exact Release ID. Choosing a candidate may update
+   artwork, but never writes the edited IDs to audio tags. Ordinary rows, URLs,
+   numbering, selection, filters, and visited state remain unchanged. Windows no longer exposes the separate
    **Search Artist / Track** free-text result branch; automatic compilation
    matching still performs shared Artist/Title lookup when track IDs are absent.
 

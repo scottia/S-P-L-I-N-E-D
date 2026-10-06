@@ -627,14 +627,21 @@ namespace Splined.WindowsGui
                         && row.ForeColor.ToArgb() == ThemeManager.CurrentPalette.StatusOrange.ToArgb()),
                         "MusicBrainz current/visited rows did not use green and orange state colors.");
                     string originalResultUrl = Convert.ToString(((Dictionary<string, object>)matchFixture[0])["url"]);
+                    Dictionary<string, object> appliedAuthority = null;
+                    matches.AuthorityApplyRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
+                    {
+                        appliedAuthority = args.Item;
+                    };
                     TextBox releaseAuthority = Descendants(matches).OfType<TextBox>()
                         .Single(box => box.Text == "ac8e3469-8f18-4ffc-8581-ade501ae0dc5");
                     releaseAuthority.Text = "4f725973-aaf1-4d0d-a775-0a90ed2a0757";
                     Descendants(matches).OfType<Button>().Single(button => button.Text == "Apply IDs").PerformClick();
                     Dictionary<string, object> authorityRow = (Dictionary<string, object>)matchList.Items[1].Tag;
                     Assert(Convert.ToString(authorityRow["url"]).EndsWith("/4f725973-aaf1-4d0d-a775-0a90ed2a0757")
+                        && Object.ReferenceEquals(appliedAuthority, authorityRow)
+                        && Convert.ToString(appliedAuthority["release_mbid"]) == "4f725973-aaf1-4d0d-a775-0a90ed2a0757"
                         && Convert.ToString(((Dictionary<string, object>)matchFixture[0])["url"]) == originalResultUrl,
-                        "Apply IDs changed a result URL or failed to update only the authority row link.");
+                        "Apply IDs changed a result URL or failed to submit the updated authority row for source discovery.");
                     ListViewItem selectedEp = matchList.Items.Cast<ListViewItem>().Single(row => row.Tag == matchFixture[1]);
                     selectedEp.Selected = true;
                     matches.ApplyFilterSelection(new[] { "Various Artists" }, new[] { "ep" });
@@ -1060,7 +1067,10 @@ namespace Splined.WindowsGui
                     upscalable["projected_height"] = 1800;
                     upscalable["upscaled"] = true;
                     string upscalePreviewPath = Path.Combine(internalSettings, "upscale-preview.jpg");
-                    using (Bitmap fixture = new Bitmap(12, 12)) fixture.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    using (Bitmap fixture = new Bitmap(12, 12))
+                    {
+                        fixture.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    }
                     previewAlbum.CoverPath = upscalePreviewPath;
                     previewAlbum.LocalArtworkFiles.Add(upscalePreviewPath);
                     previewAlbum.HasLocalArtwork = true;
@@ -1075,6 +1085,21 @@ namespace Splined.WindowsGui
                         && directCandidates.Values.Single().IsLocal && directUpscalePreview.Enabled
                         && directSaveExisting.Text == "Save Existing" && directSaveExisting.Enabled,
                         "Selecting an Album with cover.* did not expose direct Artwork Filter editing before a provider run.");
+                    DateTime firstCoverWrite = File.GetLastWriteTimeUtc(upscalePreviewPath);
+                    using (Bitmap replacement = new Bitmap(16, 14))
+                    {
+                        replacement.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    }
+                    File.SetLastWriteTimeUtc(upscalePreviewPath, firstCoverWrite.AddSeconds(2));
+                    showSelectedAlbum.Invoke(form, new object[] { previewAlbum });
+                    PictureBox selectedArtwork = (PictureBox)typeof(MainForm)
+                        .GetField("artworkPreviewImage", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    directCandidates = (Dictionary<int, CandidateView>)typeof(MainForm)
+                        .GetField("candidates", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(selectedArtwork.Image != null && selectedArtwork.Image.Width == 16 && selectedArtwork.Image.Height == 14
+                        && directCandidates.Values.Single().PixelWidth == 16
+                        && directCandidates.Values.Single().PixelHeight == 14,
+                        "Selecting an Album reused stale cached cover bytes after cover.* was replaced at the same path.");
                     upscalable["cache_path"] = upscalePreviewPath;
                     object[] upscaleCandidates = { belowMinimum, upscalable };
                     showCandidates.Invoke(form, new object[] { upscaleCandidates });
@@ -1218,7 +1243,7 @@ namespace Splined.WindowsGui
                         "Upscale Preview did not render the projected Ideal-size image in memory.");
                     Assert(artworkCaption.Text.Contains("brightness +3%") && artworkCaption.Text.Contains("contrast")
                         && artworkCaption.Text.Contains("preview only"),
-                        "Upscale Preview did not disclose the live saved profile correction.");
+                        "Upscale Preview did not disclose the live saved profile correction: " + artworkCaption.Text);
                     typeof(MainForm).GetMethod("UpscaleShowFullClicked", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, new object[] { showFullPreview, EventArgs.Empty });
                     FullSizeArtworkPreviewForm fullPreview = (FullSizeArtworkPreviewForm)typeof(MainForm)
