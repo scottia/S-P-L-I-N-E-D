@@ -606,6 +606,21 @@ namespace Splined.WindowsGui
                                 && row.SubItems[1].Text.IndexOf("2010s", StringComparison.Ordinal) < 0
                                 && row.SubItems[1].Text.IndexOf("2020s", StringComparison.Ordinal) < 0),
                         "MusicBrainz result rows were not sorted by Artist/family, Date, Country, title, and MBID with release-type-only headings.");
+                    Button artistFilterButton = Descendants(matches).OfType<Button>()
+                        .Single(button => button.Text == "Filter by Artist ▼");
+                    artistFilterButton.PerformClick();
+                    Application.DoEvents();
+                    FieldInfo activeFilterField = typeof(MusicBrainzMatchesPanel)
+                        .GetField("activeFilter", BindingFlags.Instance | BindingFlags.NonPublic);
+                    ToolStripDropDown artistDropDown = (ToolStripDropDown)activeFilterField.GetValue(matches);
+                    Assert(artistDropDown != null && !artistDropDown.IsDisposed && artistDropDown.Visible,
+                        "MusicBrainz Artist filter did not open a live multi-select popup.");
+                    ListBox artistChoices = (ListBox)((ToolStripControlHost)artistDropDown.Items[0]).Control;
+                    typeof(Control).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(artistChoices, new object[] { new KeyEventArgs(Keys.Enter) });
+                    Application.DoEvents();
+                    Assert(activeFilterField.GetValue(matches) == null && artistDropDown.IsDisposed,
+                        "MusicBrainz Artist filter did not close and release its popup after Enter applied the selection.");
                     Assert(matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[0]
                         && row.ForeColor.ToArgb() == ThemeManager.CurrentPalette.Success.ToArgb())
                         && matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[1]
