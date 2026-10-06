@@ -58,7 +58,7 @@ The default callback is `urn:ietf:wg:oauth:2.0:oob` and the default scope is
 Supported login entry points are:
 
 ```text
-splined.exe --mb-oauth-login        # Windows core
+splined-core.exe --mb-oauth-login   # Windows core
 ./splined --mb-oauth-login          # Linux/macOS native
 splined --mb-oauth-login            # Python/Docker
 ```
@@ -68,7 +68,7 @@ splined --mb-oauth-login            # Python/Docker
 The Windows credential editor under **File > Credentials...** (also reachable
 from Settings) edits credential fields and tests an already-present bearer
 token against `/oauth2/userinfo`. It does not run the browser authorization
-exchange. Use `splined.exe --mb-oauth-login` to authorize, then return to the
+exchange. Use `splined-core.exe --mb-oauth-login` to authorize, then return to the
 GUI to inspect or test the saved credential.
 
 ## Credential validation and renewal

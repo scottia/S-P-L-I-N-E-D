@@ -352,8 +352,9 @@ The compilation branch is explicit and per track:
    Archive release-group front-image URL for Artwork preview, falling back to
    the exact-release endpoint when no group MBID is available. Selecting a
    match makes its Recording/Artist/Release IDs session authority and performs
-   the normal local/provider artwork search. The current source-result release is green;
-   previously inspected releases are blue. Re-selecting either restores its
+   the normal local/provider artwork search. The current source-result release
+   is green. Previously inspected releases are blue in Ratatui and orange in
+   Windows. Re-selecting either restores its
    candidates and diagnostics without repeating provider discovery or image
    downloads. Escape from artwork sources returns to the same cached match
    list. Resolution is populated only after that release has been inspected.
@@ -366,22 +367,29 @@ The compilation branch is explicit and per track:
    different resolution/source results. Higher resolution is useful comparison
    evidence, not a replacement for normal range, source-priority, shape,
    approval, and fallback policy.
-   In Windows, this list replaces the Scan Activity surface while active and
-   uses the existing right-side Artwork panel. Its `[URL]` hover is active
+   In Windows, one separate yellow `[CURRENT ALBUM]` category and `[*]`
+   authority row remain fixed first and outside Artist/Release-Type filtering.
+   The filters use ordinary Artist and Release Type column values, intersect,
+   and rebuild only populated headings. The list replaces the Scan Activity
+   surface while active and uses the existing right-side Artwork panel. Its `[URL]` hover is active
    during MusicBrainz review even when ordinary candidate hover is disabled;
    it is a bounded visual authority check and does not rerun artwork providers.
-10. The three `[E]` controls in Ratatui `FALLBACK ARTIST / ALBUM INFO`, and the
-   corresponding Windows Artist/Release/Recording fields plus **Apply IDs**,
-   accept session-only MBID corrections. Applying validates the UUID and
-   performs a fresh authority/artwork query. Editing Artist or
+10. The three `[E]` controls in Ratatui `FALLBACK ARTIST / ALBUM INFO` accept
+   session-only MBID corrections. Applying validates the UUID and performs a
+   fresh authority/artwork query. Editing Artist or
    Recording invalidates the previously derived Release; editing Release
    performs an exact lookup that must be Official and contain the selected
    Recording and Artist. An exact operator-selected release may be any
    MusicBrainz release type, including a Single or EP; the automatic
    Album, Soundtrack, Compilation restriction in step 5 does not apply.
-   Ratatui `M` or the Windows Matches navigation reopens the active Artist/Title
-   result list. The initial bounded search is reused for the active run unless
-   the authority/search identity changes.
+   Ratatui `M` reopens the active Artist/Title result list. The initial bounded
+   search is reused for the active run unless the authority/search identity
+   changes. The Windows Artist/Release/Recording fields describe only its
+   separate current-Album authority row. **Apply IDs** updates that row and its
+   Release-ID page target without changing ordinary rows, URLs, numbering,
+   selection, filters, or visited state. Windows no longer exposes the separate
+   **Search Artist / Track** free-text result branch; automatic compilation
+   matching still performs shared Artist/Title lookup when track IDs are absent.
 
 The curated Album name is never used as MusicBrainz identity. SPLINED does not
 invent or write an Album/Release ID, write an operator-edited MBID, change the compilation's Album/Artist

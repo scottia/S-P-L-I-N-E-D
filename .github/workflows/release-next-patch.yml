@@ -205,7 +205,6 @@ jobs:
         shell: bash
         env:
           SPLINED_BUILD_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-          SPLINED_UPDATE_CHANNEL: stable
         run: |
           set -euo pipefail
           started=$SECONDS
@@ -221,20 +220,16 @@ jobs:
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path release-package, release-assets | Out-Null
           Copy-Item windows/target/release/splined.exe release-package/splined.exe
-          Copy-Item windows/target/release/splined.exe release-assets/setup-splined.exe
+          Copy-Item windows/target/release/splined-core.exe release-package/splined-core.exe
           Copy-Item release/README-WINDOWS.txt release-package/README-WINDOWS.txt
           Compress-Archive -Path "release-package/*" -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
-          $asset = Get-Item release-assets/setup-splined.exe
-          $digest = (Get-FileHash -Algorithm SHA256 $asset.FullName).Hash.ToLowerInvariant()
           $manifest = [ordered]@{
-            schema = 1
+            schema = 2
             channel = "stable"
             commit = $env:RELEASE_COMMIT
             short_commit = $env:RELEASE_COMMIT.Substring(0, 7)
             published_at = [DateTime]::UtcNow.ToString("o")
-            asset_url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/$env:RELEASE_VERSION/setup-splined.exe"
-            sha256 = $digest
-            size = $asset.Length
+            release_url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/$env:RELEASE_VERSION"
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
@@ -244,7 +239,6 @@ jobs:
           name: splined-windows-x86_64
           path: |
             release-assets/splined-windows-x86_64.zip
-            release-assets/setup-splined.exe
             release-assets/windows-update.json
           if-no-files-found: error
 
@@ -380,12 +374,8 @@ jobs:
             exit 1
           fi
           release_files=("${archives[@]}")
-          if [ -e setup-splined.exe ] || [ -e windows-update.json ]; then
-            if [ ! -f setup-splined.exe ] || [ ! -f windows-update.json ]; then
-              echo "ERROR: Windows updater executable and manifest must be published together."
-              exit 1
-            fi
-            release_files+=(setup-splined.exe windows-update.json)
+          if [ -f windows-update.json ]; then
+            release_files+=(windows-update.json)
           fi
           sha256sum "${release_files[@]}" > SHA256SUMS.txt
           gh release create "$RELEASE_VERSION" \

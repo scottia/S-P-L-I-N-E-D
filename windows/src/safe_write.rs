@@ -420,4 +420,3 @@ mod tests {
         assert!(!backup.exists());
     }
 }
-

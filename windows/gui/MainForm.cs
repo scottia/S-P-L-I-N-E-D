@@ -2212,8 +2212,7 @@ namespace Splined.WindowsGui
                 RuntimeLog.Write("debug", "album.path.translated indexed=" + album.Path + " physical=" + scanPath);
             ProcessStartInfo start = new ProcessStartInfo();
             start.FileName = core;
-            // Keep the child in core scan mode instead of the no-argument
-            // Windows entry point, which launches the GUI shell.
+            // The fixed side-by-side core has one explicit processing role.
             start.Arguments = "--scan-dir";
             start.WorkingDirectory = ConfigStore.AppRoot;
             start.UseShellExecute = false;
@@ -2371,6 +2370,9 @@ namespace Splined.WindowsGui
                 ShowMusicBrainzMatchesWorkspace(
                     ReadString(payload, "artist"), ReadString(payload, "title"),
                     ReadString(payload, "album_artist"), ReadString(payload, "album"), items,
+                    ReadString(payload, "authority_recording_mbid"),
+                    ReadString(payload, "authority_artist_mbids"),
+                    ReadString(payload, "authority_release_mbid"),
                     ReadBool(payload, "compilation_track"));
             }
             else if (eventName == "compilation_started")
@@ -2397,12 +2399,6 @@ namespace Splined.WindowsGui
                 candidateContext.Text = "Source Results — choose artwork or open MusicBrainz Matches again.";
                 awaitingDecision = true;
                 UpdateCandidateActions();
-            }
-            else if (eventName == "musicbrainz_authority_error")
-            {
-                string message = ReadString(payload, "message");
-                AppendActivity("     MusicBrainz authority correction rejected: " + message + "\r\n", ActivityTone.Warning);
-                SetStatus("MusicBrainz authority correction was rejected; review the IDs and try again.");
             }
             else if (eventName == "compilation_track_unresolved" || eventName == "compilation_lookup_warning")
             {
@@ -3950,12 +3946,24 @@ namespace Splined.WindowsGui
             ClearCandidates();
         }
 
-        private void ShowMusicBrainzMatchesWorkspace(string artist, string title, string albumArtist, string albumTitle, object[] items, bool compilationTrack)
+        private void ShowMusicBrainzMatchesWorkspace(
+            string artist,
+            string title,
+            string albumArtist,
+            string albumTitle,
+            object[] items,
+            string authorityRecordingMbid,
+            string authorityArtistMbids,
+            string authorityReleaseMbid,
+            bool compilationTrack)
         {
             ApplyCandidateFilterWorkspace(false);
             CloseMusicBrainzMatchesWorkspace(false);
             if (activityContentHost == null) return;
-            musicBrainzMatchesPanel = new MusicBrainzMatchesPanel(artist, title, albumArtist, albumTitle, items, compilationTrack, uiState.Theme);
+            musicBrainzMatchesPanel = new MusicBrainzMatchesPanel(
+                artist, title, albumArtist, albumTitle, items,
+                authorityRecordingMbid, authorityArtistMbids, authorityReleaseMbid,
+                compilationTrack, uiState.Theme);
             musicBrainzMatchesPanel.UseRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
             {
                 Dictionary<string, object> command = new Dictionary<string, object>();
@@ -3964,25 +3972,10 @@ namespace Splined.WindowsGui
                 CloseMusicBrainzMatchesWorkspace();
                 SendDecision(json.Serialize(command));
             };
-            musicBrainzMatchesPanel.SearchRequested += delegate
-            {
-                CloseMusicBrainzMatchesWorkspace();
-                SendDecision("{\"action\":\"search_musicbrainz\"}");
-            };
             musicBrainzMatchesPanel.LeaveRequested += delegate
             {
                 CloseMusicBrainzMatchesWorkspace();
                 SendDecision("{\"action\":\"leave_unchanged\"}");
-            };
-            musicBrainzMatchesPanel.AuthorityEditRequested += delegate(object sender, MusicBrainzAuthorityEventArgs args)
-            {
-                Dictionary<string, object> command = new Dictionary<string, object>();
-                command["action"] = "edit_musicbrainz_authority";
-                command["recording_mbid"] = args.RecordingMbid;
-                command["artist_mbids"] = args.ArtistMbids;
-                command["release_mbid"] = args.ReleaseMbid;
-                CloseMusicBrainzMatchesWorkspace();
-                SendDecision(json.Serialize(command));
             };
             musicBrainzMatchesPanel.ArtworkPreviewRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
             {
@@ -4833,15 +4826,14 @@ namespace Splined.WindowsGui
             if (checkUpdateMenuItem != null) checkUpdateMenuItem.Enabled = false;
             try
             {
-                string channel = WindowsUpdateService.UsesDevChannel ? "dev" : "stable";
-                if (interactive) SetStatus("Checking for Windows " + channel + " updates...");
+                if (interactive) SetStatus("Checking the official GitHub releases...");
                 WindowsUpdateCheck update = await WindowsUpdateService.CheckAsync();
                 RuntimeLog.Write("info", "windows.update.checked current=" + BuildInfo.ShortCommit
                     + " latest=" + update.Manifest.short_commit
                     + " available=" + update.Available.ToString().ToLowerInvariant());
                 if (!update.Available)
                 {
-                    if (interactive) SetStatus("SPLINED is current at " + channel + " commit " + BuildInfo.ShortCommit + ".");
+                    if (interactive) SetStatus("SPLINED is current at commit " + BuildInfo.ShortCommit + ".");
                     if (interactive)
                         MessageBox.Show(this,
                             "SPLINED is current.\r\n\r\nInstalled commit: " + BuildInfo.ShortCommit,
@@ -4850,38 +4842,22 @@ namespace Splined.WindowsGui
                 }
 
                 WindowsUpdateManifest manifest = update.Manifest;
-                SetStatus("Windows " + channel + " update " + manifest.short_commit + " is available.");
+                SetStatus("An official Windows release at commit " + manifest.short_commit + " is available.");
                 string published = String.IsNullOrWhiteSpace(manifest.published_at)
                     ? "unknown"
                     : manifest.published_at;
-                DialogResult install = MessageBox.Show(this,
-                    "A Windows " + channel + " update is available.\r\n\r\n"
+                DialogResult openRelease = MessageBox.Show(this,
+                    "An official Windows release is available.\r\n\r\n"
                     + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
                     + "Available commit: " + manifest.short_commit + "\r\n"
                     + "Published: " + published + "\r\n\r\n"
-                    + "Download, verify, install, and restart SPLINED now?",
+                    + "Open the official GitHub release page? SPLINED will not download, install, or run an executable.",
                     "SPLINED update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                if (install != DialogResult.Yes) return;
-                if (running)
+                if (openRelease == DialogResult.Yes)
                 {
-                    MessageBox.Show(this,
-                        "Finish or stop the active album run before installing the update.",
-                        "SPLINED update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
+                    WindowsUpdateService.OpenReleasePage(manifest.release_url);
+                    RuntimeLog.Write("info", "windows.update.release_page_opened commit=" + manifest.short_commit);
                 }
-
-                SetStatus("Downloading and verifying Windows update " + manifest.short_commit + "...");
-                progress.Style = ProgressBarStyle.Marquee;
-                progress.Visible = true;
-                string updater = await WindowsUpdateService.DownloadAndStageAsync(manifest);
-                RuntimeLog.Write("info", "windows.update.verified current=" + BuildInfo.ShortCommit
-                    + " available=" + manifest.short_commit);
-                MessageBox.Show(this,
-                    "The update was downloaded and SHA-256 verified. SPLINED will now restart.",
-                    "SPLINED update ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                WindowsUpdateService.LaunchUpdater(updater);
-                RuntimeLog.Write("info", "windows.update.launched commit=" + manifest.short_commit);
-                Application.Exit();
             }
             catch (Exception error)
             {
@@ -5006,10 +4982,7 @@ namespace Splined.WindowsGui
 
         private string FindCoreExecutable()
         {
-            string embeddedHost = Environment.GetEnvironmentVariable("SPLINED_CORE_PATH");
-            if (!String.IsNullOrWhiteSpace(embeddedHost) && File.Exists(embeddedHost))
-                return Path.GetFullPath(embeddedHost);
-            string path = Path.Combine(ConfigStore.AppRoot, "splined.exe");
+            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "splined-core.exe");
             if (File.Exists(path)) return path;
             return null;
         }

@@ -116,12 +116,6 @@ pub enum CandidateDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MusicBrainzMatchDecision {
     Use(usize),
-    Search,
-    EditAuthority {
-        recording_mbid: String,
-        artist_mbids: String,
-        release_mbid: String,
-    },
     LeaveUnchanged,
 }
 
@@ -146,29 +140,6 @@ pub fn wait_for_musicbrainz_match_decision() -> Result<MusicBrainzMatchDecision,
                     }
                     return Ok(MusicBrainzMatchDecision::Use(index as usize - 1));
                 }
-                "search_musicbrainz" => return Ok(MusicBrainzMatchDecision::Search),
-                "edit_musicbrainz_authority" => {
-                    return Ok(MusicBrainzMatchDecision::EditAuthority {
-                        recording_mbid: value
-                            .get("recording_mbid")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string(),
-                        artist_mbids: value
-                            .get("artist_mbids")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string(),
-                        release_mbid: value
-                            .get("release_mbid")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string(),
-                    });
-                }
                 "leave_unchanged" | "bypass" | "skip" => {
                     return Ok(MusicBrainzMatchDecision::LeaveUnchanged);
                 }
@@ -176,7 +147,6 @@ pub fn wait_for_musicbrainz_match_decision() -> Result<MusicBrainzMatchDecision,
             }
         }
         match trimmed.to_ascii_lowercase().as_str() {
-            "m" => return Ok(MusicBrainzMatchDecision::Search),
             "b" | "skip" => return Ok(MusicBrainzMatchDecision::LeaveUnchanged),
             value if value.parse::<usize>().is_ok_and(|index| index > 0) => {
                 return Ok(MusicBrainzMatchDecision::Use(

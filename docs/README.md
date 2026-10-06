@@ -1,6 +1,6 @@
 # S:P:L:I:N:E:D Documentation
 
-This directory documents the current **S:P:L:I:N:E:D 1.0.30** behavior and
+This directory documents the current **S:P:L:I:N:E:D 1.0.31** behavior and
 Config v5 schema. It is organized by task so one subject has one authoritative
 home. Historical changes and release notes are maintained in
 [GitHub Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases), not mixed
