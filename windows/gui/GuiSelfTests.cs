@@ -17,12 +17,38 @@ namespace Splined.WindowsGui
     internal static class GuiSelfTests
     {
         [STAThread]
-        private static int Main()
+        private static int Main(string[] commandLine)
         {
+            if (commandLine != null && commandLine.Length == 5 && commandLine[0] == "--portable-restore-worker")
+                return RunPortableRestoreWorker(commandLine[1], commandLine[2], commandLine[3], commandLine[4]);
             try
             {
-                string internalSettings = Path.Combine(Path.GetTempPath(), "splined-windows-v4-tests-" + Guid.NewGuid().ToString("N"));
+                string internalSettings = Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR");
+                if (String.IsNullOrWhiteSpace(internalSettings))
+                    internalSettings = Path.Combine(Path.GetTempPath(), "splined-windows-v4-tests-" + Guid.NewGuid().ToString("N"));
+                string legacySettings = Environment.GetEnvironmentVariable("SPLINED_LEGACY_SETTINGS_TEST_DIR");
+                if (String.IsNullOrWhiteSpace(legacySettings))
+                    legacySettings = Path.Combine(Path.GetTempPath(), "splined-windows-v4-legacy-" + Guid.NewGuid().ToString("N"));
                 Environment.SetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR", internalSettings);
+                Environment.SetEnvironmentVariable("SPLINED_LEGACY_SETTINGS_TEST_DIR", legacySettings);
+                Directory.CreateDirectory(legacySettings);
+                string legacyConfigFile = Path.Combine(legacySettings, "ConfigV5.txt");
+                string legacyUiFile = Path.Combine(legacySettings, "UiV4.txt");
+                File.WriteAllText(legacyConfigFile, "config_version = 5\r\nmode = \"write\"\r\nverbosity = \"info\"\r\n");
+                File.WriteAllText(legacyUiFile, "[ui]\r\ntheme = \"Dark\"\r\n");
+                UiState migratedUi = ConfigStore.LoadUi();
+                ConfigState migratedConfig = ConfigStore.Load();
+                Assert(migratedUi.Theme == "Dark" && migratedConfig.Mode == "write"
+                    && File.Exists(ConfigStore.DefaultConfigPath) && File.Exists(ConfigStore.UiPath),
+                    "Legacy HKCU ConfigV5/UiV4 values were not migrated into portable files.");
+                Assert(File.Exists(legacyConfigFile) && File.Exists(legacyUiFile)
+                    && File.Exists(Path.Combine(legacySettings, "PortableFilesMigrated.txt")),
+                    "Legacy settings were deleted or the one-time migration was not recorded.");
+                File.Delete(ConfigStore.DefaultConfigPath);
+                File.Delete(ConfigStore.UiPath);
+                Assert(!ConfigStore.HasSavedSettings && ConfigStore.LoadUi().Theme == "System"
+                    && !File.Exists(ConfigStore.DefaultConfigPath) && !File.Exists(ConfigStore.UiPath),
+                    "Deleting the portable data files resurrected migrated Registry settings.");
                 string library = Path.Combine(ConfigStore.AppRoot, "fixture-library");
                 string firstAlbum = Path.Combine(library, "Artist One", "Album One");
                 string ignoredAlbum = Path.Combine(library, "Skip This", "Ignored Album");
@@ -125,10 +151,10 @@ namespace Splined.WindowsGui
                     "Strict Override did not supersede Source Override and retain the global range.");
                 Assert(loaded.SourcePolicies["amazon"].StrictOverride
                     && configText.Contains("strict_override = true"),
-                    "Amazon strict policy default did not round-trip through Windows internal settings.");
+                    "Amazon strict policy default did not round-trip through the portable Config v5 file.");
 
                 ConfigState optionCoverage = loaded.Clone();
-                optionCoverage.ConfigPath = ConfigStore.InternalSettingsLabel;
+                optionCoverage.ConfigPath = ConfigStore.DefaultConfigPath;
                 optionCoverage.Mode = "read";
                 optionCoverage.Verbosity = "trace";
                 optionCoverage.ScanLibraryDir = firstAlbum;
@@ -179,8 +205,9 @@ namespace Splined.WindowsGui
                     && optionReopened.SqliteShared && optionReopened.LogDir == optionCoverage.LogDir
                     && optionReopened.CredentialDir == optionCoverage.CredentialDir,
                     "Python directory options did not round-trip through Config v5.");
-                Assert(optionReopened.ConfigPath == ConfigStore.InternalSettingsLabel,
-                    "Windows v4 settings did not remain in the internal Windows store.");
+                Assert(optionReopened.ConfigPath == ConfigStore.DefaultConfigPath
+                    && File.Exists(ConfigStore.DefaultConfigPath),
+                    "Windows settings did not remain in the portable data\\config.toml store.");
                 string redactedLog = RuntimeLog.Redact("Authorization: Bearer top-secret access_token=also-secret");
                 Assert(!redactedLog.Contains("top-secret") && !redactedLog.Contains("also-secret"),
                     "Runtime diagnostics did not redact authorization and token values.");
@@ -331,13 +358,14 @@ namespace Splined.WindowsGui
                 try { BackupService.Read(backupPath, "wrong-password"); }
                 catch (InvalidOperationException) { wrongPasswordRejected = true; }
                 Assert(wrongPasswordRejected, "Password-protected .spl backup accepted an incorrect password.");
+                VerifyPortableRestoreDeterminism(internalSettings, loaded);
                 string savedConfigBeforeTemporaryRun = ConfigStore.ExportConfigText(ConfigStore.Load());
                 ConfigState temporaryRunState = loaded.Clone();
                 temporaryRunState.Mode = "read";
                 string runtimeConfigText = ConfigStore.ExportConfigText(temporaryRunState);
                 Assert(runtimeConfigText.Contains("mode = \"read\"")
                     && ConfigStore.ExportConfigText(ConfigStore.Load()) == savedConfigBeforeTemporaryRun,
-                    "The in-memory runtime settings handoff changed the saved internal settings.");
+                    "The in-memory runtime settings handoff changed the saved portable settings.");
                 Assert(!Directory.Exists(Path.Combine(ConfigStore.AppRoot, ".splined-runtime")),
                     "The in-memory runtime settings handoff created a portable runtime directory.");
 
@@ -828,8 +856,11 @@ namespace Splined.WindowsGui
                     "UTF-8/Windows-1252 mojibake Album names were not translated to the physical directory.");
                 string stableManifest = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/windows-update.json";
                 string stableArchive = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/splined-windows-x86_64.zip";
+                string stableUpdater = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/splined-update.exe";
                 string stableRelease = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/1.0.18";
                 Assert(WindowsUpdateService.IsApprovedStableManifestUrl(stableManifest)
+                    && WindowsUpdateService.IsApprovedStableArchiveUrl(stableArchive)
+                    && WindowsUpdateService.IsApprovedStableUpdaterUrl(stableUpdater)
                     && WindowsUpdateService.IsApprovedReleasePageUrl(stableRelease)
                     && !WindowsUpdateService.IsApprovedReleasePageUrl(
                         "https://github.com.evil.invalid/scottia/S-P-L-I-N-E-D/releases/tag/1.0.18"),
@@ -838,18 +869,54 @@ namespace Splined.WindowsGui
                     + "{\"draft\":false,\"prerelease\":true,\"tag_name\":\"preview\",\"html_url\":\"https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/preview\",\"assets\":[]},"
                     + "{\"draft\":false,\"prerelease\":false,\"tag_name\":\"1.0.18\",\"html_url\":\"" + stableRelease + "\",\"assets\":["
                     + "{\"name\":\"windows-update.json\",\"browser_download_url\":\"" + stableManifest + "\"},"
-                    + "{\"name\":\"splined-windows-x86_64.zip\",\"browser_download_url\":\"" + stableArchive + "\"}]}]";
+                    + "{\"name\":\"splined-windows-x86_64.zip\",\"browser_download_url\":\"" + stableArchive + "\"},"
+                    + "{\"name\":\"splined-update.exe\",\"browser_download_url\":\"" + stableUpdater + "\"}]}]";
                 WindowsUpdateLocation stableLocation = WindowsUpdateService.SelectStableUpdateLocation(releasesJson);
-                Assert(stableLocation.ManifestUrl == stableManifest && stableLocation.ReleaseUrl == stableRelease,
-                    "Stable update discovery did not select the official archive notification and release page.");
-                WindowsUpdateService.ValidateManifest(new WindowsUpdateManifest
+                Assert(stableLocation.ManifestUrl == stableManifest && stableLocation.ArchiveUrl == stableArchive
+                    && stableLocation.UpdaterUrl == stableUpdater && stableLocation.ReleaseUrl == stableRelease,
+                    "Stable update discovery did not select the complete official automatic-update asset set.");
+                string notificationReleasesJson = "[{\"draft\":false,\"prerelease\":false,\"tag_name\":\"1.0.18\",\"html_url\":\""
+                    + stableRelease + "\",\"assets\":["
+                    + "{\"name\":\"windows-update.json\",\"browser_download_url\":\"" + stableManifest + "\"},"
+                    + "{\"name\":\"splined-windows-x86_64.zip\",\"browser_download_url\":\"" + stableArchive + "\"}]}]";
+                WindowsUpdateLocation notificationLocation = WindowsUpdateService.SelectStableUpdateLocation(notificationReleasesJson);
+                Assert(notificationLocation.ManifestUrl == stableManifest
+                    && notificationLocation.ArchiveUrl == stableArchive
+                    && notificationLocation.UpdaterUrl == null,
+                    "A legacy notification release incorrectly required or inferred an updater asset.");
+                WindowsUpdateManifest notificationOnlyManifest = new WindowsUpdateManifest
                 {
                     schema = 2,
                     channel = "stable",
                     commit = "0123456789abcdef0123456789abcdef01234567",
                     short_commit = "0123456",
                     release_url = stableRelease
-                }, stableLocation);
+                };
+                WindowsUpdateService.ValidateNotificationManifest(notificationOnlyManifest, notificationLocation);
+                Assert(!WindowsUpdateService.IsAutomaticInstallManifest(notificationOnlyManifest, notificationLocation),
+                    "A legacy schema-2 notification manifest was incorrectly promoted to automatic installation.");
+                WindowsUpdateManifest automaticManifest = new WindowsUpdateManifest
+                {
+                    schema = 2,
+                    channel = "stable",
+                    version = "1.0.18",
+                    commit = "0123456789abcdef0123456789abcdef01234567",
+                    short_commit = "0123456",
+                    release_url = stableRelease,
+                    archive_url = stableArchive,
+                    archive_sha256 = "0000000000000000000000000000000000000000000000000000000000000000",
+                    archive_size = 100,
+                    updater_url = stableUpdater,
+                    updater_sha256 = "1111111111111111111111111111111111111111111111111111111111111111",
+                    updater_size = 100,
+                    gui_sha256 = "2222222222222222222222222222222222222222222222222222222222222222",
+                    gui_size = 100,
+                    core_sha256 = "3333333333333333333333333333333333333333333333333333333333333333",
+                    core_size = 100
+                };
+                WindowsUpdateService.ValidateAutomaticManifest(automaticManifest, stableLocation);
+                Assert(WindowsUpdateService.IsAutomaticInstallManifest(automaticManifest, stableLocation),
+                    "The complete schema-2 automatic-update integrity contract was not accepted.");
 
                 loadedUi.HoverEnabled = false;
                 loadedUi.ShowMediaSelector = true;
@@ -1512,7 +1579,7 @@ namespace Splined.WindowsGui
                         "Stacked layout did not preserve independent scrolling for all three work areas.");
                 }
 
-                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, Config v5 and credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
+                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, portable Config v5/UI migration, deterministic two-root selective restore, credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
                 return 0;
             }
             catch (Exception error)
@@ -2119,6 +2186,188 @@ namespace Splined.WindowsGui
                 && ReleaseInfo.HelpUrl == "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/README.md"
                 && ReleaseInfo.ReleasesUrl == "https://github.com/scottia/S-P-L-I-N-E-D/releases/latest",
                 "Repository, Help, and release URLs are not centralized on their stable public targets.");
+        }
+
+        private static void VerifyPortableRestoreDeterminism(string testRoot, ConfigState template)
+        {
+            string sharedRoot = Path.Combine(testRoot, "deterministic-restore-shared");
+            string backupPath = Path.Combine(testRoot, "deterministic-portable-restore.spl");
+            string uncLibrary = @"\\server\share\SPLINED Music";
+            ConfigState backupState = template.Clone();
+            backupState.Mode = "write";
+            backupState.MusicLibrary = uncLibrary;
+            backupState.ScanLibraryDir = uncLibrary + @"\Artist\Album";
+            backupState.CacheDir = Path.Combine(sharedRoot, "database");
+            backupState.TemporaryCacheDir = Path.Combine(sharedRoot, "run-cache");
+            backupState.LogDir = Path.Combine(sharedRoot, "logs");
+            backupState.CredentialDir = Path.Combine(sharedRoot, "credentials");
+            Directory.CreateDirectory(backupState.CacheDir);
+            Directory.CreateDirectory(backupState.CredentialDir);
+            File.WriteAllText(Path.Combine(backupState.CredentialDir, "lastfm.json"), "backup-credential");
+            File.WriteAllText(Path.Combine(backupState.CacheDir, "splined.db"), "backup-database");
+            UiState backupUi = new UiState
+            {
+                Theme = "Light",
+                ShowArtwork = false,
+                MediaArtistFilter = "Backup Artist",
+                MainWidth = 1440,
+                MainHeight = 900
+            };
+            BackupService.Export(backupPath, backupState, backupUi, new BackupSelection
+            {
+                Settings = true,
+                Interface = true,
+                Credentials = true,
+                Database = true,
+                Diagnostics = true
+            }, "");
+
+            string firstRoot = Path.Combine(testRoot, "portable-restore-a");
+            string secondRoot = Path.Combine(testRoot, "portable-restore-b");
+            string firstReport = Path.Combine(testRoot, "portable-restore-a.json");
+            string secondReport = Path.Combine(testRoot, "portable-restore-b.json");
+            Assert(!Directory.Exists(firstRoot) && !Directory.Exists(secondRoot),
+                "Deterministic restore roots were not independently clean.");
+            RunPortableRestoreChild(firstRoot, backupPath, firstReport, "first-installation");
+            RunPortableRestoreChild(secondRoot, backupPath, secondReport, "second-installation");
+
+            string firstConfig = File.ReadAllText(Path.Combine(firstRoot, "data", "config.toml"));
+            string secondConfig = File.ReadAllText(Path.Combine(secondRoot, "data", "config.toml"));
+            string firstUi = File.ReadAllText(Path.Combine(firstRoot, "data", "ui.toml"));
+            string secondUi = File.ReadAllText(Path.Combine(secondRoot, "data", "ui.toml"));
+            Assert(firstConfig == secondConfig && firstUi == secondUi,
+                "The same .spl restore produced path-dependent Config v5 or UI state.");
+
+            JavaScriptSerializer json = new JavaScriptSerializer();
+            Dictionary<string, object> first = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(firstReport));
+            Dictionary<string, object> second = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(secondReport));
+            foreach (Dictionary<string, object> report in new[] { first, second })
+            {
+                Assert(Convert.ToString(report["music_library"]) == uncLibrary
+                    && Convert.ToString(report["scan_library_dir"]) == uncLibrary + @"\Artist\Album"
+                    && Convert.ToString(report["cache_dir"]) == backupState.CacheDir
+                    && Convert.ToString(report["temporary_cache_dir"]) == backupState.TemporaryCacheDir
+                    && Convert.ToString(report["log_dir"]) == backupState.LogDir
+                    && Convert.ToString(report["credential_dir"]) == backupState.CredentialDir
+                    && Convert.ToString(report["theme"]) == "Light"
+                    && Convert.ToString(report["media_artist_filter"]) == "Backup Artist",
+                    "Portable restore changed configured absolute/UNC resources or selected UI state.");
+            }
+            Assert(Convert.ToString(first["credential_sentinel"]) == "first-installation"
+                && Convert.ToString(first["database_sentinel"]) == "first-installation"
+                && Convert.ToString(second["credential_sentinel"]) == "second-installation"
+                && Convert.ToString(second["database_sentinel"]) == "second-installation",
+                "Selective restore changed an unselected credential or database category.");
+        }
+
+        private static void RunPortableRestoreChild(string root, string backupPath, string reportPath, string sentinel)
+        {
+            Directory.CreateDirectory(root);
+            string childExecutable = Path.Combine(root, "splined.exe");
+            File.Copy(Application.ExecutablePath, childExecutable, false);
+            string legacyStore = root + "-legacy-registry-fixture";
+            Directory.CreateDirectory(legacyStore);
+            File.WriteAllText(Path.Combine(legacyStore, "ConfigV5.txt"), "config_version = 5\r\nmode = \"read\"\r\n");
+            File.WriteAllText(Path.Combine(legacyStore, "UiV4.txt"), "[ui]\r\ntheme = \"Dark\"\r\n");
+            ProcessStartInfo start = new ProcessStartInfo
+            {
+                FileName = childExecutable,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                Arguments = "--portable-restore-worker " + QuoteProcessArgument(root)
+                    + " " + QuoteProcessArgument(backupPath)
+                    + " " + QuoteProcessArgument(reportPath)
+                    + " " + QuoteProcessArgument(sentinel)
+            };
+            string previousHome = Environment.GetEnvironmentVariable("SPLINED_HOME");
+            string previousTestStore = Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR");
+            string previousLegacyStore = Environment.GetEnvironmentVariable("SPLINED_LEGACY_SETTINGS_TEST_DIR");
+            try
+            {
+                Environment.SetEnvironmentVariable("SPLINED_HOME", null);
+                Environment.SetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR", null);
+                Environment.SetEnvironmentVariable("SPLINED_LEGACY_SETTINGS_TEST_DIR", legacyStore);
+                using (Process process = Process.Start(start))
+                {
+                    string stdout = process.StandardOutput.ReadToEnd();
+                    string stderr = process.StandardError.ReadToEnd();
+                    if (!process.WaitForExit(30000) || process.ExitCode != 0)
+                        throw new InvalidOperationException("Portable restore child failed. " + stdout + " " + stderr);
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("SPLINED_HOME", previousHome);
+                Environment.SetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR", previousTestStore);
+                Environment.SetEnvironmentVariable("SPLINED_LEGACY_SETTINGS_TEST_DIR", previousLegacyStore);
+            }
+        }
+
+        private static int RunPortableRestoreWorker(string root, string backupPath, string reportPath, string sentinel)
+        {
+            try
+            {
+                Assert(String.Equals(Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar),
+                        ConfigStore.AppRoot.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase),
+                    "The copied portable installation did not derive its root from its own executable path.");
+                string sharedRoot = Path.Combine(Path.GetDirectoryName(backupPath), "deterministic-restore-shared");
+                ConfigState initial = ConfigStore.Defaults();
+                initial.Mode = "read";
+                initial.MusicLibrary = Path.Combine(root, "pre-restore-library");
+                initial.ScanLibraryDir = initial.MusicLibrary;
+                initial.CacheDir = Path.Combine(sharedRoot, "database");
+                initial.TemporaryCacheDir = Path.Combine(sharedRoot, "run-cache");
+                initial.LogDir = Path.Combine(sharedRoot, "logs");
+                initial.CredentialDir = Path.Combine(sharedRoot, "credentials");
+                ConfigStore.Save(initial);
+                ConfigStore.SaveUi(new UiState { Theme = "System", MediaArtistFilter = "Before Restore" });
+                File.WriteAllText(Path.Combine(initial.CredentialDir, "lastfm.json"), sentinel);
+                File.WriteAllText(Path.Combine(initial.CacheDir, "splined.db"), sentinel);
+
+                SplinedBackupPayload payload = BackupService.Read(backupPath, "");
+                BackupService.Restore(payload, new BackupSelection
+                {
+                    Settings = true,
+                    Interface = true,
+                    Credentials = false,
+                    Database = false,
+                    Diagnostics = false
+                }, initial);
+                ConfigState restored = ConfigStore.Load();
+                UiState restoredUi = ConfigStore.LoadUi();
+                Dictionary<string, object> report = new Dictionary<string, object>
+                {
+                    { "root", ConfigStore.AppRoot },
+                    { "config_path", ConfigStore.DefaultConfigPath },
+                    { "ui_path", ConfigStore.UiPath },
+                    { "music_library", restored.MusicLibrary },
+                    { "scan_library_dir", restored.ScanLibraryDir },
+                    { "cache_dir", restored.CacheDir },
+                    { "temporary_cache_dir", restored.TemporaryCacheDir },
+                    { "log_dir", restored.LogDir },
+                    { "credential_dir", restored.CredentialDir },
+                    { "theme", restoredUi.Theme },
+                    { "media_artist_filter", restoredUi.MediaArtistFilter },
+                    { "credential_sentinel", File.ReadAllText(Path.Combine(restored.CredentialDir, "lastfm.json")) },
+                    { "database_sentinel", File.ReadAllText(Path.Combine(restored.CacheDir, "splined.db")) }
+                };
+                File.WriteAllText(reportPath, new JavaScriptSerializer().Serialize(report));
+                return 0;
+            }
+            catch (Exception error)
+            {
+                Console.Error.WriteLine(error);
+                return 1;
+            }
+        }
+
+        private static string QuoteProcessArgument(string value)
+        {
+            if ((value ?? "").IndexOf('"') >= 0)
+                throw new InvalidOperationException("Test paths containing quotes are not supported.");
+            return "\"" + (value ?? "") + "\"";
         }
 
         private static void Assert(bool condition, string message)

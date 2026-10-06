@@ -458,7 +458,7 @@ For Python/Docker installations, back up:
 The WAL/SHM sidecars may exist while SPLINED is running. Stop SPLINED before
 copying the database if a consistent filesystem-level backup is required.
 
-On Windows, **File > Backup > Export Backup...** can include internal settings,
+On Windows, **File > Backup > Export Backup...** can include portable settings,
 interface state, credentials, `splined.db`, and diagnostics independently. Stop
 other writers before exporting an actively shared database.
 

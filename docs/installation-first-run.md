@@ -8,18 +8,25 @@ Config v5; application release identities remain independent.
 1. Download the Windows archive from the
    [latest release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest).
 2. Extract the complete archive into its final application directory.
-3. Keep `splined.exe` and `splined-core.exe` together, then run `splined.exe`.
+3. Keep the extracted `runtime` folder with `splined.exe`, then run
+   `splined.exe`.
 4. Choose the music library and the required SQL database, temporary run cache,
    log, and credential directories, or open Advanced Settings.
 5. Select **Save and Continue**.
 6. Configure provider credentials through **File > Credentials...** as needed.
 7. Start in Read mode against a small selection.
 
-Windows keeps Config v5 and interface state internally for the current user.
-Extraction creates no `config`, `credentials`, `_cache`, `_logs`, or
-`docker_builds` folders and no `config.location` file. The required directories
-are created only at the user-selected locations after settings are saved. No
-executable rename or setup launcher is required.
+The release ZIP contains no `data` directory, so a fresh extraction performs
+true first-run setup. Saving creates portable `data\config.toml` and
+`data\ui.toml` beside `splined.exe`. Moving or copying the complete application
+folder carries those settings; deleting the folder removes them. The selected
+runtime directories are created only after settings are saved. No executable
+rename or setup launcher is required.
+
+When both portable files are initially absent, a compatible build copies the
+former per-path HKCU `ConfigV5`/`UiV4` values once, records migration, and leaves
+the old values intact for manual cleanup. They are not runtime authority after
+migration and cannot reconstruct deleted portable files.
 
 The first-run SQL database, temporary run cache, log, and credential fields default beneath
 `%LOCALAPPDATA%\SPLINED` for the current Windows user, not beside the portable
@@ -27,14 +34,15 @@ executable and not in machine-wide `%PROGRAMDATA%`. These locations remain
 editable before saving; selecting UNC paths does not change the portable
 program files. Existing saved locations are never migrated automatically.
 
-The portable archive contains two fixed executable artifacts with stable roles:
-`splined.exe` is the Windows GUI and `splined-core.exe` is its side-by-side Rust
-worker. Normal startup and scanning do not extract, generate, rename, replace,
-or delete executable files. GUI-to-core Config v5 handoff is memory-only and
-creates no runtime TOML.
+The permanent portable layout has two fixed executable artifacts with stable
+roles: `splined.exe` is the only user-facing root executable and
+`runtime\splined-core.exe` is its shipped Rust worker. The worker is not
+embedded in or extracted from the GUI. Normal startup and scanning do not
+create, extract, rename, replace, or delete executable files. GUI-to-core
+Config v5 handoff is memory-only and creates no runtime TOML.
 
-Use **File > Backup > Export Backup...** for a selective `.spl` backup. Internal
-settings, interface state, credential JSON, SQLite, and diagnostics are
+Use **File > Backup > Export Backup...** for a selective `.spl` backup. Portable
+Config v5, interface state, credential JSON, SQLite, and diagnostics are
 independent options. A password is optional. Double-clicking a registered
 `.spl` file opens SPLINED's restore dialog; no data is restored until the user
 chooses the sections and confirms.
@@ -43,22 +51,45 @@ chooses the sections and confirms.
 
 SPLINED checks official, non-prerelease GitHub release metadata after the
 library opens and through **Help > Check for Update...**. When a newer release
-is available, the GUI can open its official GitHub release page. It does not
-download, stage, execute, install, replace, or relaunch executable files.
-Official Windows releases publish the portable ZIP plus notification-only
-`windows-update.json` metadata.
+is available, choose automatic update, open the official release page, or
+install later. Automatic update occurs only after explicit approval.
+
+The GUI downloads the official portable ZIP and consistently named temporary
+`splined-update.exe`, validates their sizes and SHA-256 digests, and then
+closes. The visible updater waits for the exact GUI/core process IDs, stages
+and verifies the new `splined.exe` and `runtime\splined-core.exe`, performs
+transactional replacement with recovery copies and rollback, verifies the
+installed pair, and restarts the GUI. The restarted GUI confirms its commit and
+both file hashes before removing the finished updater and staging files. The
+helper is a separate release asset; it is never embedded in or extracted from
+`splined.exe`. No CMD or PowerShell update machinery is used.
+
+The added verification fields remain backward-compatible with the existing
+schema 2 notification manifest. Notification-only builds continue to detect
+the release and open its page; after one manual upgrade to this automatic-update
+architecture, later compatible releases can be installed from the prompt. A
+schema 2 document is eligible for automatic installation only when its exact
+release version/commit, archive and updater URLs, sizes, and SHA-256 digests for
+the archive, updater, GUI, and core are all present and validated. Missing
+integrity fields are never inferred or defaulted.
 
 The next-patch release workflow uses the same pinned Rust toolchain and Windows
 dependency/target cache. A warm cache recompiles SPLINED itself without rebuilding
 the complete Rust dependency graph; the first run for a new lockfile or toolchain
 still performs a cold build and may take longer.
 
-To update, close SPLINED, download the current official Windows ZIP from the
-opened release page, and replace both executable artifacts together. Internal
-settings and the selected credential, database, temporary-cache, and log
-directories remain external to the program files and survive replacement.
+For a manual update, close SPLINED, download the official Windows ZIP, and
+replace `splined.exe` plus the complete `runtime` folder together. Automatic
+and manual executable replacement never touches `data\config.toml`,
+`data\ui.toml`, or the selected credential, SQLite/history, temporary-cache,
+and log locations.
 Preserve the selected credential directory and `<scan.cache_dir>/splined.db`,
 or create a `.spl` export first.
+
+The relocated `runtime\splined-core.exe` resolves portable-relative paths from
+the parent directory containing `splined.exe`, so it does not create a second
+`runtime\_cache\splined.db`. Existing absolute, mapped-drive, and UNC paths are
+preserved exactly.
 
 See [Windows portable instructions](../release/README-WINDOWS.txt).
 
@@ -145,7 +176,7 @@ See [SPLINED media database](splined-media-database.md).
 
 ## Persistent and disposable data
 
-On Windows, **File > Backup > Export Backup...** can include internal Config v5,
+On Windows, **File > Backup > Export Backup...** can include portable Config v5,
 interface state, credentials, SQLite, and diagnostics independently. On
 file-backed runtimes, back up `config.toml`, credentials, and the authoritative
 runtime database:

@@ -281,22 +281,14 @@ namespace Splined.WindowsGui
     {
         public static readonly string AppRoot = ResolveAppRoot();
         public static readonly string DefaultUserDataRoot = ResolveDefaultUserDataRoot();
-        public const string InternalSettingsLabel = "Windows internal settings";
+        public const string PortableSettingsLabel = "Portable Config v5";
         private const string ConfigRegistryValue = "ConfigV5";
         private const string UiRegistryValue = "UiV4";
+        private const string PortableMigrationRegistryValue = "PortableFilesMigrated";
         private static readonly string RegistryPath = BuildRegistryPath();
-        // These paths are migration inputs only. Windows v4 never writes them.
-        public static readonly string DefaultConfigPath = Path.Combine(AppRoot, "config", "config.toml");
-        public static readonly string LocatorPath = Path.Combine(AppRoot, "config.location");
-        public static string UiPath
-        {
-            get
-            {
-                string configPath = GetConfigPath();
-                string directory = Path.GetDirectoryName(configPath);
-                return Path.Combine(String.IsNullOrWhiteSpace(directory) ? Path.Combine(AppRoot, "config") : directory, "ui.toml");
-            }
-        }
+        public static readonly string DataRoot = ResolveDataRoot();
+        public static readonly string DefaultConfigPath = Path.Combine(DataRoot, "config.toml");
+        public static readonly string UiPath = Path.Combine(DataRoot, "ui.toml");
 
         private static string ResolveAppRoot()
         {
@@ -316,6 +308,14 @@ namespace Splined.WindowsGui
             return Path.Combine(root, "SPLINED");
         }
 
+        private static string ResolveDataRoot()
+        {
+            string testStore = Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR");
+            return Path.GetFullPath(String.IsNullOrWhiteSpace(testStore)
+                ? Path.Combine(AppRoot, "data")
+                : testStore);
+        }
+
         private static string BuildRegistryPath()
         {
             byte[] bytes = Encoding.UTF8.GetBytes(AppRoot.TrimEnd(Path.DirectorySeparatorChar).ToUpperInvariant());
@@ -326,68 +326,119 @@ namespace Splined.WindowsGui
             }
         }
 
-        private static string ReadInternalText(string name)
+        private static bool ReadLegacySettings(out string config, out string ui, out bool alreadyMigrated)
         {
-            string testStore = Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR");
+            config = null;
+            ui = null;
+            alreadyMigrated = false;
+            string testStore = Environment.GetEnvironmentVariable("SPLINED_LEGACY_SETTINGS_TEST_DIR");
             if (!String.IsNullOrWhiteSpace(testStore))
             {
-                string path = Path.Combine(testStore, name + ".txt");
-                return File.Exists(path) ? File.ReadAllText(path) : null;
+                string configPath = Path.Combine(testStore, ConfigRegistryValue + ".txt");
+                string uiPath = Path.Combine(testStore, UiRegistryValue + ".txt");
+                alreadyMigrated = File.Exists(Path.Combine(testStore, PortableMigrationRegistryValue + ".txt"));
+                config = File.Exists(configPath) ? File.ReadAllText(configPath) : null;
+                ui = File.Exists(uiPath) ? File.ReadAllText(uiPath) : null;
+                return true;
             }
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryPath, false))
-                return key == null ? null : key.GetValue(name) as string;
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryPath, false))
+                {
+                    if (key == null) return false;
+                    alreadyMigrated = Convert.ToInt32(key.GetValue(PortableMigrationRegistryValue, 0), CultureInfo.InvariantCulture) == 1;
+                    config = key.GetValue(ConfigRegistryValue) as string;
+                    ui = key.GetValue(UiRegistryValue) as string;
+                    return true;
+                }
+            }
+            catch { return false; }
         }
 
-        private static void WriteInternalText(string name, string text)
+        private static bool MarkLegacySettingsMigrated()
         {
-            string testStore = Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR");
+            string testStore = Environment.GetEnvironmentVariable("SPLINED_LEGACY_SETTINGS_TEST_DIR");
             if (!String.IsNullOrWhiteSpace(testStore))
             {
                 Directory.CreateDirectory(testStore);
-                File.WriteAllText(Path.Combine(testStore, name + ".txt"), text ?? "");
-                return;
+                File.WriteAllText(Path.Combine(testStore, PortableMigrationRegistryValue + ".txt"), "1");
+                return true;
             }
-            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RegistryPath))
+            try
             {
-                if (key == null) throw new InvalidOperationException("Unable to open the Windows settings store.");
-                key.SetValue(name, text ?? "", RegistryValueKind.String);
-                key.Flush();
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryPath, true))
+                {
+                    if (key == null) return false;
+                    key.SetValue(PortableMigrationRegistryValue, 1, RegistryValueKind.DWord);
+                    key.Flush();
+                    return true;
+                }
+            }
+            catch { return false; }
+        }
+
+        private static void EnsureLegacyMigration()
+        {
+            // Portable files are the sole ongoing authority. Consult the old
+            // per-path HKCU values only when this folder has no portable state.
+            if (File.Exists(DefaultConfigPath) || File.Exists(UiPath)) return;
+
+            string legacyConfig;
+            string legacyUi;
+            bool alreadyMigrated;
+            if (!ReadLegacySettings(out legacyConfig, out legacyUi, out alreadyMigrated)
+                || alreadyMigrated
+                || (String.IsNullOrWhiteSpace(legacyConfig) && String.IsNullOrWhiteSpace(legacyUi)))
+                return;
+
+            bool wroteConfig = false;
+            bool wroteUi = false;
+            try
+            {
+                if (!String.IsNullOrWhiteSpace(legacyConfig))
+                {
+                    WriteTextAtomic(DefaultConfigPath, legacyConfig);
+                    wroteConfig = true;
+                }
+                if (!String.IsNullOrWhiteSpace(legacyUi))
+                {
+                    WriteTextAtomic(UiPath, legacyUi);
+                    wroteUi = true;
+                }
+                if (!MarkLegacySettingsMigrated())
+                    throw new InvalidOperationException("Unable to record completion of the one-time portable settings migration.");
+            }
+            catch
+            {
+                if (wroteConfig && File.Exists(DefaultConfigPath)) File.Delete(DefaultConfigPath);
+                if (wroteUi && File.Exists(UiPath)) File.Delete(UiPath);
+                throw;
             }
         }
 
         public static bool HasSavedSettings
         {
-            get { return !String.IsNullOrWhiteSpace(ReadInternalText(ConfigRegistryValue)); }
+            get
+            {
+                EnsureLegacyMigration();
+                return File.Exists(DefaultConfigPath)
+                    && !String.IsNullOrWhiteSpace(File.ReadAllText(DefaultConfigPath));
+            }
         }
 
         public static string GetConfigPath()
         {
-            try
-            {
-                if (File.Exists(LocatorPath))
-                {
-                    string value = File.ReadAllText(LocatorPath).Trim();
-                    if (value.Length > 0)
-                        return ResolvePortablePath(value);
-                }
-            }
-            catch { }
             return DefaultConfigPath;
         }
 
         public static ConfigState Load()
         {
             ConfigState state = Defaults();
-            state.ConfigPath = InternalSettingsLabel;
-            string text = ReadInternalText(ConfigRegistryValue);
-            bool migratedLegacyConfig = false;
-            if (String.IsNullOrWhiteSpace(text))
-            {
-                string legacyPath = GetConfigPath();
-                if (!File.Exists(legacyPath)) return state;
-                text = File.ReadAllText(legacyPath);
-                migratedLegacyConfig = true;
-            }
+            state.ConfigPath = DefaultConfigPath;
+            EnsureLegacyMigration();
+            if (!File.Exists(DefaultConfigPath)) return state;
+            string text = File.ReadAllText(DefaultConfigPath);
+            if (String.IsNullOrWhiteSpace(text)) return state;
             int version = ReadInt(text, "", "config_version", 0);
             if (version != 5)
                 throw new InvalidOperationException("Unsupported SPLINED configuration version " + version + "; expected Config v5.");
@@ -476,15 +527,14 @@ namespace Splined.WindowsGui
             state.AiSplinedEndpoint = hasAiSplined ? canonicalEndpoint : legacyEndpoint;
             state.AiSplinedMinimumShortSide = hasAiSplined ? canonicalMinimumShortSide : legacyMinimumShortSide;
             state.AiSplinedAllowBelowMinimumOverride = hasAiSplined ? canonicalAllowBelowMinimumOverride : legacyAllowBelowMinimumOverride;
-            state.ConfigPath = InternalSettingsLabel;
-            if (migratedLegacyConfig) Save(state, false);
+            state.ConfigPath = DefaultConfigPath;
             return state;
         }
 
         public static ConfigState Defaults()
         {
             ConfigState state = new ConfigState();
-            state.ConfigPath = InternalSettingsLabel;
+            state.ConfigPath = DefaultConfigPath;
             state.CacheDir = Path.Combine(DefaultUserDataRoot, "cache");
             state.TemporaryCacheDir = Path.Combine(DefaultUserDataRoot, "run-cache");
             state.LogDir = Path.Combine(DefaultUserDataRoot, "logs");
@@ -502,8 +552,8 @@ namespace Splined.WindowsGui
         {
             Validate(state);
             if (createRuntimeDirectories) EnsureRuntimeDirectories(state);
-            state.ConfigPath = InternalSettingsLabel;
-            WriteInternalText(ConfigRegistryValue, BuildConfigText(state));
+            state.ConfigPath = DefaultConfigPath;
+            WriteTextAtomic(DefaultConfigPath, BuildConfigText(state));
         }
 
         private static void EnsureRuntimeDirectories(ConfigState state)
@@ -524,25 +574,22 @@ namespace Splined.WindowsGui
         internal static void ImportConfigText(string text, bool createRuntimeDirectories)
         {
             if (String.IsNullOrWhiteSpace(text)) throw new InvalidDataException("The backup contains no Windows settings.");
-            string previous = ReadInternalText(ConfigRegistryValue);
+            byte[] previous = File.Exists(DefaultConfigPath) ? File.ReadAllBytes(DefaultConfigPath) : null;
             try
             {
-                WriteInternalText(ConfigRegistryValue, text);
+                WriteTextAtomic(DefaultConfigPath, text);
                 ConfigState imported = Load();
                 Validate(imported);
                 if (createRuntimeDirectories) EnsureRuntimeDirectories(imported);
             }
             catch
             {
-                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(RegistryPath))
+                if (previous == null)
                 {
-                    if (key != null)
-                    {
-                        if (previous == null) key.DeleteValue(ConfigRegistryValue, false);
-                        else key.SetValue(ConfigRegistryValue, previous, RegistryValueKind.String);
-                        key.Flush();
-                    }
+                    if (File.Exists(DefaultConfigPath)) File.Delete(DefaultConfigPath);
                 }
+                else
+                    WriteTextAtomic(DefaultConfigPath, Encoding.UTF8.GetString(previous));
                 throw;
             }
         }
@@ -601,12 +648,8 @@ namespace Splined.WindowsGui
             UiState state = new UiState();
             try
             {
-                string text = ReadInternalText(UiRegistryValue);
-                if (String.IsNullOrWhiteSpace(text) && File.Exists(UiPath))
-                {
-                    text = File.ReadAllText(UiPath);
-                    WriteInternalText(UiRegistryValue, text);
-                }
+                EnsureLegacyMigration();
+                string text = File.Exists(UiPath) ? File.ReadAllText(UiPath) : null;
                 if (String.IsNullOrWhiteSpace(text)) return state;
                 state.Theme = ReadString(text, "ui", "theme", "System");
                 state.ShowStatusOnLaunch = ReadBool(text, "ui", "show_status_on_launch", true);
@@ -662,7 +705,7 @@ namespace Splined.WindowsGui
 
         public static void SaveUi(UiState state)
         {
-            WriteInternalText(UiRegistryValue, BuildUiText(state));
+            WriteTextAtomic(UiPath, BuildUiText(state));
         }
 
         internal static string ExportUiText(UiState state)
@@ -673,7 +716,7 @@ namespace Splined.WindowsGui
         internal static void ImportUiText(string text)
         {
             if (String.IsNullOrWhiteSpace(text)) throw new InvalidDataException("The backup contains no interface settings.");
-            WriteInternalText(UiRegistryValue, text);
+            WriteTextAtomic(UiPath, text);
         }
 
         private static string BuildUiText(UiState state)

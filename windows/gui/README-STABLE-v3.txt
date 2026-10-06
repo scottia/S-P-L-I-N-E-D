@@ -41,7 +41,7 @@ Stable Windows release
   with the active Artist's Unprocessed Albums, NONE clears it, and FILTERED
   requires Artist or Album filter text.
 - Main library/right-workspace splitter sizes and Select-panel expansion state
-  are restored from the GUI-local UI state on the next launch.
+  are restored from portable data\ui.toml on the next launch.
 
 Fluent Compact + SPLINED identity
 ---------------------------------
@@ -77,9 +77,14 @@ Package contents
 splined-windows-x86_64.zip contains exactly:
 
     splined.exe
-    splined-core.exe
+    runtime\splined-core.exe
     README-WINDOWS.txt
 
 The fixed WinForms GUI, watermark, and application icon are in splined.exe. The
-fixed Rust worker is splined-core.exe. The archive contains no config.toml,
+fixed Rust worker is runtime\splined-core.exe. The temporary splined-update.exe
+is a separate verified release asset and is not stored in this archive. The archive contains no config.toml,
 credential JSON, cache data, logs, history, or other user data.
+
+Portable Config v5 and UI state are created after extraction beneath data\ as
+config.toml and ui.toml. Moving or copying the complete SPLINED folder carries
+those settings; release updates never stage or replace them.

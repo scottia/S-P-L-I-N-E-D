@@ -218,20 +218,43 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force -Path release-package, release-assets | Out-Null
+          New-Item -ItemType Directory -Force -Path release-package, release-package/runtime, release-assets | Out-Null
           Copy-Item windows/target/release/splined.exe release-package/splined.exe
-          Copy-Item windows/target/release/splined-core.exe release-package/splined-core.exe
+          Copy-Item windows/target/release/splined-core.exe release-package/runtime/splined-core.exe
+          Copy-Item windows/target/release/splined-update.exe release-assets/splined-update.exe
           Copy-Item release/README-WINDOWS.txt release-package/README-WINDOWS.txt
           Compress-Archive -Path "release-package/*" -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
+          $archive = Get-Item release-assets/splined-windows-x86_64.zip
+          $updater = Get-Item release-assets/splined-update.exe
+          $gui = Get-Item release-package/splined.exe
+          $core = Get-Item release-package/runtime/splined-core.exe
           $manifest = [ordered]@{
             schema = 2
             channel = "stable"
+            version = $env:RELEASE_VERSION
             commit = $env:RELEASE_COMMIT
             short_commit = $env:RELEASE_COMMIT.Substring(0, 7)
             published_at = [DateTime]::UtcNow.ToString("o")
             release_url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/$env:RELEASE_VERSION"
+            archive_url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/$env:RELEASE_VERSION/splined-windows-x86_64.zip"
+            archive_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive.FullName).Hash.ToLowerInvariant()
+            archive_size = $archive.Length
+            updater_url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/$env:RELEASE_VERSION/splined-update.exe"
+            updater_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $updater.FullName).Hash.ToLowerInvariant()
+            updater_size = $updater.Length
+            gui_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $gui.FullName).Hash.ToLowerInvariant()
+            gui_size = $gui.Length
+            core_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $core.FullName).Hash.ToLowerInvariant()
+            core_size = $core.Length
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
+
+      - name: Validate Windows update helper
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & windows/target/release/splined-update.exe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "Windows update-helper self-test failed with exit code $LASTEXITCODE" }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -239,6 +262,7 @@ jobs:
           name: splined-windows-x86_64
           path: |
             release-assets/splined-windows-x86_64.zip
+            release-assets/splined-update.exe
             release-assets/windows-update.json
           if-no-files-found: error
 
@@ -376,6 +400,9 @@ jobs:
           release_files=("${archives[@]}")
           if [ -f windows-update.json ]; then
             release_files+=(windows-update.json)
+          fi
+          if [ -f splined-update.exe ]; then
+            release_files+=(splined-update.exe)
           fi
           sha256sum "${release_files[@]}" > SHA256SUMS.txt
           gh release create "$RELEASE_VERSION" \

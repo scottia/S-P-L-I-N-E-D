@@ -1089,7 +1089,7 @@ namespace Splined.WindowsGui
             ToolTip help = ThemeManager.CreateToolTip();
             help.SetToolTip(selectModeGroup, "Matches Python: ALL replaces selection with the active Artist's unprocessed Albums; NONE clears selection; FILTERED requires Artist or Album text and replaces selection with matching unprocessed or processed Albums.");
             help.SetToolTip(automatic, "Auto Scan is optional unattended processing. [All] processes every unprocessed Album plus explicit selections; [Selected] processes only explicit selections. Only a policy-qualified Ideal candidate is accepted automatically. Ideal does not verify visual accuracy.");
-            help.SetToolTip(scan, "Choose one Read or Live Write mode, then use the single LAUNCH button in Artwork Candidates and Preview. Internal settings are not changed and bypass/timeout authority is preserved.");
+            help.SetToolTip(scan, "Choose one Read or Live Write mode, then use the single LAUNCH button in Artwork Candidates and Preview. Portable settings are not changed and bypass/timeout authority is preserved.");
             selectModeGroup.Tag = help;
             automatic.Tag = help;
             scan.Tag = help;
@@ -2071,7 +2071,7 @@ namespace Splined.WindowsGui
             string core = FindCoreExecutable();
             if (core == null)
             {
-                MessageBox.Show(this, "The live SPLINED processing core was not found beside the GUI.", "SPLINED core missing", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "The SPLINED processing core was not found in the runtime folder.", "SPLINED core missing", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 UpdateSelectionControlsCore(false);
                 return;
             }
@@ -3752,7 +3752,7 @@ namespace Splined.WindowsGui
             string core = FindCoreExecutable();
             if (core == null)
             {
-                MessageBox.Show(this, "The SPLINED processing core was not found beside the GUI.",
+                MessageBox.Show(this, "The SPLINED processing core was not found in the runtime folder.",
                     "SPLINED core missing", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
@@ -4861,6 +4861,7 @@ namespace Splined.WindowsGui
         private async Task CheckForUpdateAsync(bool interactive)
         {
             if (updateCheckRunning) return;
+            WindowsUpdatePackage stagedPackage = null;
             updateCheckRunning = true;
             if (checkUpdateMenuItem != null) checkUpdateMenuItem.Enabled = false;
             try
@@ -4885,21 +4886,77 @@ namespace Splined.WindowsGui
                 string published = String.IsNullOrWhiteSpace(manifest.published_at)
                     ? "unknown"
                     : manifest.published_at;
-                DialogResult openRelease = MessageBox.Show(this,
+                if (!update.AutomaticInstallAvailable)
+                {
+                    DialogResult openNotification = MessageBox.Show(this,
+                        "An official Windows release is available.\r\n\r\n"
+                        + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
+                        + "Available commit: " + manifest.short_commit + "\r\n"
+                        + "Published: " + published + "\r\n\r\n"
+                        + "This release has valid notification metadata but does not contain the complete "
+                        + "automatic-update integrity contract. SPLINED will not infer missing URLs, hashes, sizes, or version fields.\r\n\r\n"
+                        + "Open the official GitHub release page for a manual update?",
+                        "SPLINED update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                    if (openNotification == DialogResult.Yes)
+                    {
+                        WindowsUpdateService.OpenReleasePage(manifest.release_url);
+                        RuntimeLog.Write("info", "windows.update.notification_only release=" + manifest.short_commit);
+                    }
+                    return;
+                }
+                DialogResult action = MessageBox.Show(this,
                     "An official Windows release is available.\r\n\r\n"
                     + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
                     + "Available commit: " + manifest.short_commit + "\r\n"
                     + "Published: " + published + "\r\n\r\n"
-                    + "Open the official GitHub release page? SPLINED will not download, install, or run an executable.",
-                    "SPLINED update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                if (openRelease == DialogResult.Yes)
+                    + "Yes: download, verify, install, and restart SPLINED.\r\n"
+                    + "No: open the official GitHub release page.\r\n"
+                    + "Cancel: install later.",
+                    "SPLINED update available", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Information);
+                if (action == DialogResult.No)
                 {
                     WindowsUpdateService.OpenReleasePage(manifest.release_url);
                     RuntimeLog.Write("info", "windows.update.release_page_opened commit=" + manifest.short_commit);
+                    return;
                 }
+                if (action != DialogResult.Yes) return;
+                int coreProcessId = ActiveCoreProcessId();
+                if (running || coreProcessId > 0)
+                {
+                    MessageBox.Show(this,
+                        "Finish or stop the active Album run before installing the update.",
+                        "SPLINED update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                SetStatus("Downloading and verifying Windows update " + manifest.short_commit + "...");
+                progress.Style = ProgressBarStyle.Marquee;
+                progress.Visible = true;
+                stagedPackage = await WindowsUpdateService.DownloadAndStageAsync(update);
+                coreProcessId = ActiveCoreProcessId();
+                if (running || coreProcessId > 0)
+                    throw new InvalidOperationException("A SPLINED core process started while the update was downloading. Stop it before retrying.");
+                RuntimeLog.Write("info", "windows.update.verified current=" + BuildInfo.ShortCommit
+                    + " available=" + manifest.short_commit);
+                MessageBox.Show(this,
+                    "The GUI, processing core, archive, and temporary update helper passed SHA-256 verification.\r\n\r\n"
+                    + "SPLINED will close while the visible updater performs transactional replacement and rollback protection.",
+                    "SPLINED update ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                WindowsUpdateService.LaunchUpdater(stagedPackage, coreProcessId);
+                stagedPackage = null;
+                RuntimeLog.Write("info", "windows.update.launched commit=" + manifest.short_commit);
+                Application.Exit();
             }
             catch (Exception error)
             {
+                if (stagedPackage != null)
+                {
+                    try { WindowsUpdateService.DiscardStagedPackage(stagedPackage); }
+                    catch (Exception cleanupError)
+                    {
+                        RuntimeLog.Write("error", "windows.update.cleanup_failed message=" + cleanupError.Message);
+                    }
+                }
                 if (interactive) SetStatus("Windows update check failed.");
                 RuntimeLog.Write("error", "windows.update.failed type=" + error.GetType().Name
                     + " message=" + error.Message);
@@ -5021,9 +5078,18 @@ namespace Splined.WindowsGui
 
         private string FindCoreExecutable()
         {
-            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "splined-core.exe");
+            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "runtime", "splined-core.exe");
             if (File.Exists(path)) return path;
             return null;
+        }
+
+        private int ActiveCoreProcessId()
+        {
+            try
+            {
+                return currentProcess != null && !currentProcess.HasExited ? currentProcess.Id : 0;
+            }
+            catch { return 0; }
         }
 
         private void BeginAlbumRunStatistics(AlbumInfo album)

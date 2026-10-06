@@ -17,10 +17,12 @@ Expected distributable output:
 
     windows\target\release\splined.exe
     windows\target\release\splined-core.exe
+    windows\target\release\splined-update.exe
 
 BUILD-WINDOWS-GUI.cmd invokes the authoritative Cargo build.
 TEST-WINDOWS-GUI.cmd runs the Config v5, selection, filtering, theme, Help,
-About, and reusable launch-lifecycle regression suite.
+About, one-time portable-settings migration, deterministic two-root selective
+restore, and reusable launch-lifecycle regression suite.
 
 ReleaseInfo.cs is the single Windows GUI version and URL authority:
 
@@ -30,10 +32,14 @@ ReleaseInfo.cs is the single Windows GUI version and URL authority:
 
 The Rust worker consumes the same Config v5 policy, credential-directory,
 history, bypass, timeout, candidate, and artwork behavior used by the GUI.
+Config v5 and UI state live beneath the portable root in data\config.toml and
+data\ui.toml; legacy HKCU values are one-time migration input only.
 `splined.exe` is the fixed WinForms GUI with embedded image/icon resources;
-`splined-core.exe` is the fixed side-by-side processing worker. The GUI never
+The release archive places `splined-core.exe` under runtime as the fixed
+processing worker. The GUI never
 re-invokes itself as `--scan-dir`, and normal runtime never extracts or manages
-an executable file. No local configuration, credentials, cache, logs, history,
+an executable file. The separately published splined-update.exe is temporary
+and runs only after explicit update approval. No local configuration, credentials, cache, logs, history,
 generated build executables, QA captures, or archives belong in source control.
 
 The repository/native release number is independent. A repository release such

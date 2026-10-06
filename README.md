@@ -36,7 +36,7 @@ the selected artwork into the Album folder.
 - 🧭 **Persistent history and bypass state** live in the authoritative SQLite database
 - 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and fast warm startup in Python/Docker
 - ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
-- 🪟 **Windows internal settings** — Config v5 and interface layout do not require external TOML files
+- 🪟 **Portable Windows settings** — `data/config.toml` and `data/ui.toml` move with the application folder
 - 💾 **Selective `.spl` backup** — export/import settings, interface state, credentials, SQLite, or diagnostics with optional password protection
 - 🐳 **Docker image** provides a Linux/server deployment path
 - 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, local `cover.*` preview/resolution, URL-backed candidate preview, and mouse/touch operation
@@ -91,12 +91,14 @@ button in its About dialog.
 
 The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
-internal settings, and selective `.spl` backup/restore.
+portable settings, and selective `.spl` backup/restore.
 
-The fixed Windows `splined.exe` GUI uses the adjacent `splined-core.exe` worker.
-**Help > Check for Update...** checks official release metadata and can open the
-official GitHub release page; the portable application never downloads or runs
-replacement executables. See
+The fixed Windows `splined.exe` GUI uses the shipped
+`runtime\splined-core.exe` worker. **Help > Check for Update...** can download
+and verify an official release after explicit approval, run the visible
+temporary `splined-update.exe`, transactionally replace the GUI/core pair with
+rollback protection, and restart. Ordinary startup and scanning never manage
+executable files. See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
 ---
@@ -281,8 +283,9 @@ All supported runtimes use **Config v5**:
 - [Docker Config v5 example](docker/config.example.toml)
 - [Config v5 reference](docs/config-v5-reference.md)
 
-The Windows GUI stores Config v5 internally and presents its fields through
-**File > Settings...**. Its first-run SQL database, temporary run cache, log, and credential paths default
+The Windows GUI stores Config v5 in `data/config.toml`, stores interface state
+in `data/ui.toml`, and presents its fields through **File > Settings...**. Its
+first-run SQL database, temporary run cache, log, and credential paths default
 beneath `%LOCALAPPDATA%\SPLINED`, remain editable, and are created only after
 Save and Continue. Native portable paths may be application-relative. Docker
 uses container-specific absolute paths while preserving the schema.
@@ -309,7 +312,7 @@ Interactive Python scans use OLED by default. Use `--tui-theme CHALK`, or
 
 A bare native invocation scans the caller's current directory recursively.
 Windows portable users launch `splined.exe`; direct worker/CLI diagnostics use
-`splined-core.exe`.
+`runtime\splined-core.exe`.
 
 ---
 
@@ -343,7 +346,7 @@ are implemented.
 Write mode changes files in Album directories. Test against a copy, staging
 library, backup, or snapshot first.
 
-On Windows, use **File > Backup > Export Backup...** to select internal settings,
+On Windows, use **File > Backup > Export Backup...** to select portable settings,
 interface state, credentials, SQLite, and diagnostics independently. On
 file-backed runtimes, preserve Config v5, the credential directory, and
 `<scan.cache_dir>/splined.db`. The database contains durable completion,
