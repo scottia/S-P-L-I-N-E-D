@@ -1,8 +1,8 @@
 use clap::Parser;
 use splined::candidate::StaticFormat;
 use splined::config::{
-    Config, Mode, Verbosity, config_path, default_toml, load_config, load_config_from,
-    resolve_sources, samples_dir,
+    Config, Mode, Verbosity, config_path, load_config, load_config_from, resolve_sources,
+    samples_dir,
 };
 use splined::config_migration::{MigrationReport, migrate_config_if_needed};
 use splined::credentials::{
@@ -14,7 +14,6 @@ use splined::musicbrainz::{
     resolve_token_path, save_credential as save_musicbrainz_credential,
 };
 use splined::pipeline::{candidate_summary, run_registry_pipeline};
-use splined::portable::{bootstrap_portable_install, running_as_setup_executable};
 use splined::range::Range;
 use splined::scan_runtime::run_scan_library_read_report;
 use splined::source::{ArtworkQuery, ProviderContext, ProviderRegistry, lastfm::LastFm};
@@ -25,20 +24,6 @@ use cli::Cli;
 
 const LASTFM_AUTH_TIMEOUT_SECS: u64 = 60;
 const HELP_COLUMN_WIDTH: usize = 38;
-
-fn setup_only_bootstrap() -> Result<bool, String> {
-    if !running_as_setup_executable()? {
-        return Ok(false);
-    }
-
-    let defaults = default_toml()
-        .map_err(|error| format!("Unable to generate default SPLINED config: {error}"))?;
-    bootstrap_portable_install(&defaults)?;
-
-    // A setup executable is installation machinery only. It must not continue
-    // into config migration, credential discovery, scans, or provider activity.
-    Ok(true)
-}
 
 fn confirm_replace(path: &std::path::Path) -> Result<bool, String> {
     if !path.exists() {
@@ -746,15 +731,6 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
 
 #[tokio::main]
 async fn main() {
-    match setup_only_bootstrap() {
-        Ok(true) => return,
-        Ok(false) => {}
-        Err(error) => {
-            eprintln!("{error}");
-            return;
-        }
-    }
-
     let cli = Cli::parse();
 
     if cli.version {

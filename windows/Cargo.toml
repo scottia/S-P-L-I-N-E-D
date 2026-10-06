@@ -12,7 +12,7 @@ name = "splined"
 path = "src/lib.rs"
 
 [[bin]]
-name = "splined"
+name = "splined-core"
 path = "src/main.rs"
 
 [dependencies]

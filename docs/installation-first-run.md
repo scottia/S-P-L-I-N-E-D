@@ -8,7 +8,7 @@ Config v5; application release identities remain independent.
 1. Download the Windows archive from the
    [latest release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest).
 2. Extract the complete archive into its final application directory.
-3. Run `splined.exe` directly.
+3. Keep `splined.exe` and `splined-core.exe` together, then run `splined.exe`.
 4. Choose the music library and the required SQL database, temporary run cache,
    log, and credential directories, or open Advanced Settings.
 5. Select **Save and Continue**.
@@ -27,11 +27,11 @@ executable and not in machine-wide `%PROGRAMDATA%`. These locations remain
 editable before saving; selecting UNC paths does not change the portable
 program files. Existing saved locations are never migrated automatically.
 
-The single-file launcher keeps its fingerprinted embedded GUI shell in
-`%LOCALAPPDATA%\SPLINED\runtime` so Windows does not repeatedly extract and
-security-scan the same build. Older fingerprinted shells are pruned on start.
-This private executable cache contains no Config v5 values or credentials.
-GUI-to-core Config v5 handoff is memory-only and creates no runtime TOML.
+The portable archive contains two fixed executable artifacts with stable roles:
+`splined.exe` is the Windows GUI and `splined-core.exe` is its side-by-side Rust
+worker. Normal startup and scanning do not extract, generate, rename, replace,
+or delete executable files. GUI-to-core Config v5 handoff is memory-only and
+creates no runtime TOML.
 
 Use **File > Backup > Export Backup...** for a selective `.spl` backup. Internal
 settings, interface state, credential JSON, SQLite, and diagnostics are
@@ -41,41 +41,24 @@ chooses the sections and confirms.
 
 ### Windows upgrade
 
-The Windows updater is built into `splined.exe`. Stable and dev builds check
-their own channel after the library opens and through **Help > Check for
-Update...**. Stable builds select the newest official, non-prerelease SPLINED
-release that contains the paired Windows manifest and updater. Dev builds use
-the temporary rolling `windows-dev` prerelease. Neither channel can consume the
-other channel's assets.
-
-An accepted update is verified against the manifest's SHA-256 and byte count,
-installed beside the existing executable with rollback protection, and then
-restarted. A locked previous executable backup is deleted by deferred cleanup
-after the old process exits, and stale update backups are pruned by the next
-updater as a safety net. Official Windows releases therefore publish all three artifacts:
-the portable ZIP, `windows-update.json`, and `setup-splined.exe`.
-
-This is a complete executable replacement, not an in-place binary patch. The
-rolling workflow uses one optimized Windows build and a reusable Rust cache; it
-does not repeat the full test and static-analysis matrix before each active-dev
-update.
+SPLINED checks official, non-prerelease GitHub release metadata after the
+library opens and through **Help > Check for Update...**. When a newer release
+is available, the GUI can open its official GitHub release page. It does not
+download, stage, execute, install, replace, or relaunch executable files.
+Official Windows releases publish the portable ZIP plus notification-only
+`windows-update.json` metadata.
 
 The next-patch release workflow uses the same pinned Rust toolchain and Windows
 dependency/target cache. A warm cache recompiles SPLINED itself without rebuilding
 the complete Rust dependency graph; the first run for a new lockfile or toolchain
 still performs a cold build and may take longer.
 
-The updater replaces only `splined.exe`. It does not rewrite internal settings,
-the selected credential/database/temporary-cache/log directories, or the configured shared SQLite
-database. An active Album run must be stopped or completed before installation.
-If the download, manifest, size, checksum, replacement, or restart validation
-fails, the GUI reports the failure and leaves persistent application data
-unchanged.
-
-The updater can still be performed manually by closing SPLINED and extracting
-the current official Windows ZIP over the program files. Preserve the selected
-credential directory and `<scan.cache_dir>/splined.db`, or create a `.spl`
-export first.
+To update, close SPLINED, download the current official Windows ZIP from the
+opened release page, and replace both executable artifacts together. Internal
+settings and the selected credential, database, temporary-cache, and log
+directories remain external to the program files and survive replacement.
+Preserve the selected credential directory and `<scan.cache_dir>/splined.db`,
+or create a `.spl` export first.
 
 See [Windows portable instructions](../release/README-WINDOWS.txt).
 

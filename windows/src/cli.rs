@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub config_path: Option<PathBuf>,
 
-    /// Emit the Rust-owned SQLite Select Media snapshot for the embedded GUI
+    /// Emit the Rust-owned SQLite Select Media snapshot for the side-by-side GUI
     #[arg(long, hide = true)]
     pub media_snapshot: bool,
 

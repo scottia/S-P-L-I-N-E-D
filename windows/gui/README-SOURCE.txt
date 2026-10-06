@@ -16,6 +16,7 @@ From the repository root on Windows run:
 Expected distributable output:
 
     windows\target\release\splined.exe
+    windows\target\release\splined-core.exe
 
 BUILD-WINDOWS-GUI.cmd invokes the authoritative Cargo build.
 TEST-WINDOWS-GUI.cmd runs the Config v5, selection, filtering, theme, Help,
@@ -27,17 +28,13 @@ ReleaseInfo.cs is the single Windows GUI version and URL authority:
     Config v5
     https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/README.md
 
-The Rust host/core consumes the same Config v5 policy, credential-directory,
-history, bypass, timeout, candidate, and artwork behavior used by the GUI. The
-single splined.exe embeds the WinForms GUI and its image/icon resources. At
-runtime, the host materializes the GUI only under disposable `_cache\runtime`
-and the GUI launches the same outer splined.exe with redirected streams for
-core operations.
-
-No watermark, application-icon, or core sidecar is required. The executable
-icon and GUI images are embedded at build time. No local configuration,
-credentials, cache, logs, history, generated executables, QA captures, or
-archives belong in source control.
+The Rust worker consumes the same Config v5 policy, credential-directory,
+history, bypass, timeout, candidate, and artwork behavior used by the GUI.
+`splined.exe` is the fixed WinForms GUI with embedded image/icon resources;
+`splined-core.exe` is the fixed side-by-side processing worker. The GUI never
+re-invokes itself as `--scan-dir`, and normal runtime never extracts or manages
+an executable file. No local configuration, credentials, cache, logs, history,
+generated build executables, QA captures, or archives belong in source control.
 
 The repository/native release number is independent. A repository release such
 as 1.0.4 can contain this unchanged Windows v3.0.0 Stable application.

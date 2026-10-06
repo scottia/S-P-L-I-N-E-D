@@ -43,7 +43,6 @@ fn main() {
     println!("cargo:rerun-if-changed=gui/app.ico");
     println!("cargo:rerun-if-changed=gui/app.rc");
     println!("cargo:rerun-if-env-changed=SPLINED_BUILD_COMMIT");
-    println!("cargo:rerun-if-env-changed=SPLINED_UPDATE_CHANNEL");
     for source in GUI_SOURCES {
         println!("cargo:rerun-if-changed=gui/{source}");
     }
@@ -57,15 +56,14 @@ fn main() {
     }
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is not set"));
-    let embedded_gui = out_dir.join("splined-gui.exe");
+    let profile_dir = out_dir
+        .ancestors()
+        .nth(3)
+        .unwrap_or_else(|| panic!("Unable to determine the Cargo profile output directory"));
+    let gui_executable = profile_dir.join("splined.exe");
     let build_info = write_build_info(&manifest_dir, &out_dir);
-    compile_gui(&gui_dir, &embedded_gui, &build_info);
+    compile_gui(&gui_dir, &gui_executable, &build_info);
     compile_native_resources(&gui_dir, &out_dir);
-
-    println!(
-        "cargo:rustc-env=SPLINED_EMBEDDED_GUI={}",
-        embedded_gui.display()
-    );
 }
 
 fn compile_gui(gui_dir: &Path, output_path: &Path, build_info: &Path) {
@@ -95,7 +93,7 @@ fn compile_gui(gui_dir: &Path, output_path: &Path, build_info: &Path) {
 
     run_checked(
         Command::new(&csc).current_dir(gui_dir).args(&arguments),
-        "SPLINED embedded Windows GUI compilation failed",
+        "SPLINED Windows GUI compilation failed",
     );
 }
 
@@ -105,18 +103,13 @@ fn write_build_info(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
         .filter(|value| valid_commit(value))
         .or_else(|| git_commit(manifest_dir))
         .unwrap_or_else(|| "unknown".to_string());
-    let channel = env::var("SPLINED_UPDATE_CHANNEL")
-        .ok()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| matches!(value.as_str(), "stable" | "dev"))
-        .unwrap_or_else(|| "stable".to_string());
     let short_commit = if commit == "unknown" {
         commit.clone()
     } else {
         commit.chars().take(7).collect()
     };
     let source = format!(
-        "namespace Splined.WindowsGui\n{{\n    internal static class BuildInfo\n    {{\n        public const string Commit = \"{commit}\";\n        public const string ShortCommit = \"{short_commit}\";\n        public const string UpdateChannel = \"{channel}\";\n    }}\n}}\n"
+        "namespace Splined.WindowsGui\n{{\n    internal static class BuildInfo\n    {{\n        public const string Commit = \"{commit}\";\n        public const string ShortCommit = \"{short_commit}\";\n    }}\n}}\n"
     );
     let path = out_dir.join("BuildInfo.cs");
     fs::write(&path, source).unwrap_or_else(|error| {
@@ -161,7 +154,10 @@ fn compile_native_resources(gui_dir: &Path, out_dir: &Path) {
             .arg("app.rc"),
         "SPLINED native icon/version resource compilation failed",
     );
-    println!("cargo:rustc-link-arg-bin=splined={}", resource.display());
+    println!(
+        "cargo:rustc-link-arg-bin=splined-core={}",
+        resource.display()
+    );
 }
 
 fn locate_csc() -> Option<PathBuf> {

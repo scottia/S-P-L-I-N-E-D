@@ -32,7 +32,7 @@ part of normal run-cache cleanup.
 Windows derives the file from the browsable **SQL Database Directory** field;
 its **Temporary Run Cache** is independent and may remain local.
 SQLite access, schema validation, refresh, and status updates are owned by the
-Rust core; the embedded C# GUI receives a compact JSON snapshot from that core.
+Rust core; the side-by-side C# GUI receives a compact JSON snapshot from that core.
 It does not link another SQLite library or maintain a separate JSON-derived
 Select Media authority.
 

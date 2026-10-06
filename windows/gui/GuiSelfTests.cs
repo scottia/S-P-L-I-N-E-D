@@ -456,17 +456,37 @@ namespace Splined.WindowsGui
                     {
                         { "index", 1 }, { "decade", "2010s" }, { "release_class", "album" },
                         { "release_artist", "Fixture Artist" }, { "release_title", "Fixture Album" },
+                        { "current", true },
                         { "recording_mbid", "59a0c68f-ec68-418d-a29a-fa54a7d9aea9" },
                         { "artist_mbids", new ArrayList { "291dcfb8-b31c-496a-905b-9955509d75b6" } },
                         { "release_mbid", "5d05694f-2b0f-427e-9df8-78dbc0983681" },
                         { "release_group_mbid", "420c6768-0685-415a-bb59-d6a275121125" },
                         { "url", "https://musicbrainz.org/release/5d05694f-2b0f-427e-9df8-78dbc0983681" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 2 }, { "decade", "2000s" }, { "release_class", "ep" },
+                        { "release_artist", "Various Artists" }, { "release_title", "Fixture EP" },
+                        { "visited", true },
+                        { "release_mbid", "9e8005ec-0ee4-4c64-8431-cb315c2c5742" },
+                        { "url", "https://musicbrainz.org/release/9e8005ec-0ee4-4c64-8431-cb315c2c5742" }
+                    },
+                    new Dictionary<string, object>
+                    {
+                        { "index", 3 }, { "decade", "2000s" }, { "release_class", "album" },
+                        { "release_artist", "Various Artists" }, { "release_title", "Fixture Compilation" },
+                        { "release_mbid", "0c9bcf05-ddb3-4377-aab5-1c0a2264d55a" },
+                        { "url", "https://musicbrainz.org/release/0c9bcf05-ddb3-4377-aab5-1c0a2264d55a" }
                     }
                 };
                 using (FluentForm matchesHost = new FluentForm())
                 {
                     MusicBrainzMatchesPanel matches = new MusicBrainzMatchesPanel(
-                        "Fixture Artist", "Fixture Track", "Fixture Album Artist", "Fixture Album", matchFixture, false, loadedUi.Theme);
+                        "Fixture Artist", "Fixture Track", "Fixture Album Artist", "Fixture Album", matchFixture,
+                        "7b0e3436-afe7-4da7-8d41-b793b8d84b51",
+                        "5f9ee42f-84b1-42bb-a318-09a05b3fcde1",
+                        "ac8e3469-8f18-4ffc-8581-ade501ae0dc5",
+                        false, loadedUi.Theme);
                     matchesHost.Controls.Add(matches);
                     matchesHost.ShowInTaskbar = false;
                     matchesHost.StartPosition = FormStartPosition.Manual;
@@ -477,16 +497,45 @@ namespace Splined.WindowsGui
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Apply IDs")
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Return to Source Results"),
                         "MusicBrainz Matches omitted session-only Artist/Release/Recording authority editing or normal-Album return navigation.");
-                    Assert(Descendants(matches).OfType<Label>().Any(label => label.Name == "musicBrainzCurrentAlbum"
-                        && label.Text.Contains("Fixture Album Artist") && label.Text.Contains("Fixture Album")),
-                        "MusicBrainz Matches did not keep the current Album identity above the result list.");
-                    Assert(Descendants(matches).OfType<TextBox>().Any(box => box.Text == "291dcfb8-b31c-496a-905b-9955509d75b6")
-                        && !Descendants(matches).OfType<TextBox>().Any(box => box.Text.Contains("System.Collections")),
-                        "MusicBrainz Artist ID collections were displayed as a collection type name.");
+                    Assert(!Descendants(matches).OfType<Button>().Any(button => button.Text == "Search Artist / Track")
+                        && Descendants(matches).OfType<Button>().Any(button => button.Text == "Filter by Artist ▼")
+                        && Descendants(matches).OfType<Button>().Any(button => button.Text == "Filter by Release Type ▼"),
+                        "MusicBrainz Matches retained free-text search or omitted the dependent row filters.");
+                    Assert(Descendants(matches).OfType<TextBox>().Any(box => box.Text == "5f9ee42f-84b1-42bb-a318-09a05b3fcde1")
+                        && !Descendants(matches).OfType<TextBox>().Any(box => box.Text == "291dcfb8-b31c-496a-905b-9955509d75b6"),
+                        "MusicBrainz authority fields did not use the queried track authority supplied above the results.");
                     ListView matchList = Descendants(matches).OfType<ListView>().Single();
-                    Assert(matchList.Items.Count >= 2 && matchList.Items[0].Tag == null
-                        && matchList.Items[0].ForeColor.ToArgb() == ThemeManager.CurrentPalette.CategoryMagenta.ToArgb(),
-                        "MusicBrainz decade/release categories did not use the magenta category role.");
+                    Assert(matchList.Items[0].Name == "musicBrainzCurrentAlbumCategory"
+                        && matchList.Items[0].SubItems[1].Text == "[CURRENT ALBUM]"
+                        && matchList.Items[1].Text == "[*]"
+                        && matchList.Items[0].ForeColor.ToArgb() == ThemeManager.CurrentPalette.Warning.ToArgb()
+                        && matchList.Items[1].ForeColor.ToArgb() == ThemeManager.CurrentPalette.Warning.ToArgb(),
+                        "MusicBrainz Matches did not keep one yellow CURRENT ALBUM authority category and [*] row first.");
+                    Assert(matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[0]
+                        && row.ForeColor.ToArgb() == ThemeManager.CurrentPalette.Success.ToArgb())
+                        && matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[1]
+                        && row.ForeColor.ToArgb() == ThemeManager.CurrentPalette.StatusOrange.ToArgb()),
+                        "MusicBrainz current/visited rows did not use green and orange state colors.");
+                    string originalResultUrl = Convert.ToString(((Dictionary<string, object>)matchFixture[0])["url"]);
+                    TextBox releaseAuthority = Descendants(matches).OfType<TextBox>()
+                        .Single(box => box.Text == "ac8e3469-8f18-4ffc-8581-ade501ae0dc5");
+                    releaseAuthority.Text = "4f725973-aaf1-4d0d-a775-0a90ed2a0757";
+                    Descendants(matches).OfType<Button>().Single(button => button.Text == "Apply IDs").PerformClick();
+                    Dictionary<string, object> authorityRow = (Dictionary<string, object>)matchList.Items[1].Tag;
+                    Assert(Convert.ToString(authorityRow["url"]).EndsWith("/4f725973-aaf1-4d0d-a775-0a90ed2a0757")
+                        && Convert.ToString(((Dictionary<string, object>)matchFixture[0])["url"]) == originalResultUrl,
+                        "Apply IDs changed a result URL or failed to update only the authority row link.");
+                    ListViewItem selectedEp = matchList.Items.Cast<ListViewItem>().Single(row => row.Tag == matchFixture[1]);
+                    selectedEp.Selected = true;
+                    matches.ApplyFilterSelection(new[] { "Various Artists" }, new[] { "ep" });
+                    Assert(matchList.Items[0].Name == "musicBrainzCurrentAlbumCategory" && matchList.Items[1].Text == "[*]"
+                        && matchList.Items.Cast<ListViewItem>().Count(row => row.Tag is Dictionary<string, object>
+                            && !Object.ReferenceEquals(row.Tag, authorityRow)) == 1
+                        && matchList.Items.Cast<ListViewItem>().Any(row => row.Tag == matchFixture[1] && row.Selected)
+                        && matchList.Items.Cast<ListViewItem>().Where(row => row.Name == "musicBrainzResultCategory")
+                            .All(row => row.SubItems[1].Text.Contains("[EP]"))
+                        && matches.ReleaseTypeFilterChoices.SequenceEqual(new[] { "ep", "album" }),
+                        "MusicBrainz Artist/Release Type filters did not combine actual row values, preserve selection, or rebuild headings.");
                     string[] previewUrls = MusicBrainzMatchesPanel.ArtworkPreviewUrls((Dictionary<string, object>)matchFixture[0]);
                     Assert(previewUrls.Length == 2
                         && previewUrls[0].Contains("/release-group/420c6768-0685-415a-bb59-d6a275121125/front")
@@ -660,32 +709,30 @@ namespace Splined.WindowsGui
                 string resolvedMojibakeAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { indexedMojibakeAlbum });
                 Assert(resolvedMojibakeAlbum == mojibakeAlbum && Directory.Exists(resolvedMojibakeAlbum),
                     "UTF-8/Windows-1252 mojibake Album names were not translated to the physical directory.");
-                Assert(WindowsUpdateService.IsApprovedManifestUrl(ReleaseInfo.DevUpdateManifestUrl),
-                    "The fixed Windows dev manifest URL is not approved by its own validator.");
-                Assert(WindowsUpdateService.IsApprovedUpdaterUrl(ReleaseInfo.DevUpdateAssetUrl),
-                    "The fixed Windows dev executable URL is not approved by its own validator.");
-                Assert(!WindowsUpdateService.IsApprovedManifestUrl(ReleaseInfo.DevUpdateAssetUrl)
-                    && !WindowsUpdateService.IsApprovedUpdaterUrl(ReleaseInfo.DevUpdateManifestUrl),
-                    "Windows update manifest and executable URL policies are not isolated.");
-                Assert(!WindowsUpdateService.IsApprovedUpdaterUrl(
-                        "https://github.com.evil.invalid/scottia/S-P-L-I-N-E-D/releases/download/windows-dev/setup-splined.exe"),
-                    "The Windows updater accepted an unapproved release host.");
                 string stableManifest = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/windows-update.json";
-                string stableUpdater = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/setup-splined.exe";
+                string stableArchive = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/splined-windows-x86_64.zip";
+                string stableRelease = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/1.0.18";
                 Assert(WindowsUpdateService.IsApprovedStableManifestUrl(stableManifest)
-                    && WindowsUpdateService.IsApprovedStableUpdaterUrl(stableUpdater),
-                    "Official versioned Windows update assets are not approved.");
-                Assert(!WindowsUpdateService.IsApprovedStableManifestUrl(ReleaseInfo.DevUpdateManifestUrl)
-                    && !WindowsUpdateService.IsApprovedStableUpdaterUrl(ReleaseInfo.DevUpdateAssetUrl),
-                    "Stable update policy accepted the rolling dev release.");
+                    && WindowsUpdateService.IsApprovedReleasePageUrl(stableRelease)
+                    && !WindowsUpdateService.IsApprovedReleasePageUrl(
+                        "https://github.com.evil.invalid/scottia/S-P-L-I-N-E-D/releases/tag/1.0.18"),
+                    "Official versioned Windows notification assets or release pages are not isolated to GitHub.");
                 string releasesJson = "["
-                    + "{\"draft\":false,\"prerelease\":true,\"tag_name\":\"preview\",\"assets\":[]},"
-                    + "{\"draft\":false,\"prerelease\":false,\"tag_name\":\"1.0.18\",\"assets\":["
+                    + "{\"draft\":false,\"prerelease\":true,\"tag_name\":\"preview\",\"html_url\":\"https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/preview\",\"assets\":[]},"
+                    + "{\"draft\":false,\"prerelease\":false,\"tag_name\":\"1.0.18\",\"html_url\":\"" + stableRelease + "\",\"assets\":["
                     + "{\"name\":\"windows-update.json\",\"browser_download_url\":\"" + stableManifest + "\"},"
-                    + "{\"name\":\"setup-splined.exe\",\"browser_download_url\":\"" + stableUpdater + "\"}]}]";
+                    + "{\"name\":\"splined-windows-x86_64.zip\",\"browser_download_url\":\"" + stableArchive + "\"}]}]";
                 WindowsUpdateLocation stableLocation = WindowsUpdateService.SelectStableUpdateLocation(releasesJson);
-                Assert(stableLocation.ManifestUrl == stableManifest && stableLocation.UpdaterUrl == stableUpdater,
-                    "Stable update discovery did not select the official paired Windows assets.");
+                Assert(stableLocation.ManifestUrl == stableManifest && stableLocation.ReleaseUrl == stableRelease,
+                    "Stable update discovery did not select the official archive notification and release page.");
+                WindowsUpdateService.ValidateManifest(new WindowsUpdateManifest
+                {
+                    schema = 2,
+                    channel = "stable",
+                    commit = "0123456789abcdef0123456789abcdef01234567",
+                    short_commit = "0123456",
+                    release_url = stableRelease
+                }, stableLocation);
 
                 loadedUi.HoverEnabled = false;
                 loadedUi.ShowMediaSelector = true;

@@ -77,8 +77,9 @@ Package contents
 splined-windows-x86_64.zip contains exactly:
 
     splined.exe
+    splined-core.exe
     README-WINDOWS.txt
 
-The Rust core, WinForms interface, watermark, and application icon are embedded
-in splined.exe. The archive contains no sidecar assets, config.toml, credential
-JSON, cache data, logs, history, or other user data.
+The fixed WinForms GUI, watermark, and application icon are in splined.exe. The
+fixed Rust worker is splined-core.exe. The archive contains no config.toml,
+credential JSON, cache data, logs, history, or other user data.

@@ -6,6 +6,5 @@ namespace Splined.WindowsGui
     {
         public const string Commit = "0000000000000000000000000000000000000000";
         public const string ShortCommit = "0000000";
-        public const string UpdateChannel = "stable";
     }
 }

@@ -396,7 +396,8 @@ environment; it creates no runtime TOML or portable settings folder. Native and
 Python/Docker implementations also validate Config v5; use the Docker example
 for container-specific paths.
 
-The fingerprinted embedded Windows Forms shell is a separate executable cache
-under `%LOCALAPPDATA%\SPLINED\runtime`. It contains no Config v5 values or
-credentials, is reused to avoid repeated extraction/security scanning, and
-prunes stale shells from older builds on startup.
+The Windows Forms GUI is the fixed `splined.exe` release artifact and uses the
+fixed side-by-side `splined-core.exe` worker. Neither artifact is extracted or
+generated at runtime. `%LOCALAPPDATA%\SPLINED` remains data-only and may contain
+settings, credentials, SQLite/history, caches, and logs, but no runtime GUI or
+worker executable cache.

@@ -12,12 +12,16 @@ User-facing Windows behavior is documented in the
 build, packaging, and update implementation details.
 
 The Cargo manifest is the reproducible Windows build entry point. On Windows,
-the build script embeds the WinForms shell, processing core, watermark, and
-application icon into one distributable executable:
+the build script emits two fixed executable artifacts with stable roles:
 
 ```text
 windows/target/release/splined.exe
+windows/target/release/splined-core.exe
 ```
+
+`splined.exe` is the C# Windows Forms GUI, including its watermark and icon
+resources. `splined-core.exe` is the Rust processing worker used for snapshots,
+Album scans, and direct core diagnostics.
 
 Build and validate from the repository root:
 
@@ -30,14 +34,11 @@ cargo build --manifest-path windows/Cargo.toml --locked --release
 ```
 
 `gui/TEST-WINDOWS-GUI.cmd` runs the WinForms Config v5 and lifecycle regression
-suite. At runtime the embedded GUI is materialized only beneath the current
-user's `%LOCALAPPDATA%\SPLINED\runtime` directory; it does not require the
-user-selected artwork cache. The shell filename is derived from its content
-digest, the identical build is reused, and stale older shells are removed on
-startup. No GUI, watermark, icon, or core sidecar is distributed beside
-`splined.exe`. Generated executables, QA images, local settings, credentials,
-cache, logs, and database files are intentionally excluded from version
-control.
+suite. The release archive distributes both executables side by side. The GUI
+always invokes `splined-core.exe`; it never re-invokes itself as a worker.
+Normal startup and scanning never extract, generate, rename, replace, or delete
+an executable. Generated build/QA outputs, local settings, credentials, cache,
+logs, and database files are intentionally excluded from version control.
 
 Windows stores the validated Config v5 document and interface preferences
 in the current user's internal application settings. First run requires the
@@ -170,37 +171,15 @@ manifest or `gui/ReleaseInfo.cs`.
 
 ## Windows updates
 
-The updater is compiled into the Windows application source. Stable builds
-discover the newest official, non-prerelease release containing both
-`windows-update.json` and `setup-splined.exe`. The official release workflow
-publishes those paired assets whenever Windows is selected. A release for only
-another operating system is skipped during Windows update discovery.
+The GUI discovers the newest official, non-prerelease release containing both
+`windows-update.json` and `splined-windows-x86_64.zip`. Notification metadata
+contains the exact release commit and official GitHub release-page URL. A
+release for only another operating system is skipped during Windows update
+discovery.
 
-Stable and dev channels are isolated. Stable builds accept only versioned
-official-release assets and dev builds accept only the fixed rolling dev
-assets. Both require the manifest channel, full commit, byte count, SHA-256,
-and executable URL to agree before installation.
-
-### Rolling dev updates
-
-`.github/workflows/windows-dev-update.yml` is manually dispatched after the
-desired `dev` commit is ready. Ordinary pushes do not rebuild or publish the
-executable. The workflow restores its Rust build cache, performs one optimized
-build, and publishes a commit-aware `setup-splined.exe` and manifest to the
-rolling `windows-dev` prerelease. The manifest contains the exact commit, byte
-count, and SHA-256 digest. Dev-channel builds check that manifest after startup
-and through **Help > Check for Update...**. The public rolling prerelease is a
-temporary compatibility endpoint for installed dev builds, not the stable
-distribution path.
-
-The rolling updater deliberately does not repeat the full test, clippy, and GUI
-QA matrix before its distribution build. Those checks remain developer/CI
-validation; the dev updater's job is a fast, deterministic full-executable
-replacement for an active test environment.
-
-The GUI accepts only the fixed HTTPS repository release asset, validates the
-manifest and executable before launch, and refuses installation during an
-active Album run. The setup process waits briefly for the prior Windows process
-to release `splined.exe`, preserves a rollback copy during replacement, starts
-the verified executable, and leaves Config v5, credentials, cache/SQLite, and
-logs untouched.
+Update checking is notification-only. The GUI can open the validated official
+GitHub release page, but it never downloads, stages, executes, installs,
+self-replaces, relaunches, or cleans up executable files. The former rolling
+Windows executable updater workflow is removed. Users close SPLINED and replace
+both fixed program artifacts from the official archive; Config v5, credentials,
+cache/SQLite, history, and logs remain external and untouched.

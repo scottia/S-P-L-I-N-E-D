@@ -1,7 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use clap::Parser;
-use sha2::{Digest, Sha256};
 use splined::candidate::{Candidate, StaticFormat};
 use splined::config::{
     Config, Mode, Verbosity, config_path, load_config, load_config_from, load_config_text,
@@ -19,162 +18,17 @@ use splined::musicbrainz::{
     resolve_token_path, save_credential as save_musicbrainz_credential,
 };
 use splined::pipeline::{candidate_summary, run_registry_pipeline};
-use splined::portable::{
-    APP_ROOT_ENV, cleanup_stale_upgrade_files, finish_setup_executable, running_as_setup_executable,
-};
 use splined::range::Range;
 use splined::scan_runtime::run_scan_library_read_report;
 use splined::source::{ArtworkQuery, ProviderContext, ProviderRegistry, lastfm::LastFm};
-use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
 mod cli;
 use cli::Cli;
 
 const LASTFM_AUTH_TIMEOUT_SECS: u64 = 60;
 const HELP_COLUMN_WIDTH: usize = 38;
-
-#[cfg(windows)]
-const EMBEDDED_GUI: &[u8] = include_bytes!(env!("SPLINED_EMBEDDED_GUI"));
-#[cfg(windows)]
-const CORE_PATH_ENV: &str = "SPLINED_CORE_PATH";
-
-#[cfg(windows)]
-fn launch_embedded_gui(restore_path: Option<&Path>) -> Result<i32, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
-    let app_root = executable
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
-    let runtime_root = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let runtime_dir = runtime_root.join("SPLINED").join("runtime");
-    fs::create_dir_all(&runtime_dir).map_err(|error| {
-        format!(
-            "Unable to create SPLINED runtime cache {}: {error}",
-            runtime_dir.display()
-        )
-    })?;
-
-    let digest = Sha256::digest(EMBEDDED_GUI);
-    let fingerprint = digest[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let gui_path = runtime_dir.join(format!("splined-gui-{fingerprint}.exe"));
-    cleanup_stale_embedded_gui_files(&runtime_dir, Some(&gui_path));
-    if !embedded_file_matches(&gui_path, &digest)? {
-        let staged = runtime_dir.join(format!(
-            ".splined-gui-{fingerprint}-{}.tmp",
-            std::process::id()
-        ));
-        fs::write(&staged, EMBEDDED_GUI).map_err(|error| {
-            format!(
-                "Unable to stage the embedded SPLINED interface {}: {error}",
-                staged.display()
-            )
-        })?;
-        if let Err(error) = fs::rename(&staged, &gui_path) {
-            let _ = fs::remove_file(&staged);
-            return Err(format!(
-                "Unable to install the embedded SPLINED interface {}: {error}",
-                gui_path.display()
-            ));
-        }
-    }
-
-    let mut command = Command::new(&gui_path);
-    command
-        .current_dir(&app_root)
-        .env(APP_ROOT_ENV, &app_root)
-        .env(CORE_PATH_ENV, &executable);
-    if let Some(path) = restore_path {
-        command.arg("--restore").arg(path);
-    }
-    let status = command
-        .status()
-        .map_err(|error| format!("Unable to start the SPLINED interface: {error}"))?;
-    Ok(status.code().unwrap_or(1))
-}
-
-#[cfg(windows)]
-fn cleanup_stale_embedded_gui_files(runtime_dir: &Path, keep: Option<&Path>) {
-    let Ok(entries) = fs::read_dir(runtime_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if keep.is_some_and(|current| current == path) {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-            continue;
-        };
-        if (name.starts_with("splined-gui-") && name.ends_with(".exe"))
-            || (name.starts_with(".splined-gui-") && name.ends_with(".tmp"))
-        {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn embedded_file_matches(path: &Path, expected_digest: &[u8]) -> Result<bool, String> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let bytes = fs::read(path).map_err(|error| {
-        format!(
-            "Unable to inspect cached SPLINED interface {}: {error}",
-            path.display()
-        )
-    })?;
-    Ok(&Sha256::digest(&bytes)[..] == expected_digest)
-}
-
-#[cfg(windows)]
-fn show_gui_error(message: &str) {
-    use std::os::raw::c_void;
-    use std::ptr;
-
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn MessageBoxW(
-            window: *mut c_void,
-            text: *const u16,
-            caption: *const u16,
-            kind: u32,
-        ) -> i32;
-    }
-
-    let text = message.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-    let caption = "S:P:L:I:N:E:D v3.0.0 Stable"
-        .encode_utf16()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    unsafe {
-        MessageBoxW(ptr::null_mut(), text.as_ptr(), caption.as_ptr(), 0x10);
-    }
-}
-
-fn setup_only_bootstrap() -> Result<bool, String> {
-    if !running_as_setup_executable()? {
-        return Ok(false);
-    }
-
-    // Windows v4 setup installs only the application. The GUI prompts for all
-    // required runtime locations on first launch and creates those locations
-    // only after the operator saves them.
-    finish_setup_executable()?;
-
-    // A setup executable is installation machinery only. It must not continue
-    // into config migration, credential discovery, scans, or provider activity.
-    Ok(true)
-}
 
 fn confirm_replace(path: &std::path::Path) -> Result<bool, String> {
     if !path.exists() {
@@ -456,7 +310,7 @@ fn print_dynamic_help(config: Option<&Config>) {
 
     println!("SPLINED artwork discovery and evaluation engine");
     println!();
-    println!("Usage: splined.exe [OPTIONS]");
+    println!("Usage: splined-core.exe [OPTIONS]");
     println!();
 
     println!("Media Directories:");
@@ -903,45 +757,6 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
 
 #[tokio::main]
 async fn main() {
-    match setup_only_bootstrap() {
-        Ok(true) => return,
-        Ok(false) => {}
-        Err(error) => {
-            #[cfg(windows)]
-            show_gui_error(&error);
-            #[cfg(not(windows))]
-            eprintln!("{error}");
-            return;
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        if let Ok(executable) = std::env::current_exe()
-            && let Some(parent) = executable.parent()
-        {
-            // The newly installed process is the first point at which the old
-            // executable is guaranteed to be unlocked on Windows.
-            cleanup_stale_upgrade_files(parent);
-        }
-        let arguments = std::env::args_os().collect::<Vec<_>>();
-        let restore_path = arguments.get(1).map(Path::new).filter(|path| {
-            arguments.len() == 2
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("spl"))
-        });
-        if arguments.len() == 1 || restore_path.is_some() {
-            match launch_embedded_gui(restore_path) {
-                Ok(0) => {}
-                Ok(code) => std::process::exit(code),
-                Err(error) => show_gui_error(&error),
-            }
-            return;
-        }
-    }
-
     let cli = Cli::parse();
 
     if cli.version {

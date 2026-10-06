@@ -1,20 +1,22 @@
 # Windows Guide
 
 This is the single user guide for the native Windows application in the current
-S:P:L:I:N:E:D release. It covers the Windows Forms interface, embedded Rust
+S:P:L:I:N:E:D release. It covers the Windows Forms interface, side-by-side Rust
 processing core, Config v5 settings, SQLite media database, updates, backup,
 and troubleshooting. Historical Windows build notes belong in GitHub Releases,
 not in the current product documentation.
 
 ## Portable application model
 
-The Windows release is distributed as one `splined.exe`. The application can
-be extracted to any writable final folder and that folder can later be moved or
-replaced without moving the media library or selected persistent data.
+The Windows release is distributed as a fixed `splined.exe` GUI with a fixed
+side-by-side `splined-core.exe` worker. The application can be extracted to any
+writable final folder and that folder can later be moved or replaced without
+moving the media library or selected persistent data.
 
 | Data | Authority and location | Lifecycle |
 | --- | --- | --- |
-| Program | `splined.exe` in the selected portable folder | Replaced by an update |
+| GUI program | `splined.exe` in the selected portable folder | Replaced manually from an official release |
+| Processing worker | `splined-core.exe` beside the GUI | Replaced together with the GUI |
 | Config v5 | Current user's internal Windows application settings | Persists until reset or restored |
 | Interface state | Current user's internal Windows application settings | Persists theme, layout, filters, and selection |
 | SQL database | User-selected database directory; first-run default is `%LOCALAPPDATA%\SPLINED\cache` | Persistent; contains `splined.db` |
@@ -22,7 +24,6 @@ replaced without moving the media library or selected persistent data.
 | Logs | User-selected log directory; first-run default is `%LOCALAPPDATA%\SPLINED\logs` | Diagnostic and disposable |
 | Credentials | User-selected credential directory; first-run default is `%LOCALAPPDATA%\SPLINED\credentials` | Persistent and sensitive |
 | GUI-to-core configuration | Private child-process environment | Memory-only; disappears with the child process |
-| Embedded GUI shell | `%LOCALAPPDATA%\SPLINED\runtime` | Fingerprinted private cache reused by the same build; stale older shells are removed on start |
 
 `%PROGRAMDATA%` is not used for per-user defaults because it is shared by all
 users on the computer. `%LOCALAPPDATA%` is the correct Windows per-user data
@@ -37,7 +38,8 @@ file-backed Config v5 document.
 
 ## First run
 
-1. Extract the complete Windows archive into its final folder.
+1. Extract the complete Windows archive into its final folder, keeping
+   `splined.exe` and `splined-core.exe` together.
 2. Run `splined.exe`.
 3. Choose the required music-library, SQL database, temporary run cache, log,
    and credential directories.
@@ -447,10 +449,19 @@ Matches are grouped by newest-to-oldest decade and by populated official
 release type: Album, Single, EP, Soundtrack, Compilation, and any additional
 type returned by MusicBrainz.
 
-A fixed **CURRENT ALBUM · Artist • Album** row remains immediately above the
-scrollable result list. It identifies the Album being refined even when a
-representative track or a curated-compilation track supplied the Recording
-search terms.
+A yellow `[CURRENT ALBUM]` category and exactly one yellow `[*]` authority row
+remain first in the list. This row is separate from the ordinary MusicBrainz
+results and represents the queried track's Artist, Release, and Recording MBIDs
+shown in the authority fields. It is never derived from the first result and is
+never hidden by filtering. Selecting it and choosing **Open MB Page** opens its
+current Release MBID.
+
+**Filter by Artist ▼** and **Filter by Release Type ▼** open Ctrl multi-select
+lists; press Enter to apply. Artist choices come from the ordinary result
+Artist column, including `Various Artists`. Release Type choices narrow to the
+active Artist selection. A visible ordinary row must satisfy both filters;
+empty release-type headings are omitted and headings are rebuilt from the
+filtered rows. The authority category and row remain fixed above them.
 
 Rows show:
 
@@ -472,18 +483,21 @@ the release-group preview size. Preview bytes are bounded and cached for the
 active Windows session; previewing does not rerun provider discovery or alter
 source ranking.
 
-Selecting a row runs the ordinary configured artwork providers for that
-release. **Back to MB Matches** returns to the same cached list. The current
-release is green and previously inspected releases are blue. Re-selecting an
+Selecting an ordinary row runs the configured artwork providers for that
+release. **Back to MB Matches** returns to the same cached list. The most
+recently visited ordinary release is green and earlier visited releases are
+orange. Re-selecting an
 inspected row restores its source candidates, resolution evidence, diagnostics,
 and deterministic ordering without repeating provider discovery or image
 downloads. **Return to Source Results** restores the original Album results.
 
 The Matches workspace also has session-only Artist, Release, and Recording MBID
-fields. **Apply IDs** requires canonical UUIDs and lets the Rust core validate
-available Recording/Artist and Recording/Release relationships before
-rebuilding the list. These fields choose search authority for the current
-session; SPLINED does not write edited MBIDs into the media tags.
+fields. **Apply IDs** requires canonical UUIDs and updates only the separate
+`[*]` authority row and its **Open MB Page** Release-ID target. Ordinary result
+rows, numbering, URLs, visited state, selection, and filter state are unchanged.
+The removed **Search Artist / Track** action no longer starts a second free-text
+result branch. Automatic MusicBrainz lookup/search used by compilation matching
+remains available when track authority is missing.
 
 For iTunes, exact official Apple Music/iTunes relationships from MusicBrainz
 are tried before ordinary Artist/Album searches. Current no-slug Album URLs and
@@ -603,22 +617,17 @@ redacted and must never be logged.
 
 ## Updates
 
-**Help > Check for Update...** uses the channel compiled into the application:
+**Help > Check for Update...** checks the newest official non-prerelease GitHub
+release containing the Windows portable archive and notification metadata. If
+the release differs from the installed build, SPLINED offers to open the
+official GitHub release page.
 
-- Stable accepts only an official non-prerelease release with the matching
-  Windows manifest and setup asset.
-- Dev accepts only the rolling `windows-dev` prerelease and exact dev manifest.
-
-The updater verifies channel, commit, byte count, SHA-256, and asset URL before
-replacement. It refuses installation during an active Album run, preserves a
-rollback copy during replacement, restarts the verified executable, and leaves
-internal settings plus the configured database, temporary cache, logs, and credentials
-unchanged. The rollback executable is removed after the old process unlocks it;
-the restarted application also prunes a stale `.splined-backup-*` as a safety
-net. It replaces the whole executable; it is not a source-code patcher.
-
-Ordinary pushes do not publish the rolling dev build. The corresponding GitHub
-workflow is manually dispatched after the desired commit is ready.
+The portable application never downloads, stages, executes, installs,
+self-replaces, relaunches, or cleans up replacement executables. Close SPLINED,
+download the official archive in the browser, and replace `splined.exe` and
+`splined-core.exe` together. Internal settings and the configured database,
+temporary cache, logs, and credentials remain external and survive program-file
+replacement.
 
 ## Troubleshooting
 

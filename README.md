@@ -93,10 +93,10 @@ The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
 internal settings, and selective `.spl` backup/restore.
 
-The Windows updater is compiled into `splined.exe`. Stable builds discover
-verified updater assets from official versioned releases; `dev` builds use the
-isolated rolling test channel. Both expose **Help > Check for Update...** and
-notify the operator when their channel advances. See
+The fixed Windows `splined.exe` GUI uses the adjacent `splined-core.exe` worker.
+**Help > Check for Update...** checks official release metadata and can open the
+official GitHub release page; the portable application never downloads or runs
+replacement executables. See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
 ---
@@ -136,7 +136,7 @@ Default Docker path:
 Windows derives the same filename from its browsable **SQL Database
 Directory**. Its separate **Temporary Run Cache** holds downloaded and derived
 candidate images and may remain local even when SQLite is shared over UNC. The
-Rust core owns SQLite access and supplies the embedded GUI with a compact JSON
+Rust core owns SQLite access and supplies the side-by-side GUI with a compact JSON
 projection; the GUI does not maintain a second database or recursively rebuild
 Select Media before first paint. Set `[scan].sqlite_shared = true` only when
 the same physical database is intentionally opened through multiple OS or
@@ -308,7 +308,8 @@ Interactive Python scans use OLED by default. Use `--tui-theme CHALK`, or
 [Python Ratatui TUI guide](docs/ratatui-tui.md).
 
 A bare native invocation scans the caller's current directory recursively.
-Windows portable users can invoke `splined.exe`.
+Windows portable users launch `splined.exe`; direct worker/CLI diagnostics use
+`splined-core.exe`.
 
 ---
 

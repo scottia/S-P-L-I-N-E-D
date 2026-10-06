@@ -1825,8 +1825,8 @@ async fn run_normal_musicbrainz_browser(
         cache_dir,
     } = context;
     let (recording_mbid, artist_mbids) = track_authority(track);
-    let mut use_search = recording_mbid.is_none();
-    let mut matches = match_cache
+    let use_search = recording_mbid.is_none();
+    let matches = match_cache
         .browser_matches(
             musicbrainz,
             recording_mbid.as_deref(),
@@ -1855,39 +1855,6 @@ async fn run_normal_musicbrainz_browser(
             }
             gui_events::MusicBrainzMatchDecision::Use(_) => {
                 return Err("Selected MusicBrainz match does not exist.".to_string());
-            }
-            gui_events::MusicBrainzMatchDecision::Search => {
-                use_search = true;
-                matches = match_cache
-                    .browser_matches(musicbrainz, None, &[], &track.artist, &track.title)
-                    .await?;
-                continue;
-            }
-            gui_events::MusicBrainzMatchDecision::EditAuthority {
-                recording_mbid,
-                artist_mbids,
-                release_mbid,
-            } => {
-                match match_cache
-                    .edited_authority_matches(
-                        musicbrainz,
-                        &recording_mbid,
-                        &artist_mbids,
-                        &release_mbid,
-                        &track.artist,
-                        &track.title,
-                    )
-                    .await
-                {
-                    Ok(edited) => matches = edited,
-                    Err(error) => {
-                        gui_events::emit(json!({ "event": "musicbrainz_authority_error",
-                            "album_path": album.path, "message": error }));
-                        continue;
-                    }
-                }
-                use_search = recording_mbid.trim().is_empty();
-                continue;
             }
             gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
                 return Ok(NormalBrowserOutcome::ReturnToSources);
@@ -2037,6 +2004,7 @@ fn emit_normal_musicbrainz_matches(
     searched: bool,
     resolutions: &std::collections::HashMap<String, String>,
 ) {
+    let (authority_recording, authority_artists) = track_authority(track);
     let items = matches
         .iter()
         .enumerate()
@@ -2058,6 +2026,9 @@ fn emit_normal_musicbrainz_matches(
         "artist": track.artist, "title": track.title, "searched": searched,
         "album_artist": track.album_artist.as_deref().unwrap_or(&track.artist),
         "album": track.album.as_deref().unwrap_or(""),
+        "authority_recording_mbid": authority_recording.as_deref().unwrap_or(""),
+        "authority_artist_mbids": authority_artists.join(", "),
+        "authority_release_mbid": track.musicbrainz_album_id.as_deref().unwrap_or(""),
         "compilation_track": false, "items": items }),
     );
 }
@@ -2235,67 +2206,6 @@ async fn run_compilation_album(
                     }
                     gui_events::MusicBrainzMatchDecision::Use(_) => {
                         return Err("Selected MusicBrainz match does not exist.".to_string());
-                    }
-                    gui_events::MusicBrainzMatchDecision::Search => {
-                        used_search = true;
-                        matches = match_cache
-                            .artist_title_matches(musicbrainz, &track.artist, &track.title)
-                            .await?;
-                        if matches.is_empty() {
-                            result.unresolved += 1;
-                            record_compilation_progress(
-                                config,
-                                &album.path,
-                                tracks.len(),
-                                completed,
-                            )?;
-                            gui_events::emit(
-                                json!({ "event": "compilation_track_unresolved", "track_path": track.path,
-                                "artist": track.artist, "title": track.title, "reason": "MusicBrainz Artist/Title search returned no supported releases" }),
-                            );
-                            break 'match_selection;
-                        }
-                        continue;
-                    }
-                    gui_events::MusicBrainzMatchDecision::EditAuthority {
-                        recording_mbid,
-                        artist_mbids,
-                        release_mbid,
-                    } => {
-                        match match_cache
-                            .edited_authority_matches(
-                                musicbrainz,
-                                &recording_mbid,
-                                &artist_mbids,
-                                &release_mbid,
-                                &track.artist,
-                                &track.title,
-                            )
-                            .await
-                        {
-                            Ok(edited) => matches = edited,
-                            Err(error) => {
-                                gui_events::emit(json!({ "event": "musicbrainz_authority_error",
-                                    "album_path": album.path, "track_path": track.path,
-                                    "message": error }));
-                                continue;
-                            }
-                        }
-                        used_search = recording_mbid.trim().is_empty();
-                        if matches.is_empty() {
-                            result.unresolved += 1;
-                            record_compilation_progress(
-                                config,
-                                &album.path,
-                                tracks.len(),
-                                completed,
-                            )?;
-                            gui_events::emit(json!({ "event": "compilation_track_unresolved",
-                                "track_path": track.path, "artist": track.artist, "title": track.title,
-                                "reason": "Edited MusicBrainz authority returned no supported release" }));
-                            break 'match_selection;
-                        }
-                        continue;
                     }
                     gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
                         result.unresolved += 1;
@@ -2592,6 +2502,7 @@ fn emit_musicbrainz_matches(
     current_release: Option<&str>,
     searched: bool,
 ) {
+    let (authority_recording, authority_artists) = track_authority(track);
     let items = matches.iter().enumerate().map(|(index, item)| json!({
         "index": index + 1, "recording_mbid": item.recording_mbid, "recording_title": item.recording_title,
         "recording_artist": item.recording_artist, "artist_mbids": item.artist_mbids,
@@ -2608,6 +2519,9 @@ fn emit_musicbrainz_matches(
         "artist": track.artist, "title": track.title, "searched": searched,
         "album_artist": track.album_artist.as_deref().unwrap_or(&track.artist),
         "album": track.album.as_deref().unwrap_or(""),
+        "authority_recording_mbid": authority_recording.as_deref().unwrap_or(""),
+        "authority_artist_mbids": authority_artists.join(", "),
+        "authority_release_mbid": track.musicbrainz_album_id.as_deref().unwrap_or(""),
         "compilation_track": true, "items": items }),
     );
 }
