@@ -25,3 +25,17 @@
   cannot install public updates.
 - The portable Windows ZIP now contains only `splined.exe` and
   `README-WINDOWS.txt`; `data\` is created after first-run save or migration.
+- Corrected Select Media status colors to Blue/Incomplete,
+  Orange/Processed, Red/Bypassed, and Purple/Timeout, while retaining the
+  separate Artist aggregate colors.
+- Restored Select `[ALL]`, `[FILTERED]`, and `[NONE]`, Artist selection cascade,
+  Ctrl additive selection, temporary bypass confirmation, timeout protection,
+  and Auto Scan `[ALL]`/`[SELECTED]` queue semantics.
+- Bound every Album in a multi-Album run to its own indexed path and SQLite key,
+  preventing later results from being written through the focused Album's
+  identity.
+- Restored `.spl` Windows shell association and startup Restore routing without
+  making Registry state an authority for portable Config v5 or UI settings.
+- Aligned the Windows Cargo/Tauri version with the root project version. Release
+  provisioning now advances the current source major/minor line and validates
+  Windows signing prerequisites before creating a release tag.

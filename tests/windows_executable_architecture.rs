@@ -111,6 +111,12 @@ fn portable_release_and_official_update_contract_exclude_durable_state() {
 
     assert!(configuration.contains("\"createUpdaterArtifacts\": true"));
     assert!(configuration.contains("\"updater\""));
+    assert!(configuration.contains("\"fileAssociations\""));
+    assert!(configuration.contains("\"ext\": [\"spl\"]"));
+    assert!(source("windows/src/tauri_app.rs").contains("startup_backup_path"));
+    let shell = source("windows/src/windows_shell.rs");
+    assert!(shell.contains(r"Software\Classes\.spl"));
+    assert!(shell.contains(r"shell\open\command"));
     assert!(hooks.contains("SPLINED_PORTABLE_ROOT"));
     assert!(hooks.contains("Abort"));
     assert!(hooks.contains("SetOutPath $INSTDIR"));

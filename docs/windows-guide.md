@@ -23,20 +23,38 @@ creates `data\config.toml` and `data\ui.toml`.
 
 The left pane reads the authoritative SQLite media index and groups Albums by
 Artist. Artist, Album, Folder Status, and Show Tracks controls filter the view.
-Folder colors retain their existing meanings. Checked Albums form the scan
-selection; focus and explicit selection are separate:
+Album colors are White/Unprocessed, Blue/Incomplete, Orange/Processed,
+Red/Bypassed, and Purple/Timeout. Green and Blue Artist markers retain the
+Artist Complete and Artist Contains Bypass meanings.
 
-- clicking an Album or track changes preview/focus only;
+A plain Album click replaces the current Album selection; Ctrl+Click toggles
+it additively. Selecting an Artist cascades to its eligible Albums. Select
+`[ALL]` applies to the active Artist, Select `[FILTERED]` applies to Albums
+matching the active text filters, and Select `[NONE]` clears the transient
+selection. Processed Albums require direct or filtered selection for deliberate
+reprocessing. Bypassed Albums require confirmation for a temporary run-only
+override, while timeout-active Albums remain protected.
+
+Track focus and explicit targeting remain separate:
+
+- clicking a track changes preview/focus only;
 - checking a track intentionally targets that exact track;
-- checking or launching the Album clears the explicit track target and starts
+- selecting or launching the Album clears the explicit track target and starts
   normal Album resume.
 
 Selection history controls live at the right edge of the Media Selection filter
 bar and remain visible as the pane is resized.
 
 READ performs a fully evaluated dry run. LIVE WRITE may install selected
-artwork. Auto Scan accepts only policy-eligible automatic decisions; otherwise
-the reusable LAUNCH / WAITING / STOP lifecycle pauses for input.
+artwork. Auto Scan `[SELECTED]` uses only the explicit queue. Auto Scan `[ALL]`
+adds every unprocessed/incomplete Album without bypassing protected states.
+Auto Scan accepts only policy-eligible automatic decisions; otherwise the
+reusable LAUNCH / WAITING / STOP lifecycle pauses for input.
+
+Every queued Album carries its own indexed Album path and SQLite key into the
+in-process Rust scan context. A multi-Album batch therefore records each result
+against that Album's own database identity rather than the currently focused
+row.
 
 ## Scan activity and candidates
 
@@ -120,6 +138,12 @@ Selective `.spl` export supports Config v5, interface state, credentials,
 SQLite, and diagnostics. Optional password protection remains compatible with
 the established format. Restore validates its envelope and contents, then uses
 recoverable file replacement.
+
+The Windows shell association for `.spl` is intentionally separate from
+Config/UI authority. SPLINED registers the portable executable as the backup
+opener, and the Tauri Windows package declares the same association. Opening an
+existing `.spl` file launches the selective Restore surface with that path
+pre-filled.
 
 For the same backup and category selection, two clean portable directories
 produce equivalent Config v5 and UI state. Selected categories overwrite their

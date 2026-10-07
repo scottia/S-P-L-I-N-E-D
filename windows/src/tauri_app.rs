@@ -14,6 +14,7 @@ use splined::windows_backup::{
     BackupSelection, export_backup as export_spl_backup, read_backup,
     restore_backup as restore_spl_backup,
 };
+use splined::windows_shell::register_backup_file_association;
 use splined::windows_state::{
     PortableState, UiState, load_portable_state, save_config_text, save_ui_state, ui_state_to_text,
 };
@@ -50,18 +51,44 @@ impl Default for DesktopState {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ScanAlbumRequest {
+    path: String,
+    indexed_album_path: String,
+    indexed_album_key: Option<String>,
+    compilation_track_path: Option<String>,
+    #[serde(default)]
+    bypass_override: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ScanRequest {
-    album_paths: Vec<String>,
+    albums: Vec<ScanAlbumRequest>,
     mode: String,
     review_required: bool,
     auto_ideal: bool,
-    compilation_track_path: Option<String>,
     fallback_album: Option<String>,
     fallback_artist: Option<String>,
-    indexed_album_path: Option<String>,
-    indexed_album_key: Option<String>,
-    #[serde(default)]
-    bypass_overrides: Vec<String>,
+}
+
+fn scan_context_for_album(
+    album: &ScanAlbumRequest,
+    fallback_album: Option<String>,
+    fallback_artist: Option<String>,
+) -> ScanBridgeContext {
+    ScanBridgeContext {
+        compilation_track_path: album.compilation_track_path.as_deref().map(PathBuf::from),
+        fallback_album,
+        fallback_artist,
+        indexed_album_path: Some(PathBuf::from(
+            if album.indexed_album_path.trim().is_empty() {
+                &album.path
+            } else {
+                &album.indexed_album_path
+            },
+        )),
+        indexed_album_key: album.indexed_album_key.clone(),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +111,25 @@ fn updater_public_key() -> Option<&'static str> {
 #[tauri::command]
 fn bootstrap() -> Result<PortableState, String> {
     load_portable_state()
+}
+
+fn backup_path_from_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Option<PathBuf> {
+    let values = args.into_iter().skip(1).collect::<Vec<_>>();
+    let candidate = match values.as_slice() {
+        [path] => Some(PathBuf::from(path)),
+        [flag, path] if flag == "--restore" => Some(PathBuf::from(path)),
+        _ => None,
+    }?;
+    let is_backup = candidate
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("spl"));
+    (is_backup && candidate.is_file()).then_some(candidate)
+}
+
+#[tauri::command]
+fn startup_backup_path() -> Option<String> {
+    backup_path_from_args(std::env::args_os()).map(|path| path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -144,7 +190,7 @@ fn start_scan(
     state: State<'_, DesktopState>,
     request: ScanRequest,
 ) -> Result<(), String> {
-    if request.album_paths.is_empty() {
+    if request.albums.is_empty() {
         return Err("Select at least one Album before launching a scan.".to_string());
     }
     if state
@@ -173,14 +219,13 @@ fn start_scan(
         .inspect_err(|_| {
             state.scan_running.store(false, Ordering::SeqCst);
         })?;
-    gui_events::set_bypass_overrides(request.bypass_overrides.iter().map(PathBuf::from));
-    gui_events::set_scan_context(ScanBridgeContext {
-        compilation_track_path: request.compilation_track_path.map(PathBuf::from),
-        fallback_album: request.fallback_album,
-        fallback_artist: request.fallback_artist,
-        indexed_album_path: request.indexed_album_path.map(PathBuf::from),
-        indexed_album_key: request.indexed_album_key,
-    });
+    gui_events::set_bypass_overrides(
+        request
+            .albums
+            .iter()
+            .filter(|album| album.bypass_override)
+            .map(|album| PathBuf::from(&album.path)),
+    );
 
     let event_app = app.clone();
     std::thread::spawn(move || {
@@ -209,12 +254,17 @@ fn start_scan(
         };
 
         let mut error = None;
-        for album_path in request.album_paths {
+        for album in request.albums {
             if gui_events::cancelled() {
                 break;
             }
+            gui_events::set_scan_context(scan_context_for_album(
+                &album,
+                request.fallback_album.clone(),
+                request.fallback_artist.clone(),
+            ));
             let mut album_config = config.clone();
-            album_config.scan.scan_library_dir = album_path;
+            album_config.scan.scan_library_dir = album.path;
             if let Err(run_error) =
                 runtime.block_on(run_scan_library_read_report(&album_config, &sources))
             {
@@ -479,6 +529,9 @@ async fn install_update(app: AppHandle, state: State<'_, DesktopState>) -> Resul
 
 pub fn run() -> Result<(), String> {
     let layout = app_layout()?;
+    if let Ok(executable) = std::env::current_exe() {
+        let _ = register_backup_file_association(&executable);
+    }
     // The official updater's installer inherits this value and the project
     // hook uses it to replace the current portable binary in place.
     unsafe { std::env::set_var("SPLINED_PORTABLE_ROOT", &layout.root) };
@@ -489,6 +542,7 @@ pub fn run() -> Result<(), String> {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            startup_backup_path,
             save_config,
             save_ui,
             export_backup,
@@ -520,4 +574,75 @@ pub fn run() -> Result<(), String> {
     builder
         .run(tauri::generate_context!())
         .map_err(|error| format!("Unable to run the SPLINED desktop application: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_batch_album_builds_its_own_sqlite_identity_context() {
+        let first = ScanAlbumRequest {
+            path: r"D:\Music\Artist A\Album A".into(),
+            indexed_album_path: r"D:\Music\Artist A\Album A".into(),
+            indexed_album_key: Some("album-key-a".into()),
+            compilation_track_path: None,
+            bypass_override: false,
+        };
+        let second = ScanAlbumRequest {
+            path: r"D:\Music\Artist B\Album B".into(),
+            indexed_album_path: r"D:\Music\Artist B\Album B".into(),
+            indexed_album_key: Some("album-key-b".into()),
+            compilation_track_path: None,
+            bypass_override: false,
+        };
+
+        let first_context = scan_context_for_album(&first, None, None);
+        let second_context = scan_context_for_album(&second, None, None);
+        assert_eq!(
+            first_context.indexed_album_path.as_deref(),
+            Some(Path::new(&first.indexed_album_path))
+        );
+        assert_eq!(
+            first_context.indexed_album_key.as_deref(),
+            Some("album-key-a")
+        );
+        assert_eq!(
+            second_context.indexed_album_path.as_deref(),
+            Some(Path::new(&second.indexed_album_path))
+        );
+        assert_eq!(
+            second_context.indexed_album_key.as_deref(),
+            Some("album-key-b")
+        );
+        assert_ne!(first_context, second_context);
+    }
+
+    #[test]
+    fn spl_file_association_arguments_open_only_existing_backup_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let backup = directory.path().join("portable-state.spl");
+        fs::write(&backup, "fixture").unwrap();
+
+        assert_eq!(
+            backup_path_from_args(["splined.exe".into(), backup.clone().into_os_string()]),
+            Some(backup.clone())
+        );
+        assert_eq!(
+            backup_path_from_args([
+                "splined.exe".into(),
+                "--restore".into(),
+                backup.clone().into_os_string(),
+            ]),
+            Some(backup)
+        );
+        assert_eq!(
+            backup_path_from_args(["splined.exe".into(), "missing.spl".into()]),
+            None
+        );
+        assert_eq!(
+            backup_path_from_args(["splined.exe".into(), "not-a-backup.zip".into()]),
+            None
+        );
+    }
 }

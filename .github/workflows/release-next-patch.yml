@@ -26,8 +26,34 @@ env:
   RUST_TOOLCHAIN: "1.99.0"
 
 jobs:
+  release-preflight:
+    name: Validate release prerequisites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Windows signing material before creating a tag
+        if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
+        shell: bash
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_PUBLISHER: ${{ secrets.WINDOWS_CERTIFICATE_PUBLISHER }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in WINDOWS_CERTIFICATE_BASE64 WINDOWS_CERTIFICATE_PASSWORD WINDOWS_CERTIFICATE_PUBLISHER TAURI_UPDATER_PUBLIC_KEY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required Windows release signing material is unavailable: $name"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+
   prepare-release:
     name: Create next patch tag
+    needs: release-preflight
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,8 +124,16 @@ jobs:
           windows_source_version = tuple(
               map(int, windows_source_match.group(1).split("."))
           )
+          if windows_source_version != source_version:
+              raise SystemExit(
+                  "Root and Windows package versions must match before release provisioning"
+              )
 
-          baseline = max([source_version, windows_source_version, *versions])
+          compatible_versions = [
+              version for version in versions
+              if version[:2] == source_version[:2]
+          ]
+          baseline = max([source_version, *compatible_versions])
           release_version = f"{baseline[0]}.{baseline[1]}.{baseline[2] + 1}"
           if release_version in tags or f"v{release_version}" in tags:
               raise SystemExit(f"Release tag already exists: {release_version}")

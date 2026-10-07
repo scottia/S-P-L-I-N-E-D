@@ -43,7 +43,15 @@ selected in Config v5.
 
 When no portable state exists, a legacy ConfigV5/UiV4 pair may be read once and
 written into the portable files. The legacy values are not deleted and are not
-used as runtime authority afterward. The `.spl` shell association is separate.
+used as runtime authority afterward. The `.spl` shell association is separate:
+the portable application registers its current executable as the backup opener,
+and the Windows package declares the same association. Opening a backup starts
+the selective Restore surface; it does not restore categories automatically.
+
+The Windows Cargo and Tauri versions must match the root package version before
+release provisioning. Patch releases advance only within that source
+major/minor line, so an unrelated or abandoned higher-major tag cannot silently
+change the next public version.
 
 ## Backup and restore
 
