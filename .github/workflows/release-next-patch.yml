@@ -253,8 +253,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & windows/target/release/splined-update.exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "Windows update-helper self-test failed with exit code $LASTEXITCODE" }
+          $process = Start-Process -FilePath "windows/target/release/splined-update.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Windows update-helper self-test failed with exit code $($process.ExitCode)" }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
