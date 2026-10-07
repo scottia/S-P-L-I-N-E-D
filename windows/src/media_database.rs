@@ -1156,6 +1156,69 @@ pub fn completed_compilation_track_paths(
     Ok(completed)
 }
 
+pub fn compilation_resume_track(
+    config: &Config,
+    album_path: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let (connection, mapper) = runtime_connection_and_mapper(config)?;
+    let canonical_album = mapper.to_canonical(&album_path.to_string_lossy())?;
+    let cache_key = compilation_resume_cache_key(&canonical_album);
+    let payload = connection
+        .query_row(
+            "SELECT payload_json FROM cache_entries WHERE cache_key=? AND cache_type='compilation_resume'",
+            [cache_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(db_error("read compilation resume cursor"))?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    let canonical_track = serde_json::from_str::<String>(&payload)
+        .map_err(|error| format!("Unable to parse compilation resume cursor: {error}"))?;
+    Ok(Some(PathBuf::from(mapper.to_local(&canonical_track)?)))
+}
+
+pub fn record_compilation_resume_track(
+    config: &Config,
+    album_path: &Path,
+    track_path: Option<&Path>,
+) -> Result<(), String> {
+    if config.mode == crate::config::Mode::Read {
+        return Ok(());
+    }
+    let (connection, mapper) = runtime_connection_and_mapper(config)?;
+    let canonical_album = mapper.to_canonical(&album_path.to_string_lossy())?;
+    let cache_key = compilation_resume_cache_key(&canonical_album);
+    if let Some(track_path) = track_path {
+        let canonical_track = mapper.to_canonical(&track_path.to_string_lossy())?;
+        let payload = serde_json::to_string(&canonical_track)
+            .map_err(|error| format!("Unable to serialize compilation resume cursor: {error}"))?;
+        let now = sqlite_now(&connection)?;
+        connection
+            .execute(
+                "INSERT INTO cache_entries(cache_key, cache_type, album_key, payload_json, splined_version, created_at, updated_at) \
+                 VALUES(?, 'compilation_resume', NULL, ?, ?, ?, ?) \
+                 ON CONFLICT(cache_key) DO UPDATE SET cache_type=excluded.cache_type, album_key=NULL, \
+                 payload_json=excluded.payload_json, splined_version=excluded.splined_version, updated_at=excluded.updated_at",
+                params![cache_key, payload, env!("CARGO_PKG_VERSION"), now, now],
+            )
+            .map_err(db_error("write compilation resume cursor"))?;
+    } else {
+        connection
+            .execute(
+                "DELETE FROM cache_entries WHERE cache_key=? AND cache_type='compilation_resume'",
+                [cache_key],
+            )
+            .map_err(db_error("clear compilation resume cursor"))?;
+    }
+    Ok(())
+}
+
+fn compilation_resume_cache_key(canonical_album: &str) -> String {
+    format!("compilation-resume:{}", short_hash(canonical_album))
+}
+
 pub fn record_compilation_artwork_application(
     config: &Config,
     application: CompilationArtworkApplication<'_>,
@@ -2680,6 +2743,33 @@ mod tests {
             Some(r#"{"sources":{"itunes":{"selected":2}}}"#.to_string())
         );
         assert!(!temp.path().join("_history").exists());
+    }
+
+    #[test]
+    fn compilation_resume_cursor_round_trips_through_canonical_sqlite_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Various Artists").join("Compilation");
+        let track = album.join("03 - Current.mp3");
+        let mut config = Config::default();
+        config.mode = crate::config::Mode::Write;
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let connection = open_database(&database_path(&config.scan.cache_dir), false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')",
+            params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now],
+        ).unwrap();
+        drop(connection);
+
+        record_compilation_resume_track(&config, &album, Some(&track)).unwrap();
+        assert_eq!(
+            compilation_resume_track(&config, &album).unwrap(),
+            Some(track)
+        );
+        record_compilation_resume_track(&config, &album, None).unwrap();
+        assert_eq!(compilation_resume_track(&config, &album).unwrap(), None);
     }
 
     #[test]

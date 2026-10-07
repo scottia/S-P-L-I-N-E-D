@@ -19,9 +19,10 @@ use crate::local_artwork::{
     embedded_candidate, inspect_local_preflight,
 };
 use crate::media_database::{
-    CompilationArtworkApplication, RuntimeArtworkMaterial, completed_compilation_track_paths,
-    find_local_compilation_artwork, record_album_outcome_from_runtime,
-    record_compilation_artwork_application, record_compilation_progress,
+    CompilationArtworkApplication, RuntimeArtworkMaterial, compilation_resume_track,
+    completed_compilation_track_paths, find_local_compilation_artwork,
+    record_album_outcome_from_runtime, record_compilation_artwork_application,
+    record_compilation_progress, record_compilation_resume_track,
 };
 use crate::musicbrainz::MusicBrainzClient;
 use crate::pipeline::{
@@ -2140,10 +2141,16 @@ async fn run_compilation_album(
         tracks.to_vec()
     };
     let targeted_edit = requested_track.is_some();
+    let resume_track = if targeted_edit {
+        None
+    } else {
+        compilation_resume_track(config, &album.path)?
+    };
     gui_events::emit(json!({
         "event": "compilation_started", "album_path": album.path,
         "total_tracks": tracks.len(),
         "targeted_track": requested_track,
+        "resume_track": resume_track,
         "message": if targeted_edit {
             "Reopening one selected compilation track for embedded-art review; folder cover files are untouched."
         } else {
@@ -2164,6 +2171,7 @@ async fn run_compilation_album(
     } else {
         completed_compilation_track_paths(config, &album.path, &identities)?
     };
+    let resume_index = compilation_resume_start_index(&tracks, resume_track.as_deref());
     let mut completed = already_completed.len();
     let mut result = CompilationRunResult::default();
     // Keep every inspected release available for the duration of this Album.
@@ -2171,9 +2179,16 @@ async fn run_compilation_album(
     // downloads, and ranking is restored from the original deterministic run.
     let mut source_results_cache = std::collections::HashMap::<String, CachedPipelineResult>::new();
 
-    for (track_index, track) in tracks.iter().enumerate() {
+    for (track_index, track) in tracks.iter().enumerate().skip(resume_index) {
         if gui_events::cancelled() {
             break;
+        }
+        if !targeted_edit {
+            // The current track remains the restart point until processing advances
+            // to the next loop iteration. Stop/error therefore resumes at the exact
+            // decision that was visible, while the completion ledger remains the
+            // authority for already-written tracks.
+            record_compilation_resume_track(config, &album.path, Some(&track.path))?;
         }
         if compilation_track_is_already_complete(&track.path, &already_completed, targeted_edit) {
             gui_events::emit(
@@ -2609,6 +2624,9 @@ async fn run_compilation_album(
     }
 
     record_compilation_progress(config, &album.path, tracks.len(), completed)?;
+    if !targeted_edit && !gui_events::cancelled() {
+        record_compilation_resume_track(config, &album.path, None)?;
+    }
     result.failed = gui_events::cancelled();
     gui_events::emit(
         json!({ "event": "album_completed", "album_path": album.path,
@@ -2626,6 +2644,24 @@ fn compilation_track_is_already_complete(
     targeted_edit: bool,
 ) -> bool {
     !targeted_edit && completed_paths.contains(track_path)
+}
+
+fn compilation_resume_start_index(
+    tracks: &[LocalTrackEvidence],
+    resume_track: Option<&Path>,
+) -> usize {
+    let Some(resume_track) = resume_track else {
+        return 0;
+    };
+    tracks
+        .iter()
+        .position(|track| {
+            track
+                .path
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&resume_track.to_string_lossy())
+        })
+        .unwrap_or(0)
 }
 
 fn emit_musicbrainz_matches(
@@ -3670,6 +3706,38 @@ mod tests {
             &completed,
             true,
         ));
+    }
+
+    #[test]
+    fn compilation_resume_cursor_restarts_at_the_interrupted_track() {
+        let tracks = ["01.mp3", "02.mp3", "03.mp3", "04.mp3"]
+            .into_iter()
+            .map(|name| LocalTrackEvidence {
+                path: PathBuf::from("album").join(name),
+                title: String::new(),
+                artist: String::new(),
+                album: None,
+                album_artist: None,
+                musicbrainz_album_id: None,
+                musicbrainz_track_id: None,
+                musicbrainz_artist_id: None,
+                compilation: None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            compilation_resume_start_index(
+                &tracks,
+                Some(PathBuf::from("album").join("03.mp3").as_path()),
+            ),
+            2
+        );
+        assert_eq!(
+            compilation_resume_start_index(
+                &tracks,
+                Some(PathBuf::from("album").join("missing.mp3").as_path()),
+            ),
+            0
+        );
     }
 
     #[test]

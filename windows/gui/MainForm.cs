@@ -174,7 +174,6 @@ namespace Splined.WindowsGui
         private ToolStripMenuItem checkUpdateMenuItem;
         private ToolStripMenuItem showArtworkMenuItem;
         private ToolStripMenuItem showMediaSelectorMenuItem;
-        private Button mediaSelectorVisibilityToggle;
         private Button mediaSelectorExpandToggle;
         private Control mediaSelectorExpandedContent;
         private Control mediaSelectorCollapsedRail;
@@ -586,7 +585,7 @@ namespace Splined.WindowsGui
             TableLayoutPanel row = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 4,
+                ColumnCount = 3,
                 RowCount = 1,
                 Margin = new Padding(0),
                 Padding = new Padding(0)
@@ -594,7 +593,6 @@ namespace Splined.WindowsGui
             row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 28));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 48));
             row.Controls.Add(new Label
             {
                 Text = "Media Library Selection",
@@ -609,36 +607,17 @@ namespace Splined.WindowsGui
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(0, 1, 0, 0)
             }, 1, 0);
-            mediaSelectorVisibilityToggle = new SpectrumToggleButton
-            {
-                Name = "mediaSelectorVisibilityToggle",
-                Text = "«",
-                CenterText = true,
-                Dock = DockStyle.Fill,
-                Margin = new Padding(2),
-                Padding = new Padding(0),
-                Font = ThemeManager.UiFont(ThemeFontRole.AppTitle),
-                AccessibleName = "Hide Media Album Selector"
-            };
-            ToolTip tip = ThemeManager.CreateToolTip();
-            tip.SetToolTip(mediaSelectorVisibilityToggle, "Hide the Media Album Selector. Restore it from View > Show Media Album Selector.");
-            mediaSelectorVisibilityToggle.Tag = tip;
-            mediaSelectorVisibilityToggle.Click += delegate { SetMediaSelectorVisible(false, true); };
-            row.Controls.Add(mediaSelectorVisibilityToggle, 3, 0);
             return row;
         }
 
         private void StyleMediaSelectorVisibilityToggle()
         {
-            foreach (Button button in new[] { mediaSelectorVisibilityToggle, mediaSelectorExpandToggle })
-            {
-                if (button == null) continue;
-                object metadata = button.Tag;
-                button.Tag = "primary";
-                ThemeManager.StyleButton(button, uiState.Theme);
-                button.Tag = metadata;
-                button.Padding = new Padding(0);
-            }
+            if (mediaSelectorExpandToggle == null) return;
+            object metadata = mediaSelectorExpandToggle.Tag;
+            mediaSelectorExpandToggle.Tag = "primary";
+            ThemeManager.StyleButton(mediaSelectorExpandToggle, uiState.Theme);
+            mediaSelectorExpandToggle.Tag = metadata;
+            mediaSelectorExpandToggle.Padding = new Padding(0);
         }
 
         private void SetMediaSelectorVisible(bool visible, bool save)
@@ -915,16 +894,26 @@ namespace Splined.WindowsGui
             outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             outer.RowStyles.Add(new RowStyle(SizeType.Absolute, CollapsedMediaFilterHeight));
             outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            mediaFilterToggle = new SpectrumToggleButton
+            SpectrumToggleButton filterToggle = new SpectrumToggleButton
             {
                 Name = "mediaFilterToggle",
                 Text = "Select Media  ▾",
+                TrailingText = "«",
+                TrailingFont = ThemeManager.UiFont(ThemeFontRole.AppTitle),
+                TrailingWidth = 46,
                 Dock = DockStyle.Fill,
                 Height = CollapsedMediaFilterHeight,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
-                Margin = new Padding(0, 0, 0, 2)
+                Margin = new Padding(0, 0, 0, 2),
+                AccessibleName = "Select Media filters; hide Media Album Selector with the trailing double-left arrow"
             };
+            filterToggle.TrailingClick += delegate { SetMediaSelectorVisible(false, true); };
+            ToolTip selectorTip = ThemeManager.CreateToolTip();
+            selectorTip.SetToolTip(filterToggle,
+                "Select Media filters. The double-left arrow hides the Media Album Selector; use the double-right arrow to restore it.");
+            filterToggle.Tag = selectorTip;
+            mediaFilterToggle = filterToggle;
             mediaFilterToggle.Click += delegate { SetMediaFilterExpanded(mediaFilterPanel == null || !mediaFilterPanel.Visible); };
             mediaFilterPanel = new FluentCardPanel { Name = "mediaFilterPanel", Dock = DockStyle.Fill, Padding = new Padding(9), VisualRole = CardVisualRole.SpectrumNested };
             TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
@@ -4654,9 +4643,9 @@ namespace Splined.WindowsGui
         {
             displayedAlbum = running && activeLaunchAlbum != null ? activeLaunchAlbum : album;
             candidatePreviewActive = false;
-            bool embeddedCompilationRun = running && displayedAlbum != null
+            bool embeddedCompilationPreview = displayedAlbum != null
                 && displayedAlbum.Compilation && displayedAlbum.CompilationTrackArtworkEligible;
-            if (!embeddedCompilationRun)
+            if (!embeddedCompilationPreview || !running)
             {
                 focusedCompilationTrack = null;
                 focusedCompilationEmbeddedArtworkPath = "";
@@ -4667,10 +4656,13 @@ namespace Splined.WindowsGui
                 focusedCompilationTrack = null;
                 focusedCompilationEmbeddedArtworkPath = "";
             }
-            compilationTrackPreviewActive = embeddedCompilationRun;
-            if (!running) RefreshAlbumCoverFacts(displayedAlbum);
+            compilationTrackPreviewActive = embeddedCompilationPreview;
+            if (!running && embeddedCompilationPreview)
+                ClearCandidates();
+            else if (!running)
+                RefreshAlbumCoverFacts(displayedAlbum);
             RenderDisplayedAlbum();
-            if (!running)
+            if (!running && !embeddedCompilationPreview)
                 ShowStandaloneExistingCoverEditor(displayedAlbum);
         }
 

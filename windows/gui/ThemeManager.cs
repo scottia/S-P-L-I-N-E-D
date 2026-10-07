@@ -1324,7 +1324,24 @@ namespace Splined.WindowsGui
     {
         private bool spectrumHot;
         private bool spectrumPressed;
+        private bool trailingHot;
+        private bool trailingPressed;
+        private int trailingWidth = 46;
         internal bool CenterText { get; set; }
+        internal string TrailingText { get; set; }
+        internal Font TrailingFont { get; set; }
+        internal int TrailingWidth { get { return trailingWidth; } set { trailingWidth = value; Invalidate(); } }
+        internal event EventHandler TrailingClick;
+
+        private Rectangle TrailingBounds
+        {
+            get
+            {
+                int width = String.IsNullOrWhiteSpace(TrailingText)
+                    ? 0 : Math.Min(Math.Max(32, TrailingWidth), Math.Max(0, ClientSize.Width));
+                return new Rectangle(Math.Max(0, ClientSize.Width - width), 0, width, ClientSize.Height);
+            }
+        }
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -1340,19 +1357,105 @@ namespace Splined.WindowsGui
                 using (SolidBrush brush = new SolidBrush(Color.FromArgb(spectrumPressed ? 76 : 42, overlay)))
                     e.Graphics.FillPath(brush, path);
             }
+            Rectangle trailingBounds = TrailingBounds;
+            if (!trailingBounds.IsEmpty && (trailingHot || trailingPressed))
+            {
+                Color overlay = trailingPressed ? active.SurfacePressed : active.SurfaceHover;
+                GraphicsState trailingState = e.Graphics.Save();
+                using (GraphicsPath clip = ThemeManager.RoundedPath(
+                    new RectangleF(1f, 1f, Math.Max(1f, Width - 2f), Math.Max(1f, Height - 2f)),
+                    ThemeManager.CardRadius))
+                using (SolidBrush brush = new SolidBrush(Color.FromArgb(trailingPressed ? 76 : 42, overlay)))
+                {
+                    e.Graphics.SetClip(clip);
+                    e.Graphics.FillRectangle(brush, trailingBounds);
+                }
+                e.Graphics.Restore(trailingState);
+            }
             Rectangle textBounds = CenterText
-                ? ClientRectangle
-                : new Rectangle(ThemeManager.Space12, 0, Math.Max(1, Width - ThemeManager.Space16), Height);
+                ? new Rectangle(0, 0, Math.Max(1, Width - trailingBounds.Width), Height)
+                : new Rectangle(ThemeManager.Space12, 0,
+                    Math.Max(1, Width - ThemeManager.Space16 - trailingBounds.Width), Height);
             TextRenderer.DrawText(e.Graphics, Text, Font, textBounds,
                 Enabled ? active.TextPrimary : active.TextDisabled,
                 (CenterText ? TextFormatFlags.HorizontalCenter : TextFormatFlags.Left)
                 | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            if (!trailingBounds.IsEmpty)
+            {
+                TextRenderer.DrawText(e.Graphics, TrailingText, TrailingFont ?? Font, trailingBounds,
+                    Enabled ? active.TextPrimary : active.TextDisabled,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+                    | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+            }
         }
 
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); spectrumHot = true; Invalidate(); }
-        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); spectrumHot = false; spectrumPressed = false; Invalidate(); }
-        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) { spectrumPressed = true; Invalidate(); } }
-        protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); spectrumPressed = false; Invalidate(); }
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            bool overTrailing = !String.IsNullOrWhiteSpace(TrailingText) && TrailingBounds.Contains(e.Location);
+            if (trailingHot != overTrailing)
+            {
+                trailingHot = overTrailing;
+                Invalidate();
+            }
+        }
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            spectrumHot = false;
+            spectrumPressed = false;
+            trailingHot = false;
+            trailingPressed = false;
+            Invalidate();
+        }
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            if (!Capture && trailingPressed)
+            {
+                trailingPressed = false;
+                Invalidate();
+            }
+        }
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left && !String.IsNullOrWhiteSpace(TrailingText)
+                && TrailingBounds.Contains(e.Location))
+            {
+                trailingPressed = true;
+                Capture = true;
+                Invalidate();
+                return;
+            }
+            base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Left) { spectrumPressed = true; Invalidate(); }
+        }
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            if (trailingPressed)
+            {
+                bool invoke = e.Button == MouseButtons.Left && TrailingBounds.Contains(e.Location);
+                trailingPressed = false;
+                Capture = false;
+                Invalidate();
+                EventHandler handler = TrailingClick;
+                if (invoke && handler != null) handler(this, EventArgs.Empty);
+                return;
+            }
+            base.OnMouseUp(e);
+            spectrumPressed = false;
+            Invalidate();
+        }
+
+        internal void PerformTrailingClick()
+        {
+            if (Enabled && !String.IsNullOrWhiteSpace(TrailingText))
+            {
+                EventHandler handler = TrailingClick;
+                if (handler != null) handler(this, EventArgs.Empty);
+            }
+        }
     }
 
     /// <summary>

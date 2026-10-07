@@ -120,10 +120,11 @@ is used. Folder-tree selection uses the same round red/green states.
 
 ### Media Library Selection
 
-The hollow double-left arrow at the upper right of the title reduces Media
-Library Selection to a narrow spectrum-framed rail instead of removing it.
-The double-right arrow on that rail restores the selector. Both arrows use the
-larger header font and remain visible in the dark theme.
+The double-left arrow at the right edge of the **Select Media** filter bar
+reduces Media Library Selection to a narrow spectrum-framed rail instead of
+removing it. It shares the filter bar's existing frame rather than occupying a
+second framed button. The double-right arrow on the rail restores the selector.
+Both arrows remain visible as the panes are resized.
 
 Select Media contains:
 
@@ -149,16 +150,21 @@ preview; it does not create a launch target. Checking a track selects only that
 track and changes the primary action to **LAUNCH (1 TRACK)**. Launching reopens
 the track's current embedded front image as the local candidate when present,
 including tracks already completed in an earlier run. Checking the Album clears
-that explicit track target and performs ordinary resume, using the SQLite
-completion ledger to continue at the first unfinished track. The runtime's
-current-track event moves focus to the track actually being processed without
-turning it into an explicit target.
+that explicit track target and performs ordinary resume. SQLite retains both
+the successful-write ledger and the track that was active when an interrupted
+run stopped: the next normal launch returns to that active track, then continues
+forward while skipping completed tracks. Once a run reaches the end normally,
+its stop cursor is cleared so a later incomplete run can revisit any earlier
+unresolved tracks. The runtime's current-track event moves focus to the track
+actually being processed without turning it into an explicit target.
 
-The fallback-compilation preview reads only the current track's embedded front
-artwork. It displays **No embedded artwork** when none exists and never falls
-back to the Album directory's `cover.*`. Normal Album artwork preview remains
-unchanged outside this workflow. The existing compilation editor and LIVE WRITE
-safety path are reused; no `cover.*` file is created or changed. The hierarchy
+The fallback-compilation preview reads only the focused/current track's embedded
+front artwork. Merely selecting the fallback Album clears track focus and shows
+**No embedded artwork**; it does not display or offer the Album directory's
+`cover.*` as an editable candidate. A focused track without embedded front art
+shows the same message. Normal non-fallback Album artwork preview remains
+unchanged. The existing compilation editor and LIVE WRITE safety path are
+reused; no `cover.*` file is created or changed. The hierarchy
 and completion markers come from the warm SQLite index. If an older compilation
 does not yet have a complete cached filename list, expanding that Album performs
 one non-recursive directory listing for that folder only; it does not scan the
@@ -170,10 +176,11 @@ The only control that starts or stops processing is the primary **LAUNCH**
 button beneath the Artwork Candidates pane. There is no second Launch button
 inside Select Media.
 
-The `«` control at the top right reduces the Media Album Selector to its `≫`
-reopen rail and returns the remaining space to processing. **View > Show Media
-Album Selector** also restores it and preserves the choice in Windows interface
-settings. If the selector is reduced when a selected batch finishes
+The `«` control at the right of the **Select Media** filter bar reduces the
+Media Album Selector to its `≫` reopen rail and returns the remaining space to
+processing. **View > Show Media Album Selector** also restores it and preserves
+the choice in Windows interface settings. If the selector is reduced when a
+selected batch finishes
 successfully, Windows restores it automatically so the completed status and the
 next selection are visible.
 
@@ -557,10 +564,12 @@ For each track SPLINED:
 
 Tracks without authoritative evidence remain unchanged and appear unresolved.
 Timeouts and upstream errors likewise leave the existing embedded image alone.
-Incomplete Albums remain blue and resumable; already completed track decisions
-are skipped on the next normal Album run. Merely previewing another track does
-not change that resume point; checking a completed track remains the deliberate
-way to reopen it.
+Incomplete Albums remain blue and resumable. Stop/error retains the track that
+was active, and the next normal Album run resumes there while the completion
+ledger skips prior successful writes. Reaching the end normally clears that
+cursor so any earlier unresolved track can be reconsidered on a later run.
+Merely previewing another track does not change either resume authority;
+checking a completed track remains the deliberate way to reopen it.
 
 ## Settings and credentials
 
