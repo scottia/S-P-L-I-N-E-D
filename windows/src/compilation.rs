@@ -2,9 +2,9 @@
 //!
 //! Eligibility is explicit: the representative track has no Album/Release
 //! MBID and is tagged `compilation=1`. The curated Album title is never used
-//! as MusicBrainz identity. Local Recording/Artist IDs are preferred; a
-//! bounded Artist/Title Recording search is available when those IDs are
-//! absent or need operator correction.
+//! as MusicBrainz identity. Local Recording/Artist IDs are preferred, while a
+//! bounded Artist/Title release search discovers alternate editions and then
+//! resolves each release back to its actual Recording and Artist IDs.
 
 use crate::config::Config;
 use crate::media_database::{
@@ -66,6 +66,37 @@ pub struct CompilationMatchCache {
 }
 
 impl CompilationMatchCache {
+    pub async fn automatic_matches(
+        &mut self,
+        client: &MusicBrainzClient,
+        config: &Config,
+        recording_mbid: Option<&str>,
+        local_artist_mbids: &[String],
+        artist: &str,
+        title: &str,
+    ) -> (Vec<MusicBrainzMatch>, Vec<String>) {
+        let mut matches = Vec::new();
+        let mut warnings = Vec::new();
+
+        if let Some(recording_mbid) = recording_mbid.filter(|value| !value.trim().is_empty()) {
+            match self
+                .recording_matches(client, config, recording_mbid, local_artist_mbids)
+                .await
+            {
+                Ok(items) => matches.extend(items),
+                Err(error) => warnings.push(error),
+            }
+        }
+
+        match self.artist_title_matches(client, artist, title).await {
+            Ok(items) => matches.extend(items),
+            Err(error) => warnings.push(error),
+        }
+
+        sort_and_deduplicate(&mut matches);
+        (matches, warnings)
+    }
+
     pub async fn recording_matches(
         &mut self,
         client: &MusicBrainzClient,
@@ -109,23 +140,30 @@ impl CompilationMatchCache {
             100,
             true,
         );
-        let cache_rows = matches
-            .iter()
-            .enumerate()
-            .map(|(rank, item)| RecordingReleaseCacheRow {
-                recording_mbid: item.recording_mbid.clone(),
-                release_mbid: item.release_mbid.clone(),
-                release_group_mbid: item.release_group_mbid.clone(),
-                release_class: format!("{:?}", item.release_class).to_ascii_lowercase(),
-                class_rank: item.release_class.rank(),
-                candidate_rank: rank,
-                release_title: item.release_title.clone(),
-                release_artist: item.release_artist.clone(),
-                artist_mbids_key: artist_mbids_key.clone(),
-                release_date: item.release_date.clone(),
-            })
-            .collect::<Vec<_>>();
-        cache_recording_releases(config, recording_mbid, &artist_mbids_key, &cache_rows)?;
+        // MusicBrainz can redirect a merged Recording MBID to its canonical
+        // identity. The SQL parent row is keyed by the requested/tagged MBID,
+        // while projected children correctly carry the canonical MBID; mixing
+        // those identities would violate the candidate foreign key. Return the
+        // canonical live result and leave that redirected lookup uncached.
+        if recording_cache_identity_matches(recording_mbid, &lookup.id) {
+            let cache_rows = matches
+                .iter()
+                .enumerate()
+                .map(|(rank, item)| RecordingReleaseCacheRow {
+                    recording_mbid: item.recording_mbid.clone(),
+                    release_mbid: item.release_mbid.clone(),
+                    release_group_mbid: item.release_group_mbid.clone(),
+                    release_class: format!("{:?}", item.release_class).to_ascii_lowercase(),
+                    class_rank: item.release_class.rank(),
+                    candidate_rank: rank,
+                    release_title: item.release_title.clone(),
+                    release_artist: item.release_artist.clone(),
+                    artist_mbids_key: artist_key(&item.artist_mbids),
+                    release_date: item.release_date.clone(),
+                })
+                .collect::<Vec<_>>();
+            cache_recording_releases(config, &lookup.id, &artist_mbids_key, &cache_rows)?;
+        }
         self.recording.insert(cache_key, matches.clone());
         Ok(matches)
     }
@@ -139,15 +177,49 @@ impl CompilationMatchCache {
         if artist.trim().is_empty() || title.trim().is_empty() {
             return Err("MusicBrainz search requires local Artist and Track Title.".to_string());
         }
-        let query = format!(
-            "recording:\"{}\" AND artist:\"{}\" AND status:official",
-            lucene_phrase(title),
-            lucene_phrase(artist)
+        let cache_key = format!(
+            "{}|{}",
+            artist.trim().to_ascii_lowercase(),
+            title.trim().to_ascii_lowercase()
         );
-        if let Some(cached) = self.search.get(&query) {
+        if let Some(cached) = self.search.get(&cache_key) {
             return Ok(cached.clone());
         }
+
         let mut matches = Vec::new();
+
+        // Recording search can be saturated by duplicate recordings before it
+        // reaches a valid edition. Search releases by their indexed track and
+        // release artist first, then constrain Recording search to those exact
+        // release IDs so every row carries the real Recording and Artist IDs.
+        let release_ids = client
+            .search_release_ids(&artist_title_release_query(artist, title), 100)
+            .await?;
+        for release_ids in release_ids.chunks(20) {
+            let allowed = release_ids
+                .iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect::<HashSet<_>>();
+            let query = release_recording_query(artist, title, release_ids);
+            for mut hit in client.search_recordings(&query, 100).await? {
+                hit.releases
+                    .retain(|release| allowed.contains(&release.id.to_ascii_lowercase()));
+                matches.extend(project_releases(
+                    &hit.id,
+                    &hit.title,
+                    &hit.artist_credit,
+                    &hit.artist_mbids,
+                    hit.releases,
+                    hit.score,
+                    true,
+                ));
+            }
+        }
+
+        // Release artist search intentionally does not find Various Artists
+        // compilations. Preserve the bounded Recording search as a supplement
+        // and merge both result sets by their real Recording/Release identity.
+        let query = artist_title_recording_query(artist, title);
         for hit in client.search_recordings(&query, 100).await? {
             matches.extend(project_releases(
                 &hit.id,
@@ -160,7 +232,7 @@ impl CompilationMatchCache {
             ));
         }
         sort_and_deduplicate(&mut matches);
-        self.search.insert(query, matches.clone());
+        self.search.insert(cache_key, matches.clone());
         Ok(matches)
     }
 
@@ -460,10 +532,10 @@ fn project_releases(
             } else {
                 classify_release_for_browser(&release)?
             };
-            let artist_mbids = if release.artist_mbids.is_empty() {
-                recording_artist_mbids.to_vec()
-            } else {
+            let artist_mbids = if recording_artist_mbids.is_empty() {
                 release.artist_mbids.clone()
+            } else {
+                recording_artist_mbids.to_vec()
             };
             Some(MusicBrainzMatch {
                 recording_mbid: recording_mbid.to_ascii_lowercase(),
@@ -564,6 +636,38 @@ fn ids_intersect(left: &[String], right: &[String]) -> bool {
 
 fn lucene_phrase(value: &str) -> String {
     value.trim().replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn recording_cache_identity_matches(requested: &str, resolved: &str) -> bool {
+    requested.trim().eq_ignore_ascii_case(resolved.trim())
+}
+
+fn artist_title_release_query(artist: &str, title: &str) -> String {
+    format!(
+        "track:\"{}\" AND artist:\"{}\" AND status:official",
+        lucene_phrase(title),
+        lucene_phrase(artist)
+    )
+}
+
+fn artist_title_recording_query(artist: &str, title: &str) -> String {
+    format!(
+        "recording:\"{}\" AND artist:\"{}\" AND status:official",
+        lucene_phrase(title),
+        lucene_phrase(artist)
+    )
+}
+
+fn release_recording_query(artist: &str, title: &str, release_ids: &[String]) -> String {
+    let releases = release_ids
+        .iter()
+        .map(|release_id| format!("reid:{}", release_id.trim().to_ascii_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!(
+        "{} AND ({releases})",
+        artist_title_recording_query(artist, title)
+    )
 }
 
 #[cfg(test)]
@@ -682,5 +786,61 @@ mod tests {
                 classify_release(&release).map(|value| format!("{value:?}").to_ascii_lowercase());
             assert_eq!(actual.as_deref(), item["expected"].as_str());
         }
+    }
+
+    #[test]
+    fn release_first_query_resolves_exact_recording_and_artist_authority() {
+        let release_id = "823b3eeb-e62b-42c6-9029-5fc47279b7fc".to_string();
+        assert_eq!(
+            artist_title_release_query("Ben E. King", "Spanish Harlem"),
+            "track:\"Spanish Harlem\" AND artist:\"Ben E. King\" AND status:official"
+        );
+        assert_eq!(
+            release_recording_query("Ben E. King", "Spanish Harlem", &[release_id]),
+            "recording:\"Spanish Harlem\" AND artist:\"Ben E. King\" AND status:official AND (reid:823b3eeb-e62b-42c6-9029-5fc47279b7fc)"
+        );
+
+        let recording_artist_id = "837555ba-012e-45f1-9a9c-9628da13ee54".to_string();
+        let release_artist_id = "89ad4ac3-39f7-470e-963a-56509c546377".to_string();
+        let projected = project_releases(
+            "29b6fe53-6c45-4328-ad87-b4b3334a1436",
+            "Spanish Harlem",
+            "Ben E. King",
+            std::slice::from_ref(&recording_artist_id),
+            vec![RecordingRelease {
+                id: "823b3eeb-e62b-42c6-9029-5fc47279b7fc".into(),
+                title: "Spanish Harlem".into(),
+                artist_credit: "Various Artists".into(),
+                status: Some("Official".into()),
+                date: Some("2012-10-03".into()),
+                country: Some("XW".into()),
+                artist_mbids: vec![release_artist_id],
+                release_group_id: None,
+                release_group_title: None,
+                release_group_primary_type: Some("Album".into()),
+                release_group_secondary_types: Vec::new(),
+            }],
+            100,
+            true,
+        );
+        assert_eq!(projected.len(), 1);
+        assert_eq!(
+            projected[0].recording_mbid,
+            "29b6fe53-6c45-4328-ad87-b4b3334a1436"
+        );
+        assert_eq!(projected[0].artist_mbids, vec![recording_artist_id]);
+        assert_eq!(projected[0].release_artist, "Various Artists");
+    }
+
+    #[test]
+    fn redirected_recording_identity_is_not_sql_cache_compatible() {
+        assert!(recording_cache_identity_matches(
+            "29b6fe53-6c45-4328-ad87-b4b3334a1436",
+            "29B6FE53-6C45-4328-AD87-B4B3334A1436"
+        ));
+        assert!(!recording_cache_identity_matches(
+            "b5386435-a43c-4fe5-ae3c-337176914ca6",
+            "29b6fe53-6c45-4328-ad87-b4b3334a1436"
+        ));
     }
 }

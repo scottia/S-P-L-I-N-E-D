@@ -561,12 +561,22 @@ For each track SPLINED:
 
 1. checks the exact Recording-ID/Artist-ID SQLite cache;
 2. lazily checks indexed Albums belonging to the matching Artist identity;
-3. uses bounded MusicBrainz work only after a local miss;
-4. applies the automatic order Album, Soundtrack, then Compilation;
-5. lets the operator inspect broader Artist/Track MusicBrainz results;
+3. after a local miss, combines the tagged Recording lookup with a bounded
+   Artist/Track release search;
+4. resolves every discovered release back to its actual Recording and track
+   Artist IDs instead of treating release-level artist credit as track
+   authority;
+5. merges and de-duplicates both result sets, then applies the automatic order
+   Album, Soundtrack, then Compilation;
 6. runs the ordinary configured artwork providers and policies;
 7. replaces only the approved embedded front image in Live Write;
 8. commits the track ledger and Album progress immediately.
+
+The release-first branch prevents a prolific song's first 100 Recording-search
+hits from hiding a valid Album edition. Various Artists compilations discovered
+from the exact or supplemental Recording search remain in the same ordinary
+result set. MusicBrainz-merged Recording IDs are used live but are not written
+into an incompatible SQLite cache key.
 
 Tracks without authoritative evidence remain unchanged and appear unresolved.
 Timeouts and upstream errors likewise leave the existing embedded image alone.

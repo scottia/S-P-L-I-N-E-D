@@ -172,9 +172,10 @@ When a selected curated compilation is tagged `compilation=1` but its
 representative track has no MusicBrainz Album/Release ID, the ordinary scan
 automatically routes that Album to per-track embedded-artwork decisions. The
 yellow warning remains visible before launch. SPLINED searches the local SQL
-cache first, performs bounded Recording-ID recovery only after a local miss,
-and offers an operator-reviewed Artist/Track MusicBrainz list when IDs are
-missing or the recovered release is unsuitable. A chosen release enters the
+cache first, then combines the tagged Recording lookup with bounded
+release-first Artist/Track discovery after a local miss. Every discovered
+release is resolved back to its actual Recording and track Artist IDs before
+the operator reviews the merged MusicBrainz list. A chosen release enters the
 same artwork-source preview and approval path used by every Album; Escape
 returns to the cached MusicBrainz choices without another request. The current
 release is green, inspected alternatives are blue, and reselecting either
