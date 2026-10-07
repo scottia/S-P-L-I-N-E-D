@@ -1031,15 +1031,13 @@ namespace Splined.WindowsGui
                     FluentCardTableLayoutPanel candidatesPanel = form.Controls.Find("artworkCandidatesCard", true).Single() as FluentCardTableLayoutPanel;
                     Assert(libraryCard != null && activityPanel != null && candidatesPanel != null,
                         "The three major work areas do not use the shared rounded panel surface.");
-                    Button selectorVisibility = form.Controls.Find("mediaSelectorVisibilityToggle", true).OfType<Button>().Single();
+                    SpectrumToggleButton mediaFilterHeader = form.Controls.Find("mediaFilterToggle", true).OfType<SpectrumToggleButton>().Single();
                     Button selectorExpand = form.Controls.Find("mediaSelectorExpandToggle", true).OfType<Button>().Single();
-                    Assert(selectorVisibility is SpectrumToggleButton && selectorVisibility.Text == "«"
-                        && selectorExpand is SpectrumToggleButton && selectorExpand.Text == "≫"
-                        && selectorVisibility.Font.SizeInPoints == selectorExpand.Font.SizeInPoints
-                        && selectorVisibility.Font.SizeInPoints >= 13f
-                        && selectorVisibility.Width >= 40
-                        && selectorVisibility.Padding.All == 0,
-                        "The Media Library Selection show/hide glyph is not visible at the panel-title font size.");
+                    Assert(mediaFilterHeader.TrailingText == "«" && mediaFilterHeader.TrailingWidth >= 40
+                        && mediaFilterHeader.TrailingFont.SizeInPoints == selectorExpand.Font.SizeInPoints
+                        && mediaFilterHeader.TrailingFont.SizeInPoints >= 13f
+                        && selectorExpand is SpectrumToggleButton && selectorExpand.Text == "≫",
+                        "The Media Library Selection show/hide glyph is not retained inside the responsive Select Media bar.");
                     CheckBox showTracksControl = form.Controls.Find("showTracks", true).OfType<CheckBox>().Single();
                     Assert(showTracksControl.Text == "Show Tracks"
                         && showTracksControl.Parent == form.Controls.Find("mediaStatusFilters", true).Single().Controls[0],
@@ -1047,7 +1045,7 @@ namespace Splined.WindowsGui
                     SplitContainer selectorSplit = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     ToolStripMenuItem showMediaSelector = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
                         .Single(item => item.Text == "Show Media Album Selector");
-                    invokeArtworkFilter.Invoke(selectorVisibility, new object[] { EventArgs.Empty });
+                    mediaFilterHeader.PerformTrailingClick();
                     Control selectorRail = form.Controls.Find("mediaLibrarySelectionCollapsedRail", true).Single();
                     Assert(!selectorSplit.Panel1Collapsed && selectorSplit.SplitterDistance <= 58
                         && selectorRail.Parent.Controls.GetChildIndex(selectorRail) == 0
@@ -1218,8 +1216,11 @@ namespace Splined.WindowsGui
 
                     showSelectedAlbum.Invoke(form, new object[] { compilationAlbum });
                     PictureBox compilationPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
-                    Assert(compilationPreview.Image != null,
-                        "Normal Album artwork behavior changed before fallback compilation began.");
+                    Dictionary<int, CandidateView> compilationCandidates = (Dictionary<int, CandidateView>)typeof(MainForm)
+                        .GetField("candidates", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(compilationPreview.Image == null && artworkCaption.Text == "No embedded artwork"
+                        && compilationCandidates.Count == 0,
+                        "Selecting a fallback compilation Album displayed or offered its folder cover.* artwork.");
                     MethodInfo compilationEvent = typeof(MainForm).GetMethod(
                         "ApplyCoreEvent", BindingFlags.Instance | BindingFlags.NonPublic);
                     compilationEvent.Invoke(form, new object[] { new Dictionary<string, object>

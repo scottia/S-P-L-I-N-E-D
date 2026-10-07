@@ -183,8 +183,10 @@ also exposes a direct Cover Art Archive URL for Artwork-pane preview. This path
 replaces only operator-approved embedded track artwork. LIVE
 WRITE progress is durable per track: an interrupted compilation is blue
 `Incomplete` in the picker even if the operator leaves before the first
-approval, and the next scan skips already verified writes. No folder-level
-`cover.*` is created, changed, or removed for this compilation path. See
+approval, and the next scan returns to the interrupted track while skipping
+already verified writes. Selecting the fallback Album never previews or offers
+its folder cover as track artwork. No folder-level `cover.*` is created,
+changed, or removed for this compilation path. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
 The MusicBrainz list uses release-group artwork only as a quick visual preview;

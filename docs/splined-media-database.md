@@ -302,8 +302,8 @@ actions update the affected database rows immediately.
 
 ## Compilation track-art caches
 
-Compilation artwork recovery adds four persistent surfaces without changing
-normal index cost:
+Compilation artwork recovery uses the following persistent surfaces without
+changing normal index cost:
 
 - `tracks` stores exact local Recording-ID/Artist-ID relationships discovered
   lazily during the compilation branch;
@@ -312,7 +312,10 @@ normal index cost:
 - `compilation_track_artwork` records approved per-track artwork outcomes and a
   content digest, but never stores credential values or image bytes;
 - `compilation_album_progress` stores only Album path, total/completed counts,
-  `incomplete`/`complete`, update time, and SPLINED version.
+  `incomplete`/`complete`, update time, and SPLINED version;
+- a `cache_entries` row of type `compilation_resume` stores the canonical path
+  of the track active during an interruptible normal Album run. It contains no
+  image bytes or MusicBrainz/tag authority.
 
 The compilation branch first queries the exact `tracks` cache. On a miss it uses the
 already-indexed Album Artist ID to restrict local inspection to that Artist's
@@ -329,18 +332,23 @@ same progress and track-artwork tables when an eligible compilation starts.
 Normal discovery continues to
 inspect one representative track per Album.
 Resume accepts a prior completion only when the current local Recording and
-Artist IDs still match the ledger row.
+Artist IDs still match the ledger row. Separately, the interruption cursor
+starts the next normal run at the track that was active when Stop/error ended
+the previous run. The cursor advances only as the runtime reaches each next
+track and is cleared after a normal pass reaches the end; completed-track
+skipping remains authoritative throughout.
 
 A targeted Windows edit passes one explicitly checked compilation track to the
 runtime. Highlighting or clicking a track is preview focus only and never sets
-the target environment value, so an ordinary Album launch still reads this
-ledger and skips completed tracks. Checking the Album clears any explicit track
+the target environment value, so an ordinary Album launch still reads the
+ledger and interruption cursor. Checking the Album clears any explicit track
 target. A checked track bypasses the resume skip for that track only, including
 when it is already complete, extracts its current embedded front image into the
 run cache, and sends it through the same review/edit/write path. Other tracks in
 the Album are not processed and folder cover files remain untouched. The
-fallback GUI preview uses that embedded cache image only; it never substitutes
-the Album folder's `cover.*`.
+fallback GUI preview uses that embedded cache image only. Selecting the fallback
+Album itself shows **No embedded artwork** and does not create a folder-cover
+candidate; it never substitutes the Album folder's `cover.*`.
 
 LIVE WRITE creates or refreshes the progress row when compilation work starts, so
 an operator exit before the first approval is represented as `0/N incomplete`.
