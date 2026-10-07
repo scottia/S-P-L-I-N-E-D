@@ -553,7 +553,14 @@ namespace Splined.WindowsGui
             string argument = value ?? "";
             if (argument.IndexOf('"') >= 0)
                 throw new ArgumentException("Windows paths containing a quote character are not supported.", "value");
-            return "\"" + argument + "\"";
+            int trailingBackslashes = 0;
+            for (int index = argument.Length - 1; index >= 0 && argument[index] == '\\'; index--)
+                trailingBackslashes++;
+            // Windows command-line parsing treats a backslash immediately
+            // before a closing quote as escaping that quote. Double every
+            // trailing backslash so a directory root ending in '\\' remains
+            // one complete argument instead of swallowing the next option.
+            return "\"" + argument + new string('\\', trailingBackslashes) + "\"";
         }
     }
 }

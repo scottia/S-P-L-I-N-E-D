@@ -48,6 +48,16 @@ namespace Splined.WindowsUpdater
 
     internal static class Program
     {
+        private static readonly Regex RawApplyPattern = new Regex(
+            "^\\s*(?:\\\"[^\\\"]*\\\"|\\S+)\\s+--apply"
+            + "\\s+--app-root\\s+\\\"(?<appRoot>[^\\\"]*)\\\""
+            + "\\s+--archive\\s+\\\"(?<archive>[^\\\"]*)\\\""
+            + "\\s+--manifest\\s+\\\"(?<manifest>[^\\\"]*)\\\""
+            + "\\s+--update-dir\\s+\\\"(?<updateDir>[^\\\"]*)\\\""
+            + "\\s+--wait-gui-pid\\s+(?<guiPid>[0-9]+)"
+            + "\\s+--wait-core-pid\\s+(?<corePid>[0-9]+)\\s*$",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
         [STAThread]
         private static int Main(string[] args)
         {
@@ -55,7 +65,17 @@ namespace Splined.WindowsUpdater
                 return UpdateInstaller.RunSelfTest();
             try
             {
-                UpdateOptions options = ParseOptions(args);
+                UpdateOptions options;
+                try { options = ParseOptions(args); }
+                catch (InvalidOperationException)
+                {
+                    // GUI builds that predate Windows-correct trailing-slash
+                    // quoting can cause CommandLineToArgvW to merge several
+                    // options. Recover only the exact, ordered updater contract
+                    // from the untouched raw command line so those installed
+                    // versions can still consume a corrected release helper.
+                    options = ParseRawOptions(Environment.CommandLine);
+                }
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new UpdateForm(options));
@@ -93,6 +113,35 @@ namespace Splined.WindowsUpdater
                 GuiProcessId = guiProcessId,
                 CoreProcessId = coreProcessId
             };
+        }
+
+        internal static UpdateOptions ParseRawOptions(string commandLine)
+        {
+            Match match = RawApplyPattern.Match(commandLine ?? "");
+            if (!match.Success)
+                throw new InvalidOperationException("The SPLINED update helper received invalid arguments.");
+            int guiProcessId;
+            int coreProcessId;
+            if (!Int32.TryParse(match.Groups["guiPid"].Value, out guiProcessId) || guiProcessId <= 0
+                || !Int32.TryParse(match.Groups["corePid"].Value, out coreProcessId) || coreProcessId < 0)
+                throw new InvalidOperationException("The SPLINED update helper received invalid process identities.");
+            return new UpdateOptions
+            {
+                AppRoot = RequiredRawValue(match, "appRoot", "--app-root"),
+                ArchivePath = RequiredRawValue(match, "archive", "--archive"),
+                ManifestPath = RequiredRawValue(match, "manifest", "--manifest"),
+                UpdateDirectory = RequiredRawValue(match, "updateDir", "--update-dir"),
+                GuiProcessId = guiProcessId,
+                CoreProcessId = coreProcessId
+            };
+        }
+
+        private static string RequiredRawValue(Match match, string groupName, string optionName)
+        {
+            string value = match.Groups[groupName].Value;
+            if (String.IsNullOrWhiteSpace(value) || value.IndexOf('"') >= 0)
+                throw new InvalidOperationException("The SPLINED update helper is missing " + optionName + ".");
+            return value;
         }
 
         private static string Value(Dictionary<string, string> values, string key)
@@ -181,7 +230,11 @@ namespace Splined.WindowsUpdater
         {
             if ((value ?? "").IndexOf('"') >= 0)
                 throw new InvalidOperationException("Update paths containing quotes are not supported.");
-            return "\"" + (value ?? "") + "\"";
+            string argument = value ?? "";
+            int trailingBackslashes = 0;
+            for (int index = argument.Length - 1; index >= 0 && argument[index] == '\\'; index--)
+                trailingBackslashes++;
+            return "\"" + argument + new string('\\', trailingBackslashes) + "\"";
         }
     }
 
@@ -480,6 +533,25 @@ namespace Splined.WindowsUpdater
                 };
                 string manifestPath = Path.Combine(updateDirectory, "windows-update.json");
                 File.WriteAllText(manifestPath, new JavaScriptSerializer().Serialize(manifest), new UTF8Encoding(false));
+                string legacyAppRoot = appRoot + Path.DirectorySeparatorChar;
+                string legacyRawCommandLine = "\"" + Application.ExecutablePath + "\" --apply"
+                    + " --app-root \"" + legacyAppRoot + "\""
+                    + " --archive \"" + archivePath + "\""
+                    + " --manifest \"" + manifestPath + "\""
+                    + " --update-dir \"" + updateDirectory + "\""
+                    + " --wait-gui-pid 1234 --wait-core-pid 0";
+                UpdateOptions recovered = Program.ParseRawOptions(legacyRawCommandLine);
+                if (!String.Equals(recovered.AppRoot, legacyAppRoot, StringComparison.Ordinal)
+                    || !String.Equals(recovered.ArchivePath, archivePath, StringComparison.Ordinal)
+                    || !String.Equals(recovered.ManifestPath, manifestPath, StringComparison.Ordinal)
+                    || !String.Equals(recovered.UpdateDirectory, updateDirectory, StringComparison.Ordinal)
+                    || recovered.GuiProcessId != 1234 || recovered.CoreProcessId != 0)
+                    throw new InvalidOperationException("The updater did not recover the legacy trailing-root launch contract.");
+                bool invalidRawRejected = false;
+                try { Program.ParseRawOptions(legacyRawCommandLine + " --unexpected"); }
+                catch (InvalidOperationException) { invalidRawRejected = true; }
+                if (!invalidRawRejected)
+                    throw new InvalidOperationException("The updater accepted extra raw launch arguments.");
                 UpdateInstaller installer = new UpdateInstaller(new UpdateOptions
                 {
                     AppRoot = appRoot,
@@ -549,7 +621,7 @@ namespace Splined.WindowsUpdater
                     && File.ReadAllText(Path.Combine(appRoot, GuiRelativePath)) == "old-gui"
                     && File.ReadAllText(Path.Combine(appRoot, CoreRelativePath)) == "old-core";
                 if (!valid) throw new InvalidOperationException("The updater accepted or staged a database file from the release archive.");
-                Console.WriteLine("PASS: updater verified staging, paired replacement, rollback, and executable-only targets.");
+                Console.WriteLine("PASS: updater verified legacy launch recovery, staging, paired replacement, rollback, and executable-only targets.");
                 return 0;
             }
             catch (Exception error)
