@@ -1,205 +1,96 @@
-# Installation and First Run
+# Installation and first run
 
-Choose the runtime that matches your system. All supported implementations use
-Config v5; application release identities remain independent.
+SPLINED ships supported Windows, Linux, macOS, Python, and container release
+artifacts. Keep configuration, credentials, and databases outside source
+control.
 
 ## Windows portable
 
-1. Download the Windows archive from the
-   [latest release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest).
-2. Extract the complete archive into its final application directory.
-3. Keep the extracted `runtime` folder with `splined.exe`, then run
-   `splined.exe`.
-4. Choose the music library and the required SQL database, temporary run cache,
-   log, and credential directories, or open Advanced Settings.
-5. Select **Save and Continue**.
-6. Configure provider credentials through **File > Credentials...** as needed.
-7. Start in Read mode against a small selection.
-
-The release ZIP contains no `data` directory, so a fresh extraction performs
-true first-run setup. Saving creates portable `data\config.toml` and
-`data\ui.toml` beside `splined.exe`. Moving or copying the complete application
-folder carries those settings; deleting the folder removes them. The selected
-runtime directories are created only after settings are saved. No executable
-rename or setup launcher is required.
-
-When both portable files are initially absent, a compatible build copies the
-former per-path HKCU `ConfigV5`/`UiV4` values once, records migration, and leaves
-the old values intact for manual cleanup. They are not runtime authority after
-migration and cannot reconstruct deleted portable files.
-
-The first-run SQL database, temporary run cache, log, and credential fields default beneath
-`%LOCALAPPDATA%\SPLINED` for the current Windows user, not beside the portable
-executable and not in machine-wide `%PROGRAMDATA%`. These locations remain
-editable before saving; selecting UNC paths does not change the portable
-program files. Existing saved locations are never migrated automatically.
-
-The permanent portable layout has two fixed executable artifacts with stable
-roles: `splined.exe` is the only user-facing root executable and
-`runtime\splined-core.exe` is its shipped Rust worker. The worker is not
-embedded in or extracted from the GUI. Normal startup and scanning do not
-create, extract, rename, replace, or delete executable files. GUI-to-core
-Config v5 handoff is memory-only and creates no runtime TOML.
-
-Use **File > Backup > Export Backup...** for a selective `.spl` backup. Portable
-Config v5, interface state, credential JSON, SQLite, and diagnostics are
-independent options. A password is optional. Double-clicking a registered
-`.spl` file opens SPLINED's restore dialog; no data is restored until the user
-chooses the sections and confirms.
-
-### Windows upgrade
-
-SPLINED checks official, non-prerelease GitHub release metadata after the
-library opens and through **Help > Check for Update...**. When a newer release
-is available, choose automatic update, open the official release page, or
-install later. Automatic update occurs only after explicit approval.
-
-The GUI downloads the official portable ZIP and consistently named temporary
-`splined-update.exe`, validates their sizes and SHA-256 digests, and then
-closes. The visible updater waits for the exact GUI/core process IDs, stages
-and verifies the new `splined.exe` and `runtime\splined-core.exe`, performs
-transactional replacement with recovery copies and rollback, verifies the
-installed pair, and restarts the GUI. The restarted GUI confirms its commit and
-both file hashes before removing the finished updater and staging files. The
-helper is a separate release asset; it is never embedded in or extracted from
-`splined.exe`. No CMD or PowerShell update machinery is used.
-
-The added verification fields remain backward-compatible with the existing
-schema 2 notification manifest. Notification-only builds continue to detect
-the release and open its page; after one manual upgrade to this automatic-update
-architecture, later compatible releases can be installed from the prompt. A
-schema 2 document is eligible for automatic installation only when its exact
-release version/commit, archive and updater URLs, sizes, and SHA-256 digests for
-the archive, updater, GUI, and core are all present and validated. Missing
-integrity fields are never inferred or defaulted.
-
-The next-patch release workflow uses the same pinned Rust toolchain and Windows
-dependency/target cache. A warm cache recompiles SPLINED itself without rebuilding
-the complete Rust dependency graph; the first run for a new lockfile or toolchain
-still performs a cold build and may take longer.
-
-For a manual update, close SPLINED, download the official Windows ZIP, and
-replace `splined.exe` plus the complete `runtime` folder together. Automatic
-and manual executable replacement never touches `data\config.toml`,
-`data\ui.toml`, or the selected credential, SQLite/history, temporary-cache,
-and log locations.
-Preserve the selected credential directory and `<scan.cache_dir>/splined.db`,
-or create a `.spl` export first.
-
-The relocated `runtime\splined-core.exe` resolves portable-relative paths from
-the parent directory containing `splined.exe`, so it does not create a second
-`runtime\_cache\splined.db`. Existing absolute, mapped-drive, and UNC paths are
-preserved exactly.
-
-See [Windows portable instructions](../release/README-WINDOWS.txt).
-
-## Linux portable
-
-Extract the archive into its final directory, restore executable permission if
-needed, then run:
-
-```bash
-chmod +x ./splined
-./splined --help
-```
-
-See [Linux portable instructions](../release/README-LINUX.txt).
-
-## macOS portable
-
-Extract the archive into its final directory, restore executable permission if
-needed, then run:
-
-```bash
-chmod +x ./splined
-./splined --help
-```
-
-macOS may require first-run approval in **Privacy & Security**.
-
-See [macOS portable instructions](../release/README-MACOS.txt).
-
-## Docker
-
-Use the published image:
+Extract the Windows ZIP to a writable directory and run `splined.exe`. The
+fresh archive contains exactly:
 
 ```text
-ghcr.io/scottia/splined:latest
+SPLINED\
+  splined.exe
+  README-WINDOWS.txt
 ```
 
-Begin with [`docker/config.example.toml`](../docker/config.example.toml). It is
-Config v5 with Docker-specific container paths.
+The executable contains the desktop frontend and authoritative Rust processing
+backend. Normal startup and scans do not extract executable code or launch a
+SPLINED processing child.
 
-See [Docker installation](../docker/README.md) for mounts and commands.
-
-Interactive Python/Docker operational scans use the Ratatui TUI when stdin and
-stdout are terminals. Scripted or redirected execution remains plain.
-
-## Python/Docker first media-index build
-
-The first interactive launch creates:
+On first save, the application creates:
 
 ```text
-<scan.cache_dir>/splined.db
+SPLINED\
+  data\
+    config.toml
+    ui.toml
 ```
 
-Default Docker path:
+These files are the only Config v5 and interface-state authority. Process CWD
+does not affect resolution. Relative paths resolve from the directory containing
+`splined.exe`; absolute, mapped-drive, and UNC paths remain unchanged. Copying
+the complete directory carries portable settings. Deleting it removes
+SPLINED-owned settings.
 
-```text
-/_cache/splined.db
-```
+If neither portable file exists, one legacy ConfigV5/UiV4 pair may be imported
+once. Imported values are written to the portable files. Legacy values are not
+deleted, are never written by the new desktop, and cannot override an existing
+portable file or resurrect after the migration marker is recorded.
 
-The one-time build:
+### Windows first-run checklist
 
-1. inventories Artist and Album folders;
-2. reads one representative audio file per Album with Mutagen;
-3. identifies Artists and Albums from MusicBrainz/tag values;
-4. records local `cover.*` and selected Album statistics;
-5. saves resumable per-Album SQLite checkpoints;
-6. validates and publishes the completed snapshot marker-last;
-7. opens Select Media with final stable Album Status colors.
+1. Open Settings.
+2. Set `library.music_library` and `scan.scan_library_dir`.
+3. Confirm `scan.cache_dir`; `splined.db` remains authoritative there.
+4. Confirm temporary cache, log, history, and credential locations.
+5. Save Config v5.
+6. Add provider JSON in Credentials and complete authorization where required.
+7. Refresh Media Library Selection.
+8. Run a READ scan before enabling LIVE WRITE.
 
-The first build may take time on a large library. Warm launches load the picker
-read-only from SQLite and do not repeat an Artist-by-Artist filesystem
-validation. WAL-free databases on NAS/bind mounts may be staged temporarily on
-local container storage for faster compact reads.
+### Windows update
 
-The Artist Picker groups Albums by the first physical directory below the
-library root. Album Artist/MusicBrainz tag identity remains artwork/search
-authority and may have a different count from visible physical Artist folders.
+Production releases use signed update metadata and a signed standard Windows
+update package. The user must approve installation. Package signature
+verification occurs before installation, and publisher signatures are checked
+in the release pipeline. The update is directed to the current portable root;
+it replaces application code without modifying `data\`, SQLite, credentials,
+history, cache, logs, or external paths. Updated SPLINED then relaunches.
 
-Use the explicit Refresh action after external tagger or
-filesystem changes. Refresh commits the new model before changing the visible
-picker, so colors do not progressively change while the user is working.
+Unsigned developer builds can check their build status but cannot install public
+updates. Public automatic updating is not production-ready unless the release
+pipeline has both the stable updater signing key and the timestamped publisher
+certificate.
 
-See [SPLINED media database](splined-media-database.md).
+A schema 2 `windows-update.json` remains available for older notification-only
+builds. It intentionally omits automatic-install integrity fields, so it cannot
+authorize installation. Current builds use the signed updater metadata and do
+not infer missing trust fields.
 
-## Persistent and disposable data
+## Linux
 
-On Windows, **File > Backup > Export Backup...** can include portable Config v5,
-interface state, credentials, SQLite, and diagnostics independently. On
-file-backed runtimes, back up `config.toml`, credentials, and the authoritative
-runtime database:
+Extract the archive, keep `splined` executable, and run it from a terminal.
+Config v5 may be supplied with `--config`; see the configuration reference.
 
-```text
-<scan.cache_dir>/splined.db
-```
+## macOS
 
-Run logs and other candidate, sample, and transient cache files remain
-disposable.
+Extract the archive, keep `splined` executable, and run it from a terminal.
+If downloaded-file quarantine applies, review the file and clear quarantine
+according to local policy before execution.
 
-Credential files may contain API keys and OAuth tokens. Never commit or share
-them.
+## Python
 
-## First safe scan
+Install the dependencies declared by the supported Python package or use the
+published container image. Python and native implementations share Config v5
+and SQLite authority. Do not run concurrent writers against one database.
 
-1. Confirm library and scan paths.
-2. Validate Config v5 where the runtime exposes validation.
-3. Allow the Python/Docker media index to complete on first TUI launch.
-4. Use **Select Media** to choose a small Artist or Album set.
-5. Use Read first.
-6. Review provider candidates and local/embedded artwork decisions.
-7. Enable Write only after confirming output and replacement policy.
+## Safe validation
 
-Write changes Album folders. Use a backup, snapshot, copy, or staging library
-for initial validation.
+Start with READ mode. Confirm provider access, MusicBrainz identity, candidate
+ordering, destination paths, and run reports. Enable LIVE WRITE only after the
+reported decisions match the intended policy.
+
+For Windows-specific behavior, see [Windows guide](windows-guide.md). For all
+settings, see [Config v5 reference](config-v5-reference.md).

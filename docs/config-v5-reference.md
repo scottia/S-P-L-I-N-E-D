@@ -395,17 +395,12 @@ restores the floating hover preview without changing artwork policy.
 
 ## Validation
 
-Windows Settings **Validate Saved Settings** and **Save and Continue** validate
-`data/config.toml` before execution. The GUI passes the validated
-document directly to its Rust child process through that process's private
-environment; it creates no worker-specific runtime TOML. Native and
-Python/Docker implementations also validate Config v5; use the Docker example
-for container-specific paths.
+Windows Settings validates `data/config.toml` before saving. The validated
+configuration is consumed directly by the Rust backend in the same application
+process. Native and Python/container implementations also validate Config v5;
+use the container example for container-specific paths.
 
-The Windows Forms GUI is the fixed root `splined.exe` release artifact and uses
-the fixed `runtime\splined-core.exe` worker. Neither artifact is extracted or
-generated during ordinary startup or scanning. A user-approved update may
-stage and transactionally replace this verified pair through the separate
-temporary `splined-update.exe`; the updater is not part of Config v5 and never
-touches persistent data. `data/config.toml`, `data/ui.toml`, and configured
-credentials, SQLite/history, caches, and logs are never updater targets.
+The Windows portable release contains one `splined.exe`. A user-approved
+production update uses the signed standard update package. Application updates
+never target `data/config.toml`, `data/ui.toml`, credentials, SQLite/history,
+caches, or logs.
