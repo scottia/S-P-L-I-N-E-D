@@ -12,7 +12,7 @@ use splined::credentials::{
     save_lastfm_credential,
 };
 use splined::final_artwork::{install_prepared_artwork, prepare_existing_cover_edit};
-use splined::local_artwork::embedded_candidate;
+use splined::local_artwork::{embedded_candidate, embedded_preview_cache_dir};
 use splined::media_database::media_snapshot;
 use splined::musicbrainz::{
     MusicBrainzClient, OAuthCredential, load_credential as load_musicbrainz_credential,
@@ -817,7 +817,9 @@ async fn main() {
     }
 
     if let Some(path) = cli.embedded_artwork_preview.as_deref() {
-        match embedded_candidate(path, std::path::Path::new(&config.scan.temporary_cache_dir)) {
+        let configured_cache = std::path::Path::new(&config.scan.temporary_cache_dir);
+        let preview_cache = embedded_preview_cache_dir(configured_cache);
+        match embedded_candidate(path, &preview_cache) {
             Ok(Some(candidate)) => println!("{}", candidate.path().display()),
             Ok(None) => {}
             Err(error) => {

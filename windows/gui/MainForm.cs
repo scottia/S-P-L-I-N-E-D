@@ -1991,6 +1991,7 @@ namespace Splined.WindowsGui
                     StandardErrorEncoding = new UTF8Encoding(false)
                 };
                 start.EnvironmentVariables["SPLINED_CONFIG_TOML"] = ConfigStore.ExportConfigText(state.Clone());
+                start.EnvironmentVariables["SPLINED_EMBEDDED_PREVIEW_CACHE_DIR"] = EmbeddedArtworkPreviewCacheDirectory();
                 start.EnvironmentVariables["NO_COLOR"] = "1";
                 using (Process process = Process.Start(start))
                 {
@@ -2335,6 +2336,7 @@ namespace Splined.WindowsGui
             start.EnvironmentVariables["SPLINED_GUI_REVIEW"] = "1";
             if (autoScanEnabled) start.EnvironmentVariables["SPLINED_GUI_AUTO_IDEAL"] = "1";
             start.EnvironmentVariables["SPLINED_CONFIG_TOML"] = runConfigText;
+            start.EnvironmentVariables["SPLINED_EMBEDDED_PREVIEW_CACHE_DIR"] = EmbeddedArtworkPreviewCacheDirectory();
             // Pass the resolved physical Windows directory losslessly. The
             // shared SQLite identity may use proper Unicode while the same
             // SMB folder is exposed on Windows with a legacy-decoded name.
@@ -2397,6 +2399,11 @@ namespace Splined.WindowsGui
                 completion.TrySetResult(false);
             }
             return completion.Task;
+        }
+
+        internal static string EmbeddedArtworkPreviewCacheDirectory()
+        {
+            return Path.Combine(ConfigStore.DataRoot, "preview-cache");
         }
 
         private void HandleCoreLine(string line, bool error)

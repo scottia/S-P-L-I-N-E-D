@@ -11,8 +11,28 @@ use crate::source::ArtworkReference;
 use lofty::file::TaggedFileExt;
 use lofty::picture::PictureType;
 use sha2::{Digest, Sha256};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub const EMBEDDED_PREVIEW_CACHE_ENV: &str = "SPLINED_EMBEDDED_PREVIEW_CACHE_DIR";
+
+pub fn embedded_preview_cache_dir(configured_cache_dir: &Path) -> PathBuf {
+    resolve_embedded_preview_cache_dir(
+        std::env::var_os(EMBEDDED_PREVIEW_CACHE_ENV).as_deref(),
+        configured_cache_dir,
+    )
+}
+
+fn resolve_embedded_preview_cache_dir(
+    override_value: Option<&OsStr>,
+    configured_cache_dir: &Path,
+) -> PathBuf {
+    override_value
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| configured_cache_dir.to_path_buf())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalPreflightAction {
@@ -443,6 +463,25 @@ mod tests {
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
     use std::io::Cursor;
     use tempfile::tempdir;
+
+    #[test]
+    fn embedded_preview_cache_override_is_independent_of_configured_run_cache() {
+        let configured = Path::new(r"N:\media\music\_noinfo\_cache");
+        let portable = OsStr::new(r"E:\SPLINED\data\preview-cache");
+
+        assert_eq!(
+            resolve_embedded_preview_cache_dir(Some(portable), configured),
+            PathBuf::from(portable)
+        );
+        assert_eq!(
+            resolve_embedded_preview_cache_dir(Some(OsStr::new("  ")), configured),
+            configured
+        );
+        assert_eq!(
+            resolve_embedded_preview_cache_dir(None, configured),
+            configured
+        );
+    }
 
     fn write_image(path: &Path, width: u32, height: u32, format: ImageFormat) {
         let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(width, height, Rgb([3, 4, 5])));

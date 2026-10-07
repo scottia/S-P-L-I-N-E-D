@@ -13,6 +13,32 @@ use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::path::Path;
 
+pub fn embedded_front_sha256s(track_path: &Path) -> Result<Vec<String>, String> {
+    let tagged = lofty::read_from_path(track_path).map_err(|error| {
+        format!(
+            "Unable to read embedded artwork tags from {}: {error}",
+            track_path.display()
+        )
+    })?;
+    Ok(tagged
+        .tags()
+        .iter()
+        .flat_map(|tag| tag.pictures())
+        .filter(|picture| picture.pic_type() == PictureType::CoverFront)
+        .map(|picture| sha256_hex(picture.data()))
+        .collect())
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(value);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
 pub fn replace_embedded_front(track_path: &Path, artwork: &[u8]) -> Result<(), String> {
     let mut reader = Cursor::new(artwork);
     let mut picture = Picture::from_reader(&mut reader)
@@ -81,5 +107,13 @@ mod tests {
         let error = replace_embedded_front(Path::new("missing.mp3"), b"not-an-image")
             .expect_err("invalid image should fail first");
         assert!(error.contains("supported image"));
+    }
+
+    #[test]
+    fn embedded_artwork_digest_uses_lowercase_sha256() {
+        assert_eq!(
+            sha256_hex(b"SPLINED embedded artwork"),
+            "15bb1cd87155169d373d5c56732c7e98a0149f12a49f47d8ef06fdd2d1982f5b"
+        );
     }
 }

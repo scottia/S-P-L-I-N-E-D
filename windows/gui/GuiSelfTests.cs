@@ -99,6 +99,12 @@ namespace Splined.WindowsGui
                 };
                 ConfigStore.Save(state);
 
+                string embeddedPreviewCache = MainForm.EmbeddedArtworkPreviewCacheDirectory();
+                Assert(embeddedPreviewCache == Path.Combine(ConfigStore.DataRoot, "preview-cache")
+                    && !String.Equals(Path.GetFullPath(embeddedPreviewCache),
+                        Path.GetFullPath(state.TemporaryCacheDir), StringComparison.OrdinalIgnoreCase),
+                    "Compilation embedded previews still depended on the configured temporary run cache.");
+
                 ConfigState loaded = ConfigStore.Load();
                 Assert(loaded.Mode == "write", "Config v5 mode did not round-trip.");
                 Assert(loaded.IgnoredSubs.SequenceEqual(excludedFolders), "Excluded folders with bracketed names did not round-trip.");
