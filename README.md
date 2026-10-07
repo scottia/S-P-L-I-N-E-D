@@ -93,12 +93,11 @@ The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
 portable settings, and selective `.spl` backup/restore.
 
-The fixed Windows `splined.exe` GUI uses the shipped
-`runtime\splined-core.exe` worker. **Help > Check for Update...** can download
-and verify an official release after explicit approval, run the visible
-temporary `splined-update.exe`, transactionally replace the GUI/core pair with
-rollback protection, and restart. Ordinary startup and scanning never manage
-executable files. See
+The Windows portable application is one `splined.exe`. Its Tauri frontend calls
+the authoritative Rust processing backend in-process. Signed production builds
+use the official signed updater package after explicit approval; portable
+`data\` and configured external resources remain untouched. Unsigned developer
+builds cannot install public updates. See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
 ---
@@ -314,8 +313,8 @@ Interactive Python scans use OLED by default. Use `--tui-theme CHALK`, or
 [Python Ratatui TUI guide](docs/ratatui-tui.md).
 
 A bare native invocation scans the caller's current directory recursively.
-Windows portable users launch `splined.exe`; direct worker/CLI diagnostics use
-`runtime\splined-core.exe`.
+Windows portable users launch `splined.exe`; its desktop workflow always uses
+the saved portable Config v5 paths and is independent of process CWD.
 
 ---
 

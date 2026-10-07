@@ -9,6 +9,7 @@
 # Finalized Windows GUI build and local runtime state
 /debug/
 /windows/target/
+/windows/gen/
 /windows/.env
 /windows/.env.*
 /windows/config/

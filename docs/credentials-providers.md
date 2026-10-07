@@ -81,10 +81,9 @@ Account authorization is a separate workflow:
 3. exchange the authorized token with `auth.getSession`;
 4. retain `username`, `session_key`, and `subscriber` without losing the API key or shared secret.
 
-The native Windows worker command is `runtime\splined-core.exe --lastfm-login`;
-use `./splined --lastfm-login` on Linux/macOS. It polls the pending authorization
-for up to 60 seconds. Python/Docker exposes `splined --lastfm-login` and performs
-the same Last.fm API sequence after the user confirms browser authorization.
+On Windows, save `lastfm.json`, choose **Authorize** in Credentials, approve the
+browser request, and choose **Complete**. Linux/macOS and Python/container
+commands expose `--lastfm-login` and perform the same API sequence.
 
 ## Discogs
 
@@ -143,17 +142,13 @@ metadata lookup. If a nominally current bearer token is rejected, it forces one
 refresh and retries once. Successful renewal atomically updates only the
 MusicBrainz credential while preserving its other fields.
 
-## Windows GUI versus runtime authorization
+## Windows authorization
 
-Use **File > Credentials...** or **Settings > Advanced > Library, Paths & Processing > Credentials / Status...** to edit provider fields and test saved credentials.
-
-The MusicBrainz GUI test validates an already-present access token through `/oauth2/userinfo`. It does not perform the browser authorization-code exchange. Use the core command:
-
-```text
-runtime\splined-core.exe --mb-oauth-login
-```
-
-The root native and Python/Docker commands expose the corresponding `--mb-oauth-login` option.
+Use **Credentials** to edit provider JSON. For MusicBrainz, save the application
+fields, choose **Authorize**, approve the request, paste the returned code, and
+choose **Complete**. The in-process Rust backend performs PKCE exchange and
+atomically updates the same credential file. Root native and Python/container
+commands expose the corresponding `--mb-oauth-login` option.
 
 ## Moving or backing up credentials
 

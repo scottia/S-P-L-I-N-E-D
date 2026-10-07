@@ -60,7 +60,7 @@ with the current product documentation.
 
 | Runtime | User interface | Configuration | Persistent state |
 | --- | --- | --- | --- |
-| Windows | Native Windows Forms | Portable `data/config.toml` plus `data/ui.toml` | `splined.db` plus separately stored credentials |
+| Windows | Tauri v2 desktop | Portable `data/config.toml` plus `data/ui.toml` | `splined.db` plus separately stored credentials |
 | Python/Docker | Ratatui when attached to a terminal; plain CLI when redirected or disabled | File-backed Config v5 | `splined.db` plus separately stored credentials |
 | Linux/macOS native CLI | Command line | File-backed Config v5 | Runtime-selected cache and database paths |
 

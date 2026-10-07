@@ -104,20 +104,24 @@ fn all_public_examples_are_config_v5_and_secret_free() {
 }
 
 #[test]
-fn windows_identity_and_release_domains_stay_separate() {
+fn windows_and_release_versions_advance_coherently() {
     let manifest = fs::read_to_string("windows/Cargo.toml").expect("Windows manifest");
     let manifest: toml::Value = toml::from_str(&manifest).expect("Windows manifest TOML");
     assert_eq!(manifest["package"]["version"].as_str(), Some("3.0.0"));
 
-    let release_info = fs::read_to_string("windows/gui/ReleaseInfo.cs").expect("ReleaseInfo.cs");
-    assert!(release_info.contains("NumericVersion = \"3.0.0\""));
-    assert!(release_info.contains("Channel = \"Stable\""));
-    assert!(release_info.contains("HelpUrl = RepositoryUrl + \"/blob/main/docs/README.md\""));
+    let tauri = fs::read_to_string("windows/tauri.conf.json").expect("Tauri configuration");
+    let tauri: serde_json::Value = serde_json::from_str(&tauri).expect("Tauri configuration JSON");
+    assert_eq!(tauri["version"].as_str(), Some("3.0.0"));
+    assert_eq!(tauri["productName"].as_str(), Some("SPLINED"));
 
     let workflow =
         fs::read_to_string(".github/workflows/release-next-patch.yml").expect("release workflow");
-    assert!(workflow.contains("expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\")"));
-    assert!(!workflow.contains("cargo set-version --manifest-path windows/Cargo.toml"));
+    assert!(workflow.contains(
+        "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/tauri.conf.json\")"
+    ));
+    assert!(
+        workflow.contains("baseline = max([source_version, windows_source_version, *versions])")
+    );
     assert!(workflow.contains("ref: refs/tags/${{ needs.prepare-release.outputs.version }}"));
     assert!(workflow.contains("packages: write"));
 

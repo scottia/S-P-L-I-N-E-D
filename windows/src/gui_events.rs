@@ -1,20 +1,124 @@
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock, mpsc::Sender};
+use std::sync::{
+    Mutex, OnceLock,
+    mpsc::{Receiver, Sender},
+};
 
-pub const PREFIX: &str = "@@SPLINED_GUI@@";
 static EVENT_SENDER: OnceLock<Mutex<Option<Sender<Value>>>> = OnceLock::new();
+static DECISION_SENDER: OnceLock<Mutex<Option<Sender<Value>>>> = OnceLock::new();
+static DECISION_RECEIVER: OnceLock<Mutex<Option<Receiver<Value>>>> = OnceLock::new();
 static BYPASS_OVERRIDES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 static CANCELLED: AtomicBool = AtomicBool::new(false);
+static IN_PROCESS: AtomicBool = AtomicBool::new(false);
+static REVIEW_REQUIRED: AtomicBool = AtomicBool::new(false);
+static AUTO_IDEAL: AtomicBool = AtomicBool::new(false);
+static SCAN_CONTEXT: OnceLock<Mutex<ScanBridgeContext>> = OnceLock::new();
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanBridgeContext {
+    pub compilation_track_path: Option<PathBuf>,
+    pub fallback_album: Option<String>,
+    pub fallback_artist: Option<String>,
+    pub indexed_album_path: Option<PathBuf>,
+    pub indexed_album_key: Option<String>,
+}
 
 pub fn set_sender(sender: Option<Sender<Value>>) {
     let slot = EVENT_SENDER.get_or_init(|| Mutex::new(None));
     if let Ok(mut current) = slot.lock() {
         *current = sender;
     }
+}
+
+pub fn begin_in_process(
+    event_sender: Sender<Value>,
+    review_required: bool,
+    auto_ideal: bool,
+) -> Result<(), String> {
+    let (decision_sender, decision_receiver) = std::sync::mpsc::channel();
+    set_sender(Some(event_sender));
+    *DECISION_SENDER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "SPLINED decision sender is unavailable.".to_string())? =
+        Some(decision_sender);
+    *DECISION_RECEIVER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "SPLINED decision receiver is unavailable.".to_string())? =
+        Some(decision_receiver);
+    REVIEW_REQUIRED.store(review_required, Ordering::SeqCst);
+    AUTO_IDEAL.store(review_required && auto_ideal, Ordering::SeqCst);
+    IN_PROCESS.store(true, Ordering::SeqCst);
+    reset_cancel();
+    Ok(())
+}
+
+pub fn end_in_process() {
+    IN_PROCESS.store(false, Ordering::SeqCst);
+    REVIEW_REQUIRED.store(false, Ordering::SeqCst);
+    AUTO_IDEAL.store(false, Ordering::SeqCst);
+    set_sender(None);
+    if let Some(slot) = DECISION_SENDER.get()
+        && let Ok(mut current) = slot.lock()
+    {
+        *current = None;
+    }
+    if let Some(slot) = DECISION_RECEIVER.get()
+        && let Ok(mut current) = slot.lock()
+    {
+        *current = None;
+    }
+    set_bypass_overrides(std::iter::empty());
+    set_scan_context(ScanBridgeContext::default());
+}
+
+pub fn set_scan_context(context: ScanBridgeContext) {
+    if let Ok(mut current) = SCAN_CONTEXT
+        .get_or_init(|| Mutex::new(ScanBridgeContext::default()))
+        .lock()
+    {
+        *current = context;
+    }
+}
+
+pub fn scan_context() -> ScanBridgeContext {
+    SCAN_CONTEXT
+        .get_or_init(|| Mutex::new(ScanBridgeContext::default()))
+        .lock()
+        .map(|current| current.clone())
+        .unwrap_or_default()
+}
+
+pub fn submit_decision(value: Value) -> Result<(), String> {
+    let slot = DECISION_SENDER
+        .get()
+        .ok_or_else(|| "No SPLINED scan is waiting for a decision.".to_string())?;
+    let sender = slot
+        .lock()
+        .map_err(|_| "SPLINED decision sender is unavailable.".to_string())?
+        .clone()
+        .ok_or_else(|| "No SPLINED scan is waiting for a decision.".to_string())?;
+    sender
+        .send(value)
+        .map_err(|_| "The active SPLINED scan no longer accepts decisions.".to_string())
+}
+
+fn receive_in_process_decision() -> Result<Value, String> {
+    let slot = DECISION_RECEIVER
+        .get()
+        .ok_or_else(|| "SPLINED in-process decision channel is unavailable.".to_string())?;
+    let receiver = slot
+        .lock()
+        .map_err(|_| "SPLINED decision receiver is unavailable.".to_string())?;
+    receiver
+        .as_ref()
+        .ok_or_else(|| "SPLINED in-process decision channel is closed.".to_string())?
+        .recv()
+        .map_err(|_| "SPLINED decision channel closed before a choice was made.".to_string())
 }
 
 pub fn request_cancel() {
@@ -38,17 +142,6 @@ pub fn set_bypass_overrides(paths: impl IntoIterator<Item = PathBuf>) {
 }
 
 pub fn bypass_allowed(path: &Path) -> bool {
-    if std::env::var("SPLINED_BYPASS_OVERRIDE")
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
-    {
-        return true;
-    }
     BYPASS_OVERRIDES
         .get()
         .and_then(|slot| slot.lock().ok())
@@ -56,31 +149,15 @@ pub fn bypass_allowed(path: &Path) -> bool {
 }
 
 pub fn enabled() -> bool {
-    std::env::var_os("SPLINED_GUI_EVENTS").is_some()
+    IN_PROCESS.load(Ordering::SeqCst)
 }
 
 pub fn review_required() -> bool {
-    enabled()
-        && std::env::var("SPLINED_GUI_REVIEW")
-            .ok()
-            .is_some_and(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes"
-                )
-            })
+    enabled() && REVIEW_REQUIRED.load(Ordering::SeqCst)
 }
 
 pub fn auto_ideal_enabled() -> bool {
-    review_required()
-        && std::env::var("SPLINED_GUI_AUTO_IDEAL")
-            .ok()
-            .is_some_and(|value| {
-                matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes"
-                )
-            })
+    review_required() && AUTO_IDEAL.load(Ordering::SeqCst)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,160 +247,91 @@ fn parse_musicbrainz_match_decision(
 
 pub fn wait_for_musicbrainz_match_decision() -> Result<MusicBrainzMatchDecision, String> {
     loop {
-        let mut answer = String::new();
-        io::stdin()
-            .read_line(&mut answer)
-            .map_err(|error| format!("Unable to read MusicBrainz match decision: {error}"))?;
-        if answer.is_empty() {
-            return Err("MusicBrainz match input closed before a choice was made.".to_string());
-        }
-        let trimmed = answer.trim();
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed)
-            && let Some(decision) = parse_musicbrainz_match_decision(&value)?
-        {
+        let value = receive_in_process_decision()?;
+        if let Some(decision) = parse_musicbrainz_match_decision(&value)? {
             return Ok(decision);
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "b" | "skip" => return Ok(MusicBrainzMatchDecision::LeaveUnchanged),
-            value if value.parse::<usize>().is_ok_and(|index| index > 0) => {
-                return Ok(MusicBrainzMatchDecision::Use(
-                    value.parse::<usize>().unwrap() - 1,
-                ));
-            }
-            _ => {}
         }
     }
 }
 
 pub fn decisions_available() -> bool {
-    enabled() || io::stdin().is_terminal()
+    enabled()
 }
 
 pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
     loop {
-        let mut answer = String::new();
-        io::stdin()
-            .read_line(&mut answer)
-            .map_err(|error| format!("Unable to read artwork decision: {error}"))?;
-        if answer.is_empty() {
-            return Err("Artwork decision input closed before a choice was made.".to_string());
-        }
-        let trimmed = answer.trim();
-        if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
-            match value.get("action").and_then(Value::as_str).unwrap_or("") {
-                "use" => {
-                    let index = value.get("index").and_then(Value::as_u64).ok_or_else(|| {
-                        "Artwork decision did not include a candidate index.".to_string()
-                    })?;
-                    if index == 0 {
-                        return Err("Artwork candidate indexes start at 1.".to_string());
-                    }
-                    let upscale =
-                        value
-                            .get("upscale_adaptive_defaults")
-                            .map(|_| UpscaleOverrides {
-                                adaptive_defaults: value
-                                    .get("upscale_adaptive_defaults")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(true),
-                                picture_percent: value
-                                    .get("upscale_picture_percent")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                sharpen_percent: value
-                                    .get("upscale_sharpen_percent")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                softness_percent: value
-                                    .get("upscale_softness_percent")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                contrast_percent: value
-                                    .get("upscale_contrast_percent")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                exposure_percent: value
-                                    .get("upscale_exposure_percent")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                brightness_percent: value
-                                    .get("upscale_brightness_percent")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                gamma_percent: value
-                                    .get("upscale_gamma_percent")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                color_temperature: value
-                                    .get("upscale_color_temperature")
-                                    .and_then(Value::as_i64)
-                                    .unwrap_or(0)
-                                    as i32,
-                                apply_edit_profile: value
-                                    .get("apply_edit_profile")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false),
-                                edit_existing_cover: value
-                                    .get("edit_existing_cover")
-                                    .and_then(Value::as_bool)
-                                    .unwrap_or(false),
-                            });
-                    return Ok(CandidateDecision::Use {
-                        index: index as usize - 1,
-                        upscale,
-                    });
-                }
-                "bypass" | "skip" => return Ok(CandidateDecision::Bypass),
-                "retry_musicbrainz" => return Ok(CandidateDecision::RetryMusicBrainz),
-                "back_musicbrainz" => return Ok(CandidateDecision::BackToMusicBrainz),
-                "retry" => {
-                    let artist = value
-                        .get("artist")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    let album = value
-                        .get("album")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .trim()
-                        .to_string();
-                    if artist.is_empty() || album.is_empty() {
-                        return Err("Fallback retry requires both Artist and Album.".to_string());
-                    }
-                    return Ok(CandidateDecision::Retry { artist, album });
-                }
-                _ => {}
-            }
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "b" | "bypass" | "skip" => return Ok(CandidateDecision::Bypass),
-            "m" => return Ok(CandidateDecision::RetryMusicBrainz),
-            "back" => return Ok(CandidateDecision::BackToMusicBrainz),
-            value => {
-                if let Ok(index) = value.parse::<usize>()
-                    && index > 0
-                {
-                    return Ok(CandidateDecision::Use {
-                        index: index - 1,
-                        upscale: None,
-                    });
-                }
-            }
-        }
-        if !enabled() {
-            print!("Choose a candidate number or b to bypass: ");
-            let _ = io::stdout().flush();
+        let value = receive_in_process_decision()?;
+        if let Some(decision) = parse_candidate_decision(&value)? {
+            return Ok(decision);
         }
     }
+}
+
+fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, String> {
+    match value.get("action").and_then(Value::as_str).unwrap_or("") {
+        "use" => {
+            let index = value
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "Artwork decision did not include a candidate index.".to_string())?;
+            if index == 0 {
+                return Err("Artwork candidate indexes start at 1.".to_string());
+            }
+            let upscale = value
+                .get("upscale_adaptive_defaults")
+                .map(|_| UpscaleOverrides {
+                    adaptive_defaults: value
+                        .get("upscale_adaptive_defaults")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    picture_percent: decision_i32(value, "upscale_picture_percent"),
+                    sharpen_percent: decision_i32(value, "upscale_sharpen_percent"),
+                    softness_percent: decision_i32(value, "upscale_softness_percent"),
+                    contrast_percent: decision_i32(value, "upscale_contrast_percent"),
+                    exposure_percent: decision_i32(value, "upscale_exposure_percent"),
+                    brightness_percent: decision_i32(value, "upscale_brightness_percent"),
+                    gamma_percent: decision_i32(value, "upscale_gamma_percent"),
+                    color_temperature: decision_i32(value, "upscale_color_temperature"),
+                    apply_edit_profile: value
+                        .get("apply_edit_profile")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    edit_existing_cover: value
+                        .get("edit_existing_cover")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                });
+            Ok(Some(CandidateDecision::Use {
+                index: index as usize - 1,
+                upscale,
+            }))
+        }
+        "bypass" | "skip" => Ok(Some(CandidateDecision::Bypass)),
+        "retry_musicbrainz" => Ok(Some(CandidateDecision::RetryMusicBrainz)),
+        "back_musicbrainz" => Ok(Some(CandidateDecision::BackToMusicBrainz)),
+        "retry" => {
+            let artist = decision_text(value, "artist");
+            let album = decision_text(value, "album");
+            if artist.is_empty() || album.is_empty() {
+                return Err("Fallback retry requires both Artist and Album.".to_string());
+            }
+            Ok(Some(CandidateDecision::Retry { artist, album }))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn decision_i32(value: &Value, key: &str) -> i32 {
+    value.get(key).and_then(Value::as_i64).unwrap_or(0) as i32
+}
+
+fn decision_text(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string()
 }
 
 pub fn emit(value: Value) {
@@ -331,13 +339,8 @@ pub fn emit(value: Value) {
         && let Ok(current) = slot.lock()
         && let Some(sender) = current.as_ref()
     {
-        let _ = sender.send(value.clone());
+        let _ = sender.send(value);
     }
-    if !enabled() {
-        return;
-    }
-    println!("{PREFIX}{value}");
-    let _ = io::stdout().flush();
 }
 
 #[cfg(test)]

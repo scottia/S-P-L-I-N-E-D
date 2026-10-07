@@ -27,3 +27,5 @@ pub mod source;
 pub mod source_history;
 pub mod source_policy;
 pub mod strict_source_policy;
+pub mod windows_backup;
+pub mod windows_state;

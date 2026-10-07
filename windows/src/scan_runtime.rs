@@ -1814,6 +1814,8 @@ struct MusicBrainzSessionAuthority {
     recording_mbid: Option<String>,
     artist_mbids: Vec<String>,
     release_mbid: String,
+    release_title: String,
+    release_artist: String,
 }
 
 impl MusicBrainzSessionAuthority {
@@ -1823,10 +1825,22 @@ impl MusicBrainzSessionAuthority {
             recording_mbid,
             artist_mbids,
             release_mbid: track.musicbrainz_album_id.clone().unwrap_or_default(),
+            release_title: track.album.clone().unwrap_or_default(),
+            release_artist: track
+                .album_artist
+                .clone()
+                .unwrap_or_else(|| track.artist.clone()),
         }
     }
 
-    fn apply(&mut self, recording_mbid: &str, artist_mbids: &str, release_mbid: &str) {
+    fn apply(
+        &mut self,
+        recording_mbid: &str,
+        artist_mbids: &str,
+        release_mbid: &str,
+        release_title: &str,
+        release_artist: &str,
+    ) {
         let recording_mbid = recording_mbid.trim();
         self.recording_mbid =
             (!recording_mbid.is_empty()).then(|| recording_mbid.to_ascii_lowercase());
@@ -1839,6 +1853,8 @@ impl MusicBrainzSessionAuthority {
             .map(str::to_ascii_lowercase)
             .collect();
         self.release_mbid = release_mbid.trim().to_ascii_lowercase();
+        self.release_title = release_title.to_string();
+        self.release_artist = release_artist.to_string();
     }
 }
 
@@ -1921,8 +1937,15 @@ async fn run_normal_musicbrainz_browser(
                             continue;
                         }
                     };
-                    authority.apply(&recording_mbid, &artist_mbids, &release_mbid);
-                    (edited.remove(0), true)
+                    let selected = edited.remove(0);
+                    authority.apply(
+                        &recording_mbid,
+                        &artist_mbids,
+                        &release_mbid,
+                        &selected.release_title,
+                        &selected.release_artist,
+                    );
+                    (selected, true)
                 }
                 gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
                     return Ok(NormalBrowserOutcome::ReturnToSources);
@@ -2085,7 +2108,7 @@ fn emit_normal_musicbrainz_matches(
                 "release_group_mbid": item.release_group_mbid, "release_class": item.release_class,
                 "release_title": item.release_title, "release_artist": item.release_artist,
                 "release_date": item.release_date, "country": item.country, "score": item.score,
-                "url": item.url, "decade": crate::compilation::decade(item.release_date.as_deref()),
+                "url": item.url,
                 "resolution": resolutions.get(&item.release_mbid),
                 "visited": visited_releases.contains(&item.release_mbid),
                 "current": current_release.is_some_and(|value| value.eq_ignore_ascii_case(&item.release_mbid)) })
@@ -2099,6 +2122,8 @@ fn emit_normal_musicbrainz_matches(
         "authority_recording_mbid": authority.recording_mbid.as_deref().unwrap_or(""),
         "authority_artist_mbids": authority.artist_mbids.join(", "),
         "authority_release_mbid": authority.release_mbid,
+        "authority_release_title": authority.release_title,
+        "authority_release_artist": authority.release_artist,
         "compilation_track": false, "items": items }),
     );
 }
@@ -2118,7 +2143,7 @@ async fn run_compilation_album(
         format_order,
         cache_dir,
     } = context;
-    let requested_track = std::env::var_os("SPLINED_COMPILATION_TRACK_PATH").map(PathBuf::from);
+    let requested_track = gui_events::scan_context().compilation_track_path;
     let tracks = if let Some(requested) = requested_track.as_ref() {
         let targeted = tracks
             .iter()
@@ -2329,8 +2354,15 @@ async fn run_compilation_album(
                                 continue 'match_selection;
                             }
                         };
-                        authority.apply(&recording_mbid, &artist_mbids, &release_mbid);
-                        selected_match = Some(edited.remove(0));
+                        let selected = edited.remove(0);
+                        authority.apply(
+                            &recording_mbid,
+                            &artist_mbids,
+                            &release_mbid,
+                            &selected.release_title,
+                            &selected.release_artist,
+                        );
+                        selected_match = Some(selected);
                         selected_from_authority = true;
                     }
                     gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
@@ -2667,7 +2699,6 @@ fn emit_musicbrainz_matches(
         "release_class": item.release_class, "release_title": item.release_title,
         "release_artist": item.release_artist, "release_date": item.release_date,
         "country": item.country, "score": item.score, "url": item.url,
-        "decade": crate::compilation::decade(item.release_date.as_deref()),
         "visited": visited_releases.contains(&item.release_mbid),
         "current": current_release.is_some_and(|value| value.eq_ignore_ascii_case(&item.release_mbid)),
     })).collect::<Vec<_>>();
@@ -2679,6 +2710,8 @@ fn emit_musicbrainz_matches(
         "authority_recording_mbid": authority.recording_mbid.as_deref().unwrap_or(""),
         "authority_artist_mbids": authority.artist_mbids.join(", "),
         "authority_release_mbid": authority.release_mbid,
+        "authority_release_title": authority.release_title,
+        "authority_release_artist": authority.release_artist,
         "compilation_track": true, "items": items }),
     );
 }
@@ -3230,8 +3263,9 @@ fn fallback_provider_context(
     tracks: &[LocalTrackEvidence],
     tagged_album: Option<&str>,
 ) -> Option<ProviderContext> {
-    let release_title = std::env::var("SPLINED_FALLBACK_ALBUM")
-        .ok()
+    let bridge = gui_events::scan_context();
+    let release_title = bridge
+        .fallback_album
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or_else(|| {
@@ -3248,8 +3282,8 @@ fn fallback_provider_context(
                         .map(str::to_string)
                 })
         })?;
-    let artist_credit = std::env::var("SPLINED_FALLBACK_ARTIST")
-        .ok()
+    let artist_credit = bridge
+        .fallback_artist
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or_else(|| {
@@ -3302,8 +3336,9 @@ fn record_runtime_completion(
     final_logged_started: Instant,
 ) -> Result<(), String> {
     let pre_persistence_ms = elapsed_ms(post_cover_started);
-    let indexed_album_path = std::env::var_os("SPLINED_INDEXED_ALBUM_PATH").map(PathBuf::from);
-    let indexed_album_key = std::env::var("SPLINED_INDEXED_ALBUM_KEY").ok();
+    let bridge = gui_events::scan_context();
+    let indexed_album_path = bridge.indexed_album_path;
+    let indexed_album_key = bridge.indexed_album_key;
     let timing = record_album_outcome_from_runtime(
         config,
         &album.path,
@@ -3671,6 +3706,34 @@ mod tests {
             ..overrides
         };
         assert!(apply_upscale_overrides(&mut output, &invalid).is_err());
+    }
+
+    #[test]
+    fn applying_ids_updates_only_the_musicbrainz_authority() {
+        let ordinary_results = vec!["ordinary-release-a", "ordinary-release-b"];
+        let mut authority = MusicBrainzSessionAuthority {
+            recording_mbid: Some("old-recording".into()),
+            artist_mbids: vec!["old-artist".into()],
+            release_mbid: "old-release".into(),
+            release_title: "Old Album".into(),
+            release_artist: "Old Artist".into(),
+        };
+        authority.apply(
+            "NEW-RECORDING",
+            "NEW-ARTIST",
+            "NEW-RELEASE",
+            "Applied Album",
+            "Applied Artist",
+        );
+        assert_eq!(authority.recording_mbid.as_deref(), Some("new-recording"));
+        assert_eq!(authority.artist_mbids, ["new-artist"]);
+        assert_eq!(authority.release_mbid, "new-release");
+        assert_eq!(authority.release_title, "Applied Album");
+        assert_eq!(authority.release_artist, "Applied Artist");
+        assert_eq!(
+            ordinary_results,
+            ["ordinary-release-a", "ordinary-release-b"]
+        );
     }
 
     #[test]

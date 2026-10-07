@@ -679,15 +679,6 @@ pub fn load_config() -> Result<Config, String> {
     let root = app_root()?;
     resolve_runtime_paths(&mut config, &root);
 
-    // A completely bare native invocation is the operational scan command.
-    // Keep explicit --scan-dir behavior config-driven, but make `splined`
-    // itself scan the caller's current working directory recursively.
-    if std::env::args_os().len() == 1 {
-        let current_dir = std::env::current_dir()
-            .map_err(|error| format!("Unable to determine current working directory: {error}"))?;
-        config.scan.scan_library_dir = current_dir.to_string_lossy().into_owned();
-    }
-
     Ok(config)
 }
 
@@ -863,12 +854,19 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
 /// Relative paths retain the same application-root semantics as file-backed
 /// configuration, and the source text must never be written to diagnostics.
 pub fn load_config_text(text: &str) -> Result<Config, String> {
+    let root = app_root()?;
+    load_config_text_at_root(text, &root)
+}
+
+/// Load and resolve Config v5 against an explicit portable root. This keeps
+/// restore validation deterministic when the same backup is applied in two
+/// different portable directories.
+pub fn load_config_text_at_root(text: &str, root: &Path) -> Result<Config, String> {
     if text.trim().is_empty() {
         return Err("SPLINED received empty Windows Config v5 settings.".to_string());
     }
     let mut config = parse_config(text)?;
-    let root = app_root()?;
-    resolve_runtime_paths(&mut config, &root);
+    resolve_runtime_paths(&mut config, root);
     Ok(config)
 }
 
@@ -1091,20 +1089,48 @@ mod tests {
     }
 
     #[test]
-    fn worker_relocation_preserves_sqlite_and_all_runtime_path_authority() {
+    fn portable_config_moves_with_relative_state_and_preserves_absolute_authority() {
+        let text = default_toml().unwrap();
+        let first = load_config_text_at_root(&text, Path::new(r"C:\Portable\One")).unwrap();
+        let second = load_config_text_at_root(&text, Path::new(r"D:\Portable\Two")).unwrap();
+        assert_eq!(first.scan.cache_dir, r"C:\Portable\One\_cache");
+        assert_eq!(second.scan.cache_dir, r"D:\Portable\Two\_cache");
+
+        let mut explicit = parse_config(&text).unwrap();
+        explicit.library.music_library = r"\\server\music".into();
+        explicit.scan.cache_dir = r"E:\State\Database".into();
+        explicit.credentials.credential_dir = r"\\server\private\credentials".into();
+        let explicit_text = toml::to_string_pretty(&explicit).unwrap();
+        let first =
+            load_config_text_at_root(&explicit_text, Path::new(r"C:\Portable\One")).unwrap();
+        let second =
+            load_config_text_at_root(&explicit_text, Path::new(r"D:\Portable\Two")).unwrap();
+        assert_eq!(first.library.music_library, r"\\server\music");
+        assert_eq!(second.library.music_library, r"\\server\music");
+        assert_eq!(first.scan.cache_dir, r"E:\State\Database");
+        assert_eq!(second.scan.cache_dir, r"E:\State\Database");
+        assert_eq!(
+            first.credentials.credential_dir,
+            r"\\server\private\credentials"
+        );
+        assert_eq!(
+            first.credentials.credential_dir,
+            second.credentials.credential_dir
+        );
+    }
+
+    #[test]
+    fn single_executable_preserves_sqlite_and_all_runtime_path_authority() {
         use crate::media_database::database_path;
         use crate::portable::{AppLayout, portable_root_from_executable};
 
         let portable_root = PathBuf::from(r"C:\Portable\SPLINED");
-        let old_worker = portable_root.join("splined-core.exe");
-        let relocated_worker = portable_root.join("runtime").join("splined-core.exe");
-        let old_root = portable_root_from_executable(&old_worker).unwrap();
-        let relocated_root = portable_root_from_executable(&relocated_worker).unwrap();
-        assert_eq!(old_root, portable_root);
-        assert_eq!(relocated_root, portable_root);
+        let executable = portable_root.join("splined.exe");
+        let resolved_root = portable_root_from_executable(&executable).unwrap();
+        assert_eq!(resolved_root, portable_root);
 
-        let before_layout = AppLayout::from_root(old_root.clone());
-        let after_layout = AppLayout::from_root(relocated_root.clone());
+        let before_layout = AppLayout::from_root(resolved_root.clone());
+        let after_layout = AppLayout::from_root(resolved_root.clone());
         assert_eq!(before_layout, after_layout);
         assert_eq!(
             after_layout.config_file,
@@ -1116,43 +1142,15 @@ mod tests {
             after_layout.credentials_dir,
             portable_root.join("credentials")
         );
-        assert!(
-            !after_layout
-                .config_file
-                .starts_with(portable_root.join("runtime"))
-        );
-        assert!(
-            !after_layout
-                .cache_dir
-                .starts_with(portable_root.join("runtime"))
-        );
-        assert!(
-            !after_layout
-                .logs_dir
-                .starts_with(portable_root.join("runtime"))
-        );
-        assert!(
-            !after_layout
-                .credentials_dir
-                .starts_with(portable_root.join("runtime"))
-        );
-
         let source = parse_config(&default_toml().unwrap()).unwrap();
         let mut before = source.clone();
         let mut after = source;
-        resolve_runtime_paths(&mut before, &old_root);
-        resolve_runtime_paths(&mut after, &relocated_root);
+        resolve_runtime_paths(&mut before, &resolved_root);
+        resolve_runtime_paths(&mut after, &resolved_root);
         assert_eq!(before, after);
         let expected_database = portable_root.join("_cache").join("splined.db");
         assert_eq!(database_path(&before.scan.cache_dir), expected_database);
         assert_eq!(database_path(&after.scan.cache_dir), expected_database);
-        assert_ne!(
-            database_path(&after.scan.cache_dir),
-            portable_root
-                .join("runtime")
-                .join("_cache")
-                .join("splined.db")
-        );
 
         let mut explicit = parse_config(&default_toml().unwrap()).unwrap();
         explicit.scan.cache_dir = r"\\server\share\SPLINED database".to_string();
@@ -1162,7 +1160,7 @@ mod tests {
         explicit.library.music_library = r"\\server\music".to_string();
         explicit.scan.scan_library_dir = r"\\server\music".to_string();
         let expected = explicit.clone();
-        resolve_runtime_paths(&mut explicit, &relocated_root);
+        resolve_runtime_paths(&mut explicit, &resolved_root);
         assert_eq!(explicit.scan.cache_dir, expected.scan.cache_dir);
         assert_eq!(
             database_path(&explicit.scan.cache_dir),
