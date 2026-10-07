@@ -396,7 +396,7 @@ fn decode_utf16(bytes: &[u8], forced_big_endian: Option<bool>) -> String {
     } else {
         (false, bytes)
     };
-    let units = content.chunks_exact(2).map(|pair| {
+    let units = content.as_chunks::<2>().0.iter().map(|pair| {
         if big_endian {
             u16::from_be_bytes([pair[0], pair[1]])
         } else {

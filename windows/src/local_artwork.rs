@@ -11,27 +11,13 @@ use crate::source::ArtworkReference;
 use lofty::file::TaggedFileExt;
 use lofty::picture::PictureType;
 use sha2::{Digest, Sha256};
-use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const EMBEDDED_PREVIEW_CACHE_ENV: &str = "SPLINED_EMBEDDED_PREVIEW_CACHE_DIR";
-
 pub fn embedded_preview_cache_dir(configured_cache_dir: &Path) -> PathBuf {
-    resolve_embedded_preview_cache_dir(
-        std::env::var_os(EMBEDDED_PREVIEW_CACHE_ENV).as_deref(),
-        configured_cache_dir,
-    )
-}
-
-fn resolve_embedded_preview_cache_dir(
-    override_value: Option<&OsStr>,
-    configured_cache_dir: &Path,
-) -> PathBuf {
-    override_value
-        .filter(|value| !value.to_string_lossy().trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| configured_cache_dir.to_path_buf())
+    crate::portable::app_layout()
+        .map(|layout| layout.config_dir.join("preview-cache"))
+        .unwrap_or_else(|_| configured_cache_dir.to_path_buf())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,21 +451,12 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn embedded_preview_cache_override_is_independent_of_configured_run_cache() {
-        let configured = Path::new(r"N:\media\music\_noinfo\_cache");
-        let portable = OsStr::new(r"E:\SPLINED\data\preview-cache");
-
+    fn embedded_preview_cache_is_owned_by_the_portable_data_directory() {
+        let root = PathBuf::from(r"E:\SPLINED");
+        let layout = crate::portable::AppLayout::from_root(root.clone());
         assert_eq!(
-            resolve_embedded_preview_cache_dir(Some(portable), configured),
-            PathBuf::from(portable)
-        );
-        assert_eq!(
-            resolve_embedded_preview_cache_dir(Some(OsStr::new("  ")), configured),
-            configured
-        );
-        assert_eq!(
-            resolve_embedded_preview_cache_dir(None, configured),
-            configured
+            layout.config_dir.join("preview-cache"),
+            root.join("data").join("preview-cache")
         );
     }
 

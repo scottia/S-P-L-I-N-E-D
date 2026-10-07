@@ -2,8 +2,6 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 
-pub const APP_ROOT_ENV: &str = "SPLINED_HOME";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppLayout {
     pub root: PathBuf,
@@ -38,20 +36,6 @@ impl AppLayout {
 }
 
 pub fn app_root() -> Result<PathBuf, String> {
-    if let Some(configured) = std::env::var_os(APP_ROOT_ENV) {
-        let configured = PathBuf::from(configured);
-        if configured.as_os_str().is_empty() {
-            return Err(format!("{APP_ROOT_ENV} cannot be empty."));
-        }
-        return if configured.is_absolute() {
-            Ok(configured)
-        } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(configured))
-                .map_err(|error| format!("Unable to resolve {APP_ROOT_ENV}: {error}"))
-        };
-    }
-
     let executable = std::env::current_exe()
         .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
     portable_root_from_executable(&executable)
@@ -63,19 +47,6 @@ pub(crate) fn portable_root_from_executable(
     let parent = executable
         .parent()
         .ok_or_else(|| "Unable to determine SPLINED application directory.".to_string())?;
-    let is_runtime_worker = parent
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case("runtime"))
-        && executable
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.eq_ignore_ascii_case("splined-core.exe"));
-    if is_runtime_worker {
-        return parent.parent().map(PathBuf::from).ok_or_else(|| {
-            "Unable to determine the SPLINED portable directory above runtime.".to_string()
-        });
-    }
     Ok(parent.to_path_buf())
 }
 
@@ -163,15 +134,11 @@ mod tests {
     }
 
     #[test]
-    fn packaged_runtime_worker_resolves_the_parent_portable_root() {
-        let root = PathBuf::from("portable-root");
-        let worker = root.join("runtime").join("splined-core.exe");
-        assert_eq!(portable_root_from_executable(&worker).unwrap(), root);
-
-        let direct = PathBuf::from("build").join("splined-core.exe");
+    fn executable_parent_is_the_portable_root() {
+        let direct = PathBuf::from("portable-root").join("splined.exe");
         assert_eq!(
             portable_root_from_executable(&direct).unwrap(),
-            PathBuf::from("build")
+            PathBuf::from("portable-root")
         );
     }
 
