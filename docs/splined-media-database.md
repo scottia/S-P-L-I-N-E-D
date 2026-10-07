@@ -368,6 +368,13 @@ return to the same list without another request. A deliberate `M` search
 refreshes that per-run list while preserving the configured MusicBrainz delay,
 timeout, and attempt budget.
 
+Exact Recording-to-release lookups use the requested/tagged Recording MBID as
+the persistent cache parent. If MusicBrainz redirects a merged Recording to a
+different canonical MBID, SPLINED uses the canonical result for the active run
+but does not insert mismatched child rows beneath the old parent key. This
+avoids a foreign-key failure without changing tag authority or rewriting the
+database identity.
+
 ## Album Status and physical folder aggregates
 
 The database materializes Album facts including:

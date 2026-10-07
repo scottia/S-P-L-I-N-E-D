@@ -332,10 +332,12 @@ The compilation branch is explicit and per track:
 4. On a cache miss, SPLINED uses the indexed Artist ID to narrow local Albums,
    lazily reads only those tracks, and caches the exact relationships. A
    matching existing Album `cover.*` becomes a `[LOCAL]` candidate.
-5. Only after the bounded local lookup misses does SPLINED make a MusicBrainz
-   Recording-ID request. It considers the first suitable official release in
-   this order: Album, Soundtrack, Compilation. Single, EP, live, remix, DJ-mix,
-   and mixtape references are not selected.
+5. Only after the bounded local lookup misses does SPLINED combine the tagged
+   MusicBrainz Recording lookup with a release-first Artist/Track search. It
+   resolves every discovered release back to its actual Recording and track
+   Artist IDs, merges and de-duplicates both branches, and considers suitable
+   official releases in this order: Album, Soundtrack, Compilation. Single,
+   EP, live, remix, DJ-mix, and mixtape references are not selected.
 6. Normal source discovery and candidate quality policy evaluate artwork for
    the recovered release. The configured `[range].ladder` caps the embedded
    result and no upscaling is introduced.
@@ -344,9 +346,11 @@ The compilation branch is explicit and per track:
 8. Each successful LIVE WRITE is committed to the per-track ledger
    immediately. A later scan validates the saved Recording/Artist IDs
    and skips that track instead of repeating local or remote discovery.
-9. If the ID-first path returns no useful authority, the operator opens the
-   MusicBrainz Matches surface (`M` in Ratatui or **MusicBrainz Matches...** on
-   Windows). Ratatui shows matches by newest-to-oldest decade (`Unknown` last),
+9. The operator reviews the merged results in the MusicBrainz Matches surface
+   (`M` in Ratatui or **MusicBrainz Matches...** on Windows). Release-first
+   discovery prevents the first 100 Recording-search hits from hiding a valid
+   Album edition, while the exact and supplemental Recording branches retain
+   Various Artists compilations. Ratatui shows matches by newest-to-oldest decade (`Unknown` last),
    then populated Album, Single, EP, Compilation, Soundtrack, and additional
    release types. Each row exposes the Cover Art
    Archive release-group front-image URL for Artwork preview, falling back to
@@ -396,7 +400,8 @@ The compilation branch is explicit and per track:
    artwork, but never writes the edited IDs to audio tags. Ordinary rows, URLs,
    numbering, selection, filters, and visited state remain unchanged. Windows no longer exposes the separate
    **Search Artist / Track** free-text result branch; automatic compilation
-   matching still performs shared Artist/Title lookup when track IDs are absent.
+   matching performs shared Artist/Title discovery even when a tagged
+   Recording ID exists, then de-duplicates it with the exact-ID results.
 
 The curated Album name is never used as MusicBrainz identity. SPLINED does not
 invent or write an Album/Release ID, write an operator-edited MBID, change the compilation's Album/Artist

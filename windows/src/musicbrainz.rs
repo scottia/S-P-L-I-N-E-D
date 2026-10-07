@@ -272,6 +272,12 @@ struct ApiRecordingSearch {
 }
 
 #[derive(Debug, Deserialize)]
+struct ApiReleaseSearch {
+    #[serde(default)]
+    releases: Vec<ApiRelease>,
+}
+
+#[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
     expires_in: u64,
@@ -761,6 +767,93 @@ impl MusicBrainzClient {
                 .into_iter()
                 .map(recording_search_hit_from_api)
                 .collect());
+        }
+
+        unreachable!("MusicBrainz retry loop always performs at least one attempt")
+    }
+
+    pub async fn search_release_ids(&self, query: &str, limit: u8) -> Result<Vec<String>, String> {
+        self.ensure_enabled()?;
+        let query = query.trim();
+        if query.is_empty() {
+            return Err("MusicBrainz release search query cannot be empty.".to_string());
+        }
+
+        let limit = limit.clamp(1, 100);
+        let url = format!("{API_BASE_URL}/release");
+        let access_token = if self.config.oauth {
+            Some(self.valid_access_token().await?)
+        } else {
+            None
+        };
+
+        let attempts = self.config.retry_max.max(1);
+        for attempt in 0..attempts {
+            self.wait_for_rate_limit().await;
+            let limit_text = limit.to_string();
+            let mut request = self
+                .client
+                .get(&url)
+                .timeout(self.recording_timeout())
+                .query(&[
+                    ("fmt", "json"),
+                    ("query", query),
+                    ("limit", limit_text.as_str()),
+                ]);
+            if let Some(token) = access_token.as_deref() {
+                request = request.bearer_auth(token);
+            }
+
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(error) if attempt + 1 < attempts => {
+                    let _ = error;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Unable to search MusicBrainz releases after {} attempt(s): {error}",
+                        attempt + 1
+                    ));
+                }
+            };
+
+            let status = response.status();
+            match status {
+                StatusCode::OK => {}
+                StatusCode::UNAUTHORIZED => {
+                    return Err("MusicBrainz OAuth authentication was rejected.".to_string());
+                }
+                status if is_retryable_status(status) && attempt + 1 < attempts => {
+                    continue;
+                }
+                status => {
+                    return Err(format!(
+                        "MusicBrainz release search returned HTTP {status} after {} attempt(s)",
+                        attempt + 1
+                    ));
+                }
+            }
+
+            let final_url = response.url().clone();
+            let body = response.text().await.map_err(|error| {
+                format!("Unable to read MusicBrainz release search response: {error}")
+            })?;
+            let search: ApiReleaseSearch = serde_json::from_str(&body).map_err(|error| {
+                let preview: String = body.chars().take(500).collect();
+                format!(
+                    "Invalid MusicBrainz release-search JSON from {final_url}: {error}\nResponse preview: {preview}"
+                )
+            })?;
+
+            let mut ids = search
+                .releases
+                .into_iter()
+                .map(|release| release.id.to_ascii_lowercase())
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids.dedup();
+            return Ok(ids);
         }
 
         unreachable!("MusicBrainz retry loop always performs at least one attempt")
@@ -1473,6 +1566,19 @@ mod tests {
         .expect("fixture should parse");
         let hit = recording_search_hit_from_api(search.recordings.into_iter().next().unwrap());
         assert!(!hit.video);
+    }
+
+    #[test]
+    fn release_search_response_exposes_exact_release_ids() {
+        let search: ApiReleaseSearch = serde_json::from_str(
+            r#"{"releases":[{"id":"823b3eeb-e62b-42c6-9029-5fc47279b7fc","title":"Spanish Harlem"}]}"#,
+        )
+        .expect("fixture should parse");
+        assert_eq!(search.releases.len(), 1);
+        assert_eq!(
+            search.releases[0].id,
+            "823b3eeb-e62b-42c6-9029-5fc47279b7fc"
+        );
     }
 
     #[test]

@@ -2253,37 +2253,23 @@ async fn run_compilation_album(
         let mut used_search = false;
 
         if local_candidate.is_none() && targeted_embedded.is_none() {
-            matches = if let Some(recording) = recording_mbid
-                .as_deref()
-                .filter(|_| !artist_mbids.is_empty())
-            {
-                match match_cache
-                    .recording_matches(musicbrainz, config, recording, &artist_mbids)
-                    .await
-                {
-                    Ok(items) => items,
-                    Err(error) => {
-                        gui_events::emit(
-                            json!({ "event": "compilation_lookup_warning", "track_path": track.path, "message": error }),
-                        );
-                        Vec::new()
-                    }
-                }
-            } else {
-                used_search = true;
-                match match_cache
-                    .artist_title_matches(musicbrainz, &track.artist, &track.title)
-                    .await
-                {
-                    Ok(items) => items,
-                    Err(error) => {
-                        gui_events::emit(
-                            json!({ "event": "compilation_lookup_warning", "track_path": track.path, "message": error }),
-                        );
-                        Vec::new()
-                    }
-                }
-            };
+            used_search = true;
+            let (items, warnings) = match_cache
+                .automatic_matches(
+                    musicbrainz,
+                    config,
+                    recording_mbid.as_deref(),
+                    &artist_mbids,
+                    &track.artist,
+                    &track.title,
+                )
+                .await;
+            matches = items;
+            for warning in warnings {
+                gui_events::emit(
+                    json!({ "event": "compilation_lookup_warning", "track_path": track.path, "message": warning }),
+                );
+            }
             if matches.is_empty() {
                 result.unresolved += 1;
                 record_compilation_progress(config, &album.path, tracks.len(), completed)?;
