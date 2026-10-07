@@ -16,7 +16,7 @@ use crate::history::{AlbumHistoryState, album_history_status, load_completion_hi
 use crate::inspect::inspect_image;
 use crate::local_artwork::{
     LocalPreflightAction, cleanup_competing_static, cleanup_replaced_static_covers,
-    embedded_candidate, inspect_local_preflight,
+    embedded_candidate, embedded_preview_cache_dir, inspect_local_preflight,
 };
 use crate::media_database::{
     CompilationArtworkApplication, RuntimeArtworkMaterial, compilation_resume_track,
@@ -2141,6 +2141,10 @@ async fn run_compilation_album(
         tracks.to_vec()
     };
     let targeted_edit = requested_track.is_some();
+    // Track previews are GUI state, not provider/run-cache state. The Windows
+    // GUI supplies a portable, writable preview cache so a read-only shared
+    // temporary cache cannot suppress the current track's embedded artwork.
+    let embedded_preview_cache = embedded_preview_cache_dir(cache_dir);
     let resume_track = if targeted_edit {
         None
     } else {
@@ -2159,11 +2163,13 @@ async fn run_compilation_album(
     }));
     let identities = tracks
         .iter()
-        .filter_map(|track| {
+        .map(|track| {
             let (recording, artists) = track_authority(track);
-            recording
-                .map(|recording| (track.path.clone(), recording, artists.join(",")))
-                .filter(|(_, _, artists)| !artists.is_empty())
+            (
+                track.path.clone(),
+                recording.unwrap_or_default(),
+                artists.join(","),
+            )
         })
         .collect::<Vec<_>>();
     let already_completed = if targeted_edit {
@@ -2203,9 +2209,9 @@ async fn run_compilation_album(
         // alter normal resume or provider discovery; explicit targeted edits
         // retain the existing strict error behavior.
         let embedded_preview = if targeted_edit {
-            embedded_candidate(&track.path, cache_dir)?
+            embedded_candidate(&track.path, &embedded_preview_cache)?
         } else {
-            embedded_candidate(&track.path, cache_dir).unwrap_or(None)
+            embedded_candidate(&track.path, &embedded_preview_cache).unwrap_or(None)
         };
         let embedded_artwork_path = embedded_preview
             .as_ref()
@@ -2579,15 +2585,11 @@ async fn run_compilation_album(
                         .as_ref()
                         .map(|item| item.release_mbid.as_str())
                 });
-            let authority_recording = selected_match
-                .as_ref()
-                .map(|item| item.recording_mbid.clone())
-                .or(recording_mbid.clone())
-                .unwrap_or_default();
-            let authority_artists = selected_match
-                .as_ref()
-                .map(|item| item.artist_mbids.clone())
-                .unwrap_or_else(|| artist_mbids.clone());
+            // Apply IDs and result selection are session authority only. The
+            // durable resume ledger must retain the unchanged local tag
+            // identity; the selected release is recorded separately below.
+            let track_recording = recording_mbid.clone().unwrap_or_default();
+            let track_artists = artist_mbids.join(",");
             if config.mode == Mode::Write {
                 replace_embedded_front(&track.path, &prepared.bytes)?;
                 completed += 1;
@@ -2596,8 +2598,8 @@ async fn run_compilation_album(
                     CompilationArtworkApplication {
                         album_path: &album.path,
                         track_path: &track.path,
-                        recording_mbid: &authority_recording,
-                        artist_mbids_key: &authority_artists.join(","),
+                        recording_mbid: &track_recording,
+                        artist_mbids_key: &track_artists,
                         source_kind: &chosen.downloaded.candidate.source,
                         source_locator: &chosen.reference.url,
                         release_mbid: selected_release,
@@ -3738,6 +3740,36 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn compilation_resume_cursor_and_completion_ledger_advance_to_track_52() {
+        let tracks = (1..=100)
+            .map(|index| LocalTrackEvidence {
+                path: PathBuf::from("1961").join(format!("{index:02}.mp3")),
+                title: String::new(),
+                artist: String::new(),
+                album: None,
+                album_artist: None,
+                musicbrainz_album_id: None,
+                musicbrainz_track_id: None,
+                musicbrainz_artist_id: None,
+                compilation: Some("1".to_string()),
+            })
+            .collect::<Vec<_>>();
+        let completed = tracks
+            .iter()
+            .take(51)
+            .map(|track| track.path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let resume_index = compilation_resume_start_index(&tracks, Some(&tracks[2].path));
+        let next = tracks
+            .iter()
+            .skip(resume_index)
+            .find(|track| !compilation_track_is_already_complete(&track.path, &completed, false))
+            .expect("track 52 should remain unfinished");
+
+        assert_eq!(next.path, tracks[51].path);
     }
 
     #[test]

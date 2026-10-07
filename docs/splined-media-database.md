@@ -309,8 +309,10 @@ changing normal index cost:
   lazily during the compilation branch;
 - `recording_release_lookups` and `recording_release_candidates` cache positive,
   bounded MusicBrainz Recording-ID results;
-- `compilation_track_artwork` records approved per-track artwork outcomes and a
-  content digest, but never stores credential values or image bytes;
+- `compilation_track_artwork` records approved per-track artwork outcomes, the
+  unchanged local tag identity, and a content digest, but never stores
+  credential values or image bytes. Operator-edited/current-result IDs remain
+  session authority and the chosen Release ID is stored separately;
 - `compilation_album_progress` stores only Album path, total/completed counts,
   `incomplete`/`complete`, update time, and SPLINED version;
 - a `cache_entries` row of type `compilation_resume` stores the canonical path
@@ -331,12 +333,15 @@ folder non-recursively; no tag data is read. The compilation runtime reads the
 same progress and track-artwork tables when an eligible compilation starts.
 Normal discovery continues to
 inspect one representative track per Album.
-Resume accepts a prior completion only when the current local Recording and
-Artist IDs still match the ledger row. Separately, the interruption cursor
-starts the next normal run at the track that was active when Stop/error ended
-the previous run. The cursor advances only as the runtime reaches each next
-track and is cleared after a normal pass reaches the end; completed-track
-skipping remains authoritative throughout.
+Resume accepts a prior completion when the current local Recording and Artist
+IDs still match the ledger row. For compatibility with older rows that stored
+the selected session authority, an identity mismatch is accepted and normalized
+only when the current embedded front image still matches the ledger's SHA-256;
+a replaced or changed file therefore remains unfinished. Separately, the
+interruption cursor starts the next normal run at the track that was active when
+Stop/error ended the previous run. The cursor advances only as the runtime
+reaches each next track and is cleared after a normal pass reaches the end;
+completed-track skipping remains authoritative throughout.
 
 A targeted Windows edit passes one explicitly checked compilation track to the
 runtime. Highlighting or clicking a track is preview focus only and never sets
@@ -344,8 +349,10 @@ the target environment value, so an ordinary Album launch still reads the
 ledger and interruption cursor. Checking the Album clears any explicit track
 target. A checked track bypasses the resume skip for that track only, including
 when it is already complete, extracts its current embedded front image into the
-run cache, and sends it through the same review/edit/write path. Other tracks in
-the Album are not processed and folder cover files remain untouched. The
+portable `data\preview-cache`, and sends it through the same review/edit/write
+path. This preview-only cache is independent of the configured provider run
+cache. Other tracks in the Album are not processed and folder cover files
+remain untouched. The
 fallback GUI preview uses that embedded cache image only. Selecting the fallback
 Album itself shows **No embedded artwork** and does not create a folder-cover
 candidate; it never substitutes the Album folder's `cover.*`.

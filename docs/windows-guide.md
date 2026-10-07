@@ -155,16 +155,22 @@ the successful-write ledger and the track that was active when an interrupted
 run stopped: the next normal launch returns to that active track, then continues
 forward while skipping completed tracks. Once a run reaches the end normally,
 its stop cursor is cleared so a later incomplete run can revisit any earlier
-unresolved tracks. The runtime's current-track event moves focus to the track
-actually being processed without turning it into an explicit target.
+unresolved tracks. MusicBrainz IDs chosen for better artwork remain session-only:
+the ledger retains the unchanged local tag identity. Older ledger rows are
+reconciled only when their saved artwork SHA-256 still matches the track's
+current embedded front image. The runtime's current-track event moves focus to
+the track actually being processed without turning it into an explicit target.
 
 The fallback-compilation preview reads only the focused/current track's embedded
 front artwork. Merely selecting the fallback Album clears track focus and shows
 **No embedded artwork**; it does not display or offer the Album directory's
 `cover.*` as an editable candidate. A focused track without embedded front art
 shows the same message. Normal non-fallback Album artwork preview remains
-unchanged. The existing compilation editor and LIVE WRITE safety path are
-reused; no `cover.*` file is created or changed. The hierarchy
+unchanged. Extracted embedded previews use the portable
+`data\preview-cache` directory independently of the configured temporary run
+cache, so a read-only shared run cache cannot substitute folder artwork or hide
+the current track's embedded image. The existing compilation editor and LIVE
+WRITE safety path are reused; no `cover.*` file is created or changed. The hierarchy
 and completion markers come from the warm SQLite index. If an older compilation
 does not yet have a complete cached filename list, expanding that Album performs
 one non-recursive directory listing for that folder only; it does not scan the

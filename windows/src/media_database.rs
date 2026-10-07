@@ -4,6 +4,7 @@
 //! supplies tag identity. Per-track reads belong only to processing workflows.
 
 use crate::config::{Config, resolve_sources};
+use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
@@ -1116,7 +1117,7 @@ pub fn completed_compilation_track_paths(
 ) -> Result<HashSet<PathBuf>, String> {
     let (connection, mapper) = runtime_connection_and_mapper(config)?;
     let mut statement = connection.prepare(
-        "SELECT track_path, recording_mbid, artist_mbid FROM compilation_track_artwork WHERE outcome='embedded-replaced'"
+        "SELECT track_path, recording_mbid, artist_mbid, artwork_sha256 FROM compilation_track_artwork WHERE outcome='embedded-replaced'"
     ).map_err(db_error("prepare compilation resume ledger"))?;
     let saved = statement
         .query_map([], |row| {
@@ -1124,28 +1125,58 @@ pub fn completed_compilation_track_paths(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })
         .map_err(db_error("query compilation resume ledger"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(db_error("read compilation resume ledger"))?;
+    drop(statement);
     let saved = saved
         .into_iter()
-        .map(|(path, recording, artists)| (path.to_ascii_lowercase(), (recording, artists)))
+        .map(|(path, recording, artists, artwork_sha256)| {
+            (
+                path.to_ascii_lowercase(),
+                (path, recording, artists, artwork_sha256),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let mut completed = HashSet::new();
     for (path, recording, artists) in identities {
         let canonical = mapper.to_canonical(&path.to_string_lossy())?;
-        if saved.get(&canonical.to_ascii_lowercase()).is_some_and(
-            |(saved_recording, saved_artists)| {
-                saved_recording.eq_ignore_ascii_case(recording)
-                    && saved_artists.eq_ignore_ascii_case(artists)
-            },
-        ) {
-            completed.insert(path.clone());
+        let Some((saved_path, saved_recording, saved_artists, saved_artwork_sha256)) =
+            saved.get(&canonical.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        let identity_matches = saved_recording.eq_ignore_ascii_case(recording)
+            && saved_artists.eq_ignore_ascii_case(artists);
+        let artwork_matches = if identity_matches {
+            false
+        } else {
+            embedded_front_sha256s(path).is_ok_and(|hashes| {
+                hashes
+                    .iter()
+                    .any(|hash| hash.eq_ignore_ascii_case(saved_artwork_sha256))
+            })
+        };
+        if !compilation_completion_matches(identity_matches, artwork_matches) {
+            continue;
+        }
+        completed.insert(path.clone());
+        if artwork_matches {
+            // Builds before this correction stored the operator-selected
+            // session authority here. Once the installed artwork digest proves
+            // this is still the completed file, normalize the row to the local
+            // tag identity so later resumes no longer need to open the track.
+            connection
+                .execute(
+                    "UPDATE compilation_track_artwork SET recording_mbid=?, artist_mbid=?, splined_version=? WHERE track_path=?",
+                    params![recording, artists, env!("CARGO_PKG_VERSION"), saved_path],
+                )
+                .map_err(db_error("normalize compilation resume ledger identity"))?;
         }
     }
-    drop(statement);
     record_compilation_progress_with_connection(
         &connection,
         &mapper,
@@ -1154,6 +1185,10 @@ pub fn completed_compilation_track_paths(
         completed.len(),
     )?;
     Ok(completed)
+}
+
+fn compilation_completion_matches(identity_matches: bool, artwork_matches: bool) -> bool {
+    identity_matches || artwork_matches
 }
 
 pub fn compilation_resume_track(
@@ -2592,6 +2627,13 @@ fn db_error(context: &'static str) -> impl FnOnce(rusqlite::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compilation_resume_accepts_legacy_session_authority_only_with_matching_artwork() {
+        assert!(compilation_completion_matches(true, false));
+        assert!(compilation_completion_matches(false, true));
+        assert!(!compilation_completion_matches(false, false));
+    }
     use std::fs::File;
 
     #[test]
