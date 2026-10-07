@@ -264,7 +264,7 @@ jobs:
 
       - name: Install official Tauri v2 build tool
         shell: bash
-        run: cargo install tauri-cli --version 2.9.6 --locked
+        run: cargo install tauri-cli --version 2.12.0 --locked
 
       - name: Import publisher certificate and configure signed build
         shell: pwsh
