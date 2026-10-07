@@ -25,7 +25,7 @@ lofty = "0.25.1"
 rand = "0.10.2"
 reqwest = { version = "0.13.5", features = ["form", "json", "query", "rustls"] }
 rpassword = "7.5.4"
-rusqlite = { version = "0.38.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -37,6 +37,6 @@ unicode-casefold = "0.2.0"
 
 [target.'cfg(windows)'.dependencies]
 bytemuck = "1.24.0"
-pollster = "0.4.0"
-wgpu = { version = "29.0.4", default-features = false, features = ["std", "vulkan", "wgsl"] }
+pollster = "1.0.1"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet"] }
