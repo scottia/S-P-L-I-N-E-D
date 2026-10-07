@@ -32,7 +32,11 @@ fn windows_desktop_is_one_permanent_executable_with_in_process_rust() {
     assert!(manifest.contains("name = \"splined\""));
     assert_eq!(manifest.matches("[[bin]]").count(), 1);
     assert!(manifest.contains("tauri ="));
-    assert_eq!(build.trim(), "fn main() {\n    tauri_build::build()\n}");
+    let normalized_build = build.replace("\r\n", "\n");
+    assert_eq!(
+        normalized_build.trim(),
+        "fn main() {\n    tauri_build::build()\n}"
+    );
     assert!(main.contains("tauri_app::run()"));
     assert!(backend.contains("run_scan_library_read_report"));
     assert!(backend.contains("begin_in_process"));
@@ -136,7 +140,7 @@ fn updater_signature_validation_failure_has_no_installation_fallback() {
     assert!(backend.contains("The signed update was not installed"));
     assert!(backend.contains("The active scan did not close normally"));
     assert!(backend.contains("This unsigned development build cannot install public updates"));
-    assert!(manifest.contains("tauri-plugin-updater = \"=2.9.0\""));
+    assert!(manifest.contains("tauri-plugin-updater = \"=2.13.2\""));
     assert!(!backend.contains("sha256"));
     assert!(!backend.contains("rename("));
     assert!(!backend.contains("remove_file"));

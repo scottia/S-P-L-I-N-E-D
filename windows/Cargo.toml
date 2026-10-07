@@ -42,17 +42,17 @@ unicode-normalization = "0.1.25"
 unicode-casefold = "0.2.0"
 
 [build-dependencies]
-tauri-build = { version = "=2.5.3", features = [] }
-tauri-utils = "=2.8.1"
+tauri-build = { version = "=2.7.1", features = [] }
+tauri-utils = "=2.10.1"
 
 [target.'cfg(windows)'.dependencies]
 bytemuck = "1.24.0"
 pollster = "0.4.0"
-tauri = { version = "=2.9.5", features = [] }
+tauri = { version = "=2.12.1", features = [] }
 tauri-plugin-dialog = "=2.6.0"
 tauri-plugin-opener = "=2.5.0"
-tauri-plugin-updater = "=2.9.0"
-tauri-utils = "=2.8.1"
+tauri-plugin-updater = "=2.13.2"
+tauri-utils = "=2.10.1"
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "vulkan", "wgsl"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet"] }
 winreg = "0.55.0"
