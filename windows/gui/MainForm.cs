@@ -192,7 +192,11 @@ namespace Splined.WindowsGui
         private Label artworkPreviewCaption;
         private Label selectedAlbumInfo;
         private AlbumInfo displayedAlbum;
+        private CompilationTrackInfo focusedCompilationTrack;
         private CompilationTrackInfo selectedCompilationTrack;
+        private string focusedCompilationEmbeddedArtworkPath = "";
+        private bool compilationTrackPreviewActive;
+        private int compilationTrackPreviewVersion;
         private bool candidatePreviewActive;
         private bool adjustingArtworkLayout;
         private int musicBrainzPreviewVersion;
@@ -1227,8 +1231,7 @@ namespace Splined.WindowsGui
             uiState.ShowTracks = showTracks.Checked;
             if (!uiState.ShowTracks)
             {
-                selectedCompilationTrack = null;
-                uiState.SelectedCompilationTrackPath = "";
+                ClearExplicitCompilationTrackTarget();
             }
             BuildTree();
             if (uiState.ShowTracks && selectedCompilationTrack != null)
@@ -1295,6 +1298,7 @@ namespace Splined.WindowsGui
                     return;
                 }
                 selectionMode = SelectionMode.All;
+                ClearExplicitCompilationTrackTarget();
                 foreach (AlbumInfo album in albums)
                 {
                     album.Selected = activeArtist.AllAlbums.Contains(album) && album.EligibleByDefault;
@@ -1307,6 +1311,7 @@ namespace Splined.WindowsGui
             else if (Object.ReferenceEquals(selected, selectModeNone))
             {
                 selectionMode = SelectionMode.None;
+                ClearExplicitCompilationTrackTarget();
                 foreach (AlbumInfo album in albums) { album.Selected = false; album.BypassOverride = false; }
                 ClearRightWorkspace();
                 BuildTree();
@@ -1329,6 +1334,7 @@ namespace Splined.WindowsGui
                 SetStatus("Select [FILTERED] requires Artist or Album filter text.");
                 return albums.Count(album => album.Selected);
             }
+            ClearExplicitCompilationTrackTarget();
             foreach (AlbumInfo album in albums)
             {
                 bool textMatch = (artistText.Length == 0 || album.Artist.IndexOf(artistText, StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1815,8 +1821,7 @@ namespace Splined.WindowsGui
                     value.Selected = false;
                     value.BypassOverride = false;
                 }
-                selectedCompilationTrack = e.Node.Checked ? trackItem : null;
-                uiState.SelectedCompilationTrackPath = selectedCompilationTrack == null ? "" : selectedCompilationTrack.Path;
+                SetExplicitCompilationTrackTarget(e.Node.Checked ? trackItem : null);
                 if (selectedCompilationTrack != null)
                 {
                     trackItem.Album.Selected = true;
@@ -1836,6 +1841,7 @@ namespace Splined.WindowsGui
             ArtistNodeInfo artist = e.Node.Tag as ArtistNodeInfo;
             if (artist != null)
             {
+                ClearExplicitCompilationTrackTarget();
                 bool includeBypassed = false;
                 if (e.Node.Checked)
                 {
@@ -1868,11 +1874,7 @@ namespace Splined.WindowsGui
 
             AlbumInfo item = e.Node.Tag as AlbumInfo;
             if (item == null) return;
-            if (uiState.ShowTracks)
-            {
-                selectedCompilationTrack = null;
-                uiState.SelectedCompilationTrackPath = "";
-            }
+            ClearExplicitCompilationTrackTarget();
             if (e.Node.Checked && item.State == AlbumState.TimeoutActive)
             {
                 suppressTreeEvents = true;
@@ -1936,16 +1938,130 @@ namespace Splined.WindowsGui
         private void ShowSelectedCompilationTrack(CompilationTrackInfo track)
         {
             if (track == null) return;
-            selectedCompilationTrack = track;
-            uiState.SelectedCompilationTrackPath = track.Path ?? "";
+            FocusCompilationTrack(track, "");
+            LoadFocusedCompilationTrackEmbeddedArtworkAsync(track, compilationTrackPreviewVersion);
+        }
+
+        private void FocusCompilationTrack(CompilationTrackInfo track, string embeddedArtworkPath)
+        {
+            if (track == null) return;
+            compilationTrackPreviewVersion++;
+            focusedCompilationTrack = track;
+            focusedCompilationEmbeddedArtworkPath = File.Exists(embeddedArtworkPath)
+                ? embeddedArtworkPath : "";
+            compilationTrackPreviewActive = true;
             displayedAlbum = track.Album;
             candidatePreviewActive = false;
             RenderDisplayedAlbum();
             ClearCandidates();
-            candidateContext.Text = track.FileName + " · "
-                + (track.EmbeddedArtworkRecorded ? "embedded artwork available" : "embedded artwork not yet recorded")
-                + " · check this track and LAUNCH to review or edit only this file.";
-            SetStatus("Track focus: " + track.FileName + ". Check it and launch to reopen its embedded artwork.");
+            string artworkState = track.EmbeddedArtworkRecorded
+                ? "embedded artwork available" : "embedded artwork not yet recorded";
+            if (running)
+            {
+                candidateContext.Text = track.FileName + " · " + artworkState
+                    + " · current compilation track.";
+                SetStatus("Compilation track: " + track.FileName);
+            }
+            else
+            {
+                candidateContext.Text = track.FileName + " · " + artworkState
+                    + " · check this track and LAUNCH to review or edit only this file.";
+                SetStatus("Track focus: " + track.FileName + ". Check it and launch to reopen its embedded artwork.");
+            }
+        }
+
+        private async void LoadFocusedCompilationTrackEmbeddedArtworkAsync(CompilationTrackInfo track, int version)
+        {
+            if (track == null || !String.IsNullOrWhiteSpace(focusedCompilationEmbeddedArtworkPath)) return;
+            string previewPath = await Task.Run(delegate { return ExtractEmbeddedArtworkPreview(track.Path); });
+            if (IsDisposed || version != compilationTrackPreviewVersion || focusedCompilationTrack == null
+                || !SameAlbumPath(focusedCompilationTrack.Path, track.Path))
+                return;
+            focusedCompilationEmbeddedArtworkPath = File.Exists(previewPath) ? previewPath : "";
+            RenderDisplayedAlbum();
+        }
+
+        private string ExtractEmbeddedArtworkPreview(string trackPath)
+        {
+            string core = FindCoreExecutable();
+            if (String.IsNullOrWhiteSpace(core) || !File.Exists(core) || String.IsNullOrWhiteSpace(trackPath))
+                return "";
+            try
+            {
+                ProcessStartInfo start = new ProcessStartInfo
+                {
+                    FileName = core,
+                    Arguments = "--embedded-artwork-preview " + QuoteArgument(trackPath),
+                    WorkingDirectory = ConfigStore.AppRoot,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = new UTF8Encoding(false),
+                    StandardErrorEncoding = new UTF8Encoding(false)
+                };
+                start.EnvironmentVariables["SPLINED_CONFIG_TOML"] = ConfigStore.ExportConfigText(state.Clone());
+                start.EnvironmentVariables["NO_COLOR"] = "1";
+                using (Process process = Process.Start(start))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    string error = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+                    if (process.ExitCode != 0)
+                    {
+                        RuntimeLog.Write("debug", "windows.compilation.preview_unavailable track=" + trackPath
+                            + " error=" + error.Trim());
+                        return "";
+                    }
+                    return output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(value => value.Trim()).LastOrDefault(File.Exists) ?? "";
+                }
+            }
+            catch (Exception error)
+            {
+                RuntimeLog.Write("debug", "windows.compilation.preview_failed track=" + trackPath
+                    + " error=" + error.Message);
+                return "";
+            }
+        }
+
+        private void FocusStartedCompilationTrack(Dictionary<string, object> payload)
+        {
+            string trackPath = ReadString(payload, "track_path");
+            string albumPath = ReadString(payload, "album_path");
+            AlbumInfo album = activeLaunchAlbum;
+            if (album == null)
+                album = albums.FirstOrDefault(item => SameAlbumPath(item.Path, albumPath));
+            if (album == null && displayedAlbum != null
+                && (String.IsNullOrWhiteSpace(albumPath) || SameAlbumPath(displayedAlbum.Path, albumPath)))
+                album = displayedAlbum;
+            if (album == null) return;
+
+            EnsureCompilationTracks(album);
+            CompilationTrackInfo track = album.CompilationTracks.FirstOrDefault(item => SameAlbumPath(item.Path, trackPath));
+            if (track == null)
+            {
+                track = new CompilationTrackInfo
+                {
+                    Album = album,
+                    Path = trackPath,
+                    Title = ReadString(payload, "title"),
+                    EmbeddedArtworkRecorded = !String.IsNullOrWhiteSpace(ReadString(payload, "embedded_artwork_path"))
+                };
+            }
+            FocusCompilationTrack(track, ReadString(payload, "embedded_artwork_path"));
+        }
+
+        private void SetExplicitCompilationTrackTarget(CompilationTrackInfo track)
+        {
+            selectedCompilationTrack = track;
+            uiState.SelectedCompilationTrackPath = track == null ? "" : track.Path ?? "";
+        }
+
+        private void ClearExplicitCompilationTrackTarget()
+        {
+            SetExplicitCompilationTrackTarget(null);
         }
 
         private void TreeNodeMouseHover(object sender, TreeNodeMouseHoverEventArgs e)
@@ -2242,11 +2358,11 @@ namespace Splined.WindowsGui
             start.EnvironmentVariables["NO_COLOR"] = "1";
             if (!String.IsNullOrWhiteSpace(retryArtist)) start.EnvironmentVariables["SPLINED_FALLBACK_ARTIST"] = retryArtist;
             if (!String.IsNullOrWhiteSpace(retryAlbum)) start.EnvironmentVariables["SPLINED_FALLBACK_ALBUM"] = retryAlbum;
-            if (selectedCompilationTrack != null && SameAlbumPath(selectedCompilationTrack.Album.Path, album.Path))
+            string explicitTrackPath = ExplicitCompilationTrackPathForAlbum(album, scanPath);
+            if (!String.IsNullOrWhiteSpace(explicitTrackPath))
             {
-                string trackPath = ResolveExistingTrackPath(album.Path, selectedCompilationTrack.Path, scanPath);
-                start.EnvironmentVariables["SPLINED_COMPILATION_TRACK_PATH"] = trackPath;
-                RuntimeLog.Write("debug", "album.core.target_track album=" + scanPath + " track=" + trackPath);
+                start.EnvironmentVariables["SPLINED_COMPILATION_TRACK_PATH"] = explicitTrackPath;
+                RuntimeLog.Write("debug", "album.core.target_track album=" + scanPath + " track=" + explicitTrackPath);
             }
             if (album.BypassOverride || (album.State == AlbumState.Bypassed && album.CompilationTrackArtworkPending))
                 start.EnvironmentVariables["SPLINED_BYPASS_OVERRIDE"] = "1";
@@ -2384,10 +2500,17 @@ namespace Splined.WindowsGui
             }
             else if (eventName == "compilation_started")
             {
+                compilationTrackPreviewVersion++;
+                compilationTrackPreviewActive = true;
+                focusedCompilationTrack = null;
+                focusedCompilationEmbeddedArtworkPath = "";
+                candidatePreviewActive = false;
+                RenderDisplayedAlbum();
                 AppendActivity("  Curated compilation: per-track embedded artwork mode. Folder cover files will not be changed.\r\n", ActivityTone.Warning);
             }
             else if (eventName == "compilation_track_started")
             {
+                FocusStartedCompilationTrack(payload);
                 AppendActivity("  Track " + ReadInt(payload, "index", 0) + "/" + ReadInt(payload, "total", 0)
                     + ": " + ReadString(payload, "artist") + " — " + ReadString(payload, "title") + "\r\n", ActivityTone.Accent);
             }
@@ -3605,10 +3728,7 @@ namespace Splined.WindowsGui
             album.Selected = false;
             album.BypassOverride = false;
             if (selectedCompilationTrack != null && SameAlbumPath(selectedCompilationTrack.Album.Path, album.Path))
-            {
-                selectedCompilationTrack = null;
-                uiState.SelectedCompilationTrackPath = "";
-            }
+                ClearExplicitCompilationTrackTarget();
             if (!changed) return;
             BuildTree();
             UpdateSelectionControls();
@@ -3646,6 +3766,14 @@ namespace Splined.WindowsGui
             }
             catch { }
             return indexedTrackPath;
+        }
+
+        private string ExplicitCompilationTrackPathForAlbum(AlbumInfo album, string physicalAlbumPath)
+        {
+            if (album == null || selectedCompilationTrack == null || selectedCompilationTrack.Album == null
+                || !SameAlbumPath(selectedCompilationTrack.Album.Path, album.Path))
+                return "";
+            return ResolveExistingTrackPath(album.Path, selectedCompilationTrack.Path, physicalAlbumPath);
         }
 
         private static string ResolveExistingAlbumPath(string path)
@@ -4526,6 +4654,20 @@ namespace Splined.WindowsGui
         {
             displayedAlbum = running && activeLaunchAlbum != null ? activeLaunchAlbum : album;
             candidatePreviewActive = false;
+            bool embeddedCompilationRun = running && displayedAlbum != null
+                && displayedAlbum.Compilation && displayedAlbum.CompilationTrackArtworkEligible;
+            if (!embeddedCompilationRun)
+            {
+                focusedCompilationTrack = null;
+                focusedCompilationEmbeddedArtworkPath = "";
+            }
+            else if (focusedCompilationTrack != null
+                && !SameAlbumPath(focusedCompilationTrack.Album.Path, displayedAlbum.Path))
+            {
+                focusedCompilationTrack = null;
+                focusedCompilationEmbeddedArtworkPath = "";
+            }
+            compilationTrackPreviewActive = embeddedCompilationRun;
             if (!running) RefreshAlbumCoverFacts(displayedAlbum);
             RenderDisplayedAlbum();
             if (!running)
@@ -4625,6 +4767,11 @@ namespace Splined.WindowsGui
         private void RenderDisplayedAlbum()
         {
             if (selectedAlbumInfo == null) return;
+            if (compilationTrackPreviewActive)
+            {
+                RenderCompilationTrackPreview();
+                return;
+            }
             artworkPreviewTitle.Text = "Selected Album Artwork";
             if (displayedAlbum == null)
             {
@@ -4649,6 +4796,41 @@ namespace Splined.WindowsGui
             if (String.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
                 coverPath = displayedAlbum.LocalArtworkFiles.FirstOrDefault(File.Exists) ?? "";
             SetArtworkPreview(coverPath, coverName + " · " + resolution);
+        }
+
+        private void RenderCompilationTrackPreview()
+        {
+            artworkPreviewTitle.Text = "Selected Track Embedded Artwork";
+            AlbumInfo album = focusedCompilationTrack == null ? displayedAlbum : focusedCompilationTrack.Album;
+            selectedAlbumInfo.ForeColor = album == null
+                ? ThemeManager.PaletteFor(uiState.Theme).TextPrimary
+                : AlbumStatePresentation.StateColor(album.State, ThemeManager.IsDark(uiState.Theme));
+            if (focusedCompilationTrack == null)
+            {
+                selectedAlbumInfo.Text = album == null ? "" : album.Artist + "  ·  " + album.Title
+                    + Environment.NewLine + "Waiting for the current compilation track…"
+                    + Environment.NewLine + "Path " + album.Path;
+                SetArtworkPreview("", "No embedded artwork");
+                return;
+            }
+
+            selectedAlbumInfo.Text = focusedCompilationTrack.FileName
+                + (String.IsNullOrWhiteSpace(focusedCompilationTrack.Title)
+                    ? "" : Environment.NewLine + focusedCompilationTrack.Title)
+                + Environment.NewLine + "Embedded front artwork only"
+                + Environment.NewLine + "Path " + focusedCompilationTrack.Path;
+            if (String.IsNullOrWhiteSpace(focusedCompilationEmbeddedArtworkPath)
+                || !File.Exists(focusedCompilationEmbeddedArtworkPath))
+            {
+                SetArtworkPreview("", "No embedded artwork");
+                return;
+            }
+            using (Image image = LoadImageCopy(focusedCompilationEmbeddedArtworkPath))
+            {
+                string resolution = image == null ? "resolution unavailable" : image.Width + " x " + image.Height;
+                SetArtworkPreview(focusedCompilationEmbeddedArtworkPath,
+                    Path.GetFileName(focusedCompilationTrack.Path) + " · embedded front artwork · " + resolution);
+            }
         }
 
         private void SetArtworkPreview(string path, string caption)

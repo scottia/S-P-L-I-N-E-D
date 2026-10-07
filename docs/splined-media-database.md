@@ -331,11 +331,16 @@ inspect one representative track per Album.
 Resume accepts a prior completion only when the current local Recording and
 Artist IDs still match the ledger row.
 
-A targeted Windows edit passes one selected compilation track to the runtime.
-That explicit target bypasses the resume skip for that track only, extracts its
-current embedded front image into the run cache, and sends it through the same
-review/edit/write path. Other tracks in the Album are not processed and folder
-cover files remain untouched.
+A targeted Windows edit passes one explicitly checked compilation track to the
+runtime. Highlighting or clicking a track is preview focus only and never sets
+the target environment value, so an ordinary Album launch still reads this
+ledger and skips completed tracks. Checking the Album clears any explicit track
+target. A checked track bypasses the resume skip for that track only, including
+when it is already complete, extracts its current embedded front image into the
+run cache, and sends it through the same review/edit/write path. Other tracks in
+the Album are not processed and folder cover files remain untouched. The
+fallback GUI preview uses that embedded cache image only; it never substitutes
+the Album folder's `cover.*`.
 
 LIVE WRITE creates or refreshes the progress row when compilation work starts, so
 an operator exit before the first approval is represented as `0/N incomplete`.

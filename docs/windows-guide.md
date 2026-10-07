@@ -144,17 +144,27 @@ tree; hovering always shows the complete filename. A green `●` identifies a
 track whose completed embedded-art write is recorded in SQLite; `○` identifies
 a track without that completion record.
 
-Checking a track selects only that track and changes the primary action to
-**LAUNCH (1 TRACK)**. Launching reopens the track's current embedded front image
-as the local candidate when present, including tracks already completed in an
-earlier run. The existing compilation editor, preview, and LIVE WRITE safety
-path are reused; no `cover.*` file is created or changed. The hierarchy and
-completion markers come from the warm SQLite index. If an older compilation
+Highlighting or clicking a track changes only the focus and embedded-artwork
+preview; it does not create a launch target. Checking a track selects only that
+track and changes the primary action to **LAUNCH (1 TRACK)**. Launching reopens
+the track's current embedded front image as the local candidate when present,
+including tracks already completed in an earlier run. Checking the Album clears
+that explicit track target and performs ordinary resume, using the SQLite
+completion ledger to continue at the first unfinished track. The runtime's
+current-track event moves focus to the track actually being processed without
+turning it into an explicit target.
+
+The fallback-compilation preview reads only the current track's embedded front
+artwork. It displays **No embedded artwork** when none exists and never falls
+back to the Album directory's `cover.*`. Normal Album artwork preview remains
+unchanged outside this workflow. The existing compilation editor and LIVE WRITE
+safety path are reused; no `cover.*` file is created or changed. The hierarchy
+and completion markers come from the warm SQLite index. If an older compilation
 does not yet have a complete cached filename list, expanding that Album performs
 one non-recursive directory listing for that folder only; it does not scan the
-library or open audio tags. The Show Tracks choice and focused track survive normal
-focus changes, closure, and interface-settings backup. Completing the targeted
-run consumes that one queued track while leaving Show Tracks enabled.
+library or open audio tags. The Show Tracks choice and explicitly checked target
+survive closure and interface-settings backup. Completing the targeted run
+consumes that one queued track while leaving Show Tracks enabled.
 
 The only control that starts or stops processing is the primary **LAUNCH**
 button beneath the Artwork Candidates pane. There is no second Launch button
@@ -548,7 +558,9 @@ For each track SPLINED:
 Tracks without authoritative evidence remain unchanged and appear unresolved.
 Timeouts and upstream errors likewise leave the existing embedded image alone.
 Incomplete Albums remain blue and resumable; already completed track decisions
-are skipped on the next run.
+are skipped on the next normal Album run. Merely previewing another track does
+not change that resume point; checking a completed track remains the deliberate
+way to reopen it.
 
 ## Settings and credentials
 

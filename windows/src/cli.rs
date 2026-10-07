@@ -30,6 +30,10 @@ pub struct Cli {
     #[arg(long, value_name = "PATH", hide = true)]
     pub edit_existing_cover: Option<PathBuf>,
 
+    /// Extract one track's embedded artwork into the disposable preview cache
+    #[arg(long, value_name = "PATH", hide = true)]
+    pub embedded_artwork_preview: Option<PathBuf>,
+
     /// Open SPLINED configuration
     #[arg(long)]
     pub config: bool,
