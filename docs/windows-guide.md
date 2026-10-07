@@ -667,6 +667,12 @@ removing the temporary updater and staging files. The updater is never embedded
 in or extracted from `splined.exe`, does not run hidden, and uses neither CMD
 nor PowerShell.
 
+The launch handoff uses Windows-correct quoting for a portable root that ends
+in a backslash. The separately downloaded helper also recognizes the exact
+ordered legacy handoff emitted by earlier automatic-update builds, allowing an
+already-installed affected GUI to consume the corrected next-patch helper.
+Unknown, reordered, missing, or additional arguments remain rejected.
+
 The schema 2 manifest retains compatibility with notification-only builds:
 they ignore the added verification fields and can still direct the user to the
 release page. One manual upgrade enables the automatic-update path for later

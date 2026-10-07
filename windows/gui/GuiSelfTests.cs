@@ -843,6 +843,12 @@ namespace Splined.WindowsGui
                 string unc = @"\\server\share\music\Artist\Album";
                 string quotedUnc = (string)quoteArgument.Invoke(null, new object[] { unc });
                 Assert(quotedUnc == "\"" + unc + "\"", "UNC command argument changed its leading backslashes.");
+                MethodInfo quoteUpdateArgument = typeof(WindowsUpdateService).GetMethod(
+                    "QuoteArgument", BindingFlags.Static | BindingFlags.NonPublic);
+                string trailingRoot = @"C:\Portable SPLINED\";
+                string quotedTrailingRoot = (string)quoteUpdateArgument.Invoke(null, new object[] { trailingRoot });
+                Assert(quotedTrailingRoot == "\"" + trailingRoot + "\\\"",
+                    "The updater launch did not double a trailing root backslash before the closing quote.");
                 MethodInfo resolveUnicodePath = typeof(MainForm).GetMethod("ResolveExistingAlbumPath", BindingFlags.Static | BindingFlags.NonPublic);
                 string requestedUnicodeAlbum = Path.Combine(unicodeArtist, "Café — Big Bambú");
                 string resolvedUnicodeAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { requestedUnicodeAlbum });

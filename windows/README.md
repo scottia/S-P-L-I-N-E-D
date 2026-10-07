@@ -194,6 +194,12 @@ The GUI discovers the newest official, non-prerelease release containing
 to the sizes and SHA-256 digests of the archive, temporary updater, GUI, and
 core. Releases for only another operating system are skipped.
 
+GUI-to-helper arguments use Windows-correct trailing-backslash quoting. The
+helper retains a narrowly parsed fallback for the exact ordered handoff from
+earlier automatic-update GUI builds, so an installed affected build can update
+through a corrected next-patch helper; extra or reordered arguments are not
+accepted.
+
 Notification validation intentionally accepts older schema 2 documents that
 contain only the established release identity. Automatic-install validation is
 separate and requires exact version/commit, archive/updater URLs, all four
