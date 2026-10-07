@@ -1138,6 +1138,113 @@ namespace Splined.WindowsGui
                     {
                         fixture.Save(upscalePreviewPath, System.Drawing.Imaging.ImageFormat.Jpeg);
                     }
+                    string unfinishedCompilationTrackPath = Path.Combine(firstAlbum, "track-02.mp3");
+                    File.WriteAllBytes(unfinishedCompilationTrackPath, new byte[] { 0 });
+                    AlbumInfo compilationAlbum = new AlbumInfo
+                    {
+                        Artist = "Compilation Artist",
+                        Title = "Resume Fixture",
+                        Path = firstAlbum,
+                        Compilation = true,
+                        CompilationTrackArtworkEligible = true,
+                        CoverPath = upscalePreviewPath,
+                        CoverName = "cover.jpg",
+                        CoverWidth = 12,
+                        CoverHeight = 12,
+                        HasLocalArtwork = true
+                    };
+                    compilationAlbum.LocalArtworkFiles.Add(upscalePreviewPath);
+                    CompilationTrackInfo completedCompilationTrack = new CompilationTrackInfo
+                    {
+                        Album = compilationAlbum,
+                        Path = Path.Combine(firstAlbum, "track.mp3"),
+                        Title = "Completed Track",
+                        EmbeddedArtworkRecorded = true
+                    };
+                    CompilationTrackInfo unfinishedCompilationTrack = new CompilationTrackInfo
+                    {
+                        Album = compilationAlbum,
+                        Path = unfinishedCompilationTrackPath,
+                        Title = "Unfinished Track",
+                        EmbeddedArtworkRecorded = false
+                    };
+                    compilationAlbum.CompilationTracks.Add(completedCompilationTrack);
+                    compilationAlbum.CompilationTracks.Add(unfinishedCompilationTrack);
+                    compilationAlbum.CompilationTracksLoaded = true;
+
+                    MethodInfo showCompilationTreeNode = typeof(MainForm).GetMethod(
+                        "ShowTreeNode", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo checkCompilationTreeNode = typeof(MainForm).GetMethod(
+                        "TreeAfterCheck", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo setExplicitCompilationTrack = typeof(MainForm).GetMethod(
+                        "SetExplicitCompilationTrackTarget", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo explicitTrackPathForAlbum = typeof(MainForm).GetMethod(
+                        "ExplicitCompilationTrackPathForAlbum", BindingFlags.Instance | BindingFlags.NonPublic);
+                    FieldInfo explicitCompilationTrackField = typeof(MainForm).GetField(
+                        "selectedCompilationTrack", BindingFlags.Instance | BindingFlags.NonPublic);
+                    FieldInfo focusedCompilationTrackField = typeof(MainForm).GetField(
+                        "focusedCompilationTrack", BindingFlags.Instance | BindingFlags.NonPublic);
+                    setExplicitCompilationTrack.Invoke(form, new object[] { null });
+                    TreeNode completedCompilationTrackNode = new TreeNode("Completed Track")
+                    {
+                        Tag = completedCompilationTrack,
+                        Checked = false
+                    };
+                    showCompilationTreeNode.Invoke(form, new object[] { completedCompilationTrackNode });
+                    string focusedLaunchTarget = Convert.ToString(explicitTrackPathForAlbum.Invoke(form,
+                        new object[] { compilationAlbum, compilationAlbum.Path }));
+                    Assert(explicitCompilationTrackField.GetValue(form) == null
+                        && Object.ReferenceEquals(focusedCompilationTrackField.GetValue(form), completedCompilationTrack)
+                        && String.IsNullOrWhiteSpace(focusedLaunchTarget),
+                        "Merely focusing a completed compilation track created an explicit target and bypassed normal ledger resume.");
+
+                    completedCompilationTrackNode.Checked = true;
+                    checkCompilationTreeNode.Invoke(form, new object[]
+                    {
+                        form, new TreeViewEventArgs(completedCompilationTrackNode)
+                    });
+                    string checkedLaunchTarget = Convert.ToString(explicitTrackPathForAlbum.Invoke(form,
+                        new object[] { compilationAlbum, compilationAlbum.Path }));
+                    Assert(String.Equals(Path.GetFullPath(checkedLaunchTarget), Path.GetFullPath(completedCompilationTrack.Path),
+                            StringComparison.OrdinalIgnoreCase),
+                        "Checking a completed compilation track did not create the explicit reopen target.");
+                    setExplicitCompilationTrack.Invoke(form, new object[] { null });
+
+                    showSelectedAlbum.Invoke(form, new object[] { compilationAlbum });
+                    PictureBox compilationPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
+                    Assert(compilationPreview.Image != null,
+                        "Normal Album artwork behavior changed before fallback compilation began.");
+                    MethodInfo compilationEvent = typeof(MainForm).GetMethod(
+                        "ApplyCoreEvent", BindingFlags.Instance | BindingFlags.NonPublic);
+                    compilationEvent.Invoke(form, new object[] { new Dictionary<string, object>
+                    {
+                        { "event", "compilation_started" }, { "album_path", compilationAlbum.Path }
+                    } });
+                    Assert(compilationPreview.Image == null && artworkCaption.Text == "No embedded artwork",
+                        "Fallback compilation preview displayed the Album folder cover before a track started.");
+                    compilationEvent.Invoke(form, new object[] { new Dictionary<string, object>
+                    {
+                        { "event", "compilation_track_started" }, { "album_path", compilationAlbum.Path },
+                        { "track_path", unfinishedCompilationTrack.Path }, { "title", unfinishedCompilationTrack.Title },
+                        { "artist", "Track Artist" }, { "embedded_artwork_path", upscalePreviewPath },
+                        { "index", 2 }, { "total", 2 }
+                    } });
+                    Assert(Object.ReferenceEquals(focusedCompilationTrackField.GetValue(form), unfinishedCompilationTrack)
+                        && explicitCompilationTrackField.GetValue(form) == null
+                        && compilationPreview.Image != null
+                        && artworkCaption.Text.Contains("embedded front artwork")
+                        && !artworkCaption.Text.Contains("cover.jpg"),
+                        "The current compilation event did not focus embedded track artwork independently of the launch target.");
+                    compilationEvent.Invoke(form, new object[] { new Dictionary<string, object>
+                    {
+                        { "event", "compilation_track_started" }, { "album_path", compilationAlbum.Path },
+                        { "track_path", completedCompilationTrack.Path }, { "title", completedCompilationTrack.Title },
+                        { "artist", "Track Artist" }, { "embedded_artwork_path", "" },
+                        { "index", 1 }, { "total", 2 }
+                    } });
+                    Assert(compilationPreview.Image == null && artworkCaption.Text == "No embedded artwork",
+                        "A track without an embedded preview fell back to the Album folder cover.");
+
                     previewAlbum.CoverPath = upscalePreviewPath;
                     previewAlbum.LocalArtworkFiles.Add(upscalePreviewPath);
                     previewAlbum.HasLocalArtwork = true;
@@ -1579,7 +1686,7 @@ namespace Splined.WindowsGui
                         "Stacked layout did not preserve independent scrolling for all three work areas.");
                 }
 
-                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, portable Config v5/UI migration, deterministic two-root selective restore, credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
+                Console.WriteLine("PASS: Stable v3 identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, compilation focus/target resume contract and embedded-only track preview, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, portable Config v5/UI migration, deterministic two-root selective restore, credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
                 return 0;
             }
             catch (Exception error)

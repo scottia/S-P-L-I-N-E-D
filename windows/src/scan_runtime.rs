@@ -2175,24 +2175,37 @@ async fn run_compilation_album(
         if gui_events::cancelled() {
             break;
         }
-        if already_completed.contains(&track.path) {
+        if compilation_track_is_already_complete(&track.path, &already_completed, targeted_edit) {
             gui_events::emit(
                 json!({ "event": "compilation_track_skipped", "album_path": album.path,
                 "track_path": track.path, "index": track_index + 1, "total": tracks.len(), "reason": "already-complete" }),
             );
             continue;
         }
+        // The GUI preview is deliberately sourced only from this track's
+        // embedded bytes. Folder-level cover files are not candidates for the
+        // fallback-compilation preview. A preview extraction failure must not
+        // alter normal resume or provider discovery; explicit targeted edits
+        // retain the existing strict error behavior.
+        let embedded_preview = if targeted_edit {
+            embedded_candidate(&track.path, cache_dir)?
+        } else {
+            embedded_candidate(&track.path, cache_dir).unwrap_or(None)
+        };
+        let embedded_artwork_path = embedded_preview
+            .as_ref()
+            .map(|candidate| candidate.path().to_path_buf());
         gui_events::emit(
             json!({ "event": "compilation_track_started", "album_path": album.path,
             "track_path": track.path, "artist": track.artist, "title": track.title,
+            "embedded_artwork_path": embedded_artwork_path,
             "index": track_index + 1, "total": tracks.len() }),
         );
 
         let (recording_mbid, artist_mbids) = track_authority(track);
         let mut authority = MusicBrainzSessionAuthority::from_track(track);
         let targeted_embedded = if targeted_edit {
-            embedded_candidate(&track.path, cache_dir)?
-                .map(|candidate| candidate.path().to_path_buf())
+            embedded_artwork_path
         } else {
             None
         };
@@ -2605,6 +2618,14 @@ async fn run_compilation_album(
         "unresolved_tracks": tracks.len().saturating_sub(completed) }),
     );
     Ok(result)
+}
+
+fn compilation_track_is_already_complete(
+    track_path: &Path,
+    completed_paths: &std::collections::HashSet<PathBuf>,
+    targeted_edit: bool,
+) -> bool {
+    !targeted_edit && completed_paths.contains(track_path)
 }
 
 fn emit_musicbrainz_matches(
@@ -3626,6 +3647,29 @@ mod tests {
             ..overrides
         };
         assert!(apply_upscale_overrides(&mut output, &invalid).is_err());
+    }
+
+    #[test]
+    fn compilation_resume_skips_completed_tracks_but_targeted_edit_reopens_them() {
+        let completed_track = PathBuf::from("album/01-complete.mp3");
+        let unfinished_track = PathBuf::from("album/02-unfinished.mp3");
+        let completed = std::collections::HashSet::from([completed_track.clone()]);
+
+        assert!(compilation_track_is_already_complete(
+            &completed_track,
+            &completed,
+            false,
+        ));
+        assert!(!compilation_track_is_already_complete(
+            &unfinished_track,
+            &completed,
+            false,
+        ));
+        assert!(!compilation_track_is_already_complete(
+            &completed_track,
+            &completed,
+            true,
+        ));
     }
 
     #[test]

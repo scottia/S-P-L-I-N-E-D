@@ -12,6 +12,7 @@ use splined::credentials::{
     save_lastfm_credential,
 };
 use splined::final_artwork::{install_prepared_artwork, prepare_existing_cover_edit};
+use splined::local_artwork::embedded_candidate;
 use splined::media_database::media_snapshot;
 use splined::musicbrainz::{
     MusicBrainzClient, OAuthCredential, load_credential as load_musicbrainz_credential,
@@ -807,6 +808,18 @@ async fn main() {
                 .map_err(|error| format!("Unable to serialize media snapshot: {error}"))
         }) {
             Ok(body) => println!("{body}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if let Some(path) = cli.embedded_artwork_preview.as_deref() {
+        match embedded_candidate(path, std::path::Path::new(&config.scan.temporary_cache_dir)) {
+            Ok(Some(candidate)) => println!("{}", candidate.path().display()),
+            Ok(None) => {}
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(2);
