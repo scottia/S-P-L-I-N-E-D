@@ -210,8 +210,32 @@ fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
 #[test]
 fn winappcli_builds_store_ready_and_development_signed_msix_without_release_secrets() {
     let workflow = source(".github/workflows/release-next-patch.yml");
-    assert!(workflow.contains("uses: microsoft/setup-WinAppCli@v0.1"));
-    assert!(workflow.contains("version: v0.7.1"));
+    assert!(!workflow.contains("microsoft/setup-WinAppCli"));
+    assert!(workflow.contains(
+        "npm install --prefix $installRoot --no-save --no-audit --no-fund \"@microsoft/winappcli@0.7.1\""
+    ));
+    assert!(workflow.contains("$commandDirectory | Out-File -FilePath $env:GITHUB_PATH"));
+    assert!(workflow.contains(
+        "$reportedVersion = (& (Join-Path $commandDirectory \"winapp.cmd\") --version) -join \"`n\""
+    ));
+    assert!(workflow.contains("$reportedVersion -notmatch '0\\.7\\.1'"));
+    for line in workflow.lines().map(str::trim) {
+        let Some(action) = line.strip_prefix("uses: ") else {
+            continue;
+        };
+        let (repository, revision) = action
+            .split_once('@')
+            .expect("workflow action must include an explicit revision");
+        assert!(
+            repository.starts_with("actions/"),
+            "workflow uses disallowed action repository: {repository}"
+        );
+        let revision = revision.split_whitespace().next().unwrap_or_default();
+        assert!(
+            revision.len() == 40 && revision.chars().all(|value| value.is_ascii_hexdigit()),
+            "workflow action is not pinned to a full commit SHA: {action}"
+        );
+    }
     assert!(workflow.contains("winapp manifest update-assets"));
     assert!(workflow.contains("winapp create-debug-identity"));
     assert!(workflow.contains("--no-install"));

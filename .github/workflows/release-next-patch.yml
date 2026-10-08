@@ -312,9 +312,18 @@ jobs:
             ${{ runner.os }}-splined-windows-
 
       - name: Install pinned upstream WinAppCli
-        uses: microsoft/setup-WinAppCli@v0.1
-        with:
-          version: v0.7.1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installRoot = Join-Path $env:RUNNER_TEMP "splined-winappcli"
+          npm install --prefix $installRoot --no-save --no-audit --no-fund "@microsoft/winappcli@0.7.1"
+          $commandDirectory = Join-Path $installRoot "node_modules\.bin"
+          $commandDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $reportedVersion = (& (Join-Path $commandDirectory "winapp.cmd") --version) -join "`n"
+          if ($reportedVersion -notmatch '0\.7\.1') {
+            throw "The pinned WinAppCli installation did not report version 0.7.1."
+          }
 
       - name: Validate Rust and restored WinForms behavior
         shell: pwsh
