@@ -131,6 +131,11 @@ shown as a local comparison candidate. That preview is not release authority
 and does not bypass MusicBrainz Matches or provider discovery; the operator can
 still choose another release and select higher-resolution artwork.
 
+In **Show Tracks**, clicking a pending fallback compilation's Album row selects
+that Album for normal SQLite-ledger resume and enables **LAUNCH**. Clicking a
+track remains focus/preview only; only its check control requests an explicit
+single-track reopen.
+
 The compilation-track-started event moves focus to the actual current track but
 does not set an explicit target. Fallback compilation preview reads only that
 track's embedded front artwork. If none exists, the preview says **No embedded
