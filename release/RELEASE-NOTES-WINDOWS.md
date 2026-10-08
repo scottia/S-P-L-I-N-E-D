@@ -7,6 +7,9 @@
   protections, per-Album SQLite identity in batch runs, compilation resume versus
   explicit targeting, embedded-only fallback preview, and corrected MusicBrainz
   CURRENT ALBUM authority/filter/order/visited behavior.
+- Corrected fallback compilation launch across the WinForms/native boundary:
+  blank track targets now mean normal Album resume, while only an explicitly
+  checked track enables intentional single-track reopening.
 - Moved authoritative Rust processing into the WinForms process through the
   fixed `runtime\splined-core.dll` and a stable UTF-8 C ABI. Requests, callbacks,
   decisions, cancellation, structured errors, and Rust buffer ownership no
@@ -35,3 +38,6 @@
 - Added a disabled App Installer template for a future Windows-managed installed
   update channel. It is not published until a stable public publisher/signing
   chain and HTTPS endpoint exist.
+- Reduced Windows release time by removing the discarded multi-gigabyte compiled
+  target cache. CI now reuses dependency downloads while preserving the clean,
+  version/commit-bound x64 build and every package validation gate.

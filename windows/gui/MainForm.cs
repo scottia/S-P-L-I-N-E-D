@@ -2315,7 +2315,8 @@ namespace Splined.WindowsGui
                 path = scanPath,
                 indexed_album_path = album.Path,
                 indexed_album_key = album.Key,
-                compilation_track_path = explicitTrackPath,
+                compilation_track_path = String.IsNullOrWhiteSpace(explicitTrackPath)
+                    ? null : explicitTrackPath,
                 bypass_override = album.BypassOverride
                     || (album.State == AlbumState.Bypassed && album.CompilationTrackArtworkPending),
                 review_required = true,

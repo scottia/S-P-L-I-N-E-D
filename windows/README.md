@@ -43,6 +43,12 @@ WinForms GUI regression suite. This avoids making DPI-sensitive desktop layout
 checks a prerequisite for every packaging retry while retaining the suite as an
 explicit CI diagnostic.
 
+Release CI caches Cargo registry and Git dependency downloads but never
+`windows/target`. Restoring the compiled target had cost several minutes and
+was immediately discarded by the mandatory clean release build. The normalized
+dependency key ignores only the release-version field, so ordinary version
+bumps reuse downloads while dependency changes still invalidate the cache.
+
 ## Native boundary
 
 `gui/NativeCore.cs` loads the absolute fixed DLL path and owns the managed
