@@ -6,12 +6,12 @@
 -->
 <AppInstaller
   xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
-  Version="1.0.31.0"
+  Version="1.0.62.0"
   Uri="__APPINSTALLER_HTTPS_URI__">
   <MainPackage
     Name="SPLINED"
     Publisher="__PUBLIC_PUBLISHER_DN__"
-    Version="1.0.31.0"
+    Version="1.0.62.0"
     ProcessorArchitecture="x64"
     Uri="__MSIX_HTTPS_URI__" />
   <UpdateSettings>
