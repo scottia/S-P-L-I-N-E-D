@@ -1,43 +1,37 @@
-# Windows architecture release notes
+# Windows migration release notes
 
-- Replaced the former split GUI/processing arrangement with one permanent
-  `splined.exe`; the authoritative Rust processing implementation now runs
-  in-process behind Tauri commands and events.
-- Rebuilt Media Library Selection, scan decisions, candidate review, advanced
-  artwork controls, MusicBrainz Matches, compilation-track workflow, Settings,
-  Credentials, backup/restore, appearance, update, activity, and preview
-  surfaces in the Windows frontend.
-- Preserved MusicBrainz CURRENT ALBUM as a separate, unfiltered authority row;
-  result filtering, deterministic ordering, URLs, indexes, and visited state
-  remain independent.
-- Preserved compilation resume authority in SQLite. Track focus previews only;
-  explicit track checks reopen a track, and normal Album launch resumes at the
-  first unfinished track.
-- Fallback compilation preview now uses only the current track's embedded front
-  artwork and never a folder-level cover file.
-- Made `data/config.toml` and `data/ui.toml` the portable Windows authority,
-  including CWD-independent relative paths and one-time legacy migration.
-- Preserved absolute/UNC paths, the configured `splined.db`, credentials,
-  history, caches, logs, and deterministic selective `.spl` restore.
-- Replaced custom executable swapping with the official updater package flow.
-  The final x64 NSIS artifact is signed and verified with the stable updater key
-  before `latest.json` is generated. Invalid or missing signatures fail closed,
-  with no hash-only fallback and no Authenticode requirement.
-- The portable Windows ZIP now contains only `splined.exe` and
-  `README-WINDOWS.txt`; `data\` is created after first-run save or migration.
-- Corrected Select Media status colors to Blue/Incomplete,
-  Orange/Processed, Red/Bypassed, and Purple/Timeout, while retaining the
-  separate Artist aggregate colors.
-- Restored Select `[ALL]`, `[FILTERED]`, and `[NONE]`, Artist selection cascade,
-  Ctrl additive selection, temporary bypass confirmation, timeout protection,
-  and Auto Scan `[ALL]`/`[SELECTED]` queue semantics.
-- Bound every Album in a multi-Album run to its own indexed path and SQLite key,
-  preventing later results from being written through the focused Album's
-  identity.
-- Restored `.spl` Windows shell association and startup Restore routing without
-  making Registry state an authority for portable Config v5 or UI settings.
-- Aligned the Windows Cargo/Tauri version with the root project version. Release
-  provisioning now advances the current source major/minor line and validates
-  only the three updater-key secrets before creating a release tag.
-- Restricted Windows releases to `x86_64-pc-windows-msvc`, including an AMD64
-  (`0x8664`) PE-header audit and rejection of x86/ARM release artifacts.
+- Restored the accepted 1.0.60 WinForms product experience, including mature
+  Media Selection, Settings, candidate/artwork editing, MusicBrainz, compilation,
+  backup/restore, theme, layout, activity, and help surfaces.
+- Retained newer correctness fixes: status colors, complete Select modes and
+  protections, per-Album SQLite identity in batch runs, compilation resume versus
+  explicit targeting, embedded-only fallback preview, and corrected MusicBrainz
+  CURRENT ALBUM authority/filter/order/visited behavior.
+- Moved authoritative Rust processing into the WinForms process through the
+  fixed `runtime\splined-core.dll` and a stable UTF-8 C ABI. Requests, callbacks,
+  decisions, cancellation, structured errors, and Rust buffer ownership no
+  longer use a child process or redirected streams.
+- Added GUI/core version and commit pairing so a mismatched executable and DLL
+  are rejected at startup.
+- Preserved portable `data\config.toml` and `data\ui.toml`, CWD independence,
+  one-time Registry migration, absolute/UNC paths, configured SQLite authority,
+  credentials, history, cache, logs, and deterministic selective `.spl` restore.
+- Added a distinct installed state model: x64 MSIX runs use stable per-user
+  package LocalState for Config/UI while leaving configured external resources
+  unchanged.
+- Removed the rejected desktop frontend/runtime, custom updater, worker
+  executable, updater executable, executable/DLL extraction, hidden lifecycle
+  helpers, self-reinvocation, and in-app binary replacement.
+- Made portable updates notification-only: SPLINED opens the official release
+  page and the user manually replaces only program files.
+- Restricted Windows output to `x86_64-pc-windows-msvc` and audits both
+  `splined.exe` and `runtime\splined-core.dll` for AMD64 PE Machine `0x8664`.
+- Changed the portable ZIP allowlist to exactly `SPLINED\splined.exe`,
+  `SPLINED\runtime\splined-core.dll`, and `SPLINED\README-WINDOWS.txt`; a fresh
+  archive contains no user state.
+- Added an upstream Microsoft WinAppCli packaging path for x64 package identity,
+  manifest assets, `.spl` association, unsigned Store-ready MSIX output, and
+  disposable development certificate/sign/install/launch/uninstall validation.
+- Added a disabled App Installer template for a future Windows-managed installed
+  update channel. It is not published until a stable public publisher/signing
+  chain and HTTPS endpoint exist.

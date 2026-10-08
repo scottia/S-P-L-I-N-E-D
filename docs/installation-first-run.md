@@ -12,12 +12,15 @@ fresh archive contains exactly:
 ```text
 SPLINED\
   splined.exe
+  runtime\
+    splined-core.dll
   README-WINDOWS.txt
 ```
 
-The executable contains the desktop frontend and authoritative Rust processing
-backend. Normal startup and scans do not extract executable code or launch a
-SPLINED processing child.
+The WinForms executable loads the fixed Rust DLL in-process. Rust remains the
+authoritative processing implementation. Normal startup and scans do not
+extract executable code or launch a SPLINED processing child; the application
+runs as one normal process.
 
 On first save, the application creates:
 
@@ -50,25 +53,41 @@ portable file or resurrect after the migration marker is recorded.
 7. Refresh Media Library Selection.
 8. Run a READ scan before enabling LIVE WRITE.
 
-### Windows update
+### Windows installed MSIX
 
-Production releases use updater metadata carrying a cryptographic signature for
-the standard x64 NSIS update package. The user must approve installation. The
-release pipeline and application verify the package with the stable updater key
-before installation. The update is directed to the current portable root; it
-replaces application code without modifying `data\`, SQLite, credentials,
-history, cache, logs, or external paths. Updated SPLINED then relaunches.
+The optional `SPLINED-x64.msix` channel supplies package identity, Start menu
+activation, manifest-owned `.spl` association, and normal Windows uninstall.
+Its payload is the same `splined.exe` plus `runtime\splined-core.dll`. Because
+an MSIX installation directory is read-only, Config v5 and interface state live
+under the package's per-user LocalState directory. Configured absolute, mapped,
+and UNC resources remain unchanged.
 
-Developer builds without an updater verification key can check their build
-status but cannot install public updates. Public automatic updating requires
-the stable updater public key, private signing key, and signing-key password.
-SPLINED Windows is built only for `x86_64-pc-windows-msvc` and does not require
-Authenticode signing.
+Release CI creates a disposable development certificate, signs a validation
+package, installs it, checks identity/activation/file association, and removes
+it. The published Store-ready MSIX remains unsigned until an external public
+publisher or the Microsoft Store supplies the production signature. A
+self-signed development package is not publicly trusted.
 
-A schema 2 `windows-update.json` remains available for older notification-only
-builds. It intentionally omits automatic-install integrity fields, so it cannot
-authorize installation. Current builds use the signed updater metadata and do
-not infer missing trust fields.
+### Windows upgrade
+
+Portable automatic binary replacement is retired. **Help > Check for Updates**
+shows the official release information; the user may open the official release
+page, download the current portable ZIP, close SPLINED, and replace only:
+
+```text
+splined.exe
+runtime\splined-core.dll
+README-WINDOWS.txt
+```
+
+Never replace or delete `data\`, SQLite, credentials, history, cache, logs, or
+configured external state. No updater executable, hidden helper, command shell,
+or self-replacement loop participates in this process.
+
+The installed channel has a prepared App Installer template for a future
+Windows-managed update endpoint. It is intentionally not published or enabled
+until that channel has a stable public publisher/signing chain. Windows builds
+target only `x86_64-pc-windows-msvc`.
 
 ## Linux
 

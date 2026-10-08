@@ -1,79 +1,106 @@
 # SPLINED Windows desktop
 
-The Windows desktop is an upstream Tauri v2 application. `splined.exe` contains
-the frontend and the authoritative Rust processing backend. Scans, provider
-requests, decisions, MusicBrainz matching, artwork processing, cancellation,
-and completion reporting cross an in-process command/event boundary. No SPLINED
-processing child is launched.
+The Windows frontend is the mature WinForms application accepted in 1.0.60,
+with later correctness fixes retained. `splined.exe` loads the fixed
+`runtime\splined-core.dll` and calls authoritative Rust processing in-process
+through a stable UTF-8 C ABI. Structured callbacks carry progress, decisions,
+candidates, MusicBrainz results, compilation events, cancellation, errors, and
+completion without redirected process streams. No SPLINED worker or updater
+process exists.
 
 ## Build and test
 
+Windows is x64-only. Install the `x86_64-pc-windows-msvc` Rust target, then run:
+
 ```powershell
-cd windows
-cargo fmt --all -- --check
-cargo check --all-targets
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
-node --test frontend/tests/app-model.test.mjs
-cargo tauri build --no-bundle
+cargo fmt --manifest-path windows/Cargo.toml -- --check
+cargo check --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc
+cargo test --locked --manifest-path windows/Cargo.toml --lib --target x86_64-pc-windows-msvc
+cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+windows\gui\RUN-GUI-QA.cmd
+windows\gui\BUILD-WINDOWS-GUI.cmd
 ```
 
-Developer builds without an updater verification key deliberately disable
-public automatic installation. A production build requires the stable updater
-public key at compile time and the matching private signing key plus password at
-package time. Windows releases target only `x86_64-pc-windows-msvc`; no
-Authenticode certificate is required.
+Cargo checks and tests do not compile the WinForms executable. The explicit
+build script opts into one GUI build and produces the pair under
+`windows\target\x86_64-pc-windows-msvc\release`:
 
-## Portable state
+```text
+splined.exe
+splined_core.dll
+```
 
-The executable directory is always the portable root; process CWD is ignored.
-The durable Windows-owned files are:
+Packaging renames only the DLL filename to `splined-core.dll`. Both binaries
+embed the same release version/commit identity, and startup rejects a mismatched
+pair. Release CI deletes the release output before building and verifies both PE
+Machine fields are AMD64 (`0x8664`).
+
+## Native boundary
+
+`gui/NativeCore.cs` loads the absolute fixed DLL path and owns the managed
+callback lifetime. `src/ffi.rs` exposes initialization, build identity, media
+snapshot, embedded-artwork preview, existing-cover editing, scan start,
+decision submission, cancellation, active-state query, and Rust-buffer release.
+Every exported operation contains Rust panics and returns structured errors.
+Scan work and callbacks execute away from the WinForms UI thread.
+
+The GUI provides both the executable root and the writable state root during
+initialization. This prevents the DLL's `runtime` directory or process CWD from
+becoming path authority.
+
+## Portable and packaged state
+
+Portable mode uses:
 
 ```text
 SPLINED\
   splined.exe
-  data\
+  runtime\
+    splined-core.dll
+  data\                  # created after first save or migration
     config.toml
     ui.toml
 ```
 
-`data\` is created only after first-run save or one-time migration. Relative
-Config v5 paths resolve from the portable root. Absolute and UNC paths remain
-unchanged. SQLite, credentials, history, logs, and caches retain the locations
-selected in Config v5.
+The executable directory is the portable root. In installed MSIX mode Config v5
+and UI state use the package's per-user LocalState directory because installed
+package files are read-only. Absolute, mapped-drive, and UNC paths remain
+unchanged. SQLite, credentials, history, logs, and caches retain their Config v5
+locations.
 
-When no portable state exists, a legacy ConfigV5/UiV4 pair may be read once and
-written into the portable files. The legacy values are not deleted and are not
-used as runtime authority afterward. The `.spl` shell association is separate:
-the portable application registers its current executable as the backup opener,
-and the Windows package declares the same association. Opening a backup starts
-the selective Restore surface; it does not restore categories automatically.
+Legacy ConfigV5/UiV4 Registry values are one-time migration input only. Portable
+files or package LocalState are runtime authority afterward. Portable `.spl`
+association is intentional HKCU shell integration; packaged association comes
+from the MSIX manifest. Opening a backup pre-fills selective Restore and never
+automatically restores all categories.
 
-The Windows Cargo and Tauri versions must match the root package version before
-release provisioning. Patch releases advance only within that source
-major/minor line, so an unrelated or abandoned higher-major tag cannot silently
-change the next public version.
+## Packaging with WinAppCli
 
-## Backup and restore
+The release workflow pins upstream Microsoft WinAppCli and uses it to generate
+MSIX assets, generate a non-installed loose-layout debug identity, package x64
+payloads, create disposable development certificates, sign a CI-only package,
+install/activate/inspect it with real package identity, and uninstall it. Loose
+identity registration is available for development machines with Developer Mode
+enabled; release CI does not depend on that machine-wide setting. Development
+private keys remain ephemeral.
 
-The `.spl` format preserves selective Config v5, interface, credential,
-database, and diagnostic categories. Password-protected backups remain
-compatible with the prior format. Restore validates content before atomic
-replacement. Selected categories overwrite their destinations; unselected
-categories are untouched. Resolution is deterministic across different
-portable roots.
+The primary GitHub artifact is `splined-windows-x86_64.zip`, containing exactly:
 
-## Signed updates
+```text
+SPLINED\splined.exe
+SPLINED\runtime\splined-core.dll
+SPLINED\README-WINDOWS.txt
+```
 
-The application uses the official updater plugin and its cryptographically
-signed package contract. The release pipeline verifies the final NSIS update
-artifact with the configured updater public key before generating
-`latest.json`. A missing or invalid updater signature stops the release; there
-is no hash-only fallback. The installer receives the current portable root and
-replaces the application in that directory while leaving `data\` and
-configured external resources alone. Authenticode is not part of this release
-trust model.
+`SPLINED-x64.msix` is the unsigned Store-ready output. Public installation
+requires a future external publisher signature or Microsoft Store signing; the
+development certificate is not public trust. The App Installer template stays
+disabled until that installed channel has a stable publisher and HTTPS endpoint.
 
-The portable ZIP contains exactly `splined.exe` and `README-WINDOWS.txt`.
-The update installer, its updater signature, and update metadata are separate
-release assets.
+## Updates
+
+Portable checking is notification-only and opens the official release page.
+There is no custom updater, executable/DLL extraction, hidden helper, shell
+lifecycle script, self-reinvocation, process-name killing, or in-app binary
+replacement. Users replace `splined.exe`, `runtime\splined-core.dll`, and the
+README manually while preserving `data\` and configured external resources.
