@@ -2276,8 +2276,16 @@ async fn run_compilation_album(
         let mut current_release: Option<String> = None;
         let mut matches = Vec::<MusicBrainzMatch>::new();
         let mut used_search = false;
+        // Embedded artwork is the current track's preview/comparison candidate,
+        // not release authority. An explicitly reopened track must still enter
+        // the normal MusicBrainz/provider workflow so a higher-resolution source
+        // can be selected. Only an authoritative SQLite local match bypasses it.
+        let needs_musicbrainz = compilation_requires_musicbrainz_match(
+            local_candidate.is_some(),
+            targeted_embedded.is_some(),
+        );
 
-        if local_candidate.is_none() && targeted_embedded.is_none() {
+        if needs_musicbrainz {
             used_search = true;
             let (items, warnings) = match_cache
                 .automatic_matches(
@@ -2307,8 +2315,7 @@ async fn run_compilation_album(
         }
 
         'match_selection: loop {
-            if local_candidate.is_none() && targeted_embedded.is_none() && selected_match.is_none()
-            {
+            if needs_musicbrainz && selected_match.is_none() {
                 emit_musicbrainz_matches(
                     track,
                     &matches,
@@ -2377,36 +2384,7 @@ async fn run_compilation_album(
                 }
             }
 
-            let mut pipeline = if let Some(embedded_path) = targeted_embedded.as_ref() {
-                let downloaded = DownloadedCandidate::from_existing_path(
-                    "local",
-                    embedded_path.clone(),
-                    0,
-                    track.path.to_string_lossy(),
-                )?;
-                PipelineResult {
-                    candidates: vec![PipelineCandidate {
-                        reference: ArtworkReference {
-                            source: "local".to_string(),
-                            id: track
-                                .path
-                                .file_name()
-                                .and_then(|value| value.to_str())
-                                .unwrap_or("embedded track")
-                                .to_string(),
-                            url: track.path.to_string_lossy().into_owned(),
-                            front: true,
-                            approved: true,
-                            types: vec!["EmbeddedTrack".to_string()],
-                        },
-                        downloaded,
-                        strict: StrictContentDecision::default(),
-                    }],
-                    best_index: Some(0),
-                    diagnostics: Vec::new(),
-                    provider_timings: Vec::new(),
-                }
-            } else if let Some(local) = local_candidate.as_ref() {
+            let mut pipeline = if let Some(local) = local_candidate.as_ref() {
                 let downloaded = DownloadedCandidate::from_existing_path(
                     "local",
                     local.cover_path.clone(),
@@ -2475,6 +2453,9 @@ async fn run_compilation_album(
                     "errors": timing.errors, "error": timing.error }),
                 );
             }
+            if let Some(embedded_path) = targeted_embedded.as_ref() {
+                prepend_embedded_compilation_candidate(&mut pipeline, embedded_path, &track.path)?;
+            }
             if pipeline.candidates.is_empty() {
                 if let Some(selected) = selected_match.take() {
                     if !selected_from_authority {
@@ -2497,12 +2478,12 @@ async fn run_compilation_album(
             });
             let display_indices = (0..pipeline.candidates.len())
                 .filter(|index| {
-                    targeted_embedded.is_some()
-                        || candidate_visible_for_review(
-                            &pipeline.candidates[*index].downloaded.candidate,
-                            range,
-                            config,
-                        )
+                    let item = &pipeline.candidates[*index];
+                    item.reference
+                        .types
+                        .iter()
+                        .any(|value| value == "EmbeddedTrack")
+                        || candidate_visible_for_review(&item.downloaded.candidate, range, config)
                 })
                 .collect::<Vec<_>>();
             let gui_candidates = display_indices.iter().map(|candidate_index| {
@@ -2536,12 +2517,12 @@ async fn run_compilation_album(
                 json!({ "event": "candidates", "album_path": album.path, "track_path": track.path,
                 "items": gui_candidates, "recommended_index": suggested_index.map(|value| value + 1),
                 "hidden_by_source_policy": pipeline.candidates.len() - display_indices.len(), "fallback": false,
-                "compilation_track": true, "musicbrainz_back_available": local_candidate.is_none() && targeted_embedded.is_none() }),
+                "compilation_track": true, "musicbrainz_back_available": needs_musicbrainz }),
             );
             gui_events::emit(
                 json!({ "event": "decision_required", "album_path": album.path, "track_path": track.path,
                 "reason": "compilation-track", "suggested_index": suggested_index.map(|value| value + 1),
-                "allow_bypass": true, "musicbrainz_back_available": local_candidate.is_none() && targeted_embedded.is_none() }),
+                "allow_bypass": true, "musicbrainz_back_available": needs_musicbrainz }),
             );
 
             let chosen_index = match gui_events::wait_for_candidate_decision()? {
@@ -2550,9 +2531,7 @@ async fn run_compilation_album(
                 {
                     index
                 }
-                gui_events::CandidateDecision::BackToMusicBrainz
-                    if local_candidate.is_none() && targeted_embedded.is_none() =>
-                {
+                gui_events::CandidateDecision::BackToMusicBrainz if needs_musicbrainz => {
                     if let Some(selected) = selected_match.take()
                         && !selected_from_authority
                     {
@@ -2926,6 +2905,52 @@ fn configured_candidate_policy(
         Some(policy) => source_override_decision(policy, candidate.width, candidate.height, range),
         None => global_range_decision(projected.width, projected.height, range),
     }
+}
+
+fn compilation_requires_musicbrainz_match(
+    has_authoritative_local_match: bool,
+    has_embedded_track_preview: bool,
+) -> bool {
+    // Embedded track art describes the current bytes, not the release whose
+    // provider results the operator wants to inspect. It therefore never
+    // suppresses release selection or remote source discovery.
+    has_embedded_track_preview || !has_authoritative_local_match
+}
+
+fn prepend_embedded_compilation_candidate(
+    result: &mut PipelineResult,
+    embedded_path: &Path,
+    track_path: &Path,
+) -> Result<(), String> {
+    let downloaded = DownloadedCandidate::from_existing_path(
+        "local",
+        embedded_path.to_path_buf(),
+        0,
+        track_path.to_string_lossy(),
+    )?;
+    if let Some(best_index) = result.best_index.as_mut() {
+        *best_index += 1;
+    }
+    result.candidates.insert(
+        0,
+        PipelineCandidate {
+            reference: ArtworkReference {
+                source: "local".to_string(),
+                id: track_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("embedded track")
+                    .to_string(),
+                url: track_path.to_string_lossy().into_owned(),
+                front: true,
+                approved: true,
+                types: vec!["EmbeddedTrack".to_string()],
+            },
+            downloaded,
+            strict: StrictContentDecision::default(),
+        },
+    );
+    Ok(())
 }
 
 fn apply_strict_candidate_policy(
@@ -3819,6 +3844,70 @@ mod tests {
             .expect("track 52 should remain unfinished");
 
         assert_eq!(next.path, tracks[51].path);
+    }
+
+    #[test]
+    fn targeted_embedded_preview_does_not_bypass_musicbrainz_discovery() {
+        assert!(compilation_requires_musicbrainz_match(false, false));
+        assert!(compilation_requires_musicbrainz_match(false, true));
+        assert!(!compilation_requires_musicbrainz_match(true, false));
+        assert!(compilation_requires_musicbrainz_match(true, true));
+    }
+
+    #[test]
+    fn targeted_embedded_art_is_added_without_replacing_provider_results() {
+        let dir = TempDir::new().unwrap();
+        let embedded_path = dir.path().join("embedded.png");
+        let provider_path = dir.path().join("provider.png");
+        image::RgbImage::from_pixel(32, 32, image::Rgb([12, 34, 56]))
+            .save(&embedded_path)
+            .unwrap();
+        image::RgbImage::from_pixel(64, 64, image::Rgb([65, 43, 21]))
+            .save(&provider_path)
+            .unwrap();
+        let downloaded = DownloadedCandidate::from_existing_path(
+            "itunes",
+            provider_path,
+            3,
+            "https://example.invalid/provider.png",
+        )
+        .unwrap();
+        let mut pipeline = PipelineResult {
+            candidates: vec![PipelineCandidate {
+                reference: ArtworkReference {
+                    source: "itunes".to_string(),
+                    id: "provider".to_string(),
+                    url: "https://example.invalid/provider.png".to_string(),
+                    front: true,
+                    approved: true,
+                    types: vec!["Front".to_string()],
+                },
+                downloaded,
+                strict: StrictContentDecision::default(),
+            }],
+            best_index: Some(0),
+            diagnostics: Vec::new(),
+            provider_timings: Vec::new(),
+        };
+
+        prepend_embedded_compilation_candidate(
+            &mut pipeline,
+            &embedded_path,
+            Path::new("album/54 - Track.mp3"),
+        )
+        .unwrap();
+
+        assert_eq!(pipeline.candidates.len(), 2);
+        assert_eq!(pipeline.candidates[0].downloaded.candidate.source, "local");
+        assert!(
+            pipeline.candidates[0]
+                .reference
+                .types
+                .iter()
+                .any(|value| value == "EmbeddedTrack")
+        );
+        assert_eq!(pipeline.candidates[1].downloaded.candidate.source, "itunes");
+        assert_eq!(pipeline.best_index, Some(1));
     }
 
     #[test]
