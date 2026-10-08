@@ -1,4 +1,7 @@
 /target
+/target-windows/
+/.winapp/
+/rust-temp/
 /python/pyratatui_input/target/
 /python/pyratatui_input/dist/
 /.security-tools/
@@ -23,6 +26,7 @@
 /windows/config.location
 /windows/gui/qa-app/
 /windows/gui/qa-test/
+/windows/gui/qa-temp/
 /windows/gui/config/
 /windows/gui/credentials/
 /windows/gui/secrets/

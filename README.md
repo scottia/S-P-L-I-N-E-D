@@ -51,6 +51,7 @@ Choose the installation method that matches where SPLINED will run.
 | Install type | Intended use | Installation files |
 | --- | --- | --- |
 | **Windows Portable** | Windows desktop / workstation | [`release/README-WINDOWS.txt`](release/README-WINDOWS.txt) |
+| **Windows MSIX** | Optional installed x64 Windows channel | [`docs/windows-guide.md`](docs/windows-guide.md) |
 | **Linux Portable** | Native Linux installation | [`release/README-LINUX.txt`](release/README-LINUX.txt) |
 | **macOS Portable** | Native macOS installation | [`release/README-MACOS.txt`](release/README-MACOS.txt) |
 | **Docker** | Linux servers, NAS, and container deployments | [`docker/README.md`](docker/README.md) · [`python/Dockerfile`](python/Dockerfile) |
@@ -93,11 +94,12 @@ The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
 portable settings, and selective `.spl` backup/restore.
 
-The x64 Windows portable application is one `splined.exe`. Its Tauri frontend
-calls the authoritative Rust processing backend in-process. Production builds
-use a cryptographically verified updater package after explicit approval;
-portable `data\` and configured external resources remain untouched. Builds
-without an updater verification key cannot install public updates. See
+The x64 Windows portable application restores the mature WinForms interface.
+`splined.exe` loads the fixed `runtime\splined-core.dll` and calls the
+authoritative Rust processing backend in-process through a stable UTF-8 C ABI;
+there is one normal application process. Portable update checks open the
+official release page for manual program-file replacement, leaving `data\` and
+configured external resources untouched. See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
 ---
@@ -285,12 +287,14 @@ All supported runtimes use **Config v5**:
 - [Docker Config v5 example](docker/config.example.toml)
 - [Config v5 reference](docs/config-v5-reference.md)
 
-The Windows GUI stores Config v5 in `data/config.toml`, stores interface state
-in `data/ui.toml`, and presents its fields through **File > Settings...**. Its
-first-run SQL database, temporary run cache, log, and credential paths default
-beneath `%LOCALAPPDATA%\SPLINED`, remain editable, and are created only after
-Save and Continue. Native portable paths may be application-relative. Docker
-uses container-specific absolute paths while preserving the schema.
+The portable Windows GUI stores Config v5 in `data/config.toml`, stores
+interface state in `data/ui.toml`, and presents its fields through **File >
+Settings...**. The optional MSIX channel stores those two Windows-owned files in
+the package's per-user LocalState directory because its installation directory
+is read-only. SQL database, temporary run cache, log, credential, and other
+configured paths remain editable and are not silently relocated. Native
+portable paths may be application-relative. Docker uses container-specific
+absolute paths while preserving the schema.
 
 ---
 

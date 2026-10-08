@@ -1,21 +1,30 @@
-# Windows portable guide
+# Windows guide
 
 ## Architecture and package
 
-The Windows application uses upstream Tauri v2 and contains its frontend and
-authoritative Rust backend in one permanent executable:
+The Windows application restores the accepted 1.0.60 WinForms product
+experience while retaining later correctness fixes. Its fixed runtime is:
 
 ```text
 SPLINED\
   splined.exe
+  runtime\
+    splined-core.dll
   README-WINDOWS.txt
 ```
 
-No SPLINED processing child is launched. Commands start Rust operations in the
-application process; structured events return progress, decisions, candidates,
-MusicBrainz matches, logs, and completion state to the frontend. Cancellation
-uses the same in-process boundary. Windows releases are x64-only and are built
-for `x86_64-pc-windows-msvc`.
+`splined.exe` is the WinForms frontend. It loads the normally shipped DLL from
+the fixed `runtime` location and calls the authoritative Rust implementation
+through a narrow C ABI. UTF-8 requests and structured callbacks carry scans,
+progress, decisions, candidates, MusicBrainz matches, cancellation, errors, and
+completion. Rust owns returned buffers and exposes their matching free
+function; panics are contained at the boundary. Work runs away from the UI
+thread, so the established LAUNCH / WAITING / STOP interface remains
+responsive.
+
+There is one normal SPLINED process. The DLL is never embedded, extracted,
+renamed, copied into an executable cache, or launched. Windows releases are
+x64-only and both PE images are audited for AMD64 (`0x8664`).
 
 The fresh archive does not contain `data\`. First save or one-time migration
 creates `data\config.toml` and `data\ui.toml`.
@@ -113,9 +122,16 @@ workflow. Successful per-track writes are recorded durably before advancing.
 
 ## Portable Config v5 and interface state
 
-The executable directory is the portable root. Relative paths resolve from it,
-not process CWD. Moving or copying the complete directory carries settings.
-Absolute and UNC paths remain exact.
+In portable mode the executable directory is the portable root. Relative paths
+resolve from it, not process CWD. Moving or copying the complete directory
+carries settings. Absolute and UNC paths remain exact.
+
+In installed MSIX mode the package installation directory is read-only. Config
+v5 and UI state therefore live under the package's stable per-user LocalState
+directory, and relative configured paths resolve from that writable state root.
+Existing absolute, mapped-drive, and UNC resources remain exact. Selective
+`.spl` backup/restore is the supported transfer path between portable and
+installed copies.
 
 Config v5 retains authority for the music library, database directory,
 temporary cache, credentials, logs, history, and external path mapping. The
@@ -141,36 +157,45 @@ the established format. Restore validates its envelope and contents, then uses
 recoverable file replacement.
 
 The Windows shell association for `.spl` is intentionally separate from
-Config/UI authority. SPLINED registers the portable executable as the backup
-opener, and the Tauri Windows package declares the same association. Opening an
-existing `.spl` file launches the selective Restore surface with that path
-pre-filled.
+Config/UI authority. Portable SPLINED registers its current executable as the
+backup opener. Installed SPLINED declares the association in its MSIX manifest.
+Opening an existing `.spl` file launches the selective Restore surface with
+that path pre-filled.
 
 For the same backup and category selection, two clean portable directories
 produce equivalent Config v5 and UI state. Selected categories overwrite their
 destinations. Unselected categories stay unchanged. Registry contents,
 previous roots, and unrelated folders do not affect restore.
 
-## Updates and trust
+## Distribution, updates, and trust
 
-Production automatic updates require all of the following:
+The primary GitHub artifact is `splined-windows-x86_64.zip`. Its allowlist is
+exactly `splined.exe`, `runtime\splined-core.dll`, and `README-WINDOWS.txt`
+under the `SPLINED` directory. A fresh archive contains no `data\`.
 
-- update metadata containing the final NSIS package signature;
-- a cryptographically signed updater package that verifies with the stable
-  updater public key;
-- explicit user approval.
+Portable update checking is notification-only. It can show release information
+and open the official release page, but it cannot download or replace binaries.
+The user closes SPLINED and replaces only the three program/documentation files;
+portable `data\` and every configured external resource remain outside that
+operation.
 
-The standard update installer receives the current portable root and replaces
-application code there. Portable `data\` and all configured SQLite, credential,
-history, cache, and log paths are outside the update payload. Developer builds
-without the updater verification key cannot install public updates.
+The optional installed artifact is an x64 MSIX created with upstream Microsoft
+WinAppCli. WinAppCli generates package assets, validates the manifest, supplies
+debug/loose-layout identity, creates disposable development certificates, and
+supports signing and Store-ready unsigned output. CI generates the loose-layout
+identity without registering it, so release validation does not depend on a
+machine-wide Developer Mode setting. Developers may register that identity with
+WinAppCli on machines where Developer Mode is enabled. CI development-signs a
+temporary package, installs and activates it through its package identity,
+verifies in-process native-core startup and the `.spl` association, and
+uninstalls it. Development certificates and private keys are never committed or
+published.
 
-The release pipeline emits the final x64 NSIS update installer, its updater
-signature, and `latest.json`. It verifies the installer signature before
-generating metadata and fails closed if the signature is missing or invalid;
-hashes are not an installation fallback. SPLINED does not require Authenticode
-signing. A schema 2 notification manifest remains for older builds but cannot
-authorize installation.
+The checked-in `SPLINED.appinstaller.template` prepares Windows App Installer
+OnLaunch updates for a future public installed channel. It contains deliberate
+publisher and HTTPS placeholders and is not published or enabled until a stable
+public publisher/signing chain exists. The portable ZIP never depends on MSIX,
+Store publication, or public code-signing infrastructure.
 
 ## Diagnostics
 

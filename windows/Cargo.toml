@@ -3,17 +3,15 @@ name = "splined-windows"
 version = "1.0.31"
 edition = "2024"
 build = "build.rs"
+autobins = false
 publish = false
 license = "GPL-3.0-only"
 repository = "https://github.com/scottia/S-P-L-I-N-E-D"
 
 [lib]
-name = "splined"
+name = "splined_core"
 path = "src/lib.rs"
-
-[[bin]]
-name = "splined"
-path = "src/main.rs"
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 base64 = "0.23.1"
@@ -41,21 +39,8 @@ toml = "1.1.5"
 unicode-normalization = "0.1.25"
 unicode-casefold = "0.2.0"
 
-[build-dependencies]
-tauri-build = { version = "=2.7.1", features = [] }
-tauri-utils = "=2.10.1"
-
-[dev-dependencies]
-minisign-verify = "0.2.5"
-
 [target.'cfg(windows)'.dependencies]
 bytemuck = "1.24.0"
 pollster = "0.4.0"
-tauri = { version = "=2.12.1", features = [] }
-tauri-plugin-dialog = "=2.6.0"
-tauri-plugin-opener = "=2.5.0"
-tauri-plugin-updater = "=2.13.2"
-tauri-utils = "=2.10.1"
 wgpu = { version = "29.0.4", default-features = false, features = ["std", "vulkan", "wgsl"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet"] }
-winreg = "0.55.0"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
