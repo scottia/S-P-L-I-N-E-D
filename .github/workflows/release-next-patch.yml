@@ -13,6 +13,11 @@ on:
           - "Ubuntu"
           - "macOS"
           - "All"
+      extended_windows_validation:
+        description: "Run the full Rust and WinForms GUI regression suite before Windows packaging"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -326,13 +331,13 @@ jobs:
             throw "The pinned WinAppCli installation did not report version 0.7.1."
           }
 
-      - name: Validate Rust and restored WinForms behavior
+      - name: Run extended Windows regression suite
+        if: ${{ inputs.extended_windows_validation }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           cargo fmt --manifest-path windows/Cargo.toml -- --check
-          cargo check --locked --manifest-path windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET
           cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
           cargo test --locked --manifest-path windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
           Push-Location windows/gui

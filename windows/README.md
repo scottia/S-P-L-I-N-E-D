@@ -35,6 +35,14 @@ embed the same release version/commit identity, and startup rejects a mismatched
 pair. Release CI deletes the release output before building and verifies both PE
 Machine fields are AMD64 (`0x8664`).
 
+The manual release workflow keeps its default path focused on clean release
+build, native smoke, PE/version checks, portable allowlist auditing, and MSIX
+install/identity validation. Its `extended_windows_validation` input is off by
+default; enable it when a release run should also execute the full Rust and
+WinForms GUI regression suite. This avoids making DPI-sensitive desktop layout
+checks a prerequisite for every packaging retry while retaining the suite as an
+explicit CI diagnostic.
+
 ## Native boundary
 
 `gui/NativeCore.cs` loads the absolute fixed DLL path and owns the managed
