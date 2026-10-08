@@ -27,31 +27,8 @@ env:
   WINDOWS_TARGET: "x86_64-pc-windows-msvc"
 
 jobs:
-  release-preflight:
-    name: Validate release prerequisites
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require Tauri updater signing material before creating a tag
-        if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
-        shell: bash
-        env:
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          missing=0
-          for name in TAURI_UPDATER_PUBLIC_KEY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Required Tauri updater signing material is unavailable: $name"
-              missing=1
-            fi
-          done
-          test "$missing" -eq 0
-
   prepare-release:
     name: Create next patch tag
-    needs: release-preflight
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -180,17 +157,71 @@ jobs:
               raise SystemExit("windows/Cargo.lock package version was not updated")
           windows_lock_path.write_text(windows_lock, encoding="utf-8")
 
-          tauri_path = Path("windows/tauri.conf.json")
-          tauri = tauri_path.read_text(encoding="utf-8")
-          tauri, tauri_count = re.subn(
-              r'("version"\s*:\s*")[^"]+("\s*,)',
+          release_info_path = Path("windows/gui/ReleaseInfo.cs")
+          release_info = release_info_path.read_text(encoding="utf-8-sig")
+          for field in ("NumericVersion", "SemanticVersion"):
+              release_info, count = re.subn(
+                  rf'(public const string {field} = ")[^"]+(";)',
+                  rf'\g<1>{release_version}\g<2>',
+                  release_info,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit(f"Windows {field} was not updated")
+          release_info, count = re.subn(
+              r'(public const string PackageName = "SPLINED-Windows-)[^"]+(";)',
               rf'\g<1>{release_version}\g<2>',
-              tauri,
+              release_info,
               count=1,
           )
-          if tauri_count != 1:
-              raise SystemExit("windows/tauri.conf.json version was not updated")
-          tauri_path.write_text(tauri, encoding="utf-8")
+          if count != 1:
+              raise SystemExit("Windows package name was not updated")
+          release_info_path.write_text(release_info, encoding="utf-8")
+
+          assembly_path = Path("windows/gui/AssemblyInfo.cs")
+          assembly = assembly_path.read_text(encoding="utf-8-sig")
+          assembly = re.sub(
+              r'(native Windows interface - v)[^ ]+( Stable)',
+              rf'\g<1>{release_version}\g<2>',
+              assembly,
+              count=1,
+          )
+          for attribute in ("AssemblyVersion", "AssemblyFileVersion"):
+              assembly, count = re.subn(
+                  rf'(\[assembly: {attribute}\(")[^"]+("\)\])',
+                  rf'\g<1>{release_version}.0\g<2>',
+                  assembly,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit(f"Windows {attribute} was not updated")
+          assembly_path.write_text(assembly, encoding="utf-8")
+
+          app_manifest_path = Path("windows/gui/app.manifest")
+          app_manifest = app_manifest_path.read_text(encoding="utf-8-sig")
+          app_manifest, count = re.subn(
+              r'(<assemblyIdentity version=")[^"]+(" name="SPLINED\.Windows\.GUI"/>)',
+              rf'\g<1>{release_version}.0\g<2>',
+              app_manifest,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("Windows executable manifest version was not updated")
+          app_manifest_path.write_text(app_manifest, encoding="utf-8")
+
+          for package_path in (
+              Path("windows/package/Package.appxmanifest"),
+              Path("windows/package/SPLINED.appinstaller.template"),
+          ):
+              package = package_path.read_text(encoding="utf-8-sig")
+              package, count = re.subn(
+                  r'(Version=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
+                  rf'\g<1>{release_version}.0\g<2>',
+                  package,
+              )
+              if count < 1:
+                  raise SystemExit(f"Package version was not updated in {package_path}")
+              package_path.write_text(package, encoding="utf-8")
 
           python_path = Path("python/splined.py")
           source = python_path.read_text(encoding="utf-8")
@@ -221,14 +252,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mapfile -t changed < <(git diff --name-only | sort)
-          expected=("Cargo.lock" "Cargo.toml" "python/splined.py" "windows/Cargo.lock" "windows/Cargo.toml" "windows/tauri.conf.json")
+          expected=("Cargo.lock" "Cargo.toml" "python/splined.py" "windows/Cargo.lock" "windows/Cargo.toml" "windows/gui/AssemblyInfo.cs" "windows/gui/ReleaseInfo.cs" "windows/gui/app.manifest" "windows/package/Package.appxmanifest" "windows/package/SPLINED.appinstaller.template")
           if [ "${changed[*]}" != "${expected[*]}" ]; then
             echo "ERROR: Release provisioning changed unexpected files."
             printf '  %s\n' "${changed[@]}"
             exit 1
           fi
 
-          git add Cargo.toml Cargo.lock python/splined.py windows/Cargo.toml windows/Cargo.lock windows/tauri.conf.json
+          git add Cargo.toml Cargo.lock python/splined.py windows/Cargo.toml windows/Cargo.lock windows/gui/AssemblyInfo.cs windows/gui/ReleaseInfo.cs windows/gui/app.manifest windows/package/Package.appxmanifest windows/package/SPLINED.appinstaller.template
           git commit -m "release: prepare ${RELEASE_VERSION}"
 
           RELEASE_COMMIT=$(git rev-parse HEAD)
@@ -280,69 +311,89 @@ jobs:
             ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-
             ${{ runner.os }}-splined-windows-
 
-      - name: Require Tauri updater signing material
+      - name: Install pinned upstream WinAppCli
+        uses: microsoft/setup-WinAppCli@v0.1
+        with:
+          version: v0.7.1
+
+      - name: Validate Rust and restored WinForms behavior
         shell: pwsh
-        env:
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          foreach ($name in @("TAURI_UPDATER_PUBLIC_KEY", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD")) {
-            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Required Tauri updater signing material is unavailable: $name" }
-          }
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo fmt --manifest-path windows/Cargo.toml -- --check
+          cargo check --locked --manifest-path windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET
+          cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
+          cargo test --locked --manifest-path windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
+          Push-Location windows/gui
+          try { cmd /d /c RUN-GUI-QA.cmd } finally { Pop-Location }
 
-      - name: Install official Tauri v2 build tool
-        shell: bash
-        run: cargo install tauri-cli --version 2.12.0 --locked
-
-      - name: Configure updater verification key
-        shell: pwsh
-        env:
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $configuration = [ordered]@{
-            plugins = [ordered]@{
-              updater = [ordered]@{ pubkey = $env:TAURI_UPDATER_PUBLIC_KEY }
-            }
-          }
-          $configuration | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 windows/tauri.release.conf.json
-
-      - name: Build x64 Windows release and signed updater package
+      - name: Build clean x64 WinForms and Rust DLL pair
         id: windows-build
         shell: pwsh
         env:
           SPLINED_BUILD_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-          SPLINED_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          if (Test-Path -LiteralPath $releaseRoot) {
+            Remove-Item -LiteralPath $releaseRoot -Recurse -Force
+          }
+          $env:SPLINED_BUILD_GUI = "1"
           $started = Get-Date
-          Push-Location windows
-          try { cargo tauri build --target $env:WINDOWS_TARGET --config tauri.release.conf.json } finally { Pop-Location }
+          cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET
           "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
 
-      - name: Package Windows release
+      - name: Stage and audit portable Windows release
         shell: pwsh
         env:
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
-          New-Item -ItemType Directory -Force -Path release-package, release-assets | Out-Null
-          Copy-Item "$releaseRoot/splined.exe" release-package/splined.exe
-          Copy-Item release/README-WINDOWS.txt release-package/README-WINDOWS.txt
-          $packageFiles = Get-ChildItem -LiteralPath release-package -File
-          if ($packageFiles.Count -ne 2 -or @($packageFiles | Where-Object Extension -eq ".exe").Count -ne 1) { throw "Portable Windows package must contain exactly splined.exe and README-WINDOWS.txt." }
-          Compress-Archive -Path "release-package/*" -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
-          $installerName = "SPLINED_{0}_x64-setup.exe" -f $env:RELEASE_VERSION
-          $installer = Get-Item -LiteralPath "$releaseRoot/bundle/nsis/$installerName" -ErrorAction SilentlyContinue
-          if (-not $installer -or -not (Test-Path "$($installer.FullName).sig")) { throw "The signed Windows installer/update artifacts were not produced." }
-          Copy-Item $installer.FullName release-assets/splined-windows-x86_64-installer.exe
-          Copy-Item "$($installer.FullName).sig" release-assets/splined-windows-x86_64-installer.exe.sig
+          $portableRoot = "release-package/SPLINED"
+          New-Item -ItemType Directory -Force -Path "$portableRoot/runtime", release-assets | Out-Null
+          Copy-Item "$releaseRoot/splined.exe" "$portableRoot/splined.exe"
+          Copy-Item "$releaseRoot/splined_core.dll" "$portableRoot/runtime/splined-core.dll"
+          Copy-Item release/README-WINDOWS.txt "$portableRoot/README-WINDOWS.txt"
+
+          function Assert-Amd64Pe([string]$path) {
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path).Path)
+            if ($bytes.Length -lt 64) { throw "PE image is truncated: $path" }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { throw "PE header is invalid: $path" }
+            if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) { throw "PE signature is invalid: $path" }
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0x8664) { throw ("Expected AMD64 PE Machine 0x8664 for {0}; found 0x{1:X4}." -f $path, $machine) }
+          }
+          Assert-Amd64Pe "$portableRoot/splined.exe"
+          Assert-Amd64Pe "$portableRoot/runtime/splined-core.dll"
+
+          $version = (Get-Item -LiteralPath "$portableRoot/splined.exe").VersionInfo.FileVersion
+          if ($version -ne "$env:RELEASE_VERSION.0") { throw "The Windows executable version does not match the release tag." }
+          $assembly = [Reflection.Assembly]::LoadFile((Resolve-Path -LiteralPath "$portableRoot/splined.exe").Path)
+          $buildInfo = $assembly.GetType("Splined.WindowsGui.BuildInfo", $true)
+          $commitField = $buildInfo.GetField("Commit", [Reflection.BindingFlags] "Static,Public,NonPublic")
+          if ($commitField.GetValue($null) -ne $env:RELEASE_COMMIT) { throw "The Windows executable commit does not match the release commit." }
+
+          $files = @(Get-ChildItem -LiteralPath $portableRoot -Recurse -File | ForEach-Object {
+            $_.FullName.Substring((Resolve-Path $portableRoot).Path.Length + 1).Replace('\', '/')
+          } | Sort-Object)
+          $expected = @("README-WINDOWS.txt", "runtime/splined-core.dll", "splined.exe")
+          if (Compare-Object $files $expected) { throw "Portable package contents do not match the release allowlist." }
+          if (Test-Path -LiteralPath "$portableRoot/data") { throw "A fresh portable package must not contain data/." }
+
+          $smoke = Start-Process -FilePath (Resolve-Path "$portableRoot/splined.exe") -ArgumentList "--native-smoke" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
+          if ($smoke.ExitCode -ne 0) { throw "The clean portable WinForms-to-Rust DLL smoke test failed." }
+
+          Compress-Archive -Path $portableRoot -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
+          $archiveEntries = @(tar -tf release-assets/splined-windows-x86_64.zip | Where-Object { -not $_.EndsWith('/') } | Sort-Object)
+          $expectedEntries = @("SPLINED/README-WINDOWS.txt", "SPLINED/runtime/splined-core.dll", "SPLINED/splined.exe")
+          if (Compare-Object $archiveEntries $expectedEntries) { throw "Portable archive contents do not match the release allowlist." }
+
           $manifest = [ordered]@{
             schema = 2
             channel = "stable"
@@ -354,59 +405,114 @@ jobs:
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
-      - name: Validate x64 package and updater signature
+      - name: Build Store-ready unsigned x64 MSIX with WinAppCli
         shell: pwsh
-        env:
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
-          function Assert-Amd64Pe([string]$path) {
-            $resolved = (Resolve-Path -LiteralPath $path).Path
-            $bytes = [IO.File]::ReadAllBytes($resolved)
-            if ($bytes.Length -lt 64) { throw "PE image is truncated: $path" }
-            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
-            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { throw "PE header is invalid: $path" }
-            if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) { throw "PE signature is invalid: $path" }
-            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
-            if ($machine -ne 0x8664) { throw ("Expected AMD64 PE Machine 0x8664 for {0}; found 0x{1:X4}." -f $path, $machine) }
-          }
+          $PSNativeCommandUseErrorActionPreference = $true
+          $layout = "msix-layout"
+          New-Item -ItemType Directory -Force -Path "$layout/runtime" | Out-Null
+          Copy-Item release-package/SPLINED/splined.exe "$layout/splined.exe"
+          Copy-Item release-package/SPLINED/runtime/splined-core.dll "$layout/runtime/splined-core.dll"
+          Copy-Item windows/package/Package.appxmanifest "$layout/Package.appxmanifest"
+          winapp manifest update-assets windows/gui/splined-app-icon.png --manifest "$layout/Package.appxmanifest"
+          winapp create-debug-identity "$layout/splined.exe" --manifest "$layout/Package.appxmanifest" --no-install
+          winapp pack $layout --manifest "$layout/Package.appxmanifest" --executable splined.exe --output release-assets/SPLINED-x64.msix --no-sign
+          winapp tool makeappx unpack /p release-assets/SPLINED-x64.msix /d unpacked-msix /o
+          $packageManifest = [xml](Get-Content -Raw unpacked-msix/AppxManifest.xml)
+          if ($packageManifest.Package.Identity.ProcessorArchitecture -ne "x64") { throw "The MSIX package architecture is not x64." }
+          if ($packageManifest.OuterXml -notmatch '<uap:FileType>\.spl</uap:FileType>') { throw "The MSIX package does not declare the .spl association." }
 
-          Assert-Amd64Pe "release-package/splined.exe"
-          if (-not (Test-Path release-assets/splined-windows-x86_64-installer.exe.sig)) { throw "Cryptographic updater-package signature is missing." }
-          $archiveEntries = @(tar -tf release-assets/splined-windows-x86_64.zip)
-          if ($archiveEntries.Count -ne 2 -or $archiveEntries -notcontains "splined.exe" -or $archiveEntries -notcontains "README-WINDOWS.txt") { throw "Portable archive must contain exactly splined.exe and README-WINDOWS.txt." }
-          if (@($archiveEntries | Where-Object { $_ -match '\.exe$' }).Count -ne 1) { throw "Portable archive must contain exactly one executable." }
-          foreach ($forbidden in @("splined-core.exe", "splined-update.exe", "data/config.toml", "data/ui.toml", "splined.db")) {
-            if ($archiveEntries -contains $forbidden) { throw "Portable archive contains forbidden state or executable: $forbidden" }
-          }
-          $forbiddenArchitecture = Get-ChildItem -LiteralPath release-assets -File | Where-Object { $_.Name -match '(?i)(i686|aarch64|arm64|windows-x86(?!_64))' }
-          if ($forbiddenArchitecture) { throw "A non-x64 Windows release artifact was produced: $($forbiddenArchitecture.Name -join ', ')" }
-
-          $env:SPLINED_UPDATE_ARTIFACT = (Resolve-Path -LiteralPath "release-assets/splined-windows-x86_64-installer.exe").Path
-          $env:SPLINED_UPDATE_SIGNATURE = (Resolve-Path -LiteralPath "release-assets/splined-windows-x86_64-installer.exe.sig").Path
-          $env:SPLINED_UPDATER_PUBLIC_KEY = $env:TAURI_UPDATER_PUBLIC_KEY
-          Push-Location windows
-          try { cargo test --target $env:WINDOWS_TARGET --test release_updater_signature -- --ignored --exact verifies_release_updater_signature } finally { Pop-Location }
-
-      - name: Generate updater metadata after signature validation
+      - name: Development-sign, install, launch, identify, and uninstall MSIX
         shell: pwsh
-        env:
-          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $latest = [ordered]@{
-            version = $env:RELEASE_VERSION
-            notes = "Cryptographically verified SPLINED Windows x64 update $env:RELEASE_VERSION"
-            pub_date = [DateTime]::UtcNow.ToString("o")
-            platforms = [ordered]@{
-              "windows-x86_64" = [ordered]@{
-                signature = (Get-Content -Raw release-assets/splined-windows-x86_64-installer.exe.sig).Trim()
-                url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/$env:RELEASE_VERSION/splined-windows-x86_64-installer.exe"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $password = [Guid]::NewGuid().ToString("N")
+          $pfx = Join-Path $env:RUNNER_TEMP "splined-development.pfx"
+          $cer = [IO.Path]::ChangeExtension($pfx, ".cer")
+          $devPackage = Join-Path $env:RUNNER_TEMP "SPLINED-x64-development.msix"
+          $thumbprint = $null
+          try {
+            winapp cert generate --manifest msix-layout/Package.appxmanifest --output $pfx --password $password --export-cer
+            $thumbprint = (Get-PfxCertificate -FilePath $cer).Thumbprint
+            winapp cert install $cer
+            winapp pack msix-layout --manifest msix-layout/Package.appxmanifest --executable splined.exe --output $devPackage --cert $pfx --cert-password $password
+            Add-AppxPackage -Path $devPackage
+            $package = Get-AppxPackage -Name SPLINED
+            if (-not $package -or $package.Architecture -ne "X64") { throw "The development MSIX did not install with x64 package identity." }
+            $installedManifest = $package | Get-AppxPackageManifest
+            if ($installedManifest.Package.Applications.Application.Id -ne "SPLINED") { throw "The installed package identity is invalid." }
+            if ($installedManifest.OuterXml -notmatch '<uap:FileType>\.spl</uap:FileType>') { throw "The installed package lost its .spl association." }
+            $smokePath = Join-Path $env:LOCALAPPDATA "Packages\$($package.PackageFamilyName)\LocalState\SPLINED\package-identity-smoke.ok"
+            Remove-Item -LiteralPath $smokePath -Force -ErrorAction SilentlyContinue
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          public enum SplinedActivateOptions
+          {
+              None = 0,
+              DesignMode = 1,
+              NoErrorUI = 2,
+              NoSplashScreen = 4
+          }
+
+          [ComImport]
+          [Guid("2e941141-7f97-4756-ba1d-9decde894a3d")]
+          [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+          public interface ISplinedApplicationActivationManager
+          {
+              int ActivateApplication(
+                  [MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
+                  [MarshalAs(UnmanagedType.LPWStr)] string arguments,
+                  SplinedActivateOptions options,
+                  out uint processId);
+              int ActivateForFile(
+                  [MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
+                  IntPtr itemArray,
+                  [MarshalAs(UnmanagedType.LPWStr)] string verb,
+                  out uint processId);
+              int ActivateForProtocol(
+                  [MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
+                  IntPtr itemArray,
+                  out uint processId);
+          }
+
+          [ComImport]
+          [Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
+          public class SplinedApplicationActivationManager {}
+
+          public static class SplinedPackageActivator
+          {
+              public static uint Activate(string appUserModelId, string arguments)
+              {
+                  uint processId;
+                  var manager = (ISplinedApplicationActivationManager)new SplinedApplicationActivationManager();
+                  int result = manager.ActivateApplication(
+                      appUserModelId,
+                      arguments,
+                      SplinedActivateOptions.NoErrorUI,
+                      out processId);
+                  if (result < 0) Marshal.ThrowExceptionForHR(result);
+                  return processId;
               }
+          }
+          '@
+            $applicationUserModelId = "$($package.PackageFamilyName)!SPLINED"
+            $processId = [SplinedPackageActivator]::Activate($applicationUserModelId, "--package-identity-smoke")
+            Wait-Process -Id $processId -Timeout 30 -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $smokePath)) {
+              throw "The installed SPLINED process did not confirm package identity and native DLL initialization."
             }
           }
-          $latest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 release-assets/latest.json
+          finally {
+            Get-AppxPackage -Name SPLINED | Remove-AppxPackage -ErrorAction SilentlyContinue
+            if ($thumbprint) {
+              certutil -delstore TrustedPeople $thumbprint | Out-Null
+            }
+            Remove-Item -LiteralPath $pfx, $cer, $devPackage -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -414,9 +520,7 @@ jobs:
           name: splined-windows-x86_64
           path: |
             release-assets/splined-windows-x86_64.zip
-            release-assets/splined-windows-x86_64-installer.exe
-            release-assets/splined-windows-x86_64-installer.exe.sig
-            release-assets/latest.json
+            release-assets/SPLINED-x64.msix
             release-assets/windows-update.json
           if-no-files-found: error
 
@@ -552,7 +656,7 @@ jobs:
             exit 1
           fi
           release_files=("${archives[@]}")
-          for metadata in windows-update.json latest.json splined-windows-x86_64-installer.exe splined-windows-x86_64-installer.exe.sig; do
+          for metadata in windows-update.json SPLINED-x64.msix; do
             if [ -f "$metadata" ]; then release_files+=("$metadata"); fi
           done
           sha256sum "${release_files[@]}" > SHA256SUMS.txt

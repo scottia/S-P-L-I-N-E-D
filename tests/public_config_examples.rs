@@ -114,28 +114,30 @@ fn windows_and_release_versions_advance_coherently() {
         root_manifest["package"]["version"].as_str()
     );
 
-    let tauri = fs::read_to_string("windows/tauri.conf.json").expect("Tauri configuration");
-    let tauri: serde_json::Value = serde_json::from_str(&tauri).expect("Tauri configuration JSON");
-    assert_eq!(
-        tauri["version"].as_str(),
-        root_manifest["package"]["version"].as_str()
-    );
-    assert_eq!(tauri["productName"].as_str(), Some("SPLINED"));
+    let version = root_manifest["package"]["version"]
+        .as_str()
+        .expect("root version");
+    let release_info =
+        fs::read_to_string("windows/gui/ReleaseInfo.cs").expect("WinForms release identity");
+    assert!(release_info.contains(&format!("NumericVersion = \"{version}\"")));
+    assert!(release_info.contains(&format!("SemanticVersion = \"{version}\"")));
+    let package = fs::read_to_string("windows/package/Package.appxmanifest")
+        .expect("Windows package manifest");
+    assert!(package.contains(&format!("Version=\"{version}.0\"")));
 
     let workflow =
         fs::read_to_string(".github/workflows/release-next-patch.yml").expect("release workflow");
     assert!(workflow.contains(
-        "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/tauri.conf.json\")"
+        "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/gui/AssemblyInfo.cs\" \"windows/gui/ReleaseInfo.cs\" \"windows/gui/app.manifest\" \"windows/package/Package.appxmanifest\" \"windows/package/SPLINED.appinstaller.template\")"
     ));
     assert!(workflow.contains("compatible_versions"));
     assert!(workflow.contains("baseline = max([source_version, *compatible_versions])"));
     assert!(
         !workflow.contains("baseline = max([source_version, windows_source_version, *versions])")
     );
-    assert!(workflow.contains(
-        "prepare-release:\n    name: Create next patch tag\n    needs: release-preflight"
-    ));
-    assert!(workflow.contains("Require Tauri updater signing material before creating a tag"));
+    assert!(workflow.contains("prepare-release:\n    name: Create next patch tag"));
+    assert!(!workflow.contains("release-preflight"));
+    assert!(!workflow.to_ascii_lowercase().contains("tauri"));
     assert!(workflow.contains("ref: refs/tags/${{ needs.prepare-release.outputs.version }}"));
     assert!(workflow.contains("packages: write"));
 

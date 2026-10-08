@@ -13,7 +13,7 @@ fn repository_files(root: &Path, files: &mut Vec<PathBuf>) {
         if path.is_dir() {
             if !matches!(
                 path.file_name().and_then(|value| value.to_str()),
-                Some("target" | ".git" | "debug")
+                Some("target" | "qa-app" | "qa-test" | "qa-temp" | "debug")
             ) {
                 repository_files(&path, files);
             }
@@ -24,59 +24,121 @@ fn repository_files(root: &Path, files: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn windows_desktop_is_one_permanent_executable_with_in_process_rust() {
+fn windows_desktop_is_winforms_with_one_in_process_rust_dll() {
     let manifest = source("windows/Cargo.toml");
-    let main = source("windows/src/main.rs");
-    let backend = source("windows/src/tauri_app.rs");
     let build = source("windows/build.rs");
+    let native = source("windows/gui/NativeCore.cs");
+    let ffi = source("windows/src/ffi.rs");
 
-    assert!(manifest.contains("name = \"splined\""));
-    assert_eq!(manifest.matches("[[bin]]").count(), 1);
-    assert!(manifest.contains("tauri ="));
-    let normalized_build = build.replace("\r\n", "\n");
-    assert_eq!(
-        normalized_build.trim(),
-        "fn main() {\n    tauri_build::build()\n}"
-    );
-    assert!(main.contains("tauri_app::run()"));
-    assert!(backend.contains("run_scan_library_read_report"));
-    assert!(backend.contains("begin_in_process"));
-    assert!(!backend.contains("std::process::Command"));
-    assert!(!backend.contains("stdin"));
-    assert!(!backend.contains("stdout"));
+    assert!(Path::new("windows/gui/MainForm.cs").is_file());
+    assert!(Path::new("windows/gui/SetupForm.cs").is_file());
+    assert!(Path::new("windows/gui/ThemeManager.cs").is_file());
+    assert!(manifest.contains("autobins = false"));
+    assert!(manifest.contains("crate-type = [\"rlib\", \"cdylib\"]"));
+    assert!(!manifest.contains("[[bin]]"));
+    assert!(!manifest.to_ascii_lowercase().contains("tauri"));
+    assert!(build.contains("SPLINED_BUILD_GUI"));
+    assert!(build.contains("/platform:x64"));
+    assert!(native.contains("runtime\", \"splined-core.dll"));
+    assert!(native.contains("LoadLibraryEx(path"));
+    assert!(native.contains("LoadLibrarySearchDllLoadDir | LoadLibrarySearchSystem32"));
+    assert!(native.contains("GetProcAddress(libraryHandle, name)"));
+    assert!(!native.contains("DllImport(\"splined-core.dll\""));
+    assert!(native.contains("splined_build_identity"));
+    assert!(!native.contains("System.Diagnostics.Process"));
+    for export in [
+        "splined_initialize",
+        "splined_media_snapshot",
+        "splined_start_scan",
+        "splined_submit_decision",
+        "splined_cancel_scan",
+        "splined_scan_active",
+        "splined_build_identity",
+        "splined_free_string",
+    ] {
+        assert!(
+            ffi.contains(&format!("fn {export}")),
+            "missing native export {export}"
+        );
+    }
+    assert!(ffi.contains("catch_unwind"));
+    assert!(ffi.contains("EventCallback"));
+    assert!(ffi.contains("std::thread::spawn"));
+    assert!(ffi.contains("initialize_app_root"));
+    assert!(ffi.contains("initialize_state_root"));
 }
 
 #[test]
-fn obsolete_windows_executable_and_process_paths_are_absent() {
-    assert!(!Path::new("windows/updater").exists());
-    let gui_sources = [
-        "MainForm.cs",
-        "Program.cs",
-        "UpdateService.cs",
-        "ConfigState.cs",
+fn windows_gui_qa_uses_the_x64_excluded_output_directory() {
+    let scripts = [
+        "windows/gui/RUN-GUI-QA.cmd",
+        "windows/gui/TEST-WINDOWS-GUI.cmd",
+        "windows/gui/TEST-WINFORMS-GUI.cmd",
+        "windows/gui/TEST-CREDENTIALS-WINDOWS-GUI.cmd",
+        "windows/gui/TEST-PREVIEW-WINDOWS-GUI.cmd",
     ];
-    for name in gui_sources {
+    for path in scripts {
+        let script = source(path);
         assert!(
-            !Path::new("windows/gui").join(name).exists(),
-            "legacy GUI source remained: {name}"
+            script.contains(r#"set "QA_ROOT=%~dp0..\..\target-windows\winforms-qa""#)
+                && script.contains(r#"set "QA_OUT=%QA_ROOT%\"#),
+            "{path} does not use the excluded QA output directory"
+        );
+        assert!(script.contains("/platform:x64"), "{path} is not x64-only");
+        assert!(
+            !script.contains("qa-test"),
+            "{path} still writes to the blocked legacy QA directory"
         );
     }
+}
+
+#[test]
+fn rejected_desktop_and_executable_lifecycles_are_absent() {
+    for path in ["windows/frontend", "windows/capabilities", "windows/nsis"] {
+        let path = Path::new(path);
+        if path.is_dir() {
+            let mut files = Vec::new();
+            repository_files(path, &mut files);
+            assert!(
+                files.is_empty(),
+                "retired Windows component retained files: {}",
+                path.display()
+            );
+        }
+    }
+    for path in [
+        "windows/tauri.conf.json",
+        "windows/src/main.rs",
+        "windows/src/tauri_app.rs",
+        "windows/updater",
+    ] {
+        assert!(
+            !Path::new(path).exists(),
+            "retired Windows component remained: {path}"
+        );
+    }
+
     let mut files = Vec::new();
-    repository_files(Path::new("windows"), &mut files);
+    repository_files(Path::new("windows/src"), &mut files);
+    repository_files(Path::new("windows/gui"), &mut files);
     for path in files {
-        if path.extension().and_then(|value| value.to_str()) == Some("ico") {
+        if !matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("rs" | "cs")
+        ) {
             continue;
         }
-        let Ok(body) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let lower = body.to_ascii_lowercase();
+        let lower = source(path.to_str().unwrap()).to_ascii_lowercase();
         for retired in [
             "splined-core.exe",
             "splined-update.exe",
+            "--scan-dir",
             "splined-gui-",
-            "splined_gui_events",
-            "splined_compilation_track_path",
+            "extract executable",
+            "cmd.exe",
+            "powershell.exe",
+            "std::process::command",
+            "command::new(",
         ] {
             assert!(
                 !lower.contains(retired),
@@ -84,115 +146,108 @@ fn obsolete_windows_executable_and_process_paths_are_absent() {
                 path.display()
             );
         }
-        if path.starts_with("windows/src")
-            || path.starts_with("windows/frontend")
-            || path.starts_with("windows/nsis")
-        {
-            assert!(
-                !lower.contains("cmd.exe"),
-                "{} invokes cmd.exe",
-                path.display()
-            );
-            assert!(
-                !lower.contains("powershell"),
-                "{} invokes PowerShell",
-                path.display()
-            );
-        }
     }
 }
 
 #[test]
-fn portable_release_and_official_update_contract_exclude_durable_state() {
-    let configuration = source("windows/tauri.conf.json");
-    let hooks = source("windows/nsis/portable-hooks.nsh");
-    let workflow = source(".github/workflows/release-next-patch.yml");
-    let state = source("windows/src/windows_state.rs");
+fn portable_and_packaged_state_authorities_are_distinct() {
+    let state = source("windows/gui/ConfigState.cs");
+    let program = source("windows/gui/Program.cs");
+    let backup = source("windows/gui/BackupWindows.cs");
     let portable = source("windows/src/portable.rs");
 
-    assert!(configuration.contains("\"createUpdaterArtifacts\": true"));
-    assert!(configuration.contains("\"updater\""));
-    assert!(configuration.contains("\"fileAssociations\""));
-    assert!(configuration.contains("\"ext\": [\"spl\"]"));
-    assert!(source("windows/src/tauri_app.rs").contains("startup_backup_path"));
-    let shell = source("windows/src/windows_shell.rs");
-    assert!(shell.contains(r"Software\Classes\.spl"));
-    assert!(shell.contains(r"shell\open\command"));
-    assert!(hooks.contains("SPLINED_PORTABLE_ROOT"));
-    assert!(hooks.contains("Abort"));
-    assert!(hooks.contains("SetOutPath $INSTDIR"));
-    assert!(hooks.contains("DeleteRegKey SHCTX"));
-    assert!(!hooks.contains("$INSTDIR\\data"));
-    assert!(!hooks.contains("splined.db"));
-    assert!(portable.contains("root.join(\"data\")"));
-    assert!(portable.contains("config.toml"));
+    assert!(state.contains("AppDomain.CurrentDomain.BaseDirectory"));
+    assert!(state.contains("GetCurrentPackageFamilyName"));
+    assert!(state.contains("PackageFamilyName, \"LocalState\", \"SPLINED\""));
+    assert!(state.contains("RelativePathRoot = RuntimeStateRoot"));
+    assert!(state.contains("Path.Combine(AppRoot, \"data\")"));
+    assert!(state.contains("config.toml"));
     assert!(state.contains("ui.toml"));
-    assert!(workflow.contains("Portable archive contains forbidden state or executable"));
-    assert!(workflow.contains("splined-windows-x86_64-installer.exe.sig"));
-    assert!(workflow.contains("SPLINED_UPDATE_ARTIFACT"));
-    assert!(workflow.contains("verifies_release_updater_signature"));
-    assert!(workflow.contains("Generate updater metadata after signature validation"));
-    assert!(workflow.contains("Expected AMD64 PE Machine 0x8664"));
-    assert!(!configuration.contains("digestAlgorithm"));
-    assert!(!configuration.contains("timestampUrl"));
-    assert!(!workflow.contains("Copy-Item windows/data"));
-    assert!(!workflow.contains("Copy-Item data"));
+    assert!(
+        program
+            .contains("NativeCore.Initialize(ConfigStore.AppRoot, ConfigStore.RelativePathRoot)")
+    );
+    assert!(backup.contains("Software\\Classes\\.spl"));
+    assert!(backup.contains("if (ConfigStore.IsPackaged) return"));
+    assert!(portable.contains("initialize_app_root"));
+    assert!(portable.contains("initialize_state_root"));
 }
 
 #[test]
-fn windows_release_is_amd64_only_and_requires_only_tauri_updater_secrets() {
+fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
     let workflow = source(".github/workflows/release-next-patch.yml");
+    let package = source("windows/package/Package.appxmanifest");
+    let appinstaller = source("windows/package/SPLINED.appinstaller.template");
+
     assert!(workflow.contains("WINDOWS_TARGET: \"x86_64-pc-windows-msvc\""));
     assert!(workflow.contains("rustup target add \"$WINDOWS_TARGET\""));
-    assert!(workflow.contains("cargo tauri build --target $env:WINDOWS_TARGET"));
-    assert!(workflow.contains("windows/target/$env:WINDOWS_TARGET/release"));
-    assert!(workflow.contains("$machine -ne 0x8664"));
-    let windows_targets = workflow
+    assert!(workflow.contains("cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET"));
+    assert!(workflow.contains("Expected AMD64 PE Machine 0x8664"));
+    assert!(workflow.contains("Assert-Amd64Pe \"$portableRoot/splined.exe\""));
+    assert!(workflow.contains("Assert-Amd64Pe \"$portableRoot/runtime/splined-core.dll\""));
+    assert!(
+        workflow.contains("\"README-WINDOWS.txt\", \"runtime/splined-core.dll\", \"splined.exe\"")
+    );
+    assert!(workflow.contains("SPLINED/README-WINDOWS.txt"));
+    assert!(workflow.contains("SPLINED/runtime/splined-core.dll"));
+    assert!(workflow.contains("SPLINED/splined.exe"));
+    assert!(!workflow.contains("i686-pc-windows"));
+    assert!(!workflow.contains("aarch64-pc-windows"));
+    assert!(!workflow.contains("TAURI_"));
+
+    let targets = workflow
         .split(|character: char| character.is_whitespace() || matches!(character, '"' | '\''))
         .filter(|word| word.contains("-pc-windows-"))
         .collect::<BTreeSet<_>>();
-    assert_eq!(windows_targets, BTreeSet::from(["x86_64-pc-windows-msvc"]));
-    let required_secrets = BTreeSet::from([
-        "TAURI_UPDATER_PUBLIC_KEY",
-        "TAURI_SIGNING_PRIVATE_KEY",
-        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
-    ]);
-    let preflight = workflow
-        .split("  release-preflight:")
-        .nth(1)
-        .expect("release preflight job")
-        .split("  prepare-release:")
-        .next()
-        .expect("release preflight body");
-    let configured_secrets = preflight
-        .lines()
-        .filter_map(|line| line.split("${{ secrets.").nth(1))
-        .filter_map(|value| value.split(" }}").next())
-        .collect::<BTreeSet<_>>();
-    assert_eq!(configured_secrets, required_secrets);
-    let signature_validation = workflow
-        .find("Validate x64 package and updater signature")
-        .expect("signature validation step");
-    let metadata = workflow
-        .find("Generate updater metadata after signature validation")
-        .expect("metadata generation step");
-    assert!(signature_validation < metadata);
+    assert_eq!(targets, BTreeSet::from(["x86_64-pc-windows-msvc"]));
+    assert!(package.contains("ProcessorArchitecture=\"x64\""));
+    assert!(package.contains("<uap:FileType>.spl</uap:FileType>"));
+    assert!(appinstaller.contains("ProcessorArchitecture=\"x64\""));
+    assert!(appinstaller.contains("__APPINSTALLER_HTTPS_URI__"));
+    assert!(appinstaller.contains("__PUBLIC_PUBLISHER_DN__"));
 }
 
 #[test]
-fn updater_signature_validation_failure_has_no_installation_fallback() {
-    let backend = source("windows/src/tauri_app.rs");
-    let manifest = source("windows/Cargo.toml");
-    assert!(backend.contains("SPLINED_UPDATER_PUBLIC_KEY"));
-    assert!(backend.contains("download_and_install"));
-    assert_eq!(backend.matches(".download_and_install(").count(), 1);
-    assert!(!backend.contains(".download("));
-    assert!(!backend.contains(".install("));
-    assert!(backend.contains("The signed update was not installed"));
-    assert!(backend.contains("The active scan did not close normally"));
-    assert!(backend.contains("This development build has no updater verification key"));
-    assert!(manifest.contains("tauri-plugin-updater = \"=2.13.2\""));
-    assert!(!backend.contains("sha256"));
-    assert!(!backend.contains("rename("));
-    assert!(!backend.contains("remove_file"));
+fn winappcli_builds_store_ready_and_development_signed_msix_without_release_secrets() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+    assert!(workflow.contains("uses: microsoft/setup-WinAppCli@v0.1"));
+    assert!(workflow.contains("version: v0.7.1"));
+    assert!(workflow.contains("winapp manifest update-assets"));
+    assert!(workflow.contains("winapp create-debug-identity"));
+    assert!(workflow.contains("--no-install"));
+    assert!(workflow.contains("--output release-assets/SPLINED-x64.msix --no-sign"));
+    assert!(workflow.contains("winapp cert generate --manifest"));
+    assert!(workflow.contains("winapp cert install $cer"));
+    assert!(workflow.contains("--cert $pfx --cert-password $password"));
+    assert!(workflow.contains("Add-AppxPackage -Path $devPackage"));
+    assert!(workflow.contains("Get-AppxPackage -Name SPLINED"));
+    assert!(workflow.contains("--package-identity-smoke"));
+    assert!(workflow.contains("[SplinedPackageActivator]::Activate"));
+    assert!(workflow.contains("package-identity-smoke.ok"));
+    assert!(workflow.contains("Remove-AppxPackage"));
+    assert!(workflow.contains("certutil -delstore TrustedPeople $thumbprint"));
+    assert!(!workflow.contains("Get-Process -Name splined"));
+    assert!(!workflow.contains("TAURI_UPDATER_PUBLIC_KEY"));
+    assert!(!workflow.contains("TAURI_SIGNING_PRIVATE_KEY"));
+    assert!(!workflow.contains("latest.json"));
+    assert!(!workflow.contains("NSIS"));
+}
+
+#[test]
+fn portable_updates_are_notification_only() {
+    let update = source("windows/gui/UpdateService.cs");
+    let main = source("windows/gui/MainForm.cs");
+    assert!(update.contains("ReleaseUrl"));
+    assert!(update.contains("DownloadDataTaskAsync"));
+    assert!(update.contains("MaximumReleaseListBytes"));
+    assert!(main.contains("UpdateService.OpenReleasePage"));
+    for forbidden in [
+        "DownloadFile",
+        "splined-update.exe",
+        "Process.Kill",
+        "File.Replace",
+        "latest.json",
+    ] {
+        assert!(!update.contains(forbidden));
+    }
 }

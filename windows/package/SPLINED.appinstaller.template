@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Store-ready App Installer template. This is intentionally not published or
+  enabled until the MSIX channel has a stable public publisher/signing chain
+  and the two URI placeholders below are replaced by controlled HTTPS URLs.
+-->
+<AppInstaller
+  xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+  Version="1.0.31.0"
+  Uri="__APPINSTALLER_HTTPS_URI__">
+  <MainPackage
+    Name="SPLINED"
+    Publisher="__PUBLIC_PUBLISHER_DN__"
+    Version="1.0.31.0"
+    ProcessorArchitecture="x64"
+    Uri="__MSIX_HTTPS_URI__" />
+  <UpdateSettings>
+    <OnLaunch
+      HoursBetweenUpdateChecks="24"
+      ShowPrompt="true"
+      UpdateBlocksActivation="false" />
+  </UpdateSettings>
+</AppInstaller>
