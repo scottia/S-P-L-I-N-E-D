@@ -18,10 +18,11 @@ node --test frontend/tests/app-model.test.mjs
 cargo tauri build --no-bundle
 ```
 
-Unsigned developer builds deliberately disable public automatic installation.
-A production build must provide the stable updater public key at compile time,
-the updater private signing key to the build tool, and a timestamped publisher
-certificate to the Windows bundle signer.
+Developer builds without an updater verification key deliberately disable
+public automatic installation. A production build requires the stable updater
+public key at compile time and the matching private signing key plus password at
+package time. Windows releases target only `x86_64-pc-windows-msvc`; no
+Authenticode certificate is required.
 
 ## Portable state
 
@@ -64,11 +65,14 @@ portable roots.
 
 ## Signed updates
 
-The application uses the official updater plugin and its signed metadata and
-package contract. The release pipeline also applies and verifies a timestamped
-publisher signature on `splined.exe` and the Windows update installer. The
-installer receives the current portable root and replaces the application in
-that directory while leaving `data\` and configured external resources alone.
+The application uses the official updater plugin and its cryptographically
+signed package contract. The release pipeline verifies the final NSIS update
+artifact with the configured updater public key before generating
+`latest.json`. A missing or invalid updater signature stops the release; there
+is no hash-only fallback. The installer receives the current portable root and
+replaces the application in that directory while leaving `data\` and
+configured external resources alone. Authenticode is not part of this release
+trust model.
 
 The portable ZIP contains exactly `splined.exe` and `README-WINDOWS.txt`.
 The update installer, its updater signature, and update metadata are separate

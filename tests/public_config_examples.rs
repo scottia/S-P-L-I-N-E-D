@@ -135,7 +135,7 @@ fn windows_and_release_versions_advance_coherently() {
     assert!(workflow.contains(
         "prepare-release:\n    name: Create next patch tag\n    needs: release-preflight"
     ));
-    assert!(workflow.contains("Require Windows signing material before creating a tag"));
+    assert!(workflow.contains("Require Tauri updater signing material before creating a tag"));
     assert!(workflow.contains("ref: refs/tags/${{ needs.prepare-release.outputs.version }}"));
     assert!(workflow.contains("packages: write"));
 

@@ -14,7 +14,8 @@ SPLINED\
 No SPLINED processing child is launched. Commands start Rust operations in the
 application process; structured events return progress, decisions, candidates,
 MusicBrainz matches, logs, and completion state to the frontend. Cancellation
-uses the same in-process boundary.
+uses the same in-process boundary. Windows releases are x64-only and are built
+for `x86_64-pc-windows-msvc`.
 
 The fresh archive does not contain `data\`. First save or one-time migration
 creates `data\config.toml` and `data\ui.toml`.
@@ -154,21 +155,22 @@ previous roots, and unrelated folders do not affect restore.
 
 Production automatic updates require all of the following:
 
-- signed update metadata;
-- a cryptographically signed updater package;
-- a stable publisher certificate on the application and update installer;
-- a trusted timestamp on Windows signatures;
+- update metadata containing the final NSIS package signature;
+- a cryptographically signed updater package that verifies with the stable
+  updater public key;
 - explicit user approval.
 
 The standard update installer receives the current portable root and replaces
 application code there. Portable `data\` and all configured SQLite, credential,
-history, cache, and log paths are outside the update payload. Unsigned developer
-builds cannot install public updates.
+history, cache, and log paths are outside the update payload. Developer builds
+without the updater verification key cannot install public updates.
 
-The release pipeline emits a separate update installer, update archive,
-archive signature, and `latest.json`. A schema 2 notification manifest remains
-for older builds but intentionally lacks the new trust contract and therefore
-cannot authorize installation.
+The release pipeline emits the final x64 NSIS update installer, its updater
+signature, and `latest.json`. It verifies the installer signature before
+generating metadata and fails closed if the signature is missing or invalid;
+hashes are not an installation fallback. SPLINED does not require Authenticode
+signing. A schema 2 notification manifest remains for older builds but cannot
+authorize installation.
 
 ## Diagnostics
 

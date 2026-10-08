@@ -42,11 +42,12 @@ unchanged. Password protection is optional.
 
 UPDATES
 
-Production Windows releases use signed update metadata and a cryptographically
-signed standard update package. Installation requires explicit approval.
-Publisher and package signatures are verified before installation. The update
+Production Windows releases use update metadata carrying a cryptographic
+signature for the standard x64 update package. Installation requires explicit
+approval, and the package must verify with the stable updater key. The update
 targets this portable directory and preserves data\ plus all configured
-external state. Unsigned development builds cannot install public updates.
+external state. Builds without an updater verification key cannot install
+public updates. Authenticode signing is not required.
 
 SUPPORT
 

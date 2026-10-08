@@ -45,6 +45,9 @@ unicode-casefold = "0.2.0"
 tauri-build = { version = "=2.7.1", features = [] }
 tauri-utils = "=2.10.1"
 
+[dev-dependencies]
+minisign-verify = "0.2.5"
+
 [target.'cfg(windows)'.dependencies]
 bytemuck = "1.24.0"
 pollster = "0.4.0"

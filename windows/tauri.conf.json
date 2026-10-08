@@ -39,8 +39,6 @@
       }
     ],
     "windows": {
-      "digestAlgorithm": "sha256",
-      "timestampUrl": "http://timestamp.digicert.com",
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "nsis/portable-hooks.nsh"

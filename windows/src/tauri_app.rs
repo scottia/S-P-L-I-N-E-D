@@ -448,7 +448,10 @@ async fn check_for_update(app: AppHandle) -> Result<UpdateStatus, String> {
             available: false,
             version: None,
             current_version: env!("CARGO_PKG_VERSION").into(),
-            notes: Some("Signed updates are disabled in this unsigned development build.".into()),
+            notes: Some(
+                "Signed updates are disabled because this development build has no updater verification key."
+                    .into(),
+            ),
             published_at: None,
             signed_install_enabled: false,
         });
@@ -482,7 +485,10 @@ async fn check_for_update(app: AppHandle) -> Result<UpdateStatus, String> {
 #[tauri::command]
 async fn install_update(app: AppHandle, state: State<'_, DesktopState>) -> Result<(), String> {
     if updater_public_key().is_none() {
-        return Err("This unsigned development build cannot install public updates.".to_string());
+        return Err(
+            "This development build has no updater verification key and cannot install public updates."
+                .to_string(),
+        );
     }
     if state.scan_running.load(Ordering::SeqCst) {
         gui_events::request_cancel();

@@ -52,17 +52,18 @@ portable file or resurrect after the migration marker is recorded.
 
 ### Windows update
 
-Production releases use signed update metadata and a signed standard Windows
-update package. The user must approve installation. Package signature
-verification occurs before installation, and publisher signatures are checked
-in the release pipeline. The update is directed to the current portable root;
-it replaces application code without modifying `data\`, SQLite, credentials,
+Production releases use updater metadata carrying a cryptographic signature for
+the standard x64 NSIS update package. The user must approve installation. The
+release pipeline and application verify the package with the stable updater key
+before installation. The update is directed to the current portable root; it
+replaces application code without modifying `data\`, SQLite, credentials,
 history, cache, logs, or external paths. Updated SPLINED then relaunches.
 
-Unsigned developer builds can check their build status but cannot install public
-updates. Public automatic updating is not production-ready unless the release
-pipeline has both the stable updater signing key and the timestamped publisher
-certificate.
+Developer builds without an updater verification key can check their build
+status but cannot install public updates. Public automatic updating requires
+the stable updater public key, private signing key, and signing-key password.
+SPLINED Windows is built only for `x86_64-pc-windows-msvc` and does not require
+Authenticode signing.
 
 A schema 2 `windows-update.json` remains available for older notification-only
 builds. It intentionally omits automatic-install integrity fields, so it cannot

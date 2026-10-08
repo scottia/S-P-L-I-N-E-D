@@ -4891,6 +4891,7 @@ dependencies = [
  "hmac",
  "image",
  "lofty",
+ "minisign-verify",
  "pbkdf2",
  "pollster",
  "rand 0.10.3",
