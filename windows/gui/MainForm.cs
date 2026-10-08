@@ -193,6 +193,7 @@ namespace Splined.WindowsGui
         private Label selectedAlbumInfo;
         private AlbumInfo displayedAlbum;
         private CompilationTrackInfo focusedCompilationTrack;
+        private CompilationTrackInfo activeCompilationTrack;
         private CompilationTrackInfo selectedCompilationTrack;
         private string focusedCompilationEmbeddedArtworkPath = "";
         private bool compilationTrackPreviewActive;
@@ -1713,22 +1714,14 @@ namespace Splined.WindowsGui
             foreach (CompilationTrackInfo track in album.CompilationTracks
                 .OrderBy(item => item.FileName, StringComparer.OrdinalIgnoreCase))
             {
-                string fileName = track.FileName;
-                string shown = fileName.Length <= 75 ? fileName : fileName.Substring(0, 72) + "...";
                 bool selected = selectedCompilationTrack != null
                     && SameAlbumPath(selectedCompilationTrack.Path, track.Path);
-                TreeNode trackNode = new TreeNode((track.EmbeddedArtworkRecorded ? "● " : "○ ") + shown)
+                TreeNode trackNode = new TreeNode
                 {
                     Tag = track,
-                    Checked = selected,
-                    ForeColor = track.EmbeddedArtworkRecorded
-                        ? ThemeManager.StatusColor(ThemeStatusColor.Green, dark ? "Dark" : "Light")
-                        : AlbumStatePresentation.StateColor(album.State, dark),
-                    ToolTipText = fileName + Environment.NewLine
-                        + (track.EmbeddedArtworkRecorded
-                            ? "Embedded artwork recorded by SPLINED. Check and launch to reopen this track for editing."
-                            : "No completed SPLINED embedded-art write is recorded for this track.")
+                    Checked = selected
                 };
+                ApplyCompilationTrackNodePresentation(trackNode, track, dark);
                 node.Nodes.Add(trackNode);
             }
             if (!album.CompilationTracksLoaded)
@@ -1944,11 +1937,11 @@ namespace Splined.WindowsGui
         private void ShowSelectedCompilationTrack(CompilationTrackInfo track)
         {
             if (track == null) return;
-            FocusCompilationTrack(track, "");
+            FocusCompilationTrack(track, "", false);
             LoadFocusedCompilationTrackEmbeddedArtworkAsync(track, compilationTrackPreviewVersion);
         }
 
-        private void FocusCompilationTrack(CompilationTrackInfo track, string embeddedArtworkPath)
+        private void FocusCompilationTrack(CompilationTrackInfo track, string embeddedArtworkPath, bool processingFocus)
         {
             if (track == null) return;
             compilationTrackPreviewVersion++;
@@ -1959,17 +1952,25 @@ namespace Splined.WindowsGui
             displayedAlbum = track.Album;
             candidatePreviewActive = false;
             RenderDisplayedAlbum();
-            ClearCandidates();
             string artworkState = track.EmbeddedArtworkRecorded
-                ? "embedded artwork available" : "embedded artwork not yet recorded";
-            if (running)
+                ? "SPLINED embedded-art write complete" : "no completed SPLINED write recorded";
+            if (processingFocus)
             {
+                activeCompilationTrack = track;
+                ClearCandidates();
                 candidateContext.Text = track.FileName + " · " + artworkState
                     + " · current compilation track.";
                 SetStatus("Compilation track: " + track.FileName);
             }
+            else if (running)
+            {
+                string current = activeCompilationTrack == null ? "the active compilation track"
+                    : activeCompilationTrack.FileName;
+                SetStatus("Track preview: " + track.FileName + ". Processing remains on " + current + ".");
+            }
             else
             {
+                ClearCandidates();
                 candidateContext.Text = track.FileName + " · " + artworkState
                     + " · check this track and LAUNCH to review or edit only this file.";
                 SetStatus("Track focus: " + track.FileName + ". Check it and launch to reopen its embedded artwork.");
@@ -2024,10 +2025,56 @@ namespace Splined.WindowsGui
                     Album = album,
                     Path = trackPath,
                     Title = ReadString(payload, "title"),
-                    EmbeddedArtworkRecorded = !String.IsNullOrWhiteSpace(ReadString(payload, "embedded_artwork_path"))
+                    EmbeddedArtworkRecorded = false
                 };
+                album.CompilationTracks.Add(track);
             }
-            FocusCompilationTrack(track, ReadString(payload, "embedded_artwork_path"));
+            FocusCompilationTrack(track, ReadString(payload, "embedded_artwork_path"), true);
+        }
+
+        private void ApplyCompilationTrackNodePresentation(TreeNode node, CompilationTrackInfo track, bool dark)
+        {
+            if (node == null || track == null) return;
+            string fileName = track.FileName;
+            string shown = fileName.Length <= 75 ? fileName : fileName.Substring(0, 72) + "...";
+            node.Text = (track.EmbeddedArtworkRecorded ? "● " : "○ ") + shown;
+            node.ForeColor = track.EmbeddedArtworkRecorded
+                ? ThemeManager.StatusColor(ThemeStatusColor.Green, dark ? "Dark" : "Light")
+                : AlbumStatePresentation.StateColor(track.Album.State, dark);
+            node.ToolTipText = fileName + Environment.NewLine
+                + (track.EmbeddedArtworkRecorded
+                    ? "Embedded artwork recorded by SPLINED. Check and launch to reopen this track for editing."
+                    : "No completed SPLINED embedded-art write is recorded for this track.");
+        }
+
+        private void MarkCompilationTrackCompleted(string trackPath)
+        {
+            if (String.IsNullOrWhiteSpace(trackPath)) return;
+            CompilationTrackInfo completed = albums
+                .SelectMany(album => album.CompilationTracks)
+                .FirstOrDefault(track => SameAlbumPath(track.Path, trackPath));
+            if (completed == null && activeLaunchAlbum != null)
+                completed = activeLaunchAlbum.CompilationTracks
+                    .FirstOrDefault(track => SameAlbumPath(track.Path, trackPath));
+            if (completed == null) return;
+            completed.EmbeddedArtworkRecorded = true;
+            bool dark = ThemeManager.IsDark(uiState.Theme);
+            foreach (TreeNode node in DescendantTreeNodes(tree.Nodes))
+            {
+                CompilationTrackInfo shown = node.Tag as CompilationTrackInfo;
+                if (shown != null && SameAlbumPath(shown.Path, trackPath))
+                    ApplyCompilationTrackNodePresentation(node, completed, dark);
+            }
+        }
+
+        private static IEnumerable<TreeNode> DescendantTreeNodes(TreeNodeCollection roots)
+        {
+            foreach (TreeNode node in roots)
+            {
+                yield return node;
+                foreach (TreeNode descendant in DescendantTreeNodes(node.Nodes))
+                    yield return descendant;
+            }
         }
 
         private void SetExplicitCompilationTrackTarget(CompilationTrackInfo track)
@@ -2250,6 +2297,7 @@ namespace Splined.WindowsGui
 
             currentSession = null;
             activeLaunchAlbum = null;
+            activeCompilationTrack = null;
             ShowSelectedAlbum(null);
             running = false;
             string completedRunMode = activeRunMode;
@@ -2446,6 +2494,7 @@ namespace Splined.WindowsGui
             {
                 compilationTrackPreviewVersion++;
                 compilationTrackPreviewActive = true;
+                activeCompilationTrack = null;
                 focusedCompilationTrack = null;
                 focusedCompilationEmbeddedArtworkPath = "";
                 candidatePreviewActive = false;
@@ -2460,6 +2509,7 @@ namespace Splined.WindowsGui
             }
             else if (eventName == "compilation_track_completed")
             {
+                MarkCompilationTrackCompleted(ReadString(payload, "track_path"));
                 AppendActivity("     " + ReadString(payload, "action") + " from " + ReadString(payload, "source")
                     + " (" + ReadInt(payload, "width", 0) + "x" + ReadInt(payload, "height", 0) + ")\r\n", ActivityTone.Success);
             }

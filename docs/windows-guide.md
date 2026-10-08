@@ -119,6 +119,13 @@ track path as normal Album resume. Only a real checked-track path enables
 targeted edit, so an empty UI selection cannot bypass the completion ledger or
 prevent the fallback compilation workflow from loading.
 
+During an active compilation decision, clicking another track changes only the
+embedded-art preview. It does not clear the current candidate cards, change the
+processing target, or interrupt the SQLite resume cursor. Successful per-track
+writes turn the corresponding track indicator green immediately. Embedded
+preview cache writes are serialized and reuse identical cached bytes so rapid
+focus changes cannot race the in-process scan.
+
 The compilation-track-started event moves focus to the actual current track but
 does not set an explicit target. Fallback compilation preview reads only that
 track's embedded front artwork. If none exists, the preview says **No embedded

@@ -13,6 +13,9 @@ use lofty::picture::PictureType;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+static EMBEDDED_PREVIEW_CACHE_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn embedded_preview_cache_dir(configured_cache_dir: &Path) -> PathBuf {
     crate::portable::app_layout()
@@ -415,10 +418,23 @@ pub fn embedded_candidate(
         _ => return Err("Embedded front cover is not JPEG, PNG, or WebP.".to_string()),
     };
     let path = cache_path(cache_dir, "embedded", audio_path, &bytes, extension);
-    replace_binary_file(&path, &bytes, "embedded artwork cache", |staged| {
-        inspect_image(staged).map(|_| ())
-    })?;
+    install_embedded_preview_cache(&path, &bytes)?;
     DownloadedCandidate::from_existing_path("embedded", path, 0, "").map(Some)
+}
+
+fn install_embedded_preview_cache(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let _cache_guard = EMBEDDED_PREVIEW_CACHE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if fs::read(path)
+        .map(|existing| existing == bytes)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    replace_binary_file(path, bytes, "embedded artwork cache", |staged| {
+        inspect_image(staged).map(|_| ())
+    })
 }
 
 fn cache_path(
@@ -448,6 +464,8 @@ mod tests {
     use super::*;
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgb};
     use std::io::Cursor;
+    use std::sync::Arc;
+    use std::thread;
     use tempfile::tempdir;
 
     #[test]
@@ -465,6 +483,34 @@ mod tests {
         let mut bytes = Cursor::new(Vec::new());
         image.write_to(&mut bytes, format).unwrap();
         fs::write(path, bytes.into_inner()).unwrap();
+    }
+
+    #[test]
+    fn concurrent_embedded_preview_requests_share_one_valid_cache_file() {
+        let temp = tempdir().unwrap();
+        let path = Arc::new(temp.path().join("embedded-preview.jpg"));
+        let image = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(24, 24, Rgb([7, 8, 9])));
+        let mut encoded = Cursor::new(Vec::new());
+        image.write_to(&mut encoded, ImageFormat::Jpeg).unwrap();
+        let bytes = Arc::new(encoded.into_inner());
+        let workers = (0..8)
+            .map(|_| {
+                let path = Arc::clone(&path);
+                let bytes = Arc::clone(&bytes);
+                thread::spawn(move || install_embedded_preview_cache(&path, &bytes))
+            })
+            .collect::<Vec<_>>();
+
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+
+        assert_eq!(fs::read(path.as_ref()).unwrap(), bytes.as_ref().as_slice());
+        assert!(
+            !path
+                .with_file_name("embedded-preview.jpg.splined-backup")
+                .exists()
+        );
     }
 
     #[test]
