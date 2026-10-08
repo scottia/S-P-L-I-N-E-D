@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{
     Mutex, OnceLock,
-    mpsc::{Receiver, Sender},
+    mpsc::{Receiver, RecvTimeoutError, Sender},
 };
+use std::time::Duration;
 
 static EVENT_SENDER: OnceLock<Mutex<Option<Sender<Value>>>> = OnceLock::new();
 static DECISION_SENDER: OnceLock<Mutex<Option<Sender<Value>>>> = OnceLock::new();
@@ -114,11 +115,21 @@ fn receive_in_process_decision() -> Result<Value, String> {
     let receiver = slot
         .lock()
         .map_err(|_| "SPLINED decision receiver is unavailable.".to_string())?;
-    receiver
+    let receiver = receiver
         .as_ref()
-        .ok_or_else(|| "SPLINED in-process decision channel is closed.".to_string())?
-        .recv()
-        .map_err(|_| "SPLINED decision channel closed before a choice was made.".to_string())
+        .ok_or_else(|| "SPLINED in-process decision channel is closed.".to_string())?;
+    loop {
+        if cancelled() {
+            return Err("The SPLINED scan was cancelled by the user.".to_string());
+        }
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(value) => return Ok(value),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err("SPLINED decision channel closed before a choice was made.".to_string());
+            }
+        }
+    }
 }
 
 pub fn request_cancel() {
@@ -347,6 +358,27 @@ pub fn emit(value: Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cancellation_releases_an_in_process_decision_wait() {
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        begin_in_process(event_sender, true, false).unwrap();
+        let waiter = std::thread::spawn(wait_for_candidate_decision);
+        std::thread::sleep(Duration::from_millis(20));
+        request_cancel();
+        let error = waiter.join().unwrap().unwrap_err();
+        assert!(error.contains("cancelled"));
+        end_in_process();
+
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        begin_in_process(event_sender, true, false).unwrap();
+        submit_decision(json!({"action": "bypass"})).unwrap();
+        assert_eq!(
+            wait_for_candidate_decision().unwrap(),
+            CandidateDecision::Bypass
+        );
+        end_in_process();
+    }
 
     #[test]
     fn parses_edited_musicbrainz_authority_without_turning_it_into_a_result_index() {

@@ -1,6 +1,10 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+static APP_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static STATE_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppLayout {
@@ -36,9 +40,75 @@ impl AppLayout {
 }
 
 pub fn app_root() -> Result<PathBuf, String> {
+    if let Some(root) = APP_ROOT_OVERRIDE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "SPLINED application-root authority is unavailable.".to_string())?
+        .clone()
+    {
+        return Ok(root);
+    }
     let executable = std::env::current_exe()
         .map_err(|error| format!("Unable to determine SPLINED executable path: {error}"))?;
     portable_root_from_executable(&executable)
+}
+
+/// Establish the portable root supplied by the WinForms host. The DLL lives in
+/// `runtime`, so it must never infer that directory as the settings root.
+pub fn initialize_app_root(root: &std::path::Path) -> Result<PathBuf, String> {
+    if !root.is_absolute() {
+        return Err("The SPLINED application root must be an absolute path.".to_string());
+    }
+    let root = root.to_path_buf();
+    let slot = APP_ROOT_OVERRIDE.get_or_init(|| Mutex::new(None));
+    let mut current = slot
+        .lock()
+        .map_err(|_| "SPLINED application-root authority is unavailable.".to_string())?;
+    if let Some(existing) = current.as_ref() {
+        if existing != &root {
+            return Err(
+                "The SPLINED application root cannot change during a process lifetime.".to_string(),
+            );
+        }
+    } else {
+        *current = Some(root.clone());
+    }
+    Ok(root)
+}
+
+/// Establish the writable configuration/state root selected by the host. It is
+/// the executable root in portable mode and the package LocalState directory
+/// in installed mode.
+pub fn initialize_state_root(root: &std::path::Path) -> Result<PathBuf, String> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if !root.is_absolute() {
+        return Err("The SPLINED state root must be absolute.".to_string());
+    }
+    let slot = STATE_ROOT_OVERRIDE.get_or_init(|| Mutex::new(None));
+    let mut guard = slot
+        .lock()
+        .map_err(|_| "The SPLINED state-root lock is poisoned.".to_string())?;
+    if let Some(existing) = guard.as_ref() {
+        if existing != &root {
+            return Err(
+                "The SPLINED state root cannot change while the application is running."
+                    .to_string(),
+            );
+        }
+    } else {
+        *guard = Some(root.clone());
+    }
+    Ok(root)
+}
+
+pub fn state_root() -> Result<PathBuf, String> {
+    if let Some(slot) = STATE_ROOT_OVERRIDE.get()
+        && let Ok(guard) = slot.lock()
+        && let Some(root) = guard.as_ref()
+    {
+        return Ok(root.clone());
+    }
+    app_root()
 }
 
 pub(crate) fn portable_root_from_executable(

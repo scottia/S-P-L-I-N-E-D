@@ -6,6 +6,7 @@ pub mod credentials;
 pub mod download;
 pub mod embedded_artwork;
 pub mod evaluate;
+pub mod ffi;
 pub mod final_artwork;
 #[cfg(windows)]
 mod gpu_upscale;
@@ -27,6 +28,3 @@ pub mod source;
 pub mod source_history;
 pub mod source_policy;
 pub mod strict_source_policy;
-pub mod windows_backup;
-pub mod windows_shell;
-pub mod windows_state;

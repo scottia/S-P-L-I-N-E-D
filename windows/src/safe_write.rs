@@ -17,39 +17,141 @@ fn is_credential_label(label: &str) -> bool {
 
 #[cfg(windows)]
 fn apply_user_only_file_protection(path: &Path) -> bool {
-    use std::process::Command;
-    let whoami = match Command::new("whoami")
-        .args(["/user", "/fo", "csv", "/nh"])
-        .output()
-    {
-        Ok(output) if output.status.success() => output,
-        _ => return false,
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::{null, null_mut};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, SET_ACCESS, SetEntriesInAclW,
+        SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_IS_WELL_KNOWN_GROUP,
+        TRUSTEE_W,
     };
-    let stdout = match String::from_utf8(whoami.stdout) {
-        Ok(stdout) => stdout,
-        Err(_) => return false,
+    use windows_sys::Win32::Security::{
+        CreateWellKnownSid, DACL_SECURITY_INFORMATION, GetTokenInformation, NO_INHERITANCE,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        WinLocalSystemSid,
     };
-    let sid = match stdout
-        .trim()
-        .rsplit_once(',')
-        .map(|(_, sid)| sid.trim().trim_matches('"'))
-        .filter(|sid| sid.starts_with("S-1-"))
-    {
-        Some(sid) => sid,
-        None => return false,
-    };
-    let user_grant = format!("*{sid}:F");
-    match Command::new("icacls")
-        .arg(path)
-        .arg("/grant:r")
-        .arg(user_grant)
-        .arg("*S-1-5-18:F")
-        .arg("/inheritance:r")
-        .output()
-    {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
+    use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    struct TokenHandle(HANDLE);
+    impl Drop for TokenHandle {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
     }
+
+    struct LocalAcl(*mut windows_sys::Win32::Security::ACL);
+    impl Drop for LocalAcl {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { LocalFree(self.0.cast()) };
+            }
+        }
+    }
+
+    unsafe fn protect(path: &Path) -> bool {
+        let mut token = null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return false;
+        }
+        let _token = TokenHandle(token);
+
+        let mut user_length = 0;
+        unsafe { GetTokenInformation(token, TokenUser, null_mut(), 0, &mut user_length) };
+        if user_length < std::mem::size_of::<TOKEN_USER>() as u32 {
+            return false;
+        }
+        let mut user_buffer = vec![0u8; user_length as usize];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                user_buffer.as_mut_ptr().cast(),
+                user_length,
+                &mut user_length,
+            )
+        } == 0
+        {
+            return false;
+        }
+        let user_sid = unsafe { (*(user_buffer.as_ptr() as *const TOKEN_USER)).User.Sid };
+
+        let mut system_length = 0;
+        unsafe {
+            CreateWellKnownSid(
+                WinLocalSystemSid,
+                null_mut(),
+                null_mut(),
+                &mut system_length,
+            )
+        };
+        if system_length == 0 {
+            return false;
+        }
+        let mut system_buffer = vec![0u8; system_length as usize];
+        let system_sid = system_buffer.as_mut_ptr().cast();
+        if unsafe {
+            CreateWellKnownSid(
+                WinLocalSystemSid,
+                null_mut(),
+                system_sid,
+                &mut system_length,
+            )
+        } == 0
+        {
+            return false;
+        }
+
+        fn trustee(sid: PSID, trustee_type: i32) -> TRUSTEE_W {
+            TRUSTEE_W {
+                pMultipleTrustee: null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: trustee_type,
+                ptstrName: sid.cast(),
+            }
+        }
+
+        let entries = [
+            EXPLICIT_ACCESS_W {
+                grfAccessPermissions: FILE_ALL_ACCESS,
+                grfAccessMode: SET_ACCESS,
+                grfInheritance: NO_INHERITANCE,
+                Trustee: trustee(user_sid, TRUSTEE_IS_USER),
+            },
+            EXPLICIT_ACCESS_W {
+                grfAccessPermissions: FILE_ALL_ACCESS,
+                grfAccessMode: SET_ACCESS,
+                grfInheritance: NO_INHERITANCE,
+                Trustee: trustee(system_sid, TRUSTEE_IS_WELL_KNOWN_GROUP),
+            },
+        ];
+        let mut acl = null_mut();
+        if unsafe { SetEntriesInAclW(entries.len() as u32, entries.as_ptr(), null(), &mut acl) }
+            != ERROR_SUCCESS
+            || acl.is_null()
+        {
+            return false;
+        }
+        let acl = LocalAcl(acl);
+        let mut wide_path = path.as_os_str().encode_wide().collect::<Vec<_>>();
+        wide_path.push(0);
+        (unsafe {
+            SetNamedSecurityInfoW(
+                wide_path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                acl.0,
+                null(),
+            )
+        }) == ERROR_SUCCESS
+    }
+
+    unsafe { protect(path) }
 }
 
 #[cfg(unix)]
