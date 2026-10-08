@@ -261,6 +261,17 @@ fn winappcli_builds_store_ready_and_development_signed_msix_without_release_secr
 }
 
 #[test]
+fn full_windows_regression_suite_is_available_without_blocking_default_packaging() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+    assert!(workflow.contains("extended_windows_validation:"));
+    assert!(workflow.contains("default: false"));
+    assert!(workflow.contains("if: ${{ inputs.extended_windows_validation }}"));
+    assert!(workflow.contains("cargo test --locked --manifest-path windows/Cargo.toml --lib"));
+    assert!(workflow.contains("cmd /d /c RUN-GUI-QA.cmd"));
+    assert!(workflow.contains("Build clean x64 WinForms and Rust DLL pair"));
+}
+
+#[test]
 fn portable_updates_are_notification_only() {
     let update = source("windows/gui/UpdateService.cs");
     let main = source("windows/gui/MainForm.cs");

@@ -125,8 +125,9 @@ fn windows_and_release_versions_advance_coherently() {
         .expect("Windows package manifest");
     assert!(package.contains(&format!("Version=\"{version}.0\"")));
 
-    let workflow =
-        fs::read_to_string(".github/workflows/release-next-patch.yml").expect("release workflow");
+    let workflow = fs::read_to_string(".github/workflows/release-next-patch.yml")
+        .expect("release workflow")
+        .replace("\r\n", "\n");
     assert!(workflow.contains(
         "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/gui/AssemblyInfo.cs\" \"windows/gui/ReleaseInfo.cs\" \"windows/gui/app.manifest\" \"windows/package/Package.appxmanifest\" \"windows/package/SPLINED.appinstaller.template\")"
     ));
