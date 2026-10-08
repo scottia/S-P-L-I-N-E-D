@@ -1231,6 +1231,28 @@ namespace Splined.WindowsGui
                         && artworkCaption.Text.Contains("embedded front artwork")
                         && !artworkCaption.Text.Contains("cover.jpg"),
                         "The current compilation event did not focus embedded track artwork independently of the launch target.");
+                    object[] activeTrackCandidates = { CandidatePayload(12, "local", 1024, 1024, true, "") };
+                    showCandidates.Invoke(form, new object[] { activeTrackCandidates });
+                    FieldInfo runningCompilationField = typeof(MainForm).GetField(
+                        "running", BindingFlags.Instance | BindingFlags.NonPublic);
+                    FieldInfo activeCompilationTrackField = typeof(MainForm).GetField(
+                        "activeCompilationTrack", BindingFlags.Instance | BindingFlags.NonPublic);
+                    runningCompilationField.SetValue(form, true);
+                    showCompilationTreeNode.Invoke(form, new object[] { completedCompilationTrackNode });
+                    Assert(compilationCandidates.Count == 1
+                        && Object.ReferenceEquals(activeCompilationTrackField.GetValue(form), unfinishedCompilationTrack)
+                        && Object.ReferenceEquals(focusedCompilationTrackField.GetValue(form), completedCompilationTrack),
+                        "Previewing another compilation track while a decision was active cleared the current candidate results or changed the processing target.");
+                    runningCompilationField.SetValue(form, false);
+                    compilationEvent.Invoke(form, new object[] { new Dictionary<string, object>
+                    {
+                        { "event", "compilation_track_completed" },
+                        { "track_path", unfinishedCompilationTrack.Path },
+                        { "action", "EmbeddedReplaced" }, { "source", "fixture" },
+                        { "width", 1800 }, { "height", 1800 }
+                    } });
+                    Assert(unfinishedCompilationTrack.EmbeddedArtworkRecorded,
+                        "A completed compilation-track write did not update its live to-do state.");
                     compilationEvent.Invoke(form, new object[] { new Dictionary<string, object>
                     {
                         { "event", "compilation_track_started" }, { "album_path", compilationAlbum.Path },
