@@ -128,6 +128,7 @@ impl GpuUpscaler {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         }))
         .map_err(|error| format!("no compatible hardware Vulkan adapter: {error}"))?;
         let info = adapter.get_info();
@@ -264,7 +265,10 @@ impl GpuUpscaler {
             .map_err(|error| format!("GPU upscale readback callback failed: {error}"))?
             .map_err(|error| format!("GPU upscale readback failed: {error}"))?;
 
-        let mapped = readback.slice(..).get_mapped_range();
+        let mapped = readback
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|error| format!("GPU upscale mapped-range access failed: {error}"))?;
         let bytes = mapped.to_vec();
         drop(mapped);
         readback.unmap();
