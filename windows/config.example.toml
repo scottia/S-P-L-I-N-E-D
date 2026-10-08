@@ -1,5 +1,5 @@
 # S:P:L:I:N:E:D Config v5 example
-# Windows GUI v3.0.0 Stable developer/reference Config v5 example.
+# Windows GUI developer/reference Config v5 example.
 # The Windows v4 GUI stores Config v5 internally and does not read this file
 # during normal operation. Change settings through File > Settings.
 

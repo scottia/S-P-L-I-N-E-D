@@ -14,7 +14,8 @@ SPLINED\
 No SPLINED processing child is launched. Commands start Rust operations in the
 application process; structured events return progress, decisions, candidates,
 MusicBrainz matches, logs, and completion state to the frontend. Cancellation
-uses the same in-process boundary.
+uses the same in-process boundary. Windows releases are x64-only and are built
+for `x86_64-pc-windows-msvc`.
 
 The fresh archive does not contain `data\`. First save or one-time migration
 creates `data\config.toml` and `data\ui.toml`.
@@ -23,20 +24,38 @@ creates `data\config.toml` and `data\ui.toml`.
 
 The left pane reads the authoritative SQLite media index and groups Albums by
 Artist. Artist, Album, Folder Status, and Show Tracks controls filter the view.
-Folder colors retain their existing meanings. Checked Albums form the scan
-selection; focus and explicit selection are separate:
+Album colors are White/Unprocessed, Blue/Incomplete, Orange/Processed,
+Red/Bypassed, and Purple/Timeout. Green and Blue Artist markers retain the
+Artist Complete and Artist Contains Bypass meanings.
 
-- clicking an Album or track changes preview/focus only;
+A plain Album click replaces the current Album selection; Ctrl+Click toggles
+it additively. Selecting an Artist cascades to its eligible Albums. Select
+`[ALL]` applies to the active Artist, Select `[FILTERED]` applies to Albums
+matching the active text filters, and Select `[NONE]` clears the transient
+selection. Processed Albums require direct or filtered selection for deliberate
+reprocessing. Bypassed Albums require confirmation for a temporary run-only
+override, while timeout-active Albums remain protected.
+
+Track focus and explicit targeting remain separate:
+
+- clicking a track changes preview/focus only;
 - checking a track intentionally targets that exact track;
-- checking or launching the Album clears the explicit track target and starts
+- selecting or launching the Album clears the explicit track target and starts
   normal Album resume.
 
 Selection history controls live at the right edge of the Media Selection filter
 bar and remain visible as the pane is resized.
 
 READ performs a fully evaluated dry run. LIVE WRITE may install selected
-artwork. Auto Scan accepts only policy-eligible automatic decisions; otherwise
-the reusable LAUNCH / WAITING / STOP lifecycle pauses for input.
+artwork. Auto Scan `[SELECTED]` uses only the explicit queue. Auto Scan `[ALL]`
+adds every unprocessed/incomplete Album without bypassing protected states.
+Auto Scan accepts only policy-eligible automatic decisions; otherwise the
+reusable LAUNCH / WAITING / STOP lifecycle pauses for input.
+
+Every queued Album carries its own indexed Album path and SQLite key into the
+in-process Rust scan context. A multi-Album batch therefore records each result
+against that Album's own database identity rather than the currently focused
+row.
 
 ## Scan activity and candidates
 
@@ -121,6 +140,12 @@ SQLite, and diagnostics. Optional password protection remains compatible with
 the established format. Restore validates its envelope and contents, then uses
 recoverable file replacement.
 
+The Windows shell association for `.spl` is intentionally separate from
+Config/UI authority. SPLINED registers the portable executable as the backup
+opener, and the Tauri Windows package declares the same association. Opening an
+existing `.spl` file launches the selective Restore surface with that path
+pre-filled.
+
 For the same backup and category selection, two clean portable directories
 produce equivalent Config v5 and UI state. Selected categories overwrite their
 destinations. Unselected categories stay unchanged. Registry contents,
@@ -130,21 +155,22 @@ previous roots, and unrelated folders do not affect restore.
 
 Production automatic updates require all of the following:
 
-- signed update metadata;
-- a cryptographically signed updater package;
-- a stable publisher certificate on the application and update installer;
-- a trusted timestamp on Windows signatures;
+- update metadata containing the final NSIS package signature;
+- a cryptographically signed updater package that verifies with the stable
+  updater public key;
 - explicit user approval.
 
 The standard update installer receives the current portable root and replaces
 application code there. Portable `data\` and all configured SQLite, credential,
-history, cache, and log paths are outside the update payload. Unsigned developer
-builds cannot install public updates.
+history, cache, and log paths are outside the update payload. Developer builds
+without the updater verification key cannot install public updates.
 
-The release pipeline emits a separate update installer, update archive,
-archive signature, and `latest.json`. A schema 2 notification manifest remains
-for older builds but intentionally lacks the new trust contract and therefore
-cannot authorize installation.
+The release pipeline emits the final x64 NSIS update installer, its updater
+signature, and `latest.json`. It verifies the installer signature before
+generating metadata and fails closed if the signature is missing or invalid;
+hashes are not an installation fallback. SPLINED does not require Authenticode
+signing. A schema 2 notification manifest remains for older builds but cannot
+authorize installation.
 
 ## Diagnostics
 

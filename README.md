@@ -93,11 +93,11 @@ The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
 portable settings, and selective `.spl` backup/restore.
 
-The Windows portable application is one `splined.exe`. Its Tauri frontend calls
-the authoritative Rust processing backend in-process. Signed production builds
-use the official signed updater package after explicit approval; portable
-`data\` and configured external resources remain untouched. Unsigned developer
-builds cannot install public updates. See
+The x64 Windows portable application is one `splined.exe`. Its Tauri frontend
+calls the authoritative Rust processing backend in-process. Production builds
+use a cryptographically verified updater package after explicit approval;
+portable `data\` and configured external resources remain untouched. Builds
+without an updater verification key cannot install public updates. See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
 ---

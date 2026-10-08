@@ -1,6 +1,6 @@
 [package]
 name = "splined-windows"
-version = "3.0.0"
+version = "1.0.31"
 edition = "2024"
 build = "build.rs"
 publish = false
@@ -44,6 +44,9 @@ unicode-casefold = "0.2.0"
 [build-dependencies]
 tauri-build = { version = "=2.7.1", features = [] }
 tauri-utils = "=2.10.1"
+
+[dev-dependencies]
+minisign-verify = "0.2.5"
 
 [target.'cfg(windows)'.dependencies]
 bytemuck = "1.24.0"

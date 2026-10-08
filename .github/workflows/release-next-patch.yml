@@ -24,10 +24,34 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.99.0"
+  WINDOWS_TARGET: "x86_64-pc-windows-msvc"
 
 jobs:
+  release-preflight:
+    name: Validate release prerequisites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Tauri updater signing material before creating a tag
+        if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
+        shell: bash
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in TAURI_UPDATER_PUBLIC_KEY TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required Tauri updater signing material is unavailable: $name"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+
   prepare-release:
     name: Create next patch tag
+    needs: release-preflight
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,8 +122,16 @@ jobs:
           windows_source_version = tuple(
               map(int, windows_source_match.group(1).split("."))
           )
+          if windows_source_version != source_version:
+              raise SystemExit(
+                  "Root and Windows package versions must match before release provisioning"
+              )
 
-          baseline = max([source_version, windows_source_version, *versions])
+          compatible_versions = [
+              version for version in versions
+              if version[:2] == source_version[:2]
+          ]
+          baseline = max([source_version, *compatible_versions])
           release_version = f"{baseline[0]}.{baseline[1]}.{baseline[2] + 1}"
           if release_version in tags or f"v{release_version}" in tags:
               raise SystemExit(f"Release tag already exists: {release_version}")
@@ -233,6 +265,7 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
+          rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
 
       - name: Restore Rust build cache
         id: rust-cache
@@ -247,55 +280,36 @@ jobs:
             ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-
             ${{ runner.os }}-splined-windows-
 
-      - name: Require Windows signing material
+      - name: Require Tauri updater signing material
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_CERTIFICATE_PUBLISHER: ${{ secrets.WINDOWS_CERTIFICATE_PUBLISHER }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-          foreach ($name in @("WINDOWS_CERTIFICATE_BASE64", "WINDOWS_CERTIFICATE_PASSWORD", "WINDOWS_CERTIFICATE_PUBLISHER", "TAURI_UPDATER_PUBLIC_KEY", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD")) {
-            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Required Windows release signing material is unavailable: $name" }
+          foreach ($name in @("TAURI_UPDATER_PUBLIC_KEY", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD")) {
+            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Required Tauri updater signing material is unavailable: $name" }
           }
 
       - name: Install official Tauri v2 build tool
         shell: bash
         run: cargo install tauri-cli --version 2.12.0 --locked
 
-      - name: Import publisher certificate and configure signed build
+      - name: Configure updater verification key
         shell: pwsh
         env:
-          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          WINDOWS_CERTIFICATE_PUBLISHER: ${{ secrets.WINDOWS_CERTIFICATE_PUBLISHER }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
-          $certificatePath = Join-Path $env:RUNNER_TEMP "splined-release-certificate.pfx"
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
-          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
-          $certificate = Import-PfxCertificate -FilePath $certificatePath -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable
-          if (-not $certificate.HasPrivateKey) { throw "The Windows release certificate has no private key." }
           $configuration = [ordered]@{
-            bundle = [ordered]@{
-              publisher = $env:WINDOWS_CERTIFICATE_PUBLISHER
-              windows = [ordered]@{
-                certificateThumbprint = $certificate.Thumbprint
-                digestAlgorithm = "sha256"
-                timestampUrl = "http://timestamp.digicert.com"
-              }
-            }
             plugins = [ordered]@{
               updater = [ordered]@{ pubkey = $env:TAURI_UPDATER_PUBLIC_KEY }
             }
           }
           $configuration | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 windows/tauri.release.conf.json
 
-      - name: Build signed Windows release and updater package
+      - name: Build x64 Windows release and signed updater package
         id: windows-build
         shell: pwsh
         env:
@@ -307,7 +321,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $started = Get-Date
           Push-Location windows
-          try { cargo tauri build --config tauri.release.conf.json } finally { Pop-Location }
+          try { cargo tauri build --target $env:WINDOWS_TARGET --config tauri.release.conf.json } finally { Pop-Location }
           "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Package Windows release
@@ -317,18 +331,18 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
+          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
           New-Item -ItemType Directory -Force -Path release-package, release-assets | Out-Null
-          Copy-Item windows/target/release/splined.exe release-package/splined.exe
+          Copy-Item "$releaseRoot/splined.exe" release-package/splined.exe
           Copy-Item release/README-WINDOWS.txt release-package/README-WINDOWS.txt
           $packageFiles = Get-ChildItem -LiteralPath release-package -File
           if ($packageFiles.Count -ne 2 -or @($packageFiles | Where-Object Extension -eq ".exe").Count -ne 1) { throw "Portable Windows package must contain exactly splined.exe and README-WINDOWS.txt." }
           Compress-Archive -Path "release-package/*" -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
-          $installer = Get-ChildItem windows/target/release/bundle/nsis -Filter "*-setup.exe" | Select-Object -First 1
+          $installerName = "SPLINED_{0}_x64-setup.exe" -f $env:RELEASE_VERSION
+          $installer = Get-Item -LiteralPath "$releaseRoot/bundle/nsis/$installerName" -ErrorAction SilentlyContinue
           if (-not $installer -or -not (Test-Path "$($installer.FullName).sig")) { throw "The signed Windows installer/update artifacts were not produced." }
           Copy-Item $installer.FullName release-assets/splined-windows-x86_64-installer.exe
           Copy-Item "$($installer.FullName).sig" release-assets/splined-windows-x86_64-installer.exe.sig
-          $archive = Get-Item release-assets/splined-windows-x86_64.zip
-          $gui = Get-Item release-package/splined.exe
           $manifest = [ordered]@{
             schema = 2
             channel = "stable"
@@ -339,9 +353,51 @@ jobs:
             release_url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/$env:RELEASE_VERSION"
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
+
+      - name: Validate x64 package and updater signature
+        shell: pwsh
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Assert-Amd64Pe([string]$path) {
+            $resolved = (Resolve-Path -LiteralPath $path).Path
+            $bytes = [IO.File]::ReadAllBytes($resolved)
+            if ($bytes.Length -lt 64) { throw "PE image is truncated: $path" }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { throw "PE header is invalid: $path" }
+            if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) { throw "PE signature is invalid: $path" }
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0x8664) { throw ("Expected AMD64 PE Machine 0x8664 for {0}; found 0x{1:X4}." -f $path, $machine) }
+          }
+
+          Assert-Amd64Pe "release-package/splined.exe"
+          if (-not (Test-Path release-assets/splined-windows-x86_64-installer.exe.sig)) { throw "Cryptographic updater-package signature is missing." }
+          $archiveEntries = @(tar -tf release-assets/splined-windows-x86_64.zip)
+          if ($archiveEntries.Count -ne 2 -or $archiveEntries -notcontains "splined.exe" -or $archiveEntries -notcontains "README-WINDOWS.txt") { throw "Portable archive must contain exactly splined.exe and README-WINDOWS.txt." }
+          if (@($archiveEntries | Where-Object { $_ -match '\.exe$' }).Count -ne 1) { throw "Portable archive must contain exactly one executable." }
+          foreach ($forbidden in @("splined-core.exe", "splined-update.exe", "data/config.toml", "data/ui.toml", "splined.db")) {
+            if ($archiveEntries -contains $forbidden) { throw "Portable archive contains forbidden state or executable: $forbidden" }
+          }
+          $forbiddenArchitecture = Get-ChildItem -LiteralPath release-assets -File | Where-Object { $_.Name -match '(?i)(i686|aarch64|arm64|windows-x86(?!_64))' }
+          if ($forbiddenArchitecture) { throw "A non-x64 Windows release artifact was produced: $($forbiddenArchitecture.Name -join ', ')" }
+
+          $env:SPLINED_UPDATE_ARTIFACT = (Resolve-Path -LiteralPath "release-assets/splined-windows-x86_64-installer.exe").Path
+          $env:SPLINED_UPDATE_SIGNATURE = (Resolve-Path -LiteralPath "release-assets/splined-windows-x86_64-installer.exe.sig").Path
+          $env:SPLINED_UPDATER_PUBLIC_KEY = $env:TAURI_UPDATER_PUBLIC_KEY
+          Push-Location windows
+          try { cargo test --target $env:WINDOWS_TARGET --test release_updater_signature -- --ignored --exact verifies_release_updater_signature } finally { Pop-Location }
+
+      - name: Generate updater metadata after signature validation
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
           $latest = [ordered]@{
             version = $env:RELEASE_VERSION
-            notes = "Signed SPLINED Windows update $env:RELEASE_VERSION"
+            notes = "Cryptographically verified SPLINED Windows x64 update $env:RELEASE_VERSION"
             pub_date = [DateTime]::UtcNow.ToString("o")
             platforms = [ordered]@{
               "windows-x86_64" = [ordered]@{
@@ -351,25 +407,6 @@ jobs:
             }
           }
           $latest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 release-assets/latest.json
-
-      - name: Validate Windows trust chain and package boundaries
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PUBLISHER: ${{ secrets.WINDOWS_CERTIFICATE_PUBLISHER }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          foreach ($path in @("release-package/splined.exe", "release-assets/splined-windows-x86_64-installer.exe")) {
-            $signature = Get-AuthenticodeSignature -LiteralPath $path
-            if ($signature.Status -ne "Valid") { throw "Authenticode validation failed for $path: $($signature.Status)" }
-            if ($signature.SignerCertificate.Subject -notlike "*$env:WINDOWS_CERTIFICATE_PUBLISHER*") { throw "Unexpected Windows publisher for $path." }
-            if (-not $signature.TimeStamperCertificate) { throw "The Windows signature is not timestamped: $path" }
-          }
-          if (-not (Test-Path release-assets/splined-windows-x86_64-installer.exe.sig)) { throw "Cryptographic updater-package signature is missing." }
-          $archiveEntries = tar -tf release-assets/splined-windows-x86_64.zip
-          if (@($archiveEntries | Where-Object { $_ -match '\.exe$' }).Count -ne 1) { throw "Portable archive contains more than one executable." }
-          foreach ($forbidden in @("splined-core.exe", "splined-update.exe", "data/config.toml", "data/ui.toml", "splined.db")) {
-            if ($archiveEntries -contains $forbidden) { throw "Portable archive contains forbidden state or executable: $forbidden" }
-          }
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -515,7 +552,7 @@ jobs:
             exit 1
           fi
           release_files=("${archives[@]}")
-          for metadata in windows-update.json latest.json splined-windows-x86_64-installer.exe splined-windows-x86_64.nsis.zip splined-windows-x86_64.nsis.zip.sig; do
+          for metadata in windows-update.json latest.json splined-windows-x86_64-installer.exe splined-windows-x86_64-installer.exe.sig; do
             if [ -f "$metadata" ]; then release_files+=("$metadata"); fi
           done
           sha256sum "${release_files[@]}" > SHA256SUMS.txt

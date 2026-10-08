@@ -1,16 +1,24 @@
 import {
+  albumStatusClass,
+  applyArtistSelection,
+  applyBulkSelection,
+  artistAggregateStatus,
+  artistStatusClass,
   buildMusicBrainzView,
   canPersistPortableUi,
-  checkAlbum,
   checkTrack,
+  compilationArtworkPending,
+  configuredScanMode,
   createSelectionState,
   filterCandidates,
   focusTrack,
   groupAlbumsByArtist,
+  launchSelection,
   releaseTypesForArtists,
+  restoreSafeSelection,
   scanRequestFromSelection,
+  selectAlbum,
   shouldLoadLibraryAfterBootstrap,
-  statusClass,
 } from "./app-model.mjs";
 
 const tauri = window.__TAURI__;
@@ -92,7 +100,18 @@ function captureUi() {
     selected_compilation_track_path: runtime.selection.explicitTrackPath,
     filtered_scan_mode: $("#scan-mode").value,
     auto_scan_enabled: $("#auto-scan").checked,
-    selected_album_paths: [...runtime.selection.albumPaths],
+    auto_scan_scope: $("#auto-scan-scope").value,
+    media_show_white: $('[data-status="unprocessed"]').checked,
+    media_show_incomplete: $('[data-status="incomplete"]').checked,
+    media_show_orange: $('[data-status="processed"]').checked,
+    media_show_red: $('[data-status="bypassed"]').checked,
+    media_show_purple: $('[data-status="partial-timeout"]').checked,
+    media_show_green: $('[data-status="artist-complete"]').checked,
+    media_show_blue: $('[data-status="artist-bypass"]').checked,
+    selected_album_paths: [...runtime.selection.albumPaths].filter(path => {
+      const status = String(runtime.albums.get(path)?.status || "").toLocaleLowerCase();
+      return status !== "bypassed" && status !== "timeout";
+    }),
     candidate_excluded_sources: runtime.candidateFilters.sources,
     candidate_excluded_types: runtime.candidateFilters.types,
     candidate_excluded_policies: runtime.candidateFilters.policies,
@@ -156,8 +175,16 @@ function restoreUi() {
   $("#artist-filter").value = ui.media_artist_filter;
   $("#album-filter").value = ui.media_album_filter;
   $("#show-tracks").checked = ui.show_tracks;
-  $("#scan-mode").value = ui.filtered_scan_mode === "write" ? "write" : "read";
+  $("#scan-mode").value = configuredScanMode(runtime.portable?.config_text);
   $("#auto-scan").checked = ui.auto_scan_enabled;
+  $("#auto-scan-scope").value = ui.auto_scan_scope === "all" ? "all" : "selected";
+  $('[data-status="unprocessed"]').checked = ui.media_show_white !== false;
+  $('[data-status="incomplete"]').checked = ui.media_show_incomplete !== false;
+  $('[data-status="processed"]').checked = ui.media_show_orange !== false;
+  $('[data-status="bypassed"]').checked = ui.media_show_red !== false;
+  $('[data-status="partial-timeout"]').checked = ui.media_show_purple !== false;
+  $('[data-status="artist-complete"]').checked = ui.media_show_green !== false;
+  $('[data-status="artist-bypass"]').checked = ui.media_show_blue !== false;
   $("#media-filters").classList.toggle("hidden", !ui.media_filter_expanded);
   $("#candidate-filters").classList.toggle("hidden", !ui.candidate_filter_expanded);
   document.documentElement.style.setProperty("--media-width", `${Math.max(250, ui.main_splitter_distance)}px`);
@@ -174,6 +201,7 @@ async function loadLibrary(refresh = false) {
   try {
     runtime.library = await command("load_library", { refresh });
     runtime.albums = new Map(runtime.library.albums.map(album => [album.path, album]));
+    runtime.selection = restoreSafeSelection(runtime.selection, runtime.library.albums);
     $("#library-summary").textContent = `${runtime.library.albums.length} Albums · ${runtime.library.database_path}`;
     renderMediaTree();
   } catch (error) {
@@ -186,40 +214,76 @@ function activeStatusFilters() {
   return new Set($$("[data-status]").filter(item => item.checked).map(item => item.dataset.status));
 }
 
-function renderMediaTree() {
-  if (!runtime.library) return;
+function albumFilterCategory(album) {
+  const color = albumStatusClass(album.status);
+  return color === "purple" ? "partial-timeout"
+    : color === "blue" ? "incomplete"
+      : color === "orange" ? "processed"
+        : color === "red" ? "bypassed" : "unprocessed";
+}
+
+function artistFilterCategory(status) {
+  if (status === "contains-bypass") return "artist-bypass";
+  if (status === "complete") return "artist-complete";
+  if (status === "partial") return "partial-timeout";
+  return "unprocessed";
+}
+
+function textFilteredAlbums() {
+  if (!runtime.library) return [];
   const artistNeedle = $("#artist-filter").value.trim().toLocaleLowerCase();
   const albumNeedle = $("#album-filter").value.trim().toLocaleLowerCase();
+  return runtime.library.albums.filter(album =>
+    (!artistNeedle || String(album.artist || album.tagged_artist).toLocaleLowerCase().includes(artistNeedle))
+    && (!albumNeedle || String(album.title).toLocaleLowerCase().includes(albumNeedle)));
+}
+
+function updateSelectionSummary() {
+  $("#selection-count").textContent = `SELECTED [${runtime.selection.albumPaths.size}]`;
+}
+
+function updateStatusCounts(allGroups) {
+  const counts = {
+    unprocessed: 0, incomplete: 0, processed: 0, bypassed: 0,
+    "partial-timeout": 0, "artist-complete": 0, "artist-bypass": 0,
+  };
+  for (const album of runtime.library.albums) counts[albumFilterCategory(album)] += 1;
+  for (const group of allGroups.values()) {
+    const category = artistFilterCategory(artistAggregateStatus(group.albums));
+    if (category !== "unprocessed") counts[category] += 1;
+  }
+  $$('[data-status-count]').forEach(output => { output.value = counts[output.dataset.statusCount] || 0; });
+}
+
+function renderMediaTree() {
+  if (!runtime.library) return;
   const statuses = activeStatusFilters();
   const showTracks = $("#show-tracks").checked;
-  const albums = runtime.library.albums.filter(album => {
-    const color = statusClass(album.status);
-    return statuses.has(color)
-      && (!artistNeedle || String(album.artist || album.tagged_artist).toLocaleLowerCase().includes(artistNeedle))
-      && (!albumNeedle || String(album.title).toLocaleLowerCase().includes(albumNeedle));
-  });
-  $("#media-tree").innerHTML = groupAlbumsByArtist(albums).map(group => `
-    <details class="tree-artist" open><summary>${escapeHtml(group.artist)} <span class="subtle">${group.albums.length}</span></summary>
+  const allGroups = new Map(groupAlbumsByArtist(runtime.library.albums).map(group => [group.artist, group]));
+  updateStatusCounts(allGroups);
+  const groups = groupAlbumsByArtist(textFilteredAlbums()).map(group => {
+    const aggregate = artistAggregateStatus(allGroups.get(group.artist)?.albums || group.albums);
+    return { ...group, aggregate, albums: group.albums.filter(album => statuses.has(albumFilterCategory(album))) };
+  }).filter(group => group.albums.length && statuses.has(artistFilterCategory(group.aggregate)));
+  $("#media-tree").innerHTML = groups.map(group => `
+    <details class="tree-artist" open><summary data-artist-row="${escapeHtml(group.artist)}"><span class="status-ring ${artistStatusClass(group.aggregate)}"></span>${escapeHtml(group.artist)} <span class="subtle">${group.albums.length}</span></summary>
       ${group.albums.map(album => {
         const focused = runtime.selection.focusedAlbumPath === album.path ? " focused" : "";
+        const selected = runtime.selection.albumPaths.has(album.path) ? " selected" : "";
         const tracks = showTracks && album.compilation_track_art_eligible ? album.compilation_tracks.map(track => `
           <div class="track-row${runtime.selection.focusedTrackPath === track.path ? " focused" : ""}" data-track-row="${escapeHtml(track.path)}" data-album-path="${escapeHtml(album.path)}" title="Click previews; check explicitly reopens this track">
             <input type="checkbox" data-track-check="${escapeHtml(track.path)}" data-album-path="${escapeHtml(album.path)}" ${runtime.selection.explicitTrackPath === track.path ? "checked" : ""}>
-            <span class="status-ring ${track.embedded_artwork_recorded ? "green" : "red"}"></span><span class="album-title">${escapeHtml(track.title || track.path.split(/[\\/]/).pop())}</span>
+            <span class="status-ring ${track.embedded_artwork_recorded ? "green" : "white"}"></span><span class="album-title">${escapeHtml(track.title || track.path.split(/[\\/]/).pop())}</span>
           </div>`).join("") : "";
-        return `<div class="album-row${focused}" data-album-row="${escapeHtml(album.path)}"><input type="checkbox" data-album-check="${escapeHtml(album.path)}" ${runtime.selection.albumPaths.has(album.path) ? "checked" : ""}><span class="status-ring ${statusClass(album.status)}"></span><span class="album-title">${escapeHtml(album.title || album.path)}${album.compilation ? " · Compilation" : ""}</span></div>${tracks}`;
+        return `<div class="album-row${focused}${selected}" data-album-row="${escapeHtml(album.path)}" title="Click selects this Album; Ctrl+Click toggles it additively"><span class="status-ring ${albumStatusClass(album.status)}"></span><span class="album-title">${escapeHtml(album.title || album.path)}${album.compilation ? " · Compilation" : ""}</span></div>${tracks}`;
       }).join("")}
     </details>`).join("") || `<div class="empty-state"><p>No Albums match the current filters.</p></div>`;
 
-  $$('[data-album-row]').forEach(row => row.addEventListener("click", event => {
-    if (event.target.matches("input")) return;
-    focusAlbum(row.dataset.albumRow);
+  $$('[data-artist-row]').forEach(row => row.addEventListener("click", event => {
+    const group = groups.find(item => item.artist === row.dataset.artistRow);
+    if (group) selectArtistGroup(group, event.ctrlKey);
   }));
-  $$('[data-album-check]').forEach(box => box.addEventListener("change", () => {
-    runtime.selection = checkAlbum(runtime.selection, box.dataset.albumCheck, box.checked);
-    pushSelectionHistory(); renderMediaTree(); scheduleUiSave();
-    if ($("#auto-scan").checked && box.checked && !runtime.running) launchScan();
-  }));
+  $$('[data-album-row]').forEach(row => row.addEventListener("click", event => selectAlbumRow(row.dataset.albumRow, event.ctrlKey)));
   $$('[data-track-row]').forEach(row => row.addEventListener("click", event => {
     if (event.target.matches("input")) return;
     runtime.selection = focusTrack(runtime.selection, row.dataset.albumPath, row.dataset.trackRow);
@@ -227,9 +291,58 @@ function renderMediaTree() {
   }));
   $$('[data-track-check]').forEach(box => box.addEventListener("change", () => {
     runtime.selection = checkTrack(runtime.selection, box.dataset.albumPath, box.dataset.trackCheck, box.checked);
+    const album = runtime.albums.get(box.dataset.albumPath);
+    if (box.checked && String(album?.status || "").toLocaleLowerCase() === "bypassed") {
+      runtime.selection.bypassOverrides.add(box.dataset.albumPath);
+    }
     if (box.checked) previewTrack(box.dataset.trackCheck);
     pushSelectionHistory(); renderMediaTree(); scheduleUiSave();
   }));
+  updateSelectionSummary();
+}
+
+async function selectAlbumRow(path, additive) {
+  const album = runtime.albums.get(path);
+  if (!album) return;
+  let outcome = selectAlbum(runtime.selection, album, { additive });
+  if (outcome.protection === "timeout") {
+    await focusAlbum(path);
+    notify("Album timeout active", "This Album remains protected until its recorded timeout expires.");
+    return;
+  }
+  if (outcome.protection === "bypass") {
+    const allowed = window.confirm("This Album is marked bypassed. Override bypass for this run only?\n\nThe saved bypass history will not be deleted.");
+    if (!allowed) { await focusAlbum(path); return; }
+    outcome = selectAlbum(runtime.selection, album, { additive, allowBypass: true });
+  }
+  runtime.selection = outcome.selection;
+  await focusAlbum(path);
+  pushSelectionHistory(); renderMediaTree(); scheduleUiSave();
+}
+
+function selectArtistGroup(group, additive) {
+  const protectedBypass = group.albums.filter(album => String(album.status).toLocaleLowerCase() === "bypassed" && !compilationArtworkPending(album));
+  const includeBypassed = protectedBypass.length > 0 && window.confirm(`This Artist contains ${protectedBypass.length} bypassed Album(s). Include them using a temporary override for this run?\n\nThe saved bypass history will not be deleted.`);
+  runtime.selection = applyArtistSelection(runtime.selection, group.albums, { additive, includeBypassed, artist: group.artist });
+  const focused = group.albums.find(album => runtime.selection.albumPaths.has(album.path));
+  if (focused) focusAlbum(focused.path);
+  pushSelectionHistory(); renderMediaTree(); scheduleUiSave();
+}
+
+function applySelectMode(mode) {
+  if (mode === "none") {
+    runtime.selection = applyBulkSelection(runtime.selection, [], "none");
+  } else if (mode === "all") {
+    if (!runtime.selection.focusedArtist) return notify("Select [ALL]", "Select an Artist first.");
+    const albums = runtime.library.albums.filter(album => (album.artist || album.tagged_artist) === runtime.selection.focusedArtist);
+    runtime.selection = applyBulkSelection(runtime.selection, albums, "all");
+  } else {
+    if (!$("#artist-filter").value.trim() && !$("#album-filter").value.trim()) {
+      return notify("Select [FILTERED]", "Enter an Artist or Album filter first.");
+    }
+    runtime.selection = applyBulkSelection(runtime.selection, textFilteredAlbums(), "filtered");
+  }
+  pushSelectionHistory(); renderMediaTree(); scheduleUiSave();
 }
 
 async function focusAlbum(path) {
@@ -263,7 +376,7 @@ function showArtwork(dataUrl, caption, title = "Selected Album Artwork") {
 }
 
 function pushSelectionHistory() {
-  const snapshot = { albums: [...runtime.selection.albumPaths], explicit: runtime.selection.explicitTrackPath };
+  const snapshot = { albums: [...runtime.selection.albumPaths], overrides: [...runtime.selection.bypassOverrides], explicit: runtime.selection.explicitTrackPath };
   const current = runtime.selectionHistory[runtime.selectionCursor];
   if (current && JSON.stringify(current) === JSON.stringify(snapshot)) return;
   runtime.selectionHistory = runtime.selectionHistory.slice(0, runtime.selectionCursor + 1);
@@ -275,23 +388,24 @@ function moveSelectionHistory(delta) {
   if (next < 0 || next >= runtime.selectionHistory.length) return;
   runtime.selectionCursor = next;
   const snapshot = runtime.selectionHistory[next];
-  runtime.selection.albumPaths = new Set(snapshot.albums); runtime.selection.explicitTrackPath = snapshot.explicit;
+  runtime.selection.albumPaths = new Set(snapshot.albums); runtime.selection.bypassOverrides = new Set(snapshot.overrides || []); runtime.selection.explicitTrackPath = snapshot.explicit;
   renderMediaTree(); scheduleUiSave();
 }
 
 async function launchScan() {
   if (runtime.running) { await command("stop_scan"); activity("Stop requested; the in-process workflow will stop at a safe boundary."); return; }
-  const focused = runtime.albums.get(runtime.selection.focusedAlbumPath);
-  const request = scanRequestFromSelection(runtime.selection, {
+  const autoScan = $("#auto-scan").checked;
+  const launchState = launchSelection(runtime.selection, runtime.library?.albums || [], autoScan ? $("#auto-scan-scope").value : "selected");
+  const request = scanRequestFromSelection(launchState, {
+    albums: runtime.library?.albums || [],
     mode: $("#scan-mode").value,
     reviewRequired: true,
-    autoIdeal: $("#auto-scan").checked,
-    indexedAlbumKey: focused?.album_key || null,
+    autoIdeal: autoScan,
   });
-  if (!request.albumPaths.length) { notify("Selection required", "Check at least one Album before launching."); return; }
+  if (!request.albums.length) { notify("Selection required", "Select at least one Album before launching."); return; }
   try {
     runtime.running = true; runtime.waiting = false; setLifecycle("STOP");
-    $("#run-progress").value = 0; $("#run-progress").max = request.albumPaths.length;
+    $("#run-progress").value = 0; $("#run-progress").max = request.albums.length;
     activity(`${request.mode === "write" ? "LIVE WRITE" : "READ"} scan started in the application process.`);
     await command("start_scan", { request });
   } catch (error) { runtime.running = false; setLifecycle("LAUNCH"); notify("Scan could not start", error); }
@@ -526,12 +640,15 @@ async function checkUpdate() {
 function wireControls() {
   $("#launch-button").onclick = launchScan;
   $("#refresh-library").onclick = () => loadLibrary(true);
+  $("#select-all").onclick = () => applySelectMode("all");
+  $("#select-filtered").onclick = () => applySelectMode("filtered");
+  $("#select-none").onclick = () => applySelectMode("none");
   $("#media-filter-toggle").onclick = () => { $("#media-filters").classList.toggle("hidden"); scheduleUiSave(); };
   $("#candidate-filter-toggle").onclick = () => { $("#candidate-filters").classList.toggle("hidden"); scheduleUiSave(); };
   ["#artist-filter","#album-filter"].forEach(selector => $(selector).oninput = () => { renderMediaTree(); scheduleUiSave(); });
-  $$("[data-status]").forEach(box => box.onchange = renderMediaTree);
+  $$("[data-status]").forEach(box => box.onchange = () => { renderMediaTree(); scheduleUiSave(); });
   $("#show-tracks").onchange = () => { renderMediaTree(); scheduleUiSave(); };
-  $("#scan-mode").onchange = scheduleUiSave; $("#auto-scan").onchange=scheduleUiSave; $("#hover-toggle").onchange=scheduleUiSave;
+  $("#scan-mode").onchange = scheduleUiSave; $("#auto-scan").onchange=scheduleUiSave; $("#auto-scan-scope").onchange=scheduleUiSave; $("#hover-toggle").onchange=scheduleUiSave;
   $("#theme-select").onchange = () => { applyTheme($("#theme-select").value); scheduleUiSave(); };
   $("#history-back").onclick=()=>moveSelectionHistory(-1); $("#history-forward").onclick=()=>moveSelectionHistory(1);
   $("#use-selected").onclick=()=>submitDecision({action:"use",index:runtime.selectedCandidate,...advancedDecisionValues()});
@@ -552,7 +669,8 @@ function wireControls() {
   $("#save-credential").onclick=async event=>{event.preventDefault();try{await command("save_credential",{name:$("#credential-select").value,contents:$("#credential-editor").value});$("#credentials-dialog").close();activity("Credential saved.","success");}catch(error){notify("Credential was not saved",error);}};
   $("#choose-backup").onclick=async()=>{if(!dialogApi)return;const chosen=await dialogApi.save({filters:[{name:"SPLINED backup",extensions:["spl"]}]});if(chosen)$("#backup-path").value=chosen;};
   $("#export-backup").onclick=async()=>{try{const ui=await captureWindowUi(captureUi());await command("export_backup",{path:$("#backup-path").value,password:$("#backup-password").value,selection:backupSelection(),ui});activity("Selective .spl backup exported.","success");notify("Backup complete","The selected portable state was backed up.");}catch(error){notify("Backup failed",error);}};
-  $("#restore-backup").onclick=async()=>{try{runtime.portable=await command("restore_backup",{path:$("#backup-path").value,password:$("#backup-password").value,selection:backupSelection()});runtime.ui=runtime.portable.ui;restoreUi();await loadLibrary(false);activity("Selected .spl categories restored.","success");notify("Restore complete","Selected categories were restored; unselected categories were unchanged.");}catch(error){notify("Restore failed",error);}};
+  $("#restore-backup").onclick=async()=>{try{runtime.portable=await command("restore_backup",{path:$("#backup-path").value,password:$("#backup-password").value,selection:backupSelection()});runtime.ui=runtime.portable.ui;restoreUi();await loadLibrary(false);$("#backup-dialog").close();activity("Selected .spl categories restored.","success");notify("Restore complete","Selected categories were restored; unselected categories were unchanged.");}catch(error){notify("Restore failed",error);}};
+  $("#backup-dialog").addEventListener("close",()=>{if(runtime.portable?.first_run&&!$("#settings-dialog").open){$("#config-editor").value=runtime.portable.config_text;$("#settings-dialog").showModal();}});
   $("#update-button").onclick=checkUpdate;
   window.addEventListener("resize",scheduleUiSave);
   appWindow?.onMoved?.(scheduleUiSave);
@@ -567,7 +685,13 @@ async function start() {
     await listen("splined-event", event => handleEvent(event.payload));
     if (shouldLoadLibraryAfterBootstrap(runtime.portable.first_run)) await loadLibrary(false);
     $("#app").ariaBusy="false"; activity(runtime.portable.first_run ? "First-run setup is ready." : "Portable settings loaded.","success");
-    if (runtime.portable.first_run) { $("#config-editor").value=runtime.portable.config_text; $("#settings-dialog").showModal(); }
+    const associatedBackup = await command("startup_backup_path");
+    if (associatedBackup) {
+      $("#backup-path").value = associatedBackup;
+      $("#backup-dialog").showModal();
+    } else if (runtime.portable.first_run) {
+      $("#config-editor").value=runtime.portable.config_text; $("#settings-dialog").showModal();
+    }
   } catch (error) { notify("SPLINED could not start",error); $("#status-text").textContent=String(error); }
 }
 

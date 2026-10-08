@@ -4879,7 +4879,7 @@ dependencies = [
 
 [[package]]
 name = "splined-windows"
-version = "3.0.0"
+version = "1.0.31"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -4891,6 +4891,7 @@ dependencies = [
  "hmac",
  "image",
  "lofty",
+ "minisign-verify",
  "pbkdf2",
  "pollster",
  "rand 0.10.3",

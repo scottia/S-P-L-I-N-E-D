@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -111,6 +112,12 @@ fn portable_release_and_official_update_contract_exclude_durable_state() {
 
     assert!(configuration.contains("\"createUpdaterArtifacts\": true"));
     assert!(configuration.contains("\"updater\""));
+    assert!(configuration.contains("\"fileAssociations\""));
+    assert!(configuration.contains("\"ext\": [\"spl\"]"));
+    assert!(source("windows/src/tauri_app.rs").contains("startup_backup_path"));
+    let shell = source("windows/src/windows_shell.rs");
+    assert!(shell.contains(r"Software\Classes\.spl"));
+    assert!(shell.contains(r"shell\open\command"));
     assert!(hooks.contains("SPLINED_PORTABLE_ROOT"));
     assert!(hooks.contains("Abort"));
     assert!(hooks.contains("SetOutPath $INSTDIR"));
@@ -122,10 +129,54 @@ fn portable_release_and_official_update_contract_exclude_durable_state() {
     assert!(state.contains("ui.toml"));
     assert!(workflow.contains("Portable archive contains forbidden state or executable"));
     assert!(workflow.contains("splined-windows-x86_64-installer.exe.sig"));
-    assert!(workflow.contains("Get-AuthenticodeSignature"));
-    assert!(workflow.contains("TimeStamperCertificate"));
+    assert!(workflow.contains("SPLINED_UPDATE_ARTIFACT"));
+    assert!(workflow.contains("verifies_release_updater_signature"));
+    assert!(workflow.contains("Generate updater metadata after signature validation"));
+    assert!(workflow.contains("Expected AMD64 PE Machine 0x8664"));
+    assert!(!configuration.contains("digestAlgorithm"));
+    assert!(!configuration.contains("timestampUrl"));
     assert!(!workflow.contains("Copy-Item windows/data"));
     assert!(!workflow.contains("Copy-Item data"));
+}
+
+#[test]
+fn windows_release_is_amd64_only_and_requires_only_tauri_updater_secrets() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+    assert!(workflow.contains("WINDOWS_TARGET: \"x86_64-pc-windows-msvc\""));
+    assert!(workflow.contains("rustup target add \"$WINDOWS_TARGET\""));
+    assert!(workflow.contains("cargo tauri build --target $env:WINDOWS_TARGET"));
+    assert!(workflow.contains("windows/target/$env:WINDOWS_TARGET/release"));
+    assert!(workflow.contains("$machine -ne 0x8664"));
+    let windows_targets = workflow
+        .split(|character: char| character.is_whitespace() || matches!(character, '"' | '\''))
+        .filter(|word| word.contains("-pc-windows-"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(windows_targets, BTreeSet::from(["x86_64-pc-windows-msvc"]));
+    let required_secrets = BTreeSet::from([
+        "TAURI_UPDATER_PUBLIC_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+    ]);
+    let preflight = workflow
+        .split("  release-preflight:")
+        .nth(1)
+        .expect("release preflight job")
+        .split("  prepare-release:")
+        .next()
+        .expect("release preflight body");
+    let configured_secrets = preflight
+        .lines()
+        .filter_map(|line| line.split("${{ secrets.").nth(1))
+        .filter_map(|value| value.split(" }}").next())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(configured_secrets, required_secrets);
+    let signature_validation = workflow
+        .find("Validate x64 package and updater signature")
+        .expect("signature validation step");
+    let metadata = workflow
+        .find("Generate updater metadata after signature validation")
+        .expect("metadata generation step");
+    assert!(signature_validation < metadata);
 }
 
 #[test]
@@ -139,7 +190,7 @@ fn updater_signature_validation_failure_has_no_installation_fallback() {
     assert!(!backend.contains(".install("));
     assert!(backend.contains("The signed update was not installed"));
     assert!(backend.contains("The active scan did not close normally"));
-    assert!(backend.contains("This unsigned development build cannot install public updates"));
+    assert!(backend.contains("This development build has no updater verification key"));
     assert!(manifest.contains("tauri-plugin-updater = \"=2.13.2\""));
     assert!(!backend.contains("sha256"));
     assert!(!backend.contains("rename("));

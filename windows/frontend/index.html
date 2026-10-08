@@ -25,18 +25,25 @@
       <aside id="media-pane" class="panel media-panel">
         <div class="panel-heading"><h1>Media Library Selection</h1><button class="info" title="Select Albums to scan. Track clicks only preview; track checks explicitly reopen that track.">i</button></div>
         <div class="media-filter-bar">
-          <button id="media-filter-toggle" class="wide-button">Media Selection <span>▾</span></button>
+          <button id="media-filter-toggle" class="wide-button">Media Selection · <span id="selection-count">SELECTED [0]</span> <span>▾</span></button>
           <div class="history-nav" aria-label="Selection history"><button id="history-back" title="Previous selection">↶</button><button id="history-forward" title="Next selection">↷</button></div>
         </div>
         <section id="media-filters" class="filter-box">
           <label>Artist <input id="artist-filter" type="search" autocomplete="off"></label>
           <label>Album <input id="album-filter" type="search" autocomplete="off"></label>
           <div class="status-filters" aria-label="Folder status colors">
-            <label><input type="checkbox" data-status="white" checked><i class="dot white"></i></label><label><input type="checkbox" data-status="orange" checked><i class="dot orange"></i></label><label><input type="checkbox" data-status="red" checked><i class="dot red"></i></label><label><input type="checkbox" data-status="purple" checked><i class="dot purple"></i></label><label><input type="checkbox" data-status="green" checked><i class="dot green"></i></label><label><input type="checkbox" data-status="blue" checked><i class="dot blue"></i></label>
+            <label><input type="checkbox" data-status="unprocessed" checked><i class="dot white"></i><span>Unprocessed</span><output data-status-count="unprocessed">0</output></label>
+            <label><input type="checkbox" data-status="incomplete" checked><i class="dot blue"></i><span>Incomplete</span><output data-status-count="incomplete">0</output></label>
+            <label><input type="checkbox" data-status="processed" checked><i class="dot orange"></i><span>Processed</span><output data-status-count="processed">0</output></label>
+            <label><input type="checkbox" data-status="bypassed" checked><i class="dot red"></i><span>Bypassed</span><output data-status-count="bypassed">0</output></label>
+            <label><input type="checkbox" data-status="partial-timeout" checked><i class="dot purple"></i><span>Partial / Timeout</span><output data-status-count="partial-timeout">0</output></label>
+            <label><input type="checkbox" data-status="artist-complete" checked><i class="dot green"></i><span>Artist Complete</span><output data-status-count="artist-complete">0</output></label>
+            <label><input type="checkbox" data-status="artist-bypass" checked><i class="dot blue"></i><span>Artist Contains Bypass</span><output data-status-count="artist-bypass">0</output></label>
           </div>
+          <div class="select-actions" aria-label="Select Mode"><button id="select-all" type="button">Select [ALL]</button><button id="select-filtered" type="button">Select [FILTERED]</button><button id="select-none" type="button">Select [NONE]</button></div>
           <label class="inline"><input id="show-tracks" type="checkbox"> Show Tracks</label>
           <label>Filtered Scan <select id="scan-mode"><option value="read">READ</option><option value="write">LIVE WRITE</option></select></label>
-          <label class="inline"><input id="auto-scan" type="checkbox"> Auto Scan</label>
+          <label class="inline"><input id="auto-scan" type="checkbox"> Auto Scan</label><label>Auto Scan Scope <select id="auto-scan-scope"><option value="selected">SELECTED</option><option value="all">ALL</option></select></label>
           <button id="refresh-library">Refresh Library</button>
         </section>
         <div id="library-summary" class="subtle">Loading portable media index…</div>

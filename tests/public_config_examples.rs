@@ -107,11 +107,19 @@ fn all_public_examples_are_config_v5_and_secret_free() {
 fn windows_and_release_versions_advance_coherently() {
     let manifest = fs::read_to_string("windows/Cargo.toml").expect("Windows manifest");
     let manifest: toml::Value = toml::from_str(&manifest).expect("Windows manifest TOML");
-    assert_eq!(manifest["package"]["version"].as_str(), Some("3.0.0"));
+    let root_manifest = fs::read_to_string("Cargo.toml").expect("root manifest");
+    let root_manifest: toml::Value = toml::from_str(&root_manifest).expect("root manifest TOML");
+    assert_eq!(
+        manifest["package"]["version"].as_str(),
+        root_manifest["package"]["version"].as_str()
+    );
 
     let tauri = fs::read_to_string("windows/tauri.conf.json").expect("Tauri configuration");
     let tauri: serde_json::Value = serde_json::from_str(&tauri).expect("Tauri configuration JSON");
-    assert_eq!(tauri["version"].as_str(), Some("3.0.0"));
+    assert_eq!(
+        tauri["version"].as_str(),
+        root_manifest["package"]["version"].as_str()
+    );
     assert_eq!(tauri["productName"].as_str(), Some("SPLINED"));
 
     let workflow =
@@ -119,9 +127,15 @@ fn windows_and_release_versions_advance_coherently() {
     assert!(workflow.contains(
         "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/tauri.conf.json\")"
     ));
+    assert!(workflow.contains("compatible_versions"));
+    assert!(workflow.contains("baseline = max([source_version, *compatible_versions])"));
     assert!(
-        workflow.contains("baseline = max([source_version, windows_source_version, *versions])")
+        !workflow.contains("baseline = max([source_version, windows_source_version, *versions])")
     );
+    assert!(workflow.contains(
+        "prepare-release:\n    name: Create next patch tag\n    needs: release-preflight"
+    ));
+    assert!(workflow.contains("Require Tauri updater signing material before creating a tag"));
     assert!(workflow.contains("ref: refs/tags/${{ needs.prepare-release.outputs.version }}"));
     assert!(workflow.contains("packages: write"));
 
