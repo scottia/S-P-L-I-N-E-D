@@ -16,6 +16,9 @@
 - Corrected explicit compilation-track reopening so existing embedded artwork
   remains a local comparison choice without suppressing MusicBrainz release
   selection or higher-resolution provider results.
+- Restored fallback Album launch from Show Tracks: clicking the Album row now
+  selects normal SQLite resume and enables LAUNCH, while clicking a track still
+  changes preview only and checking a track remains explicit one-track reopen.
 - Moved authoritative Rust processing into the WinForms process through the
   fixed `runtime\splined-core.dll` and a stable UTF-8 C ABI. Requests, callbacks,
   decisions, cancellation, structured errors, and Rust buffer ownership no

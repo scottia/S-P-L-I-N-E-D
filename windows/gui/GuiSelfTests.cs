@@ -1169,6 +1169,8 @@ namespace Splined.WindowsGui
                         "ShowTreeNode", BindingFlags.Instance | BindingFlags.NonPublic);
                     MethodInfo checkCompilationTreeNode = typeof(MainForm).GetMethod(
                         "TreeAfterCheck", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo selectCompilationAlbumForResume = typeof(MainForm).GetMethod(
+                        "SelectCompilationAlbumForResume", BindingFlags.Instance | BindingFlags.NonPublic);
                     MethodInfo setExplicitCompilationTrack = typeof(MainForm).GetMethod(
                         "SetExplicitCompilationTrackTarget", BindingFlags.Instance | BindingFlags.NonPublic);
                     MethodInfo explicitTrackPathForAlbum = typeof(MainForm).GetMethod(
@@ -1201,7 +1203,21 @@ namespace Splined.WindowsGui
                     Assert(String.Equals(Path.GetFullPath(checkedLaunchTarget), Path.GetFullPath(completedCompilationTrack.Path),
                             StringComparison.OrdinalIgnoreCase),
                         "Checking a completed compilation track did not create the explicit reopen target.");
-                    setExplicitCompilationTrack.Invoke(form, new object[] { null });
+                    List<AlbumInfo> formAlbums = (List<AlbumInfo>)typeof(MainForm)
+                        .GetField("albums", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    formAlbums.Add(compilationAlbum);
+                    selectCompilationAlbumForResume.Invoke(form, new object[] { compilationAlbum, null });
+                    string albumResumeTarget = Convert.ToString(explicitTrackPathForAlbum.Invoke(form,
+                        new object[] { compilationAlbum, compilationAlbum.Path }));
+                    Button compilationLaunch = (Button)typeof(MainForm)
+                        .GetField("launch", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(compilationAlbum.Selected
+                        && explicitCompilationTrackField.GetValue(form) == null
+                        && String.IsNullOrWhiteSpace(albumResumeTarget)
+                        && compilationLaunch.Enabled,
+                        "Focusing a pending fallback compilation Album did not select normal resume and enable LAUNCH.");
+                    formAlbums.Remove(compilationAlbum);
+                    compilationAlbum.Selected = false;
 
                     showSelectedAlbum.Invoke(form, new object[] { compilationAlbum });
                     PictureBox compilationPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();

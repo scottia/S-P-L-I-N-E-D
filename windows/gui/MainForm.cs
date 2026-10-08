@@ -1917,9 +1917,45 @@ namespace Splined.WindowsGui
         private void TreeNodeMouseClick(object sender, TreeNodeMouseClickEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
+            {
                 ShowTreeNode(e.Node);
+                TreeViewHitTestInfo hit = tree.HitTest(e.Location);
+                AlbumInfo album = e.Node == null ? null : e.Node.Tag as AlbumInfo;
+                if (album != null
+                    && uiState.ShowTracks
+                    && album.CompilationTrackArtworkPending
+                    && (hit.Location & TreeViewHitTestLocations.StateImage) == 0)
+                {
+                    SelectCompilationAlbumForResume(album, e.Node);
+                }
+            }
             if (e.Button == MouseButtons.Right && e.Node.ToolTipText.Length > 0)
                 SetStatus(e.Node.ToolTipText);
+        }
+
+        private void SelectCompilationAlbumForResume(AlbumInfo album, TreeNode node)
+        {
+            if (album == null || running || loadingLibrary
+                || !album.CompilationTrackArtworkPending
+                || album.State == AlbumState.TimeoutActive)
+                return;
+            ClearExplicitCompilationTrackTarget();
+            album.Selected = true;
+            album.BypassOverride = album.State == AlbumState.Bypassed;
+            if (node != null && !node.Checked)
+            {
+                bool wasSuppressed = suppressTreeEvents;
+                suppressTreeEvents = true;
+                try { node.Checked = true; }
+                finally { suppressTreeEvents = wasSuppressed; }
+            }
+            displayedAlbum = album;
+            ShowSelectedAlbum(album);
+            if (node != null) UpdateParentCheck(node.Parent);
+            RuntimeLog.Write("debug", "windows.selection.compilation_album_resume album=" + album.Path
+                + " state=" + album.State);
+            UpdateSelectionControls();
+            SaveUiState();
         }
 
         private void ShowTreeNode(TreeNode node)
