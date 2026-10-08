@@ -126,6 +126,11 @@ writes turn the corresponding track indicator green immediately. Embedded
 preview cache writes are serialized and reuse identical cached bytes so rapid
 focus changes cannot race the in-process scan.
 
+When a checked track is intentionally reopened, its current embedded image is
+shown as a local comparison candidate. That preview is not release authority
+and does not bypass MusicBrainz Matches or provider discovery; the operator can
+still choose another release and select higher-resolution artwork.
+
 The compilation-track-started event moves focus to the actual current track but
 does not set an explicit target. Fallback compilation preview reads only that
 track's embedded front artwork. If none exists, the preview says **No embedded

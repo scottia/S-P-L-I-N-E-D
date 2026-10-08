@@ -188,7 +188,9 @@ WRITE progress is durable per track: an interrupted compilation is blue
 approval, and the next scan returns to the interrupted track while skipping
 already verified writes. Selecting the fallback Album never previews or offers
 its folder cover as track artwork. No folder-level `cover.*` is created,
-changed, or removed for this compilation path. See
+changed, or removed for this compilation path. Explicitly reopening a checked
+track keeps its embedded image as a local comparison while still loading
+MusicBrainz releases and provider results for higher-resolution choices. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
 The MusicBrainz list uses release-group artwork only as a quick visual preview;
