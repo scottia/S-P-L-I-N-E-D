@@ -2242,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "splined-windows"
-version = "1.0.31"
+version = "1.0.67"
 dependencies = [
  "aes",
  "base64",
