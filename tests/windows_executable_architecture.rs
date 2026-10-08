@@ -210,6 +210,9 @@ fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
 #[test]
 fn winappcli_builds_store_ready_and_development_signed_msix_without_release_secrets() {
     let workflow = source(".github/workflows/release-next-patch.yml");
+    assert!(
+        workflow.contains("rustup component add rustfmt clippy --toolchain \"$RUST_TOOLCHAIN\"")
+    );
     assert!(!workflow.contains("microsoft/setup-WinAppCli"));
     assert!(workflow.contains(
         "npm install --prefix $installRoot --no-save --no-audit --no-fund \"@microsoft/winappcli@0.7.1\""
