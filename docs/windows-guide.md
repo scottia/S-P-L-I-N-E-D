@@ -114,6 +114,11 @@ starts at the first unfinished track whose recorded authority does not already
 match. A track merely clicked for preview never becomes an explicit target.
 Checking a completed track intentionally reopens that track.
 
+The native scan boundary treats a missing, blank, or whitespace-only explicit
+track path as normal Album resume. Only a real checked-track path enables
+targeted edit, so an empty UI selection cannot bypass the completion ledger or
+prevent the fallback compilation workflow from loading.
+
 The compilation-track-started event moves focus to the actual current track but
 does not set an explicit target. Fallback compilation preview reads only that
 track's embedded front artwork. If none exists, the preview says **No embedded
@@ -196,6 +201,13 @@ OnLaunch updates for a future public installed channel. It contains deliberate
 publisher and HTTPS placeholders and is not published or enabled until a stable
 public publisher/signing chain exists. The portable ZIP never depends on MSIX,
 Store publication, or public code-signing infrastructure.
+
+Release CI caches Cargo dependency downloads only. Compiled `windows/target`
+artifacts are deliberately excluded because each release performs a clean
+version/commit-bound build and audits the resulting executable and DLL. The
+cache key normalizes only the release package's version, allowing unchanged
+dependencies to reuse the same small cache without restoring or resaving stale
+multi-gigabyte build directories.
 
 ## Diagnostics
 

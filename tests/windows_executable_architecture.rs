@@ -261,6 +261,24 @@ fn winappcli_builds_store_ready_and_development_signed_msix_without_release_secr
 }
 
 #[test]
+fn windows_release_cache_excludes_discarded_target_artifacts() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+    assert!(workflow.contains("Calculate Windows dependency cache key"));
+    assert!(workflow.contains("version = \"<release>\""));
+    assert!(workflow.contains("steps.windows-dependency-cache-key.outputs.hash"));
+    let cache = workflow
+        .split("      - name: Restore Cargo dependency cache")
+        .nth(1)
+        .expect("Windows dependency cache step")
+        .split("      - name: Install pinned upstream WinAppCli")
+        .next()
+        .expect("Windows dependency cache body");
+    assert!(cache.contains("~/.cargo/registry"));
+    assert!(cache.contains("~/.cargo/git"));
+    assert!(!cache.contains("windows/target"));
+}
+
+#[test]
 fn full_windows_regression_suite_is_available_without_blocking_default_packaging() {
     let workflow = source(".github/workflows/release-next-patch.yml");
     assert!(workflow.contains("extended_windows_validation:"));

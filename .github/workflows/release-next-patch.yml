@@ -301,21 +301,38 @@ jobs:
           set -euo pipefail
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
           rustup default "$RUST_TOOLCHAIN"
-          rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
           rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
 
-      - name: Restore Rust build cache
+      - name: Install Rust quality components
+        if: ${{ inputs.extended_windows_validation }}
+        shell: bash
+        run: rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
+
+      - name: Calculate Windows dependency cache key
+        id: windows-dependency-cache-key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lock = Get-Content -Raw -LiteralPath windows/Cargo.lock
+          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
+          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
+          if ($normalized -eq $lock) {
+            throw "Unable to normalize the release-only Windows package version for the dependency cache key."
+          }
+          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Restore Cargo dependency cache
         id: rust-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            windows/target
-          key: ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
+          key: ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-${{ steps.windows-dependency-cache-key.outputs.hash }}
           restore-keys: |
-            ${{ runner.os }}-splined-windows-${{ env.RUST_TOOLCHAIN }}-
-            ${{ runner.os }}-splined-windows-
+            ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Install pinned upstream WinAppCli
         shell: pwsh
@@ -545,7 +562,7 @@ jobs:
           @"
           ## Windows release build
 
-          - Rust cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
+          - Cargo dependency cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY

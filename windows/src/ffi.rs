@@ -71,6 +71,16 @@ fn default_true() -> bool {
     true
 }
 
+fn optional_non_empty_path(value: Option<String>) -> Option<PathBuf> {
+    value.and_then(|path| {
+        if path.trim().is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    })
+}
+
 fn request_text<'a>(pointer: *const u8, length: usize) -> Result<&'a str, String> {
     if pointer.is_null() {
         return Err("SPLINED received a null UTF-8 request pointer.".to_string());
@@ -262,7 +272,7 @@ pub extern "C" fn splined_start_scan(
                     .then(|| PathBuf::from(&request.path)),
             );
             gui_events::set_scan_context(ScanBridgeContext {
-                compilation_track_path: request.compilation_track_path.map(PathBuf::from),
+                compilation_track_path: optional_non_empty_path(request.compilation_track_path),
                 fallback_album: request.fallback_album,
                 fallback_artist: request.fallback_artist,
                 indexed_album_path: Some(PathBuf::from(
@@ -421,5 +431,16 @@ mod tests {
         .unwrap();
         assert_eq!(request.indexed_album_key.as_deref(), Some("album-key-b"));
         assert_ne!(request.path, request.indexed_album_path);
+    }
+
+    #[test]
+    fn blank_compilation_track_path_means_normal_album_resume() {
+        assert_eq!(optional_non_empty_path(None), None);
+        assert_eq!(optional_non_empty_path(Some(String::new())), None);
+        assert_eq!(optional_non_empty_path(Some("   ".to_string())), None);
+        assert_eq!(
+            optional_non_empty_path(Some("N:\\Music\\Compilation\\track.mp3".to_string())),
+            Some(PathBuf::from("N:\\Music\\Compilation\\track.mp3"))
+        );
     }
 }
