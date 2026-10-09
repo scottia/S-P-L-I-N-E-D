@@ -2,11 +2,11 @@ name: TEST > MS Store Auth Diagnostics
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev
-    paths:
-      - .github/workflows/test-msstore-auth.yml
+  workflow_run:
+    workflows:
+      - SPLINED > MS Store Publish & Update
+    types:
+      - completed
 
 permissions:
   contents: read
@@ -14,6 +14,7 @@ permissions:
 jobs:
   auth:
     name: Diagnose Microsoft Store authentication
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
     runs-on: windows-latest
 
     steps:
