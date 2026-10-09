@@ -19,6 +19,9 @@ fn git_cliff_2_14_2_is_the_single_release_note_engine() {
     assert!(!installer.to_ascii_lowercase().contains("latest"));
     assert!(installer.contains("24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4"));
     assert!(installer.contains("6ece2112b3f4af462190ecbea4aeb1315fff6af415629b597f84319073c31131"));
+    assert!(
+        installer.contains("$env:PATH = \"$InstallDirectory$([IO.Path]::PathSeparator)$env:PATH\"")
+    );
 
     assert_eq!(generator.matches("--context").count(), 1);
     assert_eq!(generator.matches("--from-context").count(), 2);
