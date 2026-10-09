@@ -206,6 +206,9 @@ Microsoft WinAppCli. Its exact production identity is `Psycotix.SPLINED`, its
 publisher is `CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE`, and its publisher
 display name is `Psycotix`. The package family name is
 `Psycotix.SPLINED_8pvn5te36e43t`, and the Store ID is `9P8G4GMBBVBS`.
+Certification is approved and the listing is live. The managed-install/update
+Windows option is
+[Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
 
 Release CI packs the production layout unsigned for Partner Center and validates
 the final packed manifest and AMD64 runtime pair. That layout never receives a
@@ -213,14 +216,14 @@ debug identity or development signature. A separate temporary layout receives
 debug identity and a disposable certificate for install, activation, native-core,
 and `.spl` association QA, then is removed. Development certificates and private
 keys are never committed or published. See the
-[Microsoft Store package guide](windows-store.md) for the artifact and submission
-contract.
+[Microsoft Store channel guide](windows-store.md) for the live installation,
+production identity, and future-update artifact contract.
 
 Store-installed updates use Windows/Microsoft Store package deployment, not
 SPLINED binary self-replacement. The checked-in App Installer template is kept
 only for a possible separately signed direct-distribution channel and remains
 disabled while its HTTPS placeholders are unresolved. The portable ZIP remains
-independent of MSIX and Store publication.
+an equally supported no-install/direct channel with portable-root state.
 
 Release CI caches Cargo dependency downloads only. Compiled `windows/target`
 artifacts are deliberately excluded because each release performs a clean

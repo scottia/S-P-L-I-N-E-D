@@ -55,21 +55,27 @@ portable file or resurrect after the migration marker is recorded.
 
 ### Windows installed Microsoft Store MSIX
 
-The production Microsoft Store package supplies package identity, Start menu
-activation, manifest-owned `.spl` association, and normal Windows uninstall.
-Its payload is the same x64 `splined.exe` plus `runtime\splined-core.dll`.
+The managed-install/update path is
+**[Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)**.
+The live Store package provides Windows-managed installation, Microsoft Store
+production signing and updates, package identity, Start menu activation,
+manifest-owned `.spl` association, and normal Windows uninstall. Its payload is
+the same x64 `splined.exe` plus `runtime\splined-core.dll`.
+
 Because an MSIX installation directory is read-only, Config v5 and interface
 state live under the package's per-user LocalState directory. Configured
-absolute, mapped, and UNC resources remain unchanged.
+absolute, mapped, and UNC resources remain unchanged. This differs from the
+portable ZIP above, which requires no package installation and keeps its
+root-relative state under `<portable-root>\data`.
 
-Release CI packs `SPLINED-x64-store-unsigned.msix` with the exact Partner Center
-identity and uploads it only as the `splined-windows-store-submission` Actions
-artifact. It is submitted to Partner Center for Microsoft Store processing and
-signing; it is not a normal GitHub Release download. Development identity,
-certificate signing, installation, activation, and removal use a separate
-temporary QA layout and cannot mutate the Store artifact. See
-[Microsoft Store Windows package](windows-store.md) for the exact identity and
-submission procedure.
+For maintainers, release CI packs `SPLINED-x64-store-unsigned.msix` with the
+exact Partner Center identity and uploads it only as the
+`splined-windows-store-submission` Actions artifact for future Store updates.
+It is not an end-user installer or a normal GitHub Release download.
+Development identity and signing use a separate temporary QA layout and cannot
+mutate the Store artifact. See
+[Microsoft Store Windows channel](windows-store.md) for the live product,
+identity, and update-publication procedure.
 
 ### Windows upgrade
 

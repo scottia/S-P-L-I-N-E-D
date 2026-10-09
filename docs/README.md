@@ -50,9 +50,9 @@ with the current product documentation.
 
 ### Platform packaging
 
-- [Microsoft Store Windows package](windows-store.md) — exact Partner Center
-  identity, isolated production and development MSIX paths, validation, and
-  submission responsibilities.
+- [Microsoft Store Windows channel](windows-store.md) — live installation,
+  exact production identity, Store-managed updates, isolated development QA,
+  and the future-update publishing path.
 - [Docker installation](../docker/README.md)
 - [Windows source and build guide](../windows/README.md)
 - [Windows portable instructions](../release/README-WINDOWS.txt)

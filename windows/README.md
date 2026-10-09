@@ -90,6 +90,11 @@ automatically restores all categories.
 
 ## Packaging with WinAppCli
 
+The production listing is approved and live at
+[Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
+Microsoft Store is the managed-install/update Windows channel; the portable ZIP
+is the equally supported no-install/direct channel.
+
 The release workflow pins upstream Microsoft WinAppCli and creates two isolated
 x64 layouts. The production Store layout keeps the exact Partner Center identity
 `Psycotix.SPLINED` / `CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE`, is packed
@@ -110,11 +115,12 @@ SPLINED\runtime\splined-core.dll
 SPLINED\README-WINDOWS.txt
 ```
 
-`SPLINED-x64-store-unsigned.msix` is uploaded in the
-`splined-windows-store-submission` GitHub Actions artifact for Partner Center.
-It is not published as a normal GitHub Release download. Microsoft Store
-processing supplies production signing and Windows-managed updates. The Store
-product PFN is `Psycotix.SPLINED_8pvn5te36e43t` and Store ID is
+For future Store releases and updates, `SPLINED-x64-store-unsigned.msix` is
+uploaded in the `splined-windows-store-submission` GitHub Actions artifact for
+maintainer submission to Partner Center. It is not an end-user installer and is
+not published as a normal GitHub Release download. Microsoft Store processing
+supplies production signing and Windows-managed updates. The live Store product
+PFN is `Psycotix.SPLINED_8pvn5te36e43t` and Store ID is
 `9P8G4GMBBVBS`. The App Installer template is a separate, disabled
 direct-distribution design, not the Store update path. See
 [`docs/windows-store.md`](../docs/windows-store.md).
