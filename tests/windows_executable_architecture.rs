@@ -176,7 +176,7 @@ fn portable_and_packaged_state_authorities_are_distinct() {
 #[test]
 fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
     let workflow = source(".github/workflows/release-next-patch.yml");
-    let store_workflow = source(".github/workflows/windows-store-existing-tag.yml");
+    let store_workflow = source(".github/workflows/windows-store-package-resolution.yml");
     let package = source("windows/package/Package.appxmanifest");
     let appinstaller = source("windows/package/SPLINED.appinstaller.template");
     let store_docs = source("docs/windows-store.md");
@@ -233,7 +233,7 @@ fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
 #[test]
 fn winappcli_isolates_production_store_and_development_msix_layouts() {
     let workflow = source(".github/workflows/release-next-patch.yml");
-    let store_workflow = source(".github/workflows/windows-store-existing-tag.yml");
+    let store_workflow = source(".github/workflows/windows-store-package-resolution.yml");
     let store_packager = source("windows/package/Build-StorePackage.ps1");
     let development_packager = source("windows/package/Test-DevelopmentPackage.ps1");
     assert!(
@@ -259,7 +259,8 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
                 .split_once('@')
                 .expect("workflow action must include an explicit revision");
             assert!(
-                repository.starts_with("actions/"),
+                repository.starts_with("actions/")
+                    || repository == "microsoft/microsoft-store-apppublisher",
                 "workflow uses disallowed action repository: {repository}"
             );
             let revision = revision.split_whitespace().next().unwrap_or_default();
@@ -287,7 +288,7 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
         .split("      - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package")
         .nth(1)
         .expect("development MSIX step")
-        .split("      - name: Upload Partner Center Store submission artifact")
+        .split("      - name: Upload internal Store package artifact")
         .next()
         .expect("development MSIX body");
     assert!(development.contains("splined-msix-development-layout"));
@@ -318,8 +319,9 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     for candidate in [&workflow, &store_workflow] {
         assert!(candidate.contains("windows/package/Build-StorePackage.ps1"));
         assert!(candidate.contains("windows/package/Test-DevelopmentPackage.ps1"));
-        assert!(candidate.contains("name: splined-windows-store-submission"));
     }
+    assert!(workflow.contains("name: splined-windows-store-package"));
+    assert!(store_workflow.contains("name: splined-windows-store-submission"));
     assert!(development_packager.contains("winapp cert generate"));
     assert!(development_packager.contains("winapp cert install $cer"));
     assert!(development_packager.contains("--cert $pfx"));
@@ -332,7 +334,8 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(development_packager.contains("Remove-AppxPackage"));
     assert!(development_packager.contains("certutil -delstore TrustedPeople $thumbprint"));
     assert!(workflow.contains("path: ${{ steps.store-package.outputs.path }}"));
-    assert!(store_workflow.contains("path: ${{ steps.store-package.outputs.path }}"));
+    assert!(store_workflow.contains("store-submission/SPLINED-x64-store-unsigned.msix"));
+    assert!(store_workflow.contains("store-submission/STORE-HIGHLIGHTS.txt"));
     assert!(store_workflow.contains("ref: refs/tags/${{ inputs.version }}"));
     assert!(store_workflow.contains("-ExpectedVersion \"$env:RELEASE_VERSION.0\""));
     assert!(!store_workflow.contains("contents: write"));
@@ -340,11 +343,13 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(!store_workflow.contains("git push origin"));
     assert!(!store_workflow.contains("gh release create"));
     assert!(!store_workflow.contains("packages: write"));
-    assert!(workflow.contains("build_store_package:"));
-    assert!(workflow.contains("description: \"Build Microsoft Store package\""));
+    assert!(workflow.contains("microsoft_store:"));
+    assert!(
+        workflow.contains("description: \"Build, validate, and submit Microsoft Store update\"")
+    );
     assert!(workflow.contains("default: true"));
     assert!(workflow.contains(
-        "if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}"
+        "if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}"
     ));
     let windows_job = workflow
         .split("  build-windows:")
@@ -382,7 +387,7 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(store_position < qa_position);
     assert_eq!(
         windows_job
-            .matches("inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All')")
+            .matches("inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All')")
             .count(),
         4,
         "every optional Store step must be guarded to Windows/All"
@@ -407,7 +412,7 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
 }
 
 #[test]
-fn repository_exposes_exactly_the_three_supported_workflows() {
+fn repository_exposes_exactly_the_four_supported_workflows() {
     let workflow_dir = Path::new(".github/workflows");
     let files = fs::read_dir(workflow_dir)
         .unwrap()
@@ -416,9 +421,10 @@ fn repository_exposes_exactly_the_three_supported_workflows() {
     assert_eq!(
         files,
         BTreeSet::from([
-            "publish-existing-ghcr.yml".to_string(),
+            "docker-ghcr-resolution.yml".to_string(),
             "release-next-patch.yml".to_string(),
-            "windows-store-existing-tag.yml".to_string(),
+            "windows-store-package-resolution.yml".to_string(),
+            "windows-store-publish-update.yml".to_string(),
         ])
     );
     assert!(
@@ -426,12 +432,16 @@ fn repository_exposes_exactly_the_three_supported_workflows() {
             .starts_with("name: SPLINED (All OS) and GHCR")
     );
     assert!(
-        source(".github/workflows/windows-store-existing-tag.yml")
-            .starts_with("name: SPLINED Existing Tag > MS Store Package")
+        source(".github/workflows/windows-store-package-resolution.yml")
+            .starts_with("name: SPLINED (Tagged) > MS Store Package Resolution")
     );
     assert!(
-        source(".github/workflows/publish-existing-ghcr.yml")
-            .starts_with("name: SPLINED Published > GHCR")
+        source(".github/workflows/windows-store-publish-update.yml")
+            .starts_with("name: SPLINED > MS Store Publish & Update")
+    );
+    assert!(
+        source(".github/workflows/docker-ghcr-resolution.yml")
+            .starts_with("name: SPLINED (Docker) > GHCR Resolution")
     );
 }
 
@@ -454,7 +464,7 @@ fn numeric_release_tag_is_pushed_only_after_selected_builds_pass() {
         .split("  finalize-tag:")
         .nth(1)
         .unwrap()
-        .split("  publish-release:")
+        .split("  generate-release-notes:")
         .next()
         .unwrap();
     for dependency in ["build-windows", "build-ubuntu", "build-macos"] {

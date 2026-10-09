@@ -200,14 +200,23 @@ dev -> main -> SPLINED (All OS) and GHCR
     -> Portable ZIP
     -> optional unsigned Store MSIX from the same binaries
     -> successful selected-platform/package validation
-    -> numeric tag -> GitHub Release/GHCR
+    -> numeric tag -> git-cliff notes -> GitHub Release/GHCR
+    -> when Store=true, automatic Store package/listing submission
 
-existing numeric tag -> SPLINED Existing Tag > MS Store Package
-                     -> recovery/repackaging MSIX only
+existing numeric tag -> SPLINED (Tagged) > MS Store Package Resolution
+                     -> validated recovery MSIX + Store Highlights only
+
+existing numeric tag -> SPLINED > MS Store Publish & Update
+                     -> validated MSIX + Store submission/update
+
+existing numeric tag -> SPLINED (Docker) > GHCR Resolution
+                     -> exact Docker image + existing Release body refresh
 ```
 
-`SPLINED Published > GHCR` remains the recovery path for publishing an already
-released numeric tag to GHCR. It does not create a version or tag.
+The recovery workflows do not create or alter release tags. The Store package
+resolution workflow stops at an Actions artifact; the Store publish workflow
+updates the existing live product; the Docker workflow never touches Store or
+creates another GitHub Release.
 
 The primary GitHub artifact is `splined-windows-x86_64.zip`. Its allowlist is
 exactly `splined.exe`, `runtime\splined-core.dll`, and `README-WINDOWS.txt`
@@ -241,15 +250,24 @@ same Windows job as the Portable ZIP. Both outputs use the exact same clean
 AMD64 executable and DLL. A selected Store packaging or QA failure fails that
 Windows job and therefore prevents numeric tag creation. The Store MSIX is an
 Actions-only Partner Center artifact: it is not attached to the GitHub Release
-and is omitted from public release checksums. The production layout never
+and is omitted from public release checksums. With **Microsoft Store** enabled,
+the validated package and generated en-US Store Highlights are submitted
+automatically after GitHub Release and GHCR publication. With it disabled, no
+Store package, QA, authentication, Store-submission artifact, or API submission
+step runs. The
+production layout never
 receives a debug identity or development signature. A separate temporary layout
 receives debug identity and a disposable certificate for install, activation,
 native-core, and `.spl` association QA, then is removed. Development
 certificates and private keys are never committed or published.
 
-`SPLINED Existing Tag > MS Store Package` repeats the Store build and validation
-only when an already published tag needs recovery or repackaging. It cannot
-create a version, tag, GitHub Release, or GHCR image. See the
+`SPLINED (Tagged) > MS Store Package Resolution` repeats the Store build and
+validation when an already published tag needs recovery or repackaging, without
+publishing it. `SPLINED > MS Store Publish & Update` performs the same exact-tag
+build and QA before automated publication to the existing Store product. Both
+render Store Highlights from the same authoritative git-cliff 2.14.2 context
+used for GitHub release notes. Neither creates a version, tag, GitHub Release,
+or GHCR image. See the [release automation guide](release-automation.md) and
 [Microsoft Store channel guide](windows-store.md) for the live installation,
 production identity, and future-update artifact contract.
 

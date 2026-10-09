@@ -148,12 +148,14 @@ fn windows_and_release_versions_advance_coherently() {
         .split("  publish-ghcr:")
         .nth(1)
         .expect("publish-ghcr job")
-        .split("  release-summary:")
+        .split("  publish-store:")
         .next()
         .expect("publish-ghcr job body");
     assert!(ghcr_job.contains("needs.publish-release.result == 'success'"));
+    assert!(workflow.contains("needs.publish-release.result == 'success'"));
+    assert!(workflow.contains("needs.publish-ghcr.result == 'success'"));
     assert!(workflow.contains(
-        "always() && needs.publish-release.result == 'success' && needs.publish-ghcr.result == 'success'"
+        "(needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped')"
     ));
 
     for platform in ["Windows", "Ubuntu", "macOS", "All"] {

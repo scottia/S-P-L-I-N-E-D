@@ -1,0 +1,3 @@
+{% set_global emitted = 0 %}{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}{% if entry.group == "✨ Highlights" or entry.group == "🪟 Windows" or entry.group == "🛍️ Microsoft Store" or entry.group == "🛠️ Fixes & Reliability" or entry.group == "📦 Other Changes" %}{% for commit in entry.commits %}{% if emitted < 12 %}- {{ commit.message | upper_first }}
+{% set_global emitted = emitted + 1 %}{% endif %}{% endfor %}{% endif %}{% endfor %}{% if emitted == 0 %}{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}{% for commit in entry.commits %}{% if emitted == 0 %}- {{ commit.message | upper_first }}
+{% set_global emitted = 1 %}{% endif %}{% endfor %}{% endfor %}{% endif %}

@@ -1,0 +1,35 @@
+[changelog]
+body = ""
+trim = true
+render_always = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+require_conventional = false
+split_commits = false
+protect_breaking_commits = true
+filter_commits = false
+fail_on_unmatched_commit = false
+tag_pattern = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+topo_order = false
+topo_order_commits = true
+sort_commits = "oldest"
+commit_preprocessors = [
+  { pattern = "(?s)\\n.*", replace = "" },
+]
+# Ordered, shared classification for every release-note surface. The final
+# parser is deliberately unconditional so direct and unconventional commits
+# cannot disappear.
+commit_parsers = [
+  { message = "(?i)(store|msix|microsoft[- ]store)", group = "🛍️ Microsoft Store" },
+  { message = "(?i)(windows|winforms|gui)", group = "🪟 Windows" },
+  { message = "(?i)(linux|ubuntu|ratatui|tui)", group = "🐧 Linux / Ubuntu" },
+  { message = "(?i)(macos|darwin)", group = "🍎 macOS" },
+  { message = "(?i)(docker|ghcr|container)", group = "🐳 Docker / GHCR" },
+  { message = "^feat", group = "✨ Highlights" },
+  { message = "^(fix|perf|revert)", group = "🛠️ Fixes & Reliability" },
+  { message = "(?i)(^docs?\\b|documentation|privacy policy|readme)", group = "📚 Documentation" },
+  { message = "^(test|ci|build|refactor|chore|release|merge)", group = "🔧 Maintenance" },
+  { message = ".*", group = "📦 Other Changes" },
+]

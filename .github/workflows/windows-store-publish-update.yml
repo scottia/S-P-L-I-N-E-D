@@ -1,4 +1,4 @@
-name: SPLINED Existing Tag > MS Store Package
+name: SPLINED > MS Store Publish & Update
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: splined-windows-store-${{ inputs.version }}
+  group: splined-windows-store-publish-${{ inputs.version }}
   cancel-in-progress: false
 
 env:
@@ -22,12 +22,12 @@ env:
   RELEASE_VERSION: ${{ inputs.version }}
 
 jobs:
-  build-store-package:
-    name: Rebuild existing tag for Partner Center
+  publish-store-update:
+    name: Build exact tag and publish Store update
     runs-on: windows-latest
 
     steps:
-      - name: Validate numeric version input
+      - name: Validate numeric existing-tag input
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -35,11 +35,23 @@ jobs:
             throw "version must be an existing numeric release tag such as 1.0.71."
           }
 
-      - name: Checkout existing release tag
+      - name: Checkout exact existing release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: refs/tags/${{ inputs.version }}
           fetch-depth: 0
+
+      - name: Checkout current authoritative release engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .splined-release-engine
+          sparse-checkout: |
+            cliff.toml
+            release/Install-GitCliff.ps1
+            release/Generate-ReleaseNotes.ps1
+            release/templates
+            windows/package/Publish-StoreUpdate.ps1
 
       - name: Verify exact tag and release metadata
         id: release
@@ -50,21 +62,17 @@ jobs:
           git fetch --force --tags origin
           $commit = (git rev-parse HEAD).Trim()
           $tagCommit = (git rev-parse "refs/tags/$env:RELEASE_VERSION^{commit}").Trim()
-          if ($commit -ne $tagCommit) {
-            throw "Checked-out commit does not match existing tag $env:RELEASE_VERSION."
-          }
+          if ($commit -ne $tagCommit) { throw "Checked-out commit does not match existing tag $env:RELEASE_VERSION." }
 
           function Read-PackageVersion([string]$path) {
             $content = Get-Content -Raw -LiteralPath $path
-            $match = [regex]::Match($content,
-              '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
+            $match = [regex]::Match($content, '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
             if (-not $match.Success) { throw "Unable to read package version from $path." }
             return $match.Groups[1].Value
           }
 
-          $rootVersion = Read-PackageVersion "Cargo.toml"
-          $windowsVersion = Read-PackageVersion "windows/Cargo.toml"
-          if ($rootVersion -ne $env:RELEASE_VERSION -or $windowsVersion -ne $env:RELEASE_VERSION) {
+          if ((Read-PackageVersion "Cargo.toml") -ne $env:RELEASE_VERSION -or
+              (Read-PackageVersion "windows/Cargo.toml") -ne $env:RELEASE_VERSION) {
             throw "Root/Windows package versions do not match tag $env:RELEASE_VERSION."
           }
           $releaseInfo = Get-Content -Raw -LiteralPath windows/gui/ReleaseInfo.cs
@@ -75,11 +83,7 @@ jobs:
           if ($manifest.Package.Identity.Version -cne "$env:RELEASE_VERSION.0") {
             throw "Store manifest version does not match $env:RELEASE_VERSION.0."
           }
-          if ((git status --porcelain).Count -ne 0) {
-            throw "Existing release tag checkout is not clean."
-          }
           "commit=$commit" | Add-Content $env:GITHUB_OUTPUT
-          Write-Host "Validated existing tag $env:RELEASE_VERSION at $commit"
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -95,9 +99,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-splined-windows-store-v2-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
+          key: ${{ runner.os }}-splined-windows-store-v3-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-splined-windows-store-v2-${{ env.RUST_TOOLCHAIN }}-
+            ${{ runner.os }}-splined-windows-store-v3-${{ env.RUST_TOOLCHAIN }}-
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Install pinned upstream WinAppCli
@@ -110,8 +114,15 @@ jobs:
           $commandDirectory = Join-Path $installRoot "node_modules\.bin"
           $commandDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $reportedVersion = (& (Join-Path $commandDirectory "winapp.cmd") --version) -join "`n"
-          if ($reportedVersion -notmatch '0\.7\.1') {
-            throw "The pinned WinAppCli installation did not report version 0.7.1."
+          if ($reportedVersion -notmatch '0\.7\.1') { throw "The pinned WinAppCli installation did not report version 0.7.1." }
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .splined-release-engine/release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The release-note engine must be git-cliff 2.14.2."
           }
 
       - name: Build clean x64 WinForms and Rust DLL pair
@@ -122,33 +133,26 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
-          if (Test-Path -LiteralPath $releaseRoot) {
-            Remove-Item -LiteralPath $releaseRoot -Recurse -Force
-          }
+          if (Test-Path -LiteralPath $releaseRoot) { Remove-Item -LiteralPath $releaseRoot -Recurse -Force }
           $env:SPLINED_BUILD_GUI = "1"
           cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET
 
       - name: Build and strictly validate unsigned production Store MSIX
-        id: store-package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
-          $artifactRoot = Join-Path $env:RUNNER_TEMP "splined-store-artifact"
-          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
-          $storePackage = Join-Path $artifactRoot "SPLINED-x64-store-unsigned.msix"
-          $result = & windows/package/Build-StorePackage.ps1 `
+          [IO.Directory]::CreateDirectory("store-submission") | Out-Null
+          & windows/package/Build-StorePackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
             -CoreDllPath "$releaseRoot/splined_core.dll" `
             -ManifestPath windows/package/Package.appxmanifest `
             -IconPath windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
             -UnpackedRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked") `
-            -OutputPath $storePackage `
+            -OutputPath store-submission/SPLINED-x64-store-unsigned.msix `
             -ExpectedVersion "$env:RELEASE_VERSION.0"
-          $result | Format-List | Out-String | Write-Host
-          "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Development-sign, install, activate, native-smoke, and uninstall isolated QA package
         shell: pwsh
@@ -163,28 +167,58 @@ jobs:
             -IconPath windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")
 
-      - name: Upload Partner Center Store submission artifact
+      - name: Render Store Highlights from the authoritative git-cliff context
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .splined-release-engine/release/Generate-ReleaseNotes.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ConfigPath .splined-release-engine/cliff.toml `
+            -GitHubTemplatePath .splined-release-engine/release/templates/github-release.tera `
+            -StoreTemplatePath .splined-release-engine/release/templates/store-highlights.tera `
+            -OutputDirectory release-notes
+          Copy-Item -LiteralPath release-notes/STORE-HIGHLIGHTS.txt -Destination store-submission/STORE-HIGHLIGHTS.txt
+
+      - name: Upload Store submission audit artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: splined-windows-store-submission
-          path: ${{ steps.store-package.outputs.path }}
+          path: |
+            store-submission/SPLINED-x64-store-unsigned.msix
+            store-submission/STORE-HIGHLIGHTS.txt
           if-no-files-found: error
 
-      - name: Report Store update artifact
+      - name: Require Microsoft Store credentials
         shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
         run: |
-          @"
-          ## SPLINED existing-tag Microsoft Store recovery package
+          $ErrorActionPreference = "Stop"
+          foreach ($name in @("AZURE_AD_APPLICATION_CLIENT_ID", "AZURE_AD_APPLICATION_SECRET", "AZURE_AD_TENANT_ID", "SELLER_ID")) {
+            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required Microsoft Store publishing credential is unavailable: $name"
+            }
+          }
 
-          - Existing tag: ``$env:RELEASE_VERSION``
-          - Artifact: ``splined-windows-store-submission/SPLINED-x64-store-unsigned.msix``
-          - Identity: ``Psycotix.SPLINED``
-          - Publisher: ``CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE``
-          - Publisher display name: ``Psycotix``
-          - Display name / Application Id: ``SPLINED``
-          - PFN: ``Psycotix.SPLINED_8pvn5te36e43t``
-          - Store ID: ``9P8G4GMBBVBS``
-          - Version: ``$env:RELEASE_VERSION.0``
-          - Architecture / family: ``x64`` / ``Windows.Desktop``
-          - Production signing: unsigned for manual Partner Center submission
-          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - name: Install pinned Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Stage package, update en-US Store Highlights, and submit
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .splined-release-engine/windows/package/Publish-StoreUpdate.ps1 `
+            -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
+            -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
+            -ProductId 9P8G4GMBBVBS
