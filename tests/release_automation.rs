@@ -290,12 +290,18 @@ fn normal_release_atomically_keeps_the_tagged_commit_on_main() {
         .next()
         .unwrap();
 
-    assert!(finalize.contains("name: Publish numeric tag and release commit after successful builds"));
+    assert!(finalize.contains(
+        "name: Publish numeric tag and release commit after successful builds"
+    ));
     assert!(finalize.contains("git push --atomic origin"));
-    assert!(finalize.contains("\"refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}\""));
+    assert!(finalize.contains(
+        "\"refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}\""
+    ));
     assert!(finalize.contains("\"$RELEASE_COMMIT:refs/heads/main\""));
-    assert!(finalize.contains("git ls-remote origin \"refs/tags/$RELEASE_VERSION^{}\"" ));
-    assert!(finalize.contains("git ls-remote origin \"refs/heads/main\"" ));
+    assert!(finalize.contains(
+        "git ls-remote origin \"refs/tags/$RELEASE_VERSION^{}\""
+    ));
+    assert!(finalize.contains("git ls-remote origin \"refs/heads/main\""));
 }
 
 #[test]
