@@ -912,6 +912,15 @@ namespace Splined.WindowsGui
                     release_url = stableRelease
                 };
                 WindowsUpdateService.ValidateNotificationManifest(notificationOnlyManifest, stableLocation);
+                Assert(MicrosoftStoreUpdateService.ProductUrl
+                        == "https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US"
+                    && MicrosoftStoreUpdateService.IsApprovedStorePageUrl(
+                        MicrosoftStoreUpdateService.ProductUrl)
+                    && !MicrosoftStoreUpdateService.IsApprovedStorePageUrl(
+                        "https://apps.microsoft.com/detail/not-splined?hl=en-US&gl=US")
+                    && !MicrosoftStoreUpdateService.IsApprovedStorePageUrl(
+                        "https://apps.microsoft.com.evil.invalid/detail/9p8g4gmbbvbs?hl=en-US&gl=US"),
+                    "Microsoft Store update fallback is not restricted to the official SPLINED product URL.");
 
                 loadedUi.HoverEnabled = false;
                 loadedUi.ShowMediaSelector = true;
@@ -944,7 +953,7 @@ namespace Splined.WindowsGui
                     ToolStripMenuItem helpMenu = form.MainMenuStrip.Items.OfType<ToolStripMenuItem>()
                         .Single(item => item.Text == "Help");
                     Assert(helpMenu.DropDownItems.OfType<ToolStripMenuItem>().Select(item => item.Text)
-                            .SequenceEqual(new[] { "Help", "Check for Update...", "About..." })
+                            .SequenceEqual(new[] { "Help", "Check for Updates...", "About..." })
                         && !helpMenu.DropDownItems.OfType<ToolStripMenuItem>().Any(item =>
                             item.Text.IndexOf("Documentation", StringComparison.OrdinalIgnoreCase) >= 0
                             || item.Text.IndexOf("Python", StringComparison.OrdinalIgnoreCase) >= 0

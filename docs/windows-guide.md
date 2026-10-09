@@ -191,6 +191,19 @@ previous roots, and unrelated folders do not affect restore.
 
 ## Distribution, updates, and trust
 
+The supported publication paths are deliberately separate:
+
+```text
+Portable: dev -> main -> SPLINED (All OS) and GHCR
+          -> successful selected-platform builds -> numeric tag -> GitHub ZIP
+
+Store:    existing numeric tag -> SPLINED MS Store Windows Update
+          -> unsigned MSIX -> Partner Center -> certification -> Microsoft Store
+```
+
+`SPLINED Published > GHCR` remains the recovery path for publishing an already
+released numeric tag to GHCR. It does not create a version or tag.
+
 The primary GitHub artifact is `splined-windows-x86_64.zip`. Its allowlist is
 exactly `splined.exe`, `runtime\splined-core.dll`, and `README-WINDOWS.txt`
 under the `SPLINED` directory. A fresh archive contains no `data\`.
@@ -210,9 +223,19 @@ Certification is approved and the listing is live. The managed-install/update
 Windows option is
 [Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
 
-Release CI packs the production layout unsigned for Partner Center and validates
-the final packed manifest and AMD64 runtime pair. That layout never receives a
-debug identity or development signature. A separate temporary layout receives
+**Help > Check for Updates** uses `ConfigStore.IsPackaged` to select exactly one
+authority. Portable installations query GitHub Releases and
+`windows-update.json`. Store installations query
+`Windows.Services.Store.StoreContext`; **UPDATE NOW** delegates download and
+installation to Windows/Microsoft Store, and **LATER** defers it. If the Store
+API cannot be used safely, the GUI offers the official Store page. A packaged
+installation never receives Portable ZIP replacement instructions.
+
+`SPLINED (All OS) and GHCR` creates the release and numeric tag after selected
+platform builds pass. `SPLINED MS Store Windows Update` then consumes that
+existing tag and packs the production layout unsigned for Partner Center. It
+validates the final manifest and AMD64 runtime pair. That layout never receives
+a debug identity or development signature. A separate temporary layout receives
 debug identity and a disposable certificate for install, activation, native-core,
 and `.spl` association QA, then is removed. Development certificates and private
 keys are never committed or published. See the

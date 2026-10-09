@@ -494,7 +494,7 @@ namespace Splined.WindowsGui
             ToolStripMenuItem help = new ToolStripMenuItem("Help");
             ToolStripMenuItem helpPage = new ToolStripMenuItem("Help");
             helpPage.Click += delegate { HelpWindows.OpenHelp(this); };
-            checkUpdateMenuItem = new ToolStripMenuItem("Check for Update...");
+            checkUpdateMenuItem = new ToolStripMenuItem("Check for Updates...");
             checkUpdateMenuItem.Click += CheckForUpdateClicked;
             ToolStripMenuItem about = new ToolStripMenuItem("About...");
             about.Click += delegate { using (AboutForm form = new AboutForm()) form.ShowDialog(this); };
@@ -5031,49 +5031,41 @@ namespace Splined.WindowsGui
             if (checkUpdateMenuItem != null) checkUpdateMenuItem.Enabled = false;
             try
             {
-                if (interactive) SetStatus("Checking the official GitHub releases...");
-                WindowsUpdateCheck update = await WindowsUpdateService.CheckAsync();
-                RuntimeLog.Write("info", "windows.update.checked current=" + BuildInfo.ShortCommit
-                    + " latest=" + update.Manifest.short_commit
-                    + " available=" + update.Available.ToString().ToLowerInvariant());
-                if (!update.Available)
-                {
-                    if (interactive) SetStatus("SPLINED is current at commit " + BuildInfo.ShortCommit + ".");
-                    if (interactive)
-                        MessageBox.Show(this,
-                            "SPLINED is current.\r\n\r\nInstalled commit: " + BuildInfo.ShortCommit,
-                            "SPLINED update check", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
-
-                WindowsUpdateManifest manifest = update.Manifest;
-                SetStatus("An official Windows release at commit " + manifest.short_commit + " is available.");
-                string published = String.IsNullOrWhiteSpace(manifest.published_at)
-                    ? "unknown"
-                    : manifest.published_at;
-                DialogResult action = MessageBox.Show(this,
-                    "An official Windows release is available.\r\n\r\n"
-                    + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
-                    + "Available commit: " + manifest.short_commit + "\r\n"
-                    + "Published: " + published + "\r\n\r\n"
-                    + "Portable updates are installed manually so SPLINED never replaces running program files.\r\n\r\n"
-                    + "Open the official GitHub release page?",
-                    "SPLINED update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-                if (action == DialogResult.Yes)
-                {
-                    WindowsUpdateService.OpenReleasePage(manifest.release_url);
-                    RuntimeLog.Write("info", "windows.update.release_page_opened commit=" + manifest.short_commit);
-                }
+                if (ConfigStore.IsPackaged)
+                    await CheckMicrosoftStoreForUpdateAsync(interactive);
+                else
+                    await CheckPortableForUpdateAsync(interactive);
             }
             catch (Exception error)
             {
-                if (interactive) SetStatus("Windows update check failed.");
-                RuntimeLog.Write("error", "windows.update.failed type=" + error.GetType().Name
+                string channel = ConfigStore.IsPackaged ? "store" : "portable";
+                if (interactive) SetStatus(ConfigStore.IsPackaged
+                    ? "Microsoft Store update check unavailable."
+                    : "Portable update check failed.");
+                RuntimeLog.Write("error", "windows.update.failed channel=" + channel
+                    + " type=" + error.GetType().Name
                     + " message=" + error.Message);
                 if (interactive)
-                    MessageBox.Show(this,
-                        "SPLINED could not complete the update check.\r\n\r\n" + error.Message,
-                        "SPLINED update check", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                {
+                    if (ConfigStore.IsPackaged)
+                    {
+                        DialogResult openStore = MessageBox.Show(this,
+                            "SPLINED could not complete the Microsoft Store update request.\r\n\r\n"
+                            + error.Message + "\r\n\r\nOpen the official Microsoft Store page instead?",
+                            "SPLINED Microsoft Store update", MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Warning, MessageBoxDefaultButton.Button1);
+                        if (openStore == DialogResult.Yes)
+                            MicrosoftStoreUpdateService.OpenStorePage();
+                    }
+                    else
+                    {
+                        MessageBox.Show(this,
+                            "SPLINED Portable could not complete the GitHub release check.\r\n\r\n"
+                            + error.Message,
+                            "SPLINED Portable update check", MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+                }
             }
             finally
             {
@@ -5082,6 +5074,167 @@ namespace Splined.WindowsGui
                 progress.Visible = false;
                 progress.Style = ProgressBarStyle.Blocks;
                 if (!IsDisposed && !running) UpdateSelectionControls();
+            }
+        }
+
+        private async Task CheckPortableForUpdateAsync(bool interactive)
+        {
+            if (interactive) SetStatus("Checking official GitHub releases for SPLINED Portable...");
+            WindowsUpdateCheck update = await WindowsUpdateService.CheckAsync();
+            RuntimeLog.Write("info", "windows.update.checked channel=portable current=" + BuildInfo.ShortCommit
+                + " latest=" + update.Manifest.short_commit
+                + " available=" + update.Available.ToString().ToLowerInvariant());
+            if (!update.Available)
+            {
+                if (interactive) SetStatus("SPLINED Portable is current at commit " + BuildInfo.ShortCommit + ".");
+                if (interactive)
+                    MessageBox.Show(this,
+                        "SPLINED Portable is current.\r\n\r\nInstalled commit: " + BuildInfo.ShortCommit,
+                        "SPLINED Portable update check", MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                return;
+            }
+
+            WindowsUpdateManifest manifest = update.Manifest;
+            SetStatus("A SPLINED Portable release at commit " + manifest.short_commit + " is available.");
+            string published = String.IsNullOrWhiteSpace(manifest.published_at)
+                ? "unknown"
+                : manifest.published_at;
+            DialogResult action = MessageBox.Show(this,
+                "A SPLINED Portable release is available.\r\n\r\n"
+                + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
+                + "Available commit: " + manifest.short_commit + "\r\n"
+                + "Published: " + published + "\r\n\r\n"
+                + "Portable updates are installed manually so SPLINED never replaces running program files.\r\n\r\n"
+                + "Open the official GitHub release page?",
+                "SPLINED Portable update available", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+            if (action == DialogResult.Yes)
+            {
+                WindowsUpdateService.OpenReleasePage(manifest.release_url);
+                RuntimeLog.Write("info", "windows.update.release_page_opened channel=portable commit="
+                    + manifest.short_commit);
+            }
+        }
+
+        private async Task CheckMicrosoftStoreForUpdateAsync(bool interactive)
+        {
+            if (interactive) SetStatus("Checking Microsoft Store for SPLINED updates...");
+            MicrosoftStoreUpdateCheck update = await MicrosoftStoreUpdateService.CheckAsync(Handle);
+            RuntimeLog.Write("info", "windows.update.checked channel=store available="
+                + update.Available.ToString().ToLowerInvariant()
+                + " count=" + update.UpdateCount);
+            if (!update.Available)
+            {
+                if (interactive) SetStatus("SPLINED Microsoft Store is current.");
+                if (interactive)
+                    MessageBox.Show(this, "SPLINED Microsoft Store is current.",
+                        "SPLINED Microsoft Store update check", MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                return;
+            }
+
+            SetStatus("A SPLINED Microsoft Store update is available.");
+            if (ShowMicrosoftStoreUpdatePrompt(update.UpdateCount) != DialogResult.OK)
+            {
+                RuntimeLog.Write("info", "windows.update.deferred channel=store");
+                return;
+            }
+
+            SetStatus("Microsoft Store is downloading and installing the SPLINED update...");
+            progress.Style = ProgressBarStyle.Marquee;
+            progress.Visible = true;
+            MicrosoftStoreInstallResult result = await MicrosoftStoreUpdateService.InstallAsync(update, Handle);
+            RuntimeLog.Write("info", "windows.update.install channel=store state=" + result.State);
+            if (result.Completed)
+            {
+                SetStatus("Microsoft Store completed the SPLINED update.");
+                MessageBox.Show(this,
+                    "Microsoft Store completed the SPLINED update. Restart SPLINED if Windows requests it.",
+                    "SPLINED Microsoft Store update", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                return;
+            }
+
+            DialogResult openStore = MessageBox.Show(this,
+                "Microsoft Store did not complete the in-app update request.\r\n\r\n"
+                + "Store state: " + result.State + "\r\n\r\n"
+                + "Open the official Microsoft Store page instead?",
+                "SPLINED Microsoft Store update", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button1);
+            if (openStore == DialogResult.Yes)
+                MicrosoftStoreUpdateService.OpenStorePage();
+        }
+
+        private DialogResult ShowMicrosoftStoreUpdatePrompt(int updateCount)
+        {
+            using (FluentForm dialog = new FluentForm())
+            {
+                dialog.Text = "SPLINED Microsoft Store update";
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.Size = new Size(550, 230);
+                dialog.MinimumSize = new Size(500, 220);
+                dialog.MaximizeBox = false;
+                dialog.MinimizeBox = false;
+                dialog.Font = ThemeManager.UiFont(ThemeFontRole.Body);
+                dialog.AutoScaleMode = AutoScaleMode.Dpi;
+
+                TableLayoutPanel root = new TableLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    Padding = new Padding(20),
+                    ColumnCount = 1,
+                    RowCount = 3
+                };
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+                root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+                dialog.Controls.Add(root);
+                root.Controls.Add(new Label
+                {
+                    Text = "SPLINED Microsoft Store update available",
+                    Dock = DockStyle.Fill,
+                    Font = ThemeManager.UiFont(ThemeFontRole.AppTitle),
+                    TextAlign = ContentAlignment.MiddleLeft
+                }, 0, 0);
+                root.Controls.Add(new Label
+                {
+                    Text = "Microsoft Store reports " + updateCount
+                        + (updateCount == 1 ? " package update" : " package updates")
+                        + " for SPLINED. Windows and Microsoft Store will manage the download and installation.",
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft
+                }, 0, 1);
+                FlowLayoutPanel actions = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    FlowDirection = FlowDirection.RightToLeft,
+                    WrapContents = false
+                };
+                Button updateNow = new FluentButton
+                {
+                    Text = "UPDATE NOW",
+                    Width = 130,
+                    Height = 34,
+                    Tag = "primary",
+                    DialogResult = DialogResult.OK
+                };
+                Button later = new FluentButton
+                {
+                    Text = "LATER",
+                    Width = 100,
+                    Height = 34,
+                    DialogResult = DialogResult.Cancel
+                };
+                actions.Controls.Add(updateNow);
+                actions.Controls.Add(later);
+                root.Controls.Add(actions, 0, 2);
+                dialog.AcceptButton = updateNow;
+                dialog.CancelButton = later;
+                ThemeManager.Apply(dialog, ThemeManager.CurrentTheme);
+                ThemeManager.StyleButton(updateNow, ThemeManager.CurrentTheme);
+                ThemeManager.PrepareForFirstShow(dialog, ThemeManager.CurrentTheme);
+                return dialog.ShowDialog(this);
             }
         }
 

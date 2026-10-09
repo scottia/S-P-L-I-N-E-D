@@ -136,7 +136,9 @@ fn windows_and_release_versions_advance_coherently() {
     assert!(
         !workflow.contains("baseline = max([source_version, windows_source_version, *versions])")
     );
-    assert!(workflow.contains("prepare-release:\n    name: Create next patch tag"));
+    assert!(workflow.contains("prepare-release:\n    name: Prepare next release commit"));
+    assert!(workflow.contains("finalize-tag:\n    name: Push numeric tag after successful builds"));
+    assert!(workflow.contains("git bundle create release-source.bundle HEAD \"^$BASE_MAIN_SHA\""));
     assert!(!workflow.contains("release-preflight"));
     assert!(!workflow.to_ascii_lowercase().contains("tauri"));
     assert!(workflow.contains("ref: refs/tags/${{ needs.prepare-release.outputs.version }}"));

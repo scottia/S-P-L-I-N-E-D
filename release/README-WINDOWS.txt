@@ -38,11 +38,12 @@ The Backup screen exports and restores selected .spl categories. Selected
 categories overwrite their destinations. Unselected categories remain
 unchanged. Password protection is optional.
 
-UPDATES
+PORTABLE UPDATES
 
-Help > Check for Updates shows official release information and can open the
-official release page. Portable SPLINED does not download or replace its own
-binaries. Close SPLINED, extract the new release separately, then replace only:
+Help > Check for Updates identifies this as SPLINED Portable, reads GitHub
+Releases plus windows-update.json, and can open the official release page.
+Portable SPLINED does not download or replace its own binaries. Close SPLINED,
+extract the new release separately, then replace only:
 
   splined.exe
   runtime\splined-core.dll

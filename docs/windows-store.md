@@ -59,9 +59,15 @@ channel and does not require package identity.
 
 ## Store release and update package
 
-Windows release CI creates a clean production layout directly from the Partner
-Center manifest and the release-built binaries. It updates manifest assets and
-packs this layout without signing:
+`SPLINED (All OS) and GHCR` is the only workflow that creates a release version
+and numeric tag. After that release exists, run `SPLINED MS Store Windows
+Update` manually with the existing numeric tag as its `version` input. The
+Store workflow never creates, moves, deletes, or rewrites a tag.
+
+The dedicated workflow checks out `refs/tags/<version>`, verifies the tag and
+release metadata, performs a clean x64 build, and creates a clean production
+layout directly from the Partner Center manifest and the tagged binaries. It
+updates manifest assets and packs this layout without signing:
 
 ```text
 GitHub Actions artifact: splined-windows-store-submission
@@ -95,16 +101,35 @@ The development package proves x64 installation, application activation,
 in-process Rust DLL initialization, package identity, and the `.spl` association.
 A development-signed package is QA-only and is not publicly trusted.
 
+## Help > Check for Updates
+
+The Windows GUI uses `ConfigStore.IsPackaged` as its channel detector.
+
+- **Microsoft Store package:** GitHub releases and the Portable ZIP are not
+  update authority. SPLINED queries
+  `Windows.Services.Store.StoreContext.GetAppAndOptionalStorePackageUpdatesAsync`.
+  **UPDATE NOW** requests
+  `RequestDownloadAndInstallStorePackageUpdatesAsync`, so Windows/Microsoft
+  Store owns download and installation. **LATER** makes no change. If the Store
+  API is unavailable or cannot complete safely, SPLINED offers the official
+  [Store product page](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)
+  and reports the limitation; it never shows Portable ZIP instructions.
+- **Portable package:** GitHub Releases plus `windows-update.json` remain update
+  authority. The check is notification-only and may open the official GitHub
+  release page for manual replacement. SPLINED never downloads or replaces its
+  own Portable binaries.
+
 ## Publishing future Store updates
 
 The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
 For a future Store update, maintainers download
-`splined-windows-store-submission` from the corresponding GitHub Actions run and
-submit `SPLINED-x64-store-unsigned.msix` to the existing Partner Center product
-with Store ID `9P8G4GMBBVBS`. Review, certification responses, listing changes,
-and publication remain manual Partner Center operations for each future update;
-they are not outstanding steps for the initial public release.
+`splined-windows-store-submission` from the corresponding `SPLINED MS Store
+Windows Update` run and submit `SPLINED-x64-store-unsigned.msix` to the existing
+Partner Center product with Store ID `9P8G4GMBBVBS`. Review, certification
+responses, listing changes, and publication remain manual Partner Center
+operations for each future update; they are not outstanding steps for the
+initial public release.
 
 The checked-in App Installer template is not the Microsoft Store update path.
 It is retained only for a possible separately signed direct-distribution

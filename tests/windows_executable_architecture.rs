@@ -176,6 +176,7 @@ fn portable_and_packaged_state_authorities_are_distinct() {
 #[test]
 fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
     let workflow = source(".github/workflows/release-next-patch.yml");
+    let store_workflow = source(".github/workflows/windows-store-update.yml");
     let package = source("windows/package/Package.appxmanifest");
     let appinstaller = source("windows/package/SPLINED.appinstaller.template");
     let store_docs = source("docs/windows-store.md");
@@ -195,6 +196,9 @@ fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
     assert!(!workflow.contains("i686-pc-windows"));
     assert!(!workflow.contains("aarch64-pc-windows"));
     assert!(!workflow.contains("TAURI_"));
+    assert!(store_workflow.contains("WINDOWS_TARGET: \"x86_64-pc-windows-msvc\""));
+    assert!(!store_workflow.contains("i686-pc-windows"));
+    assert!(!store_workflow.contains("aarch64-pc-windows"));
 
     let targets = workflow
         .split(|character: char| character.is_whitespace() || matches!(character, '"' | '\''))
@@ -229,22 +233,22 @@ fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
 #[test]
 fn winappcli_isolates_production_store_and_development_msix_layouts() {
     let workflow = source(".github/workflows/release-next-patch.yml");
-    let validation_workflow = source(".github/workflows/windows-store-validation.yml");
+    let store_workflow = source(".github/workflows/windows-store-update.yml");
     let store_packager = source("windows/package/Build-StorePackage.ps1");
     let development_packager = source("windows/package/Test-DevelopmentPackage.ps1");
     assert!(
         workflow.contains("rustup component add rustfmt clippy --toolchain \"$RUST_TOOLCHAIN\"")
     );
-    assert!(!workflow.contains("microsoft/setup-WinAppCli"));
-    assert!(workflow.contains(
+    assert!(!store_workflow.contains("microsoft/setup-WinAppCli"));
+    assert!(store_workflow.contains(
         "npm install --prefix $installRoot --no-save --no-audit --no-fund \"@microsoft/winappcli@0.7.1\""
     ));
-    assert!(workflow.contains("$commandDirectory | Out-File -FilePath $env:GITHUB_PATH"));
-    assert!(workflow.contains(
+    assert!(store_workflow.contains("$commandDirectory | Out-File -FilePath $env:GITHUB_PATH"));
+    assert!(store_workflow.contains(
         "$reportedVersion = (& (Join-Path $commandDirectory \"winapp.cmd\") --version) -join \"`n\""
     ));
-    assert!(workflow.contains("$reportedVersion -notmatch '0\\.7\\.1'"));
-    for candidate in [&workflow, &validation_workflow] {
+    assert!(store_workflow.contains("$reportedVersion -notmatch '0\\.7\\.1'"));
+    for candidate in [&workflow, &store_workflow] {
         for line in candidate.lines().map(str::trim) {
             let Some(action) = line.strip_prefix("uses: ") else {
                 continue;
@@ -264,11 +268,11 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
         }
     }
     assert!(store_packager.contains("winapp manifest update-assets"));
-    let store = workflow
-        .split("      - name: Build and validate production Microsoft Store x64 MSIX")
+    let store = store_workflow
+        .split("      - name: Build and strictly validate unsigned production Store MSIX")
         .nth(1)
         .expect("production Store MSIX step")
-        .split("      - name: Development-sign, install, launch, identify, and uninstall MSIX")
+        .split("      - name: Development-sign, install, activate, native-smoke, and uninstall isolated QA package")
         .next()
         .expect("production Store MSIX body");
     assert!(store.contains("splined-msix-store-layout"));
@@ -277,11 +281,11 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(!store.contains("--cert $pfx"));
     assert!(store.contains("windows/package/Build-StorePackage.ps1"));
 
-    let development = workflow
-        .split("      - name: Development-sign, install, launch, identify, and uninstall MSIX")
+    let development = store_workflow
+        .split("      - name: Development-sign, install, activate, native-smoke, and uninstall isolated QA package")
         .nth(1)
         .expect("development MSIX step")
-        .split("      - name: Upload Windows artifact")
+        .split("      - name: Upload Partner Center Store submission artifact")
         .next()
         .expect("development MSIX body");
     assert!(development.contains("splined-msix-development-layout"));
@@ -294,8 +298,13 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(store_packager.contains("PublisherDisplayName is not Psycotix"));
     assert!(store_packager.contains("DisplayName is not SPLINED"));
     assert!(store_packager.contains("TargetDeviceFamily is not Windows.Desktop"));
+    assert!(store_packager.contains("MinVersion must remain 10.0.17763.0"));
+    assert!(store_packager.contains("MaxVersionTested must remain 10.0.26100.0"));
+    assert!(store_packager.contains("Application Id changed unexpectedly"));
     assert!(store_packager.contains("does not declare the .spl file association"));
     assert!(store_packager.contains("does not declare runFullTrust"));
+    assert!(store_packager.contains("AppxSignature.p7x"));
+    assert!(store_packager.contains("Partner Center Store MSIX must remain unsigned"));
     assert!(store_packager.contains("Store MSIX is missing splined.exe"));
     assert!(store_packager.contains("Store MSIX is missing runtime/splined-core.dll"));
     assert!(store_packager.contains("Assert-Amd64Pe $storeExe"));
@@ -304,9 +313,9 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(development_packager.contains("winapp create-debug-identity"));
     assert!(development_packager.contains("--no-install"));
     assert!(development_packager.contains("Add-AppxPackage"));
-    assert!(validation_workflow.contains("windows/package/Build-StorePackage.ps1"));
-    assert!(validation_workflow.contains("windows/package/Test-DevelopmentPackage.ps1"));
-    assert!(validation_workflow.contains("name: splined-windows-store-submission"));
+    assert!(store_workflow.contains("windows/package/Build-StorePackage.ps1"));
+    assert!(store_workflow.contains("windows/package/Test-DevelopmentPackage.ps1"));
+    assert!(store_workflow.contains("name: splined-windows-store-submission"));
     assert!(development_packager.contains("winapp cert generate"));
     assert!(development_packager.contains("winapp cert install $cer"));
     assert!(development_packager.contains("--cert $pfx"));
@@ -318,21 +327,81 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(development_packager.contains("package-identity-smoke.ok"));
     assert!(development_packager.contains("Remove-AppxPackage"));
     assert!(development_packager.contains("certutil -delstore TrustedPeople $thumbprint"));
-    assert!(workflow.contains("name: splined-windows-store-submission"));
-    assert!(workflow.contains("path: release-assets/SPLINED-x64-store-unsigned.msix"));
-    let publisher = workflow
-        .split("  publish-release:")
-        .nth(1)
-        .expect("release publication job")
-        .split("  publish-ghcr:")
-        .next()
-        .expect("release publication body");
-    assert!(!publisher.contains("SPLINED-x64-store-unsigned.msix"));
+    assert!(store_workflow.contains("path: ${{ steps.store-package.outputs.path }}"));
+    assert!(store_workflow.contains("ref: refs/tags/${{ inputs.version }}"));
+    assert!(store_workflow.contains("-ExpectedVersion \"$env:RELEASE_VERSION.0\""));
+    assert!(!store_workflow.contains("contents: write"));
+    assert!(!store_workflow.contains("git tag -a"));
+    assert!(!store_workflow.contains("git push origin"));
+    assert!(!workflow.contains("Build-StorePackage.ps1"));
+    assert!(!workflow.contains("Test-DevelopmentPackage.ps1"));
+    assert!(!workflow.contains("splined-windows-store-submission"));
+    assert!(!workflow.contains("SPLINED-x64-store-unsigned.msix"));
     assert!(!workflow.contains("Get-Process -Name splined"));
     assert!(!workflow.contains("TAURI_UPDATER_PUBLIC_KEY"));
     assert!(!workflow.contains("TAURI_SIGNING_PRIVATE_KEY"));
     assert!(!workflow.contains("latest.json"));
     assert!(!workflow.contains("NSIS"));
+}
+
+#[test]
+fn repository_exposes_exactly_the_three_supported_workflows() {
+    let workflow_dir = Path::new(".github/workflows");
+    let files = fs::read_dir(workflow_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        files,
+        BTreeSet::from([
+            "publish-existing-ghcr.yml".to_string(),
+            "release-next-patch.yml".to_string(),
+            "windows-store-update.yml".to_string(),
+        ])
+    );
+    assert!(
+        source(".github/workflows/release-next-patch.yml")
+            .starts_with("name: SPLINED (All OS) and GHCR")
+    );
+    assert!(
+        source(".github/workflows/windows-store-update.yml")
+            .starts_with("name: SPLINED MS Store Windows Update")
+    );
+    assert!(
+        source(".github/workflows/publish-existing-ghcr.yml")
+            .starts_with("name: SPLINED Published > GHCR")
+    );
+}
+
+#[test]
+fn numeric_release_tag_is_pushed_only_after_selected_builds_pass() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+    let prepare = workflow
+        .split("  prepare-release:")
+        .nth(1)
+        .unwrap()
+        .split("  build-windows:")
+        .next()
+        .unwrap();
+    assert!(prepare.contains("Prepared untagged release commit"));
+    assert!(prepare.contains("git bundle create release-source.bundle HEAD \"^$BASE_MAIN_SHA\""));
+    assert!(!prepare.contains("git tag -a"));
+    assert!(!prepare.contains("refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"));
+
+    let finalize = workflow
+        .split("  finalize-tag:")
+        .nth(1)
+        .unwrap()
+        .split("  publish-release:")
+        .next()
+        .unwrap();
+    for dependency in ["build-windows", "build-ubuntu", "build-macos"] {
+        assert!(finalize.contains(dependency));
+    }
+    assert!(finalize.contains("Push numeric tag after successful builds"));
+    assert!(finalize.contains("git tag -a \"$RELEASE_VERSION\" \"$RELEASE_COMMIT\""));
+    assert!(finalize.contains("refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"));
+    assert!(finalize.contains("no tag was created"));
 }
 
 #[test]
@@ -345,7 +414,7 @@ fn windows_release_cache_excludes_discarded_target_artifacts() {
         .split("      - name: Restore Cargo dependency cache")
         .nth(1)
         .expect("Windows dependency cache step")
-        .split("      - name: Install pinned upstream WinAppCli")
+        .split("      - name: Run extended Windows regression suite")
         .next()
         .expect("Windows dependency cache body");
     assert!(cache.contains("~/.cargo/registry"));
@@ -365,13 +434,33 @@ fn full_windows_regression_suite_is_available_without_blocking_default_packaging
 }
 
 #[test]
-fn portable_updates_are_notification_only() {
+fn windows_updates_are_channel_aware_and_portable_updates_remain_notification_only() {
     let update = source("windows/gui/UpdateService.cs");
     let main = source("windows/gui/MainForm.cs");
     assert!(update.contains("ReleaseUrl"));
     assert!(update.contains("DownloadDataTaskAsync"));
     assert!(update.contains("MaximumReleaseListBytes"));
-    assert!(main.contains("UpdateService.OpenReleasePage"));
+    assert!(main.contains("if (ConfigStore.IsPackaged)"));
+    assert!(main.contains("CheckMicrosoftStoreForUpdateAsync"));
+    assert!(main.contains("CheckPortableForUpdateAsync"));
+    assert!(main.contains("WindowsUpdateService.OpenReleasePage"));
+    assert!(main.contains("SPLINED Portable"));
+    assert!(main.contains("SPLINED Microsoft Store"));
+    assert!(main.contains("UPDATE NOW"));
+    assert!(main.contains("LATER"));
+    assert!(update.contains("Windows.Services.Store.StoreContext"));
+    assert!(update.contains("GetAppAndOptionalStorePackageUpdatesAsync"));
+    assert!(update.contains("RequestDownloadAndInstallStorePackageUpdatesAsync"));
+    assert!(update.contains("https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US"));
+    let store_path = main
+        .split("private async Task CheckMicrosoftStoreForUpdateAsync")
+        .nth(1)
+        .unwrap()
+        .split("private DialogResult ShowMicrosoftStoreUpdatePrompt")
+        .next()
+        .unwrap();
+    assert!(!store_path.contains("GitHub"));
+    assert!(!store_path.contains("Portable"));
     for forbidden in [
         "DownloadFile",
         "splined-update.exe",
