@@ -66,5 +66,6 @@ if ($reportedVersion.Trim() -cne "git-cliff $version") {
 if (-not [String]::IsNullOrWhiteSpace($env:GITHUB_PATH)) {
     $InstallDirectory | Add-Content -Encoding utf8 $env:GITHUB_PATH
 }
+$env:PATH = "$InstallDirectory$([IO.Path]::PathSeparator)$env:PATH"
 
 Write-Output $installedBinary
