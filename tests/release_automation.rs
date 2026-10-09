@@ -1,7 +1,9 @@
 use std::fs;
 
 fn source(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|error| panic!("unable to read {path}: {error}"))
+    fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("unable to read {path}: {error}"))
+        .replace("\r\n", "\n")
 }
 
 #[test]
@@ -171,6 +173,107 @@ fn normal_release_notes_and_store_option_follow_the_release_contract() {
     assert!(store_job.contains("SPLINED-x64-store-unsigned.msix"));
     assert!(store_job.contains("STORE-HIGHLIGHTS.txt"));
     assert!(store_job.contains("windows/package/Publish-StoreUpdate.ps1"));
+}
+
+#[test]
+fn normal_release_dependency_gates_tolerate_only_intentional_skips() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+
+    let finalize = workflow
+        .split("  finalize-tag:")
+        .nth(1)
+        .unwrap()
+        .split("  generate-release-notes:")
+        .next()
+        .unwrap();
+    assert!(finalize.contains("always() &&"));
+    for expected in [
+        "inputs.platform == 'Windows' &&\n            needs.build-windows.result == 'success' &&\n            needs.build-ubuntu.result == 'skipped' &&\n            needs.build-macos.result == 'skipped'",
+        "inputs.platform == 'Ubuntu' &&\n            needs.build-windows.result == 'skipped' &&\n            needs.build-ubuntu.result == 'success' &&\n            needs.build-macos.result == 'skipped'",
+        "inputs.platform == 'macOS' &&\n            needs.build-windows.result == 'skipped' &&\n            needs.build-ubuntu.result == 'skipped' &&\n            needs.build-macos.result == 'success'",
+        "inputs.platform == 'All' &&\n            needs.build-windows.result == 'success' &&\n            needs.build-ubuntu.result == 'success' &&\n            needs.build-macos.result == 'success'",
+    ] {
+        assert!(
+            finalize.contains(expected),
+            "missing selected-platform gate: {expected}"
+        );
+    }
+
+    let notes = workflow
+        .split("  generate-release-notes:")
+        .nth(1)
+        .unwrap()
+        .split("  publish-release:")
+        .next()
+        .unwrap();
+    assert!(notes.contains("always() &&"));
+    assert!(notes.contains("needs.prepare-release.result == 'success'"));
+    assert!(notes.contains("needs.finalize-tag.result == 'success'"));
+
+    let publication = workflow
+        .split("  publish-release:")
+        .nth(1)
+        .unwrap()
+        .split("  publish-ghcr:")
+        .next()
+        .unwrap();
+    assert!(publication.contains("always() &&"));
+    assert!(publication.contains(
+        "(needs.build-ubuntu.result == 'success' || needs.build-ubuntu.result == 'skipped')"
+    ));
+    assert!(publication.contains(
+        "(needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')"
+    ));
+    assert!(publication.contains("needs.generate-release-notes.result == 'success'"));
+
+    let summary = workflow.split("  release-summary:").nth(1).unwrap();
+    for dependency in [
+        "prepare-release",
+        "build-windows",
+        "build-ubuntu",
+        "build-macos",
+        "finalize-tag",
+        "generate-release-notes",
+        "publish-release",
+        "publish-ghcr",
+        "publish-store",
+    ] {
+        assert!(summary.contains(&format!("      - {dependency}")));
+    }
+    assert!(summary.contains("if: ${{ always() }}"));
+    assert!(summary.contains("expect_result \"Windows build\" \"$WINDOWS_RESULT\" success"));
+    assert!(summary.contains("expect_result \"Ubuntu build\" \"$UBUNTU_RESULT\" skipped"));
+    assert!(summary.contains("expect_result \"macOS build\" \"$MACOS_RESULT\" skipped"));
+    assert!(summary.contains("expect_result \"Numeric tag\" \"$TAG_RESULT\" success"));
+    assert!(
+        summary.contains("expect_result \"git-cliff release notes\" \"$NOTES_RESULT\" success")
+    );
+    assert!(
+        summary.contains("expect_result \"GitHub Release\" \"$GITHUB_RELEASE_RESULT\" success")
+    );
+    assert!(summary.contains("expect_result \"GHCR publication\" \"$GHCR_RESULT\" success"));
+    assert!(summary.contains("[ \"$MICROSOFT_STORE\" = true ]"));
+    assert!(
+        summary.contains("expect_result \"Microsoft Store submission\" \"$STORE_RESULT\" success")
+    );
+    assert!(
+        summary.contains("expect_result \"Microsoft Store submission\" \"$STORE_RESULT\" skipped")
+    );
+    assert!(summary.contains("exit 1"));
+    assert!(!summary.contains(
+        "needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped'",
+    ));
+
+    fn windows_path_is_complete(store_enabled: bool, notes: &str, store: &str) -> bool {
+        let expected_store = if store_enabled { "success" } else { "skipped" };
+        notes == "success" && store == expected_store
+    }
+    assert!(windows_path_is_complete(true, "success", "success"));
+    assert!(!windows_path_is_complete(true, "skipped", "success"));
+    assert!(!windows_path_is_complete(true, "success", "skipped"));
+    assert!(windows_path_is_complete(false, "success", "skipped"));
+    assert!(!windows_path_is_complete(false, "skipped", "skipped"));
+    assert!(!windows_path_is_complete(false, "success", "success"));
 }
 
 #[test]

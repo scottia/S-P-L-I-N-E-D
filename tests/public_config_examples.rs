@@ -154,7 +154,14 @@ fn windows_and_release_versions_advance_coherently() {
     assert!(ghcr_job.contains("needs.publish-release.result == 'success'"));
     assert!(workflow.contains("needs.publish-release.result == 'success'"));
     assert!(workflow.contains("needs.publish-ghcr.result == 'success'"));
-    assert!(workflow.contains(
+    assert!(workflow.contains("release-summary:\n    name: Release summary"));
+    assert!(workflow.contains("      - name: Enforce selected build and publication results"));
+    assert!(workflow.contains("if: ${{ always() }}"));
+    assert!(
+        workflow.contains("expect_result \"GitHub Release\" \"$GITHUB_RELEASE_RESULT\" success")
+    );
+    assert!(workflow.contains("expect_result \"GHCR publication\" \"$GHCR_RESULT\" success"));
+    assert!(!workflow.contains(
         "(needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped')"
     ));
 

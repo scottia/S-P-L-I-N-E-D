@@ -677,9 +677,32 @@ jobs:
       ${{
         always() &&
         needs.prepare-release.result == 'success' &&
-        (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
-        (needs.build-ubuntu.result == 'success' || needs.build-ubuntu.result == 'skipped') &&
-        (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
+        (
+          (
+            inputs.platform == 'Windows' &&
+            needs.build-windows.result == 'success' &&
+            needs.build-ubuntu.result == 'skipped' &&
+            needs.build-macos.result == 'skipped'
+          ) ||
+          (
+            inputs.platform == 'Ubuntu' &&
+            needs.build-windows.result == 'skipped' &&
+            needs.build-ubuntu.result == 'success' &&
+            needs.build-macos.result == 'skipped'
+          ) ||
+          (
+            inputs.platform == 'macOS' &&
+            needs.build-windows.result == 'skipped' &&
+            needs.build-ubuntu.result == 'skipped' &&
+            needs.build-macos.result == 'success'
+          ) ||
+          (
+            inputs.platform == 'All' &&
+            needs.build-windows.result == 'success' &&
+            needs.build-ubuntu.result == 'success' &&
+            needs.build-macos.result == 'success'
+          )
+        )
       }}
     runs-on: ubuntu-latest
     permissions:
@@ -729,7 +752,12 @@ jobs:
     needs:
       - prepare-release
       - finalize-tag
-    if: ${{ needs.finalize-tag.result == 'success' }}
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        needs.finalize-tag.result == 'success'
+      }}
     runs-on: ubuntu-latest
 
     steps:
@@ -993,19 +1021,95 @@ jobs:
     name: Release summary
     needs:
       - prepare-release
+      - build-windows
+      - build-ubuntu
+      - build-macos
+      - finalize-tag
+      - generate-release-notes
       - publish-release
       - publish-ghcr
       - publish-store
-    if: >-
-      ${{
-        always() &&
-        needs.publish-release.result == 'success' &&
-        needs.publish-ghcr.result == 'success' &&
-        (needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped')
-      }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
 
     steps:
+      - name: Enforce selected build and publication results
+        shell: bash
+        env:
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          MICROSOFT_STORE: ${{ inputs.microsoft_store }}
+          PREPARE_RESULT: ${{ needs.prepare-release.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+          UBUNTU_RESULT: ${{ needs.build-ubuntu.result }}
+          MACOS_RESULT: ${{ needs.build-macos.result }}
+          TAG_RESULT: ${{ needs.finalize-tag.result }}
+          NOTES_RESULT: ${{ needs.generate-release-notes.result }}
+          GITHUB_RELEASE_RESULT: ${{ needs.publish-release.result }}
+          GHCR_RESULT: ${{ needs.publish-ghcr.result }}
+          STORE_RESULT: ${{ needs.publish-store.result }}
+        run: |
+          set -euo pipefail
+          failures=0
+
+          expect_result() {
+            local stage="$1"
+            local actual="$2"
+            local expected="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error title=Unexpected release stage result::$stage was '$actual'; expected '$expected'."
+              failures=1
+            fi
+          }
+
+          expect_result "Prepare release" "$PREPARE_RESULT" success
+          case "$RELEASE_PLATFORM" in
+            Windows)
+              expect_result "Windows build" "$WINDOWS_RESULT" success
+              expect_result "Ubuntu build" "$UBUNTU_RESULT" skipped
+              expect_result "macOS build" "$MACOS_RESULT" skipped
+              ;;
+            Ubuntu)
+              expect_result "Windows build" "$WINDOWS_RESULT" skipped
+              expect_result "Ubuntu build" "$UBUNTU_RESULT" success
+              expect_result "macOS build" "$MACOS_RESULT" skipped
+              ;;
+            macOS)
+              expect_result "Windows build" "$WINDOWS_RESULT" skipped
+              expect_result "Ubuntu build" "$UBUNTU_RESULT" skipped
+              expect_result "macOS build" "$MACOS_RESULT" success
+              ;;
+            All)
+              expect_result "Windows build" "$WINDOWS_RESULT" success
+              expect_result "Ubuntu build" "$UBUNTU_RESULT" success
+              expect_result "macOS build" "$MACOS_RESULT" success
+              ;;
+            *)
+              echo "::error title=Invalid release platform::Unsupported platform '$RELEASE_PLATFORM'."
+              failures=1
+              ;;
+          esac
+
+          expect_result "Numeric tag" "$TAG_RESULT" success
+          expect_result "git-cliff release notes" "$NOTES_RESULT" success
+          expect_result "GitHub Release" "$GITHUB_RELEASE_RESULT" success
+          expect_result "GHCR publication" "$GHCR_RESULT" success
+
+          if { [ "$RELEASE_PLATFORM" = Windows ] || [ "$RELEASE_PLATFORM" = All ]; } &&
+             [ "$MICROSOFT_STORE" = true ]; then
+            expect_result "Microsoft Store submission" "$STORE_RESULT" success
+          else
+            expect_result "Microsoft Store submission" "$STORE_RESULT" skipped
+          fi
+
+          if [ "$failures" -ne 0 ]; then
+            {
+              echo "## SPLINED release incomplete"
+              echo
+              echo "One or more required build/publication stages failed or were unexpectedly skipped."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Report published outputs
         shell: bash
         env:
