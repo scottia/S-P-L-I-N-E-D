@@ -15,9 +15,11 @@ The checked-in `windows/package/Package.appxmanifest` is the authoritative
 production manifest. Its application ID remains `SPLINED`, display name is
 `SPLINED`, target device family is `Windows.Desktop`, and architecture is
 `x64`. It retains the `.spl` file association and `runFullTrust` capability.
-Release provisioning writes the generated SPLINED release version plus `.0`
-without changing the Partner Center identity. The existing minimum and tested
-Windows versions remain unchanged.
+Release provisioning writes only the package Identity version to the generated
+SPLINED release version plus `.0`; it must never rewrite the operating-system
+version gates. The Store package is guarded at `Windows.Desktop`
+`MinVersion="10.0.17763.0"` and `MaxVersionTested="10.0.26100.0"`.
+Packaging fails if either value changes unexpectedly.
 
 ## Runtime architecture
 
