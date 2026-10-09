@@ -100,6 +100,12 @@ if ($displayName.InnerText -cne "SPLINED") {
 if ($targetFamily.Name -cne "Windows.Desktop") {
     throw "Store MSIX TargetDeviceFamily is not Windows.Desktop."
 }
+if ($targetFamily.MinVersion -cne "10.0.17763.0") {
+    throw "Store MSIX Windows.Desktop MinVersion must remain 10.0.17763.0."
+}
+if ($targetFamily.MaxVersionTested -cne "10.0.26100.0") {
+    throw "Store MSIX MaxVersionTested must remain 10.0.26100.0."
+}
 if ($application.Id -cne "SPLINED") {
     throw "Store MSIX Application Id changed unexpectedly."
 }
@@ -132,6 +138,8 @@ Assert-Amd64Pe $storeDll
     Version = [string]$identity.Version
     ProcessorArchitecture = [string]$identity.ProcessorArchitecture
     TargetDeviceFamily = [string]$targetFamily.Name
+    MinVersion = [string]$targetFamily.MinVersion
+    MaxVersionTested = [string]$targetFamily.MaxVersionTested
     ApplicationId = [string]$application.Id
     PackagePath = (Resolve-Path -LiteralPath $OutputPath).Path
 }
