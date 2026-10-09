@@ -178,6 +178,7 @@ fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
     let workflow = source(".github/workflows/release-next-patch.yml");
     let package = source("windows/package/Package.appxmanifest");
     let appinstaller = source("windows/package/SPLINED.appinstaller.template");
+    let store_docs = source("docs/windows-store.md");
 
     assert!(workflow.contains("WINDOWS_TARGET: \"x86_64-pc-windows-msvc\""));
     assert!(workflow.contains("rustup target add \"$WINDOWS_TARGET\""));
@@ -200,16 +201,37 @@ fn windows_release_is_x64_only_and_has_exact_portable_allowlist() {
         .filter(|word| word.contains("-pc-windows-"))
         .collect::<BTreeSet<_>>();
     assert_eq!(targets, BTreeSet::from(["x86_64-pc-windows-msvc"]));
+    assert!(package.contains("Name=\"Psycotix.SPLINED\""));
+    assert!(package.contains("Publisher=\"CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE\""));
+    assert!(package.contains("<PublisherDisplayName>Psycotix</PublisherDisplayName>"));
+    assert!(package.contains("<DisplayName>SPLINED</DisplayName>"));
+    assert!(package.contains("DisplayName=\"SPLINED\""));
+    assert!(package.contains("Id=\"SPLINED\""));
     assert!(package.contains("ProcessorArchitecture=\"x64\""));
+    assert!(package.contains("Name=\"Windows.Desktop\""));
     assert!(package.contains("<uap:FileType>.spl</uap:FileType>"));
+    assert!(package.contains("<rescap:Capability Name=\"runFullTrust\" />"));
     assert!(appinstaller.contains("ProcessorArchitecture=\"x64\""));
     assert!(appinstaller.contains("__APPINSTALLER_HTTPS_URI__"));
-    assert!(appinstaller.contains("__PUBLIC_PUBLISHER_DN__"));
+    assert!(appinstaller.contains("Name=\"Psycotix.SPLINED\""));
+    assert!(appinstaller.contains("Publisher=\"CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE\""));
+    assert!(!package.contains("CN=SPLINED Development"));
+    for expected in [
+        "Psycotix.SPLINED",
+        "CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE",
+        "Psycotix.SPLINED_8pvn5te36e43t",
+        "9P8G4GMBBVBS",
+    ] {
+        assert!(store_docs.contains(expected));
+    }
 }
 
 #[test]
-fn winappcli_builds_store_ready_and_development_signed_msix_without_release_secrets() {
+fn winappcli_isolates_production_store_and_development_msix_layouts() {
     let workflow = source(".github/workflows/release-next-patch.yml");
+    let validation_workflow = source(".github/workflows/windows-store-validation.yml");
+    let store_packager = source("windows/package/Build-StorePackage.ps1");
+    let development_packager = source("windows/package/Test-DevelopmentPackage.ps1");
     assert!(
         workflow.contains("rustup component add rustfmt clippy --toolchain \"$RUST_TOOLCHAIN\"")
     );
@@ -222,37 +244,90 @@ fn winappcli_builds_store_ready_and_development_signed_msix_without_release_secr
         "$reportedVersion = (& (Join-Path $commandDirectory \"winapp.cmd\") --version) -join \"`n\""
     ));
     assert!(workflow.contains("$reportedVersion -notmatch '0\\.7\\.1'"));
-    for line in workflow.lines().map(str::trim) {
-        let Some(action) = line.strip_prefix("uses: ") else {
-            continue;
-        };
-        let (repository, revision) = action
-            .split_once('@')
-            .expect("workflow action must include an explicit revision");
-        assert!(
-            repository.starts_with("actions/"),
-            "workflow uses disallowed action repository: {repository}"
-        );
-        let revision = revision.split_whitespace().next().unwrap_or_default();
-        assert!(
-            revision.len() == 40 && revision.chars().all(|value| value.is_ascii_hexdigit()),
-            "workflow action is not pinned to a full commit SHA: {action}"
-        );
+    for candidate in [&workflow, &validation_workflow] {
+        for line in candidate.lines().map(str::trim) {
+            let Some(action) = line.strip_prefix("uses: ") else {
+                continue;
+            };
+            let (repository, revision) = action
+                .split_once('@')
+                .expect("workflow action must include an explicit revision");
+            assert!(
+                repository.starts_with("actions/"),
+                "workflow uses disallowed action repository: {repository}"
+            );
+            let revision = revision.split_whitespace().next().unwrap_or_default();
+            assert!(
+                revision.len() == 40 && revision.chars().all(|value| value.is_ascii_hexdigit()),
+                "workflow action is not pinned to a full commit SHA: {action}"
+            );
+        }
     }
-    assert!(workflow.contains("winapp manifest update-assets"));
-    assert!(workflow.contains("winapp create-debug-identity"));
-    assert!(workflow.contains("--no-install"));
-    assert!(workflow.contains("--output release-assets/SPLINED-x64.msix --no-sign"));
-    assert!(workflow.contains("winapp cert generate --manifest"));
-    assert!(workflow.contains("winapp cert install $cer"));
-    assert!(workflow.contains("--cert $pfx --cert-password $password"));
-    assert!(workflow.contains("Add-AppxPackage -Path $devPackage"));
-    assert!(workflow.contains("Get-AppxPackage -Name SPLINED"));
-    assert!(workflow.contains("--package-identity-smoke"));
-    assert!(workflow.contains("[SplinedPackageActivator]::Activate"));
-    assert!(workflow.contains("package-identity-smoke.ok"));
-    assert!(workflow.contains("Remove-AppxPackage"));
-    assert!(workflow.contains("certutil -delstore TrustedPeople $thumbprint"));
+    assert!(store_packager.contains("winapp manifest update-assets"));
+    let store = workflow
+        .split("      - name: Build and validate production Microsoft Store x64 MSIX")
+        .nth(1)
+        .expect("production Store MSIX step")
+        .split("      - name: Development-sign, install, launch, identify, and uninstall MSIX")
+        .next()
+        .expect("production Store MSIX body");
+    assert!(store.contains("splined-msix-store-layout"));
+    assert!(store.contains("SPLINED-x64-store-unsigned.msix"));
+    assert!(!store.contains("winapp create-debug-identity"));
+    assert!(!store.contains("--cert $pfx"));
+    assert!(store.contains("windows/package/Build-StorePackage.ps1"));
+
+    let development = workflow
+        .split("      - name: Development-sign, install, launch, identify, and uninstall MSIX")
+        .nth(1)
+        .expect("development MSIX step")
+        .split("      - name: Upload Windows artifact")
+        .next()
+        .expect("development MSIX body");
+    assert!(development.contains("splined-msix-development-layout"));
+    assert!(development.contains("windows/package/Test-DevelopmentPackage.ps1"));
+    assert!(!store_packager.contains("winapp create-debug-identity"));
+    assert!(!store_packager.contains("--cert "));
+    assert!(store_packager.contains("--no-sign"));
+    assert!(store_packager.contains("Psycotix.SPLINED"));
+    assert!(store_packager.contains("CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE"));
+    assert!(store_packager.contains("PublisherDisplayName is not Psycotix"));
+    assert!(store_packager.contains("DisplayName is not SPLINED"));
+    assert!(store_packager.contains("TargetDeviceFamily is not Windows.Desktop"));
+    assert!(store_packager.contains("does not declare the .spl file association"));
+    assert!(store_packager.contains("does not declare runFullTrust"));
+    assert!(store_packager.contains("Store MSIX is missing splined.exe"));
+    assert!(store_packager.contains("Store MSIX is missing runtime/splined-core.dll"));
+    assert!(store_packager.contains("Assert-Amd64Pe $storeExe"));
+    assert!(store_packager.contains("Assert-Amd64Pe $storeDll"));
+    assert!(!store_packager.contains("SPLINED-x64-store-unsigned.msix"));
+    assert!(development_packager.contains("winapp create-debug-identity"));
+    assert!(development_packager.contains("--no-install"));
+    assert!(development_packager.contains("Add-AppxPackage"));
+    assert!(validation_workflow.contains("windows/package/Build-StorePackage.ps1"));
+    assert!(validation_workflow.contains("windows/package/Test-DevelopmentPackage.ps1"));
+    assert!(validation_workflow.contains("name: splined-windows-store-submission"));
+    assert!(development_packager.contains("winapp cert generate"));
+    assert!(development_packager.contains("winapp cert install $cer"));
+    assert!(development_packager.contains("--cert $pfx"));
+    assert!(development_packager.contains("--cert-password $password"));
+    assert!(development_packager.contains("Add-AppxPackage -Path $developmentPackage"));
+    assert!(development_packager.contains("Get-AppxPackage -Name $developmentPackageName"));
+    assert!(development_packager.contains("--package-identity-smoke"));
+    assert!(development_packager.contains("[SplinedPackageActivator]::Activate"));
+    assert!(development_packager.contains("package-identity-smoke.ok"));
+    assert!(development_packager.contains("Remove-AppxPackage"));
+    assert!(development_packager.contains("certutil -delstore TrustedPeople $thumbprint"));
+    assert!(workflow.contains("name: splined-windows-store-submission"));
+    assert!(workflow.contains("path: release-assets/SPLINED-x64-store-unsigned.msix"));
+    let publisher = workflow
+        .split("  publish-release:")
+        .nth(1)
+        .expect("release publication job")
+        .split("  publish-ghcr:")
+        .next()
+        .expect("release publication body");
+    assert!(!publisher.contains("SPLINED-x64-store-unsigned.msix"));
     assert!(!workflow.contains("Get-Process -Name splined"));
     assert!(!workflow.contains("TAURI_UPDATER_PUBLIC_KEY"));
     assert!(!workflow.contains("TAURI_SIGNING_PRIVATE_KEY"));

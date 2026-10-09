@@ -90,13 +90,17 @@ automatically restores all categories.
 
 ## Packaging with WinAppCli
 
-The release workflow pins upstream Microsoft WinAppCli and uses it to generate
-MSIX assets, generate a non-installed loose-layout debug identity, package x64
-payloads, create disposable development certificates, sign a CI-only package,
-install/activate/inspect it with real package identity, and uninstall it. Loose
-identity registration is available for development machines with Developer Mode
-enabled; release CI does not depend on that machine-wide setting. Development
-private keys remain ephemeral.
+The release workflow pins upstream Microsoft WinAppCli and creates two isolated
+x64 layouts. The production Store layout keeps the exact Partner Center identity
+`Psycotix.SPLINED` / `CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE`, is packed
+unsigned, and never runs `create-debug-identity`. CI unpacks the result and
+validates its identity, publisher display name `Psycotix`, release version,
+desktop family, `.spl` association, `runFullTrust`, runtime pair, and PE machine.
+
+A separate runner-temporary development layout receives debug identity, a
+disposable development certificate, signing, install/activation/identity checks,
+and clean uninstall. Development identity and signing cannot mutate the Store
+layout or artifact. Development private keys remain ephemeral.
 
 The primary GitHub artifact is `splined-windows-x86_64.zip`, containing exactly:
 
@@ -106,10 +110,14 @@ SPLINED\runtime\splined-core.dll
 SPLINED\README-WINDOWS.txt
 ```
 
-`SPLINED-x64.msix` is the unsigned Store-ready output. Public installation
-requires a future external publisher signature or Microsoft Store signing; the
-development certificate is not public trust. The App Installer template stays
-disabled until that installed channel has a stable publisher and HTTPS endpoint.
+`SPLINED-x64-store-unsigned.msix` is uploaded in the
+`splined-windows-store-submission` GitHub Actions artifact for Partner Center.
+It is not published as a normal GitHub Release download. Microsoft Store
+processing supplies production signing and Windows-managed updates. The Store
+product PFN is `Psycotix.SPLINED_8pvn5te36e43t` and Store ID is
+`9P8G4GMBBVBS`. The App Installer template is a separate, disabled
+direct-distribution design, not the Store update path. See
+[`docs/windows-store.md`](../docs/windows-store.md).
 
 ## Updates
 

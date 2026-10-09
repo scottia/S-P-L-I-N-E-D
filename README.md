@@ -51,7 +51,7 @@ Choose the installation method that matches where SPLINED will run.
 | Install type | Intended use | Installation files |
 | --- | --- | --- |
 | **Windows Portable** | Windows desktop / workstation | [`release/README-WINDOWS.txt`](release/README-WINDOWS.txt) |
-| **Windows MSIX** | Optional installed x64 Windows channel | [`docs/windows-guide.md`](docs/windows-guide.md) |
+| **Microsoft Store** | Production x64 MSIX submission/installed channel | [`docs/windows-store.md`](docs/windows-store.md) |
 | **Linux Portable** | Native Linux installation | [`release/README-LINUX.txt`](release/README-LINUX.txt) |
 | **macOS Portable** | Native macOS installation | [`release/README-MACOS.txt`](release/README-MACOS.txt) |
 | **Docker** | Linux servers, NAS, and container deployments | [`docker/README.md`](docker/README.md) · [`python/Dockerfile`](python/Dockerfile) |

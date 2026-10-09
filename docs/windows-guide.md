@@ -201,23 +201,26 @@ The user closes SPLINED and replaces only the three program/documentation files;
 portable `data\` and every configured external resource remain outside that
 operation.
 
-The optional installed artifact is an x64 MSIX created with upstream Microsoft
-WinAppCli. WinAppCli generates package assets, validates the manifest, supplies
-debug/loose-layout identity, creates disposable development certificates, and
-supports signing and Store-ready unsigned output. CI generates the loose-layout
-identity without registering it, so release validation does not depend on a
-machine-wide Developer Mode setting. Developers may register that identity with
-WinAppCli on machines where Developer Mode is enabled. CI development-signs a
-temporary package, installs and activates it through its package identity,
-verifies in-process native-core startup and the `.spl` association, and
-uninstalls it. Development certificates and private keys are never committed or
-published.
+The installed Microsoft Store channel is an x64 MSIX created with upstream
+Microsoft WinAppCli. Its exact production identity is `Psycotix.SPLINED`, its
+publisher is `CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE`, and its publisher
+display name is `Psycotix`. The package family name is
+`Psycotix.SPLINED_8pvn5te36e43t`, and the Store ID is `9P8G4GMBBVBS`.
 
-The checked-in `SPLINED.appinstaller.template` prepares Windows App Installer
-OnLaunch updates for a future public installed channel. It contains deliberate
-publisher and HTTPS placeholders and is not published or enabled until a stable
-public publisher/signing chain exists. The portable ZIP never depends on MSIX,
-Store publication, or public code-signing infrastructure.
+Release CI packs the production layout unsigned for Partner Center and validates
+the final packed manifest and AMD64 runtime pair. That layout never receives a
+debug identity or development signature. A separate temporary layout receives
+debug identity and a disposable certificate for install, activation, native-core,
+and `.spl` association QA, then is removed. Development certificates and private
+keys are never committed or published. See the
+[Microsoft Store package guide](windows-store.md) for the artifact and submission
+contract.
+
+Store-installed updates use Windows/Microsoft Store package deployment, not
+SPLINED binary self-replacement. The checked-in App Installer template is kept
+only for a possible separately signed direct-distribution channel and remains
+disabled while its HTTPS placeholders are unresolved. The portable ZIP remains
+independent of MSIX and Store publication.
 
 Release CI caches Cargo dependency downloads only. Compiled `windows/target`
 artifacts are deliberately excluded because each release performs a clean

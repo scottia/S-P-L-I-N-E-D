@@ -1,16 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Store-ready App Installer template. This is intentionally not published or
-  enabled until the MSIX channel has a stable public publisher/signing chain
-  and the two URI placeholders below are replaced by controlled HTTPS URLs.
+  Optional App Installer template for a separately signed direct-distribution
+  channel. Microsoft Store deployments use the Store package identity and
+  Store-managed updates instead. This template remains disabled until its two
+  URI placeholders are replaced by controlled HTTPS URLs and the package has a
+  suitable non-Store signing chain.
 -->
 <AppInstaller
   xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
   Version="1.0.31.0"
   Uri="__APPINSTALLER_HTTPS_URI__">
   <MainPackage
-    Name="SPLINED"
-    Publisher="__PUBLIC_PUBLISHER_DN__"
+    Name="Psycotix.SPLINED"
+    Publisher="CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE"
     Version="1.0.31.0"
     ProcessorArchitecture="x64"
     Uri="__MSIX_HTTPS_URI__" />
