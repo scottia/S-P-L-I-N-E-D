@@ -51,8 +51,8 @@ with the current product documentation.
 ### Platform packaging
 
 - [Microsoft Store Windows channel](windows-store.md) — live installation,
-  exact production identity, Store-managed updates, isolated development QA,
-  and the future-update publishing path.
+  exact production identity, Store-managed in-app update requests, dedicated
+  existing-tag packaging, isolated development QA, and Partner Center publishing.
 - [Docker installation](../docker/README.md)
 - [Windows source and build guide](../windows/README.md)
 - [Windows portable instructions](../release/README-WINDOWS.txt)

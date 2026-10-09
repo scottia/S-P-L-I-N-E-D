@@ -101,9 +101,11 @@ portable settings, and selective `.spl` backup/restore.
 The x64 Windows portable application restores the mature WinForms interface.
 `splined.exe` loads the fixed `runtime\splined-core.dll` and calls the
 authoritative Rust processing backend in-process through a stable UTF-8 C ABI;
-there is one normal application process. Portable update checks open the
-official release page for manual program-file replacement, leaving `data\` and
-configured external resources untouched. See
+there is one normal application process. **Help > Check for Updates** is
+channel-aware: Portable uses GitHub release notification and manual replacement,
+while an installed Store package uses Microsoft Store package APIs and
+Store-managed installation. Both leave configured external resources untouched.
+See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
 ---

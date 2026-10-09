@@ -1,39 +1,85 @@
-name: Windows Store Package Validation
+name: SPLINED MS Store Windows Update
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev
-    paths:
-      - "windows/package/**"
-      - "windows/gui/**"
-      - "windows/src/**"
-      - "windows/Cargo.toml"
-      - "windows/Cargo.lock"
-      - ".github/workflows/windows-store-validation.yml"
-      - ".github/workflows/release-next-patch.yml"
+    inputs:
+      version:
+        description: "Existing numeric SPLINED release tag (example: 1.0.71)"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-store-validation-${{ github.ref }}
-  cancel-in-progress: true
+  group: splined-windows-store-${{ inputs.version }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.99.0"
   WINDOWS_TARGET: "x86_64-pc-windows-msvc"
+  RELEASE_VERSION: ${{ inputs.version }}
 
 jobs:
-  validate-store-package:
-    name: Pack production Store MSIX and smoke-test development copy
+  build-store-update:
+    name: Build existing tag for Partner Center
     runs-on: windows-latest
 
     steps:
-      - name: Checkout source
+      - name: Validate numeric version input
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:RELEASE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "version must be an existing numeric release tag such as 1.0.71."
+          }
+
+      - name: Checkout existing release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.version }}
+          fetch-depth: 0
+
+      - name: Verify exact tag and release metadata
+        id: release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          git fetch --force --tags origin
+          $commit = (git rev-parse HEAD).Trim()
+          $tagCommit = (git rev-parse "refs/tags/$env:RELEASE_VERSION^{commit}").Trim()
+          if ($commit -ne $tagCommit) {
+            throw "Checked-out commit does not match existing tag $env:RELEASE_VERSION."
+          }
+
+          function Read-PackageVersion([string]$path) {
+            $content = Get-Content -Raw -LiteralPath $path
+            $match = [regex]::Match($content,
+              '(?ms)^\[package\].*?^version\s*=\s*"([^"]+)"')
+            if (-not $match.Success) { throw "Unable to read package version from $path." }
+            return $match.Groups[1].Value
+          }
+
+          $rootVersion = Read-PackageVersion "Cargo.toml"
+          $windowsVersion = Read-PackageVersion "windows/Cargo.toml"
+          if ($rootVersion -ne $env:RELEASE_VERSION -or $windowsVersion -ne $env:RELEASE_VERSION) {
+            throw "Root/Windows package versions do not match tag $env:RELEASE_VERSION."
+          }
+          $releaseInfo = Get-Content -Raw -LiteralPath windows/gui/ReleaseInfo.cs
+          if ($releaseInfo -notmatch ('SemanticVersion = "' + [regex]::Escape($env:RELEASE_VERSION) + '"')) {
+            throw "Windows ReleaseInfo does not match tag $env:RELEASE_VERSION."
+          }
+          $manifest = [xml](Get-Content -Raw -LiteralPath windows/package/Package.appxmanifest)
+          if ($manifest.Package.Identity.Version -cne "$env:RELEASE_VERSION.0") {
+            throw "Store manifest version does not match $env:RELEASE_VERSION.0."
+          }
+          if ((git status --porcelain).Count -ne 0) {
+            throw "Existing release tag checkout is not clean."
+          }
+          "commit=$commit" | Add-Content $env:GITHUB_OUTPUT
+          Write-Host "Validated existing tag $env:RELEASE_VERSION at $commit"
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -49,9 +95,9 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-splined-windows-store-v1-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
+          key: ${{ runner.os }}-splined-windows-store-v2-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-splined-windows-store-v1-${{ env.RUST_TOOLCHAIN }}-
+            ${{ runner.os }}-splined-windows-store-v2-${{ env.RUST_TOOLCHAIN }}-
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Install pinned upstream WinAppCli
@@ -71,7 +117,7 @@ jobs:
       - name: Build clean x64 WinForms and Rust DLL pair
         shell: pwsh
         env:
-          SPLINED_BUILD_COMMIT: ${{ github.sha }}
+          SPLINED_BUILD_COMMIT: ${{ steps.release.outputs.commit }}
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
@@ -82,19 +128,16 @@ jobs:
           $env:SPLINED_BUILD_GUI = "1"
           cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET
 
-      - name: Pack and read back production Store identity
+      - name: Build and strictly validate unsigned production Store MSIX
         id: store-package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
-          $versionLine = Get-Content -LiteralPath windows/Cargo.toml | Where-Object { $_ -match '^version\s*=\s*"' } | Select-Object -First 1
-          if ($versionLine -notmatch '"(\d+\.\d+\.\d+)"') {
-            throw "Unable to read the Windows package version."
-          }
-          $expectedVersion = "$($Matches[1]).0"
-          $storePackage = Join-Path $env:RUNNER_TEMP "SPLINED-x64-store-unsigned.msix"
+          $artifactRoot = Join-Path $env:RUNNER_TEMP "splined-store-artifact"
+          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+          $storePackage = Join-Path $artifactRoot "SPLINED-x64-store-unsigned.msix"
           $result = & windows/package/Build-StorePackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
             -CoreDllPath "$releaseRoot/splined_core.dll" `
@@ -103,12 +146,11 @@ jobs:
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
             -UnpackedRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked") `
             -OutputPath $storePackage `
-            -ExpectedVersion $expectedVersion
+            -ExpectedVersion "$env:RELEASE_VERSION.0"
           $result | Format-List | Out-String | Write-Host
           "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
-          "version=$expectedVersion" | Add-Content $env:GITHUB_OUTPUT
 
-      - name: Development-sign, install, activate, and uninstall isolated QA package
+      - name: Development-sign, install, activate, native-smoke, and uninstall isolated QA package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -128,21 +170,21 @@ jobs:
           path: ${{ steps.store-package.outputs.path }}
           if-no-files-found: error
 
-      - name: Report validated Store identity
+      - name: Report Store update artifact
         shell: pwsh
         run: |
           @"
-          ## Microsoft Store package validation
+          ## SPLINED Microsoft Store update
 
+          - Existing tag: ``$env:RELEASE_VERSION``
           - Artifact: ``splined-windows-store-submission/SPLINED-x64-store-unsigned.msix``
           - Identity: ``Psycotix.SPLINED``
           - Publisher: ``CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE``
           - Publisher display name: ``Psycotix``
-          - Display name: ``SPLINED``
+          - Display name / Application Id: ``SPLINED``
           - PFN: ``Psycotix.SPLINED_8pvn5te36e43t``
           - Store ID: ``9P8G4GMBBVBS``
-          - Version: ``${{ steps.store-package.outputs.version }}``
-          - Architecture: ``x64``
-          - Production signing: unsigned for Partner Center
+          - Version: ``$env:RELEASE_VERSION.0``
+          - Architecture / family: ``x64`` / ``Windows.Desktop``
+          - Production signing: unsigned for manual Partner Center submission
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
-

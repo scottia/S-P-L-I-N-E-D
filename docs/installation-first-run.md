@@ -68,10 +68,11 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, release CI packs `SPLINED-x64-store-unsigned.msix` with the
-exact Partner Center identity and uploads it only as the
-`splined-windows-store-submission` Actions artifact for future Store updates.
-It is not an end-user installer or a normal GitHub Release download.
+For maintainers, `SPLINED (All OS) and GHCR` creates the numeric release tag.
+The separate `SPLINED MS Store Windows Update` workflow consumes that existing
+tag, packs `SPLINED-x64-store-unsigned.msix` with the exact Partner Center
+identity, and uploads it only as the `splined-windows-store-submission` Actions
+artifact. It is not an end-user installer or a normal GitHub Release download.
 Development identity and signing use a separate temporary QA layout and cannot
 mutate the Store artifact. See
 [Microsoft Store Windows channel](windows-store.md) for the live product,
@@ -79,9 +80,11 @@ identity, and update-publication procedure.
 
 ### Windows upgrade
 
-Portable automatic binary replacement is retired. **Help > Check for Updates**
-shows the official release information; the user may open the official release
-page, download the current portable ZIP, close SPLINED, and replace only:
+For Portable Windows, **Help > Check for Updates** reads GitHub Releases and
+`windows-update.json`. If a release is newer, it identifies the Portable
+channel, explains that updating is manual, and can open the official release
+page. The user downloads the current portable ZIP, closes SPLINED, and replaces
+only:
 
 ```text
 splined.exe
@@ -93,9 +96,14 @@ Never replace or delete `data\`, SQLite, credentials, history, cache, logs, or
 configured external state. No updater executable, hidden helper, command shell,
 or self-replacement loop participates in this process.
 
-Microsoft Store installations receive Windows-managed package updates through
-the Store. The separate App Installer template remains disabled and is not the
-Store update path. Windows builds target only `x86_64-pc-windows-msvc`.
+For Microsoft Store installations, the same menu command uses Microsoft Store
+package APIs instead of GitHub. It reports when the Store package is current;
+when an update exists, **UPDATE NOW** asks Windows/Microsoft Store to download
+and install it and **LATER** defers it. If direct Store integration is
+unavailable, SPLINED offers the official Store product page. Store users never
+receive Portable ZIP replacement instructions. The separate App Installer
+template remains disabled and is not the Store update path. Windows builds
+target only `x86_64-pc-windows-msvc`.
 
 ## Linux
 
