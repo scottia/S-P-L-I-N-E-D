@@ -1,11 +1,11 @@
-{% if version %}# S:P:L:I:N:E:D {{ version }}{% else %}# S:P:L:I:N:E:D release{% endif %}
+{%- for entry in commits | commit_groups(groups=commit_parsers_groups) -%}
+{% if not loop.first %}
+{% endif %}## {{ entry.group }}
 
-{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}
-## {{ entry.group }}
-
-{% for commit in entry.commits %}- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/scottia/S-P-L-I-N-E-D/commit/{{ commit.id }}))
-{% endfor %}
-{% endfor %}
+{% for commit in entry.commits -%}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/scottia/S-P-L-I-N-E-D/commit/{{ commit.id }}))
+{% endfor -%}
+{% endfor -%}
 {% if previous.version and version %}
 **Full changelog:** [{{ previous.version }} → {{ version }}](https://github.com/scottia/S-P-L-I-N-E-D/compare/{{ previous.version }}...{{ version }})
-{% endif %}
+{% endif -%}
