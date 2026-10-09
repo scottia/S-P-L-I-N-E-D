@@ -74,6 +74,38 @@ jobs:
           "RELEASE_COMMIT=$commit" | Add-Content $env:GITHUB_ENV
           Write-Host "Existing tag validated: $env:RELEASE_VERSION @ $commit"
 
+      - name: Repair legacy Store minimum OS version if release provisioning corrupted it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $manifestPath = "windows/package/Package.appxmanifest"
+          $manifest = [xml](Get-Content -Raw -LiteralPath $manifestPath)
+          $family = $manifest.Package.Dependencies.TargetDeviceFamily
+          $expectedMinVersion = "10.0.17763.0"
+          $legacyCorruption = "$env:RELEASE_VERSION.0"
+
+          if ($family.Name -ne "Windows.Desktop") {
+            throw "Existing release tag does not target Windows.Desktop."
+          }
+
+          if ($family.MinVersion -eq $legacyCorruption) {
+            Write-Host "Repairing release-tag MinVersion $legacyCorruption -> $expectedMinVersion for Store packaging only."
+            $family.SetAttribute("MinVersion", $expectedMinVersion)
+            $settings = New-Object Xml.XmlWriterSettings
+            $settings.Indent = $true
+            $settings.Encoding = New-Object Text.UTF8Encoding($false)
+            $writer = [Xml.XmlWriter]::Create((Resolve-Path -LiteralPath $manifestPath).Path, $settings)
+            try { $manifest.Save($writer) } finally { $writer.Dispose() }
+          }
+          elseif ($family.MinVersion -ne $expectedMinVersion) {
+            throw "Unexpected Windows.Desktop MinVersion '$($family.MinVersion)'; refusing to silently rewrite it."
+          }
+
+          $verify = [xml](Get-Content -Raw -LiteralPath $manifestPath)
+          if ($verify.Package.Dependencies.TargetDeviceFamily.MinVersion -ne $expectedMinVersion) {
+            throw "Store MinVersion repair did not persist."
+          }
+
       - name: Install stable Rust
         shell: bash
         run: |
@@ -224,6 +256,16 @@ jobs:
             -OutputPath $storePackage `
             -ExpectedVersion "$env:RELEASE_VERSION.0"
           $result | Format-List | Out-String | Write-Host
+
+          $packedManifestPath = Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked/AppxManifest.xml"
+          $packedManifest = [xml](Get-Content -Raw -LiteralPath $packedManifestPath)
+          $packedFamily = $packedManifest.Package.Dependencies.TargetDeviceFamily
+          if ($packedFamily.MinVersion -ne "10.0.17763.0") {
+            throw "Packed Store MSIX has invalid Windows.Desktop MinVersion '$($packedFamily.MinVersion)'."
+          }
+          if ($packedFamily.MaxVersionTested -ne "10.0.26100.0") {
+            throw "Packed Store MSIX MaxVersionTested changed unexpectedly to '$($packedFamily.MaxVersionTested)'."
+          }
 
       - name: Development-sign, install, activate, and uninstall isolated QA package
         shell: pwsh
