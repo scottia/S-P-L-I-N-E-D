@@ -214,19 +214,32 @@ jobs:
               raise SystemExit("Windows executable manifest version was not updated")
           app_manifest_path.write_text(app_manifest, encoding="utf-8")
 
-          for package_path in (
-              Path("windows/package/Package.appxmanifest"),
-              Path("windows/package/SPLINED.appinstaller.template"),
-          ):
-              package = package_path.read_text(encoding="utf-8-sig")
-              package, count = re.subn(
-                  r'(Version=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
-                  rf'\g<1>{release_version}.0\g<2>',
-                  package,
-              )
-              if count < 1:
-                  raise SystemExit(f"Package version was not updated in {package_path}")
-              package_path.write_text(package, encoding="utf-8")
+          package_manifest_path = Path("windows/package/Package.appxmanifest")
+          package_manifest = package_manifest_path.read_text(encoding="utf-8-sig")
+          package_manifest, count = re.subn(
+              r'(?s)(<Identity\b[^>]*\bVersion=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
+              rf'\g<1>{release_version}.0\g<2>',
+              package_manifest,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("Package.appxmanifest Identity.Version was not updated")
+          if 'MinVersion="10.0.17763.0"' not in package_manifest:
+              raise SystemExit("Package.appxmanifest Windows.Desktop MinVersion changed unexpectedly")
+          if 'MaxVersionTested="10.0.26100.0"' not in package_manifest:
+              raise SystemExit("Package.appxmanifest MaxVersionTested changed unexpectedly")
+          package_manifest_path.write_text(package_manifest, encoding="utf-8")
+
+          appinstaller_path = Path("windows/package/SPLINED.appinstaller.template")
+          appinstaller = appinstaller_path.read_text(encoding="utf-8-sig")
+          appinstaller, count = re.subn(
+              r'(Version=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
+              rf'\g<1>{release_version}.0\g<2>',
+              appinstaller,
+          )
+          if count != 2:
+              raise SystemExit("App Installer template versions were not updated exactly twice")
+          appinstaller_path.write_text(appinstaller, encoding="utf-8")
 
           python_path = Path("python/splined.py")
           source = python_path.read_text(encoding="utf-8")
