@@ -1,0 +1,139 @@
+name: SPLINED (Docker) > GHCR Resolution
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Existing numeric SPLINED release tag (example: 1.0.71)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: splined-docker-ghcr-resolution-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish-ghcr:
+    name: Publish exact tagged image and refresh release body
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/scottia/splined
+      RELEASE_VERSION: ${{ inputs.version }}
+
+    steps:
+      - name: Validate numeric existing-tag input
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: version must be an existing numeric release tag such as 1.0.71."
+            exit 1
+          fi
+
+      - name: Checkout exact existing release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ inputs.version }}
+          fetch-depth: 0
+
+      - name: Checkout current authoritative release engine
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .splined-release-engine
+          sparse-checkout: |
+            cliff.toml
+            release/Install-GitCliff.ps1
+            release/Generate-ReleaseNotes.ps1
+            release/templates
+
+      - name: Verify exact existing tag and GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")"
+          gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .splined-release-engine/release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The release-note engine must be git-cliff 2.14.2."
+          }
+
+      - name: Render GitHub release notes from the authoritative git-cliff context
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .splined-release-engine/release/Generate-ReleaseNotes.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ConfigPath .splined-release-engine/cliff.toml `
+            -GitHubTemplatePath .splined-release-engine/release/templates/github-release.tera `
+            -StoreTemplatePath .splined-release-engine/release/templates/store-highlights.tera `
+            -OutputDirectory release-notes
+
+      - name: Build exact release Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_COMMIT=$(git rev-parse HEAD)
+          docker build --pull \
+            --build-arg SPLINED_BUILD_CHANNEL=release \
+            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
+            --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
+            --tag "$IMAGE_NAME:v$RELEASE_VERSION" \
+            --tag "$IMAGE_NAME:latest" \
+            ./python
+
+      - name: Log in to GitHub Container Registry
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish version and latest tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_NAME:v$RELEASE_VERSION"
+          docker push "$IMAGE_NAME:latest"
+
+      - name: Replace existing GitHub Release body with git-cliff notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes-file release-notes/GITHUB-RELEASE.md
+
+      - name: GHCR resolution summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## SPLINED Docker/GHCR resolution complete"
+            echo
+            echo "- Existing tag: \`$RELEASE_VERSION\`"
+            echo "- Exact release commit: \`$(git rev-parse HEAD)\`"
+            echo "- GHCR: \`$IMAGE_NAME:v$RELEASE_VERSION\` and \`$IMAGE_NAME:latest\`"
+            echo "- Existing GitHub Release body: refreshed from git-cliff context"
+            echo "- Release or tag created: \`no\`"
+            echo "- Microsoft Store touched: \`no\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -18,8 +18,8 @@ on:
         required: false
         default: false
         type: boolean
-      build_store_package:
-        description: "Build Microsoft Store package"
+      microsoft_store:
+        description: "Build, validate, and submit Microsoft Store update"
         required: false
         default: true
         type: boolean
@@ -467,7 +467,7 @@ jobs:
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
       - name: Install pinned upstream WinAppCli for Store packaging
-        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -483,7 +483,7 @@ jobs:
 
       - name: Build and strictly validate unsigned production Store MSIX from release binaries
         id: store-package
-        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -507,7 +507,7 @@ jobs:
           "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package
-        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -529,11 +529,11 @@ jobs:
             release-assets/windows-update.json
           if-no-files-found: error
 
-      - name: Upload Partner Center Store submission artifact
-        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+      - name: Upload internal Store package artifact
+        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: splined-windows-store-submission
+          name: splined-windows-store-package
           path: ${{ steps.store-package.outputs.path }}
           if-no-files-found: error
 
@@ -546,7 +546,7 @@ jobs:
           - Cargo dependency cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
-          - Microsoft Store package selected: ``${{ inputs.build_store_package }}``
+          - Microsoft Store submission selected: ``${{ inputs.microsoft_store }}``
           - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
@@ -724,6 +724,56 @@ jobs:
           git push origin "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
           test "$(git ls-remote origin "refs/tags/$RELEASE_VERSION^{}" | awk '{print $1}')" = "$RELEASE_COMMIT"
 
+  generate-release-notes:
+    name: Generate release notes from one git-cliff context
+    needs:
+      - prepare-release
+      - finalize-tag
+    if: ${{ needs.finalize-tag.result == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout generated release tag with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          $reportedVersion = (git-cliff --version) -join "`n"
+          if ($reportedVersion.Trim() -cne "git-cliff 2.14.2") {
+            throw "Expected git-cliff 2.14.2; received '$($reportedVersion.Trim())'."
+          }
+
+      - name: Render GitHub notes and Store Highlights from the same context
+        id: notes
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Generate-ReleaseNotes.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ConfigPath cliff.toml `
+            -GitHubTemplatePath release/templates/github-release.tera `
+            -StoreTemplatePath release/templates/store-highlights.tera `
+            -OutputDirectory release-notes
+
+      - name: Upload generated release-note context and outputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-release-notes
+          path: |
+            release-notes/release-context.json
+            release-notes/GITHUB-RELEASE.md
+            release-notes/STORE-HIGHLIGHTS.txt
+          if-no-files-found: error
+
   publish-release:
     name: Publish GitHub Release
     needs:
@@ -732,11 +782,13 @@ jobs:
       - build-ubuntu
       - build-macos
       - finalize-tag
+      - generate-release-notes
     if: >-
       ${{
         always() &&
         needs.prepare-release.result == 'success' &&
         needs.finalize-tag.result == 'success' &&
+        needs.generate-release-notes.result == 'success' &&
         (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
         (needs.build-ubuntu.result == 'success' || needs.build-ubuntu.result == 'skipped') &&
         (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
@@ -746,6 +798,12 @@ jobs:
       contents: write
 
     steps:
+      - name: Download generated release notes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: splined-release-notes
+          path: release-notes
+
       - name: Download Windows release assets
         if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -791,7 +849,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "S:P:L:I:N:E:D $RELEASE_VERSION" \
-            --generate-notes
+            --notes-file ../release-notes/GITHUB-RELEASE.md
 
   publish-ghcr:
     name: Publish GHCR
@@ -842,13 +900,109 @@ jobs:
           docker push "$IMAGE_NAME:v${RELEASE_VERSION}"
           docker push "$IMAGE_NAME:latest"
 
+  publish-store:
+    name: Publish Microsoft Store update
+    needs:
+      - prepare-release
+      - generate-release-notes
+      - publish-release
+      - publish-ghcr
+    if: >-
+      ${{
+        always() &&
+        inputs.microsoft_store &&
+        (inputs.platform == 'Windows' || inputs.platform == 'All') &&
+        needs.prepare-release.result == 'success' &&
+        needs.generate-release-notes.result == 'success' &&
+        needs.publish-release.result == 'success' &&
+        needs.publish-ghcr.result == 'success'
+      }}
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout generated release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Download exact Store package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: splined-windows-store-package
+          path: store-package
+
+      - name: Download Store Highlights from release context
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: splined-release-notes
+          path: release-notes
+
+      - name: Assemble Store submission audit artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [IO.Directory]::CreateDirectory("store-submission") | Out-Null
+          Copy-Item -LiteralPath "store-package/SPLINED-x64-store-unsigned.msix" -Destination "store-submission/SPLINED-x64-store-unsigned.msix"
+          Copy-Item -LiteralPath "release-notes/STORE-HIGHLIGHTS.txt" -Destination "store-submission/STORE-HIGHLIGHTS.txt"
+
+      - name: Upload Store submission audit artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-windows-store-submission
+          path: |
+            store-submission/SPLINED-x64-store-unsigned.msix
+            store-submission/STORE-HIGHLIGHTS.txt
+          if-no-files-found: error
+
+      - name: Require Microsoft Store credentials
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($name in @("AZURE_AD_APPLICATION_CLIENT_ID", "AZURE_AD_APPLICATION_SECRET", "AZURE_AD_TENANT_ID", "SELLER_ID")) {
+            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required Microsoft Store publishing credential is unavailable: $name"
+            }
+          }
+
+      - name: Install pinned Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Stage package, update en-US Store Highlights, and submit
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & windows/package/Publish-StoreUpdate.ps1 `
+            -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
+            -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
+            -ProductId 9P8G4GMBBVBS
+
   release-summary:
     name: Release summary
     needs:
       - prepare-release
       - publish-release
       - publish-ghcr
-    if: ${{ always() && needs.publish-release.result == 'success' && needs.publish-ghcr.result == 'success' }}
+      - publish-store
+    if: >-
+      ${{
+        always() &&
+        needs.publish-release.result == 'success' &&
+        needs.publish-ghcr.result == 'success' &&
+        (needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped')
+      }}
     runs-on: ubuntu-latest
 
     steps:
@@ -865,4 +1019,10 @@ jobs:
             echo "- GitHub Release: published"
             echo "- GHCR: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
             echo "- GHCR latest: \`ghcr.io/scottia/splined:latest\`"
+            echo "- Microsoft Store selected: \`${{ inputs.microsoft_store }}\`"
+            if [ "${{ needs.publish-store.result }}" = "success" ]; then
+              echo "- Microsoft Store: package and en-US Store Highlights accepted for processing"
+            else
+              echo "- Microsoft Store: not run (disabled or no Windows target selected)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

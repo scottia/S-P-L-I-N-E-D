@@ -38,7 +38,7 @@ Machine fields are AMD64 (`0x8664`).
 The manual all-OS release workflow performs one clean Windows release build,
 native smoke, PE/version checks, and portable allowlist auditing. The same built
 executable/DLL pair also feeds Store packaging and isolated MSIX QA when its
-`build_store_package` input is enabled (the default for Windows/All). Its
+`microsoft_store` input is enabled (the default for Windows/All). Its
 `extended_windows_validation` input is off by default; enable it when a release
 run should also execute the full Rust and WinForms GUI regression suite.
 
@@ -89,18 +89,26 @@ automatically restores all categories.
 
 ## Release workflows
 
-The repository has three supported workflows:
+The repository has four supported workflows:
 
 1. `SPLINED (All OS) and GHCR` prepares an exact release commit from `main`,
    builds the selected platforms, and only after successful builds pushes the
    numeric tag and publishes the GitHub/GHCR outputs. A Windows build always
    creates `splined-windows-x86_64.zip` and `windows-update.json`; when selected,
-   those same binaries also create the Actions-only Store submission artifact.
-2. `SPLINED Existing Tag > MS Store Package` rebuilds and validates the Store
-   MSIX from an existing numeric tag for recovery/repackaging. It never creates
-   a version, tag, GitHub Release, or GHCR image.
-3. `SPLINED Published > GHCR` publishes an existing release to GHCR when that
-   channel needs recovery.
+   those same binaries also create the Store MSIX and are submitted with
+   generated Store Highlights after GitHub Release/GHCR publication.
+2. `SPLINED (Tagged) > MS Store Package Resolution` rebuilds and validates the
+   Store MSIX plus Store Highlights from an existing numeric tag, then stops at
+   the Actions artifact.
+3. `SPLINED > MS Store Publish & Update` rebuilds and validates an existing
+   numeric tag and submits it to the live Store product.
+4. `SPLINED (Docker) > GHCR Resolution` publishes an existing release to GHCR
+   and refreshes that existing GitHub Release body when Docker needs recovery.
+
+All release notes come from `git-cliff 2.14.2`. One context classified by the
+root `cliff.toml` renders both the formatted GitHub release body and concise
+Store Highlights; unconventional commits fall into `📦 Other Changes`. See
+[`docs/release-automation.md`](../docs/release-automation.md).
 
 A selected-platform build failure, including selected Store packaging or QA,
 occurs before numeric tag creation, so it cannot leave an orphan release tag.
@@ -125,9 +133,10 @@ disposable development certificate, signing, install/activation/identity checks,
 and clean uninstall. Development identity and signing cannot mutate the Store
 layout or artifact. Development private keys remain ephemeral.
 
-`SPLINED Existing Tag > MS Store Package` retains this same packaging and QA
-contract as a recovery path for an existing tag, not as the normal Store release
-path.
+`SPLINED (Tagged) > MS Store Package Resolution` retains this same packaging and
+QA contract as a package-only recovery path. `SPLINED > MS Store Publish &
+Update` applies it when an existing tag needs Store publication or
+republication. Neither creates or changes a release tag.
 
 The primary GitHub artifact is `splined-windows-x86_64.zip`, containing exactly:
 
@@ -137,11 +146,15 @@ SPLINED\runtime\splined-core.dll
 SPLINED\README-WINDOWS.txt
 ```
 
-For future Store releases and updates, `SPLINED-x64-store-unsigned.msix` is
-uploaded in the `splined-windows-store-submission` GitHub Actions artifact for
-maintainer submission to Partner Center. It is not an end-user installer and is
-not published as a normal GitHub Release download. Microsoft Store processing
-supplies production signing and Windows-managed updates. The live Store product
+For future Store releases and updates, `SPLINED-x64-store-unsigned.msix` and
+`STORE-HIGHLIGHTS.txt` are uploaded in the
+`splined-windows-store-submission` GitHub Actions artifact for audit/recovery.
+When **Microsoft Store** is enabled, the normal workflow stages the package,
+preserves existing listing/package metadata, updates only the en-US ReleaseNotes
+field, and submits it automatically for Microsoft processing. The unsigned MSIX
+is not an end-user installer and is not published as a normal GitHub Release
+download. Microsoft Store processing supplies production signing and
+Windows-managed updates. The live Store product
 PFN is `Psycotix.SPLINED_8pvn5te36e43t` and Store ID is
 `9P8G4GMBBVBS`. The App Installer template is a separate, disabled
 direct-distribution design, not the Store update path. See

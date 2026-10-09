@@ -111,8 +111,13 @@ See
 For maintainers, `SPLINED (All OS) and GHCR` builds the Windows runtime pair
 once and uses those same binaries for the Portable ZIP and, when selected, the
 unsigned Microsoft Store submission package. Both must validate before the
-numeric tag is created. `SPLINED Existing Tag > MS Store Package` is the
-recovery/repackaging path for an already published source tag.
+numeric tag is created; the selected Store path then submits the validated
+package and generated Store Highlights automatically. Exact-tag recovery is
+split between `SPLINED (Tagged) > MS Store Package Resolution`,
+`SPLINED > MS Store Publish & Update`, and
+`SPLINED (Docker) > GHCR Resolution`. GitHub notes and Store Highlights are
+rendered from one git-cliff 2.14.2 context. See the
+[release automation guide](docs/release-automation.md).
 
 ---
 

@@ -70,14 +70,18 @@ root-relative state under `<portable-root>\data`.
 
 For maintainers, `SPLINED (All OS) and GHCR` builds the x64 Windows runtime pair
 once. The same `splined.exe` and `runtime\splined-core.dll` feed the Portable ZIP
-and, when **Build Microsoft Store package** is selected, the unsigned Store
-MSIX. Portable and selected Store validation must both succeed before the
-numeric release tag is created. The MSIX is uploaded only as the
-`splined-windows-store-submission` Actions artifact; it is not an end-user
-installer or a normal GitHub Release download. Development identity and signing
-use a separate temporary QA layout and cannot mutate the Store artifact.
-`SPLINED Existing Tag > MS Store Package` is reserved for recovery or
-repackaging from an existing numeric source tag. See
+and, when **Microsoft Store** is enabled, the unsigned Store MSIX. Portable and
+selected Store validation must both succeed before the numeric release tag is
+created. After the GitHub Release and GHCR publish, the workflow automatically
+stages the MSIX, preserves the existing Store submission metadata, updates only
+the en-US Store Highlights, and submits it for Microsoft processing. The MSIX
+is retained with `STORE-HIGHLIGHTS.txt` in the Actions-only
+`splined-windows-store-submission` artifact; it is not an end-user installer or
+a normal GitHub Release download. Development identity and signing use a
+separate temporary QA layout and cannot mutate the Store artifact.
+`SPLINED (Tagged) > MS Store Package Resolution` rebuilds a package without
+submitting it; `SPLINED > MS Store Publish & Update` publishes an existing tag.
+See the [release automation guide](release-automation.md) and
 [Microsoft Store Windows channel](windows-store.md) for the live product,
 identity, and update-publication procedure.
 

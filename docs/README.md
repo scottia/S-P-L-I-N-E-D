@@ -52,8 +52,11 @@ with the current product documentation.
 
 - [Microsoft Store Windows channel](windows-store.md) — live installation,
   exact production identity, Store-managed in-app update requests, synchronized
-  normal-release packaging, existing-tag recovery, isolated development QA, and
-  Partner Center publishing.
+  normal-release packaging and publication, existing-tag recovery, and isolated
+  development QA.
+- [Release automation](release-automation.md) — the four supported workflows,
+  git-cliff 2.14.2 release-note authority, automatic Store submission, and
+  exact-tag Store/Docker recovery paths.
 - [Docker installation](../docker/README.md)
 - [Windows source and build guide](../windows/README.md)
 - [Windows portable instructions](../release/README-WINDOWS.txt)
