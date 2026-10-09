@@ -68,13 +68,16 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, `SPLINED (All OS) and GHCR` creates the numeric release tag.
-The separate `SPLINED MS Store Windows Update` workflow consumes that existing
-tag, packs `SPLINED-x64-store-unsigned.msix` with the exact Partner Center
-identity, and uploads it only as the `splined-windows-store-submission` Actions
-artifact. It is not an end-user installer or a normal GitHub Release download.
-Development identity and signing use a separate temporary QA layout and cannot
-mutate the Store artifact. See
+For maintainers, `SPLINED (All OS) and GHCR` builds the x64 Windows runtime pair
+once. The same `splined.exe` and `runtime\splined-core.dll` feed the Portable ZIP
+and, when **Build Microsoft Store package** is selected, the unsigned Store
+MSIX. Portable and selected Store validation must both succeed before the
+numeric release tag is created. The MSIX is uploaded only as the
+`splined-windows-store-submission` Actions artifact; it is not an end-user
+installer or a normal GitHub Release download. Development identity and signing
+use a separate temporary QA layout and cannot mutate the Store artifact.
+`SPLINED Existing Tag > MS Store Package` is reserved for recovery or
+repackaging from an existing numeric source tag. See
 [Microsoft Store Windows channel](windows-store.md) for the live product,
 identity, and update-publication procedure.
 

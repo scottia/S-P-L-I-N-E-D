@@ -11,7 +11,7 @@ namespace Splined.WindowsGui
         public const string VersionLabel = "v" + NumericVersion + " " + Channel;
         public const string DisplayName = WindowTitle + " " + VersionLabel;
         public const string RepositoryUrl = "https://github.com/scottia/S-P-L-I-N-E-D";
-        public const string HelpUrl = RepositoryUrl + "/blob/main/docs/README.md";
+        public const string HelpUrl = RepositoryUrl + "/blob/main/docs/windows-guide.md";
         public const string ReleasesUrl = RepositoryUrl + "/releases/latest";
         public const string StableReleasesApiUrl = "https://api.github.com/repos/scottia/S-P-L-I-N-E-D/releases?per_page=20";
     }

@@ -60,14 +60,15 @@ channel and does not require package identity.
 ## Store release and update package
 
 `SPLINED (All OS) and GHCR` is the only workflow that creates a release version
-and numeric tag. After that release exists, run `SPLINED MS Store Windows
-Update` manually with the existing numeric tag as its `version` input. The
-Store workflow never creates, moves, deletes, or rewrites a tag.
+and numeric tag. For Windows or All releases its **Build Microsoft Store
+package** input defaults to enabled. The Windows job performs one clean x64
+build, uses that exact executable/DLL pair for the Portable ZIP and Store MSIX,
+and validates both before the workflow may create the numeric tag. Ubuntu-only
+and macOS-only runs ignore this Windows option.
 
-The dedicated workflow checks out `refs/tags/<version>`, verifies the tag and
-release metadata, performs a clean x64 build, and creates a clean production
-layout directly from the Partner Center manifest and the tagged binaries. It
-updates manifest assets and packs this layout without signing:
+The production layout is created directly from the Partner Center manifest and
+the same version/commit-bound binaries used by the Portable ZIP. It updates
+manifest assets and packs this layout without signing:
 
 ```text
 GitHub Actions artifact: splined-windows-store-submission
@@ -84,10 +85,18 @@ are AMD64, and confirms that no package signature was added.
 
 `SPLINED-x64-store-unsigned.msix` is a maintainer-only Partner Center submission
 artifact for future Store releases and updates. It is not an end-user installer
-and is not attached to a GitHub Release. Microsoft Store processing supplies the
-production signing and deployment path. Store-installed updates are delivered
-by Windows/Microsoft Store package deployment; SPLINED does not replace its own
-binaries.
+and is not attached to a GitHub Release or included in its checksums. Microsoft
+Store processing supplies the production signing and deployment path.
+Store-installed updates are delivered by Windows/Microsoft Store package
+deployment; SPLINED does not replace its own binaries.
+
+`SPLINED Existing Tag > MS Store Package` is a recovery-only workflow. Given an
+existing numeric release tag, it rebuilds that exact source version, performs
+the same strict production packaging and isolated development QA, and uploads
+the same Actions artifact. It never creates or changes a version or tag, creates
+a GitHub Release, or publishes GHCR. Use it only when an already published
+source tag needs a replacement Partner Center package, such as after a
+submission correction.
 
 ## Development package validation
 
@@ -123,13 +132,13 @@ The Windows GUI uses `ConfigStore.IsPackaged` as its channel detector.
 
 The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
-For a future Store update, maintainers download
-`splined-windows-store-submission` from the corresponding `SPLINED MS Store
-Windows Update` run and submit `SPLINED-x64-store-unsigned.msix` to the existing
-Partner Center product with Store ID `9P8G4GMBBVBS`. Review, certification
-responses, listing changes, and publication remain manual Partner Center
-operations for each future update; they are not outstanding steps for the
-initial public release.
+For a normal future Store update, maintainers enable **Build Microsoft Store
+package** in the corresponding `SPLINED (All OS) and GHCR` run, download
+`splined-windows-store-submission`, and submit
+`SPLINED-x64-store-unsigned.msix` to the existing Partner Center product with
+Store ID `9P8G4GMBBVBS`. Review, certification responses, listing changes, and
+publication remain manual Partner Center operations for each future update;
+they are not outstanding steps for the initial public release.
 
 The checked-in App Installer template is not the Microsoft Store update path.
 It is retained only for a possible separately signed direct-distribution

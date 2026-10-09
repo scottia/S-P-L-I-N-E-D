@@ -52,6 +52,10 @@ extract the new release separately, then replace only:
 Never replace or delete data\, splined.db, credentials, history, cache, logs, or
 configured external resources during an upgrade.
 
+Microsoft Store SPLINED is the equally supported managed-install/update Windows
+channel. Store installations use Windows/Microsoft Store package deployment;
+this Portable package remains the supported no-install/direct channel.
+
 SECURITY
 
 Normal startup and scanning do not extract, generate, rename, replace, launch,

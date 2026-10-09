@@ -35,12 +35,12 @@ embed the same release version/commit identity, and startup rejects a mismatched
 pair. Release CI deletes the release output before building and verifies both PE
 Machine fields are AMD64 (`0x8664`).
 
-The manual all-OS release workflow keeps its Windows path focused on clean
-release build, native smoke, PE/version checks, and portable allowlist auditing.
-Its `extended_windows_validation` input is off by default; enable it when a
-release run should also execute the full Rust and WinForms GUI regression suite.
-Store packaging and MSIX install/identity validation run only in the separate
-existing-tag Store workflow.
+The manual all-OS release workflow performs one clean Windows release build,
+native smoke, PE/version checks, and portable allowlist auditing. The same built
+executable/DLL pair also feeds Store packaging and isolated MSIX QA when its
+`build_store_package` input is enabled (the default for Windows/All). Its
+`extended_windows_validation` input is off by default; enable it when a release
+run should also execute the full Rust and WinForms GUI regression suite.
 
 Release CI caches Cargo registry and Git dependency downloads but never
 `windows/target`. Restoring the compiled target had cost several minutes and
@@ -93,17 +93,17 @@ The repository has three supported workflows:
 
 1. `SPLINED (All OS) and GHCR` prepares an exact release commit from `main`,
    builds the selected platforms, and only after successful builds pushes the
-   numeric tag and publishes the GitHub/GHCR outputs. Its Windows outputs are
-   only `splined-windows-x86_64.zip` and `windows-update.json`.
-2. `SPLINED MS Store Windows Update` consumes an existing numeric tag, builds
-   and validates `SPLINED-x64-store-unsigned.msix`, performs isolated
-   development-package QA, and uploads the Partner Center artifact. It never
-   creates or modifies a tag.
+   numeric tag and publishes the GitHub/GHCR outputs. A Windows build always
+   creates `splined-windows-x86_64.zip` and `windows-update.json`; when selected,
+   those same binaries also create the Actions-only Store submission artifact.
+2. `SPLINED Existing Tag > MS Store Package` rebuilds and validates the Store
+   MSIX from an existing numeric tag for recovery/repackaging. It never creates
+   a version, tag, GitHub Release, or GHCR image.
 3. `SPLINED Published > GHCR` publishes an existing release to GHCR when that
    channel needs recovery.
 
-A selected-platform build failure occurs before numeric tag creation, so it
-cannot leave an orphan release tag.
+A selected-platform build failure, including selected Store packaging or QA,
+occurs before numeric tag creation, so it cannot leave an orphan release tag.
 
 ## Packaging with WinAppCli
 
@@ -112,10 +112,9 @@ The production listing is approved and live at
 Microsoft Store is the managed-install/update Windows channel; the portable ZIP
 is the equally supported no-install/direct channel.
 
-After `SPLINED (All OS) and GHCR` creates a successfully built numeric release
-tag, `SPLINED MS Store Windows Update` consumes that existing tag. It never
-creates or changes tags. The Store workflow pins upstream Microsoft WinAppCli
-and creates two isolated x64 layouts. The production layout keeps the exact Partner Center identity
+During a normal Windows/All release, `SPLINED (All OS) and GHCR` pins upstream
+Microsoft WinAppCli and creates two isolated x64 layouts from the same clean
+runtime pair used by the Portable ZIP. The production layout keeps the exact Partner Center identity
 `Psycotix.SPLINED` / `CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE`, is packed
 unsigned, and never runs `create-debug-identity`. CI unpacks the result and
 validates its identity, publisher display name `Psycotix`, release version,
@@ -125,6 +124,10 @@ A separate runner-temporary development layout receives debug identity, a
 disposable development certificate, signing, install/activation/identity checks,
 and clean uninstall. Development identity and signing cannot mutate the Store
 layout or artifact. Development private keys remain ephemeral.
+
+`SPLINED Existing Tag > MS Store Package` retains this same packaging and QA
+contract as a recovery path for an existing tag, not as the normal Store release
+path.
 
 The primary GitHub artifact is `splined-windows-x86_64.zip`, containing exactly:
 

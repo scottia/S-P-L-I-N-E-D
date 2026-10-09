@@ -91,8 +91,8 @@ Start with:
 - [Python Ratatui TUI](docs/ratatui-tui.md)
 - [SPLINED media database](docs/splined-media-database.md)
 
-Windows opens the documentation home from **Help > Help** and from the Help
-button in its About dialog.
+Windows opens the [Windows guide](docs/windows-guide.md) from **Help > Help**
+and from the Help button in its About dialog.
 
 The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
@@ -107,6 +107,12 @@ while an installed Store package uses Microsoft Store package APIs and
 Store-managed installation. Both leave configured external resources untouched.
 See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
+
+For maintainers, `SPLINED (All OS) and GHCR` builds the Windows runtime pair
+once and uses those same binaries for the Portable ZIP and, when selected, the
+unsigned Microsoft Store submission package. Both must validate before the
+numeric tag is created. `SPLINED Existing Tag > MS Store Package` is the
+recovery/repackaging path for an already published source tag.
 
 ---
 
