@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      build_store_package:
+        description: "Build Microsoft Store package"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -461,13 +466,75 @@ jobs:
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
-      - name: Upload Windows artifact
+      - name: Install pinned upstream WinAppCli for Store packaging
+        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installRoot = Join-Path $env:RUNNER_TEMP "splined-winappcli"
+          npm install --prefix $installRoot --no-save --no-audit --no-fund "@microsoft/winappcli@0.7.1"
+          $commandDirectory = Join-Path $installRoot "node_modules\.bin"
+          $commandDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $reportedVersion = (& (Join-Path $commandDirectory "winapp.cmd") --version) -join "`n"
+          if ($reportedVersion -notmatch '0\.7\.1') {
+            throw "The pinned WinAppCli installation did not report version 0.7.1."
+          }
+
+      - name: Build and strictly validate unsigned production Store MSIX from release binaries
+        id: store-package
+        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          $artifactRoot = Join-Path $env:RUNNER_TEMP "splined-store-artifact"
+          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+          $storePackage = Join-Path $artifactRoot "SPLINED-x64-store-unsigned.msix"
+          $result = & windows/package/Build-StorePackage.ps1 `
+            -ExecutablePath "$releaseRoot/splined.exe" `
+            -CoreDllPath "$releaseRoot/splined_core.dll" `
+            -ManifestPath windows/package/Package.appxmanifest `
+            -IconPath windows/gui/splined-app-icon.png `
+            -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
+            -UnpackedRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked") `
+            -OutputPath $storePackage `
+            -ExpectedVersion "$env:RELEASE_VERSION.0"
+          $result | Format-List | Out-String | Write-Host
+          "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package
+        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          & windows/package/Test-DevelopmentPackage.ps1 `
+            -ExecutablePath "$releaseRoot/splined.exe" `
+            -CoreDllPath "$releaseRoot/splined_core.dll" `
+            -ManifestPath windows/package/Package.appxmanifest `
+            -IconPath windows/gui/splined-app-icon.png `
+            -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")
+
+      - name: Upload Windows portable release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: splined-windows-x86_64
           path: |
             release-assets/splined-windows-x86_64.zip
             release-assets/windows-update.json
+          if-no-files-found: error
+
+      - name: Upload Partner Center Store submission artifact
+        if: ${{ inputs.build_store_package && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-windows-store-submission
+          path: ${{ steps.store-package.outputs.path }}
           if-no-files-found: error
 
       - name: Report Windows build cache
@@ -479,6 +546,8 @@ jobs:
           - Cargo dependency cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
+          - Microsoft Store package selected: ``${{ inputs.build_store_package }}``
+          - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
   build-ubuntu:
@@ -677,12 +746,26 @@ jobs:
       contents: write
 
     steps:
-      - name: Download selected OS archives
+      - name: Download Windows release assets
+        if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          name: splined-windows-x86_64
           path: release-assets
-          pattern: splined-*
-          merge-multiple: true
+
+      - name: Download Ubuntu release asset
+        if: ${{ inputs.platform == 'Ubuntu' || inputs.platform == 'All' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: splined-linux-x86_64
+          path: release-assets
+
+      - name: Download macOS release asset
+        if: ${{ inputs.platform == 'macOS' || inputs.platform == 'All' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: splined-macos
+          path: release-assets
 
       - name: Create checksums and GitHub Release
         shell: bash

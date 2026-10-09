@@ -1,4 +1,4 @@
-name: SPLINED MS Store Windows Update
+name: SPLINED Existing Tag > MS Store Package
 
 on:
   workflow_dispatch:
@@ -22,8 +22,8 @@ env:
   RELEASE_VERSION: ${{ inputs.version }}
 
 jobs:
-  build-store-update:
-    name: Build existing tag for Partner Center
+  build-store-package:
+    name: Rebuild existing tag for Partner Center
     runs-on: windows-latest
 
     steps:
@@ -174,7 +174,7 @@ jobs:
         shell: pwsh
         run: |
           @"
-          ## SPLINED Microsoft Store update
+          ## SPLINED existing-tag Microsoft Store recovery package
 
           - Existing tag: ``$env:RELEASE_VERSION``
           - Artifact: ``splined-windows-store-submission/SPLINED-x64-store-unsigned.msix``

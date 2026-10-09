@@ -191,14 +191,19 @@ previous roots, and unrelated folders do not affect restore.
 
 ## Distribution, updates, and trust
 
-The supported publication paths are deliberately separate:
+The normal Windows release produces synchronized Portable and optional Store
+outputs from one build:
 
 ```text
-Portable: dev -> main -> SPLINED (All OS) and GHCR
-          -> successful selected-platform builds -> numeric tag -> GitHub ZIP
+dev -> main -> SPLINED (All OS) and GHCR
+    -> one x64 Windows build
+    -> Portable ZIP
+    -> optional unsigned Store MSIX from the same binaries
+    -> successful selected-platform/package validation
+    -> numeric tag -> GitHub Release/GHCR
 
-Store:    existing numeric tag -> SPLINED MS Store Windows Update
-          -> unsigned MSIX -> Partner Center -> certification -> Microsoft Store
+existing numeric tag -> SPLINED Existing Tag > MS Store Package
+                     -> recovery/repackaging MSIX only
 ```
 
 `SPLINED Published > GHCR` remains the recovery path for publishing an already
@@ -231,14 +236,20 @@ installation to Windows/Microsoft Store, and **LATER** defers it. If the Store
 API cannot be used safely, the GUI offers the official Store page. A packaged
 installation never receives Portable ZIP replacement instructions.
 
-`SPLINED (All OS) and GHCR` creates the release and numeric tag after selected
-platform builds pass. `SPLINED MS Store Windows Update` then consumes that
-existing tag and packs the production layout unsigned for Partner Center. It
-validates the final manifest and AMD64 runtime pair. That layout never receives
-a debug identity or development signature. A separate temporary layout receives
-debug identity and a disposable certificate for install, activation, native-core,
-and `.spl` association QA, then is removed. Development certificates and private
-keys are never committed or published. See the
+`SPLINED (All OS) and GHCR` can build the production Store layout during the
+same Windows job as the Portable ZIP. Both outputs use the exact same clean
+AMD64 executable and DLL. A selected Store packaging or QA failure fails that
+Windows job and therefore prevents numeric tag creation. The Store MSIX is an
+Actions-only Partner Center artifact: it is not attached to the GitHub Release
+and is omitted from public release checksums. The production layout never
+receives a debug identity or development signature. A separate temporary layout
+receives debug identity and a disposable certificate for install, activation,
+native-core, and `.spl` association QA, then is removed. Development
+certificates and private keys are never committed or published.
+
+`SPLINED Existing Tag > MS Store Package` repeats the Store build and validation
+only when an already published tag needs recovery or repackaging. It cannot
+create a version, tag, GitHub Release, or GHCR image. See the
 [Microsoft Store channel guide](windows-store.md) for the live installation,
 production identity, and future-update artifact contract.
 

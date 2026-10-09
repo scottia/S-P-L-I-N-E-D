@@ -2338,7 +2338,7 @@ namespace Splined.WindowsGui
                 && ReleaseInfo.PackageName == "SPLINED-Windows-" + ReleaseInfo.NumericVersion,
                 "The authoritative Windows release identity is inconsistent.");
             Assert(ReleaseInfo.RepositoryUrl == "https://github.com/scottia/S-P-L-I-N-E-D"
-                && ReleaseInfo.HelpUrl == "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/README.md"
+                && ReleaseInfo.HelpUrl == "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md"
                 && ReleaseInfo.ReleasesUrl == "https://github.com/scottia/S-P-L-I-N-E-D/releases/latest",
                 "Repository, Help, and release URLs are not centralized on their stable public targets.");
         }
