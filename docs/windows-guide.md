@@ -224,9 +224,13 @@ under the `SPLINED` directory. A fresh archive contains no `data\`.
 
 Portable update checking is notification-only. It can show release information
 and open the official release page, but it cannot download or replace binaries.
-The user closes SPLINED and replaces only the three program/documentation files;
-portable `data\` and every configured external resource remain outside that
-operation.
+Availability is based only on numeric semantic release versions: the advertised
+version must be newer than the installed version. A commit difference at the
+same version is not an update, and commit IDs are absent from normal update UI.
+Manual current checks report **No SPLINED update is available.**; startup checks
+are silent when current. The user closes SPLINED and replaces only the three
+program/documentation files; portable `data\` and every configured external
+resource remain outside that operation.
 
 The installed Microsoft Store channel is an x64 MSIX created with upstream
 Microsoft WinAppCli. Its exact production identity is `Psycotix.SPLINED`, its
@@ -239,7 +243,7 @@ Windows option is
 
 **Help > Check for Updates** uses `ConfigStore.IsPackaged` to select exactly one
 authority. Portable installations query GitHub Releases and
-`windows-update.json`. Store installations query
+`windows-update.json` and compare semantic versions. Store installations query
 `Windows.Services.Store.StoreContext`; **UPDATE NOW** delegates download and
 installation to Windows/Microsoft Store, and **LATER** defers it. If the Store
 API cannot be used safely, the GUI offers the official Store page. A packaged

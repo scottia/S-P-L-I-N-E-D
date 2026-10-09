@@ -888,8 +888,8 @@ namespace Splined.WindowsGui
                 string resolvedMojibakeAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { indexedMojibakeAlbum });
                 Assert(resolvedMojibakeAlbum == mojibakeAlbum && Directory.Exists(resolvedMojibakeAlbum),
                     "UTF-8/Windows-1252 mojibake Album names were not translated to the physical directory.");
-                string stableManifest = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.18/windows-update.json";
-                string stableRelease = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/1.0.18";
+                string stableManifest = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.71/windows-update.json";
+                string stableRelease = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/1.0.71";
                 Assert(WindowsUpdateService.IsApprovedStableManifestUrl(stableManifest)
                     && WindowsUpdateService.IsApprovedReleasePageUrl(stableRelease)
                     && !WindowsUpdateService.IsApprovedReleasePageUrl(
@@ -897,7 +897,7 @@ namespace Splined.WindowsGui
                     "Official versioned Windows notification assets or release pages are not isolated to GitHub.");
                 string releasesJson = "["
                     + "{\"draft\":false,\"prerelease\":true,\"tag_name\":\"preview\",\"html_url\":\"https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/preview\",\"assets\":[]},"
-                    + "{\"draft\":false,\"prerelease\":false,\"tag_name\":\"1.0.18\",\"html_url\":\"" + stableRelease + "\",\"assets\":["
+                    + "{\"draft\":false,\"prerelease\":false,\"tag_name\":\"1.0.71\",\"html_url\":\"" + stableRelease + "\",\"assets\":["
                     + "{\"name\":\"windows-update.json\",\"browser_download_url\":\"" + stableManifest + "\"}]}]";
                 WindowsUpdateLocation stableLocation = WindowsUpdateService.SelectStableUpdateLocation(releasesJson);
                 Assert(stableLocation.ManifestUrl == stableManifest && stableLocation.ReleaseUrl == stableRelease,
@@ -906,12 +906,35 @@ namespace Splined.WindowsGui
                 {
                     schema = 2,
                     channel = "stable",
-                    version = "1.0.18",
+                    version = "1.0.71",
                     commit = "0123456789abcdef0123456789abcdef01234567",
                     short_commit = "0123456",
                     release_url = stableRelease
                 };
                 WindowsUpdateService.ValidateNotificationManifest(notificationOnlyManifest, stableLocation);
+                Assert(notificationOnlyManifest.commit != BuildInfo.Commit
+                    && !WindowsUpdateService.IsNewerSemanticVersion("1.0.71", notificationOnlyManifest.version),
+                    "A different commit at the installed semantic version was treated as an update.");
+                Assert(WindowsUpdateService.IsNewerSemanticVersion("1.0.71", "1.0.72"),
+                    "A newer semantic release version was not treated as an update.");
+                Assert(!WindowsUpdateService.IsNewerSemanticVersion("1.0.72", "1.0.71"),
+                    "An older advertised semantic release version was treated as an update.");
+                WindowsUpdateManifest newerManifest = new WindowsUpdateManifest
+                {
+                    version = "1.0.72",
+                    published_at = "2026-10-09T00:00:00Z",
+                    commit = "fedcba9876543210fedcba9876543210fedcba98",
+                    short_commit = "fedcba9"
+                };
+                string portablePrompt = WindowsUpdateService.FormatPortableUpdateMessage(
+                    "1.0.71", newerManifest);
+                Assert(WindowsUpdateService.NoUpdateMessage == "No SPLINED update is available."
+                    && portablePrompt.Contains("A newer SPLINED version is available.")
+                    && portablePrompt.Contains("Installed version: 1.0.71")
+                    && portablePrompt.Contains("Available version: 1.0.72")
+                    && portablePrompt.IndexOf("commit", StringComparison.OrdinalIgnoreCase) < 0
+                    && !portablePrompt.Contains(newerManifest.short_commit),
+                    "Portable update messages expose commit metadata or omit semantic versions.");
                 Assert(MicrosoftStoreUpdateService.ProductUrl
                         == "https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US"
                     && MicrosoftStoreUpdateService.IsApprovedStorePageUrl(

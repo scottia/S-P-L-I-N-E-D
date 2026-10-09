@@ -102,9 +102,11 @@ The x64 Windows portable application restores the mature WinForms interface.
 `splined.exe` loads the fixed `runtime\splined-core.dll` and calls the
 authoritative Rust processing backend in-process through a stable UTF-8 C ABI;
 there is one normal application process. **Help > Check for Updates** is
-channel-aware: Portable uses GitHub release notification and manual replacement,
-while an installed Store package uses Microsoft Store package APIs and
-Store-managed installation. Both leave configured external resources untouched.
+channel-aware: Portable compares numeric semantic release versions from GitHub
+and remains notification-only/manual replacement, while an installed Store
+package uses Microsoft Store package APIs and Store-managed installation. A
+different build commit at the installed version is not an update. Both channels
+leave configured external resources untouched.
 See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 

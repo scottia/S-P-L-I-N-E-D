@@ -164,8 +164,12 @@ direct-distribution design, not the Store update path. See
 
 **Help > Check for Updates** selects its authority with
 `ConfigStore.IsPackaged`. Portable checking reads GitHub Releases and
-`windows-update.json`; it is notification-only and can open the official release
-page for manual replacement. Packaged checking uses
+`windows-update.json`, then offers an update only when the advertised semantic
+release version is newer than the installed version. Commit metadata is retained
+for internal validation and diagnostics but is not update authority or normal UI.
+Manual checks report **No SPLINED update is available.** when current; automatic
+no-update checks are silent. Portable updating remains notification-only and can
+open the official release page for manual replacement. Packaged checking uses
 `Windows.Services.Store.StoreContext`; **UPDATE NOW** delegates download and
 installation to Windows/Microsoft Store, while **LATER** defers. If Store API
 integration is unavailable, the GUI offers the official Store product page and
