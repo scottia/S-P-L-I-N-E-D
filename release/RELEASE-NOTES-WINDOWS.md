@@ -41,12 +41,18 @@
 - Changed the portable ZIP allowlist to exactly `SPLINED\splined.exe`,
   `SPLINED\runtime\splined-core.dll`, and `SPLINED\README-WINDOWS.txt`; a fresh
   archive contains no user state.
-- Added an upstream Microsoft WinAppCli packaging path for x64 package identity,
-  manifest assets, `.spl` association, unsigned Store-ready MSIX output, and
-  disposable development certificate/sign/install/launch/uninstall validation.
-- Added a disabled App Installer template for a future Windows-managed installed
-  update channel. It is not published until a stable public publisher/signing
-  chain and HTTPS endpoint exist.
+- Added the production Microsoft Store identity `Psycotix.SPLINED`, publisher
+  `CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE`, publisher display name `Psycotix`,
+  PFN `Psycotix.SPLINED_8pvn5te36e43t`, and Store ID `9P8G4GMBBVBS`.
+- Isolated the unsigned Partner Center package from development identity QA. The
+  Store layout is packed and validated without debug identity or development
+  signing; a separate temporary layout handles certificate/install/activation/
+  uninstall testing.
+- Uploads `SPLINED-x64-store-unsigned.msix` only in the
+  `splined-windows-store-submission` Actions artifact, not as a normal GitHub
+  Release download. Microsoft Store package deployment owns installed updates.
+- Retained the disabled App Installer template only for a possible separately
+  signed direct-distribution channel; it is not the Microsoft Store update path.
 - Reduced Windows release time by removing the discarded multi-gigabyte compiled
   target cache. CI now reuses dependency downloads while preserving the clean,
   version/commit-bound x64 build and every package validation gate.

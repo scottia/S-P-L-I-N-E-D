@@ -437,114 +437,51 @@ jobs:
           }
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
-      - name: Build Store-ready unsigned x64 MSIX with WinAppCli
+      - name: Build and validate production Microsoft Store x64 MSIX
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $layout = "msix-layout"
-          New-Item -ItemType Directory -Force -Path "$layout/runtime" | Out-Null
-          Copy-Item release-package/SPLINED/splined.exe "$layout/splined.exe"
-          Copy-Item release-package/SPLINED/runtime/splined-core.dll "$layout/runtime/splined-core.dll"
-          Copy-Item windows/package/Package.appxmanifest "$layout/Package.appxmanifest"
-          winapp manifest update-assets windows/gui/splined-app-icon.png --manifest "$layout/Package.appxmanifest"
-          winapp create-debug-identity "$layout/splined.exe" --manifest "$layout/Package.appxmanifest" --no-install
-          winapp pack $layout --manifest "$layout/Package.appxmanifest" --executable splined.exe --output release-assets/SPLINED-x64.msix --no-sign
-          winapp tool makeappx unpack /p release-assets/SPLINED-x64.msix /d unpacked-msix /o
-          $packageManifest = [xml](Get-Content -Raw unpacked-msix/AppxManifest.xml)
-          if ($packageManifest.Package.Identity.ProcessorArchitecture -ne "x64") { throw "The MSIX package architecture is not x64." }
-          if ($packageManifest.OuterXml -notmatch '<uap:FileType>\.spl</uap:FileType>') { throw "The MSIX package does not declare the .spl association." }
+          $storeLayout = Join-Path $env:RUNNER_TEMP "splined-msix-store-layout"
+          $unpackedStore = Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked"
+          $storePackage = "release-assets/SPLINED-x64-store-unsigned.msix"
+          $expectedVersion = "$env:RELEASE_VERSION.0"
+          $result = & windows/package/Build-StorePackage.ps1 `
+            -ExecutablePath release-package/SPLINED/splined.exe `
+            -CoreDllPath release-package/SPLINED/runtime/splined-core.dll `
+            -ManifestPath windows/package/Package.appxmanifest `
+            -IconPath windows/gui/splined-app-icon.png `
+            -LayoutRoot $storeLayout `
+            -UnpackedRoot $unpackedStore `
+            -OutputPath $storePackage `
+            -ExpectedVersion $expectedVersion
+          $result | Format-List | Out-String | Write-Host
+
+          @"
+          ## Microsoft Store submission package
+
+          - Artifact file: ``SPLINED-x64-store-unsigned.msix``
+          - Identity: ``Psycotix.SPLINED``
+          - Publisher: ``CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE``
+          - Publisher display name: ``Psycotix``
+          - Version: ``$expectedVersion``
+          - Architecture: ``x64``
+          - Signing: unsigned for Partner Center submission
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
       - name: Development-sign, install, launch, identify, and uninstall MSIX
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $password = [Guid]::NewGuid().ToString("N")
-          $pfx = Join-Path $env:RUNNER_TEMP "splined-development.pfx"
-          $cer = [IO.Path]::ChangeExtension($pfx, ".cer")
-          $devPackage = Join-Path $env:RUNNER_TEMP "SPLINED-x64-development.msix"
-          $thumbprint = $null
-          try {
-            winapp cert generate --manifest msix-layout/Package.appxmanifest --output $pfx --password $password --export-cer
-            $thumbprint = (Get-PfxCertificate -FilePath $cer).Thumbprint
-            winapp cert install $cer
-            winapp pack msix-layout --manifest msix-layout/Package.appxmanifest --executable splined.exe --output $devPackage --cert $pfx --cert-password $password
-            Add-AppxPackage -Path $devPackage
-            $package = Get-AppxPackage -Name SPLINED
-            if (-not $package -or $package.Architecture -ne "X64") { throw "The development MSIX did not install with x64 package identity." }
-            $installedManifest = $package | Get-AppxPackageManifest
-            if ($installedManifest.Package.Applications.Application.Id -ne "SPLINED") { throw "The installed package identity is invalid." }
-            if ($installedManifest.OuterXml -notmatch '<uap:FileType>\.spl</uap:FileType>') { throw "The installed package lost its .spl association." }
-            $smokePath = Join-Path $env:LOCALAPPDATA "Packages\$($package.PackageFamilyName)\LocalState\SPLINED\package-identity-smoke.ok"
-            Remove-Item -LiteralPath $smokePath -Force -ErrorAction SilentlyContinue
-            Add-Type -TypeDefinition @'
-          using System;
-          using System.Runtime.InteropServices;
-
-          public enum SplinedActivateOptions
-          {
-              None = 0,
-              DesignMode = 1,
-              NoErrorUI = 2,
-              NoSplashScreen = 4
-          }
-
-          [ComImport]
-          [Guid("2e941141-7f97-4756-ba1d-9decde894a3d")]
-          [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-          public interface ISplinedApplicationActivationManager
-          {
-              int ActivateApplication(
-                  [MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
-                  [MarshalAs(UnmanagedType.LPWStr)] string arguments,
-                  SplinedActivateOptions options,
-                  out uint processId);
-              int ActivateForFile(
-                  [MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
-                  IntPtr itemArray,
-                  [MarshalAs(UnmanagedType.LPWStr)] string verb,
-                  out uint processId);
-              int ActivateForProtocol(
-                  [MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
-                  IntPtr itemArray,
-                  out uint processId);
-          }
-
-          [ComImport]
-          [Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
-          public class SplinedApplicationActivationManager {}
-
-          public static class SplinedPackageActivator
-          {
-              public static uint Activate(string appUserModelId, string arguments)
-              {
-                  uint processId;
-                  var manager = (ISplinedApplicationActivationManager)new SplinedApplicationActivationManager();
-                  int result = manager.ActivateApplication(
-                      appUserModelId,
-                      arguments,
-                      SplinedActivateOptions.NoErrorUI,
-                      out processId);
-                  if (result < 0) Marshal.ThrowExceptionForHR(result);
-                  return processId;
-              }
-          }
-          '@
-            $applicationUserModelId = "$($package.PackageFamilyName)!SPLINED"
-            $processId = [SplinedPackageActivator]::Activate($applicationUserModelId, "--package-identity-smoke")
-            Wait-Process -Id $processId -Timeout 30 -ErrorAction Stop
-            if (-not (Test-Path -LiteralPath $smokePath)) {
-              throw "The installed SPLINED process did not confirm package identity and native DLL initialization."
-            }
-          }
-          finally {
-            Get-AppxPackage -Name SPLINED | Remove-AppxPackage -ErrorAction SilentlyContinue
-            if ($thumbprint) {
-              certutil -delstore TrustedPeople $thumbprint | Out-Null
-            }
-            Remove-Item -LiteralPath $pfx, $cer, $devPackage -Force -ErrorAction SilentlyContinue
-          }
+          & windows/package/Test-DevelopmentPackage.ps1 `
+            -ExecutablePath release-package/SPLINED/splined.exe `
+            -CoreDllPath release-package/SPLINED/runtime/splined-core.dll `
+            -ManifestPath windows/package/Package.appxmanifest `
+            -IconPath windows/gui/splined-app-icon.png `
+            -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -552,8 +489,14 @@ jobs:
           name: splined-windows-x86_64
           path: |
             release-assets/splined-windows-x86_64.zip
-            release-assets/SPLINED-x64.msix
             release-assets/windows-update.json
+          if-no-files-found: error
+
+      - name: Upload Partner Center Store submission artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-windows-store-submission
+          path: release-assets/SPLINED-x64-store-unsigned.msix
           if-no-files-found: error
 
       - name: Report Windows build cache
@@ -688,7 +631,7 @@ jobs:
             exit 1
           fi
           release_files=("${archives[@]}")
-          for metadata in windows-update.json SPLINED-x64.msix; do
+          for metadata in windows-update.json; do
             if [ -f "$metadata" ]; then release_files+=("$metadata"); fi
           done
           sha256sum "${release_files[@]}" > SHA256SUMS.txt
