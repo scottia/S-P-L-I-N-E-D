@@ -280,6 +280,25 @@ fn normal_release_dependency_gates_tolerate_only_intentional_skips() {
 }
 
 #[test]
+fn normal_release_atomically_keeps_the_tagged_commit_on_main() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+    let finalize = workflow
+        .split("  finalize-tag:")
+        .nth(1)
+        .unwrap()
+        .split("  generate-release-notes:")
+        .next()
+        .unwrap();
+
+    assert!(finalize.contains("name: Publish numeric tag and release commit after successful builds"));
+    assert!(finalize.contains("git push --atomic origin"));
+    assert!(finalize.contains("\"refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}\""));
+    assert!(finalize.contains("\"$RELEASE_COMMIT:refs/heads/main\""));
+    assert!(finalize.contains("git ls-remote origin \"refs/tags/$RELEASE_VERSION^{}\"" ));
+    assert!(finalize.contains("git ls-remote origin \"refs/heads/main\"" ));
+}
+
+#[test]
 fn microsoft_store_publication_is_pinned_preserving_and_fail_closed() {
     let normal = source(".github/workflows/release-next-patch.yml");
     let publish = source(".github/workflows/windows-store-publish-update.yml");

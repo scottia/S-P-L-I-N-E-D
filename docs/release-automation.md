@@ -22,8 +22,11 @@ All. **Microsoft Store** defaults to `true`; **Extended Windows validation**
 defaults to `false`.
 
 The workflow prepares an exact untagged release commit, builds and validates
-the selected targets, and only then creates the numeric tag. A selected Windows
-build compiles the x64 WinForms executable and Rust DLL once. The Portable ZIP
+the selected targets, and only then atomically creates the numeric tag and
+advances `main` to that exact release commit. The tag and `main` update are
+one atomic Git push, so a successful release cannot leave its version commit
+outside branch ancestry. A selected Windows build compiles the x64 WinForms
+executable and Rust DLL once. The Portable ZIP
 always contains that pair. With Microsoft Store enabled, the unsigned Store
 MSIX is created and validated from the same pair before tagging.
 
