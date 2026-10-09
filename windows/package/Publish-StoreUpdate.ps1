@@ -4,7 +4,8 @@ param(
     [string]$PackagePath,
     [Parameter(Mandatory = $true)]
     [string]$HighlightsPath,
-    [string]$ProductId = "9P8G4GMBBVBS"
+    [string]$ProductId = "9P8G4GMBBVBS",
+    [switch]$SkipReconfigure
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,11 +31,18 @@ if ([String]::IsNullOrWhiteSpace($releaseNotes)) {
 
 # Stage the package first. Microsoft's top-level publish command creates the
 # pending draft, so it must not be called again after the metadata edit.
-& msstore reconfigure `
-    --tenantId $env:AZURE_AD_TENANT_ID `
-    --sellerId $env:SELLER_ID `
-    --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID `
-    --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+if (-not $SkipReconfigure) {
+    try {
+        & msstore reconfigure `
+            --tenantId $env:AZURE_AD_TENANT_ID `
+            --sellerId $env:SELLER_ID `
+            --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID `
+            --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+    }
+    catch {
+        throw "Microsoft Store authentication failed. Verify the Partner Center Seller ID, Entra tenant/client IDs, client secret VALUE, and that the Entra application is added in Partner Center with the Manager role. $($_.Exception.Message)"
+    }
+}
 & msstore publish $package --appId $ProductId --noCommit
 
 $submissionJson = (& msstore submission get $ProductId) -join "`n"
