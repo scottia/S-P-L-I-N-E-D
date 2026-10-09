@@ -48,10 +48,14 @@ the selected artwork into the Album folder.
 
 Choose the installation method that matches where SPLINED will run.
 
+Windows users can choose **[Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)**
+for Windows-managed installation and updates, or the portable Windows ZIP for
+no-install/direct use. Both are current supported Windows distribution channels.
+
 | Install type | Intended use | Installation files |
 | --- | --- | --- |
-| **Windows Portable** | Windows desktop / workstation | [`release/README-WINDOWS.txt`](release/README-WINDOWS.txt) |
-| **Microsoft Store** | Production x64 MSIX submission/installed channel | [`docs/windows-store.md`](docs/windows-store.md) |
+| **Microsoft Store** | Managed Windows installation and updates | [Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US) · [Store guide](docs/windows-store.md) |
+| **Windows Portable** | No-install/direct Windows distribution with portable-root state | [`release/README-WINDOWS.txt`](release/README-WINDOWS.txt) |
 | **Linux Portable** | Native Linux installation | [`release/README-LINUX.txt`](release/README-LINUX.txt) |
 | **macOS Portable** | Native macOS installation | [`release/README-MACOS.txt`](release/README-MACOS.txt) |
 | **Docker** | Linux servers, NAS, and container deployments | [`docker/README.md`](docker/README.md) · [`python/Dockerfile`](python/Dockerfile) |
@@ -291,10 +295,10 @@ All supported runtimes use **Config v5**:
 
 The portable Windows GUI stores Config v5 in `data/config.toml`, stores
 interface state in `data/ui.toml`, and presents its fields through **File >
-Settings...**. The optional MSIX channel stores those two Windows-owned files in
-the package's per-user LocalState directory because its installation directory
-is read-only. SQL database, temporary run cache, log, credential, and other
-configured paths remain editable and are not silently relocated. Native
+Settings...**. The Microsoft Store installation stores those two Windows-owned
+files in the package's per-user LocalState directory because its installation
+directory is read-only. SQL database, temporary run cache, log, credential, and
+other configured paths remain editable and are not silently relocated. Native
 portable paths may be application-relative. Docker uses container-specific
 absolute paths while preserving the schema.
 

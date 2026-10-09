@@ -1,7 +1,24 @@
-# Microsoft Store Windows package
+# Microsoft Store Windows channel
 
-SPLINED's production Microsoft Store package uses the Partner Center identity
-assigned to the product. These values are exact release inputs:
+SPLINED is approved and publicly available from the Microsoft Store. The Store
+is the managed-install/update option for Windows users; the portable ZIP is the
+separate no-install/direct option. Both are current supported distribution
+channels.
+
+## Production status
+
+- Certification: **Approved**
+- Publication: **Live**
+- Public installation: **[Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)**
+- Production signing: supplied by Microsoft Store processing
+- Installed updates: delivered through Windows/Microsoft Store package deployment
+
+SPLINED does not download or self-replace its application binaries. Store users
+receive Windows-managed installation, updates, and uninstall; portable users
+continue to update their separate ZIP installation manually.
+
+The live production package uses the Partner Center identity assigned to the
+product. These values are exact release inputs:
 
 | Partner Center field | Production value |
 | --- | --- |
@@ -40,7 +57,7 @@ mapped-drive, and UNC paths remain unchanged. The portable ZIP continues to use
 root-relative `data\config.toml` and `data\ui.toml`; it is a separate distribution
 channel and does not require package identity.
 
-## Production Store package
+## Store release and update package
 
 Windows release CI creates a clean production layout directly from the Partner
 Center manifest and the release-built binaries. It updates manifest assets and
@@ -59,11 +76,12 @@ publisher, publisher display name, release version, x64 architecture,
 present. It also verifies `splined.exe` and `runtime\splined-core.dll` exist and
 are AMD64, and confirms that no package signature was added.
 
-`SPLINED-x64-store-unsigned.msix` is a Partner Center submission artifact. It is
-not an ordinary end-user installer and is not attached to a GitHub Release.
-Microsoft Store processing supplies the production signing and deployment path.
-Store-installed updates are delivered by Windows/Microsoft Store package
-deployment; SPLINED does not replace its own binaries.
+`SPLINED-x64-store-unsigned.msix` is a maintainer-only Partner Center submission
+artifact for future Store releases and updates. It is not an end-user installer
+and is not attached to a GitHub Release. Microsoft Store processing supplies the
+production signing and deployment path. Store-installed updates are delivered
+by Windows/Microsoft Store package deployment; SPLINED does not replace its own
+binaries.
 
 ## Development package validation
 
@@ -77,15 +95,23 @@ The development package proves x64 installation, application activation,
 in-process Rust DLL initialization, package identity, and the `.spl` association.
 A development-signed package is QA-only and is not publicly trusted.
 
-## Partner Center submission
+## Publishing future Store updates
 
-After a successful Windows release build, download
-`splined-windows-store-submission` from that GitHub Actions run and submit
-`SPLINED-x64-store-unsigned.msix` to the existing Partner Center product with
-Store ID `9P8G4GMBBVBS`. Partner Center submission, certification responses,
-listing text/assets, pricing/availability, age ratings, and final publication
-remain manual Store operations.
+The public listing is already live at the
+[official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
+For a future Store update, maintainers download
+`splined-windows-store-submission` from the corresponding GitHub Actions run and
+submit `SPLINED-x64-store-unsigned.msix` to the existing Partner Center product
+with Store ID `9P8G4GMBBVBS`. Review, certification responses, listing changes,
+and publication remain manual Partner Center operations for each future update;
+they are not outstanding steps for the initial public release.
 
 The checked-in App Installer template is not the Microsoft Store update path.
 It is retained only for a possible separately signed direct-distribution
 channel and remains disabled while its HTTPS placeholders are unresolved.
+
+## Privacy, support, and license
+
+- [Privacy policy](https://github.com/scottia/S-P-L-I-N-E-D/blob/main/PRIVACY.md)
+- [Support](https://github.com/scottia/S-P-L-I-N-E-D/blob/main/SUPPORT.md)
+- [GNU General Public License v3](https://github.com/scottia/S-P-L-I-N-E-D/blob/main/LICENSE)
