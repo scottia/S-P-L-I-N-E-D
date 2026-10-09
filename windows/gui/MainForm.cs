@@ -5081,32 +5081,29 @@ namespace Splined.WindowsGui
         {
             if (interactive) SetStatus("Checking official GitHub releases for SPLINED Portable...");
             WindowsUpdateCheck update = await WindowsUpdateService.CheckAsync();
-            RuntimeLog.Write("info", "windows.update.checked channel=portable current=" + BuildInfo.ShortCommit
-                + " latest=" + update.Manifest.short_commit
+            RuntimeLog.Write("info", "windows.update.checked channel=portable installed_version="
+                + ReleaseInfo.SemanticVersion
+                + " available_version=" + update.Manifest.version
+                + " installed_commit=" + BuildInfo.ShortCommit
+                + " available_commit=" + update.Manifest.short_commit
                 + " available=" + update.Available.ToString().ToLowerInvariant());
             if (!update.Available)
             {
-                if (interactive) SetStatus("SPLINED Portable is current at commit " + BuildInfo.ShortCommit + ".");
                 if (interactive)
+                {
+                    SetStatus(WindowsUpdateService.NoUpdateMessage);
                     MessageBox.Show(this,
-                        "SPLINED Portable is current.\r\n\r\nInstalled commit: " + BuildInfo.ShortCommit,
+                        WindowsUpdateService.NoUpdateMessage,
                         "SPLINED Portable update check", MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
+                }
                 return;
             }
 
             WindowsUpdateManifest manifest = update.Manifest;
-            SetStatus("A SPLINED Portable release at commit " + manifest.short_commit + " is available.");
-            string published = String.IsNullOrWhiteSpace(manifest.published_at)
-                ? "unknown"
-                : manifest.published_at;
+            SetStatus(WindowsUpdateService.PortableUpdateAvailableMessage);
             DialogResult action = MessageBox.Show(this,
-                "A SPLINED Portable release is available.\r\n\r\n"
-                + "Installed commit: " + BuildInfo.ShortCommit + "\r\n"
-                + "Available commit: " + manifest.short_commit + "\r\n"
-                + "Published: " + published + "\r\n\r\n"
-                + "Portable updates are installed manually so SPLINED never replaces running program files.\r\n\r\n"
-                + "Open the official GitHub release page?",
+                WindowsUpdateService.FormatPortableUpdateMessage(ReleaseInfo.SemanticVersion, manifest),
                 "SPLINED Portable update available", MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information);
             if (action == DialogResult.Yes)
@@ -5126,11 +5123,13 @@ namespace Splined.WindowsGui
                 + " count=" + update.UpdateCount);
             if (!update.Available)
             {
-                if (interactive) SetStatus("SPLINED Microsoft Store is current.");
                 if (interactive)
-                    MessageBox.Show(this, "SPLINED Microsoft Store is current.",
+                {
+                    SetStatus(WindowsUpdateService.NoUpdateMessage);
+                    MessageBox.Show(this, WindowsUpdateService.NoUpdateMessage,
                         "SPLINED Microsoft Store update check", MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
+                }
                 return;
             }
 

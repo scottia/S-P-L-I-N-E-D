@@ -125,9 +125,13 @@ The Windows GUI uses `ConfigStore.IsPackaged` as its channel detector.
   [Store product page](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)
   and reports the limitation; it never shows Portable ZIP instructions.
 - **Portable package:** GitHub Releases plus `windows-update.json` remain update
-  authority. The check is notification-only and may open the official GitHub
-  release page for manual replacement. SPLINED never downloads or replaces its
-  own Portable binaries.
+  authority. Availability is strictly a numeric semantic-version comparison:
+  only an advertised version newer than the installed version is an update.
+  Commit metadata remains internal and never drives or appears in normal update
+  UI. Manual current checks report **No SPLINED update is available.** and
+  automatic current checks are silent. The check is notification-only and may
+  open the official GitHub release page for manual replacement. SPLINED never
+  downloads or replaces its own Portable binaries.
 
 ## Publishing future Store updates
 

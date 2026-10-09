@@ -3,7 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn source(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|error| panic!("unable to read {path}: {error}"))
+    fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("unable to read {path}: {error}"))
+        .replace("\r\n", "\n")
 }
 
 fn repository_files(root: &Path, files: &mut Vec<PathBuf>) {
@@ -520,12 +522,49 @@ fn windows_updates_are_channel_aware_and_portable_updates_remain_notification_on
     assert!(update.contains("ReleaseUrl"));
     assert!(update.contains("DownloadDataTaskAsync"));
     assert!(update.contains("MaximumReleaseListBytes"));
+    assert!(update.contains(
+        "Available = IsNewerSemanticVersion(ReleaseInfo.SemanticVersion, manifest.version)"
+    ));
+    assert!(!update.contains("!String.Equals(BuildInfo.Commit, manifest.commit"));
+    assert!(update.contains("available.CompareTo(installed) > 0"));
+    assert!(gui_tests.contains(
+        "!WindowsUpdateService.IsNewerSemanticVersion(\"1.0.71\", notificationOnlyManifest.version)"
+    ));
+    assert!(
+        gui_tests.contains("WindowsUpdateService.IsNewerSemanticVersion(\"1.0.71\", \"1.0.72\")")
+    );
+    assert!(
+        gui_tests.contains("!WindowsUpdateService.IsNewerSemanticVersion(\"1.0.72\", \"1.0.71\")")
+    );
     assert!(main.contains("if (ConfigStore.IsPackaged)"));
     assert!(main.contains("CheckMicrosoftStoreForUpdateAsync"));
     assert!(main.contains("CheckPortableForUpdateAsync"));
+    assert!(main.contains("await CheckForUpdateAsync(false)"));
+    assert_eq!(
+        main.matches("if (!update.Available)\n            {\n                if (interactive)\n                {")
+            .count(),
+        2,
+        "manual no-update UI must be gated off during both startup checks"
+    );
     assert!(main.contains("WindowsUpdateService.OpenReleasePage"));
     assert!(main.contains("SPLINED Portable"));
     assert!(main.contains("SPLINED Microsoft Store"));
+    assert!(main.contains("WindowsUpdateService.NoUpdateMessage"));
+    assert!(update.contains("No SPLINED update is available."));
+    assert!(update.contains("A newer SPLINED version is available."));
+    assert!(update.contains("Installed version: "));
+    assert!(update.contains("Available version: "));
+    for forbidden in [
+        "Installed commit:",
+        "Available commit:",
+        "current at commit",
+        "release at commit",
+    ] {
+        assert!(
+            !main.contains(forbidden),
+            "user-visible commit wording remained: {forbidden}"
+        );
+    }
     assert!(main.contains("UPDATE NOW"));
     assert!(main.contains("LATER"));
     assert!(update.contains("Windows.Services.Store.StoreContext"));

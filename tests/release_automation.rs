@@ -56,11 +56,10 @@ fn git_cliff_2_14_2_is_the_single_release_note_engine() {
 }
 
 #[test]
-fn every_supported_workflow_uses_the_shared_git_cliff_engine() {
+fn every_release_note_generating_workflow_uses_the_shared_git_cliff_engine() {
     for path in [
         ".github/workflows/release-next-patch.yml",
         ".github/workflows/windows-store-package-resolution.yml",
-        ".github/workflows/windows-store-publish-update.yml",
         ".github/workflows/docker-ghcr-resolution.yml",
     ] {
         let workflow = source(path);
@@ -280,6 +279,31 @@ fn normal_release_dependency_gates_tolerate_only_intentional_skips() {
 }
 
 #[test]
+fn normal_release_atomically_keeps_the_tagged_commit_on_main() {
+    let workflow = source(".github/workflows/release-next-patch.yml");
+    let finalize = workflow
+        .split("  finalize-tag:")
+        .nth(1)
+        .unwrap()
+        .split("  generate-release-notes:")
+        .next()
+        .unwrap();
+
+    assert!(finalize.contains(
+        "name: Publish numeric tag and release commit after successful builds"
+    ));
+    assert!(finalize.contains("git push --atomic origin"));
+    assert!(finalize.contains(
+        "\"refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}\""
+    ));
+    assert!(finalize.contains("\"$RELEASE_COMMIT:refs/heads/main\""));
+    assert!(finalize.contains(
+        "git ls-remote origin \"refs/tags/$RELEASE_VERSION^{}\""
+    ));
+    assert!(finalize.contains("git ls-remote origin \"refs/heads/main\""));
+}
+
+#[test]
 fn microsoft_store_publication_is_pinned_preserving_and_fail_closed() {
     let normal = source(".github/workflows/release-next-patch.yml");
     let publish = source(".github/workflows/windows-store-publish-update.yml");
@@ -316,6 +340,8 @@ fn microsoft_store_publication_is_pinned_preserving_and_fail_closed() {
         .unwrap();
     assert!(stage < read && read < update && update < submit);
     assert_eq!(helper.matches("& msstore publish ").count(), 1);
+    assert!(helper.contains("[switch]$SkipReconfigure"));
+    assert!(helper.contains("if (-not $SkipReconfigure)"));
     assert!(helper.contains("Listings"));
     assert!(helper.contains("en-US"));
     assert!(helper.contains("BaseListing"));
@@ -338,8 +364,18 @@ fn recovery_workflows_never_create_tags_or_duplicate_releases() {
     assert!(!package.contains("git tag -a"));
     assert!(!package.contains("packages: write"));
 
-    assert!(publish.contains("ref: refs/tags/${{ inputs.version }}"));
     assert!(publish.contains("Publish-StoreUpdate.ps1"));
+    assert!(publish.contains("splined-windows-store-submission"));
+    assert!(publish.contains("actions/artifacts?name=$artifactName"));
+    assert!(publish.contains("gh run download"));
+    assert!(publish.contains("-SkipReconfigure"));
+    assert!(publish.contains("Authenticate Microsoft Store before artifact retrieval"));
+    assert!(!publish.contains("cargo build"));
+    assert!(!publish.contains("rustup"));
+    assert!(!publish.contains("Build-StorePackage.ps1"));
+    assert!(!publish.contains("Test-DevelopmentPackage.ps1"));
+    assert!(!publish.contains("Install-GitCliff.ps1"));
+    assert!(!publish.contains("Generate-ReleaseNotes.ps1"));
     assert!(!publish.contains("gh release create"));
     assert!(!publish.contains("git tag -a"));
     assert!(!publish.contains("packages: write"));

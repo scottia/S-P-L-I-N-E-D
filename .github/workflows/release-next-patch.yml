@@ -667,7 +667,7 @@ jobs:
           if-no-files-found: error
 
   finalize-tag:
-    name: Push numeric tag after successful builds
+    name: Publish numeric tag and release commit after successful builds
     needs:
       - prepare-release
       - build-windows
@@ -721,7 +721,7 @@ jobs:
           name: release-source-commit
           path: .release-source
 
-      - name: Create and push numeric tag
+      - name: Create tag and atomically promote release commit
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -744,8 +744,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
-          git push origin "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
+          git push --atomic origin \
+            "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}" \
+            "$RELEASE_COMMIT:refs/heads/main"
           test "$(git ls-remote origin "refs/tags/$RELEASE_VERSION^{}" | awk '{print $1}')" = "$RELEASE_COMMIT"
+          test "$(git ls-remote origin "refs/heads/main" | awk '{print $1}')" = "$RELEASE_COMMIT"
 
   generate-release-notes:
     name: Generate release notes from one git-cliff context

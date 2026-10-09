@@ -69,7 +69,12 @@ namespace Splined.WindowsGui
     {
         private const long MaximumReleaseListBytes = 4L * 1024L * 1024L;
         private const string StableManifestName = "windows-update.json";
+        internal const string NoUpdateMessage = "No SPLINED update is available.";
+        internal const string PortableUpdateAvailableMessage = "A newer SPLINED version is available.";
         private static readonly Regex CommitPattern = new Regex("^[0-9a-fA-F]{40}$", RegexOptions.Compiled);
+        private static readonly Regex SemanticVersionPattern = new Regex(
+            "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            RegexOptions.Compiled);
 
         public static async Task<WindowsUpdateCheck> CheckAsync()
         {
@@ -84,14 +89,37 @@ namespace Splined.WindowsGui
             string json = Encoding.UTF8.GetString(bytes).TrimStart('\uFEFF');
             WindowsUpdateManifest manifest = new JavaScriptSerializer().Deserialize<WindowsUpdateManifest>(json);
             ValidateNotificationManifest(manifest, location);
-            bool currentKnown = CommitPattern.IsMatch(BuildInfo.Commit ?? "");
             return new WindowsUpdateCheck
             {
-                Available = !currentKnown
-                    || !String.Equals(BuildInfo.Commit, manifest.commit, StringComparison.OrdinalIgnoreCase),
+                Available = IsNewerSemanticVersion(ReleaseInfo.SemanticVersion, manifest.version),
                 Manifest = manifest,
                 Location = location
             };
+        }
+
+        internal static bool IsNewerSemanticVersion(string installedVersion, string availableVersion)
+        {
+            Version installed = ParseSemanticVersion(installedVersion, "installed");
+            Version available = ParseSemanticVersion(availableVersion, "available");
+            return available.CompareTo(installed) > 0;
+        }
+
+        internal static string FormatPortableUpdateMessage(
+            string installedVersion,
+            WindowsUpdateManifest manifest)
+        {
+            if (manifest == null) throw new ArgumentNullException("manifest");
+            ParseSemanticVersion(installedVersion, "installed");
+            ParseSemanticVersion(manifest.version, "available");
+            string published = String.IsNullOrWhiteSpace(manifest.published_at)
+                ? "unknown"
+                : manifest.published_at;
+            return PortableUpdateAvailableMessage + "\r\n\r\n"
+                + "Installed version: " + installedVersion + "\r\n"
+                + "Available version: " + manifest.version + "\r\n"
+                + "Published: " + published + "\r\n\r\n"
+                + "Portable updates are installed manually so SPLINED never replaces running program files.\r\n\r\n"
+                + "Open the official GitHub release page?";
         }
 
         public static void OpenReleasePage(string releaseUrl)
@@ -131,6 +159,7 @@ namespace Splined.WindowsGui
                 throw new InvalidOperationException("The Windows update notification manifest is missing or unsupported.");
             if (!String.Equals(manifest.channel, "stable", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("The Windows update notification is not for the stable release channel.");
+            ParseSemanticVersion(manifest.version, "available");
             if (!CommitPattern.IsMatch(manifest.commit ?? ""))
                 throw new InvalidOperationException("The Windows update notification contains an invalid commit identity.");
             if (!String.Equals(manifest.commit.Substring(0, 7), manifest.short_commit,
@@ -141,6 +170,14 @@ namespace Splined.WindowsGui
                 || !IsApprovedReleasePageUrl(manifest.release_url)
                 || !String.Equals(manifest.release_url, location.ReleaseUrl, StringComparison.Ordinal))
                 throw new InvalidOperationException("The Windows update notification does not match its official GitHub release page.");
+        }
+
+        private static Version ParseSemanticVersion(string value, string role)
+        {
+            Version parsed;
+            if (!SemanticVersionPattern.IsMatch(value ?? "") || !Version.TryParse(value, out parsed))
+                throw new InvalidOperationException("The " + role + " SPLINED semantic version is invalid.");
+            return parsed;
         }
 
         internal static bool IsApprovedStableManifestUrl(string value)

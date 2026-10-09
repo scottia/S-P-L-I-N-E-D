@@ -41,7 +41,10 @@ unchanged. Password protection is optional.
 PORTABLE UPDATES
 
 Help > Check for Updates identifies this as SPLINED Portable, reads GitHub
-Releases plus windows-update.json, and can open the official release page.
+Releases plus windows-update.json, and compares semantic release versions. A
+different commit at the installed version is not an update. Manual checks say
+"No SPLINED update is available." when current; automatic no-update checks are
+silent. When a newer version exists, SPLINED can open its official release page.
 Portable SPLINED does not download or replace its own binaries. Close SPLINED,
 extract the new release separately, then replace only:
 

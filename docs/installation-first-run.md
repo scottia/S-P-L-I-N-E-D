@@ -88,10 +88,12 @@ identity, and update-publication procedure.
 ### Windows upgrade
 
 For Portable Windows, **Help > Check for Updates** reads GitHub Releases and
-`windows-update.json`. If a release is newer, it identifies the Portable
-channel, explains that updating is manual, and can open the official release
-page. The user downloads the current portable ZIP, closes SPLINED, and replaces
-only:
+`windows-update.json` and compares numeric semantic release versions. A newer
+version produces the Portable notification, explains that updating is manual,
+and can open the official release page. The same version with a different build
+commit is current, not an update. A manual current check displays **No SPLINED
+update is available.**; an automatic/startup current check is silent. The user
+downloads the current portable ZIP, closes SPLINED, and replaces only:
 
 ```text
 splined.exe

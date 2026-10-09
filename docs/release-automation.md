@@ -7,7 +7,7 @@ workflow creates a version, numeric tag, or GitHub Release.
 |---|---|---|
 | `SPLINED (All OS) and GHCR` | `.github/workflows/release-next-patch.yml` | Create the next release from `main`, build the selected platforms, publish GitHub assets and GHCR, and optionally submit the Windows Store update. |
 | `SPLINED (Tagged) > MS Store Package Resolution` | `.github/workflows/windows-store-package-resolution.yml` | Rebuild and validate an unsigned Store package plus Store Highlights for an existing numeric tag. It stops at an Actions artifact. |
-| `SPLINED > MS Store Publish & Update` | `.github/workflows/windows-store-publish-update.yml` | Rebuild an existing numeric tag and submit its validated package and en-US Store Highlights to the live Store product. |
+| `SPLINED > MS Store Publish & Update` | `.github/workflows/windows-store-publish-update.yml` | Publish an already validated retained Store artifact for an existing numeric tag and update its en-US Store Highlights. It never rebuilds binaries or MSIX packages. |
 | `SPLINED (Docker) > GHCR Resolution` | `.github/workflows/docker-ghcr-resolution.yml` | Rebuild and publish Docker tags from an existing numeric tag, then replace that tag's existing GitHub Release body with the authoritative notes. |
 
 Recovery workflows never create, move, or delete a tag. The Store recovery
@@ -22,8 +22,11 @@ All. **Microsoft Store** defaults to `true`; **Extended Windows validation**
 defaults to `false`.
 
 The workflow prepares an exact untagged release commit, builds and validates
-the selected targets, and only then creates the numeric tag. A selected Windows
-build compiles the x64 WinForms executable and Rust DLL once. The Portable ZIP
+the selected targets, and only then atomically creates the numeric tag and
+advances `main` to that exact release commit. The tag and `main` update are
+one atomic Git push, so a successful release cannot leave its version commit
+outside branch ancestry. A selected Windows build compiles the x64 WinForms
+executable and Rust DLL once. The Portable ZIP
 always contains that pair. With Microsoft Store enabled, the unsigned Store
 MSIX is created and validated from the same pair before tagging.
 
@@ -99,7 +102,14 @@ submission is retrieved and preserved; only the existing en-US
 publishes that same pending submission without recreating the draft.
 
 If packaging needs correction without Store submission, run
-`SPLINED (Tagged) > MS Store Package Resolution`. If an existing release was
-created with Store disabled or needs Store republication, run
-`SPLINED > MS Store Publish & Update`. Both use an existing numeric tag and the
-same git-cliff classification/context process as the normal release.
+`SPLINED (Tagged) > MS Store Package Resolution`. That workflow rebuilds,
+validates, and retains `splined-windows-store-submission`.
+
+`SPLINED > MS Store Publish & Update` is publication-only. It authenticates
+before doing package work, locates a retained non-expired
+`splined-windows-store-submission` artifact, verifies the MSIX identity and
+requested numeric version, and submits that exact package plus its preserved
+`STORE-HIGHLIGHTS.txt`. It never compiles Rust/WinForms, rebuilds an MSIX, or
+regenerates release notes. If no matching retained artifact exists, it fails
+and directs the operator to run the tagged Store Package Resolution workflow
+first.
