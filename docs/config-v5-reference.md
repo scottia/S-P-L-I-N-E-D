@@ -388,11 +388,14 @@ Legacy `[splineai]` remains a compatibility concern for existing installations;
 
 Windows interface state is stored in `data/ui.toml` beside the portable Config
 v5 record. It includes theme, window placement, filters, splitter positions
-(including the draggable Artwork-preview width), panel-layout preset, Show
+(including the coupled square Artwork-pane corner), panel-layout preset, Show
 Artwork, hover behavior, and current selections. It also retains Artwork Filter expansion and Media Album
 Selector visibility. It does not change source policy, credentials, the media
 database, or artwork-writing rules. **View > Panel Layout** supplies presets;
-splitters remain draggable and custom positions persist. **View > Show
+splitters remain draggable and custom positions persist. The Artwork-only
+vertical divider and the horizontal divider beneath it move together so the
+outer Artwork pane remains square; the Select Media divider stays independent.
+**View > Show
 Artwork** controls the embedded selected-Album/candidate preview; disabling it
 restores the floating hover preview without changing artwork policy.
 

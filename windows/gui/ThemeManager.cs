@@ -641,6 +641,7 @@ namespace Splined.WindowsGui
         internal static void DrawButton(Button button, Graphics graphics, ThemePalette palette, bool hot, bool pressed)
         {
             if (palette == null) palette = CurrentPalette;
+            FluentButton fluent = button as FluentButton;
             GraphicsState paintState = graphics.Save();
             graphics.SetClip(button.ClientRectangle, CombineMode.Intersect);
             try
@@ -668,13 +669,22 @@ namespace Splined.WindowsGui
             if (button.Parent != null && button.Parent.BackColor.A == 255) outside = button.Parent.BackColor;
             using (SolidBrush outsideBrush = new SolidBrush(outside))
                 graphics.FillRectangle(outsideBrush, button.ClientRectangle);
+            if (fluent != null && fluent.ChromeLess) return;
             using (GraphicsPath path = RoundedPath(bounds, radius))
             using (SolidBrush brush = new SolidBrush(background)) graphics.FillPath(brush, path);
             using (GraphicsPath path = RoundedPath(bounds, radius))
-            using (Pen pen = new Pen(border, borderWidth))
             {
-                pen.Alignment = PenAlignment.Inset;
-                graphics.DrawPath(pen, path);
+                if (fluent != null && fluent.SpectrumBorder)
+                    DrawSpectrumBorder(graphics, path, Rectangle.Round(bounds), palette.Dark ? 0.88f : 0.76f,
+                        Math.Max(1f, button.DeviceDpi / 96f));
+                else
+                {
+                    using (Pen pen = new Pen(border, borderWidth))
+                    {
+                        pen.Alignment = PenAlignment.Inset;
+                        graphics.DrawPath(pen, path);
+                    }
+                }
             }
 
             if (focused)
@@ -696,7 +706,29 @@ namespace Splined.WindowsGui
             else if (button.TextAlign == ContentAlignment.MiddleRight) flags |= TextFormatFlags.Right;
             else flags |= TextFormatFlags.HorizontalCenter;
             Rectangle textBounds = Rectangle.Inflate(Rectangle.Round(bounds), -Scaled(button, Space8), 0);
-            TextRenderer.DrawText(graphics, button.Text, button.Font, textBounds, foreground, flags);
+            if (fluent != null && !String.IsNullOrWhiteSpace(fluent.LeadingGlyph))
+            {
+                using (Font glyphFont = new Font("Segoe UI Symbol", button.Font.SizeInPoints,
+                    FontStyle.Regular, GraphicsUnit.Point))
+                {
+                    TextFormatFlags measureFlags = TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix;
+                    Size glyphSize = TextRenderer.MeasureText(graphics, fluent.LeadingGlyph, glyphFont,
+                        new Size(Int32.MaxValue, Int32.MaxValue), measureFlags);
+                    Size textSize = TextRenderer.MeasureText(graphics, button.Text, button.Font,
+                        new Size(Int32.MaxValue, Int32.MaxValue), measureFlags);
+                    int gap = Scaled(button, Space8);
+                    int totalWidth = glyphSize.Width + gap + textSize.Width;
+                    int start = textBounds.Left + Math.Max(0, (textBounds.Width - totalWidth) / 2);
+                    Rectangle glyphBounds = new Rectangle(start, textBounds.Top, glyphSize.Width, textBounds.Height);
+                    Rectangle labelBounds = new Rectangle(glyphBounds.Right + gap, textBounds.Top,
+                        Math.Max(1, textBounds.Right - glyphBounds.Right - gap), textBounds.Height);
+                    TextRenderer.DrawText(graphics, fluent.LeadingGlyph, glyphFont, glyphBounds, foreground,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | measureFlags);
+                    TextRenderer.DrawText(graphics, button.Text, button.Font, labelBounds, foreground,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | measureFlags);
+                }
+            }
+            else TextRenderer.DrawText(graphics, button.Text, button.Font, textBounds, foreground, flags);
             }
             finally
             {
@@ -794,6 +826,11 @@ namespace Splined.WindowsGui
 
         internal static void DrawSpectrumBorder(Graphics graphics, GraphicsPath path, Rectangle bounds, float opacity)
         {
+            DrawSpectrumBorder(graphics, path, bounds, opacity, 1.2f);
+        }
+
+        internal static void DrawSpectrumBorder(Graphics graphics, GraphicsPath path, Rectangle bounds, float opacity, float width)
+        {
             Rectangle gradientBounds = bounds.Width > 1 && bounds.Height > 1 ? bounds : new Rectangle(0, 0, 2, 2);
             using (LinearGradientBrush spectrum = new LinearGradientBrush(gradientBounds, Color.Cyan, Color.Magenta, LinearGradientMode.Horizontal))
             {
@@ -801,7 +838,7 @@ namespace Splined.WindowsGui
                 blend.Colors = SpectrumColors(opacity);
                 blend.Positions = new[] { 0f, 0.17f, 0.34f, 0.50f, 0.67f, 0.84f, 1f };
                 spectrum.InterpolationColors = blend;
-                using (Pen pen = new Pen(spectrum, 1.2f)) graphics.DrawPath(pen, path);
+                using (Pen pen = new Pen(spectrum, Math.Max(0.75f, width))) graphics.DrawPath(pen, path);
             }
         }
 
@@ -1248,9 +1285,17 @@ namespace Splined.WindowsGui
         private bool pressed;
         private bool directionGlyph;
         private string centeredGlyph = "";
+        private string leadingGlyph = "";
 
         internal string Theme { get; set; }
         internal ThemePalette Palette { get; set; }
+        internal bool ChromeLess { get; set; }
+        internal bool SpectrumBorder { get; set; }
+        internal string LeadingGlyph
+        {
+            get { return leadingGlyph; }
+            set { leadingGlyph = value ?? ""; Invalidate(); }
+        }
         internal bool DirectionGlyph
         {
             get { return directionGlyph; }
@@ -1643,7 +1688,9 @@ namespace Splined.WindowsGui
             int segmentHeight = Math.Max(2, (usableHeight - (gap * (segmentCount - 1))) / segmentCount);
             int stackHeight = (segmentHeight * segmentCount) + (gap * (segmentCount - 1));
             int top = Math.Max(inset, (ClientSize.Height - stackHeight) / 2);
-            int barWidth = Math.Max(12, Math.Min(ClientSize.Width - (inset * 2), (int)Math.Round(62f * dpi / 96f)));
+            // Keep the equalizer stack visually narrow even when its fixed
+            // module has spare width; resize never stretches the 20 bars.
+            int barWidth = Math.Max(12, Math.Min(ClientSize.Width - (inset * 2), (int)Math.Round(34f * dpi / 96f)));
             int left = Math.Max(inset, (ClientSize.Width - barWidth) / 2);
             double range = Math.Max(1, maximum - minimum);
             int activeSegments = (int)Math.Round(((value - minimum) / range) * segmentCount);
@@ -2413,9 +2460,11 @@ namespace Splined.WindowsGui
     {
         public ThemePalette Palette { get; set; }
         public bool SpectrumBorder { get; set; }
+        public float SpectrumBorderWidth { get; set; }
         public bool CenterTitle { get; set; }
         public FluentGroupBox()
         {
+            SpectrumBorderWidth = 1.2f;
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
             Padding = new Padding(ThemeManager.Space12);
         }
@@ -2432,7 +2481,8 @@ namespace Splined.WindowsGui
             Rectangle outline = new Rectangle(0, lineTop, Math.Max(1, Width - 1), Math.Max(1, Height - lineTop - 1));
             using (GraphicsPath path = ThemeManager.RoundedPath(outline, ThemeManager.CardRadius))
             {
-                if (SpectrumBorder) ThemeManager.DrawSpectrumBorder(e.Graphics, path, outline, palette.Dark ? 0.82f : 0.70f);
+                if (SpectrumBorder) ThemeManager.DrawSpectrumBorder(e.Graphics, path, outline,
+                    palette.Dark ? 0.82f : 0.70f, SpectrumBorderWidth);
                 else using (Pen pen = new Pen(palette.BorderSubtle)) e.Graphics.DrawPath(pen, path);
             }
             if (!String.IsNullOrEmpty(Text))

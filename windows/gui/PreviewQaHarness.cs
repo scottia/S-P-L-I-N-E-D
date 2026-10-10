@@ -25,6 +25,9 @@ namespace Splined.WindowsGui
             uiState.MainHeight = 1000;
             uiState.MainSplitterDistance = 430;
             uiState.RightSplitterDistance = 285;
+            uiState.CandidateFilterExpanded = false;
+            uiState.CandidateSummaryExpanded = true;
+            uiState.UpscalePreviewOnly = true;
             ThemeManager.Initialize(uiState.Theme);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
@@ -168,16 +171,54 @@ namespace Splined.WindowsGui
                             form.PerformLayout();
                             typeof(MainForm).GetField("running", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, true);
                             typeof(MainForm).GetField("awaitingDecision", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form, true);
+                            apply.Invoke(form, new object[] { new Dictionary<string, object>
+                            {
+                                { "event", "candidates" }, { "items", candidates.ToArray() },
+                                { "hidden_by_source_policy", 4 }, { "fallback", false }
+                            } });
                             typeof(MainForm).GetMethod("UpdateSelectionControls", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-candidates-qa.png"));
                             Size candidateSize = form.Size;
-                            form.Size = new Size(2400, 1000);
-                            Button artworkFilter = form.Controls.Find("candidateFilterButton", true)[0] as Button;
-                            if (artworkFilter != null) artworkFilter.PerformClick();
+                            SplitContainer rightSplit = form.Controls.Find("rightSplit", true).Length > 0
+                                ? form.Controls.Find("rightSplit", true)[0] as SplitContainer
+                                : (SplitContainer)typeof(MainForm).GetField("rightSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                            if (rightSplit != null)
+                            {
+                                int maximum = rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth;
+                                if (maximum >= rightSplit.Panel1MinSize) rightSplit.SplitterDistance = Math.Min(maximum, 560);
+                            }
+                            typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
+                                .Invoke(form, new object[] { true, false });
                             form.PerformLayout();
                             Application.DoEvents();
-                            CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-qa.png"));
-                            if (artworkFilter != null) artworkFilter.PerformClick();
+                            TableLayoutPanel expandedGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
+                            SplitContainer artworkSplit = form.Controls.Find("activityArtworkSplit", true)[0] as SplitContainer;
+                            FluentButton previewButton = form.Controls.Find("upscalePreviewButton", true)[0] as FluentButton;
+                            FluentButton fullButton = form.Controls.Find("upscaleShowFullButton", true)[0] as FluentButton;
+                            Require(expandedGrid != null && expandedGrid.ColumnCount == 4 && expandedGrid.RowCount == 2,
+                                "Expanded Candidate Findings did not retain the 4 x 2 Upscale grid.");
+                            Require(artworkSplit != null && Math.Abs(artworkSplit.Panel2.Width - artworkSplit.ClientSize.Height) <= 2,
+                                "The Artwork pane is not square at the joined splitter corner.");
+                            Require(previewButton != null && fullButton != null && previewButton.Enabled && fullButton.Enabled
+                                && previewButton.SpectrumBorder && fullButton.SpectrumBorder,
+                                "The shared framed Upscale actions are not active.");
+                            Size expandedGridSize = expandedGrid.Size;
+                            Size expandedModuleSize = expandedGrid.GetControlFromPosition(0, 0).Size;
+                            CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-expanded-qa.png"));
+                            Label summaryToggle = form.Controls.Find("candidateSummaryToggle", true)[0] as Label;
+                            if (summaryToggle != null)
+                                typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)
+                                    .Invoke(summaryToggle, new object[] { EventArgs.Empty });
+                            form.PerformLayout();
+                            Application.DoEvents();
+                            TableLayoutPanel collapsedGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
+                            Require(collapsedGrid != null && collapsedGrid.ColumnCount == 4 && collapsedGrid.RowCount == 2
+                                && collapsedGrid.Size == expandedGridSize
+                                && collapsedGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize,
+                                "Collapsed Candidate Findings changed the Upscale grid proportions.");
+                            CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-collapsed-qa.png"));
+                            typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
+                                .Invoke(form, new object[] { false, false });
                             form.Size = candidateSize;
                             form.PerformLayout();
                             CaptureAppearanceMenu(form, Path.Combine(ConfigStore.AppRoot, "appearance-menu-qa.png"));
@@ -362,6 +403,11 @@ namespace Splined.WindowsGui
                 }
                 screenshot.Save(path, ImageFormat.Png);
             }
+        }
+
+        private static void Require(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
         }
 
         [DllImport("user32.dll")]
