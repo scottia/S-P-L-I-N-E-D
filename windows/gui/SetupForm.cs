@@ -707,24 +707,29 @@ namespace Splined.WindowsGui
         private TabPage BuildSourcesTab()
         {
             TabPage page = new TabPage("Sources & Matching");
+            Panel scroll = new Panel { Name = "sourcesSettingsScroll", Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(10) };
             TableLayoutPanel root = new TableLayoutPanel();
-            root.Dock = DockStyle.Fill;
-            root.Padding = new Padding(10);
+            root.Name = "sourcesSettingsColumns";
+            root.Dock = DockStyle.Top;
+            root.AutoSize = true;
+            root.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            root.Padding = Padding.Empty;
             root.ColumnCount = 2;
             root.RowCount = 1;
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            page.Controls.Add(root);
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            scroll.Controls.Add(root);
+            page.Controls.Add(scroll);
 
-            Panel leftScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(0, 0, 8, 0) };
             TableLayoutPanel left = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 3 };
+            left.Name = "sourcesSettingsLeftColumn";
+            left.Margin = new Padding(0, 0, 5, 0);
             left.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             left.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
-            leftScroll.Controls.Add(left);
-            root.Controls.Add(leftScroll, 0, 0);
+            root.Controls.Add(left, 0, 0);
 
             GroupBox sourceBox = new FluentGroupBox { Text = "Source Settings", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(8) };
             sourceSettingsTable = CreateSourceSettingsTable(8);
@@ -800,7 +805,9 @@ namespace Splined.WindowsGui
 
             left.Controls.Add(BuildSourcePriorityGroup(), 0, 2);
 
-            root.Controls.Add(BuildSourcePolicyPreview(), 1, 0);
+            Control policyPreview = BuildSourcePolicyPreview();
+            policyPreview.Margin = new Padding(5, 0, 0, 0);
+            root.Controls.Add(policyPreview, 1, 0);
 
             sourceSelector.SelectedIndexChanged += SourceSelectionChanged;
             sourceEnabled.SelectedIndexChanged += SourceEditorChanged;
@@ -945,7 +952,14 @@ namespace Splined.WindowsGui
 
         private Control BuildSourcePolicyPreview()
         {
-            GroupBox preview = new FluentGroupBox { Text = "Range Effect / Policy Preview", Dock = DockStyle.Fill, Padding = new Padding(10) };
+            GroupBox preview = new FluentGroupBox
+            {
+                Name = "sourcePolicyPreviewGroup",
+                Text = "Range Effect / Policy Preview",
+                Dock = DockStyle.Top,
+                Height = 620,
+                Padding = new Padding(10)
+            };
             Panel previewScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
             TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Top, Height = 590, ColumnCount = 1, RowCount = 4 };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
