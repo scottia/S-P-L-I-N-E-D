@@ -7,7 +7,7 @@
   <Identity
     Name="Psycotix.SPLINED"
     Publisher="CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE"
-    Version="1.0.71.0"
+    Version="1.0.72.0"
     ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>SPLINED</DisplayName>
