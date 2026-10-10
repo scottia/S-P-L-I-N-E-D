@@ -229,7 +229,7 @@ namespace Splined.WindowsGui
         private CheckBox upscalePreviewOnly;
         private Label upscaleCandidateDimensions;
         private Label candidateSummaryToggle;
-        private readonly Dictionary<string, TrackBar> upscaleProfileSliders = new Dictionary<string, TrackBar>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, SpectrumSlider> upscaleProfileSliders = new Dictionary<string, SpectrumSlider>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Label> upscaleProfileValues = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
         private readonly System.Windows.Forms.Timer upscalePreviewTimer = new System.Windows.Forms.Timer();
         private readonly System.Windows.Forms.Timer candidateHoverExitTimer = new System.Windows.Forms.Timer();
@@ -253,6 +253,8 @@ namespace Splined.WindowsGui
         private Panel candidateFilterPanel;
         private bool candidateFilterWorkspaceActive;
         private int candidateFilterPreviousSplitterDistance = -1;
+        private bool artworkPreviewRestorePending = true;
+        private bool restoringArtworkPreviewWidth;
         private int candidateFilterPreviousPanel2MinSize = -1;
         private CheckBox candidateShowAll;
         private readonly List<CandidateFilterBinding> candidateFilterBindings = new List<CandidateFilterBinding>();
@@ -1209,14 +1211,14 @@ namespace Splined.WindowsGui
                 && mainExtent > mainSplit.Panel1MinSize + mainSplit.Panel2MinSize + mainSplit.SplitterWidth)
             {
                 int maximum = mainExtent - mainSplit.Panel2MinSize - mainSplit.SplitterWidth;
-                mainSplit.SplitterDistance = Math.Max(mainSplit.Panel1MinSize, Math.Min(uiState.MainSplitterDistance, maximum));
+                TrySetSplitterDistance(mainSplit, Math.Max(mainSplit.Panel1MinSize, Math.Min(uiState.MainSplitterDistance, maximum)));
             }
             else if (mainSplit != null && !uiState.ShowMediaSelector)
                 SetMediaSelectorVisible(false, false);
             if (rightSplit != null && rightSplit.Height > rightSplit.Panel1MinSize + rightSplit.Panel2MinSize + rightSplit.SplitterWidth)
             {
                 int maximum = rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth;
-                rightSplit.SplitterDistance = Math.Max(rightSplit.Panel1MinSize, Math.Min(uiState.RightSplitterDistance, maximum));
+                TrySetSplitterDistance(rightSplit, Math.Max(rightSplit.Panel1MinSize, Math.Min(uiState.RightSplitterDistance, maximum)));
             }
             RestoreArtworkPreviewWidth();
         }
@@ -1224,11 +1226,43 @@ namespace Splined.WindowsGui
         private void RestoreArtworkPreviewWidth()
         {
             if (activityArtworkSplit == null || activityArtworkSplit.Panel2Collapsed) return;
-            int available = activityArtworkSplit.Width - activityArtworkSplit.SplitterWidth;
-            if (available <= activityArtworkSplit.Panel1MinSize + activityArtworkSplit.Panel2MinSize) return;
+            int available = activityArtworkSplit.ClientSize.Width - activityArtworkSplit.SplitterWidth;
+            if (available < activityArtworkSplit.Panel1MinSize + activityArtworkSplit.Panel2MinSize)
+            {
+                artworkPreviewRestorePending = true;
+                return;
+            }
             int previewWidth = Math.Max(activityArtworkSplit.Panel2MinSize,
                 Math.Min(uiState.ArtworkPreviewWidth, available - activityArtworkSplit.Panel1MinSize));
-            activityArtworkSplit.SplitterDistance = available - previewWidth;
+            restoringArtworkPreviewWidth = true;
+            try
+            {
+                artworkPreviewRestorePending = !TrySetSplitterDistance(activityArtworkSplit, available - previewWidth);
+            }
+            finally { restoringArtworkPreviewWidth = false; }
+        }
+
+        internal static bool TrySetSplitterDistance(SplitContainer split, int preferredDistance)
+        {
+            if (split == null || split.IsDisposed) return false;
+            int extent = split.Orientation == Orientation.Vertical
+                ? split.ClientSize.Width : split.ClientSize.Height;
+            int minimum = Math.Max(0, split.Panel1MinSize);
+            int maximum = extent - split.Panel2MinSize - split.SplitterWidth;
+            if (maximum < minimum) return false;
+            int distance = Math.Max(minimum, Math.Min(preferredDistance, maximum));
+            try
+            {
+                if (split.SplitterDistance != distance) split.SplitterDistance = distance;
+                return true;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // WinForms can report a transient pre-layout extent while a
+                // nested SplitContainer is creating or changing DPI. The next
+                // SizeChanged/Layout pass restores the saved distance.
+                return false;
+            }
         }
 
         private void RestoreMediaFilterState()
@@ -1529,6 +1563,8 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 7,
+                Size = new Size(Math.Max(560, activityWorkspace.ClientSize.Width),
+                    Math.Max(260, activityWorkspace.ClientSize.Height)),
                 Panel1MinSize = 280,
                 Panel2MinSize = 220,
                 Margin = Padding.Empty,
@@ -1538,11 +1574,18 @@ namespace Splined.WindowsGui
             activityArtworkSplit.Panel2.Padding = new Padding(ThemeManager.Space4, 0, 0, 0);
             activityArtworkSplit.SplitterMoved += delegate
             {
-                if (!activityArtworkSplit.Panel2Collapsed)
+                if (!restoringArtworkPreviewWidth && !activityArtworkSplit.Panel2Collapsed)
+                {
+                    artworkPreviewRestorePending = false;
                     uiState.ArtworkPreviewWidth = Math.Max(activityArtworkSplit.Panel2MinSize, activityArtworkSplit.Panel2.Width);
+                }
                 UpdateArtworkSquareLayout(true);
             };
-            activityArtworkSplit.Resize += delegate { UpdateArtworkSquareLayout(false); };
+            activityArtworkSplit.Resize += delegate
+            {
+                if (artworkPreviewRestorePending) RestoreArtworkPreviewWidth();
+                UpdateArtworkSquareLayout(false);
+            };
             activityWorkspace.Controls.Add(activityArtworkSplit, 0, 0);
             activityContentHost = new Panel { Name = "activityContentHost", Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
             activityColumn = new TableLayoutPanel { Name = "activityColumn", Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
@@ -3227,7 +3270,7 @@ namespace Splined.WindowsGui
             {
                 Name = "upscaleProfileFrame_" + key,
                 Text = UpscaleProfileIcon(key) + " " + label,
-                SpectrumBorder = true,
+                SpectrumBorder = false,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(2),
                 Padding = new Padding(ThemeManager.Space4, ThemeManager.Space12, ThemeManager.Space4, ThemeManager.Space4)
@@ -3256,32 +3299,28 @@ namespace Splined.WindowsGui
                 Font = ThemeManager.UiFont(ThemeFontRole.Minor),
                 Margin = new Padding(0)
             };
-            TrackBar slider = new TrackBar
+            SpectrumSlider slider = new SpectrumSlider
             {
                 Name = "upscaleProfileSlider_" + key,
                 Minimum = minimum,
                 Maximum = maximum,
-                TickFrequency = key.Equals("temperature", StringComparison.OrdinalIgnoreCase) ? 20 : 5,
                 SmallChange = 1,
                 LargeChange = key.Equals("temperature", StringComparison.OrdinalIgnoreCase) ? 10 : 5,
                 Value = Math.Max(minimum, Math.Min(maximum, value)),
-                Anchor = AnchorStyles.None,
-                Width = 48,
-                Height = showNudgeButtons ? 136 : 118,
-                Orientation = Orientation.Vertical,
-                TickStyle = TickStyle.Both,
-                Margin = new Padding(0)
+                SpectrumIndex = upscaleProfileSliders.Count,
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                AccessibleName = label + " adjustment"
             };
             upscaleProfileSliders[key] = slider;
             upscaleProfileValues[key] = current;
-            Panel sliderHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
-            sliderHost.Controls.Add(slider);
-            Action centerSlider = delegate
+            Panel sliderHost = new Panel
             {
-                slider.Left = Math.Max(0, (sliderHost.ClientSize.Width - slider.Width) / 2);
-                slider.Top = Math.Max(0, (sliderHost.ClientSize.Height - slider.Height) / 2);
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                Padding = new Padding(ThemeManager.Space4, 0, ThemeManager.Space4, 0)
             };
-            sliderHost.Resize += delegate { centerSlider(); };
+            sliderHost.Controls.Add(slider);
             TableLayoutPanel resetRow = new BufferedTableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -3343,9 +3382,6 @@ namespace Splined.WindowsGui
             control.Controls.Add(sliderHost, 0, sliderRow);
             control.Controls.Add(resetRow, 0, resetRowIndex);
             frame.Controls.Add(control);
-            frame.Resize += delegate { centerSlider(); };
-            frame.Layout += delegate { centerSlider(); };
-            frame.VisibleChanged += delegate { if (frame.Visible) centerSlider(); };
             return frame;
         }
 
@@ -5258,7 +5294,11 @@ namespace Splined.WindowsGui
             if (showArtworkMenuItem != null) showArtworkMenuItem.Checked = visible;
             if (visible && musicBrainzMatchesPanel == null && !candidatePreviewActive) RenderDisplayedAlbum();
             else if (!visible) CloseHoverPreview();
-            if (visible && wasCollapsed) RestoreArtworkPreviewWidth();
+            if (visible && wasCollapsed)
+            {
+                artworkPreviewRestorePending = true;
+                RestoreArtworkPreviewWidth();
+            }
             UpdateArtworkSquareLayout(false);
             activityArtworkSplit.PerformLayout();
         }
@@ -5281,9 +5321,12 @@ namespace Splined.WindowsGui
                     int artworkChrome = 30 + 28 + 28 + (ThemeManager.Space12 * 2);
                     int desiredUpperHeight = activityArtworkSplit.Panel2.ClientSize.Width + artworkChrome;
                     int maximum = rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth;
-                    int target = Math.Max(rightSplit.Panel1MinSize, Math.Min(desiredUpperHeight, maximum));
-                    if (target > rightSplit.SplitterDistance)
-                        rightSplit.SplitterDistance = target;
+                    if (maximum >= rightSplit.Panel1MinSize)
+                    {
+                        int target = Math.Max(rightSplit.Panel1MinSize, Math.Min(desiredUpperHeight, maximum));
+                        if (target > rightSplit.SplitterDistance)
+                            TrySetSplitterDistance(rightSplit, target);
+                    }
                 }
             }
             finally { adjustingArtworkLayout = false; }

@@ -93,10 +93,12 @@ The single unframed arrow immediately before **Candidate Findings | Upscale
 Artwork Editing** collapses only the three finding/source/resolution summaries.
 Those summaries and **Upscale / Advanced** occupy separate compact layout
 panels, so expanding the candidate-results area cannot stretch a summary frame
-over the upscale buttons or cut off the sliders. Upscale controls remain visible
-and switch to two rows of four taller, centered sliders with one-step arrow
-controls. The workspace scrolls vertically when its available height is smaller
-than the controls.
+over the upscale buttons or cut off the sliders. The eight editing controls use
+frameless, segmented spectrum bars with dim/bright level feedback and retain
+mouse, wheel, keyboard, reset, and one-step arrow adjustment. They fill their
+layout slots without relying on fixed native-slider centering, and switch to two
+rows of four taller bars when the summaries are collapsed. The workspace scrolls
+vertically when its available height is smaller than the controls.
 
 **Upscale Preview** is enabled by default. It keeps Upscale and full-size
 preview available, but **Use Selected** saves the chosen source at its source
@@ -110,6 +112,8 @@ The vertical divider immediately left of the Artwork preview is draggable.
 Dragging it left widens the preview and, when space is available, grows the
 upper Activity/Artwork area downward so the image remains useful. Its width is
 stored with the other portable interface splitter state in `data/ui.toml`.
+Saved divider widths are clamped and deferred until WinForms has a valid layout
+extent, including first startup at the minimum supported window size.
 
 In **Settings > Sources & Matching**, source controls and their effective-policy
 preview share one scroll surface. The policy preview has a bounded content

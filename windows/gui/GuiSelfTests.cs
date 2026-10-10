@@ -1043,6 +1043,17 @@ namespace Splined.WindowsGui
                         "View / Show Artwork did not restore the persisted top-right artwork panel.");
                     artworkSplit.Size = new Size(900, 240);
                     artworkSplit.SplitterDistance = 580;
+                    UiState artworkUi = (UiState)typeof(MainForm)
+                        .GetField("uiState", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    artworkUi.ArtworkPreviewWidth = Int32.MaxValue;
+                    typeof(MainForm).GetMethod("RestoreArtworkPreviewWidth", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, null);
+                    Assert(artworkSplit.SplitterDistance >= artworkSplit.Panel1MinSize
+                        && artworkSplit.SplitterDistance <= artworkSplit.ClientSize.Width - artworkSplit.Panel2MinSize - artworkSplit.SplitterWidth,
+                        "An oversized saved Artwork width escaped the valid nested-splitter range.");
+                    artworkUi.ArtworkPreviewWidth = 320;
+                    typeof(MainForm).GetMethod("RestoreArtworkPreviewWidth", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, null);
                     int upperHeightBeforeArtworkResize = ((SplitContainer)typeof(MainForm)
                         .GetField("rightSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form)).SplitterDistance;
                     typeof(MainForm).GetMethod("UpdateArtworkSquareLayout", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -1427,17 +1438,18 @@ namespace Splined.WindowsGui
                         && resolutionTile.VisualRole == CardVisualRole.SpectrumNested
                         && resolutionTile.Controls.OfType<Label>().Single().Text.StartsWith("▣", StringComparison.Ordinal)
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
-                            .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Orientation == Orientation.Vertical)
-                        && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<TrackBar>().Single().Value == 0
-                        && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<TrackBar>().Single().Value == 0
+                            .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().Dock == DockStyle.Fill)
+                        && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<SpectrumSlider>().Single().Value == 0
+                        && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<SpectrumSlider>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<Button>().Single().Text == "↺"
                         && form.Controls.Find("upscaleProfileFrame_brightness", true).OfType<GroupBox>().Single().Text.Contains("Brightness")
                         && form.Controls.Find("upscaleProfileFrame_temperature", true).OfType<GroupBox>().Single().Text.Contains("Color")
                         && !advancedControls.AutoScroll && advancedGrid.Dock == DockStyle.Fill
                         && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
-                        && Enumerable.Range(0, 8).All(index => ((FluentGroupBox)advancedGrid.GetControlFromPosition(index, 0)).SpectrumBorder)
+                        && Enumerable.Range(0, 8).All(index => !((FluentGroupBox)advancedGrid.GetControlFromPosition(index, 0)).SpectrumBorder)
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
-                            .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Anchor == AnchorStyles.None)
+                            .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().SpectrumIndex)
+                            .Distinct().Count() == 8
                         && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<Button>().Count() == 1
                         && previewLine.ColumnCount == 3 && previewLine.GetPositionFromControl(showFullPreview).Column == 1
                         && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
@@ -1449,13 +1461,13 @@ namespace Splined.WindowsGui
                         && modeLine.ColumnStyles[1].SizeType == SizeType.Absolute
                         && modeLine.ColumnStyles[0].Width <= 190 && previewOnlyMode.Left <= 200,
                         "Upscale Preview is not kept compactly beside Apply default upscale.");
-                    foreach (TrackBar slider in Descendants(advancedGrid).OfType<TrackBar>())
+                    foreach (SpectrumSlider slider in Descendants(advancedGrid).OfType<SpectrumSlider>())
                     {
                         Panel sliderHost = slider.Parent as Panel;
                         Assert(sliderHost != null, "An Upscale slider was detached from its centering host.");
                         sliderHost.PerformLayout();
-                        Assert(Math.Abs(slider.Left - Math.Max(0, (sliderHost.ClientSize.Width - slider.Width) / 2)) <= 1,
-                            "An Upscale slider did not remain horizontally centered after candidate-panel layout.");
+                        Assert(slider.Dock == DockStyle.Fill && slider.Bounds == sliderHost.DisplayRectangle,
+                            "An Upscale spectrum slider did not remain centered and fully visible after candidate-panel layout.");
                     }
                     previewOnlyMode.Checked = false;
                     Assert(compactPreview.Text == "Upscale" && Convert.ToString(compactPreview.Tag) == "primary",
@@ -1480,7 +1492,7 @@ namespace Splined.WindowsGui
                             button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)) == 8
                         && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
                             button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal)) == 8
-                        && Descendants(compactAdvancedGrid).OfType<TrackBar>().All(slider => slider.Height >= 130),
+                        && Descendants(compactAdvancedGrid).OfType<SpectrumSlider>().All(slider => slider.Height >= 130),
                         "Collapsing Candidate Findings did not retain two centered rows of taller sliders with nudge controls.");
                     invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
                     Application.DoEvents();
@@ -1569,7 +1581,7 @@ namespace Splined.WindowsGui
                         "Result hover disturbed the Artwork Filter workspace.");
                     typeof(MainForm).GetMethod("CloseHoverPreview", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                     hoverUi.HoverEnabled = false;
-                    TrackBar brightnessProfile = form.Controls.Find("upscaleProfileSlider_brightness", true).OfType<TrackBar>().Single();
+                    SpectrumSlider brightnessProfile = form.Controls.Find("upscaleProfileSlider_brightness", true).OfType<SpectrumSlider>().Single();
                     brightnessProfile.Value = 3;
                     Assert(ConfigStore.Load().UpscaleBrightnessPercent == 3
                         && form.Controls.Find("upscaleProfileValue_brightness", true).OfType<Label>().Single().Text == "<+3%>",
@@ -1641,7 +1653,7 @@ namespace Splined.WindowsGui
                     Assert(selectedCandidatePreviewTitle.Text == "Existing Cover Editing",
                         "Selecting an existing local cover did not focus it in Selected Album Artwork; title was '"
                         + selectedCandidatePreviewTitle.Text + "'.");
-                    TrackBar pictureProfile = form.Controls.Find("upscaleProfileSlider_picture", true).OfType<TrackBar>().Single();
+                    SpectrumSlider pictureProfile = form.Controls.Find("upscaleProfileSlider_picture", true).OfType<SpectrumSlider>().Single();
                     pictureProfile.Value = 2;
                     typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
