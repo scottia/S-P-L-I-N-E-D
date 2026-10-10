@@ -53,6 +53,32 @@ namespace Splined.WindowsGui
             }
         }
 
+        public static void WriteException(string source, Exception error)
+        {
+            Write("error", (String.IsNullOrWhiteSpace(source) ? "windows.exception" : source.Trim())
+                + " " + DescribeException(error));
+        }
+
+        internal static string DescribeException(Exception error)
+        {
+            if (error == null) return "type=unknown message=No exception details were supplied.";
+            StringBuilder details = new StringBuilder();
+            Exception current = error;
+            int depth = 0;
+            while (current != null && depth < 4)
+            {
+                if (depth > 0) details.Append(" | inner[").Append(depth).Append("] ");
+                details.Append("type=").Append(current.GetType().FullName)
+                    .Append(" hresult=0x").Append(current.HResult.ToString("X8"))
+                    .Append(" message=").Append(current.Message ?? "");
+                if (!String.IsNullOrWhiteSpace(current.StackTrace))
+                    details.Append(" stack=").Append(current.StackTrace);
+                current = current.InnerException;
+                depth++;
+            }
+            return details.ToString();
+        }
+
         internal static string Redact(string message)
         {
             string safe = Authorization.Replace(message ?? "", "$1[REDACTED]");

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -1546,6 +1547,7 @@ namespace Splined.WindowsGui
         private int largeChange = 10;
         private int spectrumIndex;
         private bool dragging;
+        private bool showValueOverlay;
 
         internal ThemePalette Palette
         {
@@ -1609,6 +1611,17 @@ namespace Splined.WindowsGui
         }
 
         public int SegmentCount { get { return FixedSegmentCount; } }
+
+        public bool ShowValueOverlay
+        {
+            get { return showValueOverlay; }
+            set { showValueOverlay = value; Invalidate(); }
+        }
+
+        public string ValueOverlayText
+        {
+            get { return value.ToString("+0;-0;0", CultureInfo.InvariantCulture); }
+        }
 
         public event EventHandler ValueChanged;
 
@@ -1682,10 +1695,11 @@ namespace Splined.WindowsGui
             ThemePalette active = Palette;
             int dpi = Math.Max(96, DeviceDpi);
             int inset = Math.Max(3, (int)Math.Round(5f * dpi / 96f));
-            int gap = Math.Max(1, (int)Math.Round(2f * dpi / 96f));
             int usableHeight = Math.Max(1, ClientSize.Height - (inset * 2));
             int segmentCount = FixedSegmentCount;
-            int segmentHeight = Math.Max(2, (usableHeight - (gap * (segmentCount - 1))) / segmentCount);
+            int gap = Math.Max(1, (int)Math.Round(2f * dpi / 96f));
+            while (gap > 1 && usableHeight - (gap * (segmentCount - 1)) < segmentCount * 2) gap--;
+            int segmentHeight = Math.Max(1, (usableHeight - (gap * (segmentCount - 1))) / segmentCount);
             int stackHeight = (segmentHeight * segmentCount) + (gap * (segmentCount - 1));
             int top = Math.Max(inset, (ClientSize.Height - stackHeight) / 2);
             // Keep the equalizer stack visually narrow even when its fixed
@@ -1706,6 +1720,24 @@ namespace Splined.WindowsGui
                 Rectangle segment = new Rectangle(left, y, barWidth, segmentHeight);
                 using (SolidBrush brush = new SolidBrush(index < activeSegments ? bar : idle))
                     e.Graphics.FillRectangle(brush, segment);
+            }
+            if (showValueOverlay)
+            {
+                using (Font valueFont = new Font(Font.FontFamily,
+                    Math.Max(8f, Font.SizeInPoints), FontStyle.Bold, GraphicsUnit.Point))
+                {
+                    Rectangle valueBounds = new Rectangle(0,
+                        top + Math.Max(0, (stackHeight - valueFont.Height) / 2),
+                        ClientSize.Width, valueFont.Height + 2);
+                    Rectangle shadowBounds = valueBounds;
+                    shadowBounds.Offset(Math.Max(1, dpi / 96), Math.Max(1, dpi / 96));
+                    TextFormatFlags flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+                        | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+                    TextRenderer.DrawText(e.Graphics, ValueOverlayText, valueFont, shadowBounds,
+                        Color.Black, flags);
+                    TextRenderer.DrawText(e.Graphics, ValueOverlayText, valueFont, valueBounds,
+                        Color.White, flags);
+                }
             }
         }
 

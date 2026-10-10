@@ -1,5 +1,37 @@
 # Windows migration release notes
 
+## Draft next Microsoft Store update highlights
+
+The Microsoft Store-certified baseline is `1.0.71`. The next Store submission
+is cumulative across repository releases `1.0.72` through `1.0.78`, plus the
+next release commit. Its customer-facing Windows highlights are:
+
+- Corrected update detection so release versions, rather than differing Git
+  commits, determine whether an update is available. Current installations stay
+  quiet and normal dialogs no longer expose commit hashes.
+- Refined fallback-compilation review so Album resume, explicit track reopening,
+  embedded-track artwork, completed-track state, and current-Album focus remain
+  distinct and predictable.
+- Restored and stabilized the full artwork-review workspace, including Settings,
+  candidate findings, source and resolution filters, MusicBrainz actions,
+  Album bypass controls, preview-only upscale behavior, and persistent layout.
+- Kept the Artwork preview square with joined horizontal and vertical dividers,
+  eliminated dead layout space, and made panel resizing safe at startup and
+  across repeated candidate selections.
+- Added the spectrum-based artwork controls and unified SPLINED button, glyph,
+  typography, and multicolor-frame presentation.
+- Made all eight upscale controls a DPI-aware single row that responds to the
+  live window, Remote Desktop session, display, and splitter geometry without
+  rebuilding or scrolling. Each 20-segment slider now shows its current signed
+  value as a bold white number inside the bar.
+- Hardened live panel resizing against transient WinForms splitter extents and
+  made continued interface exceptions write actionable, redacted details to the
+  current run log.
+
+These highlights are derived from the repository changes released from
+`1.0.71` through `1.0.78`; no intermediate local-only build is treated as a
+separate Microsoft Store baseline.
+
 - Restored the accepted 1.0.60 WinForms product experience, including mature
   Media Selection, Settings, candidate/artwork editing, MusicBrainz, compilation,
   backup/restore, theme, layout, activity, and help surfaces.

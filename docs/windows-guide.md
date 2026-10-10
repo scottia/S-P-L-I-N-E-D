@@ -95,15 +95,28 @@ Those summaries and **Upscale / Advanced** occupy separate compact layout
 panels, so expanding the candidate-results area cannot stretch a summary frame
 over the upscale buttons or cut off the sliders. All three summary frames retain
 the height of the tallest summary. The eight editing controls use one frameless
-template in both layouts: a centered title, exactly 20 segmented spectrum bars,
-compact one-step up/down glyphs, and a centered reset glyph. They retain mouse,
-wheel, keyboard, reset, and persisted-value behavior. Expanded and collapsed
-states both keep the same fixed-width two rows of four controls; expanding adds
-only the three summaries above them and never changes slider proportions. The
-buttons and sliders share one hairline spectrum enclosure, while individual
+template: a centered title, exactly 20 segmented spectrum bars, compact one-step
+up/down glyphs, and a centered reset glyph. The current signed value is painted
+as a bold white number in the middle of each spectrum bar without angle
+brackets. Mouse, wheel, keyboard, reset, and persisted-value behavior remain
+unchanged.
+
+SPLINED measures the live editor width in DPI-normalized pixels instead of
+guessing a physical device from its resolution. Under 640 pixels uses Compact,
+640 through 960 uses Standard, and over 960 uses Spacious. Every density keeps
+all eight controls in one centered row. Module width, gaps, and segment height
+adapt to the available editor panel; Spacious caps control width so Retina and
+other high-resolution Remote Desktop sessions gain breathing room instead of
+oversized controls. The row is recalculated after startup, maximize/restore,
+display or RDP resolution changes, per-monitor DPI changes, and splitter
+movement. Resize events update existing bounds without rebuilding the controls,
+preventing preview-selection flicker. Expanded Candidate Findings adds only the
+three summaries above the same row. The slider row does not wrap or require a
+scrollbar.
+
+The buttons and sliders share one hairline spectrum enclosure, while individual
 slider modules remain unframed. Preview actions use SPLINED's shared action
-font, glyph, and framed-button treatment. The workspace scrolls vertically when
-its available height is smaller than the unchanged controls.
+font, glyph, and framed-button treatment.
 
 **Upscale Preview** is enabled by default. It keeps Upscale and full-size
 preview available, but **Use Selected** saves the chosen source at its source
@@ -123,7 +136,9 @@ It and the horizontal divider below the preview move as one constrained corner:
 dragging either direction derives the other dimension so the outer Artwork pane
 remains square. The vertical divider terminates on the horizontal divider, and
 the upper editing workspace and Artwork pane end on that same line without a
-dead strip below either panel.
+dead strip below either panel. If the square preview would leave too little room
+for the eight-control editor row, both preview dimensions shrink together until
+the Compact row fits.
 This coupling is isolated from the separate divider beside **Select Media**.
 The preview width is stored with the other portable interface splitter state in
 `data/ui.toml`.
@@ -351,3 +366,10 @@ Run Activity shows the live event stream. Persistent logs and run reports stay
 in Config v5 locations. Reports should include the application version, run
 mode, Album path, relevant events, and sanitized provider errors; never include
 credential contents.
+
+Unexpected WinForms interface exceptions are written to the current run log
+with their exception type, message, stack, and bounded inner-exception chain
+before SPLINED offers to continue. The dialog identifies the diagnostic file so
+a continued session does not discard the evidence. Transient splitter extents
+during startup, DPI changes, Remote Desktop display changes, and live resizing
+are rejected safely and restored on the next layout pass.

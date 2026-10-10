@@ -326,6 +326,11 @@ Credentials, tokens, authorization headers, client secrets, and private
 credential values must never be logged. SPLINED applies central redaction to UI
 and persistent runtime-log messages as a final safety boundary.
 
+Windows also records unexpected WinForms thread/domain exceptions in this
+current-run file, including bounded stack and inner-exception details. The
+continue dialog reports the file path. The same central redaction is applied to
+those diagnostic records.
+
 Python/Docker runtime and debug records are single-line and limited to 2,048
 characters. Embedded newlines are escaped and an oversized record ends with a
 truncation marker. Repeated/high-cardinality picker state is summarized as
@@ -395,6 +400,11 @@ database, or artwork-writing rules. **View > Panel Layout** supplies presets;
 splitters remain draggable and custom positions persist. The Artwork-only
 vertical divider and the horizontal divider beneath it move together so the
 outer Artwork pane remains square; the Select Media divider stays independent.
+The upscale editor derives Compact, Standard, or Spacious density from its live
+DPI-normalized width and does not persist a device name or RDP resolution as
+configuration. Moving the portable directory between displays therefore keeps
+the user's state while recalculating the eight-control single row for the active
+session.
 **View > Show
 Artwork** controls the embedded selected-Album/candidate preview; disabling it
 restores the floating hover preview without changing artwork policy.
