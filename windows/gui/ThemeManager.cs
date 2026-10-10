@@ -840,11 +840,17 @@ namespace Splined.WindowsGui
             FluentGroupBox fluentGroup = control as FluentGroupBox;
             FluentCardPanel fluentCard = control as FluentCardPanel;
             FluentCardTableLayoutPanel fluentTableCard = control as FluentCardTableLayoutPanel;
+            SpectrumSlider spectrumSlider = control as SpectrumSlider;
             if (form != null)
             {
                 form.BackColor = palette.WindowBackground;
                 form.Font = UiFont(ThemeFontRole.Body);
                 AppIcon.Apply(form);
+            }
+            else if (spectrumSlider != null)
+            {
+                spectrumSlider.Palette = palette;
+                spectrumSlider.BackColor = palette.NestedCardSurface;
             }
             else if (fluentGroup != null)
             {
@@ -1455,6 +1461,197 @@ namespace Splined.WindowsGui
                 EventHandler handler = TrailingClick;
                 if (handler != null) handler(this, EventArgs.Empty);
             }
+        }
+    }
+
+    internal sealed class SpectrumSlider : Control
+    {
+        private static readonly Color[] BarColors =
+        {
+            Color.FromArgb(255, 45, 54),
+            Color.FromArgb(255, 39, 142),
+            Color.FromArgb(201, 48, 242),
+            Color.FromArgb(75, 91, 244),
+            Color.FromArgb(39, 188, 224),
+            Color.FromArgb(46, 211, 113),
+            Color.FromArgb(205, 213, 52),
+            Color.FromArgb(247, 120, 45)
+        };
+
+        private ThemePalette palette;
+        private int minimum;
+        private int maximum = 100;
+        private int value;
+        private int smallChange = 1;
+        private int largeChange = 10;
+        private int spectrumIndex;
+        private bool dragging;
+
+        internal ThemePalette Palette
+        {
+            get { return palette ?? ThemeManager.CurrentPalette; }
+            set { palette = value; BackColor = Palette.NestedCardSurface; Invalidate(); }
+        }
+
+        public int Minimum
+        {
+            get { return minimum; }
+            set
+            {
+                minimum = value;
+                if (maximum < minimum) maximum = minimum;
+                Value = this.value;
+                Invalidate();
+            }
+        }
+
+        public int Maximum
+        {
+            get { return maximum; }
+            set
+            {
+                maximum = Math.Max(minimum, value);
+                Value = this.value;
+                Invalidate();
+            }
+        }
+
+        public int Value
+        {
+            get { return value; }
+            set
+            {
+                int next = Math.Max(minimum, Math.Min(maximum, value));
+                if (this.value == next) return;
+                this.value = next;
+                Invalidate();
+                EventHandler changed = ValueChanged;
+                if (changed != null) changed(this, EventArgs.Empty);
+            }
+        }
+
+        public int SmallChange
+        {
+            get { return smallChange; }
+            set { smallChange = Math.Max(1, value); }
+        }
+
+        public int LargeChange
+        {
+            get { return largeChange; }
+            set { largeChange = Math.Max(1, value); }
+        }
+
+        public int SpectrumIndex
+        {
+            get { return spectrumIndex; }
+            set { spectrumIndex = Math.Max(0, value); Invalidate(); }
+        }
+
+        public event EventHandler ValueChanged;
+
+        public SpectrumSlider()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw
+                | ControlStyles.Selectable, true);
+            TabStop = true;
+            Cursor = Cursors.Hand;
+            BackColor = ThemeManager.CurrentPalette.NestedCardSurface;
+            Size = new Size(58, 128);
+        }
+
+        protected override bool IsInputKey(Keys keyData)
+        {
+            Keys key = keyData & Keys.KeyCode;
+            return key == Keys.Up || key == Keys.Down || key == Keys.Left || key == Keys.Right
+                || base.IsInputKey(keyData);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Up || e.KeyCode == Keys.Right) Value += SmallChange;
+            else if (e.KeyCode == Keys.Down || e.KeyCode == Keys.Left) Value -= SmallChange;
+            else if (e.KeyCode == Keys.PageUp) Value += LargeChange;
+            else if (e.KeyCode == Keys.PageDown) Value -= LargeChange;
+            else if (e.KeyCode == Keys.Home) Value = Minimum;
+            else if (e.KeyCode == Keys.End) Value = Maximum;
+            else return;
+            e.Handled = true;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left) return;
+            Focus();
+            dragging = true;
+            Capture = true;
+            SetValueFromPointer(e.Y);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (dragging) SetValueFromPointer(e.Y);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button != MouseButtons.Left) return;
+            dragging = false;
+            Capture = false;
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            Value += e.Delta >= 0 ? SmallChange : -SmallChange;
+        }
+
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); dragging = false; Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            ThemePalette active = Palette;
+            int dpi = Math.Max(96, DeviceDpi);
+            int inset = Math.Max(3, (int)Math.Round(5f * dpi / 96f));
+            int gap = Math.Max(2, (int)Math.Round(3f * dpi / 96f));
+            int preferredHeight = Math.Max(4, (int)Math.Round(7f * dpi / 96f));
+            int usableHeight = Math.Max(1, ClientSize.Height - (inset * 2));
+            int segmentCount = Math.Max(6, Math.Min(16, (usableHeight + gap) / (preferredHeight + gap)));
+            int segmentHeight = Math.Max(2, (usableHeight - (gap * (segmentCount - 1))) / segmentCount);
+            int stackHeight = (segmentHeight * segmentCount) + (gap * (segmentCount - 1));
+            int top = Math.Max(inset, (ClientSize.Height - stackHeight) / 2);
+            int barWidth = Math.Max(12, Math.Min(ClientSize.Width - (inset * 2), (int)Math.Round(62f * dpi / 96f)));
+            int left = Math.Max(inset, (ClientSize.Width - barWidth) / 2);
+            double range = Math.Max(1, maximum - minimum);
+            int activeSegments = (int)Math.Round(((value - minimum) / range) * segmentCount);
+            activeSegments = Math.Max(0, Math.Min(segmentCount, activeSegments));
+            Color bar = BarColors[spectrumIndex % BarColors.Length];
+            if (!Enabled) bar = active.TextDisabled;
+            else if (Focused) bar = ThemeManager.Blend(bar, Color.White, active.Dark ? 0.10f : 0.18f);
+            Color idle = ThemeManager.Blend(bar, active.NestedCardSurface, active.Dark ? 0.78f : 0.86f);
+            e.Graphics.SmoothingMode = SmoothingMode.None;
+            for (int index = 0; index < segmentCount; index++)
+            {
+                int y = top + stackHeight - segmentHeight - (index * (segmentHeight + gap));
+                Rectangle segment = new Rectangle(left, y, barWidth, segmentHeight);
+                using (SolidBrush brush = new SolidBrush(index < activeSegments ? bar : idle))
+                    e.Graphics.FillRectangle(brush, segment);
+            }
+        }
+
+        private void SetValueFromPointer(int y)
+        {
+            int inset = Math.Max(3, (int)Math.Round(5f * Math.Max(96, DeviceDpi) / 96f));
+            int usable = Math.Max(1, ClientSize.Height - (inset * 2));
+            double ratio = 1d - Math.Max(0d, Math.Min(1d, (y - inset) / (double)usable));
+            Value = minimum + (int)Math.Round((maximum - minimum) * ratio);
         }
     }
 

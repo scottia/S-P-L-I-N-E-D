@@ -320,11 +320,13 @@ state. They survive candidate clearing, later Albums, concurrent batches, and
 application restart, and are included when Interface Settings are selected in
 a `.spl` backup. Controls may be temporarily disabled when the current result
 set cannot satisfy them; this does not discard the saved operator preference.
-The Upscale/Advanced area uses eight centered vertical controls. The single
-unframed summary arrow before the Candidate Findings title hides only the three
-summary groups; Upscale remains visible as two rows of four taller sliders with
-clickable one-step arrows above and below each slider. A vertically constrained
-workspace scrolls instead of clipping those controls. Existing local covers
+The Upscale/Advanced area uses eight frameless, segmented spectrum controls.
+Their bars stretch within centered layout slots and expose the same mouse,
+wheel, keyboard, reset, and persisted-value behavior as the previous vertical
+controls. The single unframed summary arrow before the Candidate Findings title
+hides only the three summary groups; Upscale remains visible as two rows of four
+taller bars with clickable one-step arrows above and below each bar. A vertically
+constrained workspace scrolls instead of clipping those controls. Existing local covers
 remain eligible for explicit preview/edit even when already Ideal or above
 Ideal; their dimensions are not reduced automatically.
 
