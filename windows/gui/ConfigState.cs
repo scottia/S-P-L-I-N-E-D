@@ -266,6 +266,7 @@ namespace Splined.WindowsGui
         public bool MainMaximized;
         public int MainSplitterDistance = 430;
         public int RightSplitterDistance = 285;
+        public int ArtworkPreviewWidth = 420;
         public string LayoutPreset = "Balanced";
         public bool LayoutStacked;
         public int SetupWidth = 980;
@@ -725,6 +726,7 @@ namespace Splined.WindowsGui
                 state.MainMaximized = ReadBool(text, "ui", "main_maximized", false);
                 state.MainSplitterDistance = ReadInt(text, "ui", "main_splitter_distance", 430);
                 state.RightSplitterDistance = ReadInt(text, "ui", "right_splitter_distance", 285);
+                state.ArtworkPreviewWidth = ReadInt(text, "ui", "artwork_preview_width", 420);
                 state.LayoutPreset = ReadString(text, "ui", "layout_preset", "Balanced");
                 state.LayoutStacked = ReadBool(text, "ui", "layout_stacked", false);
                 state.SetupWidth = ReadInt(text, "ui", "setup_width", 980);
@@ -799,6 +801,7 @@ namespace Splined.WindowsGui
                 + "main_maximized = " + Bool(state.MainMaximized) + Environment.NewLine
                 + "main_splitter_distance = " + Math.Max(280, state.MainSplitterDistance) + Environment.NewLine
                 + "right_splitter_distance = " + Math.Max(150, state.RightSplitterDistance) + Environment.NewLine
+                + "artwork_preview_width = " + Math.Max(220, state.ArtworkPreviewWidth) + Environment.NewLine
                 + "layout_preset = " + Quote(state.LayoutPreset) + Environment.NewLine
                 + "layout_stacked = " + Bool(state.LayoutStacked) + Environment.NewLine
                 + "setup_width = " + Math.Max(820, state.SetupWidth) + Environment.NewLine

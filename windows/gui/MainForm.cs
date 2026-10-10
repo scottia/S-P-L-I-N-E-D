@@ -182,6 +182,7 @@ namespace Splined.WindowsGui
         private const int MediaSelectorCollapsedExtent = 58;
         private RichTextBox activity;
         private TableLayoutPanel activityWorkspace;
+        private SplitContainer activityArtworkSplit;
         private Panel activityContentHost;
         private TableLayoutPanel activityColumn;
         private Label scanActivityTitle;
@@ -227,7 +228,7 @@ namespace Splined.WindowsGui
         private CheckBox upscaleAdaptiveDefaults;
         private CheckBox upscalePreviewOnly;
         private Label upscaleCandidateDimensions;
-        private Button candidateSummaryToggle;
+        private Label candidateSummaryToggle;
         private readonly Dictionary<string, TrackBar> upscaleProfileSliders = new Dictionary<string, TrackBar>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Label> upscaleProfileValues = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
         private readonly System.Windows.Forms.Timer upscalePreviewTimer = new System.Windows.Forms.Timer();
@@ -249,7 +250,7 @@ namespace Splined.WindowsGui
         private bool standaloneExistingCoverEdit;
         private Button candidateFilterButton;
         private TableLayoutPanel candidateLayout;
-        private Control candidateFilterPanel;
+        private Panel candidateFilterPanel;
         private bool candidateFilterWorkspaceActive;
         private int candidateFilterPreviousSplitterDistance = -1;
         private int candidateFilterPreviousPanel2MinSize = -1;
@@ -283,7 +284,6 @@ namespace Splined.WindowsGui
         private const int LibraryTreeMinimumHeight = 170;
         private const int ActivityPanelMinimumWidth = 520;
         private const int ActivityPanelMinimumHeight = 230;
-        private const int AlbumActivityMinimumWidth = 340;
         private const int CandidatePanelMinimumWidth = 720;
         private const int CandidatePanelMinimumHeight = 420;
 
@@ -614,16 +614,19 @@ namespace Splined.WindowsGui
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 26));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            candidateSummaryToggle = new SpectrumToggleButton
+            candidateSummaryToggle = new Label
             {
                 Name = "candidateSummaryToggle",
                 Text = uiState.CandidateSummaryExpanded ? "▾" : "▸",
-                Width = 30,
-                Height = 28,
+                Dock = DockStyle.Fill,
                 Margin = new Padding(0),
+                Padding = new Padding(0),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Cursor = Cursors.Hand,
                 AccessibleName = "Expand or collapse Candidate Findings, Source Selection, and Resolution"
             };
             candidateSummaryToggle.Click += delegate
@@ -852,7 +855,7 @@ namespace Splined.WindowsGui
             return actions;
         }
 
-        private Control BuildCandidateFilterPanel()
+        private Panel BuildCandidateFilterPanel()
         {
             Panel frame = new FluentCardPanel
             {
@@ -863,20 +866,7 @@ namespace Splined.WindowsGui
                 Margin = new Padding(0, 0, 0, ThemeManager.Space4),
                 VisualRole = CardVisualRole.SpectrumNested
             };
-            frame.Resize += delegate { ApplyRoundedCandidateFilterRegion(frame); };
             return frame;
-        }
-
-        private static void ApplyRoundedCandidateFilterRegion(Control control)
-        {
-            if (control == null || control.Width < 2 || control.Height < 2) return;
-            using (System.Drawing.Drawing2D.GraphicsPath path = ThemeManager.RoundedPath(
-                new RectangleF(0, 0, control.Width - 1, control.Height - 1), ThemeManager.CardRadius))
-            {
-                Region previous = control.Region;
-                control.Region = new Region(path);
-                if (previous != null) previous.Dispose();
-            }
         }
 
         private void SetCandidateFilterExpanded(bool expanded, bool save)
@@ -1048,33 +1038,47 @@ namespace Splined.WindowsGui
                 Text = "",
                 Checked = SavedMediaStatusFilter(stateFilter),
                 AutoSize = false,
-                Width = 20,
-                Dock = DockStyle.Left,
+                Dock = DockStyle.Fill,
                 Margin = new Padding(0),
                 Tag = stateFilter
             };
             filter.CheckedChanged += MediaFilterCriteriaChanged;
             mediaStatusFilters[stateFilter] = filter;
-            FlowLayoutPanel line = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty, Padding = Padding.Empty };
+            TableLayoutPanel line = new BufferedTableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            line.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 20));
+            line.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 23));
+            line.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            line.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             Label bullet = new Label
             {
                 Text = "●",
-                AutoSize = false,
-                Width = 23,
-                Height = 23,
-                Dock = DockStyle.None,
+                Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
                 Margin = new Padding(0)
             };
-            Label description = new Label { Text = label, AutoSize = true, Margin = new Padding(0, 3, 0, 0) };
+            Label description = new Label
+            {
+                Text = label,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                Margin = Padding.Empty
+            };
             bullet.Click += delegate { filter.Checked = !filter.Checked; };
             description.Click += delegate { filter.Checked = !filter.Checked; };
             mediaStatusBullets[stateFilter] = bullet;
             mediaStatusDescriptions[stateFilter] = description;
-            line.Controls.Add(filter);
-            line.Controls.Add(bullet);
-            line.Controls.Add(description);
+            line.Controls.Add(filter, 0, 0);
+            line.Controls.Add(bullet, 1, 0);
+            line.Controls.Add(description, 2, 0);
             parent.Controls.Add(line, column, row);
         }
 
@@ -1214,6 +1218,17 @@ namespace Splined.WindowsGui
                 int maximum = rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth;
                 rightSplit.SplitterDistance = Math.Max(rightSplit.Panel1MinSize, Math.Min(uiState.RightSplitterDistance, maximum));
             }
+            RestoreArtworkPreviewWidth();
+        }
+
+        private void RestoreArtworkPreviewWidth()
+        {
+            if (activityArtworkSplit == null || activityArtworkSplit.Panel2Collapsed) return;
+            int available = activityArtworkSplit.Width - activityArtworkSplit.SplitterWidth;
+            if (available <= activityArtworkSplit.Panel1MinSize + activityArtworkSplit.Panel2MinSize) return;
+            int previewWidth = Math.Max(activityArtworkSplit.Panel2MinSize,
+                Math.Min(uiState.ArtworkPreviewWidth, available - activityArtworkSplit.Panel1MinSize));
+            activityArtworkSplit.SplitterDistance = available - previewWidth;
         }
 
         private void RestoreMediaFilterState()
@@ -1505,11 +1520,31 @@ namespace Splined.WindowsGui
             Control activityTitleRow = BuildProcessingPanelTitle();
             scanActivityTitle = activityTitleRow.Controls.OfType<Label>().First();
             upper.Controls.Add(activityTitleRow, 0, 0);
-            activityWorkspace = new TableLayoutPanel { Name = "activityWorkspace", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
-            activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64));
-            activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
-            activityWorkspace.Resize += delegate { UpdateArtworkSquareLayout(false); };
-            activityContentHost = new Panel { Name = "activityContentHost", Dock = DockStyle.Fill, Margin = new Padding(0, 0, ThemeManager.Space4, 0), Padding = Padding.Empty };
+            activityWorkspace = new TableLayoutPanel { Name = "activityWorkspace", Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
+            activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            activityWorkspace.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            activityArtworkSplit = new SplitContainer
+            {
+                Name = "activityArtworkSplit",
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 7,
+                Panel1MinSize = 280,
+                Panel2MinSize = 220,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            activityArtworkSplit.Panel1.Padding = new Padding(0, 0, ThemeManager.Space4, 0);
+            activityArtworkSplit.Panel2.Padding = new Padding(ThemeManager.Space4, 0, 0, 0);
+            activityArtworkSplit.SplitterMoved += delegate
+            {
+                if (!activityArtworkSplit.Panel2Collapsed)
+                    uiState.ArtworkPreviewWidth = Math.Max(activityArtworkSplit.Panel2MinSize, activityArtworkSplit.Panel2.Width);
+                UpdateArtworkSquareLayout(true);
+            };
+            activityArtworkSplit.Resize += delegate { UpdateArtworkSquareLayout(false); };
+            activityWorkspace.Controls.Add(activityArtworkSplit, 0, 0);
+            activityContentHost = new Panel { Name = "activityContentHost", Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
             activityColumn = new TableLayoutPanel { Name = "activityColumn", Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
             activityColumn.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
             activityColumn.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -1522,9 +1557,9 @@ namespace Splined.WindowsGui
             activityCard.Controls.Add(activity);
             activityColumn.Controls.Add(activityCard, 0, 1);
             activityContentHost.Controls.Add(activityColumn);
-            activityWorkspace.Controls.Add(activityContentHost, 0, 0);
+            activityArtworkSplit.Panel1.Controls.Add(activityContentHost);
 
-            TableLayoutPanel artwork = new FluentCardTableLayoutPanel { Name = "selectedAlbumArtworkCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space8), RowCount = 3, ColumnCount = 1, Margin = new Padding(ThemeManager.Space4, 0, 0, 0), VisualRole = CardVisualRole.SpectrumNested };
+            TableLayoutPanel artwork = new FluentCardTableLayoutPanel { Name = "selectedAlbumArtworkCard", Dock = DockStyle.Fill, Padding = new Padding(ThemeManager.Space8), RowCount = 3, ColumnCount = 1, Margin = Padding.Empty, VisualRole = CardVisualRole.SpectrumNested };
             artwork.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
             artwork.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             artwork.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
@@ -1535,7 +1570,7 @@ namespace Splined.WindowsGui
             artworkPreviewCaption = new Label { Name = "artworkPreviewCaption", Text = "No artwork selected", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, AutoEllipsis = true };
             artwork.Controls.Add(artworkPreviewCaption, 0, 2);
             artworkPreviewCard = artwork;
-            activityWorkspace.Controls.Add(artwork, 1, 0);
+            activityArtworkSplit.Panel2.Controls.Add(artwork);
             upper.Controls.Add(activityWorkspace, 0, 1);
             ApplyArtworkPanelVisibility();
 
@@ -2845,23 +2880,16 @@ namespace Splined.WindowsGui
             bool summaryExpanded = uiState.CandidateSummaryExpanded;
             TableLayoutPanel columns = new BufferedTableLayoutPanel
             {
+                Name = "candidateFilterStack",
                 Dock = DockStyle.Top,
-                AutoSize = false,
-                Height = 540,
-                MinimumSize = new Size(0, 540),
-                ColumnCount = 5,
-                RowCount = 3,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 0,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0)
             };
-            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryExpanded ? 210 : 0));
-            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryExpanded ? ThemeManager.Space8 : 0));
-            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
-            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+            columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
             TableLayoutPanel types = CandidateFilterColumn();
             candidateShowAll = new FluentCheckBox
@@ -2870,7 +2898,7 @@ namespace Splined.WindowsGui
                 Text = "Show all results",
                 AutoSize = true,
                 ForeColor = palette.TextPrimary,
-                Margin = new Padding(0, 0, 0, ThemeManager.Space4)
+                Margin = Padding.Empty
             };
             candidateShowAll.CheckedChanged += delegate
             {
@@ -2882,7 +2910,7 @@ namespace Splined.WindowsGui
                 SaveCandidateFilterState();
                 ApplyCandidateFilters();
             };
-            int showAllRow = AddCandidateFilterRow(types, 27);
+            int showAllRow = AddCandidateFilterRow(types, 23);
             types.Controls.Add(candidateShowAll, 0, showAllRow);
             types.SetColumnSpan(candidateShowAll, 3);
             AddCandidateFilterSection(types, "Image Type", "type", new[]
@@ -2927,18 +2955,40 @@ namespace Splined.WindowsGui
 
             if (summaryExpanded)
             {
-                columns.Controls.Add(WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types), 0, 0);
-                columns.Controls.Add(WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources), 2, 0);
-                columns.Controls.Add(WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges), 4, 0);
+                TableLayoutPanel summary = new BufferedTableLayoutPanel
+                {
+                    Name = "candidateSummaryPanel",
+                    Dock = DockStyle.Top,
+                    AutoSize = true,
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    ColumnCount = 5,
+                    RowCount = 1,
+                    Margin = new Padding(0, 0, 0, ThemeManager.Space4),
+                    Padding = Padding.Empty
+                };
+                summary.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+                summary.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space4));
+                summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
+                summary.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space4));
+                summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
+                summary.Controls.Add(WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types), 0, 0);
+                summary.Controls.Add(WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources), 2, 0);
+                summary.Controls.Add(WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges), 4, 0);
+                int summaryRow = columns.RowCount++;
+                columns.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                columns.Controls.Add(summary, 0, summaryRow);
             }
             GroupBox upscaleGroup = WrapCandidateFilterGroup("candidateUpscaleGroup", "Upscale / Advanced", upscale);
-            columns.Controls.Add(upscaleGroup, 0, 2);
-            columns.SetColumnSpan(upscaleGroup, 5);
+            int upscaleRow = columns.RowCount++;
+            columns.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            columns.Controls.Add(upscaleGroup, 0, upscaleRow);
             candidateFilterPanel.Controls.Add(columns);
-            ApplyRoundedCandidateFilterRegion(candidateFilterPanel);
             ThemeManager.Apply(candidateFilterPanel, uiState.Theme);
             RefreshCandidateFilterDependencies();
             candidateFilterPanel.ResumeLayout(true);
+            columns.PerformLayout();
+            candidateFilterPanel.AutoScrollMinSize = new Size(0, columns.PreferredSize.Height + ThemeManager.Space8);
             candidateFilterPanel.Invalidate(true);
         }
 
@@ -2949,8 +2999,10 @@ namespace Splined.WindowsGui
                 Name = name,
                 Text = title,
                 SpectrumBorder = true,
-                Dock = DockStyle.Fill,
-                Padding = new Padding(ThemeManager.Space8, ThemeManager.Space12, ThemeManager.Space8, ThemeManager.Space8),
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space4),
                 Margin = new Padding(0)
             };
             content.Dock = DockStyle.Top;
@@ -2968,7 +3020,7 @@ namespace Splined.WindowsGui
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 3,
                 RowCount = 0,
-                Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4, ThemeManager.Space8, ThemeManager.Space4),
+                Padding = new Padding(ThemeManager.Space4, 0, ThemeManager.Space4, 0),
                 Margin = new Padding(0)
             };
             // Do not use AutoSize for the option and count cells here. In a
@@ -3032,7 +3084,7 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 AutoSize = false,
                 ForeColor = palette.Success,
-                Margin = new Padding(ThemeManager.Space8, 1, 0, 0)
+                Margin = new Padding(ThemeManager.Space4, 1, 0, 0)
             };
             upscalePreviewOnly.CheckedChanged += delegate
             {
@@ -3045,13 +3097,14 @@ namespace Splined.WindowsGui
             {
                 Name = "upscaleModeLine",
                 Dock = DockStyle.Fill,
-                ColumnCount = 2,
+                ColumnCount = 3,
                 RowCount = 1,
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
-            modeLine.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            modeLine.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            modeLine.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+            modeLine.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
+            modeLine.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             modeLine.Controls.Add(upscaleAdaptiveDefaults, 0, 0);
             modeLine.Controls.Add(upscalePreviewOnly, 1, 0);
             AddUpscaleFilterRow(column, modeLine, 25);
@@ -3104,7 +3157,7 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
                 RowCount = 1,
-                Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
+                Margin = new Padding(0, 1, 0, ThemeManager.Space4)
             };
             previewLine.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 168));
             previewLine.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
@@ -3176,7 +3229,7 @@ namespace Splined.WindowsGui
                 Text = UpscaleProfileIcon(key) + " " + label,
                 SpectrumBorder = true,
                 Dock = DockStyle.Fill,
-                Margin = new Padding(ThemeManager.Space4),
+                Margin = new Padding(2),
                 Padding = new Padding(ThemeManager.Space4, ThemeManager.Space12, ThemeManager.Space4, ThemeManager.Space4)
             };
             TableLayoutPanel control = new BufferedTableLayoutPanel
@@ -3291,6 +3344,8 @@ namespace Splined.WindowsGui
             control.Controls.Add(resetRow, 0, resetRowIndex);
             frame.Controls.Add(control);
             frame.Resize += delegate { centerSlider(); };
+            frame.Layout += delegate { centerSlider(); };
+            frame.VisibleChanged += delegate { if (frame.Visible) centerSlider(); };
             return frame;
         }
 
@@ -3397,9 +3452,9 @@ namespace Splined.WindowsGui
                     Text = title,
                     AutoSize = true,
                     Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
-                    Margin = new Padding(0, ThemeManager.Space4, 0, ThemeManager.Space4)
+                    Margin = new Padding(0, 1, 0, 1)
                 };
-                int headingRow = AddCandidateFilterRow(column, 27);
+                int headingRow = AddCandidateFilterRow(column, 23);
                 column.Controls.Add(heading, 0, headingRow);
                 column.SetColumnSpan(heading, 3);
             }
@@ -3414,7 +3469,7 @@ namespace Splined.WindowsGui
                     Font = optionFont,
                     ForeColor = option.Color,
                     Tag = option.Key,
-                    Margin = new Padding(0, 1, ThemeManager.Space4, 0)
+                    Margin = new Padding(0, 0, ThemeManager.Space4, 0)
                 };
                 Label count = new Label
                 {
@@ -3424,7 +3479,7 @@ namespace Splined.WindowsGui
                     Font = optionFont,
                     TextAlign = ContentAlignment.MiddleLeft,
                     ForeColor = option.Color,
-                    Margin = new Padding(0, 4, 0, 0)
+                    Margin = new Padding(0)
                 };
                 CandidateFilterBinding binding = new CandidateFilterBinding(dimension, option.Key, option.Color, check, count);
                 candidateFilterBindings.Add(binding);
@@ -3437,7 +3492,7 @@ namespace Splined.WindowsGui
                     SaveCandidateFilterState();
                     ApplyCandidateFilters();
                 };
-                int optionRow = AddCandidateFilterRow(column, 25);
+                int optionRow = AddCandidateFilterRow(column, 23);
                 column.Controls.Add(check, 0, optionRow);
                 column.Controls.Add(count, 1, optionRow);
             }
@@ -5192,54 +5247,44 @@ namespace Splined.WindowsGui
 
         private void ApplyArtworkPanelVisibility()
         {
-            if (activityWorkspace == null || activityWorkspace.ColumnStyles.Count < 2) return;
+            if (activityArtworkSplit == null) return;
             // MusicBrainz review temporarily forces the shared Artwork panel
             // visible without changing the user's persisted View preference.
             bool workspaceReview = musicBrainzMatchesPanel != null || CandidateFilterWorkspaceVisible || candidatePreviewActive;
             bool visible = uiState.ShowArtwork || workspaceReview;
+            bool wasCollapsed = activityArtworkSplit.Panel2Collapsed;
             if (artworkPreviewCard != null) artworkPreviewCard.Visible = visible;
-            activityWorkspace.ColumnStyles[0].SizeType = SizeType.Percent;
-            activityWorkspace.ColumnStyles[0].Width = 100;
-            activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
-            activityWorkspace.ColumnStyles[1].Width = 0;
+            activityArtworkSplit.Panel2Collapsed = !visible;
             if (showArtworkMenuItem != null) showArtworkMenuItem.Checked = visible;
             if (visible && musicBrainzMatchesPanel == null && !candidatePreviewActive) RenderDisplayedAlbum();
             else if (!visible) CloseHoverPreview();
+            if (visible && wasCollapsed) RestoreArtworkPreviewWidth();
             UpdateArtworkSquareLayout(false);
-            activityWorkspace.PerformLayout();
+            activityArtworkSplit.PerformLayout();
         }
 
         private void UpdateArtworkSquareLayout(bool constrainSplitter)
         {
-            if (adjustingArtworkLayout || activityWorkspace == null || activityWorkspace.ColumnStyles.Count < 2) return;
+            if (adjustingArtworkLayout || activityArtworkSplit == null) return;
             if ((!uiState.ShowArtwork && musicBrainzMatchesPanel == null && !CandidateFilterWorkspaceVisible && !candidatePreviewActive)
-                || activityWorkspace.ClientSize.Width <= 0 || activityWorkspace.ClientSize.Height <= 0)
+                || activityArtworkSplit.Panel2Collapsed || activityArtworkSplit.Panel2.ClientSize.Width <= 0)
             {
-                activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
-                activityWorkspace.ColumnStyles[1].Width = 0;
                 return;
             }
             adjustingArtworkLayout = true;
             try
             {
-                int marginAllowance = ThemeManager.Space4;
-                int required = activityWorkspace.ClientSize.Height + marginAllowance;
-                int available = Math.Max(0, activityWorkspace.ClientSize.Width - AlbumActivityMinimumWidth);
-                if (constrainSplitter && rightSplit != null && required > available)
+                uiState.ArtworkPreviewWidth = Math.Max(activityArtworkSplit.Panel2MinSize,
+                    activityArtworkSplit.Panel2.ClientSize.Width);
+                if (constrainSplitter && rightSplit != null)
                 {
-                    int correction = required - available;
-                    int target = Math.Max(rightSplit.Panel1MinSize, rightSplit.SplitterDistance - correction);
-                    if (target < rightSplit.SplitterDistance)
-                    {
+                    int artworkChrome = 30 + 28 + 28 + (ThemeManager.Space12 * 2);
+                    int desiredUpperHeight = activityArtworkSplit.Panel2.ClientSize.Width + artworkChrome;
+                    int maximum = rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth;
+                    int target = Math.Max(rightSplit.Panel1MinSize, Math.Min(desiredUpperHeight, maximum));
+                    if (target > rightSplit.SplitterDistance)
                         rightSplit.SplitterDistance = target;
-                        required = Math.Max(0, activityWorkspace.ClientSize.Height + marginAllowance);
-                        available = Math.Max(0, activityWorkspace.ClientSize.Width - AlbumActivityMinimumWidth);
-                    }
                 }
-                activityWorkspace.ColumnStyles[0].SizeType = SizeType.Percent;
-                activityWorkspace.ColumnStyles[0].Width = 100;
-                activityWorkspace.ColumnStyles[1].SizeType = SizeType.Absolute;
-                activityWorkspace.ColumnStyles[1].Width = Math.Max(0, Math.Min(required, available));
             }
             finally { adjustingArtworkLayout = false; }
         }
@@ -5649,6 +5694,9 @@ namespace Splined.WindowsGui
                 if (persistedRightDistance >= rightSplit.Panel1MinSize)
                     uiState.RightSplitterDistance = persistedRightDistance;
             }
+            if (activityArtworkSplit != null && !activityArtworkSplit.Panel2Collapsed)
+                uiState.ArtworkPreviewWidth = Math.Max(activityArtworkSplit.Panel2MinSize,
+                    activityArtworkSplit.Panel2.Width);
             if (mediaFilterPanel != null) uiState.MediaFilterExpanded = mediaFilterPanel.Visible;
             if (artistFilter != null) uiState.MediaArtistFilter = artistFilter.Text;
             if (albumFilter != null) uiState.MediaAlbumFilter = albumFilter.Text;

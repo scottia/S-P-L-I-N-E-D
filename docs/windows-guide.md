@@ -89,11 +89,14 @@ softness, contrast, exposure, brightness, gamma, color temperature, and
 existing-cover editing. Compare and full-size preview use the cached candidate
 bytes that the Rust backend evaluated.
 
-The single toggle immediately before **Candidate Findings | Upscale Artwork
-Editing** collapses only the three finding/source/resolution summaries. Upscale
-controls remain visible and switch to two rows of four taller, centered sliders
-with one-step arrow controls. The workspace scrolls vertically rather than
-clipping sliders when the candidate-results pane is enlarged.
+The single unframed arrow immediately before **Candidate Findings | Upscale
+Artwork Editing** collapses only the three finding/source/resolution summaries.
+Those summaries and **Upscale / Advanced** occupy separate compact layout
+panels, so expanding the candidate-results area cannot stretch a summary frame
+over the upscale buttons or cut off the sliders. Upscale controls remain visible
+and switch to two rows of four taller, centered sliders with one-step arrow
+controls. The workspace scrolls vertically when its available height is smaller
+than the controls.
 
 **Upscale Preview** is enabled by default. It keeps Upscale and full-size
 preview available, but **Use Selected** saves the chosen source at its source
@@ -102,6 +105,15 @@ enter explicit **Upscale** save mode. The framed resolution tile beside
 **Upscale Show Full** shows the source aspect ratio and projected dimensions.
 Settings remains available for passive local/candidate previews and is blocked
 only while processing or an active decision is waiting.
+
+The vertical divider immediately left of the Artwork preview is draggable.
+Dragging it left widens the preview and, when space is available, grows the
+upper Activity/Artwork area downward so the image remains useful. Its width is
+stored with the other portable interface splitter state in `data/ui.toml`.
+
+In **Settings > Sources & Matching**, source controls and their effective-policy
+preview share one scroll surface. The policy preview has a bounded content
+height; neither column expands into a large empty independently framed region.
 
 ## MusicBrainz Matches
 
