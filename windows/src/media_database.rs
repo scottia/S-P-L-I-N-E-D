@@ -587,6 +587,76 @@ pub fn record_album_outcome_from_runtime(
     )
 }
 
+/// Remove the durable Album bypass without changing artwork or any other
+/// Album authority. This is the native equivalent of Python's interactive
+/// `bp` removal path.
+pub fn clear_album_bypass_from_runtime(
+    config: &Config,
+    local_album_path: &Path,
+    indexed_album_path: Option<&Path>,
+    indexed_album_key: Option<&str>,
+) -> Result<bool, String> {
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    if !database_access.path().exists() {
+        return Err(format!(
+            "SPLINED database is missing: {}",
+            db_path.display()
+        ));
+    }
+    let mut connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
+    let Some(signature) = read_signature(&connection)? else {
+        return Err("SPLINED database has no published media inventory.".to_string());
+    };
+    validate_signature(config, Some(&signature))?;
+    let canonical_root = signature
+        .get("library_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "SPLINED database signature has no canonical library_root.".to_string())?;
+    let mapper = PathMapper::new(canonical_root, &config.library.music_library)?;
+    let canonical_album = mapper.to_canonical(
+        &indexed_album_path
+            .unwrap_or(local_album_path)
+            .to_string_lossy(),
+    )?;
+    let transaction = connection
+        .transaction()
+        .map_err(db_error("begin Album bypass-removal transaction"))?;
+    let (album_key, artist_key) =
+        resolve_outcome_identity(&transaction, indexed_album_key, &canonical_album)?;
+    let bypassed = transaction
+        .query_row(
+            "SELECT status='bypassed' OR bypassed<>0 FROM albums WHERE album_key=? COLLATE NOCASE",
+            [&album_key],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(db_error("read Album bypass authority"))?;
+    if !bypassed {
+        return Ok(false);
+    }
+    let now = sqlite_now(&transaction)?;
+    transaction
+        .execute(
+            "UPDATE albums SET status='unprocessed', bypassed=0, processed_at=NULL, \
+             timeout_until=NULL, updated_at=?, last_seen_at=? \
+             WHERE album_key=? COLLATE NOCASE",
+            params![now, now, album_key],
+        )
+        .map_err(db_error("remove Album bypass authority"))?;
+    refresh_album_artist_aggregate(&transaction, &artist_key)?;
+    transaction
+        .execute(
+            "INSERT INTO cache_history(cache_key, cache_type, album_key, action, payload_json, splined_version, event_at) \
+             VALUES(?, 'windows-runtime', ?, 'bypass-removed', '{}', ?, ?)",
+            params![canonical_album, album_key, env!("CARGO_PKG_VERSION"), now],
+        )
+        .map_err(db_error("write Album bypass-removal audit"))?;
+    transaction
+        .commit()
+        .map_err(db_error("commit Album bypass-removal transaction"))?;
+    Ok(true)
+}
+
 fn record_album_outcome_inner(
     config: &Config,
     local_album_path: &Path,
@@ -3072,6 +3142,71 @@ mod tests {
             "complete"
         );
         assert!(timing.total_ms >= timing.commit_ms);
+    }
+
+    #[test]
+    fn explicit_bypass_removal_resets_only_bypass_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Artist").join("Album");
+        fs::create_dir_all(&album).unwrap();
+        File::create(album.join("01.mp3")).unwrap();
+        File::create(album.join("cover.jpg")).unwrap();
+        let mut config = Config::default();
+        config.mode = crate::config::Mode::Read;
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let db = database_path(&config.scan.cache_dir);
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, status, bypassed_count, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:artist','Artist',?,'contains-bypass',1,?,?,?,'test')", params![library.join("Artist").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,status,cover_found,cover_path,bypassed,processed_at,selected_source,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:album','tag:artist','Album',?,'tags','bypassed',1,?,1,?,'local',?,?,?,'test')", params![album.to_string_lossy(), album.join("cover.jpg").to_string_lossy(), now, now, now, now]).unwrap();
+        connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
+        drop(connection);
+
+        assert!(clear_album_bypass_from_runtime(&config, &album, None, Some("tag:album")).unwrap());
+        let connection = Connection::open(db).unwrap();
+        let values: (String, i64, Option<String>, Option<String>, i64, String) = connection
+            .query_row(
+                "SELECT status, bypassed, processed_at, timeout_until, cover_found, selected_source FROM albums WHERE album_key='tag:album'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            values,
+            (
+                "unprocessed".to_string(),
+                0,
+                None,
+                None,
+                1,
+                "local".to_string()
+            )
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT status FROM artists WHERE artist_key='tag:artist'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "unprocessed"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM cache_history WHERE action='bypass-removed'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert!(
+            !clear_album_bypass_from_runtime(&config, &album, None, Some("tag:album")).unwrap()
+        );
     }
 
     #[test]

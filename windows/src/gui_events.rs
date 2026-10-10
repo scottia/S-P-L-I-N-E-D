@@ -173,6 +173,7 @@ pub fn auto_ideal_enabled() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpscaleOverrides {
+    pub preserve_source_resolution: bool,
     pub adaptive_defaults: bool,
     pub picture_percent: i32,
     pub sharpen_percent: i32,
@@ -192,7 +193,9 @@ pub enum CandidateDecision {
         index: usize,
         upscale: Option<UpscaleOverrides>,
     },
+    Skip,
     Bypass,
+    ClearBypass,
     Retry {
         artist: String,
         album: String,
@@ -209,6 +212,9 @@ pub enum MusicBrainzMatchDecision {
         artist_mbids: String,
         release_mbid: String,
     },
+    Skip,
+    Bypass,
+    ClearBypass,
     LeaveUnchanged,
 }
 
@@ -251,7 +257,10 @@ fn parse_musicbrainz_match_decision(
                 release_mbid,
             }))
         }
-        "leave_unchanged" | "bypass" | "skip" => Ok(Some(MusicBrainzMatchDecision::LeaveUnchanged)),
+        "skip_album" => Ok(Some(MusicBrainzMatchDecision::Skip)),
+        "bypass" | "skip" => Ok(Some(MusicBrainzMatchDecision::Bypass)),
+        "clear_bypass" => Ok(Some(MusicBrainzMatchDecision::ClearBypass)),
+        "leave_unchanged" => Ok(Some(MusicBrainzMatchDecision::LeaveUnchanged)),
         _ => Ok(None),
     }
 }
@@ -291,6 +300,10 @@ fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, 
             let upscale = value
                 .get("upscale_adaptive_defaults")
                 .map(|_| UpscaleOverrides {
+                    preserve_source_resolution: value
+                        .get("preserve_source_resolution")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                     adaptive_defaults: value
                         .get("upscale_adaptive_defaults")
                         .and_then(Value::as_bool)
@@ -317,6 +330,8 @@ fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, 
                 upscale,
             }))
         }
+        "skip_album" => Ok(Some(CandidateDecision::Skip)),
+        "clear_bypass" => Ok(Some(CandidateDecision::ClearBypass)),
         "bypass" | "skip" => Ok(Some(CandidateDecision::Bypass)),
         "retry_musicbrainz" => Ok(Some(CandidateDecision::RetryMusicBrainz)),
         "back_musicbrainz" => Ok(Some(CandidateDecision::BackToMusicBrainz)),
@@ -398,5 +413,72 @@ mod tests {
                 release_mbid: "4f725973-aaf1-4d0d-a775-0a90ed2a0757".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn distinguishes_skip_album_from_persistent_bypass() {
+        assert_eq!(
+            parse_candidate_decision(&json!({"action": "skip_album"}))
+                .unwrap()
+                .unwrap(),
+            CandidateDecision::Skip
+        );
+        assert_eq!(
+            parse_candidate_decision(&json!({"action": "bypass"}))
+                .unwrap()
+                .unwrap(),
+            CandidateDecision::Bypass
+        );
+        assert_eq!(
+            parse_musicbrainz_match_decision(&json!({"action": "skip_album"}))
+                .unwrap()
+                .unwrap(),
+            MusicBrainzMatchDecision::Skip
+        );
+        assert_eq!(
+            parse_musicbrainz_match_decision(&json!({"action": "bypass"}))
+                .unwrap()
+                .unwrap(),
+            MusicBrainzMatchDecision::Bypass
+        );
+        assert_eq!(
+            parse_candidate_decision(&json!({"action": "clear_bypass"}))
+                .unwrap()
+                .unwrap(),
+            CandidateDecision::ClearBypass
+        );
+        assert_eq!(
+            parse_musicbrainz_match_decision(&json!({"action": "clear_bypass"}))
+                .unwrap()
+                .unwrap(),
+            MusicBrainzMatchDecision::ClearBypass
+        );
+    }
+
+    #[test]
+    fn parses_preview_only_candidate_selection_without_inferred_edits() {
+        let decision = parse_candidate_decision(&json!({
+            "action": "use",
+            "index": 2,
+            "upscale_adaptive_defaults": false,
+            "preserve_source_resolution": true,
+            "apply_edit_profile": false,
+            "edit_existing_cover": false
+        }))
+        .unwrap()
+        .unwrap();
+        match decision {
+            CandidateDecision::Use {
+                index,
+                upscale: Some(overrides),
+            } => {
+                assert_eq!(index, 1);
+                assert!(overrides.preserve_source_resolution);
+                assert!(!overrides.adaptive_defaults);
+                assert!(!overrides.apply_edit_profile);
+                assert!(!overrides.edit_existing_cover);
+            }
+            other => panic!("unexpected decision: {other:?}"),
+        }
     }
 }

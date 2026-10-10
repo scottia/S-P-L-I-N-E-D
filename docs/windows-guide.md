@@ -19,7 +19,7 @@ through a narrow C ABI. UTF-8 requests and structured callbacks carry scans,
 progress, decisions, candidates, MusicBrainz matches, cancellation, errors, and
 completion. Rust owns returned buffers and exposes their matching free
 function; panics are contained at the boundary. Work runs away from the UI
-thread, so the established LAUNCH / WAITING / STOP interface remains
+thread, so the established LAUNCH / Skip Album / STOP interface remains
 responsive.
 
 There is one normal SPLINED process. The DLL is never embedded, extracted,
@@ -48,9 +48,15 @@ override, while timeout-active Albums remain protected.
 Track focus and explicit targeting remain separate:
 
 - clicking a track changes preview/focus only;
-- checking a track intentionally targets that exact track;
+- checking one or more tracks intentionally queues those exact tracks;
 - selecting or launching the Album clears the explicit track target and starts
   normal Album resume.
+
+Track checkboxes are additive within the focused fallback compilation. A plain
+checkbox click or Ctrl+Click on the track text can add/remove tracks. After a
+targeted track completes, SPLINED keeps the compilation Album expanded and in
+focus, turns the completed track indicator green, and leaves any other checked
+tracks queued.
 
 Selection history controls live at the right edge of the Media Selection filter
 bar and remain visible as the pane is resized.
@@ -59,7 +65,13 @@ READ performs a fully evaluated dry run. LIVE WRITE may install selected
 artwork. Auto Scan `[SELECTED]` uses only the explicit queue. Auto Scan `[ALL]`
 adds every unprocessed/incomplete Album without bypassing protected states.
 Auto Scan accepts only policy-eligible automatic decisions; otherwise the
-reusable LAUNCH / WAITING / STOP lifecycle pauses for input.
+reusable LAUNCH / Skip Album / STOP lifecycle pauses for input. While a
+decision is waiting, the orange **Skip Album** header action always asks for
+confirmation and advances without recording a bypass. The separate orange
+**Bypass Album** candidate action records the deliberate bypass outcome.
+When the current Album already has saved bypass authority, that action becomes
+**NO Bypass**. It asks for confirmation, removes only the saved SQLite bypass,
+keeps the current source results open, and then returns to **Bypass Album**.
 
 Every queued Album carries its own indexed Album path and SQLite key into the
 in-process Rust scan context. A multi-Album batch therefore records each result
@@ -76,6 +88,20 @@ the selected candidate and include upscale defaults, picture, sharpen,
 softness, contrast, exposure, brightness, gamma, color temperature, and
 existing-cover editing. Compare and full-size preview use the cached candidate
 bytes that the Rust backend evaluated.
+
+The single toggle immediately before **Candidate Findings | Upscale Artwork
+Editing** collapses only the three finding/source/resolution summaries. Upscale
+controls remain visible and switch to two rows of four taller, centered sliders
+with one-step arrow controls. The workspace scrolls vertically rather than
+clipping sliders when the candidate-results pane is enlarged.
+
+**Upscale Preview** is enabled by default. It keeps Upscale and full-size
+preview available, but **Use Selected** saves the chosen source at its source
+resolution without applying upscale or edit-profile filtering. Turn it off to
+enter explicit **Upscale** save mode. The framed resolution tile beside
+**Upscale Show Full** shows the source aspect ratio and projected dimensions.
+Settings remains available for passive local/candidate previews and is blocked
+only while processing or an active decision is waiting.
 
 ## MusicBrainz Matches
 
@@ -133,8 +159,8 @@ still choose another release and select higher-resolution artwork.
 
 In **Show Tracks**, clicking a pending fallback compilation's Album row selects
 that Album for normal SQLite-ledger resume and enables **LAUNCH**. Clicking a
-track remains focus/preview only; only its check control requests an explicit
-single-track reopen.
+track remains focus/preview only; checking one or more tracks requests explicit
+reopen of exactly that additive queue.
 
 The compilation-track-started event moves focus to the actual current track but
 does not set an explicit target. Fallback compilation preview reads only that

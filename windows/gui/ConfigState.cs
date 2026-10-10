@@ -237,6 +237,8 @@ namespace Splined.WindowsGui
         public bool ShowMediaSelector = true;
         public bool MediaFilterExpanded = true;
         public bool CandidateFilterExpanded;
+        public bool CandidateSummaryExpanded = true;
+        public bool UpscalePreviewOnly = true;
         public List<string> CandidateExcludedSources = new List<string>();
         public List<string> CandidateExcludedTypes = new List<string>();
         public List<string> CandidateExcludedPolicies = new List<string>();
@@ -252,6 +254,7 @@ namespace Splined.WindowsGui
         public bool MediaShowIncomplete = true;
         public bool ShowTracks;
         public string SelectedCompilationTrackPath = "";
+        public List<string> SelectedCompilationTrackPaths = new List<string>();
         public string FilteredScanMode = "";
         public bool AutoScanEnabled;
         public string AutoScanScope = "selected";
@@ -690,6 +693,8 @@ namespace Splined.WindowsGui
                 state.ShowMediaSelector = ReadBool(text, "ui", "show_media_selector", true);
                 state.MediaFilterExpanded = ReadBool(text, "ui", "media_filter_expanded", true);
                 state.CandidateFilterExpanded = ReadBool(text, "ui", "candidate_filter_expanded", false);
+                state.CandidateSummaryExpanded = ReadBool(text, "ui", "candidate_summary_expanded", true);
+                state.UpscalePreviewOnly = ReadBool(text, "ui", "upscale_preview_only", true);
                 state.CandidateExcludedSources = ReadArray(text, "ui", "candidate_excluded_sources");
                 state.CandidateExcludedTypes = ReadArray(text, "ui", "candidate_excluded_types");
                 state.CandidateExcludedPolicies = ReadArray(text, "ui", "candidate_excluded_policies");
@@ -705,6 +710,10 @@ namespace Splined.WindowsGui
                 state.MediaShowIncomplete = ReadBool(text, "ui", "media_show_incomplete", true);
                 state.ShowTracks = ReadBool(text, "ui", "show_tracks", false);
                 state.SelectedCompilationTrackPath = ReadString(text, "ui", "selected_compilation_track_path", "");
+                state.SelectedCompilationTrackPaths = ReadArray(text, "ui", "selected_compilation_track_paths");
+                if (state.SelectedCompilationTrackPaths.Count == 0
+                    && !String.IsNullOrWhiteSpace(state.SelectedCompilationTrackPath))
+                    state.SelectedCompilationTrackPaths.Add(state.SelectedCompilationTrackPath);
                 state.FilteredScanMode = ReadString(text, "ui", "filtered_scan_mode", "");
                 state.AutoScanEnabled = ReadBool(text, "ui", "auto_scan_enabled", false);
                 state.AutoScanScope = ReadString(text, "ui", "auto_scan_scope", "selected");
@@ -761,6 +770,8 @@ namespace Splined.WindowsGui
                 + "theme = " + Quote(state.Theme) + Environment.NewLine
                 + "media_filter_expanded = " + Bool(state.MediaFilterExpanded) + Environment.NewLine
                 + "candidate_filter_expanded = " + Bool(state.CandidateFilterExpanded) + Environment.NewLine
+                + "candidate_summary_expanded = " + Bool(state.CandidateSummaryExpanded) + Environment.NewLine
+                + "upscale_preview_only = " + Bool(state.UpscalePreviewOnly) + Environment.NewLine
                 + "candidate_excluded_sources = " + FormatArray(state.CandidateExcludedSources) + Environment.NewLine
                 + "candidate_excluded_types = " + FormatArray(state.CandidateExcludedTypes) + Environment.NewLine
                 + "candidate_excluded_policies = " + FormatArray(state.CandidateExcludedPolicies) + Environment.NewLine
@@ -776,6 +787,7 @@ namespace Splined.WindowsGui
                 + "media_show_incomplete = " + Bool(state.MediaShowIncomplete) + Environment.NewLine
                 + "show_tracks = " + Bool(state.ShowTracks) + Environment.NewLine
                 + "selected_compilation_track_path = " + Quote(state.SelectedCompilationTrackPath) + Environment.NewLine
+                + "selected_compilation_track_paths = " + FormatArray(state.SelectedCompilationTrackPaths) + Environment.NewLine
                 + "filtered_scan_mode = " + Quote(state.FilteredScanMode) + Environment.NewLine
                 + "auto_scan_enabled = " + Bool(state.AutoScanEnabled) + Environment.NewLine
                 + "auto_scan_scope = " + Quote(state.AutoScanScope) + Environment.NewLine

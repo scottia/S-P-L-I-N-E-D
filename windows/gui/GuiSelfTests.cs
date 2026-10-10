@@ -333,9 +333,15 @@ namespace Splined.WindowsGui
                 {
                     Theme = "Dark", ShowStatusOnLaunch = false, ShowConfirmations = false, HoverEnabled = true, ShowArtwork = true,
                     ShowMediaSelector = false, MediaFilterExpanded = false, CandidateFilterExpanded = true,
+                    CandidateSummaryExpanded = true, UpscalePreviewOnly = true,
                     MediaArtistFilter = "Alpha", MediaAlbumFilter = "Fresh",
                     MediaShowRed = false, FilteredScanMode = "read",
                     ShowTracks = true, SelectedCompilationTrackPath = Path.Combine(firstAlbum, "track.mp3"),
+                    SelectedCompilationTrackPaths = new List<string>
+                    {
+                        Path.Combine(firstAlbum, "track.mp3"),
+                        Path.Combine(firstAlbum, "track-02.mp3")
+                    },
                     SelectedAlbumPaths = new List<string> { firstAlbum },
                     MainWidth = 1320, MainHeight = 860, MainX = 110, MainY = 90,
                     MainSplitterDistance = 455, RightSplitterDistance = 305,
@@ -349,12 +355,15 @@ namespace Splined.WindowsGui
                     && !loadedUi.ShowMediaSelector && !loadedUi.MediaFilterExpanded && loadedUi.CandidateFilterExpanded
                     && loadedUi.MediaArtistFilter == "Alpha" && !loadedUi.MediaShowRed
                     && loadedUi.ShowTracks && loadedUi.SelectedCompilationTrackPath == Path.Combine(firstAlbum, "track.mp3")
+                    && loadedUi.CandidateSummaryExpanded && loadedUi.UpscalePreviewOnly
+                    && loadedUi.SelectedCompilationTrackPaths.Count == 2
                     && loadedUi.FilteredScanMode == "read" && loadedUi.SelectedAlbumPaths.SequenceEqual(new[] { firstAlbum })
                     && loadedUi.MainWidth == 1320 && loadedUi.MainSplitterDistance == 455
                     && loadedUi.SetupWidth == 1040 && loadedUi.SetupAdvancedTab == 2
                     && loadedUi.CompareWidth == 1110 && loadedUi.PreviewHeight == 650, "Internal Windows interface settings did not round-trip.");
                 loadedUi.ShowTracks = false;
                 loadedUi.SelectedCompilationTrackPath = "";
+                loadedUi.SelectedCompilationTrackPaths.Clear();
                 loadedUi.CandidateExcludedSources = new List<string> { "amazon" };
                 loadedUi.CandidateExcludedTypes = new List<string> { "Rejected" };
                 loadedUi.CandidateExcludedPolicies = new List<string> { "Strict" };
@@ -643,6 +652,12 @@ namespace Splined.WindowsGui
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Filter by Artist ▼")
                         && Descendants(matches).OfType<Button>().Any(button => button.Text == "Filter by Release Type ▼"),
                         "MusicBrainz Matches retained free-text search or omitted the dependent row filters.");
+                    Assert(Descendants(matches).OfType<Button>().Any(button => button.Text == "Use Release"
+                            && Convert.ToString(button.Tag) == "primary")
+                        && Descendants(matches).OfType<Button>().Any(button => button.Text == "MusicBrainz"
+                            && Convert.ToString(button.Tag) == "primary")
+                        && !Descendants(matches).OfType<Button>().Any(button => button.Text == "Open MB Page"),
+                        "MusicBrainz result actions did not retain white primary text or the concise MusicBrainz label.");
                     Assert(Descendants(matches).OfType<TextBox>().Any(box => box.Text == "5f9ee42f-84b1-42bb-a318-09a05b3fcde1")
                         && !Descendants(matches).OfType<TextBox>().Any(box => box.Text == "291dcfb8-b31c-496a-905b-9955509d75b6"),
                         "MusicBrainz authority fields did not use the queried track authority supplied above the results.");
@@ -1235,6 +1250,23 @@ namespace Splined.WindowsGui
                     Assert(String.Equals(Path.GetFullPath(checkedLaunchTarget), Path.GetFullPath(completedCompilationTrack.Path),
                             StringComparison.OrdinalIgnoreCase),
                         "Checking a completed compilation track did not create the explicit reopen target.");
+                    TreeNode unfinishedCompilationTrackNode = new TreeNode("Unfinished Track")
+                    {
+                        Tag = unfinishedCompilationTrack,
+                        Checked = true
+                    };
+                    checkCompilationTreeNode.Invoke(form, new object[]
+                    {
+                        form, new TreeViewEventArgs(unfinishedCompilationTrackNode)
+                    });
+                    HashSet<string> selectedCompilationPaths = (HashSet<string>)typeof(MainForm)
+                        .GetField("selectedCompilationTrackPaths", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .GetValue(form);
+                    Assert(selectedCompilationPaths.Count == 2
+                        && selectedCompilationPaths.Any(path => String.Equals(Path.GetFullPath(path), Path.GetFullPath(completedCompilationTrack.Path), StringComparison.OrdinalIgnoreCase))
+                        && selectedCompilationPaths.Any(path => String.Equals(Path.GetFullPath(path), Path.GetFullPath(unfinishedCompilationTrack.Path), StringComparison.OrdinalIgnoreCase))
+                        && compilationAlbum.Selected,
+                        "Show Tracks did not retain multiple checked tracks from one fallback compilation Album.");
                     List<AlbumInfo> formAlbums = (List<AlbumInfo>)typeof(MainForm)
                         .GetField("albums", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     formAlbums.Add(compilationAlbum);
@@ -1245,6 +1277,7 @@ namespace Splined.WindowsGui
                         .GetField("launch", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     Assert(compilationAlbum.Selected
                         && explicitCompilationTrackField.GetValue(form) == null
+                        && selectedCompilationPaths.Count == 0
                         && String.IsNullOrWhiteSpace(albumResumeTarget)
                         && compilationLaunch.Enabled,
                         "Focusing a pending fallback compilation Album did not select normal resume and enable LAUNCH.");
@@ -1344,6 +1377,11 @@ namespace Splined.WindowsGui
                     object[] upscaleCandidates = { belowMinimum, upscalable };
                     showCandidates.Invoke(form, new object[] { upscaleCandidates });
                     Assert(artworkFilter.Enabled, "Artwork Filter did not become available with candidate results.");
+                    typeof(MainForm).GetMethod("UpdateSelectionControls", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, null);
+                    Assert(((ToolStripMenuItem)typeof(MainForm)
+                            .GetField("settingsMenuItem", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form)).Enabled,
+                        "Passive local/candidate previews incorrectly disabled Settings before a run or decision.");
                     SplitContainer filterSplit = (SplitContainer)typeof(MainForm)
                         .GetField("rightSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     int filterClosedDistance = filterSplit.SplitterDistance;
@@ -1352,7 +1390,7 @@ namespace Splined.WindowsGui
                     Panel activityHost = form.Controls.Find("activityContentHost", true).OfType<Panel>().Single();
                     Label activityTitle = form.Controls.Find("scanActivityTitle", true).OfType<Label>().Single();
                     Assert(activityHost.Controls.Contains(artworkFilterPanel) && artworkFilter.Text.Contains("▾")
-                        && activityTitle.Text == "Candidate Findings | Upscale & Artwork Editing"
+                        && activityTitle.Text == "Candidate Findings | Upscale Artwork Editing"
                         && filterSplit.SplitterDistance > filterClosedDistance
                         && filterSplit.Panel2MinSize < filterClosedPanel2Minimum,
                         "Artwork Filter did not replace Scan Activity beside Selected Album Artwork.");
@@ -1360,7 +1398,8 @@ namespace Splined.WindowsGui
                     GroupBox upscaleGroup = form.Controls.Find("candidateUpscaleGroup", true).OfType<GroupBox>().Single();
                     Assert(filterColumns.ColumnCount == 5
                         && filterColumns.ColumnStyles.Count == 5 && filterColumns.RowCount == 3
-                        && filterColumns.Dock == DockStyle.Fill && !artworkFilterPanel.AutoScroll
+                        && filterColumns.Dock == DockStyle.Top && artworkFilterPanel.AutoScroll
+                        && filterColumns.Height >= 540
                         && filterColumns.GetPositionFromControl(upscaleGroup).Row == 2
                         && filterColumns.GetColumnSpan(upscaleGroup) == 5
                         && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
@@ -1371,7 +1410,13 @@ namespace Splined.WindowsGui
                     TableLayoutPanel advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
                     Button compactPreview = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
                     Button showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
+                    CheckBox previewOnlyMode = form.Controls.Find("upscalePreviewOnly", true).OfType<CheckBox>().Single();
+                    FluentCardPanel resolutionTile = form.Controls.Find("upscaleResolutionTile", true).OfType<FluentCardPanel>().Single();
                     Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
+                        && previewOnlyMode.Checked && previewOnlyMode.Text == "Upscale Preview"
+                        && compactPreview.Text == "Upscale Preview" && Convert.ToString(compactPreview.Tag) == "success"
+                        && resolutionTile.VisualRole == CardVisualRole.SpectrumNested
+                        && resolutionTile.Controls.OfType<Label>().Single().Text.StartsWith("▣", StringComparison.Ordinal)
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<TrackBar>().Single().Orientation == Orientation.Vertical)
                         && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<TrackBar>().Single().Value == 0
@@ -1389,6 +1434,35 @@ namespace Splined.WindowsGui
                         && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
                         && previewLine.ColumnStyles[0].Width == 168 && compactPreview.Width <= 170,
                         "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
+                    previewOnlyMode.Checked = false;
+                    Assert(compactPreview.Text == "Upscale" && Convert.ToString(compactPreview.Tag) == "primary",
+                        "Disabling Upscale Preview did not expose the explicit Upscale save mode.");
+                    previewOnlyMode.Checked = true;
+                    Assert(compactPreview.Text == "Upscale Preview" && Convert.ToString(compactPreview.Tag) == "success",
+                        "Upscale Preview did not restore its default enabled green state.");
+                    Button summaryToggle = form.Controls.Find("candidateSummaryToggle", true).OfType<Button>().Single();
+                    Assert(summaryToggle.Enabled && summaryToggle.Text == "▾"
+                        && summaryToggle.Parent.Controls.GetChildIndex(summaryToggle) == 0,
+                        "The single Candidate Findings summary toggle is not immediately before the panel title.");
+                    summaryToggle.PerformClick();
+                    Application.DoEvents();
+                    TableLayoutPanel compactAdvancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
+                    Assert(summaryToggle.Text == "▸"
+                        && form.Controls.Find("candidateFindingsGroup", true).Length == 0
+                        && form.Controls.Find("candidateSourcesGroup", true).Length == 0
+                        && form.Controls.Find("candidateRangesGroup", true).Length == 0
+                        && compactAdvancedGrid.ColumnCount == 4 && compactAdvancedGrid.RowCount == 2
+                        && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
+                            button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)) == 8
+                        && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
+                            button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal)) == 8
+                        && Descendants(compactAdvancedGrid).OfType<TrackBar>().All(slider => slider.Height >= 130),
+                        "Collapsing Candidate Findings did not retain two centered rows of taller sliders with nudge controls.");
+                    summaryToggle.PerformClick();
+                    Application.DoEvents();
+                    filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
+                    previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
+                    advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
                         "BelowMinimum and policy-qualified Minimum-to-Ideal candidates did not receive red and magenta backgrounds respectively.");
@@ -1616,10 +1690,42 @@ namespace Splined.WindowsGui
                     MethodInfo updateSelection = typeof(MainForm).GetMethod("UpdateSelectionControls", BindingFlags.Instance | BindingFlags.NonPublic);
                     runningField.SetValue(form, true);
                     updateSelection.Invoke(form, null);
-                    Assert(launch.Enabled && launch.Text == "WAITING" && Convert.ToString(launch.Tag) == "waiting",
-                        "LAUNCH must become the orange WAITING state while an artwork decision is pending.");
+                    Button bypassAlbum = (Button)typeof(MainForm)
+                        .GetField("skip", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(launch.Enabled && launch.Text == "Skip Album" && Convert.ToString(launch.Tag) == "waiting"
+                        && bypassAlbum.Text == "Bypass Album" && Convert.ToString(bypassAlbum.Tag) == "waiting"
+                        && bypassAlbum.Enabled,
+                        "The orange Skip Album / Bypass Album decision controls are not distinct and available during source review.");
+                    FieldInfo activeLaunchAlbumField = typeof(MainForm)
+                        .GetField("activeLaunchAlbum", BindingFlags.Instance | BindingFlags.NonPublic);
+                    AlbumInfo bypassedActiveAlbum = new AlbumInfo
+                    {
+                        Artist = "Bypass Artist",
+                        Title = "Bypassed Album",
+                        Path = Path.Combine(library, "Bypass Artist", "Bypassed Album"),
+                        State = AlbumState.Bypassed,
+                        Selected = true,
+                        BypassOverride = true,
+                        CompletedUtc = DateTime.UtcNow,
+                        Outcome = "fallback-bypassed"
+                    };
+                    activeLaunchAlbumField.SetValue(form, bypassedActiveAlbum);
+                    typeof(MainForm).GetMethod("UpdateCandidateActions", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, null);
+                    Assert(bypassAlbum.Text == "NO Bypass" && bypassAlbum.Enabled,
+                        "A source review with saved Album bypass authority did not expose NO Bypass.");
+                    applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
+                    {
+                        { "event", "album_bypass_cleared" }, { "album_path", bypassedActiveAlbum.Path },
+                        { "removed", true }
+                    } });
+                    Assert(bypassedActiveAlbum.State == AlbumState.New && !bypassedActiveAlbum.BypassOverride
+                        && !bypassedActiveAlbum.CompletedUtc.HasValue && bypassAlbum.Text == "Bypass Album"
+                        && (bool)awaitingField.GetValue(form),
+                        "Removing Album bypass did not retain review while restoring the Bypass Album action.");
+                    activeLaunchAlbumField.SetValue(form, null);
                     Assert(launch.FlatAppearance.BorderSize == 0 && launch.Region == null,
-                        "LAUNCH / WAITING still clips antialiasing through a rounded HWND region.");
+                        "LAUNCH / Skip Album still clips antialiasing through a rounded HWND region.");
                     Assert(form.Controls.Find("selectAndLaunch", true).Length == 0,
                         "Select Media still contains the duplicate mini-LAUNCH control.");
                     FieldInfo settingsField = typeof(MainForm).GetField("settingsMenuItem", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1753,7 +1859,7 @@ namespace Splined.WindowsGui
                         "Stacked layout did not preserve independent scrolling for all three work areas.");
                 }
 
-                Console.WriteLine("PASS: accepted WinForms identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, compilation focus/target resume contract and embedded-only track preview, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, portable Config v5/UI migration, deterministic two-root selective restore, credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/WAITING/STOP lifecycle.");
+                Console.WriteLine("PASS: accepted WinForms identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, compilation focus/target resume contract and embedded-only track preview, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, portable Config v5/UI migration, deterministic two-root selective restore, credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/Skip Album/STOP lifecycle.");
                 return 0;
             }
             catch (Exception error)

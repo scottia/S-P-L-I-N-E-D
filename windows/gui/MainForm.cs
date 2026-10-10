@@ -195,6 +195,9 @@ namespace Splined.WindowsGui
         private CompilationTrackInfo focusedCompilationTrack;
         private CompilationTrackInfo activeCompilationTrack;
         private CompilationTrackInfo selectedCompilationTrack;
+        private CompilationTrackInfo activeExplicitCompilationTrack;
+        private bool activeAlbumBypassed;
+        private readonly HashSet<string> selectedCompilationTrackPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private string focusedCompilationEmbeddedArtworkPath = "";
         private bool compilationTrackPreviewActive;
         private int compilationTrackPreviewVersion;
@@ -222,7 +225,9 @@ namespace Splined.WindowsGui
         private Button upscalePreview;
         private Button upscaleShowFull;
         private CheckBox upscaleAdaptiveDefaults;
+        private CheckBox upscalePreviewOnly;
         private Label upscaleCandidateDimensions;
+        private Button candidateSummaryToggle;
         private readonly Dictionary<string, TrackBar> upscaleProfileSliders = new Dictionary<string, TrackBar>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Label> upscaleProfileValues = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
         private readonly System.Windows.Forms.Timer upscalePreviewTimer = new System.Windows.Forms.Timer();
@@ -599,6 +604,55 @@ namespace Splined.WindowsGui
             return row;
         }
 
+        private Control BuildProcessingPanelTitle()
+        {
+            TableLayoutPanel row = new BufferedTableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            candidateSummaryToggle = new SpectrumToggleButton
+            {
+                Name = "candidateSummaryToggle",
+                Text = uiState.CandidateSummaryExpanded ? "▾" : "▸",
+                Width = 30,
+                Height = 28,
+                Margin = new Padding(0),
+                AccessibleName = "Expand or collapse Candidate Findings, Source Selection, and Resolution"
+            };
+            candidateSummaryToggle.Click += delegate
+            {
+                uiState.CandidateSummaryExpanded = !uiState.CandidateSummaryExpanded;
+                candidateSummaryToggle.Text = uiState.CandidateSummaryExpanded ? "▾" : "▸";
+                if (candidates.Count > 0) RebuildCandidateFilterPanel();
+                SaveUiState();
+            };
+            row.Controls.Add(candidateSummaryToggle, 0, 0);
+            Label title = new Label
+            {
+                Name = "scanActivityTitle",
+                Text = "Scan Activity and Decisions",
+                AutoSize = true,
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 4, 6, 0)
+            };
+            row.Controls.Add(title, 1, 0);
+            row.Controls.Add(new InfoButton(
+                "Live discovery, validation, provider results, and write/read outcomes appear here. MusicBrainz Matches replace the Activity surface while a release decision is active; artwork URLs preview in the shared panel at right.")
+            {
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 1, 0, 0)
+            }, 2, 0);
+            return row;
+        }
+
         private Control BuildMediaLibraryTitle()
         {
             TableLayoutPanel row = new TableLayoutPanel
@@ -764,10 +818,11 @@ namespace Splined.WindowsGui
             keepLocal.Click += KeepLocalClicked;
             keepLocal.EnabledChanged += delegate { ThemeManager.StyleButton(keepLocal, uiState.Theme); };
             compare = new FluentButton { Text = "Compare", Width = 115, Height = 34, Enabled = false };
-            skip = new FluentButton { Text = "Skip Album", Width = 120, Height = 34, Enabled = false };
+            skip = new FluentButton { Text = "Bypass Album", Width = 130, Height = 34, Enabled = false, Tag = "waiting" };
             useSelected.Click += UseSelectedClicked;
             compare.Click += CompareClicked;
             skip.Click += SkipClicked;
+            skip.EnabledChanged += delegate { ThemeManager.StyleButton(skip, uiState.Theme); };
             refineFallback = new FluentButton { Text = "Refine Fallback Search...", Width = 190, Height = 34, Enabled = false, Visible = false, Tag = "primary" };
             refineFallback.Click += RefineFallbackClicked;
             refineFallback.EnabledChanged += delegate { ThemeManager.StyleButton(refineFallback, uiState.Theme); };
@@ -803,7 +858,7 @@ namespace Splined.WindowsGui
             {
                 Name = "candidateFilterPanel",
                 Dock = DockStyle.Fill,
-                AutoScroll = false,
+                AutoScroll = true,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0, 0, 0, ThemeManager.Space4),
                 VisualRole = CardVisualRole.SpectrumNested
@@ -858,7 +913,7 @@ namespace Splined.WindowsGui
                 candidateFilterPanel.Visible = true;
                 candidateFilterPanel.BringToFront();
                 if (activityColumn != null) activityColumn.Visible = false;
-                if (scanActivityTitle != null) scanActivityTitle.Text = "Candidate Findings | Upscale & Artwork Editing";
+                if (scanActivityTitle != null) scanActivityTitle.Text = "Candidate Findings | Upscale Artwork Editing";
             }
             else
             {
@@ -950,8 +1005,8 @@ namespace Splined.WindowsGui
             columns.RowStyles.Add(new RowStyle(SizeType.Absolute, 230));
             columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            GroupBox statuses = new FluentGroupBox { Name = "mediaStatusFilters", Text = "Folder status", Dock = DockStyle.Fill, Padding = new Padding(7) };
-            TableLayoutPanel statusRows = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4 };
+            GroupBox statuses = new FluentGroupBox { Name = "mediaStatusFilters", Text = "Folder status", Dock = DockStyle.Fill, Padding = new Padding(9, 8, 7, 7) };
+            TableLayoutPanel statusRows = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, Margin = Padding.Empty, Padding = Padding.Empty };
             statusRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             statusRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             for (int row = 0; row < 4; row++) statusRows.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
@@ -1000,7 +1055,7 @@ namespace Splined.WindowsGui
             };
             filter.CheckedChanged += MediaFilterCriteriaChanged;
             mediaStatusFilters[stateFilter] = filter;
-            FlowLayoutPanel line = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0), Padding = new Padding(0) };
+            FlowLayoutPanel line = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty, Padding = Padding.Empty };
             Label bullet = new Label
             {
                 Text = "●",
@@ -1012,7 +1067,7 @@ namespace Splined.WindowsGui
                 Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
                 Margin = new Padding(0)
             };
-            Label description = new Label { Text = label, AutoSize = true, Margin = new Padding(1, 3, 0, 0) };
+            Label description = new Label { Text = label, AutoSize = true, Margin = new Padding(0, 3, 0, 0) };
             bullet.Click += delegate { filter.Checked = !filter.Checked; };
             description.Click += delegate { filter.Checked = !filter.Checked; };
             mediaStatusBullets[stateFilter] = bullet;
@@ -1439,7 +1494,7 @@ namespace Splined.WindowsGui
             rightSplit.Panel1.Padding = new Padding(0, 0, 0, ThemeManager.Space4);
             rightSplit.Panel2.Padding = new Padding(0, ThemeManager.Space4, 0, 0);
             rightSplit.SplitterDistance = Math.Max(rightSplit.Panel1MinSize, Math.Min(uiState.RightSplitterDistance, Math.Max(rightSplit.Panel1MinSize, rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth)));
-            rightSplit.SplitterMoved += delegate { UpdateArtworkSquareLayout(true); };
+            rightSplit.SplitterMoved += delegate { UpdateArtworkSquareLayout(false); };
             rightSplit.Resize += delegate { UpdateArtworkSquareLayout(false); };
             parent.Controls.Add(rightSplit);
 
@@ -1447,10 +1502,8 @@ namespace Splined.WindowsGui
             upper.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             upper.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             rightSplit.Panel1.Controls.Add(upper);
-            Control activityTitleRow = BuildPanelTitle("Scan Activity and Decisions",
-                "Live discovery, validation, provider results, and write/read outcomes appear here. MusicBrainz Matches replace the Activity surface while a release decision is active; artwork URLs preview in the shared panel at right.");
+            Control activityTitleRow = BuildProcessingPanelTitle();
             scanActivityTitle = activityTitleRow.Controls.OfType<Label>().First();
-            scanActivityTitle.Name = "scanActivityTitle";
             upper.Controls.Add(activityTitleRow, 0, 0);
             activityWorkspace = new TableLayoutPanel { Name = "activityWorkspace", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
             activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64));
@@ -1542,10 +1595,13 @@ namespace Splined.WindowsGui
                 displayedAlbum = String.IsNullOrWhiteSpace(displayedPath)
                     ? null
                     : albums.FirstOrDefault(album => SameAlbumPath(album.Path, displayedPath));
-                selectedCompilationTrack = String.IsNullOrWhiteSpace(uiState.SelectedCompilationTrackPath)
-                    ? null
-                    : albums.SelectMany(album => album.CompilationTracks)
-                        .FirstOrDefault(track => SameAlbumPath(track.Path, uiState.SelectedCompilationTrackPath));
+                selectedCompilationTrackPaths.Clear();
+                foreach (string path in (uiState.SelectedCompilationTrackPaths ?? new List<string>())
+                    .Concat(new[] { uiState.SelectedCompilationTrackPath })
+                    .Where(path => !String.IsNullOrWhiteSpace(path)))
+                    selectedCompilationTrackPaths.Add(NormalizeAlbumPath(path));
+                selectedCompilationTrack = albums.SelectMany(album => album.CompilationTracks)
+                    .FirstOrDefault(track => selectedCompilationTrackPaths.Contains(NormalizeAlbumPath(track.Path)));
                 if (selectedCompilationTrack != null)
                 {
                     displayedAlbum = selectedCompilationTrack.Album;
@@ -1699,7 +1755,7 @@ namespace Splined.WindowsGui
             TreeNode node = new TreeNode(album.Title)
             {
                 Tag = album,
-                Checked = album.Selected && selectedCompilationTrack == null,
+                Checked = album.Selected && !SelectedCompilationTracksForAlbum(album).Any(),
                 ForeColor = AlbumStatePresentation.StateColor(album.State, dark),
                 ToolTipText = album.ToolTip
             };
@@ -1714,8 +1770,7 @@ namespace Splined.WindowsGui
             foreach (CompilationTrackInfo track in album.CompilationTracks
                 .OrderBy(item => item.FileName, StringComparer.OrdinalIgnoreCase))
             {
-                bool selected = selectedCompilationTrack != null
-                    && SameAlbumPath(selectedCompilationTrack.Path, track.Path);
+                bool selected = selectedCompilationTrackPaths.Contains(NormalizeAlbumPath(track.Path));
                 TreeNode trackNode = new TreeNode
                 {
                     Tag = track,
@@ -1815,21 +1870,30 @@ namespace Splined.WindowsGui
             CompilationTrackInfo trackItem = e.Node.Tag as CompilationTrackInfo;
             if (trackItem != null)
             {
-                foreach (AlbumInfo value in albums)
+                bool sameAlbumSelection = selectedCompilationTrackPaths.Count == 0
+                    || selectedCompilationTrackPaths.Any(path => trackItem.Album.CompilationTracks
+                        .Any(track => SameAlbumPath(track.Path, path)));
+                if (e.Node.Checked && !sameAlbumSelection)
                 {
-                    value.Selected = false;
-                    value.BypassOverride = false;
+                    foreach (AlbumInfo value in albums)
+                    {
+                        value.Selected = false;
+                        value.BypassOverride = false;
+                    }
+                    selectedCompilationTrackPaths.Clear();
                 }
-                SetExplicitCompilationTrackTarget(e.Node.Checked ? trackItem : null);
-                if (selectedCompilationTrack != null)
+                SetExplicitCompilationTrackSelected(trackItem, e.Node.Checked);
+                trackItem.Album.Selected = SelectedCompilationTracksForAlbum(trackItem.Album).Any();
+                trackItem.Album.BypassOverride = trackItem.Album.Selected
+                    && trackItem.Album.State == AlbumState.Bypassed;
+                displayedAlbum = trackItem.Album;
+                if (e.Node.Checked)
                 {
-                    trackItem.Album.Selected = true;
-                    trackItem.Album.BypassOverride = trackItem.Album.State == AlbumState.Bypassed;
-                    displayedAlbum = trackItem.Album;
                     ShowSelectedCompilationTrack(trackItem);
                 }
                 RuntimeLog.Write("debug", "windows.selection.track path=" + trackItem.Path
-                    + " selected=" + (selectedCompilationTrack != null)
+                    + " selected=" + e.Node.Checked
+                    + " selected_tracks=" + selectedCompilationTrackPaths.Count
                     + " embedded_recorded=" + trackItem.EmbeddedArtworkRecorded);
                 BuildTree();
                 UpdateSelectionControls();
@@ -1927,6 +1991,12 @@ namespace Splined.WindowsGui
                     && (hit.Location & TreeViewHitTestLocations.StateImage) == 0)
                 {
                     SelectCompilationAlbumForResume(album, e.Node);
+                }
+                CompilationTrackInfo track = e.Node == null ? null : e.Node.Tag as CompilationTrackInfo;
+                if (track != null && uiState.ShowTracks && (ModifierKeys & Keys.Control) == Keys.Control
+                    && (hit.Location & TreeViewHitTestLocations.StateImage) == 0)
+                {
+                    e.Node.Checked = !e.Node.Checked;
                 }
             }
             if (e.Button == MouseButtons.Right && e.Node.ToolTipText.Length > 0)
@@ -2115,8 +2185,44 @@ namespace Splined.WindowsGui
 
         private void SetExplicitCompilationTrackTarget(CompilationTrackInfo track)
         {
+            selectedCompilationTrackPaths.Clear();
+            if (track != null && !String.IsNullOrWhiteSpace(track.Path))
+                selectedCompilationTrackPaths.Add(NormalizeAlbumPath(track.Path));
             selectedCompilationTrack = track;
-            uiState.SelectedCompilationTrackPath = track == null ? "" : track.Path ?? "";
+            SyncSelectedCompilationTrackUiState();
+        }
+
+        private void SetExplicitCompilationTrackSelected(CompilationTrackInfo track, bool selected)
+        {
+            if (track == null || String.IsNullOrWhiteSpace(track.Path)) return;
+            string path = NormalizeAlbumPath(track.Path);
+            if (selected)
+            {
+                selectedCompilationTrackPaths.Add(path);
+                selectedCompilationTrack = track;
+            }
+            else
+            {
+                selectedCompilationTrackPaths.Remove(path);
+                if (selectedCompilationTrack != null && SameAlbumPath(selectedCompilationTrack.Path, track.Path))
+                    selectedCompilationTrack = albums.SelectMany(album => album.CompilationTracks)
+                        .FirstOrDefault(item => selectedCompilationTrackPaths.Contains(NormalizeAlbumPath(item.Path)));
+            }
+            SyncSelectedCompilationTrackUiState();
+        }
+
+        private IEnumerable<CompilationTrackInfo> SelectedCompilationTracksForAlbum(AlbumInfo album)
+        {
+            if (album == null) return Enumerable.Empty<CompilationTrackInfo>();
+            EnsureCompilationTracks(album);
+            return album.CompilationTracks.Where(track =>
+                selectedCompilationTrackPaths.Contains(NormalizeAlbumPath(track.Path)));
+        }
+
+        private void SyncSelectedCompilationTrackUiState()
+        {
+            uiState.SelectedCompilationTrackPaths = selectedCompilationTrackPaths.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
+            uiState.SelectedCompilationTrackPath = uiState.SelectedCompilationTrackPaths.FirstOrDefault() ?? "";
         }
 
         private void ClearExplicitCompilationTrackTarget()
@@ -2165,12 +2271,13 @@ namespace Splined.WindowsGui
                 && (filteredScanRead.Checked || filteredScanWrite.Checked);
             launch.Enabled = running || (!loadingLibrary && count > 0 && launchModeChosen);
             launch.Tag = waiting ? "waiting" : "launch";
-            launch.Text = waiting ? "WAITING" : running ? "STOP"
-                : selectedCompilationTrack != null && count > 0 ? "LAUNCH (1 TRACK)"
+            launch.Text = waiting ? "Skip Album" : running ? "STOP"
+                : selectedCompilationTrackPaths.Count > 0 && count > 0
+                    ? "LAUNCH (" + selectedCompilationTrackPaths.Count + (selectedCompilationTrackPaths.Count == 1 ? " TRACK)" : " TRACKS)")
                 : (count > 0 ? "LAUNCH (" + count + ")" : "LAUNCH");
             ThemeManager.StyleButton(launch, uiState.Theme);
             if (settingsMenuItem != null)
-                settingsMenuItem.Enabled = !running && !awaitingDecision && candidates.Count == 0;
+                settingsMenuItem.Enabled = !running && !awaitingDecision;
             UpdateSelectModeChecks();
             bool filterActionsEnabled = !running && !loadingLibrary;
             if (artistFilter != null) artistFilter.Enabled = filterActionsEnabled;
@@ -2233,7 +2340,20 @@ namespace Splined.WindowsGui
         {
             if (running)
             {
-                StopRun();
+                string question = awaitingDecision
+                    ? "Skip the current Album without recording a bypass and continue the run?"
+                    : "Stop the current SPLINED run?";
+                string title = awaitingDecision ? "Skip current Album" : "Stop SPLINED run";
+                DialogResult answer = MessageBox.Show(this, question, title,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                if (answer != DialogResult.Yes) return;
+                if (awaitingDecision && currentSession != null)
+                {
+                    SendDecision("{\"action\":\"skip_album\"}");
+                    candidateContext.Text = "Current Album skipped without recording a bypass. Continuing the run...";
+                    ClearCandidates();
+                }
+                else StopRun();
                 return;
             }
             List<AlbumInfo> selected = GetLaunchAlbums();
@@ -2292,10 +2412,13 @@ namespace Splined.WindowsGui
             AppendActivity("Selected albums: " + selected.Count + "\r\n\r\n", ActivityTone.Muted);
 
             bool runFailed = false;
+            string retainedCompilationAlbumPath = "";
             for (int index = 0; index < selected.Count && !stopRequested; index++)
             {
                 AlbumInfo album = selected[index];
+                List<CompilationTrackInfo> explicitTracks = SelectedCompilationTracksForAlbum(album).ToList();
                 activeLaunchAlbum = album;
+                activeAlbumBypassed = false;
                 ShowSelectedAlbum(album);
                 fallbackMode = false;
                 fallbackReason = "";
@@ -2309,7 +2432,31 @@ namespace Splined.WindowsGui
                 ConfigState albumRunState = state.Clone();
                 albumRunState.Mode = activeRunMode;
                 runConfigText = ConfigStore.ExportConfigText(albumRunState);
-                bool albumSucceeded = await RunCoreAlbum(album, runConfigText);
+                bool albumSucceeded = true;
+                if (explicitTracks.Count > 0)
+                {
+                    retainedCompilationAlbumPath = album.Path;
+                    AppendActivity("  Explicit track queue: " + explicitTracks.Count + " track(s).\r\n", ActivityTone.Accent);
+                    foreach (CompilationTrackInfo track in explicitTracks)
+                    {
+                        if (stopRequested) break;
+                        activeExplicitCompilationTrack = track;
+                        ShowSelectedCompilationTrack(track);
+                        bool trackSucceeded = await RunCoreAlbum(album, runConfigText);
+                        activeExplicitCompilationTrack = null;
+                        if (!trackSucceeded)
+                        {
+                            albumSucceeded = false;
+                            break;
+                        }
+                        if (activeAlbumBypassed) break;
+                    }
+                }
+                else
+                {
+                    activeExplicitCompilationTrack = null;
+                    albumSucceeded = await RunCoreAlbum(album, runConfigText);
+                }
                 if (!albumSucceeded && !stopRequested)
                 {
                     FinishActiveAlbumStatistics("Failed");
@@ -2324,17 +2471,24 @@ namespace Splined.WindowsGui
                 // successful or operator-stopped run so it cannot lead the next
                 // independently selected artist's run. Failed and not-yet-run
                 // albums remain checked and resumable.
-                ConsumeLaunchAlbumSelection(album);
+                if (explicitTracks.Count == 0)
+                    ConsumeLaunchAlbumSelection(album);
                 FinishActiveAlbumStatistics(stopRequested ? "Stopped" : "Incomplete");
                 activeLaunchAlbum = null;
-                ShowSelectedAlbum(null);
+                if (explicitTracks.Count == 0)
+                    ShowSelectedAlbum(null);
                 AppendActivity("\r\n");
             }
 
             currentSession = null;
             activeLaunchAlbum = null;
             activeCompilationTrack = null;
-            ShowSelectedAlbum(null);
+            activeExplicitCompilationTrack = null;
+            activeAlbumBypassed = false;
+            if (String.IsNullOrWhiteSpace(retainedCompilationAlbumPath))
+                ShowSelectedAlbum(null);
+            else
+                displayedAlbum = albums.FirstOrDefault(album => SameAlbumPath(album.Path, retainedCompilationAlbumPath));
             running = false;
             string completedRunMode = activeRunMode;
             activeRunMode = null;
@@ -2621,6 +2775,8 @@ namespace Splined.WindowsGui
             else if (eventName == "album_completed")
             {
                 string action = ReadString(payload, "action");
+                if (action.Equals("Bypassed", StringComparison.OrdinalIgnoreCase))
+                    activeAlbumBypassed = true;
                 string destination = ReadString(payload, "destination");
                 CaptureFinalArtworkStatistics(payload);
                 MarkAlbumOutcome(payload, String.IsNullOrWhiteSpace(action) ? "Completed" : action, destination);
@@ -2640,6 +2796,26 @@ namespace Splined.WindowsGui
                 MarkAlbumOutcome(payload, "Skipped", skipReason);
                 AppendActivity("  Album skipped: " + skipReason + ".\r\n", ActivityTone.Warning);
                 CompleteAlbumEvent(payload, "Album skipped. Candidate results cleared.");
+            }
+            else if (eventName == "album_bypass_cleared")
+            {
+                string albumPath = ReadString(payload, "album_path");
+                AlbumInfo cleared = albums.FirstOrDefault(album => SameAlbumPath(album.Path, albumPath))
+                    ?? activeLaunchAlbum;
+                if (cleared != null)
+                {
+                    cleared.State = AlbumState.New;
+                    cleared.CompletedUtc = null;
+                    cleared.EligibleUtc = null;
+                    cleared.Outcome = "";
+                    cleared.BypassOverride = false;
+                }
+                candidateContext.Text = ReadBool(payload, "removed")
+                    ? "Saved Album bypass removed. Current source results remain available."
+                    : "This Album no longer has a saved bypass. Current source results remain available.";
+                AppendActivity("  Album bypass removed; continuing the current source review.\r\n", ActivityTone.Success);
+                BuildTree();
+                UpdateCandidateActions();
             }
             else if (eventName == "decision_required")
             {
@@ -2661,22 +2837,26 @@ namespace Splined.WindowsGui
         private void RebuildCandidateFilterPanel()
         {
             if (candidateFilterPanel == null) return;
+            candidateFilterPanel.SuspendLayout();
             foreach (Control child in candidateFilterPanel.Controls.Cast<Control>().ToArray()) child.Dispose();
             candidateFilterPanel.Controls.Clear();
             candidateFilterBindings.Clear();
             ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
-            TableLayoutPanel columns = new TableLayoutPanel
+            bool summaryExpanded = uiState.CandidateSummaryExpanded;
+            TableLayoutPanel columns = new BufferedTableLayoutPanel
             {
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
                 AutoSize = false,
+                Height = 540,
+                MinimumSize = new Size(0, 540),
                 ColumnCount = 5,
                 RowCount = 3,
                 Padding = new Padding(ThemeManager.Space4),
                 Margin = new Padding(0)
             };
-            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 44));
-            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, ThemeManager.Space8));
-            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 56));
+            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryExpanded ? 210 : 0));
+            columns.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryExpanded ? ThemeManager.Space8 : 0));
+            columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
@@ -2745,9 +2925,12 @@ namespace Splined.WindowsGui
 
             TableLayoutPanel upscale = BuildUpscaleFilterColumn();
 
-            columns.Controls.Add(WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types), 0, 0);
-            columns.Controls.Add(WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources), 2, 0);
-            columns.Controls.Add(WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges), 4, 0);
+            if (summaryExpanded)
+            {
+                columns.Controls.Add(WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types), 0, 0);
+                columns.Controls.Add(WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources), 2, 0);
+                columns.Controls.Add(WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges), 4, 0);
+            }
             GroupBox upscaleGroup = WrapCandidateFilterGroup("candidateUpscaleGroup", "Upscale / Advanced", upscale);
             columns.Controls.Add(upscaleGroup, 0, 2);
             columns.SetColumnSpan(upscaleGroup, 5);
@@ -2755,6 +2938,8 @@ namespace Splined.WindowsGui
             ApplyRoundedCandidateFilterRegion(candidateFilterPanel);
             ThemeManager.Apply(candidateFilterPanel, uiState.Theme);
             RefreshCandidateFilterDependencies();
+            candidateFilterPanel.ResumeLayout(true);
+            candidateFilterPanel.Invalidate(true);
         }
 
         private static GroupBox WrapCandidateFilterGroup(string name, string title, Control content)
@@ -2775,7 +2960,7 @@ namespace Splined.WindowsGui
 
         private static TableLayoutPanel CandidateFilterColumn()
         {
-            TableLayoutPanel column = new TableLayoutPanel
+            TableLayoutPanel column = new BufferedTableLayoutPanel
             {
                 Dock = DockStyle.Top,
                 AutoScroll = false,
@@ -2812,7 +2997,7 @@ namespace Splined.WindowsGui
             ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
             upscaleProfileSliders.Clear();
             upscaleProfileValues.Clear();
-            TableLayoutPanel column = new TableLayoutPanel
+            TableLayoutPanel column = new BufferedTableLayoutPanel
             {
                 Dock = DockStyle.Top,
                 AutoScroll = false,
@@ -2839,14 +3024,44 @@ namespace Splined.WindowsGui
                 state.UpscaleAdaptiveDefaults = upscaleAdaptiveDefaults.Checked;
                 PersistUpscaleProfile();
             };
-            AddUpscaleFilterRow(column, upscaleAdaptiveDefaults, 25);
+            upscalePreviewOnly = new FluentCheckBox
+            {
+                Name = "upscalePreviewOnly",
+                Text = "Upscale Preview",
+                Checked = uiState.UpscalePreviewOnly,
+                Dock = DockStyle.Fill,
+                AutoSize = false,
+                ForeColor = palette.Success,
+                Margin = new Padding(ThemeManager.Space8, 1, 0, 0)
+            };
+            upscalePreviewOnly.CheckedChanged += delegate
+            {
+                if (updatingCandidateFilters) return;
+                uiState.UpscalePreviewOnly = upscalePreviewOnly.Checked;
+                ApplyUpscalePreviewModeAppearance();
+                SaveUiState();
+            };
+            TableLayoutPanel modeLine = new BufferedTableLayoutPanel
+            {
+                Name = "upscaleModeLine",
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            modeLine.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            modeLine.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            modeLine.Controls.Add(upscaleAdaptiveDefaults, 0, 0);
+            modeLine.Controls.Add(upscalePreviewOnly, 1, 0);
+            AddUpscaleFilterRow(column, modeLine, 25);
             upscalePreview = new FluentButton
             {
                 Name = "upscalePreviewButton",
-                Text = "Upscale Preview",
+                Text = uiState.UpscalePreviewOnly ? "Upscale Preview" : "Upscale",
                 Dock = DockStyle.Fill,
                 Enabled = false,
-                Tag = "primary",
+                Tag = uiState.UpscalePreviewOnly ? "success" : "primary",
                 Margin = new Padding(0)
             };
             upscalePreview.Click += UpscalePreviewClicked;
@@ -2870,9 +3085,20 @@ namespace Splined.WindowsGui
                 AutoEllipsis = true,
                 ForeColor = palette.TextSecondary,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Margin = new Padding(ThemeManager.Space8, 0, 0, 0)
+                Margin = new Padding(ThemeManager.Space8, 0, ThemeManager.Space8, 0)
             };
-            TableLayoutPanel previewLine = new TableLayoutPanel
+            Panel resolutionTile = new FluentCardPanel
+            {
+                Name = "upscaleResolutionTile",
+                Dock = DockStyle.Fill,
+                Height = 34,
+                Margin = new Padding(ThemeManager.Space4, 0, 0, 0),
+                Padding = new Padding(1),
+                VisualRole = CardVisualRole.SpectrumNested
+            };
+            upscaleCandidateDimensions.Text = "▣  Aspect ratio / Resolution";
+            resolutionTile.Controls.Add(upscaleCandidateDimensions);
+            TableLayoutPanel previewLine = new BufferedTableLayoutPanel
             {
                 Name = "upscalePreviewLine",
                 Dock = DockStyle.Fill,
@@ -2885,7 +3111,7 @@ namespace Splined.WindowsGui
             previewLine.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             previewLine.Controls.Add(upscalePreview, 0, 0);
             previewLine.Controls.Add(upscaleShowFull, 1, 0);
-            previewLine.Controls.Add(upscaleCandidateDimensions, 2, 0);
+            previewLine.Controls.Add(resolutionTile, 2, 0);
             AddUpscaleFilterRow(column, previewLine, 38);
             AddUpscaleFilterRow(column, new Label
             {
@@ -2905,28 +3131,34 @@ namespace Splined.WindowsGui
                 Margin = new Padding(0),
                 Padding = new Padding(0, 0, 0, ThemeManager.Space4)
             };
-            TableLayoutPanel advancedGrid = new TableLayoutPanel
+            bool twoRows = !uiState.CandidateSummaryExpanded;
+            TableLayoutPanel advancedGrid = new BufferedTableLayoutPanel
             {
                 Name = "upscaleAdvancedGrid",
-                ColumnCount = 8,
-                RowCount = 1,
+                ColumnCount = twoRows ? 4 : 8,
+                RowCount = twoRows ? 2 : 1,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(0),
                 Padding = new Padding(0)
             };
-            advancedGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            for (int index = 0; index < 8; index++)
-                advancedGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12.5f));
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("picture", "Picture", -20, 20, state.UpscalePicturePercent), 0, 0);
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("sharpen", "Sharpen", 0, 20, state.UpscaleSharpenPercent), 1, 0);
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("softness", "Softness", 0, 20, state.UpscaleSoftnessPercent), 2, 0);
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("contrast", "Contrast", -20, 20, state.UpscaleContrastPercent), 3, 0);
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("exposure", "Exposure", -20, 20, state.UpscaleExposurePercent), 4, 0);
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("brightness", "Brightness", -20, 20, state.UpscaleBrightnessPercent), 5, 0);
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("gamma", "Gamma", -20, 20, state.UpscaleGammaPercent), 6, 0);
-            advancedGrid.Controls.Add(BuildUpscaleProfileControl("temperature", "Color", -100, 100, state.UpscaleColorTemperature), 7, 0);
+            for (int row = 0; row < advancedGrid.RowCount; row++)
+                advancedGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / advancedGrid.RowCount));
+            for (int index = 0; index < advancedGrid.ColumnCount; index++)
+                advancedGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / advancedGrid.ColumnCount));
+            string[] keys = { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" };
+            string[] labels = { "Picture", "Sharpen", "Softness", "Contrast", "Exposure", "Brightness", "Gamma", "Color" };
+            int[] minimums = { -20, 0, 0, -20, -20, -20, -20, -100 };
+            int[] maximums = { 20, 20, 20, 20, 20, 20, 20, 100 };
+            int[] values = { state.UpscalePicturePercent, state.UpscaleSharpenPercent,
+                state.UpscaleSoftnessPercent, state.UpscaleContrastPercent, state.UpscaleExposurePercent,
+                state.UpscaleBrightnessPercent, state.UpscaleGammaPercent, state.UpscaleColorTemperature };
+            for (int index = 0; index < keys.Length; index++)
+                advancedGrid.Controls.Add(BuildUpscaleProfileControl(keys[index], labels[index],
+                    minimums[index], maximums[index], values[index], twoRows),
+                    index % advancedGrid.ColumnCount, index / advancedGrid.ColumnCount);
             advanced.Controls.Add(advancedGrid);
-            AddUpscaleFilterRow(column, advanced, 220);
+            AddUpscaleFilterRow(column, advanced, twoRows ? 450 : 220);
+            ApplyUpscalePreviewModeAppearance();
             return column;
         }
 
@@ -2936,7 +3168,7 @@ namespace Splined.WindowsGui
             column.Controls.Add(control, 0, row);
         }
 
-        private Control BuildUpscaleProfileControl(string key, string label, int minimum, int maximum, int value)
+        private Control BuildUpscaleProfileControl(string key, string label, int minimum, int maximum, int value, bool showNudgeButtons)
         {
             FluentGroupBox frame = new FluentGroupBox
             {
@@ -2947,17 +3179,19 @@ namespace Splined.WindowsGui
                 Margin = new Padding(ThemeManager.Space4),
                 Padding = new Padding(ThemeManager.Space4, ThemeManager.Space12, ThemeManager.Space4, ThemeManager.Space4)
             };
-            TableLayoutPanel control = new TableLayoutPanel
+            TableLayoutPanel control = new BufferedTableLayoutPanel
             {
                 Name = "upscaleProfileControl_" + key,
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = showNudgeButtons ? 5 : 3,
                 Margin = new Padding(0),
                 Padding = new Padding(2)
             };
             control.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            if (showNudgeButtons) control.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             control.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            if (showNudgeButtons) control.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             control.RowStyles.Add(new RowStyle(SizeType.Absolute, 35));
             Label current = new Label
             {
@@ -2980,14 +3214,22 @@ namespace Splined.WindowsGui
                 Value = Math.Max(minimum, Math.Min(maximum, value)),
                 Anchor = AnchorStyles.None,
                 Width = 48,
-                Height = 118,
+                Height = showNudgeButtons ? 136 : 118,
                 Orientation = Orientation.Vertical,
                 TickStyle = TickStyle.Both,
                 Margin = new Padding(0)
             };
             upscaleProfileSliders[key] = slider;
             upscaleProfileValues[key] = current;
-            TableLayoutPanel resetRow = new TableLayoutPanel
+            Panel sliderHost = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
+            sliderHost.Controls.Add(slider);
+            Action centerSlider = delegate
+            {
+                slider.Left = Math.Max(0, (sliderHost.ClientSize.Width - slider.Width) / 2);
+                slider.Top = Math.Max(0, (sliderHost.ClientSize.Height - slider.Height) / 2);
+            };
+            sliderHost.Resize += delegate { centerSlider(); };
+            TableLayoutPanel resetRow = new BufferedTableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
@@ -3019,11 +3261,46 @@ namespace Splined.WindowsGui
                 SetUpscaleProfileValue(key, slider.Value);
                 PersistUpscaleProfile();
             };
+            int sliderRow = showNudgeButtons ? 2 : 1;
+            int resetRowIndex = showNudgeButtons ? 4 : 2;
             control.Controls.Add(current, 0, 0);
-            control.Controls.Add(slider, 0, 1);
-            control.Controls.Add(resetRow, 0, 2);
+            if (showNudgeButtons)
+            {
+                FluentButton increase = new FluentButton
+                {
+                    Name = "upscaleProfileIncrease_" + key,
+                    Text = "▲",
+                    Dock = DockStyle.Fill,
+                    Margin = new Padding(ThemeManager.Space12, 0, ThemeManager.Space12, 0),
+                    Tag = "compact"
+                };
+                FluentButton decrease = new FluentButton
+                {
+                    Name = "upscaleProfileDecrease_" + key,
+                    Text = "▼",
+                    Dock = DockStyle.Fill,
+                    Margin = new Padding(ThemeManager.Space12, 0, ThemeManager.Space12, 0),
+                    Tag = "compact"
+                };
+                increase.Click += delegate { slider.Value = Math.Min(slider.Maximum, slider.Value + slider.SmallChange); };
+                decrease.Click += delegate { slider.Value = Math.Max(slider.Minimum, slider.Value - slider.SmallChange); };
+                control.Controls.Add(increase, 0, 1);
+                control.Controls.Add(decrease, 0, 3);
+            }
+            control.Controls.Add(sliderHost, 0, sliderRow);
+            control.Controls.Add(resetRow, 0, resetRowIndex);
             frame.Controls.Add(control);
+            frame.Resize += delegate { centerSlider(); };
             return frame;
+        }
+
+        private void ApplyUpscalePreviewModeAppearance()
+        {
+            if (upscalePreview == null) return;
+            bool previewOnly = upscalePreviewOnly == null ? uiState.UpscalePreviewOnly : upscalePreviewOnly.Checked;
+            upscalePreview.Text = previewOnly ? "Upscale Preview" : "Upscale";
+            upscalePreview.Tag = previewOnly ? "success" : "primary";
+            ThemeManager.StyleButton(upscalePreview, uiState.Theme);
         }
 
         private static string UpscaleProfileDisplay(string key, int value)
@@ -3269,6 +3546,11 @@ namespace Splined.WindowsGui
             candidateFilterButton.Enabled = candidates.Count > 0;
             candidateFilterButton.Text = "Artwork Filter · " + stateText
                 + (CandidateFilterWorkspaceVisible ? "  ▾" : "  ▸");
+            if (candidateSummaryToggle != null)
+            {
+                candidateSummaryToggle.Enabled = candidates.Count > 0;
+                candidateSummaryToggle.Text = uiState.CandidateSummaryExpanded ? "▾" : "▸";
+            }
         }
 
         private IEnumerable<CandidateView> SortedCandidateViews()
@@ -3581,6 +3863,7 @@ namespace Splined.WindowsGui
             keepLocal.Visible = hasLocal;
             keepLocal.Enabled = awaitingDecision && hasLocal;
             compare.Enabled = candidates.Count > 1 && compareCandidateIndexes.Count > 1;
+            skip.Text = ActiveAlbumHasBypass() ? "NO Bypass" : "Bypass Album";
             skip.Enabled = awaitingDecision;
             refineFallback.Enabled = awaitingDecision && fallbackMode;
             retryMusicBrainz.Visible = musicBrainzRetryAvailable;
@@ -3607,6 +3890,7 @@ namespace Splined.WindowsGui
             ThemeManager.StyleButton(refineFallback, uiState.Theme);
             ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme);
             ThemeManager.StyleButton(backToMusicBrainz, uiState.Theme);
+            ThemeManager.StyleButton(skip, uiState.Theme);
             if (upscalePreview != null) ThemeManager.StyleButton(upscalePreview, uiState.Theme);
             if (upscaleShowFull != null) ThemeManager.StyleButton(upscaleShowFull, uiState.Theme);
         }
@@ -3617,19 +3901,24 @@ namespace Splined.WindowsGui
             return running && currentSession != null && candidates.Count > 0;
         }
 
+        private bool ActiveAlbumHasBypass()
+        {
+            return activeLaunchAlbum != null && activeLaunchAlbum.State == AlbumState.Bypassed;
+        }
+
         private void UpdateUpscaleCandidateContext(CandidateView candidate)
         {
             if (upscaleCandidateDimensions == null) return;
             if (candidate == null)
             {
-                upscaleCandidateDimensions.Text = "Select one result to edit";
+                upscaleCandidateDimensions.Text = "▣  Select one result to edit";
                 return;
             }
             int divisor = GreatestCommonDivisor(Math.Max(1, candidate.PixelWidth), Math.Max(1, candidate.PixelHeight));
             string ratio = (candidate.PixelWidth / divisor) + ":" + (candidate.PixelHeight / divisor);
             int targetWidth = candidate.ProjectedWidth > 0 ? candidate.ProjectedWidth : state.RangeIdeal;
             int targetHeight = candidate.ProjectedHeight > 0 ? candidate.ProjectedHeight : state.RangeIdeal;
-            upscaleCandidateDimensions.Text = ratio + "  /  " + candidate.PixelWidth + " × " + candidate.PixelHeight
+            upscaleCandidateDimensions.Text = "▣  " + ratio + "  /  " + candidate.PixelWidth + " × " + candidate.PixelHeight
                 + " → " + targetWidth + " × " + targetHeight;
         }
 
@@ -3689,6 +3978,7 @@ namespace Splined.WindowsGui
             upscalePreview = null;
             upscaleShowFull = null;
             upscaleAdaptiveDefaults = null;
+            upscalePreviewOnly = null;
             upscaleCandidateDimensions = null;
             upscaleProfileSliders.Clear();
             upscaleProfileValues.Clear();
@@ -3736,7 +4026,25 @@ namespace Splined.WindowsGui
             // when the two path spellings cannot compare equal.
             if (completed == null && activeLaunchAlbum != null)
                 completed = activeLaunchAlbum;
-            ConsumeLaunchAlbumSelection(completed);
+            bool albumTerminating = ReadString(payload, "action").Equals("Bypassed", StringComparison.OrdinalIgnoreCase);
+            if (activeExplicitCompilationTrack != null && completed != null && !albumTerminating
+                && SameAlbumPath(activeExplicitCompilationTrack.Album.Path, completed.Path))
+            {
+                selectedCompilationTrackPaths.Remove(NormalizeAlbumPath(activeExplicitCompilationTrack.Path));
+                selectedCompilationTrack = completed.CompilationTracks
+                    .FirstOrDefault(track => selectedCompilationTrackPaths.Contains(NormalizeAlbumPath(track.Path)));
+                completed.Selected = SelectedCompilationTracksForAlbum(completed).Any();
+                completed.BypassOverride = completed.Selected && completed.State == AlbumState.Bypassed;
+                displayedAlbum = completed;
+                SyncSelectedCompilationTrackUiState();
+                BuildTree();
+                SaveUiState();
+            }
+            else
+            {
+                if (albumTerminating) ClearExplicitCompilationTrackTarget();
+                ConsumeLaunchAlbumSelection(completed);
+            }
             ClearCandidates();
             fallbackMode = false;
             fallbackReason = "";
@@ -3796,10 +4104,11 @@ namespace Splined.WindowsGui
 
         private string ExplicitCompilationTrackPathForAlbum(AlbumInfo album, string physicalAlbumPath)
         {
-            if (album == null || selectedCompilationTrack == null || selectedCompilationTrack.Album == null
-                || !SameAlbumPath(selectedCompilationTrack.Album.Path, album.Path))
+            CompilationTrackInfo target = activeExplicitCompilationTrack ?? selectedCompilationTrack;
+            if (album == null || target == null || target.Album == null
+                || !SameAlbumPath(target.Album.Path, album.Path))
                 return "";
-            return ResolveExistingTrackPath(album.Path, selectedCompilationTrack.Path, physicalAlbumPath);
+            return ResolveExistingTrackPath(album.Path, target.Path, physicalAlbumPath);
         }
 
         private static string ResolveExistingAlbumPath(string path)
@@ -3887,6 +4196,11 @@ namespace Splined.WindowsGui
             if (!standaloneExistingCoverEdit || selectedCandidateIndex < 0
                 || !candidates.TryGetValue(selectedCandidateIndex, out candidate)
                 || !candidate.IsLocal || String.IsNullOrWhiteSpace(candidate.CachePath)) return;
+            if (uiState.UpscalePreviewOnly)
+            {
+                SetStatus("Upscale Preview is enabled; the existing cover remains unchanged.");
+                return;
+            }
             if (!state.Mode.Equals("write", StringComparison.OrdinalIgnoreCase))
             {
                 MessageBox.Show(this,
@@ -4004,8 +4318,20 @@ namespace Splined.WindowsGui
         private void SkipClicked(object sender, EventArgs e)
         {
             if (currentSession == null) return;
+            if (ActiveAlbumHasBypass())
+            {
+                DialogResult answer = MessageBox.Show(this,
+                    "Remove the saved bypass for this Album?\r\n\r\nThe current source results will remain open.",
+                    "Remove Album bypass", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2);
+                if (answer != DialogResult.Yes) return;
+                SendDecision("{\"action\":\"clear_bypass\"}");
+                candidateContext.Text = "Removing the saved Album bypass...";
+                skip.Enabled = false;
+                return;
+            }
             SendDecision("{\"action\":\"bypass\"}");
-            candidateContext.Text = "Album skipped. Moving to the next selected album...";
+            candidateContext.Text = "Album bypassed. Moving to the next selected album...";
             ClearCandidates();
         }
 
@@ -4059,7 +4385,8 @@ namespace Splined.WindowsGui
             Dictionary<string, object> command = new Dictionary<string, object>();
             command["action"] = "use";
             command["index"] = index;
-            command["upscale_adaptive_defaults"] = state.UpscaleAdaptiveDefaults;
+            bool previewOnly = uiState.UpscalePreviewOnly;
+            command["upscale_adaptive_defaults"] = previewOnly ? false : state.UpscaleAdaptiveDefaults;
             command["upscale_picture_percent"] = state.UpscalePicturePercent;
             command["upscale_sharpen_percent"] = state.UpscaleSharpenPercent;
             command["upscale_softness_percent"] = state.UpscaleSoftnessPercent;
@@ -4068,8 +4395,9 @@ namespace Splined.WindowsGui
             command["upscale_brightness_percent"] = state.UpscaleBrightnessPercent;
             command["upscale_gamma_percent"] = state.UpscaleGammaPercent;
             command["upscale_color_temperature"] = state.UpscaleColorTemperature;
-            command["apply_edit_profile"] = editedCandidateIndexes.Contains(candidate.Index);
-            command["edit_existing_cover"] = candidate.IsLocal && editedLocalCandidateIndexes.Contains(candidate.Index);
+            command["apply_edit_profile"] = !previewOnly && editedCandidateIndexes.Contains(candidate.Index);
+            command["edit_existing_cover"] = !previewOnly && candidate.IsLocal && editedLocalCandidateIndexes.Contains(candidate.Index);
+            command["preserve_source_resolution"] = previewOnly;
             SendDecision(json.Serialize(command));
             candidateContext.Text = "Artwork selection confirmed. Moving to the next selected album...";
             ClearCandidates();
@@ -4158,11 +4486,12 @@ namespace Splined.WindowsGui
             string[] urls = MusicBrainzMatchesPanel.ArtworkPreviewUrls(item);
             if (urls.Length == 0) return;
             int version = ++musicBrainzPreviewVersion;
+            bool previewWasActive = candidatePreviewActive;
             candidatePreviewActive = true;
             artworkPreviewTitle.Text = "MusicBrainz Artwork Preview";
             string release = ReadString(item, "release_title");
             artworkPreviewCaption.Text = "Loading " + (String.IsNullOrWhiteSpace(release) ? "release artwork" : release) + "...";
-            ApplyArtworkPanelVisibility();
+            if (!previewWasActive) ApplyArtworkPanelVisibility();
             await Task.Delay(140);
             if (version != musicBrainzPreviewVersion || owner != musicBrainzMatchesPanel) return;
             await musicBrainzPreviewGate.WaitAsync();
@@ -4330,9 +4659,14 @@ namespace Splined.WindowsGui
 
         private void RefreshSelectedCandidatePreview()
         {
-            if (FocusSelectedCandidatePreview()) return;
+            bool wasPreviewActive = candidatePreviewActive;
+            if (FocusSelectedCandidatePreview(false))
+            {
+                if (!wasPreviewActive) ApplyArtworkPanelVisibility();
+                return;
+            }
             candidatePreviewActive = false;
-            ApplyArtworkPanelVisibility();
+            if (wasPreviewActive) ApplyArtworkPanelVisibility();
         }
 
         private void ShowArtworkCandidate(CandidateView candidate)
@@ -4928,7 +5262,7 @@ namespace Splined.WindowsGui
 
         private async void OpenSettings(object sender, EventArgs e)
         {
-            if (running || awaitingDecision || candidates.Count > 0)
+            if (running || awaitingDecision)
             {
                 MessageBox.Show(this,
                     "Settings are unavailable while an album search or artwork decision is active. Choose, skip, or stop the current album first.",
@@ -5326,8 +5660,7 @@ namespace Splined.WindowsGui
             uiState.MediaShowBlue = IsMediaStatusChecked(MediaStatusFilter.Blue);
             uiState.MediaShowIncomplete = IsMediaStatusChecked(MediaStatusFilter.Incomplete);
             uiState.ShowTracks = showTracks != null && showTracks.Checked;
-            uiState.SelectedCompilationTrackPath = selectedCompilationTrack == null
-                ? "" : selectedCompilationTrack.Path ?? "";
+            SyncSelectedCompilationTrackUiState();
             uiState.AutoScanEnabled = autoScanEnabled;
             uiState.AutoScanScope = autoScanScope;
             uiState.FilteredScanMode = filteredScanRead != null && filteredScanRead.Checked

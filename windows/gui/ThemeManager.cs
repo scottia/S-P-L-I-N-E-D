@@ -113,17 +113,17 @@ namespace Splined.WindowsGui
                 // Windows v4 light mode is intentionally warm rather than
                 // paper-white so the spectrum identity and watermark retain
                 // contrast without the former glare.
-                WindowBackground = Color.FromArgb(239, 234, 220);
-                TitlebarBackground = Color.FromArgb(247, 242, 229);
-                TopNavigationSurface = Color.FromArgb(244, 239, 226);
-                SurfacePrimary = Color.FromArgb(248, 244, 233);
-                SurfaceSecondary = Color.FromArgb(241, 236, 223);
-                SurfaceRaised = Color.FromArgb(252, 248, 238);
-                PanelSurface = Color.FromArgb(250, 246, 235);
-                NestedCardSurface = Color.FromArgb(245, 240, 228);
-                TreeSurface = Color.FromArgb(252, 248, 238);
-                SurfaceHover = Color.FromArgb(235, 229, 214);
-                SurfacePressed = Color.FromArgb(226, 219, 202);
+                WindowBackground = Color.FromArgb(226, 220, 205);
+                TitlebarBackground = Color.FromArgb(237, 231, 216);
+                TopNavigationSurface = Color.FromArgb(233, 227, 212);
+                SurfacePrimary = Color.FromArgb(239, 234, 220);
+                SurfaceSecondary = Color.FromArgb(229, 223, 208);
+                SurfaceRaised = Color.FromArgb(244, 239, 226);
+                PanelSurface = Color.FromArgb(241, 236, 222);
+                NestedCardSurface = Color.FromArgb(234, 228, 213);
+                TreeSurface = Color.FromArgb(244, 239, 226);
+                SurfaceHover = Color.FromArgb(222, 215, 199);
+                SurfacePressed = Color.FromArgb(211, 203, 185);
                 Shadow = Color.FromArgb(181, 172, 153);
                 BorderSubtle = Color.FromArgb(196, 187, 168);
                 BorderFocus = Color.FromArgb(0, 103, 184);
@@ -178,7 +178,7 @@ namespace Splined.WindowsGui
                 StatusGreen = Color.ForestGreen;
                 StatusBlue = Color.RoyalBlue;
                 CategoryMagenta = Color.FromArgb(174, 24, 108);
-                WatermarkOpacity = 0.060f;
+                WatermarkOpacity = 0.16f;
             }
         }
 
@@ -2269,6 +2269,15 @@ namespace Splined.WindowsGui
             Rectangle bounds = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
             ThemeManager.DrawCardSurface(e.Graphics, bounds, palette, VisualRole,
                 VisualRole == CardVisualRole.Panel || VisualRole == CardVisualRole.Log ? ThemeManager.PanelRadius : ThemeManager.CardRadius);
+        }
+    }
+
+    internal sealed class BufferedTableLayoutPanel : TableLayoutPanel
+    {
+        public BufferedTableLayoutPanel()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         }
     }
 
