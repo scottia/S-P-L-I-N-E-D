@@ -170,8 +170,8 @@ namespace Splined.WindowsGui
             matches.Columns.Add("Release", 285);
             matches.Columns.Add("Resolution", 96);
             matches.Columns.Add("URL", 72);
-            use = new FluentButton { Text = "Use Release", Width = 116, Height = 32, Enabled = false, Tag = "success" };
-            openPage = new FluentButton { Text = "Open MB Page", Width = 122, Height = 32, Enabled = false };
+            use = new FluentButton { Text = "Use Release", Width = 116, Height = 32, Enabled = false, Tag = "primary" };
+            openPage = new FluentButton { Text = "MusicBrainz", Width = 122, Height = 32, Enabled = false, Tag = "primary" };
             RebuildVisibleRows();
             matches.SelectedIndexChanged += delegate { SelectionChanged(); };
             matches.DoubleClick += delegate { RequestUse(); };

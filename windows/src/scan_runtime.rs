@@ -19,8 +19,8 @@ use crate::local_artwork::{
     embedded_candidate, embedded_preview_cache_dir, inspect_local_preflight,
 };
 use crate::media_database::{
-    CompilationArtworkApplication, RuntimeArtworkMaterial, compilation_resume_track,
-    completed_compilation_track_paths, find_local_compilation_artwork,
+    CompilationArtworkApplication, RuntimeArtworkMaterial, clear_album_bypass_from_runtime,
+    compilation_resume_track, completed_compilation_track_paths, find_local_compilation_artwork,
     record_album_outcome_from_runtime, record_compilation_artwork_application,
     record_compilation_progress, record_compilation_resume_track,
 };
@@ -927,8 +927,10 @@ pub async fn run_scan_library_read_report(
                                 println!("  {}", format!("ERROR: {error}").red().bold());
                                 continue 'candidate_review;
                             }
-                            apply_edit_profile = upscale.apply_edit_profile;
-                            edit_existing_cover = upscale.edit_existing_cover;
+                            apply_edit_profile =
+                                !upscale.preserve_source_resolution && upscale.apply_edit_profile;
+                            edit_existing_cover =
+                                !upscale.preserve_source_resolution && upscale.edit_existing_cover;
                         }
                         let candidate = &result.candidates[index].downloaded.candidate;
                         if !candidate_visible_for_review(candidate, &range, config) {
@@ -953,6 +955,16 @@ pub async fn run_scan_library_read_report(
                     Ok(gui_events::CandidateDecision::Use { index, .. }) => {
                         summary.failed += 1;
                         println!("  ERROR: candidate {} does not exist.", index + 1);
+                        continue 'album_loop;
+                    }
+                    Ok(gui_events::CandidateDecision::Skip) => {
+                        gui_events::emit(json!({
+                            "event": "album_skipped",
+                            "album_path": album.path,
+                            "reason": "operator",
+                        }));
+                        println!("  Artwork:     {}", "SKIPPED".yellow().bold());
+                        println!();
                         continue 'album_loop;
                     }
                     Ok(gui_events::CandidateDecision::Bypass) => {
@@ -981,6 +993,10 @@ pub async fn run_scan_library_read_report(
                         println!("  Artwork:     {}", "BYPASSED".yellow().bold());
                         println!();
                         continue 'album_loop;
+                    }
+                    Ok(gui_events::CandidateDecision::ClearBypass) => {
+                        clear_runtime_bypass(config, album)?;
+                        continue 'candidate_review;
                     }
                     Ok(gui_events::CandidateDecision::RetryMusicBrainz) => {
                         match run_normal_musicbrainz_browser(
@@ -1029,6 +1045,14 @@ pub async fn run_scan_library_read_report(
                                     json!({ "event": "source_results_restored", "album_path": album.path }),
                                 );
                                 continue 'candidate_review;
+                            }
+                            NormalBrowserOutcome::Skip => {
+                                gui_events::emit(json!({
+                                    "event": "album_skipped",
+                                    "album_path": album.path,
+                                    "reason": "operator",
+                                }));
+                                continue 'album_loop;
                             }
                             NormalBrowserOutcome::Bypass => {
                                 let post_cover_started = Instant::now();
@@ -1807,6 +1831,7 @@ enum NormalBrowserOutcome {
         provider_context: Box<ProviderContext>,
     },
     ReturnToSources,
+    Skip,
     Bypass,
 }
 
@@ -1947,6 +1972,16 @@ async fn run_normal_musicbrainz_browser(
                     );
                     (selected, true)
                 }
+                gui_events::MusicBrainzMatchDecision::Skip => {
+                    return Ok(NormalBrowserOutcome::Skip);
+                }
+                gui_events::MusicBrainzMatchDecision::Bypass => {
+                    return Ok(NormalBrowserOutcome::Bypass);
+                }
+                gui_events::MusicBrainzMatchDecision::ClearBypass => {
+                    clear_runtime_bypass(config, album)?;
+                    continue;
+                }
                 gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
                     return Ok(NormalBrowserOutcome::ReturnToSources);
                 }
@@ -2058,33 +2093,44 @@ async fn run_normal_musicbrainz_browser(
             "musicbrainz_matches_available": false }),
         );
 
-        match gui_events::wait_for_candidate_decision()? {
-            gui_events::CandidateDecision::Use { index, .. }
-                if index < pipeline.candidates.len() =>
-            {
-                if !candidate_visible_for_review(
-                    &pipeline.candidates[index].downloaded.candidate,
-                    range,
-                    config,
-                ) {
-                    return Err("Candidate is rejected by the active source policy.".to_string());
+        loop {
+            match gui_events::wait_for_candidate_decision()? {
+                gui_events::CandidateDecision::Use { index, .. }
+                    if index < pipeline.candidates.len() =>
+                {
+                    if !candidate_visible_for_review(
+                        &pipeline.candidates[index].downloaded.candidate,
+                        range,
+                        config,
+                    ) {
+                        return Err(
+                            "Candidate is rejected by the active source policy.".to_string()
+                        );
+                    }
+                    return Ok(NormalBrowserOutcome::Use {
+                        pipeline: Box::new(pipeline),
+                        selected: index,
+                        provider_context: Box::new(provider_context),
+                    });
                 }
-                return Ok(NormalBrowserOutcome::Use {
-                    pipeline: Box::new(pipeline),
-                    selected: index,
-                    provider_context: Box::new(provider_context),
-                });
-            }
-            gui_events::CandidateDecision::BackToMusicBrainz => {
-                if !selected_from_authority {
-                    visited.insert(selected.release_mbid.clone());
-                    current_release = Some(selected.release_mbid);
+                gui_events::CandidateDecision::BackToMusicBrainz => {
+                    if !selected_from_authority {
+                        visited.insert(selected.release_mbid.clone());
+                        current_release = Some(selected.release_mbid);
+                    }
+                    break;
                 }
+                gui_events::CandidateDecision::Skip => {
+                    return Ok(NormalBrowserOutcome::Skip);
+                }
+                gui_events::CandidateDecision::Bypass => {
+                    return Ok(NormalBrowserOutcome::Bypass);
+                }
+                gui_events::CandidateDecision::ClearBypass => {
+                    clear_runtime_bypass(config, album)?;
+                }
+                _ => return Err("Invalid MusicBrainz artwork decision.".to_string()),
             }
-            gui_events::CandidateDecision::Bypass => {
-                return Ok(NormalBrowserOutcome::Bypass);
-            }
-            _ => return Err("Invalid MusicBrainz artwork decision.".to_string()),
         }
     }
 }
@@ -2372,6 +2418,22 @@ async fn run_compilation_album(
                         selected_match = Some(selected);
                         selected_from_authority = true;
                     }
+                    gui_events::MusicBrainzMatchDecision::Skip => {
+                        gui_events::emit(json!({
+                            "event": "album_skipped",
+                            "album_path": album.path,
+                            "reason": "operator",
+                        }));
+                        return Ok(result);
+                    }
+                    gui_events::MusicBrainzMatchDecision::Bypass => {
+                        bypass_compilation_album(config, album)?;
+                        return Ok(result);
+                    }
+                    gui_events::MusicBrainzMatchDecision::ClearBypass => {
+                        clear_runtime_bypass(config, album)?;
+                        continue 'match_selection;
+                    }
                     gui_events::MusicBrainzMatchDecision::LeaveUnchanged => {
                         result.unresolved += 1;
                         record_compilation_progress(config, &album.path, tracks.len(), completed)?;
@@ -2525,32 +2587,40 @@ async fn run_compilation_album(
                 "allow_bypass": true, "musicbrainz_back_available": needs_musicbrainz }),
             );
 
-            let chosen_index = match gui_events::wait_for_candidate_decision()? {
-                gui_events::CandidateDecision::Use { index, .. }
-                    if index < pipeline.candidates.len() =>
-                {
-                    index
-                }
-                gui_events::CandidateDecision::BackToMusicBrainz if needs_musicbrainz => {
-                    if let Some(selected) = selected_match.take()
-                        && !selected_from_authority
+            let (chosen_index, upscale_overrides) = loop {
+                match gui_events::wait_for_candidate_decision()? {
+                    gui_events::CandidateDecision::Use { index, upscale }
+                        if index < pipeline.candidates.len() =>
                     {
-                        visited_releases.insert(selected.release_mbid.clone());
-                        current_release = Some(selected.release_mbid);
+                        break (index, upscale);
                     }
-                    selected_from_authority = false;
-                    continue;
+                    gui_events::CandidateDecision::BackToMusicBrainz if needs_musicbrainz => {
+                        if let Some(selected) = selected_match.take()
+                            && !selected_from_authority
+                        {
+                            visited_releases.insert(selected.release_mbid.clone());
+                            current_release = Some(selected.release_mbid);
+                        }
+                        selected_from_authority = false;
+                        continue 'match_selection;
+                    }
+                    gui_events::CandidateDecision::Skip => {
+                        gui_events::emit(json!({
+                            "event": "album_skipped",
+                            "album_path": album.path,
+                            "reason": "operator",
+                        }));
+                        return Ok(result);
+                    }
+                    gui_events::CandidateDecision::Bypass => {
+                        bypass_compilation_album(config, album)?;
+                        return Ok(result);
+                    }
+                    gui_events::CandidateDecision::ClearBypass => {
+                        clear_runtime_bypass(config, album)?;
+                    }
+                    _ => return Err("Invalid compilation artwork decision.".to_string()),
                 }
-                gui_events::CandidateDecision::Bypass => {
-                    result.unresolved += 1;
-                    record_compilation_progress(config, &album.path, tracks.len(), completed)?;
-                    gui_events::emit(
-                        json!({ "event": "compilation_track_unresolved", "track_path": track.path,
-                        "artist": track.artist, "title": track.title, "reason": "Operator left embedded artwork unchanged" }),
-                    );
-                    break 'match_selection;
-                }
-                _ => return Err("Invalid compilation artwork decision.".to_string()),
             };
             let chosen = pipeline.candidates.swap_remove(chosen_index);
             result.selected += 1;
@@ -2566,6 +2636,9 @@ async fn run_compilation_album(
             };
             let mut embedding_output = config.output.clone();
             embedding_output.upscale_below_ideal = false;
+            if let Some(overrides) = upscale_overrides.as_ref() {
+                apply_upscale_overrides(&mut embedding_output, overrides)?;
+            }
             let prepared = prepare_configured_artwork(
                 &chosen.downloaded.candidate,
                 chosen.downloaded.path(),
@@ -3018,6 +3091,20 @@ fn apply_upscale_overrides(
     output: &mut OutputConfig,
     overrides: &gui_events::UpscaleOverrides,
 ) -> Result<(), String> {
+    if overrides.preserve_source_resolution {
+        output.evaluate_final_image = false;
+        output.upscale_below_ideal = false;
+        output.upscale_adaptive_defaults = false;
+        output.upscale_picture_percent = 0;
+        output.upscale_sharpen_percent = 0;
+        output.upscale_softness_percent = 0;
+        output.upscale_contrast_percent = 0;
+        output.upscale_exposure_percent = 0;
+        output.upscale_brightness_percent = 0;
+        output.upscale_gamma_percent = 0;
+        output.upscale_color_temperature = 0;
+        return Ok(());
+    }
     for (name, value) in [
         ("sharpen", overrides.sharpen_percent),
         ("softness", overrides.softness_percent),
@@ -3391,6 +3478,35 @@ fn record_runtime_completion(
     Ok(())
 }
 
+fn clear_runtime_bypass(config: &Config, album: &AlbumDirectory) -> Result<(), String> {
+    let bridge = gui_events::scan_context();
+    let removed = clear_album_bypass_from_runtime(
+        config,
+        &album.path,
+        bridge.indexed_album_path.as_deref(),
+        bridge.indexed_album_key.as_deref(),
+    )?;
+    gui_events::emit(json!({
+        "event": "album_bypass_cleared",
+        "album_path": album.path,
+        "removed": removed,
+    }));
+    Ok(())
+}
+
+fn bypass_compilation_album(config: &Config, album: &AlbumDirectory) -> Result<(), String> {
+    let now = Instant::now();
+    record_runtime_completion(config, album, "compilation-bypassed", None, None, now, now)?;
+    gui_events::emit(json!({
+        "event": "album_completed",
+        "album_path": album.path,
+        "destination": "",
+        "action": "Bypassed",
+        "mode": format!("{:?}", config.mode).to_ascii_lowercase(),
+    }));
+    Ok(())
+}
+
 fn runtime_artwork_material(
     destination: &Path,
     info: Option<PreparedArtworkInfo>,
@@ -3703,6 +3819,7 @@ mod tests {
     fn candidate_decision_profile_overrides_the_current_album_output() {
         let mut output = OutputConfig::default();
         let overrides = gui_events::UpscaleOverrides {
+            preserve_source_resolution: false,
             adaptive_defaults: false,
             picture_percent: 6,
             sharpen_percent: 4,
@@ -3731,6 +3848,38 @@ mod tests {
             ..overrides
         };
         assert!(apply_upscale_overrides(&mut output, &invalid).is_err());
+    }
+
+    #[test]
+    fn preview_only_selection_preserves_source_resolution_and_disables_editing() {
+        let mut output = OutputConfig {
+            evaluate_final_image: true,
+            upscale_below_ideal: true,
+            upscale_picture_percent: 12,
+            upscale_sharpen_percent: 8,
+            ..OutputConfig::default()
+        };
+        let overrides = gui_events::UpscaleOverrides {
+            preserve_source_resolution: true,
+            adaptive_defaults: true,
+            picture_percent: 12,
+            sharpen_percent: 8,
+            softness_percent: 4,
+            contrast_percent: 3,
+            exposure_percent: 2,
+            brightness_percent: 1,
+            gamma_percent: -1,
+            color_temperature: 20,
+            apply_edit_profile: false,
+            edit_existing_cover: false,
+        };
+        apply_upscale_overrides(&mut output, &overrides).unwrap();
+        assert!(!output.evaluate_final_image);
+        assert!(!output.upscale_below_ideal);
+        assert!(!output.upscale_adaptive_defaults);
+        assert_eq!(output.upscale_picture_percent, 0);
+        assert_eq!(output.upscale_sharpen_percent, 0);
+        assert_eq!(output.upscale_color_temperature, 0);
     }
 
     #[test]

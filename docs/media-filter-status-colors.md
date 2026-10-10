@@ -218,6 +218,11 @@ Purple Album → protected while timeout active
 Red Album    → saved bypass removal required
 ```
 
+When a Red Album is intentionally opened for source review, the candidate
+action reads **NO Bypass**. Confirming it resets that Album to unprocessed
+SQLite authority, retains the visible source results, and restores the normal
+**Bypass Album** action.
+
 Pending compilation track-art work is the narrow exception to the ordinary Red
 and Orange automatic-selection rules. The compilation flag and completion
 source determine that exception; once `embedded-compilation` is recorded it no
@@ -314,10 +319,19 @@ state. They survive candidate clearing, later Albums, concurrent batches, and
 application restart, and are included when Interface Settings are selected in
 a `.spl` backup. Controls may be temporarily disabled when the current result
 set cannot satisfy them; this does not discard the saved operator preference.
-The Upscale/Advanced column uses eight compact vertical controls with values at
-the top and square decrement/reset/increment controls at the bottom. Existing
-local covers remain eligible for explicit preview/edit even when already Ideal
-or above Ideal; their dimensions are not reduced automatically.
+The Upscale/Advanced area uses eight centered vertical controls. The single
+summary toggle before the Candidate Findings title hides only the three summary
+groups; Upscale remains visible as two rows of four taller sliders with
+clickable one-step arrows above and below each slider. A vertically constrained
+workspace scrolls instead of clipping those controls. Existing local covers
+remain eligible for explicit preview/edit even when already Ideal or above
+Ideal; their dimensions are not reduced automatically.
+
+**Upscale Preview** is enabled by default. Preview and full-size inspection
+still apply the visible profile in memory, while **Use Selected** preserves the
+chosen source dimensions and omits upscale/edit-profile filtering. Disabling
+the toggle changes the action to **Upscale** and allows the configured profile
+to affect the saved output.
 
 ## Performance contract
 

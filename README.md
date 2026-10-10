@@ -212,6 +212,12 @@ track keeps its embedded image as a local comparison while still loading
 MusicBrainz releases and provider results for higher-resolution choices. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
+Windows **Show Tracks** supports an additive checked-track queue within the
+focused fallback compilation. Track clicks remain preview-only; checked tracks
+are processed explicitly, completed indicators turn green immediately, and
+the Album stays focused so more tracks can be selected without returning to the
+library root.
+
 The MusicBrainz list uses release-group artwork only as a quick visual preview;
 its Resolution field is separate, Release-MBID-specific evidence from the best
 candidate returned by enabled SPLINED sources. See
@@ -296,7 +302,10 @@ SPLINED evaluates existing local and embedded artwork before remote replacement.
 When a local cover is retained, no unnecessary replacement is written.
 
 The operational picker can save a persistent Album bypass. Bypass state remains
-under persistent history authority until explicitly removed.
+under persistent history authority until explicitly removed. During Windows
+source review, **Bypass Album** becomes **NO Bypass** for an Album with an
+active saved bypass; confirming it removes that authority without closing the
+current results.
 
 ---
 

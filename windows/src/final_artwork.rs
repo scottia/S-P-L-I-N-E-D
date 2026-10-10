@@ -1103,6 +1103,42 @@ mod tests {
     }
 
     #[test]
+    fn disabled_final_image_evaluation_preserves_source_dimensions() {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("preview-source.png");
+        write_image(&source, 14, 12, ImageFormat::Png);
+        let candidate = candidate(&source);
+        let output = OutputConfig {
+            evaluate_final_image: false,
+            square: true,
+            square_mode: "crop".to_string(),
+            upscale_below_ideal: true,
+            upscale_picture_percent: 20,
+            upscale_sharpen_percent: 10,
+            ..OutputConfig::default()
+        };
+
+        let projected = project_configured_artwork(&candidate, &test_range(), &output);
+        assert_eq!((projected.width, projected.height), (14, 12));
+        assert!(!projected.cropped);
+        assert!(!projected.resized);
+
+        let prepared = prepare_configured_artwork(
+            &candidate,
+            &source,
+            &test_range(),
+            StaticFormat::Png,
+            &output,
+            false,
+        )
+        .unwrap();
+        assert_eq!((prepared.info.width, prepared.info.height), (14, 12));
+        assert!(!prepared.info.resized);
+        assert_eq!(prepared.info.picture_percent, 0);
+        assert_eq!(prepared.info.sharpen_percent, 0);
+    }
+
+    #[test]
     fn configured_upscale_respects_maximum_percentage() {
         let range = test_range();
         let mut output = OutputConfig {
