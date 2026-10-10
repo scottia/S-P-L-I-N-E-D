@@ -1425,6 +1425,11 @@ namespace Splined.WindowsGui
                         && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
                             .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
                         "Artwork Filter does not keep its compact summary and Upscale controls in separate vertically scrolling panels.");
+                    FluentGroupBox[] summaryGroups = new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
+                        .Select(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single()).ToArray();
+                    Assert(summaryGroups.Select(group => group.Height).Distinct().Count() == 1
+                        && summaryGroups.All(group => group.Dock == DockStyle.Fill),
+                        "Candidate Findings, Source Selection, and Resolution did not retain the tallest shared panel height.");
                     TableLayoutPanel previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
                     Panel advancedControls = form.Controls.Find("upscaleAdvancedControls", true).OfType<Panel>().Single();
                     TableLayoutPanel advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
@@ -1441,16 +1446,23 @@ namespace Splined.WindowsGui
                             .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().Dock == DockStyle.Fill)
                         && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<SpectrumSlider>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<SpectrumSlider>().Single().Value == 0
-                        && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<Button>().Single().Text == "↺"
+                        && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<FluentButton>().Single().CenteredGlyph == "↺"
                         && form.Controls.Find("upscaleProfileFrame_brightness", true).OfType<GroupBox>().Single().Text.Contains("Brightness")
                         && form.Controls.Find("upscaleProfileFrame_temperature", true).OfType<GroupBox>().Single().Text.Contains("Color")
                         && !advancedControls.AutoScroll && advancedGrid.Dock == DockStyle.Fill
                         && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
-                        && Enumerable.Range(0, 8).All(index => !((FluentGroupBox)advancedGrid.GetControlFromPosition(index, 0)).SpectrumBorder)
+                        && Enumerable.Range(0, 8).All(index =>
+                        {
+                            FluentGroupBox profile = (FluentGroupBox)advancedGrid.GetControlFromPosition(index, 0);
+                            return !profile.SpectrumBorder && profile.CenterTitle;
+                        })
+                        && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
+                            .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single())
+                            .All(slider => slider.SegmentCount == 20)
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().SpectrumIndex)
                             .Distinct().Count() == 8
-                        && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<Button>().Count() == 1
+                        && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<Button>().Count() == 3
                         && previewLine.ColumnCount == 3 && previewLine.GetPositionFromControl(showFullPreview).Column == 1
                         && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
                         && previewLine.ColumnStyles[0].Width == 168 && compactPreview.Width <= 170,
@@ -1469,6 +1481,15 @@ namespace Splined.WindowsGui
                         Assert(slider.Dock == DockStyle.Fill && slider.Bounds == sliderHost.DisplayRectangle,
                             "An Upscale spectrum slider did not remain centered and fully visible after candidate-panel layout.");
                     }
+                    Assert(Descendants(advancedGrid).OfType<Button>().Count(button =>
+                            button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)) == 8
+                        && Descendants(advancedGrid).OfType<Button>().Count(button =>
+                            button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal)) == 8
+                        && Descendants(advancedGrid).OfType<Button>().Where(button =>
+                            button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)
+                            || button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal))
+                            .All(button => button.Width <= 32 && button.Anchor == AnchorStyles.None),
+                        "The one-row Upscale layout did not use the shared compact up/down glyph template.");
                     previewOnlyMode.Checked = false;
                     Assert(compactPreview.Text == "Upscale" && Convert.ToString(compactPreview.Tag) == "primary",
                         "Disabling Upscale Preview did not expose the explicit Upscale save mode.");
@@ -1477,7 +1498,8 @@ namespace Splined.WindowsGui
                         "Upscale Preview did not restore its default enabled green state.");
                     Label summaryToggle = form.Controls.Find("candidateSummaryToggle", true).OfType<Label>().Single();
                     Assert(summaryToggle.Enabled && summaryToggle.Text == "▾"
-                        && summaryToggle.Parent.Controls.GetChildIndex(summaryToggle) == 0,
+                        && summaryToggle.Parent.Controls.GetChildIndex(summaryToggle) == 0
+                        && summaryToggle.Font.Name.IndexOf("Symbol", StringComparison.OrdinalIgnoreCase) >= 0,
                         "The single unframed Candidate Findings summary glyph is not immediately before the panel title.");
                     MethodInfo invokeSummaryToggle = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
                     invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
@@ -1492,7 +1514,12 @@ namespace Splined.WindowsGui
                             button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)) == 8
                         && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
                             button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal)) == 8
-                        && Descendants(compactAdvancedGrid).OfType<SpectrumSlider>().All(slider => slider.Height >= 130),
+                        && Descendants(compactAdvancedGrid).OfType<SpectrumSlider>().All(slider => slider.Height >= 90
+                            && slider.SegmentCount == 20)
+                        && Descendants(compactAdvancedGrid).OfType<Button>().Where(button =>
+                            button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)
+                            || button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal))
+                            .All(button => button.Width <= 32 && button.Anchor == AnchorStyles.None),
                         "Collapsing Candidate Findings did not retain two centered rows of taller sliders with nudge controls.");
                     invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
                     Application.DoEvents();
@@ -1564,6 +1591,12 @@ namespace Splined.WindowsGui
                         "Selecting one result did not focus its artwork preview and activate editing.");
                     Assert(showFullPreview.Enabled,
                         "Upscale Show Full did not activate beside Upscale Preview for the selected result.");
+                    foreach (CheckBox choice in candidateCards.Controls.Cast<Control>()
+                        .Select(card => card.Controls["candidateChoice"] as CheckBox).Where(choice => choice != null))
+                        choice.Checked = false;
+                    Assert(upscalePreviewButton.Enabled && showFullPreview.Enabled,
+                        "Upscale controls were disabled when candidate selection state changed.");
+                    ((CheckBox)upscalableCard.Controls["candidateChoice"]).Checked = true;
                     UiState hoverUi = (UiState)typeof(MainForm)
                         .GetField("uiState", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     hoverUi.HoverEnabled = true;
@@ -1586,6 +1619,11 @@ namespace Splined.WindowsGui
                     Assert(ConfigStore.Load().UpscaleBrightnessPercent == 3
                         && form.Controls.Find("upscaleProfileValue_brightness", true).OfType<Label>().Single().Text == "<+3%>",
                         "Artwork Filter advanced profile did not update its value or save to Config v5.");
+                    Rectangle cropPreview = MainForm.UpscalePreviewSourceRectangle(1200, 1188, 1800, 1800, true, "crop");
+                    Rectangle uncroppedPreview = MainForm.UpscalePreviewSourceRectangle(1200, 1188, 1800, 1800, false, "crop");
+                    Assert(cropPreview == new Rectangle(6, 0, 1188, 1188)
+                        && uncroppedPreview == new Rectangle(0, 0, 1200, 1188),
+                        "Upscale Preview does not mirror configured center-square crop authority.");
                     typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
                     Assert(projectedPreview.Image != null && projectedPreview.Image.Width == 1800
@@ -2093,6 +2131,15 @@ namespace Splined.WindowsGui
             CheckBox selectFiltered = form.Controls.Find("selectModeFiltered", true).OfType<CheckBox>().Single();
             CheckBox autoAll = form.Controls.Find("autoScanAll", true).OfType<CheckBox>().Single();
             CheckBox autoSelected = form.Controls.Find("autoScanSelected", true).OfType<CheckBox>().Single();
+            TableLayoutPanel statusRows = form.Controls.Find("mediaStatusRows", true).OfType<TableLayoutPanel>().Single();
+            TableLayoutPanel selectRows = selectAll.Parent as TableLayoutPanel;
+            statusRows.PerformLayout();
+            if (selectRows != null) selectRows.PerformLayout();
+            double statusRowHeight = statusRows.GetRowHeights().Average();
+            double selectRowHeight = selectRows == null ? 0 : selectRows.GetRowHeights().Average();
+            Assert(selectRows != null && Math.Abs(statusRowHeight - selectRowHeight) <= 3,
+                "Folder status choices do not use the same vertical spacing as Select Mode."
+                + " folder=" + statusRowHeight + " select=" + selectRowHeight);
             ConfigState formState = (ConfigState)typeof(MainForm).GetField("state", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
             Assert(scanRead.Text == "Launch [READ] Source Results" && scanWrite.Text == "Launch [LIVE WRITE] Choice Results"
                 && (formState.Mode.Equals("write", StringComparison.OrdinalIgnoreCase) ? scanWrite.Checked : scanRead.Checked)

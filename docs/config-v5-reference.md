@@ -153,7 +153,10 @@ below-Ideal source is enlarged or when the operator explicitly previews/edits
 an existing local cover at native resolution. Merely keeping the local cover
 does not rewrite it. Setting Apply adaptive defaults false disables the
 analyze-first correction but retains explicit values. The Windows Upscale
-Preview reports the effective corrections.
+Preview reports the effective corrections. When `square = true` and
+`square_mode = "crop"`, a square Rust projection is previewed from the same
+centered square source crop before resize; the WinForms preview therefore does
+not stretch a near-square source merely to show the projected dimensions.
 
 Enlargement capability is not Preferred/Auto authority. An upscaled candidate
 must still pass the configured range and source policy, strict image-content

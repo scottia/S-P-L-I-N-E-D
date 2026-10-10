@@ -280,7 +280,9 @@ namespace Splined.WindowsGui
         private HoverPreviewForm hoverPreview;
         private bool updateCheckRunning;
         private bool applyingLayoutPreset;
-        private const int ExpandedMediaFilterHeight = 475;
+        // The extra status height keeps each of the four Folder status rows
+        // on the same visual rhythm as the three Select Mode choices.
+        private const int ExpandedMediaFilterHeight = 510;
         private const int CollapsedMediaFilterHeight = 38;
         private const int LibraryPanelMinimumWidth = 360;
         private const int LibraryTreeMinimumHeight = 170;
@@ -627,7 +629,8 @@ namespace Splined.WindowsGui
                 Margin = new Padding(0),
                 Padding = new Padding(0),
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Font = new Font("Segoe UI Symbol", ThemeManager.UiFont(ThemeFontRole.PanelTitle).SizeInPoints,
+                    FontStyle.Regular, GraphicsUnit.Point),
                 Cursor = Cursors.Hand,
                 AccessibleName = "Expand or collapse Candidate Findings, Source Selection, and Resolution"
             };
@@ -998,7 +1001,7 @@ namespace Splined.WindowsGui
             columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             GroupBox statuses = new FluentGroupBox { Name = "mediaStatusFilters", Text = "Folder status", Dock = DockStyle.Fill, Padding = new Padding(9, 8, 7, 7) };
-            TableLayoutPanel statusRows = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, Margin = Padding.Empty, Padding = Padding.Empty };
+            TableLayoutPanel statusRows = new BufferedTableLayoutPanel { Name = "mediaStatusRows", Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4, Margin = Padding.Empty, Padding = Padding.Empty };
             statusRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             statusRows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             for (int row = 0; row < 4; row++) statusRows.RowStyles.Add(new RowStyle(SizeType.Percent, 25));
@@ -2998,28 +3001,39 @@ namespace Splined.WindowsGui
 
             if (summaryExpanded)
             {
+                GroupBox findingsGroup = WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types);
+                GroupBox sourcesGroup = WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources);
+                GroupBox rangesGroup = WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges);
+                GroupBox[] summaryGroups = { findingsGroup, sourcesGroup, rangesGroup };
+                int summaryHeight = summaryGroups.Max(group => group.GetPreferredSize(new Size(420, 0)).Height);
+                foreach (GroupBox group in summaryGroups)
+                {
+                    group.AutoSize = false;
+                    group.Dock = DockStyle.Fill;
+                    group.MinimumSize = new Size(0, summaryHeight);
+                }
                 TableLayoutPanel summary = new BufferedTableLayoutPanel
                 {
                     Name = "candidateSummaryPanel",
                     Dock = DockStyle.Top,
-                    AutoSize = true,
-                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    AutoSize = false,
+                    Height = summaryHeight,
                     ColumnCount = 5,
                     RowCount = 1,
                     Margin = new Padding(0, 0, 0, ThemeManager.Space4),
                     Padding = Padding.Empty
                 };
-                summary.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                summary.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryHeight));
                 summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
                 summary.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space4));
                 summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36));
                 summary.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space4));
                 summary.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
-                summary.Controls.Add(WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types), 0, 0);
-                summary.Controls.Add(WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources), 2, 0);
-                summary.Controls.Add(WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges), 4, 0);
+                summary.Controls.Add(findingsGroup, 0, 0);
+                summary.Controls.Add(sourcesGroup, 2, 0);
+                summary.Controls.Add(rangesGroup, 4, 0);
                 int summaryRow = columns.RowCount++;
-                columns.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                columns.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryHeight));
                 columns.Controls.Add(summary, 0, summaryRow);
             }
             GroupBox upscaleGroup = WrapCandidateFilterGroup("candidateUpscaleGroup", "Upscale / Advanced", upscale);
@@ -3127,6 +3141,7 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 AutoSize = false,
                 ForeColor = palette.Success,
+                Enabled = true,
                 Margin = new Padding(ThemeManager.Space4, 1, 0, 0)
             };
             upscalePreviewOnly.CheckedChanged += delegate
@@ -3156,7 +3171,7 @@ namespace Splined.WindowsGui
                 Name = "upscalePreviewButton",
                 Text = uiState.UpscalePreviewOnly ? "Upscale Preview" : "Upscale",
                 Dock = DockStyle.Fill,
-                Enabled = false,
+                Enabled = true,
                 Tag = uiState.UpscalePreviewOnly ? "success" : "primary",
                 Margin = new Padding(0)
             };
@@ -3167,7 +3182,7 @@ namespace Splined.WindowsGui
                 Name = "upscaleShowFullButton",
                 Text = "Upscale Show Full",
                 Dock = DockStyle.Fill,
-                Enabled = false,
+                Enabled = true,
                 Tag = "primary",
                 Margin = new Padding(ThemeManager.Space4, 0, 0, 0)
             };
@@ -3250,7 +3265,7 @@ namespace Splined.WindowsGui
                 state.UpscaleBrightnessPercent, state.UpscaleGammaPercent, state.UpscaleColorTemperature };
             for (int index = 0; index < keys.Length; index++)
                 advancedGrid.Controls.Add(BuildUpscaleProfileControl(keys[index], labels[index],
-                    minimums[index], maximums[index], values[index], twoRows),
+                    minimums[index], maximums[index], values[index]),
                     index % advancedGrid.ColumnCount, index / advancedGrid.ColumnCount);
             advanced.Controls.Add(advancedGrid);
             AddUpscaleFilterRow(column, advanced, twoRows ? 450 : 220);
@@ -3264,13 +3279,14 @@ namespace Splined.WindowsGui
             column.Controls.Add(control, 0, row);
         }
 
-        private Control BuildUpscaleProfileControl(string key, string label, int minimum, int maximum, int value, bool showNudgeButtons)
+        private Control BuildUpscaleProfileControl(string key, string label, int minimum, int maximum, int value)
         {
             FluentGroupBox frame = new FluentGroupBox
             {
                 Name = "upscaleProfileFrame_" + key,
                 Text = UpscaleProfileIcon(key) + " " + label,
                 SpectrumBorder = false,
+                CenterTitle = true,
                 Dock = DockStyle.Fill,
                 Margin = new Padding(2),
                 Padding = new Padding(ThemeManager.Space4, ThemeManager.Space12, ThemeManager.Space4, ThemeManager.Space4)
@@ -3280,15 +3296,16 @@ namespace Splined.WindowsGui
                 Name = "upscaleProfileControl_" + key,
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = showNudgeButtons ? 5 : 3,
+                RowCount = 5,
                 Margin = new Padding(0),
                 Padding = new Padding(2)
             };
+            control.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             control.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-            if (showNudgeButtons) control.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             control.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            if (showNudgeButtons) control.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 35));
+            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            control.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             Label current = new Label
             {
                 Name = "upscaleProfileValue_" + key,
@@ -3321,22 +3338,15 @@ namespace Splined.WindowsGui
                 Padding = new Padding(ThemeManager.Space4, 0, ThemeManager.Space4, 0)
             };
             sliderHost.Controls.Add(slider);
-            TableLayoutPanel resetRow = new BufferedTableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 3,
-                RowCount = 1,
-                Margin = new Padding(0)
-            };
-            resetRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
-            resetRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
-            resetRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
             FluentButton reset = new FluentButton
             {
                 Name = "upscaleProfileReset_" + key,
-                Text = "↺",
-                Dock = DockStyle.Fill,
-                Margin = new Padding(1),
+                Text = "",
+                CenteredGlyph = "↺",
+                AccessibleName = "Reset " + label,
+                Anchor = AnchorStyles.None,
+                Size = new Size(32, 24),
+                Margin = Padding.Empty,
                 Tag = "compact"
             };
             reset.Click += delegate { slider.Value = 0; };
@@ -3346,41 +3356,41 @@ namespace Splined.WindowsGui
             resetHelp.SetToolTip(current, label + " current value");
             resetHelp.SetToolTip(slider, "Adjust " + label.ToLowerInvariant() + ".");
             frame.Tag = resetHelp;
-            resetRow.Controls.Add(reset, 1, 0);
             slider.ValueChanged += delegate
             {
                 current.Text = UpscaleProfileDisplay(key, slider.Value);
                 SetUpscaleProfileValue(key, slider.Value);
                 PersistUpscaleProfile();
             };
-            int sliderRow = showNudgeButtons ? 2 : 1;
-            int resetRowIndex = showNudgeButtons ? 4 : 2;
             control.Controls.Add(current, 0, 0);
-            if (showNudgeButtons)
+            FluentButton increase = new FluentButton
             {
-                FluentButton increase = new FluentButton
-                {
-                    Name = "upscaleProfileIncrease_" + key,
-                    Text = "▲",
-                    Dock = DockStyle.Fill,
-                    Margin = new Padding(ThemeManager.Space12, 0, ThemeManager.Space12, 0),
-                    Tag = "compact"
-                };
-                FluentButton decrease = new FluentButton
-                {
-                    Name = "upscaleProfileDecrease_" + key,
-                    Text = "▼",
-                    Dock = DockStyle.Fill,
-                    Margin = new Padding(ThemeManager.Space12, 0, ThemeManager.Space12, 0),
-                    Tag = "compact"
-                };
-                increase.Click += delegate { slider.Value = Math.Min(slider.Maximum, slider.Value + slider.SmallChange); };
-                decrease.Click += delegate { slider.Value = Math.Max(slider.Minimum, slider.Value - slider.SmallChange); };
-                control.Controls.Add(increase, 0, 1);
-                control.Controls.Add(decrease, 0, 3);
-            }
-            control.Controls.Add(sliderHost, 0, sliderRow);
-            control.Controls.Add(resetRow, 0, resetRowIndex);
+                Name = "upscaleProfileIncrease_" + key,
+                Text = "",
+                CenteredGlyph = "▲",
+                AccessibleName = "Increase " + label,
+                Anchor = AnchorStyles.None,
+                Size = new Size(32, 22),
+                Margin = Padding.Empty,
+                Tag = "compact"
+            };
+            FluentButton decrease = new FluentButton
+            {
+                Name = "upscaleProfileDecrease_" + key,
+                Text = "",
+                CenteredGlyph = "▼",
+                AccessibleName = "Decrease " + label,
+                Anchor = AnchorStyles.None,
+                Size = new Size(32, 22),
+                Margin = Padding.Empty,
+                Tag = "compact"
+            };
+            increase.Click += delegate { slider.Value = Math.Min(slider.Maximum, slider.Value + slider.SmallChange); };
+            decrease.Click += delegate { slider.Value = Math.Max(slider.Minimum, slider.Value - slider.SmallChange); };
+            control.Controls.Add(increase, 0, 1);
+            control.Controls.Add(sliderHost, 0, 2);
+            control.Controls.Add(decrease, 0, 3);
+            control.Controls.Add(reset, 0, 4);
             frame.Controls.Add(control);
             return frame;
         }
@@ -3968,12 +3978,12 @@ namespace Splined.WindowsGui
             if (upscalePreview != null)
             {
                 upscalePreview.Visible = true;
-                upscalePreview.Enabled = canPreviewUpscale;
+                upscalePreview.Enabled = true;
             }
             if (upscaleShowFull != null)
             {
                 upscaleShowFull.Visible = true;
-                upscaleShowFull.Enabled = canPreviewUpscale;
+                upscaleShowFull.Enabled = true;
             }
             UpdateUpscaleCandidateContext(canPreviewUpscale ? previewCandidate : null);
             ThemeManager.StyleButton(useSelected, uiState.Theme);
@@ -4772,18 +4782,26 @@ namespace Splined.WindowsGui
         private void UpscalePreviewClicked(object sender, EventArgs e)
         {
             CandidateView candidate;
-            if (selectedCandidateIndex >= 0 && candidates.TryGetValue(selectedCandidateIndex, out candidate))
+            if (selectedCandidateIndex < 0 || !candidates.TryGetValue(selectedCandidateIndex, out candidate)
+                || !CandidateCanEdit(candidate))
             {
-                editedCandidateIndexes.Add(candidate.Index);
-                if (candidate.IsLocal) editedLocalCandidateIndexes.Add(candidate.Index);
+                SetStatus("Select one artwork result to preview its Upscale / Advanced settings.");
+                return;
             }
+            editedCandidateIndexes.Add(candidate.Index);
+            if (candidate.IsLocal) editedLocalCandidateIndexes.Add(candidate.Index);
             RenderUpscalePreview();
         }
 
         private void UpscaleShowFullClicked(object sender, EventArgs e)
         {
             CandidateView candidate;
-            if (selectedCandidateIndex < 0 || !candidates.TryGetValue(selectedCandidateIndex, out candidate)) return;
+            if (selectedCandidateIndex < 0 || !candidates.TryGetValue(selectedCandidateIndex, out candidate)
+                || !CandidateCanEdit(candidate))
+            {
+                SetStatus("Select one artwork result to show its full Upscale / Advanced preview.");
+                return;
+            }
             editedCandidateIndexes.Add(candidate.Index);
             if (candidate.IsLocal) editedLocalCandidateIndexes.Add(candidate.Index);
             if (!RenderUpscalePreview() || artworkPreviewImage == null || artworkPreviewImage.Image == null) return;
@@ -4810,6 +4828,9 @@ namespace Splined.WindowsGui
                 if (source == null) return false;
                 int targetWidth = candidate.ProjectedWidth > 0 ? candidate.ProjectedWidth : state.RangeIdeal;
                 int targetHeight = candidate.ProjectedHeight > 0 ? candidate.ProjectedHeight : state.RangeIdeal;
+                Rectangle sourceRectangle = UpscalePreviewSourceRectangle(source.Width, source.Height,
+                    targetWidth, targetHeight, state.Square, state.SquareMode);
+                bool squareCrop = sourceRectangle.Width != source.Width || sourceRectangle.Height != source.Height;
                 ToneCorrection correction = BuildUpscaleCorrection(source);
                 Bitmap resized = new Bitmap(targetWidth, targetHeight, PixelFormat.Format32bppArgb);
                 resized.SetResolution(source.HorizontalResolution > 0 ? source.HorizontalResolution : 96,
@@ -4821,7 +4842,9 @@ namespace Splined.WindowsGui
                     graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     graphics.SmoothingMode = SmoothingMode.HighQuality;
-                    graphics.DrawImage(source, new Rectangle(0, 0, targetWidth, targetHeight));
+                    graphics.DrawImage(source, new Rectangle(0, 0, targetWidth, targetHeight),
+                        sourceRectangle.X, sourceRectangle.Y, sourceRectangle.Width, sourceRectangle.Height,
+                        GraphicsUnit.Pixel);
                 }
                 Bitmap projected = ApplyToneCorrection(resized, correction);
                 resized.Dispose();
@@ -4843,9 +4866,24 @@ namespace Splined.WindowsGui
                     + " · softness " + correction.SoftnessPercent + "%"
                     + " · gamma " + correction.GammaPercent.ToString("+0;-0;0") + "%"
                     + " · color " + UpscaleProfileDisplay("temperature", correction.TemperatureValue)
+                    + (squareCrop ? " · square crop" : "")
                     + " · preview only");
                 return true;
             }
+        }
+
+        internal static Rectangle UpscalePreviewSourceRectangle(int sourceWidth, int sourceHeight,
+            int targetWidth, int targetHeight, bool square, string squareMode)
+        {
+            sourceWidth = Math.Max(1, sourceWidth);
+            sourceHeight = Math.Max(1, sourceHeight);
+            bool cropSquare = square
+                && String.Equals(squareMode, "crop", StringComparison.OrdinalIgnoreCase)
+                && targetWidth == targetHeight
+                && sourceWidth != sourceHeight;
+            if (!cropSquare) return new Rectangle(0, 0, sourceWidth, sourceHeight);
+            int side = Math.Min(sourceWidth, sourceHeight);
+            return new Rectangle((sourceWidth - side) / 2, (sourceHeight - side) / 2, side, side);
         }
 
         private ToneCorrection BuildUpscaleCorrection(Image source)
@@ -5303,7 +5341,7 @@ namespace Splined.WindowsGui
             activityArtworkSplit.PerformLayout();
         }
 
-        private void UpdateArtworkSquareLayout(bool constrainSplitter)
+        private void UpdateArtworkSquareLayout(bool previewWidthIsAuthority)
         {
             if (adjustingArtworkLayout || activityArtworkSplit == null) return;
             if ((!uiState.ShowArtwork && musicBrainzMatchesPanel == null && !CandidateFilterWorkspaceVisible && !candidatePreviewActive)
@@ -5316,18 +5354,36 @@ namespace Splined.WindowsGui
             {
                 uiState.ArtworkPreviewWidth = Math.Max(activityArtworkSplit.Panel2MinSize,
                     activityArtworkSplit.Panel2.ClientSize.Width);
-                if (constrainSplitter && rightSplit != null)
+                if (rightSplit == null || artworkPreviewImage == null) return;
+                activityArtworkSplit.PerformLayout();
+                if (artworkPreviewImage.ClientSize.Width <= 0 || artworkPreviewImage.ClientSize.Height <= 0) return;
+                int squareDelta = artworkPreviewImage.ClientSize.Width - artworkPreviewImage.ClientSize.Height;
+                if (Math.Abs(squareDelta) <= 1) return;
+                if (previewWidthIsAuthority)
                 {
-                    int artworkChrome = 30 + 28 + 28 + (ThemeManager.Space12 * 2);
-                    int desiredUpperHeight = activityArtworkSplit.Panel2.ClientSize.Width + artworkChrome;
-                    int maximum = rightSplit.Height - rightSplit.Panel2MinSize - rightSplit.SplitterWidth;
-                    if (maximum >= rightSplit.Panel1MinSize)
-                    {
-                        int target = Math.Max(rightSplit.Panel1MinSize, Math.Min(desiredUpperHeight, maximum));
-                        if (target > rightSplit.SplitterDistance)
-                            TrySetSplitterDistance(rightSplit, target);
-                    }
+                    // The artwork-width divider owns the corner while it is
+                    // being dragged. Move the lower divider by the same delta
+                    // in either direction so the preview never leaves a dead
+                    // strip beneath a square image.
+                    TrySetSplitterDistance(rightSplit, rightSplit.SplitterDistance + squareDelta);
                 }
+                else
+                {
+                    // When the lower divider or window height changes, keep
+                    // the corner attached by deriving the artwork width from
+                    // the available artwork height. Moving this divider does
+                    // not affect the separate Select Media splitter.
+                    restoringArtworkPreviewWidth = true;
+                    try
+                    {
+                        TrySetSplitterDistance(activityArtworkSplit,
+                            activityArtworkSplit.SplitterDistance + squareDelta);
+                    }
+                    finally { restoringArtworkPreviewWidth = false; }
+                }
+                activityArtworkSplit.PerformLayout();
+                uiState.ArtworkPreviewWidth = Math.Max(activityArtworkSplit.Panel2MinSize,
+                    activityArtworkSplit.Panel2.ClientSize.Width);
             }
             finally { adjustingArtworkLayout = false; }
         }

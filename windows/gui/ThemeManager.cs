@@ -1247,6 +1247,7 @@ namespace Splined.WindowsGui
         private bool hot;
         private bool pressed;
         private bool directionGlyph;
+        private string centeredGlyph = "";
 
         internal string Theme { get; set; }
         internal ThemePalette Palette { get; set; }
@@ -1254,6 +1255,11 @@ namespace Splined.WindowsGui
         {
             get { return directionGlyph; }
             set { directionGlyph = value; Invalidate(); }
+        }
+        internal string CenteredGlyph
+        {
+            get { return centeredGlyph; }
+            set { centeredGlyph = value ?? ""; Invalidate(); }
         }
 
         public FluentButton()
@@ -1276,6 +1282,14 @@ namespace Splined.WindowsGui
         protected override void OnPaint(PaintEventArgs pevent)
         {
             ThemeManager.DrawButton(this, pevent.Graphics, Palette, hot, pressed);
+            if (!String.IsNullOrWhiteSpace(centeredGlyph))
+            {
+                ThemePalette glyphPalette = Palette ?? ThemeManager.CurrentPalette;
+                TextRenderer.DrawText(pevent.Graphics, centeredGlyph, Font, ClientRectangle,
+                    Enabled ? ForeColor : glyphPalette.TextDisabled,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+                    | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+            }
             if (!directionGlyph) return;
             ThemePalette active = Palette ?? ThemeManager.CurrentPalette;
             float scale = Math.Max(1f, DeviceDpi / 96f);
@@ -1466,6 +1480,7 @@ namespace Splined.WindowsGui
 
     internal sealed class SpectrumSlider : Control
     {
+        private const int FixedSegmentCount = 20;
         private static readonly Color[] BarColors =
         {
             Color.FromArgb(255, 45, 54),
@@ -1548,6 +1563,8 @@ namespace Splined.WindowsGui
             set { spectrumIndex = Math.Max(0, value); Invalidate(); }
         }
 
+        public int SegmentCount { get { return FixedSegmentCount; } }
+
         public event EventHandler ValueChanged;
 
         public SpectrumSlider()
@@ -1620,10 +1637,9 @@ namespace Splined.WindowsGui
             ThemePalette active = Palette;
             int dpi = Math.Max(96, DeviceDpi);
             int inset = Math.Max(3, (int)Math.Round(5f * dpi / 96f));
-            int gap = Math.Max(2, (int)Math.Round(3f * dpi / 96f));
-            int preferredHeight = Math.Max(4, (int)Math.Round(7f * dpi / 96f));
+            int gap = Math.Max(1, (int)Math.Round(2f * dpi / 96f));
             int usableHeight = Math.Max(1, ClientSize.Height - (inset * 2));
-            int segmentCount = Math.Max(6, Math.Min(16, (usableHeight + gap) / (preferredHeight + gap)));
+            int segmentCount = FixedSegmentCount;
             int segmentHeight = Math.Max(2, (usableHeight - (gap * (segmentCount - 1))) / segmentCount);
             int stackHeight = (segmentHeight * segmentCount) + (gap * (segmentCount - 1));
             int top = Math.Max(inset, (ClientSize.Height - stackHeight) / 2);
@@ -2397,6 +2413,7 @@ namespace Splined.WindowsGui
     {
         public ThemePalette Palette { get; set; }
         public bool SpectrumBorder { get; set; }
+        public bool CenterTitle { get; set; }
         public FluentGroupBox()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -2408,7 +2425,9 @@ namespace Splined.WindowsGui
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using (SolidBrush background = new SolidBrush(palette.NestedCardSurface)) e.Graphics.FillRectangle(background, ClientRectangle);
             Size textSize = TextRenderer.MeasureText(Text ?? "", Font, new Size(Int32.MaxValue, Int32.MaxValue), TextFormatFlags.NoPadding);
-            int titleLeft = ThemeManager.Space12;
+            int titleLeft = CenterTitle
+                ? Math.Max(ThemeManager.Space4, (Width - textSize.Width) / 2)
+                : ThemeManager.Space12;
             int lineTop = Math.Max(7, textSize.Height / 2);
             Rectangle outline = new Rectangle(0, lineTop, Math.Max(1, Width - 1), Math.Max(1, Height - lineTop - 1));
             using (GraphicsPath path = ThemeManager.RoundedPath(outline, ThemeManager.CardRadius))

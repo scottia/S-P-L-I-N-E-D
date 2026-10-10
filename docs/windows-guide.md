@@ -93,25 +93,34 @@ The single unframed arrow immediately before **Candidate Findings | Upscale
 Artwork Editing** collapses only the three finding/source/resolution summaries.
 Those summaries and **Upscale / Advanced** occupy separate compact layout
 panels, so expanding the candidate-results area cannot stretch a summary frame
-over the upscale buttons or cut off the sliders. The eight editing controls use
-frameless, segmented spectrum bars with dim/bright level feedback and retain
-mouse, wheel, keyboard, reset, and one-step arrow adjustment. They fill their
-layout slots without relying on fixed native-slider centering, and switch to two
-rows of four taller bars when the summaries are collapsed. The workspace scrolls
-vertically when its available height is smaller than the controls.
+over the upscale buttons or cut off the sliders. All three summary frames retain
+the height of the tallest summary. The eight editing controls use one frameless
+template in both layouts: a centered title, exactly 20 segmented spectrum bars,
+compact one-step up/down glyphs, and a centered reset glyph. They retain mouse,
+wheel, keyboard, reset, and persisted-value behavior, and switch to two rows of
+four equally formatted bars when the summaries are collapsed. The workspace
+scrolls vertically when its available height is smaller than the controls.
 
 **Upscale Preview** is enabled by default. It keeps Upscale and full-size
 preview available, but **Use Selected** saves the chosen source at its source
 resolution without applying upscale or edit-profile filtering. Turn it off to
 enter explicit **Upscale** save mode. The framed resolution tile beside
 **Upscale Show Full** shows the source aspect ratio and projected dimensions.
+Both preview buttons remain available across candidate-state changes; when no
+editable result is selected they give selection guidance instead of becoming
+disabled. When Config v5 enables square crop output and the Rust projection is
+square, the in-memory Upscale preview uses the same centered square source crop
+before resizing, so the preview does not stretch a near-square source.
 Settings remains available for passive local/candidate previews and is blocked
 only while processing or an active decision is waiting.
 
 The vertical divider immediately left of the Artwork preview is draggable.
-Dragging it left widens the preview and, when space is available, grows the
-upper Activity/Artwork area downward so the image remains useful. Its width is
-stored with the other portable interface splitter state in `data/ui.toml`.
+It and the horizontal divider below the preview move as one constrained corner:
+dragging either direction derives the other dimension so the artwork viewport
+remains square and does not leave a dead strip below the candidate controls.
+This coupling is isolated from the separate divider beside **Select Media**.
+The preview width is stored with the other portable interface splitter state in
+`data/ui.toml`.
 Saved divider widths are clamped and deferred until WinForms has a valid layout
 extent, including first startup at the minimum supported window size.
 

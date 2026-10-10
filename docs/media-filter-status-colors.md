@@ -320,13 +320,15 @@ state. They survive candidate clearing, later Albums, concurrent batches, and
 application restart, and are included when Interface Settings are selected in
 a `.spl` backup. Controls may be temporarily disabled when the current result
 set cannot satisfy them; this does not discard the saved operator preference.
-The Upscale/Advanced area uses eight frameless, segmented spectrum controls.
-Their bars stretch within centered layout slots and expose the same mouse,
-wheel, keyboard, reset, and persisted-value behavior as the previous vertical
-controls. The single unframed summary arrow before the Candidate Findings title
-hides only the three summary groups; Upscale remains visible as two rows of four
-taller bars with clickable one-step arrows above and below each bar. A vertically
-constrained workspace scrolls instead of clipping those controls. Existing local covers
+The three summary frames always share the tallest required height. The
+Upscale/Advanced area uses eight frameless spectrum controls built from one
+template in both layouts: title and value centered over exactly 20 bars, compact
+up/down glyphs, then a centered reset glyph. They expose the same mouse, wheel,
+keyboard, reset, and persisted-value behavior as the previous vertical controls.
+The single unframed symbol-font arrow before the Candidate Findings title hides
+only the three summary groups; Upscale remains visible as two rows of four
+equally formatted taller controls. A vertically constrained workspace scrolls
+instead of clipping those controls. Existing local covers
 remain eligible for explicit preview/edit even when already Ideal or above
 Ideal; their dimensions are not reduced automatically.
 
@@ -334,7 +336,15 @@ Ideal; their dimensions are not reduced automatically.
 still apply the visible profile in memory, while **Use Selected** preserves the
 chosen source dimensions and omits upscale/edit-profile filtering. Disabling
 the toggle changes the action to **Upscale** and allows the configured profile
-to affect the saved output.
+to affect the saved output. Upscale Preview and Upscale Show Full remain enabled
+when selection state changes. Configured square-crop output is represented in
+the live preview with the same centered crop geometry used by the Rust output
+projection, before the projected resize is applied.
+
+The Artwork-only vertical divider and the horizontal divider below it remain a
+single square-preview corner during drag and resize. The independent divider to
+the right of Select Media is not coupled. Folder Status reserves the same
+vertical choice rhythm as Select Mode rather than compressing its fourth row.
 
 ## Performance contract
 
