@@ -326,9 +326,11 @@ template in both layouts: title and value centered over exactly 20 bars, compact
 up/down glyphs, then a centered reset glyph. They expose the same mouse, wheel,
 keyboard, reset, and persisted-value behavior as the previous vertical controls.
 The single unframed symbol-font arrow before the Candidate Findings title hides
-only the three summary groups; Upscale remains visible as two rows of four
-equally formatted taller controls. A vertically constrained workspace scrolls
-instead of clipping those controls. Existing local covers
+only the three summary groups; Upscale remains the same fixed-width two rows of
+four in expanded and collapsed states. One hairline spectrum frame encloses the
+Upscale actions and all eight sliders, with no separate frames around individual
+slider modules. A vertically constrained workspace scrolls instead of clipping
+or resizing those controls. Existing local covers
 remain eligible for explicit preview/edit even when already Ideal or above
 Ideal; their dimensions are not reduced automatically.
 
@@ -342,8 +344,10 @@ the live preview with the same centered crop geometry used by the Rust output
 projection, before the projected resize is applied.
 
 The Artwork-only vertical divider and the horizontal divider below it remain a
-single square-preview corner during drag and resize. The independent divider to
-the right of Select Media is not coupled. Folder Status reserves the same
+single outer-pane square corner during drag and resize. Both upper panels end on
+the horizontal divider, and the vertical divider ends at that junction without
+dead space. The independent divider to the right of Select Media is not coupled.
+Folder Status reserves the same
 vertical choice rhythm as Select Mode rather than compressing its fourth row.
 
 ## Performance contract
