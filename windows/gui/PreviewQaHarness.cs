@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -73,6 +74,14 @@ namespace Splined.WindowsGui
             ConfigState state = ConfigStore.Defaults();
             state.Mode = "write";
             state.MusicLibrary = imageDirectory;
+            state.UpscalePicturePercent = 17;
+            state.UpscaleSharpenPercent = 2;
+            state.UpscaleSoftnessPercent = 0;
+            state.UpscaleContrastPercent = 13;
+            state.UpscaleExposurePercent = -5;
+            state.UpscaleBrightnessPercent = -5;
+            state.UpscaleGammaPercent = -6;
+            state.UpscaleColorTemperature = -17;
             using (MainForm form = new MainForm(state, uiState))
             {
                 form.Size = new Size(1600, 1000);
@@ -195,15 +204,32 @@ namespace Splined.WindowsGui
                             SplitContainer artworkSplit = form.Controls.Find("activityArtworkSplit", true)[0] as SplitContainer;
                             FluentButton previewButton = form.Controls.Find("upscalePreviewButton", true)[0] as FluentButton;
                             FluentButton fullButton = form.Controls.Find("upscaleShowFullButton", true)[0] as FluentButton;
-                            Require(expandedGrid != null && expandedGrid.ColumnCount == 4 && expandedGrid.RowCount == 2,
-                                "Expanded Candidate Findings did not retain the 4 x 2 Upscale grid.");
+                            Require(expandedGrid != null && expandedGrid.ColumnCount == 8 && expandedGrid.RowCount == 1,
+                                "Expanded Candidate Findings did not retain the adaptive 8 x 1 Upscale grid.");
                             Require(artworkSplit != null && Math.Abs(artworkSplit.Panel2.Width - artworkSplit.ClientSize.Height) <= 2,
                                 "The Artwork pane is not square at the joined splitter corner.");
                             Require(previewButton != null && fullButton != null && previewButton.Enabled && fullButton.Enabled
                                 && previewButton.SpectrumBorder && fullButton.SpectrumBorder,
                                 "The shared framed Upscale actions are not active.");
+                            string[] profileKeys = { "picture", "sharpen", "softness", "contrast",
+                                "exposure", "brightness", "gamma", "temperature" };
+                            string[] expectedValues = { "+17", "+2", "0", "+13", "-5", "-5", "-6", "-17" };
+                            SpectrumSlider[] profileSliders = profileKeys.Select(key => form.Controls.Find(
+                                "upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single()).ToArray();
+                            Require(profileSliders.Select(slider => slider.ValueOverlayText).SequenceEqual(expectedValues)
+                                && profileSliders.All(slider => slider.ShowValueOverlay
+                                    && slider.ValueOverlayText.IndexOf('<') < 0
+                                    && slider.ValueOverlayText.IndexOf('>') < 0),
+                                "The Upscale sliders do not expose plain in-bar values.");
                             Size expandedGridSize = expandedGrid.Size;
                             Size expandedModuleSize = expandedGrid.GetControlFromPosition(0, 0).Size;
+                            Panel filterPanel = form.Controls.Find("candidateFilterPanel", true)[0] as Panel;
+                            TableLayoutPanel filterStack = form.Controls.Find("candidateFilterStack", true)[0] as TableLayoutPanel;
+                            ScrollableControl activityCard = form.Controls.Find("scanActivityCard", true)[0] as ScrollableControl;
+                            Require(filterPanel != null && filterStack != null && activityCard != null
+                                && !filterPanel.VerticalScroll.Visible && !activityCard.VerticalScroll.Visible
+                                && filterPanel.ClientSize.Height >= filterStack.Height,
+                                "Expanded Candidate Findings introduced a scrollbar or clipped the single Upscale row.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-expanded-qa.png"));
                             Label summaryToggle = form.Controls.Find("candidateSummaryToggle", true)[0] as Label;
                             if (summaryToggle != null)
@@ -212,7 +238,7 @@ namespace Splined.WindowsGui
                             form.PerformLayout();
                             Application.DoEvents();
                             TableLayoutPanel collapsedGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
-                            Require(collapsedGrid != null && collapsedGrid.ColumnCount == 4 && collapsedGrid.RowCount == 2
+                            Require(collapsedGrid != null && collapsedGrid.ColumnCount == 8 && collapsedGrid.RowCount == 1
                                 && collapsedGrid.Size == expandedGridSize
                                 && collapsedGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize,
                                 "Collapsed Candidate Findings changed the Upscale grid proportions.");

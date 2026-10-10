@@ -322,15 +322,20 @@ a `.spl` backup. Controls may be temporarily disabled when the current result
 set cannot satisfy them; this does not discard the saved operator preference.
 The three summary frames always share the tallest required height. The
 Upscale/Advanced area uses eight frameless spectrum controls built from one
-template in both layouts: title and value centered over exactly 20 bars, compact
-up/down glyphs, then a centered reset glyph. They expose the same mouse, wheel,
+template: title centered over exactly 20 bars, compact up/down glyphs, then a
+centered reset glyph. The current signed value is a bold white number in the
+middle of the bar with no angle brackets. They expose the same mouse, wheel,
 keyboard, reset, and persisted-value behavior as the previous vertical controls.
 The single unframed symbol-font arrow before the Candidate Findings title hides
-only the three summary groups; Upscale remains the same fixed-width two rows of
-four in expanded and collapsed states. One hairline spectrum frame encloses the
-Upscale actions and all eight sliders, with no separate frames around individual
-slider modules. A vertically constrained workspace scrolls instead of clipping
-or resizing those controls. Existing local covers
+only the three summary groups. Upscale remains one adaptive row of eight in
+expanded and collapsed states. Its Compact, Standard, and Spacious density is
+selected from the live DPI-normalized editor width at under 640, 640–960, and
+over 960 pixels respectively. Startup, window-state, RDP/display, per-monitor
+DPI, and splitter changes resize existing modules in place without rebuilding
+them. Width is capped in Spacious mode, and the square Artwork pane yields width
+when Compact needs it, so the slider row neither wraps nor needs a scrollbar.
+One hairline spectrum frame encloses the Upscale actions and all eight sliders,
+with no separate frames around individual slider modules. Existing local covers
 remain eligible for explicit preview/edit even when already Ideal or above
 Ideal; their dimensions are not reduced automatically.
 

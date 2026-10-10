@@ -245,6 +245,14 @@ namespace Splined.WindowsGui
                 string redactedLog = RuntimeLog.Redact("Authorization: Bearer top-secret access_token=also-secret");
                 Assert(!redactedLog.Contains("top-secret") && !redactedLog.Contains("also-secret"),
                     "Runtime diagnostics did not redact authorization and token values.");
+                Exception diagnosticException = new InvalidOperationException("outer interface failure",
+                    new ArgumentOutOfRangeException("splitterDistance", "transient layout extent"));
+                string describedException = RuntimeLog.DescribeException(diagnosticException);
+                Assert(describedException.Contains("System.InvalidOperationException")
+                    && describedException.Contains("outer interface failure")
+                    && describedException.Contains("System.ArgumentOutOfRangeException")
+                    && describedException.Contains("transient layout extent"),
+                    "Unhandled Windows interface diagnostics did not retain exception and inner-exception authority.");
                 string runLogDirectory = Path.Combine(optionReopened.LogDir, "run");
                 Directory.CreateDirectory(runLogDirectory);
                 string staleRunLog = Path.Combine(runLogDirectory, "splined-debug-stale.log");
@@ -252,6 +260,13 @@ namespace Splined.WindowsGui
                 RuntimeLog.Initialize(optionReopened);
                 Assert(!File.Exists(staleRunLog) && File.Exists(RuntimeLog.Path),
                     "Windows startup did not replace prior run diagnostics with the current session log.");
+                RuntimeLog.WriteException("windows.gui.self_test_unhandled",
+                    new InvalidOperationException("Authorization: Bearer diagnostic-secret"));
+                string exceptionLog = File.ReadAllText(RuntimeLog.Path);
+                Assert(exceptionLog.Contains("windows.gui.self_test_unhandled")
+                    && exceptionLog.Contains("System.InvalidOperationException")
+                    && !exceptionLog.Contains("diagnostic-secret"),
+                    "Unhandled Windows interface diagnostics were not written safely to the current run log.");
                 Assert(optionReopened.Formats.SequenceEqual(optionCoverage.Formats)
                     && optionReopened.Sources.SequenceEqual(optionCoverage.Sources)
                     && optionReopened.ExcludedSources.SequenceEqual(optionCoverage.ExcludedSources),
@@ -1051,6 +1066,20 @@ namespace Splined.WindowsGui
                     Assert(artworkSplit.SplitterDistance >= artworkSplit.Panel1MinSize
                         && artworkSplit.SplitterDistance <= artworkSplit.ClientSize.Width - artworkSplit.Panel2MinSize - artworkSplit.SplitterWidth,
                         "An oversized saved Artwork width escaped the valid nested-splitter range.");
+                    using (SplitContainer transientSplit = new SplitContainer
+                    {
+                        Orientation = Orientation.Vertical,
+                        Size = new Size(300, 120),
+                        SplitterWidth = 7
+                    })
+                    {
+                        transientSplit.SplitterDistance = 120;
+                        transientSplit.Panel1MinSize = 80;
+                        transientSplit.Panel2MinSize = 80;
+                        transientSplit.Size = new Size(150, 120);
+                        Assert(!MainForm.TrySetSplitterDistance(transientSplit, 90),
+                            "A transient undersized splitter extent was treated as a valid distance.");
+                    }
                     artworkUi.ArtworkPreviewWidth = 320;
                     typeof(MainForm).GetMethod("RestoreArtworkPreviewWidth", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, null);
@@ -1428,6 +1457,8 @@ namespace Splined.WindowsGui
                     Assert(filterColumns.ColumnCount == 1
                         && filterColumns.ColumnStyles.Count == 1 && filterColumns.RowCount == 2
                         && filterColumns.Dock == DockStyle.Top && artworkFilterPanel.AutoScroll
+                        && !artworkFilterPanel.VerticalScroll.Visible
+                        && !form.Controls.Find("scanActivityCard", true).OfType<ScrollableControl>().Single().VerticalScroll.Visible
                         && filterColumns.GetPositionFromControl(summaryPanel).Row == 0
                         && filterColumns.GetPositionFromControl(upscaleGroup).Row == 1
                         && !Descendants(summaryPanel).Contains(upscaleGroup)
@@ -1459,10 +1490,10 @@ namespace Splined.WindowsGui
                         && form.Controls.Find("upscaleProfileTitle_brightness", true).OfType<Label>().Single().Text.Contains("Brightness")
                         && form.Controls.Find("upscaleProfileTitle_temperature", true).OfType<Label>().Single().Text.Contains("Color")
                         && !advancedControls.AutoScroll && advancedGrid.Dock == DockStyle.None
-                        && advancedGrid.ColumnCount == 4 && advancedGrid.RowCount == 2
+                        && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
                         && Enumerable.Range(0, 8).All(index =>
                         {
-                            Control profile = advancedGrid.GetControlFromPosition(index % 4, index / 4);
+                            Control profile = advancedGrid.GetControlFromPosition(index, 0);
                             return profile is Panel && !(profile is GroupBox)
                                 && profile.Width == advancedGrid.GetControlFromPosition(0, 0).Width
                                 && profile.Height == advancedGrid.GetControlFromPosition(0, 0).Height
@@ -1470,7 +1501,9 @@ namespace Splined.WindowsGui
                         })
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single())
-                            .All(slider => slider.SegmentCount == 20)
+                            .All(slider => slider.SegmentCount == 20 && slider.ShowValueOverlay
+                                && slider.ValueOverlayText == "0")
+                        && form.Controls.Find("upscaleProfileValue_picture", true).Length == 0
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().SpectrumIndex)
                             .Distinct().Count() == 8
@@ -1509,7 +1542,7 @@ namespace Splined.WindowsGui
                             || button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal))
                             .All(button => button.Width <= 24 && button.Anchor == AnchorStyles.None
                                 && ((FluentButton)button).ChromeLess),
-                        "The permanent two-row Upscale layout did not use the shared frameless compact glyph template.");
+                        "The adaptive single-row Upscale layout did not use the shared frameless compact glyph template.");
                     previewOnlyMode.Checked = false;
                     Assert(compactPreview.Text == "Upscale" && Convert.ToString(compactPreview.Tag) == "primary",
                         "Disabling Upscale Preview did not expose the explicit Upscale save mode.");
@@ -1531,30 +1564,47 @@ namespace Splined.WindowsGui
                         && form.Controls.Find("candidateFindingsGroup", true).Length == 0
                         && form.Controls.Find("candidateSourcesGroup", true).Length == 0
                         && form.Controls.Find("candidateRangesGroup", true).Length == 0
-                        && compactAdvancedGrid.ColumnCount == 4 && compactAdvancedGrid.RowCount == 2
+                        && compactAdvancedGrid.ColumnCount == 8 && compactAdvancedGrid.RowCount == 1
                         && compactAdvancedGrid.Size == expandedGridSize
                         && compactAdvancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize
                         && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
                             button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)) == 8
                         && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
                             button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal)) == 8
-                        && Descendants(compactAdvancedGrid).OfType<SpectrumSlider>().All(slider => slider.Height >= 90
+                        && Descendants(compactAdvancedGrid).OfType<SpectrumSlider>().All(slider => slider.Height >= 62
                             && slider.SegmentCount == 20)
                         && Descendants(compactAdvancedGrid).OfType<Button>().Where(button =>
                             button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)
                             || button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal))
                             .All(button => button.Width <= 24 && button.Anchor == AnchorStyles.None
                                 && ((FluentButton)button).ChromeLess),
-                        "Collapsing Candidate Findings changed the permanent two-row slider proportions or compact nudge controls.");
+                        "Collapsing Candidate Findings changed the adaptive single-row slider proportions or compact nudge controls.");
                     invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
                     Application.DoEvents();
                     filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
                     previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
                     advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
-                    Assert(advancedGrid.ColumnCount == 4 && advancedGrid.RowCount == 2
+                    Assert(advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
                         && advancedGrid.Size == expandedGridSize
                         && advancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize,
                         "Expanding Candidate Findings rebuilt the Upscale controls with different proportions.");
+                    Assert(MainForm.UpscaleDensityForLogicalWidth(639) == "compact"
+                        && MainForm.UpscaleDensityForLogicalWidth(640) == "standard"
+                        && MainForm.UpscaleDensityForLogicalWidth(960) == "standard"
+                        && MainForm.UpscaleDensityForLogicalWidth(961) == "spacious"
+                        && MainForm.DpiNormalizedUpscaleWidth(960, 96) == 960
+                        && MainForm.DpiNormalizedUpscaleWidth(1440, 144) == 960
+                        && MainForm.DpiNormalizedUpscaleWidth(1920, 192) == 960,
+                        "Upscale density breakpoints are not based on DPI-normalized live editor width.");
+                    Control[] originalUpscaleProfiles = Enumerable.Range(0, 8)
+                        .Select(index => advancedGrid.GetControlFromPosition(index, 0)).ToArray();
+                    advancedControls.Size = new Size(620, advancedControls.Height);
+                    typeof(MainForm).GetMethod("ApplyUpscaleResponsiveLayout", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, null);
+                    Assert(Enumerable.Range(0, 8).All(index => Object.ReferenceEquals(
+                            originalUpscaleProfiles[index], advancedGrid.GetControlFromPosition(index, 0)))
+                        && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1,
+                        "A compact-session resize rebuilt or wrapped the eight Upscale controls instead of updating their bounds.");
                     Assert(((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 10)).VisualRole == CardVisualRole.RejectedCandidateGlass
                         && ((FluentCardPanel)candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11)).VisualRole == CardVisualRole.UpscaleCandidateGlass,
                         "BelowMinimum and policy-qualified Minimum-to-Ideal candidates did not receive red and magenta backgrounds respectively.");
@@ -1646,8 +1696,11 @@ namespace Splined.WindowsGui
                     SpectrumSlider brightnessProfile = form.Controls.Find("upscaleProfileSlider_brightness", true).OfType<SpectrumSlider>().Single();
                     brightnessProfile.Value = 3;
                     Assert(ConfigStore.Load().UpscaleBrightnessPercent == 3
-                        && form.Controls.Find("upscaleProfileValue_brightness", true).OfType<Label>().Single().Text == "<+3%>",
-                        "Artwork Filter advanced profile did not update its value or save to Config v5.");
+                        && brightnessProfile.ValueOverlayText == "+3"
+                        && brightnessProfile.ShowValueOverlay
+                        && brightnessProfile.ValueOverlayText.IndexOf('<') < 0
+                        && brightnessProfile.ValueOverlayText.IndexOf('>') < 0,
+                        "Artwork Filter advanced profile did not update its in-slider value or save to Config v5.");
                     Rectangle cropPreview = MainForm.UpscalePreviewSourceRectangle(1200, 1188, 1800, 1800, true, "crop");
                     Rectangle uncroppedPreview = MainForm.UpscalePreviewSourceRectangle(1200, 1188, 1800, 1800, false, "crop");
                     Assert(cropPreview == new Rectangle(6, 0, 1188, 1188)

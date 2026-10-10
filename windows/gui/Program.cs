@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace Splined.WindowsGui
@@ -57,10 +58,24 @@ namespace Splined.WindowsGui
                     ThemeManager.Initialize(uiState.Theme);
                 }
                 BackupService.RegisterFileAssociation();
-                Application.Run(new MainForm(state, uiState));
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                ThreadExceptionEventHandler threadExceptionHandler = ReportUiThreadException;
+                UnhandledExceptionEventHandler domainExceptionHandler = ReportDomainException;
+                Application.ThreadException += threadExceptionHandler;
+                AppDomain.CurrentDomain.UnhandledException += domainExceptionHandler;
+                try
+                {
+                    Application.Run(new MainForm(state, uiState));
+                }
+                finally
+                {
+                    Application.ThreadException -= threadExceptionHandler;
+                    AppDomain.CurrentDomain.UnhandledException -= domainExceptionHandler;
+                }
             }
             catch (Exception error)
             {
+                RuntimeLog.WriteException("windows.gui.startup_unhandled", error);
                 if (nativeSmoke || packageIdentitySmoke)
                 {
                     Environment.ExitCode = 1;
@@ -72,6 +87,30 @@ namespace Splined.WindowsGui
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+
+        private static void ReportUiThreadException(object sender, ThreadExceptionEventArgs args)
+        {
+            Exception error = args == null ? null : args.Exception;
+            RuntimeLog.WriteException("windows.gui.thread_unhandled", error);
+            string diagnosticPath = RuntimeLog.Path;
+            string detail = error == null || String.IsNullOrWhiteSpace(error.Message)
+                ? "No additional error message was provided."
+                : error.Message;
+            string diagnostic = String.IsNullOrWhiteSpace(diagnosticPath)
+                ? "The configured run log was unavailable."
+                : "Diagnostic details were written to:\r\n" + diagnosticPath;
+            MessageBox.Show(
+                "An unexpected interface error occurred. SPLINED can continue, but the current action may not have completed.\r\n\r\n"
+                + detail + "\r\n\r\n" + diagnostic,
+                ReleaseInfo.DisplayName,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+
+        private static void ReportDomainException(object sender, UnhandledExceptionEventArgs args)
+        {
+            RuntimeLog.WriteException("windows.gui.domain_unhandled", args == null ? null : args.ExceptionObject as Exception);
         }
     }
 }
