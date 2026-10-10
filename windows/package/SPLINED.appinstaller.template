@@ -8,12 +8,12 @@
 -->
 <AppInstaller
   xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
-  Version="1.0.73.0"
+  Version="1.0.74.0"
   Uri="__APPINSTALLER_HTTPS_URI__">
   <MainPackage
     Name="Psycotix.SPLINED"
     Publisher="CN=FE370EF6-D95D-4A6F-9AAB-2654E6DE00FE"
-    Version="1.0.73.0"
+    Version="1.0.74.0"
     ProcessorArchitecture="x64"
     Uri="__MSIX_HTTPS_URI__" />
   <UpdateSettings>
