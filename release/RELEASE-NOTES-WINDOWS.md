@@ -1,10 +1,10 @@
 # Windows migration release notes
 
-## Draft next Microsoft Store update highlights
+## Microsoft Store 1.0.79 update highlights
 
 The Microsoft Store-certified baseline is `1.0.71`. The next Store submission
-is cumulative across repository releases `1.0.72` through `1.0.78`, plus the
-next release commit. Its customer-facing Windows highlights are:
+for `1.0.79` is cumulative across repository releases `1.0.72` through
+`1.0.79`. Its customer-facing Windows highlights are:
 
 - Corrected update detection so release versions, rather than differing Git
   commits, determine whether an update is available. Current installations stay
@@ -28,9 +28,9 @@ next release commit. Its customer-facing Windows highlights are:
   made continued interface exceptions write actionable, redacted details to the
   current run log.
 
-These highlights are derived from the repository changes released from
-`1.0.71` through `1.0.78`; no intermediate local-only build is treated as a
-separate Microsoft Store baseline.
+These highlights are derived from the repository range `1.0.71..1.0.79`; no
+intermediate GitHub-only build is treated as a separate Microsoft Store
+baseline.
 
 - Restored the accepted 1.0.60 WinForms product experience, including mature
   Media Selection, Settings, candidate/artwork editing, MusicBrainz, compilation,
@@ -83,6 +83,9 @@ separate Microsoft Store baseline.
 - Uploads `SPLINED-x64-store-unsigned.msix` only in the
   `splined-windows-store-submission` Actions artifact, not as a normal GitHub
   Release download. Microsoft Store package deployment owns installed updates.
+- Generates cumulative Store Highlights from the last package published by
+  Microsoft Store through the target tag, records the exact range and checksum
+  in `STORE-SUBMISSION.json`, and refuses to replace an active Store submission.
 - Retained the disabled App Installer template only for a possible separately
   signed direct-distribution channel; it is not the Microsoft Store update path.
 - Reduced Windows release time by removing the discarded multi-gigabyte compiled

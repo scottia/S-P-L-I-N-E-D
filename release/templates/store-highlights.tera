@@ -1,3 +1,15 @@
-{% set_global emitted = 0 %}{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}{% if entry.group == "✨ Highlights" or entry.group == "🪟 Windows" or entry.group == "🛍️ Microsoft Store" or entry.group == "🛠️ Fixes & Reliability" or entry.group == "📦 Other Changes" %}{% for commit in entry.commits %}{% if emitted < 12 %}- {{ commit.message | upper_first }}
-{% set_global emitted = emitted + 1 %}{% endif %}{% endfor %}{% endif %}{% endfor %}{% if emitted == 0 %}{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}{% for commit in entry.commits %}{% if emitted == 0 %}- {{ commit.message | upper_first }}
-{% set_global emitted = 1 %}{% endif %}{% endfor %}{% endfor %}{% endif %}
+What's new in {{ version }}:
+{% set_global emitted = 0 -%}
+{% for entry in commits | commit_groups(groups=commit_parsers_groups) -%}
+{% if entry.group == "✨ Highlights" or entry.group == "🪟 Windows" or entry.group == "🛍️ Microsoft Store" or entry.group == "🛠️ Fixes & Reliability" or entry.group == "📦 Other Changes" -%}
+{% for commit in entry.commits -%}
+{% if not commit.merge_commit and commit.scope != "ci" and commit.scope != "release" and not commit.raw_message is starting_with("ci(") and not commit.raw_message is starting_with("test(") and not commit.raw_message is starting_with("docs(") and not commit.raw_message is starting_with("build(") and not commit.raw_message is starting_with("chore(") and not commit.raw_message is starting_with("release:") -%}
+- {{ commit.message | upper_first }}
+{% set_global emitted = emitted + 1 -%}
+{% endif -%}
+{% endfor -%}
+{% endif -%}
+{% endfor -%}
+{% if emitted == 0 -%}
+- Reliability and maintenance improvements.
+{% endif -%}

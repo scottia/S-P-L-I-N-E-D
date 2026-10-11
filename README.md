@@ -118,7 +118,9 @@ package and generated Store Highlights automatically. Exact-tag recovery is
 split between `SPLINED (Tagged) > MS Store Package Resolution`,
 `SPLINED > MS Store Publish & Update`, and
 `SPLINED (Docker) > GHCR Resolution`. GitHub notes and Store Highlights are
-rendered from one git-cliff 2.14.2 context. See the
+rendered with one git-cliff 2.14.2 policy: GitHub notes are incremental, while
+Store Highlights include every customer-facing change since the last package
+actually published by Microsoft Store. See the
 [release automation guide](docs/release-automation.md).
 
 ---

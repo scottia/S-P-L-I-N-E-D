@@ -9,8 +9,6 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$GitHubTemplatePath,
     [Parameter(Mandatory = $true)]
-    [string]$StoreTemplatePath,
-    [Parameter(Mandatory = $true)]
     [string]$OutputDirectory
 )
 
@@ -22,7 +20,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 }
 
 $repository = (Resolve-Path -LiteralPath $RepositoryRoot).Path
-foreach ($requiredPath in @($ConfigPath, $GitHubTemplatePath, $StoreTemplatePath)) {
+foreach ($requiredPath in @($ConfigPath, $GitHubTemplatePath)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Required git-cliff input is missing: $requiredPath"
     }
@@ -46,21 +44,18 @@ $range = "$previousTag..$Version"
 [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
 $contextPath = Join-Path $OutputDirectory "release-context.json"
 $githubNotesPath = Join-Path $OutputDirectory "GITHUB-RELEASE.md"
-$storeHighlightsPath = Join-Path $OutputDirectory "STORE-HIGHLIGHTS.txt"
 
 & git-cliff --config $ConfigPath --repository $repository --context --output $contextPath $range
 & git-cliff --config $ConfigPath --from-context $contextPath --body-file $GitHubTemplatePath --strip all --output $githubNotesPath
-& git-cliff --config $ConfigPath --from-context $contextPath --body-file $StoreTemplatePath --strip all --output $storeHighlightsPath
 
-foreach ($output in @($contextPath, $githubNotesPath, $storeHighlightsPath)) {
+foreach ($output in @($contextPath, $githubNotesPath)) {
     if (-not (Test-Path -LiteralPath $output -PathType Leaf) -or (Get-Item -LiteralPath $output).Length -eq 0) {
         throw "git-cliff produced an empty release-note output: $output"
     }
 }
 
 $context = Get-Content -Raw -LiteralPath $contextPath | ConvertFrom-Json
-$releases = @($context)
-if ($null -ne $context.releases) { $releases = @($context.releases) }
+$releases = @($context | Where-Object { $null -ne $_ })
 if (-not ($releases | Where-Object { $_.version -eq $Version })) {
     throw "git-cliff context does not contain release $Version."
 }
@@ -69,7 +64,6 @@ if (-not [String]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
     "previous_tag=$previousTag" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
     "context_path=$contextPath" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
     "github_notes_path=$githubNotesPath" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
-    "store_highlights_path=$storeHighlightsPath" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
 }
 
-Write-Output "Generated git-cliff context and release notes for $range"
+Write-Output "Generated incremental git-cliff GitHub release notes for $range"

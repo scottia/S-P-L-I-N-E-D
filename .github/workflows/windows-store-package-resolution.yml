@@ -49,7 +49,10 @@ jobs:
           sparse-checkout: |
             cliff.toml
             release/Install-GitCliff.ps1
-            release/Generate-ReleaseNotes.ps1
+            release/Generate-StoreHighlights.ps1
+            release/Resolve-StoreBaseline.ps1
+            release/Test-StoreBaseline.ps1
+            release/tests
             release/templates
 
       - name: Verify exact tag and release metadata
@@ -124,6 +127,49 @@ jobs:
             throw "The release-note engine must be git-cliff 2.14.2."
           }
 
+      - name: Require Microsoft Store read credentials
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($name in @("AZURE_AD_APPLICATION_CLIENT_ID", "AZURE_AD_APPLICATION_SECRET", "AZURE_AD_TENANT_ID", "SELLER_ID")) {
+            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required Microsoft Store history credential is unavailable: $name"
+            }
+          }
+
+      - name: Test Store history baseline resolution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .splined-release-engine/release/Test-StoreBaseline.ps1 -RepositoryRoot .
+
+      - name: Install pinned Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Authenticate Microsoft Store for read-only history resolution
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          try {
+            & msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+          }
+          catch {
+            throw "Microsoft Store authentication failed before read-only release-history resolution. $($_.Exception.Message)"
+          }
+
       - name: Build clean x64 WinForms and Rust DLL pair
         shell: pwsh
         env:
@@ -168,18 +214,31 @@ jobs:
             -IconPath windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")
 
-      - name: Render Store Highlights from the authoritative git-cliff context
+      - name: Resolve last-published Store baseline
+        id: store-baseline
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & .splined-release-engine/release/Generate-ReleaseNotes.ps1 `
+          & .splined-release-engine/release/Resolve-StoreBaseline.ps1 `
+            -TargetVersion $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ProductId 9P8G4GMBBVBS `
+            -OutputDirectory store-notes
+
+      - name: Render cumulative Store Highlights from published baseline
+        id: store-highlights
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & .splined-release-engine/release/Generate-StoreHighlights.ps1 `
             -Version $env:RELEASE_VERSION `
+            -BaselineMetadataPath store-notes/STORE-BASELINE.json `
             -RepositoryRoot . `
             -ConfigPath .splined-release-engine/cliff.toml `
-            -GitHubTemplatePath .splined-release-engine/release/templates/github-release.tera `
             -StoreTemplatePath .splined-release-engine/release/templates/store-highlights.tera `
-            -OutputDirectory release-notes
-          Copy-Item -LiteralPath release-notes/STORE-HIGHLIGHTS.txt -Destination store-submission/STORE-HIGHLIGHTS.txt
+            -OutputDirectory store-notes
+          Copy-Item -LiteralPath store-notes/STORE-HIGHLIGHTS.txt -Destination store-submission/STORE-HIGHLIGHTS.txt
+          Copy-Item -LiteralPath store-notes/STORE-SUBMISSION.json -Destination store-submission/STORE-SUBMISSION.json
 
       - name: Upload Store resolution package and highlights
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -188,6 +247,7 @@ jobs:
           path: |
             store-submission/SPLINED-x64-store-unsigned.msix
             store-submission/STORE-HIGHLIGHTS.txt
+            store-submission/STORE-SUBMISSION.json
           if-no-files-found: error
 
       - name: Report Store resolution artifact
@@ -199,6 +259,7 @@ jobs:
           - Existing tag: ``$env:RELEASE_VERSION``
           - Artifact: ``splined-windows-store-submission``
           - Package: ``SPLINED-x64-store-unsigned.msix``
-          - Store Highlights: generated from the same authoritative git-cliff context
+          - Store Highlights range: ``${{ steps.store-baseline.outputs.range }}``
+          - History authority: last published Microsoft Store package
           - Microsoft Store publication: not performed by this workflow
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY

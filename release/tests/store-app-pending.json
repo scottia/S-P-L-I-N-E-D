@@ -1,0 +1,11 @@
+{
+  "id": "9P8G4GMBBVBS",
+  "pendingApplicationSubmission": {
+    "id": "pending-fixture",
+    "resourceLocation": "https://store.example.invalid/submissions/pending-fixture"
+  },
+  "lastPublishedApplicationSubmission": {
+    "id": "published-fixture",
+    "resourceLocation": "https://store.example.invalid/submissions/published-fixture"
+  }
+}

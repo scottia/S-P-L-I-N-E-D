@@ -9,7 +9,9 @@ fn source(path: &str) -> String {
 #[test]
 fn git_cliff_2_14_2_is_the_single_release_note_engine() {
     let installer = source("release/Install-GitCliff.ps1");
-    let generator = source("release/Generate-ReleaseNotes.ps1");
+    let github_generator = source("release/Generate-ReleaseNotes.ps1");
+    let store_generator = source("release/Generate-StoreHighlights.ps1");
+    let store_resolver = source("release/Resolve-StoreBaseline.ps1");
     let config = source("cliff.toml");
     let github_template = source("release/templates/github-release.tera");
     let store_template = source("release/templates/store-highlights.tera");
@@ -23,13 +25,26 @@ fn git_cliff_2_14_2_is_the_single_release_note_engine() {
         installer.contains("$env:PATH = \"$InstallDirectory$([IO.Path]::PathSeparator)$env:PATH\"")
     );
 
-    assert_eq!(generator.matches("--context").count(), 1);
-    assert_eq!(generator.matches("--from-context").count(), 2);
-    assert!(generator.contains("release-context.json"));
-    assert!(generator.contains("GITHUB-RELEASE.md"));
-    assert!(generator.contains("STORE-HIGHLIGHTS.txt"));
-    assert!(!generator.contains("python"));
-    assert!(!generator.contains("node"));
+    assert_eq!(github_generator.matches("--context").count(), 1);
+    assert_eq!(github_generator.matches("--from-context").count(), 1);
+    assert!(github_generator.contains("release-context.json"));
+    assert!(github_generator.contains("GITHUB-RELEASE.md"));
+    assert!(!github_generator.contains("STORE-HIGHLIGHTS.txt"));
+    assert_eq!(store_generator.matches("--context").count(), 1);
+    assert_eq!(store_generator.matches("--from-context").count(), 1);
+    assert!(store_generator.contains("store-context.json"));
+    assert!(store_generator.contains("STORE-HIGHLIGHTS.txt"));
+    assert!(store_generator.contains("STORE-SUBMISSION.json"));
+    assert!(store_generator.contains("1500"));
+    assert!(store_resolver.contains("msstore apps get $ProductId"));
+    assert!(store_resolver.contains("msstore submission get $ProductId"));
+    assert!(store_resolver.contains("pendingApplicationSubmission"));
+    assert!(store_resolver.contains("lastPublishedApplicationSubmission"));
+    assert!(store_resolver.contains("applicationPackages"));
+    for script in [&github_generator, &store_generator, &store_resolver] {
+        assert!(!script.contains("python"));
+        assert!(!script.contains("node"));
+    }
 
     for group in [
         "✨ Highlights",
@@ -53,13 +68,17 @@ fn git_cliff_2_14_2_is_the_single_release_note_engine() {
     assert!(store_template.contains("🛍️ Microsoft Store"));
     assert!(!store_template.contains("📚 Documentation"));
     assert!(!store_template.contains("🔧 Maintenance"));
+    assert!(store_template.contains("What's new in {{ version }}"));
+    assert!(store_template.contains("not commit.merge_commit"));
+    assert!(store_template.contains("commit.scope != \"ci\""));
+    assert!(store_template.contains("starting_with(\"ci(\")"));
+    assert!(!store_template.contains("emitted < 12"));
 }
 
 #[test]
 fn every_release_note_generating_workflow_uses_the_shared_git_cliff_engine() {
     for path in [
         ".github/workflows/release-next-patch.yml",
-        ".github/workflows/windows-store-package-resolution.yml",
         ".github/workflows/docker-ghcr-resolution.yml",
     ] {
         let workflow = source(path);
@@ -83,6 +102,20 @@ fn every_release_note_generating_workflow_uses_the_shared_git_cliff_engine() {
             workflow.contains("cliff.toml"),
             "{path} does not use the authoritative classification"
         );
+    }
+
+    for path in [
+        ".github/workflows/release-next-patch.yml",
+        ".github/workflows/windows-store-package-resolution.yml",
+        ".github/workflows/windows-store-publish-update.yml",
+    ] {
+        let workflow = source(path);
+        assert!(workflow.contains("Install-GitCliff.ps1"));
+        assert!(workflow.contains("git-cliff 2.14.2"));
+        assert!(workflow.contains("Resolve-StoreBaseline.ps1"));
+        assert!(workflow.contains("Generate-StoreHighlights.ps1"));
+        assert!(workflow.contains("Test-StoreBaseline.ps1"));
+        assert!(workflow.contains("cliff.toml"));
     }
 }
 
@@ -123,7 +156,7 @@ fn normal_release_notes_and_store_option_follow_the_release_contract() {
     assert!(!workflow.contains("--generate-notes"));
     assert!(workflow.contains("--notes-file ../release-notes/GITHUB-RELEASE.md"));
     assert!(workflow.contains("release-notes/release-context.json"));
-    assert!(workflow.contains("release-notes/STORE-HIGHLIGHTS.txt"));
+    assert!(!workflow.contains("release-notes/STORE-HIGHLIGHTS.txt"));
 
     let windows_job = workflow
         .split("  build-windows:")
@@ -174,6 +207,10 @@ fn normal_release_notes_and_store_option_follow_the_release_contract() {
     assert!(store_job.contains("name: splined-windows-store-submission"));
     assert!(store_job.contains("SPLINED-x64-store-unsigned.msix"));
     assert!(store_job.contains("STORE-HIGHLIGHTS.txt"));
+    assert!(store_job.contains("STORE-SUBMISSION.json"));
+    assert!(store_job.contains("Resolve-StoreBaseline.ps1"));
+    assert!(store_job.contains("Generate-StoreHighlights.ps1"));
+    assert!(store_job.contains("Authenticate Microsoft Store before resolving published history"));
     assert!(store_job.contains("windows/package/Publish-StoreUpdate.ps1"));
 }
 
@@ -289,29 +326,26 @@ fn normal_release_atomically_keeps_the_tagged_commit_on_main() {
         .next()
         .unwrap();
 
-    assert!(finalize.contains(
-        "name: Publish numeric tag and release commit after successful builds"
-    ));
+    assert!(
+        finalize.contains("name: Publish numeric tag and release commit after successful builds")
+    );
     assert!(finalize.contains("git push --atomic origin"));
-    assert!(finalize.contains(
-        "\"refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}\""
-    ));
+    assert!(finalize.contains("\"refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}\""));
     assert!(finalize.contains("\"$RELEASE_COMMIT:refs/heads/main\""));
-    assert!(finalize.contains(
-        "git ls-remote origin \"refs/tags/$RELEASE_VERSION^{}\""
-    ));
+    assert!(finalize.contains("git ls-remote origin \"refs/tags/$RELEASE_VERSION^{}\""));
     assert!(finalize.contains("git ls-remote origin \"refs/heads/main\""));
 }
 
 #[test]
 fn microsoft_store_publication_is_pinned_preserving_and_fail_closed() {
     let normal = source(".github/workflows/release-next-patch.yml");
+    let package = source(".github/workflows/windows-store-package-resolution.yml");
     let publish = source(".github/workflows/windows-store-publish-update.yml");
     let helper = source("windows/package/Publish-StoreUpdate.ps1");
     let pinned_action =
         "microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0";
 
-    for workflow in [&normal, &publish] {
+    for workflow in [&normal, &package, &publish] {
         assert!(workflow.contains(pinned_action));
         assert!(workflow.contains("version: v0.4.3"));
         for secret in [
@@ -348,6 +382,69 @@ fn microsoft_store_publication_is_pinned_preserving_and_fail_closed() {
     assert!(helper.contains("ReleaseNotes"));
     assert!(helper.contains("every other listing and package field is"));
     assert!(helper.contains("submission status"));
+    assert!(helper.contains("[string]$BaselineMetadataPath"));
+    assert!(helper.contains("[string]$ExpectedVersion"));
+    assert!(helper.contains("1500-character"));
+    assert!(helper.contains("highlights_sha256"));
+}
+
+#[test]
+fn store_highlights_follow_last_published_store_history() {
+    let normal = source(".github/workflows/release-next-patch.yml");
+    let package = source(".github/workflows/windows-store-package-resolution.yml");
+    let publish = source(".github/workflows/windows-store-publish-update.yml");
+    let resolver = source("release/Resolve-StoreBaseline.ps1");
+    let generator = source("release/Generate-StoreHighlights.ps1");
+    let fixture_test = source("release/Test-StoreBaseline.ps1");
+
+    assert!(resolver.contains("msstore apps get $ProductId"));
+    assert!(resolver.contains("pendingApplicationSubmission"));
+    assert!(resolver.contains("lastPublishedApplicationSubmission"));
+    assert!(resolver.contains("active or unresolved submission"));
+    assert!(resolver.contains("baseline_package_version"));
+    assert!(resolver.contains("$range = \"$baselineVersion..$TargetVersion\""));
+    assert!(generator.contains("$baseline.range"));
+    assert!(generator.contains("STORE-SUBMISSION.json"));
+    assert!(generator.contains("highlights_characters"));
+    assert!(generator.contains("highlights_sha256"));
+    assert!(fixture_test.contains("1.0.71..1.0.78"));
+    assert!(fixture_test.contains("store-app-pending.json"));
+    assert!(fixture_test.contains("store-submission-mixed.json"));
+
+    let normal_store = normal
+        .split("  publish-store:")
+        .nth(1)
+        .unwrap()
+        .split("  release-summary:")
+        .next()
+        .unwrap();
+    for store_publisher in [normal_store, publish.as_str()] {
+        assert!(store_publisher.contains("group: splined-microsoft-store-submission"));
+        assert!(store_publisher.contains("cancel-in-progress: false"));
+    }
+    let resolve = normal_store.find("Resolve-StoreBaseline.ps1").unwrap();
+    let render = normal_store.find("Generate-StoreHighlights.ps1").unwrap();
+    let stage = normal_store.find("Publish-StoreUpdate.ps1").unwrap();
+    assert!(resolve < render && render < stage);
+
+    for workflow in [normal_store, package.as_str(), publish.as_str()] {
+        assert!(workflow.contains("STORE-HIGHLIGHTS.txt"));
+        assert!(workflow.contains("STORE-SUBMISSION.json"));
+        assert!(workflow.contains("splined-windows-store-submission"));
+    }
+
+    let publish_resolve = publish.find("Resolve-StoreBaseline.ps1").unwrap();
+    let publish_artifact = publish
+        .find("Locate and validate retained Store submission artifact")
+        .unwrap();
+    let publish_render = publish
+        .find("Regenerate cumulative Store Highlights from live published baseline")
+        .unwrap();
+    let publish_stage = publish
+        .find("Publish retained package and update Store Highlights")
+        .unwrap();
+    assert!(publish_resolve < publish_artifact);
+    assert!(publish_artifact < publish_render && publish_render < publish_stage);
 }
 
 #[test]
@@ -358,8 +455,14 @@ fn recovery_workflows_never_create_tags_or_duplicate_releases() {
 
     assert!(package.contains("ref: refs/tags/${{ inputs.version }}"));
     assert!(package.contains("name: splined-windows-store-submission"));
-    assert!(!package.contains("microsoft-store-apppublisher"));
+    assert!(package.contains("microsoft-store-apppublisher"));
+    assert!(package.contains("Resolve-StoreBaseline.ps1"));
+    assert!(package.contains("Generate-StoreHighlights.ps1"));
+    assert!(package.contains("STORE-SUBMISSION.json"));
     assert!(!package.contains("Publish-StoreUpdate.ps1"));
+    assert!(!package.contains("msstore publish"));
+    assert!(!package.contains("msstore submission update"));
+    assert!(!package.contains("msstore submission publish"));
     assert!(!package.contains("gh release create"));
     assert!(!package.contains("git tag -a"));
     assert!(!package.contains("packages: write"));
@@ -370,11 +473,17 @@ fn recovery_workflows_never_create_tags_or_duplicate_releases() {
     assert!(publish.contains("gh run download"));
     assert!(publish.contains("-SkipReconfigure"));
     assert!(publish.contains("Authenticate Microsoft Store before artifact retrieval"));
+    assert!(publish.contains("Resolve-StoreBaseline.ps1"));
+    assert!(publish.contains("Generate-StoreHighlights.ps1"));
+    assert!(
+        publish.contains("Regenerate cumulative Store Highlights from live published baseline")
+    );
+    assert!(publish.contains("STORE-SUBMISSION.json"));
     assert!(!publish.contains("cargo build"));
     assert!(!publish.contains("rustup"));
     assert!(!publish.contains("Build-StorePackage.ps1"));
     assert!(!publish.contains("Test-DevelopmentPackage.ps1"));
-    assert!(!publish.contains("Install-GitCliff.ps1"));
+    assert!(publish.contains("Install-GitCliff.ps1"));
     assert!(!publish.contains("Generate-ReleaseNotes.ps1"));
     assert!(!publish.contains("gh release create"));
     assert!(!publish.contains("git tag -a"));

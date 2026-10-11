@@ -1,0 +1,15 @@
+{
+  "id": "published-fixture",
+  "applicationPackages": [
+    {
+      "version": "1.0.70.0",
+      "architecture": "x64",
+      "fileStatus": "Uploaded"
+    },
+    {
+      "version": "1.0.71.0",
+      "architecture": "x64",
+      "fileStatus": "Uploaded"
+    }
+  ]
+}
