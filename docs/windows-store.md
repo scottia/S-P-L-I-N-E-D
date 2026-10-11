@@ -121,6 +121,8 @@ The Windows GUI uses `ConfigStore.IsPackaged` as its channel detector.
 - **Microsoft Store package:** GitHub releases and the Portable ZIP are not
   update authority. SPLINED queries
   `Windows.Services.Store.StoreContext.GetAppAndOptionalStorePackageUpdatesAsync`.
+  The WinRT operation is awaited through the .NET Windows Runtime task bridge;
+  SPLINED does not poll reflection-only members from a raw COM object.
   **UPDATE NOW** requests
   `RequestDownloadAndInstallStorePackageUpdatesAsync`, so Windows/Microsoft
   Store owns download and installation. **LATER** makes no change. If the Store

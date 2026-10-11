@@ -162,6 +162,8 @@ namespace Splined.WindowsGui
         private readonly Dictionary<MediaStatusFilter, Label> mediaStatusBullets = new Dictionary<MediaStatusFilter, Label>();
         private readonly Dictionary<MediaStatusFilter, Label> mediaStatusDescriptions = new Dictionary<MediaStatusFilter, Label>();
         private CheckBox showTracks;
+        private Label showTracksBullet;
+        private Label showTracksDescription;
         private CheckBox filteredScanRead;
         private CheckBox filteredScanWrite;
         private CheckBox selectModeAll;
@@ -1153,20 +1155,57 @@ namespace Splined.WindowsGui
             showTracks = new FluentCheckBox
             {
                 Name = "showTracks",
-                Text = "● Embedded Art",
+                Text = "",
                 Checked = uiState.ShowTracks,
                 AutoSize = false,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft,
                 Margin = Padding.Empty,
                 AccessibleName = "Show embedded artwork tracks"
             };
+            TableLayoutPanel line = new BufferedTableLayoutPanel
+            {
+                Name = "embeddedArtStatusRow",
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            line.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 20));
+            line.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 23));
+            line.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            line.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            showTracksBullet = new Label
+            {
+                Name = "embeddedArtStatusBullet",
+                Text = "●",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Margin = Padding.Empty
+            };
+            showTracksDescription = new Label
+            {
+                Name = "embeddedArtStatusDescription",
+                Text = "Embedded Art",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                Margin = Padding.Empty
+            };
             ToolTip tip = CreateOwnedToolTip();
-            tip.SetToolTip(showTracks,
-                "Switch Select Media between the normal Album view and cached compilation tracks. Green-marked tracks have a recorded embedded-art write.");
+            string tipText = "Switch Select Media between the normal Album view and cached compilation tracks. Green-marked tracks have a recorded embedded-art write.";
+            tip.SetToolTip(showTracks, tipText);
+            tip.SetToolTip(showTracksBullet, tipText);
+            tip.SetToolTip(showTracksDescription, tipText);
             showTracks.Tag = tip;
             showTracks.CheckedChanged += ShowTracksChanged;
-            parent.Controls.Add(showTracks, column, row);
+            showTracksBullet.Click += delegate { showTracks.Checked = !showTracks.Checked; };
+            showTracksDescription.Click += delegate { showTracks.Checked = !showTracks.Checked; };
+            line.Controls.Add(showTracks, 0, 0);
+            line.Controls.Add(showTracksBullet, 1, 0);
+            line.Controls.Add(showTracksDescription, 2, 0);
+            parent.Controls.Add(line, column, row);
         }
 
         private Control BuildFilteredAutomationPanel()
@@ -1550,8 +1589,10 @@ namespace Splined.WindowsGui
                 filteredScanRead.ForeColor = palette.Success;
             if (filteredScanWrite != null)
                 filteredScanWrite.ForeColor = palette.Error;
-            if (showTracks != null)
-                showTracks.ForeColor = palette.StatusIndigo;
+            if (showTracksBullet != null)
+                showTracksBullet.ForeColor = palette.StatusIndigo;
+            if (showTracksDescription != null)
+                showTracksDescription.ForeColor = palette.StatusIndigo;
             foreach (KeyValuePair<MediaStatusFilter, Label> pair in mediaStatusBullets)
             {
                 Color color;
@@ -4569,7 +4610,13 @@ namespace Splined.WindowsGui
             if (String.IsNullOrWhiteSpace(path) || Directory.Exists(path)) return path;
             try
             {
-                string full = Path.GetFullPath(path);
+                string requested = path.Replace('/', '\\');
+                // Path.GetFullPath applies Win32 trailing-period normalization.
+                // Preserve components from an already-rooted SQLite path so an
+                // enumerated private-use trailing-period name can be matched.
+                string full = Path.IsPathRooted(requested)
+                    ? requested
+                    : Path.GetFullPath(requested);
                 string root = Path.GetPathRoot(full);
                 if (String.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return path;
                 string current = root;
@@ -4600,13 +4647,17 @@ namespace Splined.WindowsGui
 
         private static bool EquivalentWindowsFolderName(string physicalName, string indexedName)
         {
-            string physical = (physicalName ?? "").Normalize(NormalizationForm.FormC);
-            string indexed = (indexedName ?? "").Normalize(NormalizationForm.FormC);
-            if (physical.Equals(indexed, StringComparison.OrdinalIgnoreCase)) return true;
-            return TranslateLegacyWindowsName(physical).Normalize(NormalizationForm.FormC)
-                    .Equals(indexed, StringComparison.OrdinalIgnoreCase)
-                || TranslateLegacyWindowsName(indexed).Normalize(NormalizationForm.FormC)
-                    .Equals(physical, StringComparison.OrdinalIgnoreCase);
+            string physical = ComparableWindowsFolderName(physicalName);
+            string indexed = ComparableWindowsFolderName(indexedName);
+            return physical.Equals(indexed, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ComparableWindowsFolderName(string value)
+        {
+            string repaired = TranslateLegacyWindowsName(
+                (value ?? "").Normalize(NormalizationForm.FormC));
+            return repaired.Replace('\uF028', ' ').Replace('\uF029', '.')
+                .Normalize(NormalizationForm.FormC);
         }
 
         private static string TranslateLegacyWindowsName(string value)

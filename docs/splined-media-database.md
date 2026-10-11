@@ -109,10 +109,12 @@ shared database.
 
 When the Windows GUI opens existing artwork for a normal Album, it may resolve
 an equivalent physical directory spelling (including Unicode normalization or
-a recoverable UTF-8/Windows-1252 filename mismatch). That lookup is an I/O-only
-compatibility step: the canonical Album, cover, and local-art paths in SQLite
-remain unchanged. Eligible fallback compilations never use this lookup for the
-current-track preview; their embedded track art remains the only authority.
+a recoverable UTF-8/Windows-1252 filename mismatch). It also recognizes the
+private-use filename representation exposed by some network shares for a
+trailing period. That lookup is an I/O-only compatibility step: the canonical
+Album, cover, and local-art paths in SQLite remain unchanged. Eligible fallback
+compilations never use this lookup for the current-track preview; their embedded
+track art remains the only authority.
 
 ## Design
 

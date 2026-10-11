@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
@@ -16,11 +17,27 @@ namespace Splined.WindowsGui
 {
     internal static class GuiSelfTests
     {
+        private interface IProjectedStoreResultFixture
+        {
+            string OverallState { get; }
+        }
+
+        private sealed class ProjectedStoreResultFixture : IProjectedStoreResultFixture
+        {
+            string IProjectedStoreResultFixture.OverallState
+            {
+                get { return "Completed"; }
+            }
+        }
+
         [STAThread]
         private static int Main(string[] commandLine)
         {
             if (commandLine != null && commandLine.Length == 5 && commandLine[0] == "--portable-restore-worker")
                 return RunPortableRestoreWorker(commandLine[1], commandLine[2], commandLine[3], commandLine[4]);
+            if (commandLine != null && commandLine.Length == 1
+                && commandLine[0] == "--store-update-projection-tests")
+                return RunStoreUpdateProjectionTests();
             int result = 1;
             using (Form qaHost = new Form
             {
@@ -83,10 +100,12 @@ namespace Splined.WindowsGui
                 string unicodeArtist = Path.Combine(library, "Françoise Hardy");
                 string unicodeAlbum = Path.Combine(unicodeArtist, "Cafe\u0301 — Big Bambú");
                 string mojibakeAlbum = Path.Combine(library, "Cheech & Chong", "Big BambÃº");
+                string trailingDotAlbum = Path.Combine(library, "Blake Shelton", "Based on a True Story..ï€©");
                 Directory.CreateDirectory(firstAlbum);
                 Directory.CreateDirectory(ignoredAlbum);
                 Directory.CreateDirectory(unicodeAlbum);
                 Directory.CreateDirectory(mojibakeAlbum);
+                Directory.CreateDirectory(trailingDotAlbum);
                 File.WriteAllBytes(Path.Combine(firstAlbum, "track.mp3"), new byte[] { 0 });
                 File.WriteAllBytes(Path.Combine(ignoredAlbum, "track.mp3"), new byte[] { 0 });
                 string mojibakeCover = Path.Combine(mojibakeAlbum, "cover.jpg");
@@ -937,6 +956,10 @@ namespace Splined.WindowsGui
                 string resolvedMojibakeAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { indexedMojibakeAlbum });
                 Assert(resolvedMojibakeAlbum == mojibakeAlbum && Directory.Exists(resolvedMojibakeAlbum),
                     "UTF-8/Windows-1252 mojibake Album names were not translated to the physical directory.");
+                string indexedTrailingDotAlbum = Path.Combine(library, "Blake Shelton", "Based on a True Story...");
+                string resolvedTrailingDotAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { indexedTrailingDotAlbum });
+                Assert(resolvedTrailingDotAlbum == trailingDotAlbum && Directory.Exists(resolvedTrailingDotAlbum),
+                    "A network Album with a private-use trailing-period mapping was not resolved from its canonical indexed path.");
                 MethodInfo resolveAlbumArtwork = typeof(MainForm).GetMethod(
                     "ResolveExistingAlbumArtworkPath", BindingFlags.Static | BindingFlags.NonPublic);
                 string indexedMojibakeCover = Path.Combine(indexedMojibakeAlbum, "cover.jpg");
@@ -1019,6 +1042,7 @@ namespace Splined.WindowsGui
                     && !MicrosoftStoreUpdateService.IsApprovedStorePageUrl(
                         "https://apps.microsoft.com.evil.invalid/detail/9p8g4gmbbvbs?hl=en-US&gl=US"),
                     "Microsoft Store update fallback is not restricted to the official SPLINED product URL.");
+                VerifyStoreUpdateProjection();
 
                 loadedUi.HoverEnabled = false;
                 loadedUi.ShowMediaSelector = true;
@@ -1177,9 +1201,19 @@ namespace Splined.WindowsGui
                         && selectorExpand is SpectrumToggleButton && selectorExpand.Text == "≫",
                         "The Media Library Selection show/hide glyph is not retained inside the responsive Select Media bar.");
                     CheckBox showTracksControl = form.Controls.Find("showTracks", true).OfType<CheckBox>().Single();
-                    Assert(showTracksControl.Text == "● Embedded Art"
-                        && showTracksControl.ForeColor.ToArgb() == ThemeManager.CurrentPalette.StatusIndigo.ToArgb()
-                        && showTracksControl.Parent == form.Controls.Find("mediaStatusFilters", true).Single().Controls[0],
+                    Label embeddedArtBullet = form.Controls.Find("embeddedArtStatusBullet", true).OfType<Label>().Single();
+                    Label embeddedArtDescription = form.Controls.Find("embeddedArtStatusDescription", true).OfType<Label>().Single();
+                    TableLayoutPanel embeddedArtRow = form.Controls.Find("embeddedArtStatusRow", true).OfType<TableLayoutPanel>().Single();
+                    Assert(showTracksControl.Text == ""
+                        && embeddedArtBullet.Text == "●" && embeddedArtDescription.Text == "Embedded Art"
+                        && embeddedArtBullet.ForeColor.ToArgb() == ThemeManager.CurrentPalette.StatusIndigo.ToArgb()
+                        && embeddedArtDescription.ForeColor.ToArgb() == ThemeManager.CurrentPalette.StatusIndigo.ToArgb()
+                        && showTracksControl.Parent == embeddedArtBullet.Parent
+                        && embeddedArtBullet.Parent == embeddedArtDescription.Parent
+                        && embeddedArtRow.GetColumn(showTracksControl) == 0
+                        && embeddedArtRow.GetColumn(embeddedArtBullet) == 1
+                        && embeddedArtRow.GetColumn(embeddedArtDescription) == 2
+                        && embeddedArtRow.ColumnStyles[1].Width >= 23,
                         "The indigo Embedded Art control is not present in the Folder status selector.");
                     SplitContainer selectorSplit = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     ToolStripMenuItem showMediaSelector = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
@@ -2093,6 +2127,66 @@ namespace Splined.WindowsGui
                 Console.Error.WriteLine("FAIL: " + error);
                 return 1;
             }
+        }
+
+        private static int RunStoreUpdateProjectionTests()
+        {
+            try
+            {
+                VerifyStoreUpdateProjection();
+                Console.WriteLine("PASS: Microsoft Store operations await through the WinRT task bridge and results use their declared projection interface.");
+                return 0;
+            }
+            catch (Exception error)
+            {
+                Console.Error.WriteLine("FAIL: " + error);
+                return 1;
+            }
+        }
+
+        private static void VerifyStoreUpdateProjection()
+        {
+            Type storeContextType = Type.GetType(
+                "Windows.Services.Store.StoreContext, Windows, ContentType=WindowsRuntime", false);
+            Assert(storeContextType != null,
+                "The Windows StoreContext runtime metadata is unavailable for update projection tests.");
+            Type declaredOperationType = storeContextType
+                .GetMethod("GetAppAndOptionalStorePackageUpdatesAsync").ReturnType;
+            MethodInfo findAsyncInterface = typeof(MicrosoftStoreUpdateService).GetMethod(
+                "FindAsyncOperationInterface", BindingFlags.Static | BindingFlags.NonPublic);
+            Type projectedOperationInterface = (Type)findAsyncInterface.Invoke(
+                null, new object[] { new[] { declaredOperationType } });
+            Assert(projectedOperationInterface != null
+                    && projectedOperationInterface.IsGenericType
+                    && projectedOperationInterface.GetGenericTypeDefinition().FullName
+                        == "Windows.Foundation.IAsyncOperation`1",
+                "The declared StoreContext WinRT operation was not recognized by the task bridge.");
+
+            MethodInfo awaitStoreOperation = typeof(MicrosoftStoreUpdateService).GetMethod(
+                "GetResultsAsync", BindingFlags.Static | BindingFlags.NonPublic);
+            object projectedMarker = new object();
+            Task<object> projectedTask = Task.FromResult(projectedMarker);
+            Task projectedAwait = (Task)awaitStoreOperation.Invoke(
+                null, new object[] { projectedTask, projectedTask.GetType() });
+            projectedAwait.GetAwaiter().GetResult();
+            object projectedResult = projectedAwait.GetType().GetProperty("Result").GetValue(
+                projectedAwait, null);
+            object projectedValue = projectedResult.GetType().GetField("Value").GetValue(projectedResult);
+            Assert(Object.ReferenceEquals(projectedValue, projectedMarker),
+                "The Microsoft Store update bridge did not await a projected operation without polling Status.");
+
+            MethodInfo readProjectedProperty = typeof(MicrosoftStoreUpdateService).GetMethods(
+                    BindingFlags.Static | BindingFlags.NonPublic)
+                .Single(method => method.Name == "ReadProperty"
+                    && method.GetParameters().Length == 3);
+            object projectedState = readProjectedProperty.Invoke(null, new object[]
+            {
+                new ProjectedStoreResultFixture(),
+                typeof(IProjectedStoreResultFixture),
+                new[] { "OverallState" }
+            });
+            Assert(Convert.ToString(projectedState) == "Completed",
+                "The Microsoft Store result was not read through its declared WinRT projection interface.");
         }
 
         private static void VerifyArtistAggregateAndSelectionRules()
