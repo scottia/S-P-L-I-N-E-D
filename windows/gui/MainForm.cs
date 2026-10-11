@@ -40,6 +40,14 @@ namespace Splined.WindowsGui
         Yellow
     }
 
+    internal enum ReviewDecisionPhase
+    {
+        None,
+        Loading,
+        Candidate,
+        MusicBrainz
+    }
+
     internal sealed class AlbumRunStatistics
     {
         public string Artist;
@@ -275,6 +283,7 @@ namespace Splined.WindowsGui
         private AlbumRunStatistics activeAlbumStatistics;
         private AlbumInfo activeLaunchAlbum;
         private bool awaitingDecision;
+        private ReviewDecisionPhase reviewDecisionPhase;
         private bool fallbackMode;
         private string fallbackReason = "";
         private string fallbackArtist = "";
@@ -1144,13 +1153,13 @@ namespace Splined.WindowsGui
             showTracks = new FluentCheckBox
             {
                 Name = "showTracks",
-                Text = "Show Tracks",
+                Text = "● Embedded Art",
                 Checked = uiState.ShowTracks,
                 AutoSize = false,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Margin = Padding.Empty,
-                AccessibleName = "Show compilation tracks"
+                AccessibleName = "Show embedded artwork tracks"
             };
             ToolTip tip = CreateOwnedToolTip();
             tip.SetToolTip(showTracks,
@@ -1541,6 +1550,8 @@ namespace Splined.WindowsGui
                 filteredScanRead.ForeColor = palette.Success;
             if (filteredScanWrite != null)
                 filteredScanWrite.ForeColor = palette.Error;
+            if (showTracks != null)
+                showTracks.ForeColor = palette.StatusIndigo;
             foreach (KeyValuePair<MediaStatusFilter, Label> pair in mediaStatusBullets)
             {
                 Color color;
@@ -2815,8 +2826,9 @@ namespace Splined.WindowsGui
             {
                 object raw;
                 object[] items = payload.TryGetValue("items", out raw) ? ToObjectArray(raw) : new object[0];
-                awaitingDecision = true;
+                SetReviewDecisionPhase(ReviewDecisionPhase.MusicBrainz);
                 candidateContext.Text = "MusicBrainz Matches — " + ReadString(payload, "artist") + " — " + ReadString(payload, "title");
+                UpdateCandidateActions();
                 UpdateSelectionControls();
                 ShowMusicBrainzMatchesWorkspace(
                     ReadString(payload, "artist"), ReadString(payload, "title"),
@@ -2830,6 +2842,10 @@ namespace Splined.WindowsGui
             {
                 string message = ReadString(payload, "message");
                 if (String.IsNullOrWhiteSpace(message)) message = "The edited MusicBrainz authority could not be loaded.";
+                SetReviewDecisionPhase(ReviewDecisionPhase.MusicBrainz);
+                if (musicBrainzMatchesPanel != null) musicBrainzMatchesPanel.Enabled = true;
+                UpdateCandidateActions();
+                UpdateSelectionControls();
                 AppendActivity("  MusicBrainz authority: " + message + "\r\n", ActivityTone.Warning);
                 MessageBox.Show(this, message, "MusicBrainz authority", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
@@ -2864,8 +2880,9 @@ namespace Splined.WindowsGui
             else if (eventName == "source_results_restored")
             {
                 candidateContext.Text = "Source Results — choose artwork or open MusicBrainz Matches again.";
-                awaitingDecision = true;
+                SetReviewDecisionPhase(ReviewDecisionPhase.Candidate);
                 UpdateCandidateActions();
+                UpdateSelectionControls();
             }
             else if (eventName == "compilation_track_unresolved" || eventName == "compilation_lookup_warning")
             {
@@ -2875,6 +2892,7 @@ namespace Splined.WindowsGui
             }
             else if (eventName == "candidates")
             {
+                SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
                 fallbackMode = ReadBool(payload, "fallback") || fallbackMode;
                 musicBrainzRetryAvailable = ReadBool(payload, "musicbrainz_retry_available")
                     || ReadBool(payload, "musicbrainz_matches_available");
@@ -2882,6 +2900,9 @@ namespace Splined.WindowsGui
                 if (!String.IsNullOrWhiteSpace(eventFallbackReason)) fallbackReason = eventFallbackReason;
                 object raw;
                 if (payload.TryGetValue("items", out raw)) ShowCandidates(raw as object[] ?? ToObjectArray(raw));
+                SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
+                UpdateCandidateActions();
+                UpdateSelectionControls();
                 musicBrainzBackAvailable = ReadBool(payload, "musicbrainz_back_available");
                 SetFallbackControls(fallbackMode);
                 int hidden = ReadInt(payload, "hidden_by_source_policy", 0);
@@ -2966,6 +2987,7 @@ namespace Splined.WindowsGui
                 candidateContext.Text = ReadBool(payload, "removed")
                     ? "Saved Album bypass removed. Current source results remain available."
                     : "This Album no longer has a saved bypass. Current source results remain available.";
+                SetReviewDecisionPhase(ReviewDecisionPhase.Candidate);
                 AppendActivity("  Album bypass removed; continuing the current source review.\r\n", ActivityTone.Success);
                 BuildTree();
                 UpdateCandidateActions();
@@ -2975,9 +2997,8 @@ namespace Splined.WindowsGui
                 string decisionReason = ReadString(payload, "reason");
                 if (decisionReason.Equals("fallback", StringComparison.OrdinalIgnoreCase)) fallbackMode = true;
                 if (activeAlbumStatistics != null) activeAlbumStatistics.ReviewRequired = true;
-                awaitingDecision = true;
+                SetReviewDecisionPhase(ReviewDecisionPhase.Candidate);
                 UpdateCandidateActions();
-                skip.Enabled = true;
                 UpdateSelectionControls();
                 AppendActivity(decisionReason.Equals("auto-no-ideal", StringComparison.OrdinalIgnoreCase)
                     ? "  Auto Scan found no policy-qualified Ideal candidate. Operator review is required; resolution alone cannot verify cover accuracy.\r\n"
@@ -4252,19 +4273,21 @@ namespace Splined.WindowsGui
             selectedCandidateIndex = compareCandidateIndexes.Count == 1 ? compareCandidateIndexes.First() : -1;
             bool standaloneSelection = standaloneExistingCoverEdit && selectedCandidateIndex >= 0
                 && candidates.ContainsKey(selectedCandidateIndex) && candidates[selectedCandidateIndex].IsLocal;
+            bool candidateDecision = reviewDecisionPhase == ReviewDecisionPhase.Candidate
+                && awaitingDecision && currentSession != null;
             useSelected.Text = standaloneExistingCoverEdit ? "Save Existing" : "Use Selected";
             useSelected.Enabled = (CandidateDecisionCanBeSubmitted() || standaloneSelection) && selectedCandidateIndex >= 0;
             bool hasLocal = candidates.Values.Any(candidate => candidate.Source.Equals("local", StringComparison.OrdinalIgnoreCase) || candidate.Source.Equals("webpstill", StringComparison.OrdinalIgnoreCase));
             keepLocal.Visible = hasLocal;
-            keepLocal.Enabled = awaitingDecision && hasLocal;
-            compare.Enabled = candidates.Count > 1 && compareCandidateIndexes.Count > 1;
+            keepLocal.Enabled = candidateDecision && hasLocal;
+            compare.Enabled = (candidateDecision || standaloneSelection) && candidates.Count > 1 && compareCandidateIndexes.Count > 1;
             skip.Text = ActiveAlbumHasBypass() ? "NO Bypass" : "Bypass Album";
-            skip.Enabled = awaitingDecision;
-            refineFallback.Enabled = awaitingDecision && fallbackMode;
+            skip.Enabled = candidateDecision;
+            refineFallback.Enabled = candidateDecision && fallbackMode;
             retryMusicBrainz.Visible = musicBrainzRetryAvailable;
-            retryMusicBrainz.Enabled = awaitingDecision && musicBrainzRetryAvailable;
+            retryMusicBrainz.Enabled = candidateDecision && musicBrainzRetryAvailable;
             backToMusicBrainz.Visible = musicBrainzBackAvailable;
-            backToMusicBrainz.Enabled = awaitingDecision && musicBrainzBackAvailable;
+            backToMusicBrainz.Enabled = candidateDecision && musicBrainzBackAvailable;
             CandidateView previewCandidate = null;
             bool canPreviewUpscale = selectedCandidateIndex >= 0
                 && candidates.TryGetValue(selectedCandidateIndex, out previewCandidate)
@@ -4292,8 +4315,15 @@ namespace Splined.WindowsGui
 
         private bool CandidateDecisionCanBeSubmitted()
         {
-            if (awaitingDecision) return true;
-            return running && currentSession != null && candidates.Count > 0;
+            return reviewDecisionPhase == ReviewDecisionPhase.Candidate
+                && awaitingDecision && currentSession != null && candidates.Count > 0;
+        }
+
+        private void SetReviewDecisionPhase(ReviewDecisionPhase phase)
+        {
+            reviewDecisionPhase = phase;
+            awaitingDecision = phase == ReviewDecisionPhase.Candidate
+                || phase == ReviewDecisionPhase.MusicBrainz;
         }
 
         private bool ActiveAlbumHasBypass()
@@ -4331,10 +4361,12 @@ namespace Splined.WindowsGui
         private void SetFallbackControls(bool visible)
         {
             if (refineFallback == null) return;
+            bool candidateDecision = reviewDecisionPhase == ReviewDecisionPhase.Candidate
+                && awaitingDecision && currentSession != null;
             refineFallback.Visible = visible;
-            refineFallback.Enabled = visible && awaitingDecision;
+            refineFallback.Enabled = visible && candidateDecision;
             retryMusicBrainz.Visible = musicBrainzRetryAvailable;
-            retryMusicBrainz.Enabled = awaitingDecision && musicBrainzRetryAvailable;
+            retryMusicBrainz.Enabled = candidateDecision && musicBrainzRetryAvailable;
             ThemeManager.StyleButton(refineFallback, uiState.Theme);
             ThemeManager.StyleButton(retryMusicBrainz, uiState.Theme);
         }
@@ -4362,7 +4394,7 @@ namespace Splined.WindowsGui
             compareCandidateIndexes.Clear();
             selectedCandidateIndex = -1;
             recommendedCandidateIndex = -1;
-            awaitingDecision = false;
+            SetReviewDecisionPhase(ReviewDecisionPhase.None);
             useSelected.Enabled = false;
             useSelected.Text = "Use Selected";
             keepLocal.Enabled = false;
@@ -4498,6 +4530,29 @@ namespace Splined.WindowsGui
             }
             catch { }
             return indexedTrackPath;
+        }
+
+        private static string ResolveExistingAlbumFilePath(AlbumInfo album, string indexedFilePath)
+        {
+            if (album == null || String.IsNullOrWhiteSpace(indexedFilePath)) return indexedFilePath;
+            if (File.Exists(indexedFilePath)) return indexedFilePath;
+            string physicalAlbumPath = ResolveExistingAlbumPath(album.Path);
+            return ResolveExistingTrackPath(album.Path, indexedFilePath, physicalAlbumPath);
+        }
+
+        private static string ResolveExistingAlbumArtworkPath(AlbumInfo album)
+        {
+            if (album == null || (album.Compilation && album.CompilationTrackArtworkEligible)) return "";
+            IEnumerable<string> indexedPaths = new[] { album.CoverPath }
+                .Concat(album.LocalArtworkFiles ?? new List<string>())
+                .Where(path => !String.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            foreach (string indexedPath in indexedPaths)
+            {
+                string physicalPath = ResolveExistingAlbumFilePath(album, indexedPath);
+                if (!String.IsNullOrWhiteSpace(physicalPath) && File.Exists(physicalPath)) return physicalPath;
+            }
+            return "";
         }
 
         private string ExplicitCompilationTrackPathForAlbum(AlbumInfo album, string physicalAlbumPath)
@@ -4669,7 +4724,7 @@ namespace Splined.WindowsGui
 
         private void KeepLocalClicked(object sender, EventArgs e)
         {
-            if (!awaitingDecision || currentSession == null) return;
+            if (reviewDecisionPhase != ReviewDecisionPhase.Candidate || !awaitingDecision || currentSession == null) return;
             CandidateView local = candidates.Values.FirstOrDefault(candidate =>
                 candidate.Source.Equals("local", StringComparison.OrdinalIgnoreCase) ||
                 candidate.Source.Equals("webpstill", StringComparison.OrdinalIgnoreCase));
@@ -4679,7 +4734,8 @@ namespace Splined.WindowsGui
 
         private void RefineFallbackClicked(object sender, EventArgs e)
         {
-            if (!fallbackMode || !awaitingDecision || currentSession == null) return;
+            if (!fallbackMode || reviewDecisionPhase != ReviewDecisionPhase.Candidate
+                || !awaitingDecision || currentSession == null) return;
             using (FallbackSearchForm form = new FallbackSearchForm(fallbackArtist, fallbackAlbum, uiState.Theme))
             {
                 if (form.ShowDialog(this) != DialogResult.OK) return;
@@ -4690,6 +4746,7 @@ namespace Splined.WindowsGui
                 command["action"] = "retry";
                 command["artist"] = fallbackRetryArtist;
                 command["album"] = fallbackRetryAlbum;
+                SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
                 SendDecision(json.Serialize(command));
                 candidateContext.Text = "Retrying fallback with edited Artist / Album values...";
                 ClearCandidates();
@@ -4699,15 +4756,20 @@ namespace Splined.WindowsGui
 
         private void RetryMusicBrainzClicked(object sender, EventArgs e)
         {
-            if (!musicBrainzRetryAvailable || !awaitingDecision || currentSession == null) return;
+            if (!musicBrainzRetryAvailable || reviewDecisionPhase != ReviewDecisionPhase.Candidate
+                || !awaitingDecision || currentSession == null) return;
+            SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
             SendDecision("{\"action\":\"retry_musicbrainz\"}");
             candidateContext.Text = "Loading MusicBrainz Matches...";
-            retryMusicBrainz.Enabled = false;
+            UpdateCandidateActions();
+            UpdateSelectionControls();
         }
 
         private void BackToMusicBrainzClicked(object sender, EventArgs e)
         {
-            if (!musicBrainzBackAvailable || !awaitingDecision || currentSession == null) return;
+            if (!musicBrainzBackAvailable || reviewDecisionPhase != ReviewDecisionPhase.Candidate
+                || !awaitingDecision || currentSession == null) return;
+            SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
             SendDecision("{\"action\":\"back_musicbrainz\"}");
             candidateContext.Text = "Returning to cached MusicBrainz Matches...";
             ClearCandidates();
@@ -4715,7 +4777,7 @@ namespace Splined.WindowsGui
 
         private void SkipClicked(object sender, EventArgs e)
         {
-            if (currentSession == null) return;
+            if (currentSession == null || reviewDecisionPhase != ReviewDecisionPhase.Candidate) return;
             if (ActiveAlbumHasBypass())
             {
                 DialogResult answer = MessageBox.Show(this,
@@ -4796,6 +4858,7 @@ namespace Splined.WindowsGui
             command["apply_edit_profile"] = !previewOnly && editedCandidateIndexes.Contains(candidate.Index);
             command["edit_existing_cover"] = !previewOnly && candidate.IsLocal && editedLocalCandidateIndexes.Contains(candidate.Index);
             command["preserve_source_resolution"] = previewOnly;
+            SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
             SendDecision(json.Serialize(command));
             candidateContext.Text = "Artwork selection confirmed. Moving to the next selected album...";
             ClearCandidates();
@@ -4821,26 +4884,39 @@ namespace Splined.WindowsGui
                 compilationTrack, uiState.Theme);
             musicBrainzMatchesPanel.UseRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
             {
+                if (reviewDecisionPhase != ReviewDecisionPhase.MusicBrainz || currentSession == null) return;
                 Dictionary<string, object> command = new Dictionary<string, object>();
                 command["action"] = "use_musicbrainz_match";
                 command["index"] = args.Index;
+                SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
                 CloseMusicBrainzMatchesWorkspace();
                 SendDecision(json.Serialize(command));
+                UpdateCandidateActions();
+                UpdateSelectionControls();
             };
             musicBrainzMatchesPanel.AuthorityApplyRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
             {
+                if (reviewDecisionPhase != ReviewDecisionPhase.MusicBrainz || currentSession == null) return;
                 Dictionary<string, object> command = new Dictionary<string, object>();
                 command["action"] = "use_musicbrainz_authority";
                 command["recording_mbid"] = ReadString(args.Item, "recording_mbid");
                 command["artist_mbids"] = ReadString(args.Item, "artist_mbids");
                 command["release_mbid"] = ReadString(args.Item, "release_mbid");
                 candidateContext.Text = "Loading source results for the edited CURRENT ALBUM authority...";
+                SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
+                if (musicBrainzMatchesPanel != null) musicBrainzMatchesPanel.Enabled = false;
                 SendDecision(json.Serialize(command));
+                UpdateCandidateActions();
+                UpdateSelectionControls();
             };
             musicBrainzMatchesPanel.LeaveRequested += delegate
             {
+                if (reviewDecisionPhase != ReviewDecisionPhase.MusicBrainz || currentSession == null) return;
+                SetReviewDecisionPhase(ReviewDecisionPhase.Loading);
                 CloseMusicBrainzMatchesWorkspace();
                 SendDecision("{\"action\":\"leave_unchanged\"}");
+                UpdateCandidateActions();
+                UpdateSelectionControls();
             };
             musicBrainzMatchesPanel.ArtworkPreviewRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
             {
@@ -5434,21 +5510,16 @@ namespace Splined.WindowsGui
         private void RefreshAlbumCoverFacts(AlbumInfo album)
         {
             if (album == null) return;
-            string coverPath = album.CoverPath;
-            if (String.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
-                coverPath = album.LocalArtworkFiles.FirstOrDefault(File.Exists) ?? "";
+            string coverPath = ResolveExistingAlbumArtworkPath(album);
             if (String.IsNullOrWhiteSpace(coverPath)) return;
             using (Image image = LoadImageCopy(coverPath))
             {
                 if (image == null) return;
-                album.CoverPath = coverPath;
                 album.CoverName = Path.GetFileName(coverPath);
                 album.CoverFormat = Path.GetExtension(coverPath).TrimStart('.');
                 album.CoverWidth = image.Width;
                 album.CoverHeight = image.Height;
                 album.HasLocalArtwork = true;
-                if (!album.LocalArtworkFiles.Contains(coverPath, StringComparer.OrdinalIgnoreCase))
-                    album.LocalArtworkFiles.Insert(0, coverPath);
             }
         }
 
@@ -5456,9 +5527,7 @@ namespace Splined.WindowsGui
         {
             ClearCandidates();
             if (album == null) return;
-            string coverPath = album.CoverPath;
-            if (String.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
-                coverPath = album.LocalArtworkFiles.FirstOrDefault(File.Exists) ?? "";
+            string coverPath = ResolveExistingAlbumArtworkPath(album);
             if (String.IsNullOrWhiteSpace(coverPath)) return;
 
             int width = album.CoverWidth;
@@ -5549,9 +5618,7 @@ namespace Splined.WindowsGui
                 + "Year " + year + "  ·  Tracks " + displayedAlbum.TrackCount + "  ·  " + displayedAlbum.State + Environment.NewLine
                 + "Artwork " + coverName + "  ·  " + resolution + "  ·  Root files " + displayedAlbum.RootFiles + "  ·  Cover files " + displayedAlbum.CoverFiles + Environment.NewLine
                 + "Path " + displayedAlbum.Path;
-            string coverPath = displayedAlbum.CoverPath;
-            if (String.IsNullOrWhiteSpace(coverPath) || !File.Exists(coverPath))
-                coverPath = displayedAlbum.LocalArtworkFiles.FirstOrDefault(File.Exists) ?? "";
+            string coverPath = ResolveExistingAlbumArtworkPath(displayedAlbum);
             SetArtworkPreview(coverPath, coverName + " · " + resolution);
         }
 

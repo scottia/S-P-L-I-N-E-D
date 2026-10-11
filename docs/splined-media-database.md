@@ -107,6 +107,13 @@ Python owns the shared inventory. The database schema version must still agree;
 a genuine schema conflict fails clearly without quarantining or rebuilding the
 shared database.
 
+When the Windows GUI opens existing artwork for a normal Album, it may resolve
+an equivalent physical directory spelling (including Unicode normalization or
+a recoverable UTF-8/Windows-1252 filename mismatch). That lookup is an I/O-only
+compatibility step: the canonical Album, cover, and local-art paths in SQLite
+remain unchanged. Eligible fallback compilations never use this lookup for the
+current-track preview; their embedded track art remains the only authority.
+
 ## Design
 
 The schema uses persistent logical identities, resumable checkpoints, and
@@ -326,8 +333,8 @@ miss can proceed to MusicBrainz. Stale track rows cannot become artwork
 authority: file size and modification time are checked before reuse.
 The Windows warm snapshot projects cached compilation track paths from `tracks`
 and joins the track-artwork ledger only to mark completed embedded-art writes in
-Show Tracks. This is SQLite-only: it does not walk the music share or reopen
-audio tags. For an older compilation whose full filename list was not cached,
+**● Embedded Art**. This is SQLite-only: it does not walk the music share or
+reopen audio tags. For an older compilation whose full filename list was not cached,
 Windows fills the list only when that Album is expanded by enumerating that one
 folder non-recursively; no tag data is read. The compilation runtime reads the
 same progress and track-artwork tables when an eligible compilation starts.
