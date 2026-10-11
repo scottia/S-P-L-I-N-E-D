@@ -338,6 +338,7 @@ fn winappcli_isolates_production_store_and_development_msix_layouts() {
     assert!(workflow.contains("path: ${{ steps.store-package.outputs.path }}"));
     assert!(store_workflow.contains("store-submission/SPLINED-x64-store-unsigned.msix"));
     assert!(store_workflow.contains("store-submission/STORE-HIGHLIGHTS.txt"));
+    assert!(store_workflow.contains("store-submission/STORE-SUBMISSION.json"));
     assert!(store_workflow.contains("ref: refs/tags/${{ inputs.version }}"));
     assert!(store_workflow.contains("-ExpectedVersion \"$env:RELEASE_VERSION.0\""));
     assert!(!store_workflow.contains("contents: write"));
@@ -418,7 +419,14 @@ fn repository_exposes_exactly_the_four_supported_workflows() {
     let workflow_dir = Path::new(".github/workflows");
     let files = fs::read_dir(workflow_dir)
         .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter_map(|entry| {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let contents = fs::read_to_string(&path).ok()?;
+            contents
+                .starts_with("name: SPLINED")
+                .then(|| entry.file_name().to_string_lossy().into_owned())
+        })
         .collect::<BTreeSet<_>>();
     assert_eq!(
         files,
@@ -472,7 +480,7 @@ fn numeric_release_tag_is_pushed_only_after_selected_builds_pass() {
     for dependency in ["build-windows", "build-ubuntu", "build-macos"] {
         assert!(finalize.contains(dependency));
     }
-    assert!(finalize.contains("Push numeric tag after successful builds"));
+    assert!(finalize.contains("Publish numeric tag and release commit after successful builds"));
     assert!(finalize.contains("git tag -a \"$RELEASE_VERSION\" \"$RELEASE_COMMIT\""));
     assert!(finalize.contains("refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"));
     assert!(finalize.contains("no tag was created"));

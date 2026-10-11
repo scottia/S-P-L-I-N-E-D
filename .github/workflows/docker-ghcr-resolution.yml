@@ -81,7 +81,6 @@ jobs:
             -RepositoryRoot . `
             -ConfigPath .splined-release-engine/cliff.toml `
             -GitHubTemplatePath .splined-release-engine/release/templates/github-release.tera `
-            -StoreTemplatePath .splined-release-engine/release/templates/store-highlights.tera `
             -OutputDirectory release-notes
 
       - name: Build exact release Docker image

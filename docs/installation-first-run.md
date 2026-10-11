@@ -75,7 +75,8 @@ selected Store validation must both succeed before the numeric release tag is
 created. After the GitHub Release and GHCR publish, the workflow automatically
 stages the MSIX, preserves the existing Store submission metadata, updates only
 the en-US Store Highlights, and submits it for Microsoft processing. The MSIX
-is retained with `STORE-HIGHLIGHTS.txt` in the Actions-only
+is retained with `STORE-HIGHLIGHTS.txt` and its `STORE-SUBMISSION.json` history
+audit in the Actions-only
 `splined-windows-store-submission` artifact; it is not an end-user installer or
 a normal GitHub Release download. Development identity and signing use a
 separate temporary QA layout and cannot mutate the Store artifact.

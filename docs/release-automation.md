@@ -32,9 +32,8 @@ MSIX is created and validated from the same pair before tagging.
 
 - **Microsoft Store = false:** no Store package, Store QA, Store-submission
   artifact, Store authentication, or Store API submission runs.
-  GitHub/Portable and GHCR publishing continue normally. The shared release-note
-  context may still render its unused Store Highlights output; it is not
-  published to Store.
+  GitHub/Portable and GHCR publishing continue normally. No Store history is
+  queried and no Store Highlights are rendered.
 - **Microsoft Store = true** for Windows or All: the workflow creates and
   validates `SPLINED-x64-store-unsigned.msix`, publishes the GitHub Release and
   GHCR, stages the exact MSIX with Microsoft, updates only the existing en-US
@@ -47,6 +46,7 @@ included in public checksums. For audit/recovery, Actions retains
 ```text
 SPLINED-x64-store-unsigned.msix
 STORE-HIGHLIGHTS.txt
+STORE-SUBMISSION.json
 ```
 
 A successful Store step means the Store API accepted the package and metadata
@@ -75,13 +75,30 @@ and direct SPLINED commits and assigns every commit to one of:
 - `📦 Other Changes`
 
 The unconditional `📦 Other Changes` parser prevents unconventional commit
-messages from disappearing. `release/Generate-ReleaseNotes.ps1` asks git-cliff
-for one JSON context for the previous-numeric-tag to selected-tag range. It
-renders `GITHUB-RELEASE.md` and `STORE-HIGHLIGHTS.txt` from that same context
-using `release/templates/github-release.tera` and
-`release/templates/store-highlights.tera`. Store Highlights select the
-customer-facing Highlights, Windows, Microsoft Store, Fixes, and catch-all
-groups while omitting routine documentation and maintenance noise.
+messages from disappearing. GitHub Release notes and Store Highlights use the
+same pinned git-cliff executable, `cliff.toml` classification, and checked-in
+Tera templates, but deliberately use different release ranges:
+
+- `release/Generate-ReleaseNotes.ps1` creates the incremental GitHub context
+  from the immediately previous numeric Git tag to the selected tag.
+- `release/Resolve-StoreBaseline.ps1` queries the live product before package
+  staging and resolves the last **published** Store package version to its
+  matching numeric Git tag.
+- `release/Generate-StoreHighlights.ps1` creates the Store context from that
+  published Store tag through the selected tag. Therefore, GitHub-only releases
+  are included automatically the next time a Store update is submitted.
+
+For example, if Store version `1.0.71` is published and `1.0.72` through
+`1.0.78` are GitHub-only, a `1.0.79` Store submission renders
+`1.0.71..1.0.79`. A failed or rejected Store submission does not advance the
+baseline; only a published package does. Merge and release-preparation noise is
+excluded from Store Highlights. The complete customer-facing result must fit
+the Microsoft Store **What's new** limit of 1,500 characters; generation fails
+instead of silently truncating history.
+
+`STORE-SUBMISSION.json` records the Store product, published baseline package,
+target version and commits, exact range, git-cliff version, character count, and
+Highlights SHA-256. Publication verifies this audit record before staging.
 
 ## Automated Store publication
 
@@ -95,21 +112,32 @@ The live product is Store ID `9P8G4GMBBVBS`, package
 
 Missing credentials fail the Store publication step clearly. Values are passed
 as masked environment secrets and are not printed. The pinned Microsoft Store
-publisher action installs the pinned `msstore` CLI. Package staging with
+publisher action installs the pinned `msstore` CLI. Before staging, the workflow
+uses machine-readable application metadata to require no pending submission,
+identify `lastPublishedApplicationSubmission`, and read its package version.
+Any pending, certification, failed, or otherwise unresolved submission stops
+the workflow so a draft cannot be replaced and cannot be mistaken for
+release-history authority. Package staging with
 `--noCommit` occurs before metadata retrieval and editing. The complete pending
 submission is retrieved and preserved; only the existing en-US
 `BaseListing.ReleaseNotes` value is changed. The workflow then updates and
-publishes that same pending submission without recreating the draft.
+publishes that same pending submission without recreating the draft. Normal and
+recovery publication jobs also share one non-canceling Store concurrency group,
+so two SPLINED submissions cannot stage over each other.
 
 If packaging needs correction without Store submission, run
 `SPLINED (Tagged) > MS Store Package Resolution`. That workflow rebuilds,
-validates, and retains `splined-windows-store-submission`.
+validates, queries Store history read-only, generates cumulative Highlights,
+and retains `splined-windows-store-submission`. It requires the same Store
+credentials to identify the published baseline, but it never stages or submits
+a package.
 
 `SPLINED > MS Store Publish & Update` is publication-only. It authenticates
-before doing package work, locates a retained non-expired
-`splined-windows-store-submission` artifact, verifies the MSIX identity and
-requested numeric version, and submits that exact package plus its preserved
-`STORE-HIGHLIGHTS.txt`. It never compiles Rust/WinForms, rebuilds an MSIX, or
-regenerates release notes. If no matching retained artifact exists, it fails
-and directs the operator to run the tagged Store Package Resolution workflow
-first.
+before doing package work, resolves the live published baseline, locates a
+retained non-expired `splined-windows-store-submission` artifact, verifies the
+MSIX identity and requested numeric version, and regenerates
+`STORE-HIGHLIGHTS.txt` from current Store history immediately before submission.
+A stale retained Highlights file is never trusted. It never compiles
+Rust/WinForms or rebuilds an MSIX. If no matching retained package exists, it
+fails and directs the operator to run the tagged Store Package Resolution
+workflow first.

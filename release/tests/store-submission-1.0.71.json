@@ -1,0 +1,12 @@
+{
+  "id": "published-fixture",
+  "status": "Published",
+  "applicationPackages": [
+    {
+      "fileName": "SPLINED_1.0.71.0_x64.msix",
+      "version": "1.0.71.0",
+      "architecture": "x64",
+      "fileStatus": "Uploaded"
+    }
+  ]
+}

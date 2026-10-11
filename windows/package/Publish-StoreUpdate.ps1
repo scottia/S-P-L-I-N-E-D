@@ -4,6 +4,10 @@ param(
     [string]$PackagePath,
     [Parameter(Mandatory = $true)]
     [string]$HighlightsPath,
+    [Parameter(Mandatory = $true)]
+    [string]$BaselineMetadataPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedVersion,
     [string]$ProductId = "9P8G4GMBBVBS",
     [switch]$SkipReconfigure
 )
@@ -24,9 +28,29 @@ if ($missing.Count -gt 0) {
 
 $package = (Resolve-Path -LiteralPath $PackagePath).Path
 $highlights = (Resolve-Path -LiteralPath $HighlightsPath).Path
+$baselineMetadata = (Resolve-Path -LiteralPath $BaselineMetadataPath).Path
 $releaseNotes = (Get-Content -Raw -LiteralPath $highlights).Trim()
 if ([String]::IsNullOrWhiteSpace($releaseNotes)) {
     throw "STORE-HIGHLIGHTS.txt is empty."
+}
+if ($releaseNotes.Length -gt 1500) {
+    throw "STORE-HIGHLIGHTS.txt exceeds the Microsoft Store 1500-character What's new limit."
+}
+if ($ExpectedVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "ExpectedVersion must be a numeric SPLINED release version."
+}
+
+$audit = Get-Content -Raw -LiteralPath $baselineMetadata | ConvertFrom-Json
+if ($audit.schema_version -ne 1 -or
+    $audit.product_id -cne $ProductId -or
+    $audit.store_status -ine "Published" -or
+    $audit.target_version -cne $ExpectedVersion -or
+    $audit.range -cne "$($audit.baseline_version)..$ExpectedVersion") {
+    throw "STORE-SUBMISSION.json does not match the requested Store product, published baseline, and target version."
+}
+$actualHighlightsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $highlights).Hash.ToLowerInvariant()
+if ($audit.highlights_sha256 -cne $actualHighlightsHash) {
+    throw "STORE-HIGHLIGHTS.txt does not match the audited cumulative Store history."
 }
 
 # Stage the package first. Microsoft's top-level publish command creates the
@@ -81,6 +105,8 @@ if (-not [String]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
 
 - Store ID: ``$ProductId``
 - Package: ``$([IO.Path]::GetFileName($package))``
+- Store history range: ``$($audit.range)``
+- Last published Store baseline: ``$($audit.baseline_package_version)``
 - Listing updated: ``en-US / BaseListing / ReleaseNotes`` only
 - Package staged before metadata update: ``yes``
 - Submission status: ``$status``

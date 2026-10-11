@@ -751,7 +751,7 @@ jobs:
           test "$(git ls-remote origin "refs/heads/main" | awk '{print $1}')" = "$RELEASE_COMMIT"
 
   generate-release-notes:
-    name: Generate release notes from one git-cliff context
+    name: Generate incremental GitHub release notes
     needs:
       - prepare-release
       - finalize-tag
@@ -780,7 +780,7 @@ jobs:
             throw "Expected git-cliff 2.14.2; received '$($reportedVersion.Trim())'."
           }
 
-      - name: Render GitHub notes and Store Highlights from the same context
+      - name: Render incremental GitHub notes
         id: notes
         shell: pwsh
         env:
@@ -792,7 +792,6 @@ jobs:
             -RepositoryRoot . `
             -ConfigPath cliff.toml `
             -GitHubTemplatePath release/templates/github-release.tera `
-            -StoreTemplatePath release/templates/store-highlights.tera `
             -OutputDirectory release-notes
 
       - name: Upload generated release-note context and outputs
@@ -802,7 +801,6 @@ jobs:
           path: |
             release-notes/release-context.json
             release-notes/GITHUB-RELEASE.md
-            release-notes/STORE-HIGHLIGHTS.txt
           if-no-files-found: error
 
   publish-release:
@@ -949,6 +947,9 @@ jobs:
         needs.publish-ghcr.result == 'success'
       }}
     runs-on: windows-latest
+    concurrency:
+      group: splined-microsoft-store-submission
+      cancel-in-progress: false
 
     steps:
       - name: Checkout generated release tag
@@ -962,29 +963,6 @@ jobs:
         with:
           name: splined-windows-store-package
           path: store-package
-
-      - name: Download Store Highlights from release context
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: splined-release-notes
-          path: release-notes
-
-      - name: Assemble Store submission audit artifact
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          [IO.Directory]::CreateDirectory("store-submission") | Out-Null
-          Copy-Item -LiteralPath "store-package/SPLINED-x64-store-unsigned.msix" -Destination "store-submission/SPLINED-x64-store-unsigned.msix"
-          Copy-Item -LiteralPath "release-notes/STORE-HIGHLIGHTS.txt" -Destination "store-submission/STORE-HIGHLIGHTS.txt"
-
-      - name: Upload Store submission audit artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: splined-windows-store-submission
-          path: |
-            store-submission/SPLINED-x64-store-unsigned.msix
-            store-submission/STORE-HIGHLIGHTS.txt
-          if-no-files-found: error
 
       - name: Require Microsoft Store credentials
         shell: pwsh
@@ -1006,6 +984,85 @@ jobs:
         with:
           version: v0.4.3
 
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The release-note engine must be git-cliff 2.14.2."
+          }
+
+      - name: Test Store history baseline resolution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Test-StoreBaseline.ps1 -RepositoryRoot .
+
+      - name: Authenticate Microsoft Store before resolving published history
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          try {
+            & msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+          }
+          catch {
+            throw "Microsoft Store authentication failed before release-history resolution. Verify Partner Center credentials and application permissions. $($_.Exception.Message)"
+          }
+
+      - name: Resolve last-published Store baseline
+        id: store-baseline
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Resolve-StoreBaseline.ps1 `
+            -TargetVersion $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ProductId 9P8G4GMBBVBS `
+            -OutputDirectory store-notes
+
+      - name: Render cumulative Store Highlights from published baseline
+        id: store-highlights
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Generate-StoreHighlights.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -BaselineMetadataPath store-notes/STORE-BASELINE.json `
+            -RepositoryRoot . `
+            -ConfigPath cliff.toml `
+            -StoreTemplatePath release/templates/store-highlights.tera `
+            -OutputDirectory store-notes
+
+      - name: Assemble Store submission audit artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [IO.Directory]::CreateDirectory("store-submission") | Out-Null
+          Copy-Item -LiteralPath "store-package/SPLINED-x64-store-unsigned.msix" -Destination "store-submission/SPLINED-x64-store-unsigned.msix"
+          Copy-Item -LiteralPath "store-notes/STORE-HIGHLIGHTS.txt" -Destination "store-submission/STORE-HIGHLIGHTS.txt"
+          Copy-Item -LiteralPath "store-notes/STORE-SUBMISSION.json" -Destination "store-submission/STORE-SUBMISSION.json"
+
+      - name: Upload Store submission audit artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: splined-windows-store-submission
+          path: |
+            store-submission/SPLINED-x64-store-unsigned.msix
+            store-submission/STORE-HIGHLIGHTS.txt
+            store-submission/STORE-SUBMISSION.json
+          if-no-files-found: error
+
       - name: Stage package, update en-US Store Highlights, and submit
         shell: pwsh
         env:
@@ -1018,6 +1075,8 @@ jobs:
           & windows/package/Publish-StoreUpdate.ps1 `
             -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
             -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
+            -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `
+            -ExpectedVersion ${{ needs.prepare-release.outputs.version }} `
             -ProductId 9P8G4GMBBVBS
 
   release-summary:
