@@ -578,6 +578,12 @@ fn windows_updates_are_channel_aware_and_portable_updates_remain_notification_on
     assert!(update.contains("Windows.Services.Store.StoreContext"));
     assert!(update.contains("GetAppAndOptionalStorePackageUpdatesAsync"));
     assert!(update.contains("RequestDownloadAndInstallStorePackageUpdatesAsync"));
+    assert!(update.contains("System.WindowsRuntimeSystemExtensions"));
+    assert!(update.contains("await task;"));
+    assert!(!update.contains("ReadProperty(operation, \"Status\")"));
+    assert!(!update.contains("Task.Delay(100)"));
+    assert!(gui_tests.contains("--store-update-projection-tests"));
+    assert!(gui_tests.contains("FindAsyncOperationInterface"));
     assert!(update.contains("https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US"));
     let store_path = main
         .split("private async Task CheckMicrosoftStoreForUpdateAsync")

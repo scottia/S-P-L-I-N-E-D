@@ -241,22 +241,34 @@ namespace Splined.WindowsGui
 
     internal static class MicrosoftStoreUpdateService
     {
+        private sealed class ProjectedAsyncResult
+        {
+            public object Value;
+            public Type DeclaredType;
+        }
+
         public const string ProductUrl = "https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US";
         private const string StoreContextTypeName =
             "Windows.Services.Store.StoreContext, Windows, ContentType=WindowsRuntime";
+        private const string AsyncOperationTypeName = "Windows.Foundation.IAsyncOperation`1";
+        private const string WindowsRuntimeExtensionsTypeName =
+            "System.WindowsRuntimeSystemExtensions, System.Runtime.WindowsRuntime";
 
         public static async Task<MicrosoftStoreUpdateCheck> CheckAsync(IntPtr windowHandle)
         {
             object context = CreateContext(windowHandle);
-            object operation = Invoke(context, "GetAppAndOptionalStorePackageUpdatesAsync");
-            object updates = await GetResultsAsync(operation);
-            int count = Convert.ToInt32(ReadProperty(updates, "Count", "Size"));
+            Type operationType;
+            object operation = InvokeWithDeclaredReturnType(context,
+                "GetAppAndOptionalStorePackageUpdatesAsync", new object[0], out operationType);
+            ProjectedAsyncResult projected = await GetResultsAsync(operation, operationType);
+            int count = Convert.ToInt32(ReadProperty(
+                projected.Value, projected.DeclaredType, "Count", "Size"));
             return new MicrosoftStoreUpdateCheck
             {
                 Available = count > 0,
                 UpdateCount = count,
                 Context = context,
-                Updates = updates
+                Updates = projected.Value
             };
         }
 
@@ -267,10 +279,13 @@ namespace Splined.WindowsGui
             if (update == null || update.Context == null || update.Updates == null || !update.Available)
                 throw new InvalidOperationException("No Microsoft Store update is available for installation.");
             InitializeWindow(update.Context, windowHandle);
-            object operation = Invoke(update.Context,
-                "RequestDownloadAndInstallStorePackageUpdatesAsync", update.Updates);
-            object result = await GetResultsAsync(operation);
-            string state = Convert.ToString(ReadProperty(result, "OverallState"));
+            Type operationType;
+            object operation = InvokeWithDeclaredReturnType(update.Context,
+                "RequestDownloadAndInstallStorePackageUpdatesAsync",
+                new[] { update.Updates }, out operationType);
+            ProjectedAsyncResult projected = await GetResultsAsync(operation, operationType);
+            string state = Convert.ToString(ReadProperty(
+                projected.Value, projected.DeclaredType, "OverallState"));
             return new MicrosoftStoreInstallResult
             {
                 Completed = String.Equals(state, "Completed", StringComparison.OrdinalIgnoreCase),
@@ -338,34 +353,108 @@ namespace Splined.WindowsGui
             initializer.Initialize(windowHandle);
         }
 
-        private static async Task<object> GetResultsAsync(object operation)
+        private static async Task<ProjectedAsyncResult> GetResultsAsync(
+            object operation,
+            Type declaredOperationType)
         {
             if (operation == null)
                 throw new InvalidOperationException("Microsoft Store did not return an update operation.");
-            while (true)
+
+            Task task = operation as Task;
+            Type resultType = null;
+            if (task == null)
             {
-                string status = Convert.ToString(ReadProperty(operation, "Status"));
-                if (String.Equals(status, "Completed", StringComparison.OrdinalIgnoreCase))
-                    return Invoke(operation, "GetResults");
-                if (String.Equals(status, "Canceled", StringComparison.OrdinalIgnoreCase))
-                    throw new TaskCanceledException("The Microsoft Store update operation was canceled.");
-                if (String.Equals(status, "Error", StringComparison.OrdinalIgnoreCase))
-                {
-                    object error = ReadProperty(operation, "ErrorCode");
-                    throw new InvalidOperationException("Microsoft Store update operation failed: " + error);
-                }
-                if (!String.Equals(status, "Started", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Microsoft Store returned an unknown update state: " + status);
-                await Task.Delay(100);
+                Type operationInterface = FindAsyncOperationInterface(
+                    declaredOperationType, operation.GetType());
+                if (operationInterface == null)
+                    throw new PlatformNotSupportedException(
+                        "Microsoft Store returned an unsupported asynchronous operation.");
+                resultType = operationInterface.GetGenericArguments()[0];
+                task = ConvertWindowsRuntimeOperationToTask(
+                    operation, resultType);
             }
+
+            PropertyInfo resultProperty = task.GetType().GetProperty(
+                "Result", BindingFlags.Instance | BindingFlags.Public);
+            if (resultProperty == null)
+                throw new InvalidOperationException(
+                    "Microsoft Store returned an asynchronous operation without a result.");
+            if (resultType == null) resultType = resultProperty.PropertyType;
+
+            // Await the WinRT projection instead of reflecting Status/GetResults from
+            // System.__ComObject. The latter is not a stable .NET Framework projection.
+            await task;
+            return new ProjectedAsyncResult
+            {
+                Value = resultProperty.GetValue(task, null),
+                DeclaredType = resultType
+            };
+        }
+
+        private static Type FindAsyncOperationInterface(params Type[] candidates)
+        {
+            return ReflectionTypes(candidates).FirstOrDefault(type =>
+                type.IsGenericType
+                && type.GetGenericTypeDefinition().FullName == AsyncOperationTypeName);
+        }
+
+        private static Task ConvertWindowsRuntimeOperationToTask(
+            object operation,
+            Type resultType)
+        {
+            Type extensions = Type.GetType(WindowsRuntimeExtensionsTypeName, false);
+            if (extensions == null)
+            {
+                try
+                {
+                    extensions = Assembly.Load("System.Runtime.WindowsRuntime")
+                        .GetType("System.WindowsRuntimeSystemExtensions", false);
+                }
+                catch
+                {
+                    extensions = null;
+                }
+            }
+            if (extensions == null)
+                throw new PlatformNotSupportedException(
+                    "The Windows Runtime task bridge is unavailable.");
+
+            MethodInfo asTask = extensions.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(method =>
+                {
+                    if (method.Name != "AsTask" || !method.IsGenericMethodDefinition
+                        || method.GetGenericArguments().Length != 1)
+                        return false;
+                    ParameterInfo[] parameters = method.GetParameters();
+                    return parameters.Length == 1
+                        && parameters[0].ParameterType.IsGenericType
+                        && parameters[0].ParameterType.GetGenericTypeDefinition().FullName
+                            == AsyncOperationTypeName;
+                });
+            if (asTask == null)
+                throw new PlatformNotSupportedException(
+                    "The Windows Runtime asynchronous operation bridge is unavailable.");
+
+            object projected = InvokeReflected(
+                asTask.MakeGenericMethod(resultType), null, new[] { operation });
+            Task task = projected as Task;
+            if (task == null)
+                throw new PlatformNotSupportedException(
+                    "The Windows Runtime operation could not be converted to a task.");
+            return task;
         }
 
         private static object ReadProperty(object target, params string[] names)
         {
+            return ReadProperty(target, null, names);
+        }
+
+        private static object ReadProperty(object target, Type declaredType, params string[] names)
+        {
             if (target == null) throw new ArgumentNullException("target");
             foreach (string name in names)
             {
-                foreach (Type candidate in ReflectionTypes(target.GetType()))
+                foreach (Type candidate in ReflectionTypes(declaredType, target.GetType()))
                 {
                     PropertyInfo property = candidate.GetProperty(name);
                     if (property != null) return property.GetValue(target, null);
@@ -374,7 +463,11 @@ namespace Splined.WindowsGui
             throw new MissingMemberException(target.GetType().FullName, String.Join(" or ", names));
         }
 
-        private static object Invoke(object target, string name, params object[] arguments)
+        private static object InvokeWithDeclaredReturnType(
+            object target,
+            string name,
+            object[] arguments,
+            out Type declaredReturnType)
         {
             if (target == null) throw new ArgumentNullException("target");
             int argumentCount = arguments == null ? 0 : arguments.Length;
@@ -383,14 +476,36 @@ namespace Splined.WindowsGui
                 MethodInfo method = candidate.GetMethods()
                     .FirstOrDefault(item => item.Name == name
                         && item.GetParameters().Length == argumentCount);
-                if (method != null) return method.Invoke(target, arguments);
+                if (method != null)
+                {
+                    declaredReturnType = method.ReturnType;
+                    return InvokeReflected(method, target, arguments);
+                }
             }
+            declaredReturnType = null;
             throw new MissingMethodException(target.GetType().FullName, name);
         }
 
-        private static Type[] ReflectionTypes(Type concrete)
+        private static object InvokeReflected(MethodInfo method, object target, object[] arguments)
         {
-            return new[] { concrete }.Concat(concrete.GetInterfaces()).ToArray();
+            try
+            {
+                return method.Invoke(target, arguments);
+            }
+            catch (TargetInvocationException error)
+            {
+                if (error.InnerException != null) throw error.InnerException;
+                throw;
+            }
+        }
+
+        private static Type[] ReflectionTypes(params Type[] concreteTypes)
+        {
+            return (concreteTypes ?? new Type[0])
+                .Where(type => type != null)
+                .SelectMany(type => new[] { type }.Concat(type.GetInterfaces()))
+                .Distinct()
+                .ToArray();
         }
     }
 }

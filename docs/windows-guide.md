@@ -34,7 +34,8 @@ creates `data\config.toml` and `data\ui.toml`.
 The left pane reads the authoritative SQLite media index and groups Albums by
 Artist. Artist, Album, Folder Status, and **● Embedded Art** controls filter the
 view. **● Embedded Art** is indigo and retains the established compilation-track
-view behavior.
+view behavior. Its checkbox, indigo bullet, and label use the same aligned
+Folder Status row structure as the other status choices.
 Album colors are White/Unprocessed, Blue/Incomplete, Orange/Processed,
 Red/Bypassed, and Purple/Timeout. Green and Blue Artist markers retain the
 Artist Complete and Artist Contains Bypass meanings.
@@ -79,6 +80,11 @@ Every queued Album carries its own indexed Album path and SQLite key into the
 in-process Rust scan context. A multi-Album batch therefore records each result
 against that Album's own database identity rather than the currently focused
 row.
+
+Before invoking Rust, Windows may resolve an equivalent physical network-folder
+spelling for Unicode, recoverable encoding, or a private-use trailing-period
+representation. This changes only the path used for file I/O; the queued
+canonical Album path/key and SQLite status authority remain intact.
 
 ## Scan activity and candidates
 
@@ -327,9 +333,11 @@ Windows option is
 authority. Portable installations query GitHub Releases and
 `windows-update.json` and compare semantic versions. Store installations query
 `Windows.Services.Store.StoreContext`; **UPDATE NOW** delegates download and
-installation to Windows/Microsoft Store, and **LATER** defers it. If the Store
-API cannot be used safely, the GUI offers the official Store page. A packaged
-installation never receives Portable ZIP replacement instructions.
+installation to Windows/Microsoft Store, and **LATER** defers it. Store checks
+await the projected WinRT operation rather than reflecting members from a raw
+COM object. If the Store API cannot be used safely, the GUI offers the official
+Store page. A packaged installation never receives Portable ZIP replacement
+instructions.
 
 `SPLINED (All OS) and GHCR` can build the production Store layout during the
 same Windows job as the Portable ZIP. Both outputs use the exact same clean
