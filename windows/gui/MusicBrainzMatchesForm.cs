@@ -179,8 +179,7 @@ namespace Splined.WindowsGui
             matches.MouseLeave += delegate
             {
                 hoveredMatchIndex = -1;
-                EventHandler handler = ArtworkPreviewEnded;
-                if (handler != null) handler(this, EventArgs.Empty);
+                PreviewSelectedArtworkOrEnd();
             };
             layout.Controls.Add(matches, 0, 3);
 
@@ -465,6 +464,7 @@ namespace Splined.WindowsGui
             use.Enabled = item != null && !IsAuthority(item) && IntValue(item, "index", 0) > 0;
             openPage.Enabled = item != null && !String.IsNullOrWhiteSpace(TextValue(item, "url", ""));
             if (item != null && !IsAuthority(item)) RaiseArtworkPreview(item);
+            else RaiseArtworkPreviewEnded();
         }
 
         private void MatchesMouseMove(object sender, MouseEventArgs e)
@@ -478,11 +478,22 @@ namespace Splined.WindowsGui
             if (index == hoveredMatchIndex) return;
             hoveredMatchIndex = index;
             if (overUrl) RaiseArtworkPreview(item);
+            else PreviewSelectedArtworkOrEnd();
+        }
+
+        private void PreviewSelectedArtworkOrEnd()
+        {
+            Dictionary<string, object> selected = SelectedItem();
+            if (selected != null && !IsAuthority(selected) && ArtworkPreviewUrls(selected).Length > 0)
+                RaiseArtworkPreview(selected);
             else
-            {
-                EventHandler handler = ArtworkPreviewEnded;
-                if (handler != null) handler(this, EventArgs.Empty);
-            }
+                RaiseArtworkPreviewEnded();
+        }
+
+        private void RaiseArtworkPreviewEnded()
+        {
+            EventHandler handler = ArtworkPreviewEnded;
+            if (handler != null) handler(this, EventArgs.Empty);
         }
 
         private void RaiseArtworkPreview(Dictionary<string, object> item)

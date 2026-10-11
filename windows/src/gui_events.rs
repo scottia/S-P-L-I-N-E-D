@@ -266,12 +266,9 @@ fn parse_musicbrainz_match_decision(
 }
 
 pub fn wait_for_musicbrainz_match_decision() -> Result<MusicBrainzMatchDecision, String> {
-    loop {
-        let value = receive_in_process_decision()?;
-        if let Some(decision) = parse_musicbrainz_match_decision(&value)? {
-            return Ok(decision);
-        }
-    }
+    let value = receive_in_process_decision()?;
+    parse_musicbrainz_match_decision(&value)?
+        .ok_or_else(|| unexpected_decision_error(&value, "a MusicBrainz release decision"))
 }
 
 pub fn decisions_available() -> bool {
@@ -279,12 +276,23 @@ pub fn decisions_available() -> bool {
 }
 
 pub fn wait_for_candidate_decision() -> Result<CandidateDecision, String> {
-    loop {
-        let value = receive_in_process_decision()?;
-        if let Some(decision) = parse_candidate_decision(&value)? {
-            return Ok(decision);
-        }
-    }
+    let value = receive_in_process_decision()?;
+    parse_candidate_decision(&value)?
+        .ok_or_else(|| unexpected_decision_error(&value, "an artwork candidate decision"))
+}
+
+fn unexpected_decision_error(value: &Value, expected: &str) -> String {
+    let action = value
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let action = if action.is_empty() {
+        "<missing>"
+    } else {
+        action
+    };
+    format!("Decision action '{action}' is not valid while waiting for {expected}.")
 }
 
 fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, String> {
@@ -391,6 +399,22 @@ mod tests {
         assert_eq!(
             wait_for_candidate_decision().unwrap(),
             CandidateDecision::Bypass
+        );
+        end_in_process();
+
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        begin_in_process(event_sender, true, false).unwrap();
+        submit_decision(json!({"action": "use", "index": 1})).unwrap();
+        let error = wait_for_musicbrainz_match_decision().unwrap_err();
+        assert!(error.contains("use") && error.contains("MusicBrainz release decision"));
+        end_in_process();
+
+        let (event_sender, _event_receiver) = std::sync::mpsc::channel();
+        begin_in_process(event_sender, true, false).unwrap();
+        submit_decision(json!({"action": "use_musicbrainz_match", "index": 1})).unwrap();
+        let error = wait_for_candidate_decision().unwrap_err();
+        assert!(
+            error.contains("use_musicbrainz_match") && error.contains("artwork candidate decision")
         );
         end_in_process();
     }

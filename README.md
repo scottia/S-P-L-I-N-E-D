@@ -214,7 +214,7 @@ track keeps its embedded image as a local comparison while still loading
 MusicBrainz releases and provider results for higher-resolution choices. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
-Windows **Show Tracks** supports an additive checked-track queue within the
+Windows **● Embedded Art** supports an additive checked-track queue within the
 focused fallback compilation. Track clicks remain preview-only; checked tracks
 are processed explicitly, completed indicators turn green immediately, and
 the Album stays focused so more tracks can be selected without returning to the

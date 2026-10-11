@@ -32,7 +32,9 @@ creates `data\config.toml` and `data\ui.toml`.
 ## Media Library Selection
 
 The left pane reads the authoritative SQLite media index and groups Albums by
-Artist. Artist, Album, Folder Status, and Show Tracks controls filter the view.
+Artist. Artist, Album, Folder Status, and **● Embedded Art** controls filter the
+view. **● Embedded Art** is indigo and retains the established compilation-track
+view behavior.
 Album colors are White/Unprocessed, Blue/Incomplete, Orange/Processed,
 Red/Bypassed, and Purple/Timeout. Green and Blue Artist markers retain the
 Artist Complete and Artist Contains Bypass meanings.
@@ -179,6 +181,14 @@ A Various Artists SOUNDTRACK or COMPILATION belongs to its Release Type family.
 The most recently visited Release is green; earlier visited Releases are orange.
 Navigation back from source results retains this state.
 
+Selecting an ordinary result keeps that result's Cover Art Archive preview in
+the Artwork pane when the pointer leaves its URL. Returning to source results
+restores the cached candidate decision. While MusicBrainz owns the pending
+decision, source-candidate actions are unavailable, which prevents an artwork
+choice from being sent to the wrong Rust decision boundary. The in-process
+boundary also rejects a mismatched decision explicitly instead of waiting
+indefinitely.
+
 ## Compilation resume and fallback artwork
 
 Normal incomplete compilation launch consults the SQLite completion ledger and
@@ -203,10 +213,10 @@ shown as a local comparison candidate. That preview is not release authority
 and does not bypass MusicBrainz Matches or provider discovery; the operator can
 still choose another release and select higher-resolution artwork.
 
-In **Show Tracks**, clicking a pending fallback compilation's Album row selects
-that Album for normal SQLite-ledger resume and enables **LAUNCH**. Clicking a
-track remains focus/preview only; checking one or more tracks requests explicit
-reopen of exactly that additive queue.
+In **● Embedded Art**, clicking a pending fallback compilation's Album row
+selects that Album for normal SQLite-ledger resume and enables **LAUNCH**.
+Clicking a track remains focus/preview only; checking one or more tracks
+requests explicit reopen of exactly that additive queue.
 
 The compilation-track-started event moves focus to the actual current track but
 does not set an explicit target. Fallback compilation preview reads only that

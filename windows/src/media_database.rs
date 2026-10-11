@@ -2051,7 +2051,7 @@ fn load_snapshot(
     mapper: &PathMapper,
 ) -> Result<MediaSnapshot, String> {
     // Track rows are already maintained by the warm SQLite inventory. Load
-    // only compilation tracks so the Windows Show Tracks view never has to
+    // only compilation tracks so the Windows Embedded Art view never has to
     // walk a network library or open audio tags merely to populate the tree.
     let mut track_statement = connection
         .prepare(

@@ -89,6 +89,9 @@ namespace Splined.WindowsGui
                 Directory.CreateDirectory(mojibakeAlbum);
                 File.WriteAllBytes(Path.Combine(firstAlbum, "track.mp3"), new byte[] { 0 });
                 File.WriteAllBytes(Path.Combine(ignoredAlbum, "track.mp3"), new byte[] { 0 });
+                string mojibakeCover = Path.Combine(mojibakeAlbum, "cover.jpg");
+                using (Bitmap cover = new Bitmap(32, 32))
+                    cover.Save(mojibakeCover, System.Drawing.Imaging.ImageFormat.Jpeg);
 
                 ConfigState state = ConfigStore.Defaults();
                 Assert(state.CacheDir == Path.Combine(ConfigStore.DefaultUserDataRoot, "cache")
@@ -653,6 +656,15 @@ namespace Splined.WindowsGui
                         "5f9ee42f-84b1-42bb-a318-09a05b3fcde1",
                         "ac8e3469-8f18-4ffc-8581-ade501ae0dc5",
                         false, loadedUi.Theme);
+                    int artworkPreviewRequests = 0;
+                    int artworkPreviewEnds = 0;
+                    Dictionary<string, object> lastArtworkPreviewItem = null;
+                    matches.ArtworkPreviewRequested += delegate(object sender, MusicBrainzMatchEventArgs args)
+                    {
+                        artworkPreviewRequests++;
+                        lastArtworkPreviewItem = args.Item;
+                    };
+                    matches.ArtworkPreviewEnded += delegate { artworkPreviewEnds++; };
                     matchesHost.Controls.Add(matches);
                     matchesHost.ShowInTaskbar = false;
                     matchesHost.StartPosition = FormStartPosition.Manual;
@@ -745,6 +757,13 @@ namespace Splined.WindowsGui
                             .All(row => row.SubItems[1].Text == "RELEASE TYPE [EP]")
                         && matches.ReleaseTypeFilterChoices.SequenceEqual(new[] { "ep", "album", "soundtrack" }),
                         "MusicBrainz Artist/Release Type filters did not combine actual row values, preserve selection, or rebuild headings.");
+                    artworkPreviewEnds = 0;
+                    int previewRequestsBeforeRestore = artworkPreviewRequests;
+                    typeof(MusicBrainzMatchesPanel).GetMethod(
+                        "PreviewSelectedArtworkOrEnd", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(matches, null);
+                    Assert(artworkPreviewRequests > previewRequestsBeforeRestore && artworkPreviewEnds == 0
+                        && Object.ReferenceEquals(lastArtworkPreviewItem, matchFixture[1]),
+                        "Moving away from a MusicBrainz URL did not retain the selected release artwork preview.");
                     string[] previewUrls = MusicBrainzMatchesPanel.ArtworkPreviewUrls((Dictionary<string, object>)matchFixture[0]);
                     Assert(previewUrls.Length == 2
                         && previewUrls[0].Contains("/release-group/420c6768-0685-415a-bb59-d6a275121125/front")
@@ -918,6 +937,32 @@ namespace Splined.WindowsGui
                 string resolvedMojibakeAlbum = (string)resolveUnicodePath.Invoke(null, new object[] { indexedMojibakeAlbum });
                 Assert(resolvedMojibakeAlbum == mojibakeAlbum && Directory.Exists(resolvedMojibakeAlbum),
                     "UTF-8/Windows-1252 mojibake Album names were not translated to the physical directory.");
+                MethodInfo resolveAlbumArtwork = typeof(MainForm).GetMethod(
+                    "ResolveExistingAlbumArtworkPath", BindingFlags.Static | BindingFlags.NonPublic);
+                string indexedMojibakeCover = Path.Combine(indexedMojibakeAlbum, "cover.jpg");
+                AlbumInfo mojibakeArtworkAlbum = new AlbumInfo
+                {
+                    Artist = "Cheech & Chong",
+                    Title = "Big Bambú",
+                    Path = indexedMojibakeAlbum,
+                    CoverPath = indexedMojibakeCover,
+                    LocalArtworkFiles = new List<string> { indexedMojibakeCover }
+                };
+                Assert((string)resolveAlbumArtwork.Invoke(null, new object[] { mojibakeArtworkAlbum }) == mojibakeCover
+                    && mojibakeArtworkAlbum.CoverPath == indexedMojibakeCover,
+                    "Normal Album artwork did not resolve an equivalent physical Unicode path without changing SQLite path authority.");
+                AlbumInfo compilationArtworkAlbum = new AlbumInfo
+                {
+                    Artist = "Various Artists",
+                    Title = "Compilation Fixture",
+                    Path = indexedMojibakeAlbum,
+                    CoverPath = indexedMojibakeCover,
+                    LocalArtworkFiles = new List<string> { indexedMojibakeCover },
+                    Compilation = true,
+                    CompilationTrackArtworkEligible = true
+                };
+                Assert(String.IsNullOrEmpty((string)resolveAlbumArtwork.Invoke(null, new object[] { compilationArtworkAlbum })),
+                    "Fallback compilation preview resolved folder cover artwork instead of remaining embedded-track-only.");
                 string stableManifest = "https://github.com/scottia/S-P-L-I-N-E-D/releases/download/1.0.71/windows-update.json";
                 string stableRelease = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/1.0.71";
                 Assert(WindowsUpdateService.IsApprovedStableManifestUrl(stableManifest)
@@ -1132,9 +1177,10 @@ namespace Splined.WindowsGui
                         && selectorExpand is SpectrumToggleButton && selectorExpand.Text == "≫",
                         "The Media Library Selection show/hide glyph is not retained inside the responsive Select Media bar.");
                     CheckBox showTracksControl = form.Controls.Find("showTracks", true).OfType<CheckBox>().Single();
-                    Assert(showTracksControl.Text == "Show Tracks"
+                    Assert(showTracksControl.Text == "● Embedded Art"
+                        && showTracksControl.ForeColor.ToArgb() == ThemeManager.CurrentPalette.StatusIndigo.ToArgb()
                         && showTracksControl.Parent == form.Controls.Find("mediaStatusFilters", true).Single().Controls[0],
-                        "Show Tracks is not present in the Folder status selector.");
+                        "The indigo Embedded Art control is not present in the Folder status selector.");
                     SplitContainer selectorSplit = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     ToolStripMenuItem showMediaSelector = viewMenu.DropDownItems.OfType<ToolStripMenuItem>()
                         .Single(item => item.Text == "Show Media Album Selector");
@@ -1323,7 +1369,7 @@ namespace Splined.WindowsGui
                         && selectedCompilationPaths.Any(path => String.Equals(Path.GetFullPath(path), Path.GetFullPath(completedCompilationTrack.Path), StringComparison.OrdinalIgnoreCase))
                         && selectedCompilationPaths.Any(path => String.Equals(Path.GetFullPath(path), Path.GetFullPath(unfinishedCompilationTrack.Path), StringComparison.OrdinalIgnoreCase))
                         && compilationAlbum.Selected,
-                        "Show Tracks did not retain multiple checked tracks from one fallback compilation Album.");
+                        "Embedded Art did not retain multiple checked tracks from one fallback compilation Album.");
                     List<AlbumInfo> formAlbums = (List<AlbumInfo>)typeof(MainForm)
                         .GetField("albums", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     formAlbums.Add(compilationAlbum);
@@ -1338,7 +1384,6 @@ namespace Splined.WindowsGui
                         && String.IsNullOrWhiteSpace(albumResumeTarget)
                         && compilationLaunch.Enabled,
                         "Focusing a pending fallback compilation Album did not select normal resume and enable LAUNCH.");
-                    formAlbums.Remove(compilationAlbum);
                     compilationAlbum.Selected = false;
 
                     showSelectedAlbum.Invoke(form, new object[] { compilationAlbum });
@@ -1391,6 +1436,7 @@ namespace Splined.WindowsGui
                     } });
                     Assert(unfinishedCompilationTrack.EmbeddedArtworkRecorded,
                         "A completed compilation-track write did not update its live to-do state.");
+                    formAlbums.Remove(compilationAlbum);
                     compilationEvent.Invoke(form, new object[] { new Dictionary<string, object>
                     {
                         { "event", "compilation_track_started" }, { "album_path", compilationAlbum.Path },
@@ -1746,20 +1792,26 @@ namespace Splined.WindowsGui
                         "Manual editing did not retain a non-upscaled Ladder result at native resolution.");
                     FieldInfo candidateRunningField = typeof(MainForm).GetField("running", BindingFlags.Instance | BindingFlags.NonPublic);
                     FieldInfo candidateSessionField = typeof(MainForm).GetField("currentSession", BindingFlags.Instance | BindingFlags.NonPublic);
-                    FieldInfo candidateAwaitingField = typeof(MainForm).GetField("awaitingDecision", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo setReviewDecisionPhase = typeof(MainForm).GetMethod(
+                        "SetReviewDecisionPhase", BindingFlags.Instance | BindingFlags.NonPublic);
                     Button candidateUseSelected = (Button)typeof(MainForm)
                         .GetField("useSelected", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     candidateRunningField.SetValue(form, true);
                     candidateSessionField.SetValue(form,
                         System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(NativeCoreSession)));
-                    candidateAwaitingField.SetValue(form, false);
+                    setReviewDecisionPhase.Invoke(form, new object[] { ReviewDecisionPhase.Loading });
+                    typeof(MainForm).GetMethod("UpdateCandidateActions", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, null);
+                    Assert(!candidateUseSelected.Enabled,
+                        "Use Selected became active before the Rust core requested an artwork candidate decision.");
+                    setReviewDecisionPhase.Invoke(form, new object[] { ReviewDecisionPhase.Candidate });
                     typeof(MainForm).GetMethod("UpdateCandidateActions", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, null);
                     Assert(candidateUseSelected.Enabled,
-                        "Use Selected remained disabled while alternate MusicBrainz candidates were live before decision_required arrived.");
+                        "Use Selected did not activate after the Rust core requested an artwork candidate decision.");
                     candidateSessionField.SetValue(form, null);
                     candidateRunningField.SetValue(form, false);
-                    candidateAwaitingField.SetValue(form, true);
+                    setReviewDecisionPhase.Invoke(form, new object[] { ReviewDecisionPhase.None });
                     Dictionary<string, object> existingIdeal = CandidatePayload(12, "local", 1800, 1800, false, "cover-file");
                     existingIdeal["cache_path"] = upscalePreviewPath;
                     existingIdeal["local_reference"] = "cover.jpg";
@@ -1808,6 +1860,9 @@ namespace Splined.WindowsGui
                     Assert(embeddedView.DisplaySource == "Embedded from track · track.mp3"
                         && fileView.DisplaySource == "Cover file · cover-(2).png",
                         "Local candidates do not identify embedded-track versus cover-file origin.");
+                    candidateRunningField.SetValue(form, true);
+                    candidateSessionField.SetValue(form,
+                        System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(NativeCoreSession)));
                     MethodInfo applyEvent = typeof(MainForm).GetMethod("ApplyCoreEvent", BindingFlags.Instance | BindingFlags.NonPublic);
                     applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
                     {
@@ -1834,11 +1889,20 @@ namespace Splined.WindowsGui
                     Assert(activityHost.Controls.Contains(embeddedMatches) && activityTitle.Text == "MusicBrainz Matches"
                         && !artworkSplit.Panel2Collapsed,
                         "MusicBrainz Matches did not replace Scan Activity while forcing the shared Artwork panel visible.");
+                    Button bypassDuringMusicBrainz = (Button)typeof(MainForm)
+                        .GetField("skip", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(!candidateUseSelected.Enabled && !bypassDuringMusicBrainz.Enabled,
+                        "Artwork candidate actions remained active while MusicBrainz owned the pending decision.");
                     typeof(MainForm).GetMethod("CloseMusicBrainzMatchesWorkspace", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, new object[] { true });
+                    applyEvent.Invoke(form, new object[] { new Dictionary<string, object>
+                    {
+                        { "event", "source_results_restored" }
+                    } });
                     Assert(activityTitle.Text == "Scan Activity and Decisions"
-                        && activityHost.Controls.Find("musicBrainzMatchesPanel", true).Length == 0,
-                        "Returning from MusicBrainz Matches did not restore Scan Activity when no candidate results remained.");
+                        && activityHost.Controls.Find("musicBrainzMatchesPanel", true).Length == 0
+                        && candidateUseSelected.Enabled && bypassDuringMusicBrainz.Enabled,
+                        "Returning from MusicBrainz Matches did not restore Scan Activity and the cached source decision.");
                     formUi.ShowArtwork = true;
                     typeof(MainForm).GetMethod("ApplyArtworkPanelVisibility", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                     FieldInfo runningField = typeof(MainForm).GetField("running", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -1912,6 +1976,8 @@ namespace Splined.WindowsGui
                     } });
                     Assert(candidateMap.Count == 0 && candidateCards.Controls.Count == 0 && !(bool)awaitingField.GetValue(form),
                         "Completed artwork decisions must clear the visible candidate search.");
+                    candidateSessionField.SetValue(form, null);
+                    candidateRunningField.SetValue(form, false);
                     TableLayoutPanel reportColumn = (TableLayoutPanel)typeof(MainForm)
                         .GetField("activityColumn", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     bool filterWorkspaceActive = (bool)typeof(MainForm)
@@ -2519,7 +2585,9 @@ namespace Splined.WindowsGui
                 && dark.StatusPurple.R < 180 && dark.StatusPurple.B > dark.StatusPurple.R,
                 "Dark purple status text is still too light or reuses a MusicBrainz category color.");
             Assert(ThemeManager.StatusColor(ThemeStatusColor.Orange, "Dark") == dark.StatusOrange
-                && ThemeManager.StatusColor(ThemeStatusColor.Blue, "Light") == light.StatusBlue,
+                && ThemeManager.StatusColor(ThemeStatusColor.Blue, "Light") == light.StatusBlue
+                && ThemeManager.StatusColor(ThemeStatusColor.Indigo, "Dark") == dark.StatusIndigo
+                && ThemeManager.StatusColor(ThemeStatusColor.Indigo, "Light") == light.StatusIndigo,
                 "Folder status colors are no longer sourced from the semantic status palette.");
             Assert(typeof(FluentMenuRenderer).GetMethod("OnRenderMenuItemBackground", BindingFlags.Instance | BindingFlags.NonPublic).DeclaringType == typeof(FluentMenuRenderer)
                 && typeof(FluentMenuRenderer).GetMethod("OnRenderItemCheck", BindingFlags.Instance | BindingFlags.NonPublic).DeclaringType == typeof(FluentMenuRenderer)

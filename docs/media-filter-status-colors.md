@@ -109,12 +109,13 @@ separate folder cover is untouched. Orange Albums may be deliberately selected
 for reprocessing. Ordinary Red Albums require an intentional temporary bypass
 override. Purple Albums remain protected while timeout is active.
 
-Windows **Show Tracks** is a view mode, not another Folder Status. It uses the
-cached compilation-track rows beneath the same physical library hierarchy.
-Green track markers mean SPLINED has a completed embedded-art ledger entry;
-unmarked tracks have no such completion record. Highlighting a track changes
-only embedded-art preview focus. Checking one track deliberately reopens only
-that embedded image for review or replacement, even when the Album is otherwise
+Windows **● Embedded Art** is an indigo view mode, not another Folder Status. It
+retains the established compilation-track behavior and uses the cached
+compilation-track rows beneath the same physical library hierarchy. Green track
+markers mean SPLINED has a completed embedded-art ledger entry; unmarked tracks
+have no such completion record. Highlighting a track changes only embedded-art
+preview focus. Checking one track deliberately reopens only that embedded image
+for review or replacement, even when the Album is otherwise
 Processed or Bypassed. Checking the Album instead clears the track target and
 resumes from the first unfinished ledger entry.
 

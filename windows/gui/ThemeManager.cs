@@ -12,7 +12,7 @@ using Microsoft.Win32;
 namespace Splined.WindowsGui
 {
     internal enum ThemeFontRole { Minor, Body, Control, PanelTitle, AppTitle }
-    internal enum ThemeStatusColor { White, Orange, Red, Purple, Green, Blue }
+    internal enum ThemeStatusColor { White, Orange, Red, Purple, Green, Blue, Indigo }
     internal enum CardVisualRole { Panel, Nested, SpectrumNested, CandidateGlass, LocalCandidateGlass, UpscaleCandidateGlass, RejectedCandidateGlass, Recommended, Log }
 
     /// <summary>Central semantic palette. Status colors remain data colors, not decoration.</summary>
@@ -30,7 +30,7 @@ namespace Splined.WindowsGui
         public readonly Color Warning, Error, Success;
         public readonly Color LogReadBackground, LogWriteBackground, LogBorder, LogForeground, LogHeading, LogAccent, LogSuccess, LogWarning, LogError, LogMuted;
         public readonly Color Link, LinkActive;
-        public readonly Color StatusWhite, StatusOrange, StatusRed, StatusPurple, StatusGreen, StatusBlue, CategoryMagenta;
+        public readonly Color StatusWhite, StatusOrange, StatusRed, StatusPurple, StatusGreen, StatusBlue, StatusIndigo, CategoryMagenta;
         public readonly float WatermarkOpacity;
 
         private ThemePalette(bool dark)
@@ -106,6 +106,7 @@ namespace Splined.WindowsGui
                 StatusPurple = Color.FromArgb(157, 103, 211);
                 StatusGreen = Color.FromArgb(111, 214, 143);
                 StatusBlue = Color.FromArgb(103, 181, 255);
+                StatusIndigo = Color.FromArgb(129, 140, 248);
                 CategoryMagenta = Color.FromArgb(242, 72, 171);
                 WatermarkOpacity = 0.13f;
             }
@@ -178,6 +179,7 @@ namespace Splined.WindowsGui
                 StatusPurple = Color.Purple;
                 StatusGreen = Color.ForestGreen;
                 StatusBlue = Color.RoyalBlue;
+                StatusIndigo = Color.FromArgb(67, 56, 202);
                 CategoryMagenta = Color.FromArgb(174, 24, 108);
                 WatermarkOpacity = 0.16f;
             }
@@ -350,6 +352,7 @@ namespace Splined.WindowsGui
                 case ThemeStatusColor.Purple: return palette.StatusPurple;
                 case ThemeStatusColor.Green: return palette.StatusGreen;
                 case ThemeStatusColor.Blue: return palette.StatusBlue;
+                case ThemeStatusColor.Indigo: return palette.StatusIndigo;
                 default: return palette.StatusWhite;
             }
         }
