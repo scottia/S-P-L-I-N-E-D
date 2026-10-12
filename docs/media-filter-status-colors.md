@@ -309,55 +309,54 @@ The lower Selected Album Statistics panel remains scrollable.
 
 The expanded Windows Artwork Filter replaces the Scan Activity workspace beside
 Selected Album Artwork while its activation button remains above the candidate
-cards. A compact three-column summary contains Image Type/Policy, Source
-Selection, and Wanted/Unwanted; a fourth spectrum-framed Upscale/Advanced panel
-is attached directly below it and encloses its action buttons and sliders. The
-shared outer workspace remains unframed. Within each summary column, the
-complete option name receives a measured fixed-width cell and the live count
-follows immediately in its own cell. Remaining space stays after the count.
-Percentage layout must not collapse option names into ellipses, including at
-supported DPI scales.
+cards. Its unframed host contains exactly two equal spectrum-framed panes. The
+first pane contains three evenly spaced columns for Image Type/Policy, Source
+Selection, and Wanted/Unwanted. The second pane contains Upscale/Advanced modes
+and one compact, left-grouped slider row. Within each status column, the complete
+option name receives a measured fixed-width cell and the live count follows in
+its own cell. Remaining space stays after the count. Percentage layout must not
+collapse option names into ellipses, including at supported DPI scales.
 
 Filter exclusions are persistent interface state rather than per-Album scratch
 state. They survive candidate clearing, later Albums, concurrent batches, and
 application restart, and are included when Interface Settings are selected in
 a `.spl` backup. Controls may be temporarily disabled when the current result
 set cannot satisfy them; this does not discard the saved operator preference.
-The three summary frames always share the tallest required height. The
-Upscale/Advanced area uses eight frameless spectrum controls built from one
-template: title centered over exactly 20 bars, compact up/down glyphs, then a
-centered reset glyph. The current signed value is a bold white number in the
-middle of the bar with no angle brackets. They expose the same mouse, wheel,
-keyboard, reset, and persisted-value behavior as the previous vertical controls.
-The single unframed symbol-font arrow before the Candidate Findings title expands
-or collapses the three summary groups and the attached Upscale/Advanced section
-together. When expanded, Upscale remains one adaptive row of eight. Its Compact,
+The two panes share one required height. The Upscale/Advanced area uses eight
+frameless spectrum controls built from one template: title centered over exactly
+20 bars, compact up/down glyphs, then a centered reset glyph. The current signed
+value is a bold white number in the middle of the bar with no angle brackets.
+They expose the same mouse, wheel, keyboard, reset, and persisted-value behavior
+as the previous vertical controls. The single arrow in the Artwork Filter bar
+expands or collapses both panes together. Up means expanded. Down means
+collapsed, replacing both panes with the live Scan Activity and Decisions stream
+and completed Album reports. When expanded, Upscale remains one adaptive row of
+eight. Its Compact,
 Standard, or Spacious density is selected from the live DPI-normalized editor
 width at under 640, 640–960, and
 over 960 pixels respectively. Startup, window-state, RDP/display, per-monitor
 DPI, and splitter changes resize existing modules in place without rebuilding
 them. Width is capped in Spacious mode, and the square Artwork pane yields width
 when Compact needs it, so the slider row neither wraps nor needs a scrollbar.
-The expanded left workspace therefore has exactly four spectrum panel frames:
-the three summary groups and the shared Upscale/Advanced panel. Individual
-slider modules remain unframed. The square Artwork preview retains its own
-separate preview frame to the right.
-The selected source aspect ratio, native dimensions, and projected dimensions
-appear as unframed yellow text docked to the bottom of Source Selection. The
-text wraps without ellipsis at compact widths. The summary table itself has no
-competing bottom margin, so all three aligned frame borders remain visible at
-wide and high-DPI layouts.
+Individual slider modules remain unframed. The square Artwork preview retains
+its own separate preview frame to the right. The selected source aspect ratio,
+native dimensions, and projected dimensions appear as unframed yellow text at
+the bottom of the first pane. It remains a single horizontal status line so it
+cannot increase or clip the two-pane frame; extremely compact widths may
+ellipsize the tail rather than introduce another slider-row layout.
 Existing local covers remain eligible for explicit preview/edit even when
 already Ideal or above Ideal; their dimensions are not reduced automatically.
 
-**Upscale Preview** is enabled by default. Preview and full-size inspection
-still apply the visible profile in memory, while **Use Selected** preserves the
-chosen source dimensions and omits upscale/edit-profile filtering. Disabling
-the toggle changes the action to **Upscale** and allows the configured profile
-to affect the saved output. Upscale Preview and Upscale Show Full remain enabled
-when selection state changes. Configured square-crop output is represented in
-the live preview with the same centered crop geometry used by the Rust output
-projection, before the projected resize is applied.
+**Upscale Preview** is enabled by default and is mutually exclusive with
+**🔘 Apply Upscale**. Preview mode keeps **Use Selected** at the chosen source
+dimensions and omits upscale/edit-profile filtering. Apply mode permits the
+configured profile to affect saved output. The former Upscale and Upscale Show
+Full buttons are removed. Selecting one editable result gives Artwork Preview a
+hand pointer; clicking it opens one separate resizable window with equal
+**[CURRENT]** and **[UPSCALED]** panes, the same eight controls, **Save Existing**,
+and a red **Cancel Upscale** action. Repeated clicks focus the existing window.
+Configured square-crop output is represented there with the same centered crop
+geometry used by the Rust output projection, before the projected resize.
 
 The Artwork-only vertical divider and the horizontal divider below it remain a
 single outer-pane square corner during drag and resize. Both upper panels end on

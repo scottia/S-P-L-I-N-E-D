@@ -91,23 +91,31 @@ canonical Album path/key and SQLite status authority remain intact.
 The main workspace shows Album progress, provider activity, decisions,
 diagnostics, and run completion. Candidate cards preserve source, image type,
 resolution range, policy, ranking, and selected/recommended state. Artwork
-Filter selections narrow actual candidate values. Advanced controls accompany
-the selected candidate and include upscale defaults, picture, sharpen,
-softness, contrast, exposure, brightness, gamma, color temperature, and
-existing-cover editing. Compare and full-size preview use the cached candidate
-bytes that the Rust backend evaluated.
+Filter selections narrow actual candidate values. The branded header uses the
+repository logo, the colorized **S.P.L.I.N.E.D** wordmark, and the exact expanded
+**SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD :
+DƎFІNƎD** slogan with its spectrum separators.
 
-The single unframed arrow immediately before **Candidate Findings | Upscale
-Artwork Editing** expands or collapses one unified workspace. Its unframed outer
-host contains four thin spectrum-framed panels: **Candidate Findings**, **Source
-Selection**, **Resolution**, and **Upscale / Advanced**. The first three retain
-the height of the tallest summary, and the fourth frame encloses the shared
-Upscale action buttons and all eight sliders. Each editing control remains an
-unframed template within that shared fourth panel: a centered title, exactly 20
-segmented spectrum bars, compact one-step up/down glyphs, and a centered reset
-glyph. The current signed value is painted as a bold white number in the middle
-of each spectrum bar without angle brackets. Mouse, wheel, keyboard, reset, and
-persisted-value behavior remain unchanged.
+The arrow in the **Artwork Filter** bar expands or collapses one unified
+workspace. Up means expanded; down means collapsed. Expanded replaces Scan
+Activity with exactly two thin spectrum-framed panes:
+
+- **Candidate Findings** contains three evenly spaced status columns for image
+  type and policy, source selection, and wanted/unwanted resolution ranges.
+  Source aspect ratio, native dimensions, and projected dimensions appear as
+  unframed yellow text at the bottom of this pane.
+- **Upscale / Advanced** contains the mutually exclusive **Upscale Preview** and
+  **🔘 Apply Upscale** modes, **Apply Upscale Default**, and one compact,
+  left-grouped row of eight editing controls. Pane resizing never stretches the
+  gaps between those controls.
+
+Each editing control remains an unframed template inside the second pane: a
+centered title, exactly 20 segmented spectrum bars, compact one-step up/down
+glyphs, and a centered reset glyph. The current signed value is painted as a
+bold white number in the middle of each spectrum bar without angle brackets.
+Mouse, wheel, keyboard, reset, and persisted-value behavior remain unchanged.
+Collapsed mode replaces both panes with the live **Scan Activity and Decisions**
+stream and completed Album reports.
 
 SPLINED measures the live editor width in DPI-normalized pixels instead of
 guessing a physical device from its resolution. Under 640 pixels uses Compact,
@@ -118,33 +126,34 @@ other high-resolution Remote Desktop sessions gain breathing room instead of
 oversized controls. The row is recalculated after startup, maximize/restore,
 display or RDP resolution changes, per-monitor DPI changes, and splitter
 movement. Resize events update existing bounds without rebuilding the controls,
-preventing preview-selection flicker. Expanding the workspace restores the three
-summaries and the same attached slider row together. The slider row does not wrap
-or require a scrollbar.
+preventing preview-selection flicker. Expanding the workspace restores the same
+two panes and slider controls. The slider row does not wrap or require a
+scrollbar.
 
-Individual slider modules remain unframed inside the shared fourth
-Upscale/Advanced frame. Preview actions use SPLINED's shared action font, glyph,
-and framed-button treatment.
+**Upscale Preview** is enabled by default. It keeps **Use Selected** at the
+chosen source resolution without applying upscale or edit-profile filtering.
+Selecting **🔘 Apply Upscale** turns Preview off; the two radio modes cannot be
+active together. **Apply Upscale Default** retains the saved adaptive-profile
+behavior.
 
-**Upscale Preview** is enabled by default. It keeps Upscale and full-size
-preview available, but **Use Selected** saves the chosen source at its source
-resolution without applying upscale or edit-profile filtering. Turn it off to
-enter explicit **Upscale** save mode. The former framed resolution tile beside
-**Upscale Show Full** has been removed. Its source aspect ratio and projected
-dimensions now appear as unframed yellow text at the bottom of **Source
-Selection**, using otherwise unused summary space and leaving the Upscale action
-row uncluttered. The text stays on one line when space permits and wraps into
-short complete lines at compact widths rather than truncating a dimension.
-Both preview buttons remain available across candidate-state changes; when no
-editable result is selected they give selection guidance instead of becoming
-disabled. A refreshed result set without a formal recommendation focuses its
-first editable result without submitting it, so Upscale / Advanced never loses
-its preview target merely because MusicBrainz returned a different release.
+The old **Upscale** and **Upscale Show Full** buttons are removed from the main
+pane. When one editable result is selected, the Artwork Preview uses a hand
+pointer. Clicking it opens one separate, resizable **Upscale Comparison &
+Editing** window—never another panel below the main workspace. Its equal
+**[CURRENT]** and **[UPSCALED]** panes use the cached candidate bytes evaluated
+by Rust. The same eight controls edit the full comparison, **Save Existing**
+commits only in Apply Upscale mode, and the red **Cancel Upscale** action closes
+without saving. Repeated artwork clicks activate the existing editor rather
+than opening duplicate windows.
+
+A refreshed result set without a formal recommendation focuses its first
+editable result without submitting it, so Upscale / Advanced never loses its
+preview target merely because MusicBrainz returned a different release.
 Re-focusing the active Album in the media tree preserves the current candidate
 or MusicBrainz decision workspace; it does not restart or close the run. When
-Config v5 enables square crop output and the Rust projection is
-square, the in-memory Upscale preview uses the same centered square source crop
-before resizing, so the preview does not stretch a near-square source.
+Config v5 enables square crop output and the Rust projection is square, the
+Upscale editor uses the same centered square source crop before resizing, so its
+comparison does not stretch a near-square source.
 Settings remains available for passive local/candidate previews and is blocked
 only while processing or an active decision is waiting.
 

@@ -439,6 +439,7 @@ namespace Splined.WindowsGui
                 catch (InvalidOperationException) { wrongPasswordRejected = true; }
                 Assert(wrongPasswordRejected, "Password-protected .spl backup accepted an incorrect password.");
                 VerifyPortableRestoreDeterminism(internalSettings, loaded);
+                Console.WriteLine("WinForms QA: portable settings, backup, and restore coverage passed.");
                 string savedConfigBeforeTemporaryRun = ConfigStore.ExportConfigText(ConfigStore.Load());
                 ConfigState temporaryRunState = loaded.Clone();
                 temporaryRunState.Mode = "read";
@@ -454,6 +455,7 @@ namespace Splined.WindowsGui
                 catch (InvalidOperationException) { emptySnapshotRejected = true; }
                 Assert(emptySnapshotRejected, "An empty SQLite media snapshot was accepted.");
 
+                Console.WriteLine("WinForms QA: opening isolated Settings coverage.");
                 using (SetupForm setup = new SetupForm(loaded, false))
                 {
                     setup.ShowInTaskbar = false;
@@ -557,6 +559,7 @@ namespace Splined.WindowsGui
                     Assert(setup.Icon != null, "The SPLINED application icon was not applied to Settings.");
                     VerifyRetentionLayout(setup, advanced, pathsTab);
                 }
+                Console.WriteLine("WinForms QA: isolated Settings coverage passed.");
 
                 object[] matchFixture =
                 {
@@ -789,6 +792,7 @@ namespace Splined.WindowsGui
                         && previewUrls[1].Contains("/release/5d05694f-2b0f-427e-9df8-78dbc0983681/front"),
                         "MusicBrainz artwork preview did not prefer release-group front art with exact-release fallback.");
                 }
+                Console.WriteLine("WinForms QA: MusicBrainz authority and filter coverage passed.");
 
                 Dictionary<string, object> fanartCredential = new Dictionary<string, object>
                 {
@@ -1043,6 +1047,7 @@ namespace Splined.WindowsGui
                         "https://apps.microsoft.com.evil.invalid/detail/9p8g4gmbbvbs?hl=en-US&gl=US"),
                     "Microsoft Store update fallback is not restricted to the official SPLINED product URL.");
                 VerifyStoreUpdateProjection();
+                Console.WriteLine("WinForms QA: update and supporting service coverage passed.");
 
                 loadedUi.HoverEnabled = false;
                 loadedUi.ShowMediaSelector = true;
@@ -1083,7 +1088,11 @@ namespace Splined.WindowsGui
                         "The Help menu still exposes duplicate Documentation/Python coverage surfaces.");
                     Assert(form.MainMenuStrip is FluentMenuStrip
                         && form.MainMenuStrip.AutoSize && form.MainMenuStrip.Dock == DockStyle.Fill
-                        && Descendants(form).OfType<SplinedWordmark>().Any(),
+                        && Descendants(form).OfType<SplinedWordmark>().Single().AccessibleName
+                            == "S.P.L.I.N.E.D"
+                        && Descendants(form).OfType<SplinedSlogan>().Single().AccessibleName
+                            == "SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
+                        && form.Controls.Find("splinedBrandLogo", true).OfType<PictureBox>().Single().Image != null,
                         "The top menu does not use the centralized first-frame Fluent menu surface.");
                     form.MainMenuStrip.CreateControl();
                     form.MainMenuStrip.PerformLayout();
@@ -1186,7 +1195,7 @@ namespace Splined.WindowsGui
                         "Artwork Candidates did not use the Media Selection-style dropdown with its unframed workspace.");
                     MethodInfo invokeArtworkFilter = typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
-                    Assert(artworkFilterPanel.Parent == null && artworkFilter.Text.Contains("▸") && !artworkFilter.Enabled,
+                    Assert(artworkFilterPanel.Parent == null && artworkFilter.Text.Contains("↓") && !artworkFilter.Enabled,
                         "Artwork Filter opened a blank expanded surface before candidate results existed.");
                     FluentCardTableLayoutPanel libraryCard = form.Controls.Find("mediaLibrarySelectionCard", true).Single() as FluentCardTableLayoutPanel;
                     FluentCardTableLayoutPanel activityPanel = form.Controls.Find("scanActivityCard", true).Single() as FluentCardTableLayoutPanel;
@@ -1487,14 +1496,15 @@ namespace Splined.WindowsGui
                     showSelectedAlbum.Invoke(form, new object[] { previewAlbum });
                     Button directSaveExisting = (Button)typeof(MainForm)
                         .GetField("useSelected", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    Button directUpscalePreview = (Button)typeof(MainForm)
-                        .GetField("upscalePreview", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    PictureBox directArtworkPreview = (PictureBox)typeof(MainForm)
+                        .GetField("artworkPreviewImage", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     Dictionary<int, CandidateView> directCandidates = (Dictionary<int, CandidateView>)typeof(MainForm)
                         .GetField("candidates", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     Assert(artworkFilter.Enabled && directCandidates.Count == 1
-                        && directCandidates.Values.Single().IsLocal && directUpscalePreview.Enabled
+                        && directCandidates.Values.Single().IsLocal
+                        && directArtworkPreview.Cursor == Cursors.Hand
                         && directSaveExisting.Text == "Save Existing" && directSaveExisting.Enabled,
-                        "Selecting an Album with cover.* did not expose direct Artwork Filter editing before a provider run.");
+                        "Selecting an Album with cover.* did not expose artwork-click editing before a provider run.");
                     DateTime firstCoverWrite = File.GetLastWriteTimeUtc(upscalePreviewPath);
                     using (Bitmap replacement = new Bitmap(16, 14))
                     {
@@ -1531,47 +1541,55 @@ namespace Splined.WindowsGui
                     Application.DoEvents();
                     Panel activityHost = form.Controls.Find("activityContentHost", true).OfType<Panel>().Single();
                     Label activityTitle = form.Controls.Find("scanActivityTitle", true).OfType<Label>().Single();
-                    Assert(activityHost.Controls.Contains(artworkFilterPanel) && artworkFilter.Text.Contains("▾")
-                        && activityTitle.Text == "Candidate Findings | Upscale Artwork Editing"
+                    Assert(activityHost.Controls.Contains(artworkFilterPanel) && artworkFilter.Text.EndsWith("↑", StringComparison.Ordinal)
+                        && activityTitle.Text == "Candidate Findings | Upscale & Artwork Editing"
                         && filterSplit.Panel2MinSize < filterClosedPanel2Minimum
                         && Math.Abs(artworkSplit.Panel2.Width - artworkSplit.ClientSize.Height) <= 2,
                         "Artwork Filter did not replace Scan Activity while retaining the shared square Artwork corner.");
                     TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
-                    FluentGroupBox upscaleSection = form.Controls.Find("candidateUpscaleGroup", true)
+                    TableLayoutPanel twoPane = form.Controls.Find("candidateTwoPaneLayout", true)
+                        .OfType<TableLayoutPanel>().Single();
+                    FluentGroupBox findingsSection = form.Controls.Find("candidateFindingsPane", true)
                         .OfType<FluentGroupBox>().Single();
-                    TableLayoutPanel summaryPanel = form.Controls.Find("candidateSummaryPanel", true).OfType<TableLayoutPanel>().Single();
+                    FluentGroupBox upscaleSection = form.Controls.Find("candidateUpscalePane", true)
+                        .OfType<FluentGroupBox>().Single();
+                    TableLayoutPanel summaryColumns = form.Controls.Find("candidateSummaryColumns", true)
+                        .OfType<TableLayoutPanel>().Single();
                     Assert(filterColumns.ColumnCount == 1
-                        && filterColumns.ColumnStyles.Count == 1 && filterColumns.RowCount == 2
+                        && filterColumns.ColumnStyles.Count == 1 && filterColumns.RowCount == 1
                         && filterColumns.Dock == DockStyle.Top && artworkFilterPanel.AutoScroll
                         && !(artworkFilterPanel is FluentCardPanel)
                         && !artworkFilterPanel.VerticalScroll.Visible
                         && !form.Controls.Find("scanActivityCard", true).OfType<ScrollableControl>().Single().VerticalScroll.Visible
-                        && filterColumns.GetPositionFromControl(summaryPanel).Row == 0
-                        && filterColumns.GetPositionFromControl(upscaleSection).Row == 1
-                        && !Descendants(summaryPanel).Contains(upscaleSection)
-                        && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
-                            .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
-                        "Artwork Filter did not expose three aligned summary frames and one spectrum-framed Upscale workspace.");
-                    FluentGroupBox[] summaryGroups = new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
-                        .Select(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single()).ToArray();
-                    Assert(summaryGroups.Select(group => group.Height).Distinct().Count() == 1
-                        && summaryGroups.All(group => group.Dock == DockStyle.Fill
-                            && group.Bottom <= summaryPanel.ClientSize.Height)
-                        && summaryPanel.Margin == Padding.Empty,
-                        "Candidate Findings, Source Selection, and Resolution did not retain an unclipped tallest shared panel height.");
-                    TableLayoutPanel previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
+                        && twoPane.ColumnCount == 3 && twoPane.RowCount == 1
+                        && twoPane.GetPositionFromControl(findingsSection).Column == 0
+                        && twoPane.GetPositionFromControl(upscaleSection).Column == 2
+                        && findingsSection.SpectrumBorder && upscaleSection.SpectrumBorder
+                        && findingsSection.Height == upscaleSection.Height
+                        && form.Controls.Find("candidateFindingsGroup", true).Length == 0
+                        && form.Controls.Find("candidateSourcesGroup", true).Length == 0
+                        && form.Controls.Find("candidateRangesGroup", true).Length == 0
+                        && form.Controls.Find("candidateUpscaleGroup", true).Length == 0,
+                        "Artwork Filter did not expose exactly two equal spectrum-framed panes.");
+                    Control[] statusColumns = new[] { 0, 2, 4 }
+                        .Select(column => summaryColumns.GetControlFromPosition(column, 0)).ToArray();
+                    Assert(summaryColumns.ColumnCount == 5 && statusColumns.All(control => control is TableLayoutPanel)
+                        && summaryColumns.ColumnStyles[0].SizeType == SizeType.Percent
+                        && summaryColumns.ColumnStyles[2].SizeType == SizeType.Percent
+                        && summaryColumns.ColumnStyles[4].SizeType == SizeType.Percent
+                        && Math.Abs(summaryColumns.ColumnStyles[0].Width - summaryColumns.ColumnStyles[4].Width) < 0.1f,
+                        "Candidate Findings pane does not use three evenly spaced status columns.");
                     Panel advancedControls = form.Controls.Find("upscaleAdvancedControls", true).OfType<Panel>().Single();
                     TableLayoutPanel advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
-                    Button compactPreview = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
-                    Button showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
-                    CheckBox previewOnlyMode = form.Controls.Find("upscalePreviewOnly", true).OfType<CheckBox>().Single();
+                    RadioButton previewOnlyMode = form.Controls.Find("upscalePreviewOnly", true).OfType<RadioButton>().Single();
+                    RadioButton applyMode = form.Controls.Find("upscaleApply", true).OfType<RadioButton>().Single();
+                    CheckBox adaptiveMode = form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single();
                     Label candidateDimensions = form.Controls.Find("upscaleCandidateDimensions", true).OfType<Label>().Single();
-                    FluentGroupBox sourceSummary = form.Controls.Find("candidateSourcesGroup", true)
-                        .OfType<FluentGroupBox>().Single();
                     Assert(form.Controls.Find("upscaleResolutionTile", true).Length == 0,
                         "The obsolete framed Upscale resolution tile is still present.");
-                    Assert(candidateDimensions.Parent == sourceSummary && candidateDimensions.Dock == DockStyle.Bottom,
-                        "Aspect ratio text is not docked directly to the bottom of Source Selection.");
+                    Assert(Descendants(findingsSection).Contains(candidateDimensions)
+                        && candidateDimensions.Dock == DockStyle.Fill,
+                        "Aspect ratio text is not unframed at the bottom of the first status pane.");
                     Assert(candidateDimensions.Text.StartsWith("▣", StringComparison.Ordinal)
                         && candidateDimensions.Text.Contains("→"),
                         "Aspect ratio text does not include its source-to-projected resolution context: "
@@ -1585,52 +1603,58 @@ namespace Splined.WindowsGui
                     Assert(candidateDimensions.ForeColor.ToArgb()
                             == ThemeManager.PaletteFor("Dark").Warning.ToArgb(),
                         "Aspect ratio text is not using the requested yellow warning color.");
-                    Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
-                        && previewOnlyMode.Checked && previewOnlyMode.Text == "Upscale Preview"
-                        && compactPreview.Text == "Upscale Preview" && Convert.ToString(compactPreview.Tag) == "success"
-                        && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
-                            .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().Dock == DockStyle.Fill)
+                    Label editorLegend = form.Controls.Find("upscaleAdvancedLegend", true).OfType<Label>().Single();
+                    Assert(adaptiveMode.Checked
+                        && adaptiveMode.Text == "Apply Upscale Default"
+                        && previewOnlyMode.Checked && !applyMode.Checked
+                        && previewOnlyMode.Text == "Upscale Preview"
+                        && applyMode.Text == "🔘 Apply Upscale",
+                        "Artwork Filter did not expose mutually exclusive Preview/Apply modes with adaptive defaults.");
+                    Assert(form.Controls.Find("upscalePreviewButton", true).Length == 0
+                        && form.Controls.Find("upscaleShowFullButton", true).Length == 0
+                        && editorLegend.Text == "Click the Artwork Preview to view full upscale comparison and editing"
+                        && editorLegend.ForeColor.ToArgb() == ThemeManager.PaletteFor("Dark").Warning.ToArgb(),
+                        "Artwork Filter retained old upscale buttons or omitted the yellow artwork-click instruction.");
+                    string[] profileKeys = { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" };
+                    SpectrumSlider[] profileSliders = profileKeys
+                        .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single())
+                        .ToArray();
+                    Assert(profileSliders.All(slider => slider.Dock == DockStyle.Fill)
                         && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<SpectrumSlider>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileSlider_temperature", true).OfType<SpectrumSlider>().Single().Value == 0
                         && form.Controls.Find("upscaleProfileReset_gamma", true).OfType<FluentButton>().Single().CenteredGlyph == "↺"
                         && form.Controls.Find("upscaleProfileTitle_brightness", true).OfType<Label>().Single().Text.Contains("Brightness")
-                        && form.Controls.Find("upscaleProfileTitle_temperature", true).OfType<Label>().Single().Text.Contains("Color")
-                        && !advancedControls.AutoScroll && advancedGrid.Dock == DockStyle.None
-                        && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
-                        && Enumerable.Range(0, 8).All(index =>
+                        && form.Controls.Find("upscaleProfileTitle_temperature", true).OfType<Label>().Single().Text.Contains("Color"),
+                        "Artwork Filter slider titles, reset glyphs, or persisted values are incomplete.");
+                    Assert(!advancedControls.AutoScroll && advancedGrid.Dock == DockStyle.None
+                        && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1,
+                        "Artwork Filter sliders are not one compact, non-scrolling 8-column row.");
+                    Control firstProfile = advancedGrid.GetControlFromPosition(0, 0);
+                    Assert(Enumerable.Range(0, 8).All(index =>
                         {
                             Control profile = advancedGrid.GetControlFromPosition(index, 0);
                             return profile is Panel && !(profile is GroupBox)
-                                && profile.Width == advancedGrid.GetControlFromPosition(0, 0).Width
-                                && profile.Height == advancedGrid.GetControlFromPosition(0, 0).Height
+                                && profile.Width == firstProfile.Width
+                                && profile.Height == firstProfile.Height
                                 && profile.Anchor == AnchorStyles.None;
-                        })
-                        && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
-                            .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single())
-                            .All(slider => slider.SegmentCount == 20 && slider.ShowValueOverlay
-                                && slider.ValueOverlayText == "0")
+                        }),
+                        "Artwork Filter slider modules are not equal, unframed, and fixed in place.");
+                    Assert(profileSliders.All(slider => slider.SegmentCount == 20 && slider.ShowValueOverlay
+                            && slider.ValueOverlayText == "0")
                         && form.Controls.Find("upscaleProfileValue_picture", true).Length == 0
-                        && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
-                            .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().SpectrumIndex)
-                            .Distinct().Count() == 8
-                        && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<Button>().Count() == 3
-                        && previewLine.ColumnCount == 3 && previewLine.Controls.Count == 2
-                        && previewLine.GetPositionFromControl(showFullPreview).Column == 1
-                        && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
-                        && previewLine.ColumnStyles[0].Width == 168 && compactPreview.Width <= 170
-                        && ((FluentButton)compactPreview).SpectrumBorder && ((FluentButton)showFullPreview).SpectrumBorder
-                        && ((FluentButton)compactPreview).LeadingGlyph == "◉"
-                        && ((FluentButton)showFullPreview).LeadingGlyph == "↗"
-                        && compactPreview.Font.Name == launch.Font.Name
-                        && Math.Abs(compactPreview.Font.SizeInPoints - launch.Font.SizeInPoints) < 0.1f
-                        && compactPreview.Enabled && showFullPreview.Enabled,
-                        "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
+                        && profileSliders.Select(slider => slider.SpectrumIndex).Distinct().Count() == 8,
+                        "Artwork Filter sliders do not retain 20 segments, centered in-slider values, and eight colors.");
+                    Assert(form.Controls.Find("upscaleProfileControl_brightness", true).Single()
+                            .Controls.OfType<Button>().Count() == 3,
+                        "Artwork Filter slider controls do not retain their up, down, and reset glyph actions.");
                     TableLayoutPanel modeLine = form.Controls.Find("upscaleModeLine", true).OfType<TableLayoutPanel>().Single();
-                    Assert(modeLine.GetPositionFromControl(previewOnlyMode).Column == 1
+                    Assert(modeLine.GetPositionFromControl(previewOnlyMode).Column == 0
+                        && modeLine.GetPositionFromControl(applyMode).Column == 1
+                        && modeLine.GetPositionFromControl(adaptiveMode).Column == 2
                         && modeLine.ColumnStyles[0].SizeType == SizeType.Absolute
                         && modeLine.ColumnStyles[1].SizeType == SizeType.Absolute
-                        && modeLine.ColumnStyles[0].Width <= 190 && previewOnlyMode.Left <= 200,
-                        "Upscale Preview is not kept compactly beside Apply default upscale.");
+                        && modeLine.ColumnStyles[0].Width <= 190 && previewOnlyMode.Left <= 20,
+                        "Upscale Preview, Apply Upscale, and Apply Upscale Default are not compactly grouped.");
                     foreach (SpectrumSlider slider in Descendants(advancedGrid).OfType<SpectrumSlider>())
                     {
                         Panel sliderHost = slider.Parent as Panel;
@@ -1649,45 +1673,45 @@ namespace Splined.WindowsGui
                             .All(button => button.Width <= 24 && button.Anchor == AnchorStyles.None
                                 && ((FluentButton)button).ChromeLess),
                         "The adaptive single-row Upscale layout did not use the shared frameless compact glyph template.");
-                    previewOnlyMode.Checked = false;
-                    Assert(compactPreview.Text == "Upscale" && Convert.ToString(compactPreview.Tag) == "primary",
-                        "Disabling Upscale Preview did not expose the explicit Upscale save mode.");
+                    applyMode.Checked = true;
+                    Assert(applyMode.Checked && !previewOnlyMode.Checked
+                        && applyMode.ForeColor.ToArgb() == ThemeManager.PaletteFor("Dark").Success.ToArgb(),
+                        "Apply Upscale did not toggle Upscale Preview off and become the active green mode.");
                     previewOnlyMode.Checked = true;
-                    Assert(compactPreview.Text == "Upscale Preview" && Convert.ToString(compactPreview.Tag) == "success",
+                    Assert(previewOnlyMode.Checked && !applyMode.Checked
+                        && previewOnlyMode.ForeColor.ToArgb() == ThemeManager.PaletteFor("Dark").Success.ToArgb(),
                         "Upscale Preview did not restore its default enabled green state.");
-                    Label summaryToggle = form.Controls.Find("candidateSummaryToggle", true).OfType<Label>().Single();
-                    Assert(summaryToggle.Enabled && summaryToggle.Text == "▾"
-                        && summaryToggle.Parent.Controls.GetChildIndex(summaryToggle) == 0
-                        && summaryToggle.Font.Name.IndexOf("Symbol", StringComparison.OrdinalIgnoreCase) >= 0,
-                        "The single unframed Candidate Findings summary glyph is not immediately before the panel title.");
-                    MethodInfo invokeSummaryToggle = typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
+                    Assert(form.Controls.Find("candidateSummaryToggle", true).Length == 0,
+                        "A second nested Candidate Findings disclosure glyph remains after the two-pane redesign.");
                     Size expandedGridSize = advancedGrid.Size;
                     Size expandedProfileSize = advancedGrid.GetControlFromPosition(0, 0).Size;
-                    invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
+                    Control[] expandedProfiles = Enumerable.Range(0, 8)
+                        .Select(index => advancedGrid.GetControlFromPosition(index, 0)).ToArray();
+                    FieldInfo candidateWorkspaceActive = typeof(MainForm).GetField(
+                        "candidateFilterWorkspaceActive", BindingFlags.Instance | BindingFlags.NonPublic);
+                    Control activityColumnControl = form.Controls.Find("activityColumn", true).Single();
+                    invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
                     Application.DoEvents();
-                    Assert(summaryToggle.Text == "▸"
-                        && form.Controls.Find("candidateFindingsGroup", true).Length == 0
-                        && form.Controls.Find("candidateSourcesGroup", true).Length == 0
-                        && form.Controls.Find("candidateRangesGroup", true).Length == 0
-                        && form.Controls.Find("candidateUpscaleGroup", true).Length == 0
-                        && form.Controls.Find("upscaleCandidateDimensions", true).Length == 0
-                        && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0
-                        && form.Controls.Find("upscalePreviewButton", true).Length == 0
-                        && form.Controls.Find("upscaleShowFullButton", true).Length == 0,
-                        "Collapsing Candidate Findings did not collapse its attached Upscale / Advanced section.");
-                    invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
+                    Assert(!(bool)candidateWorkspaceActive.GetValue(form)
+                        && artworkFilter.Text.EndsWith("↓", StringComparison.Ordinal)
+                        && activityTitle.Text == "Scan Activity and Decisions"
+                        && activityColumnControl.Parent != null,
+                        "Collapsing Artwork Filter did not replace both panes with live Scan Activity and Decisions.");
+                    invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
                     Application.DoEvents();
                     filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
-                    previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
                     advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
-                    Assert(advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
+                    Assert((bool)candidateWorkspaceActive.GetValue(form)
+                        && artworkFilter.Text.EndsWith("↑", StringComparison.Ordinal)
+                        && activityTitle.Text == "Candidate Findings | Upscale & Artwork Editing"
+                        && advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
                         && advancedGrid.Size == expandedGridSize
                         && advancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize
-                        && form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single().SpectrumBorder
-                        && form.Controls.Find("upscaleCandidateDimensions", true).OfType<Label>().Single().Dock == DockStyle.Bottom
-                        && form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single().Enabled
-                        && form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single().Enabled,
-                        "Expanding Candidate Findings did not restore its attached Upscale section with the same proportions.");
+                        && Enumerable.Range(0, 8).All(index => Object.ReferenceEquals(
+                            expandedProfiles[index], advancedGrid.GetControlFromPosition(index, 0)))
+                        && form.Controls.Find("candidateFindingsPane", true).OfType<FluentGroupBox>().Single().SpectrumBorder
+                        && form.Controls.Find("candidateUpscalePane", true).OfType<FluentGroupBox>().Single().SpectrumBorder,
+                        "Expanding Artwork Filter did not restore both panes and the same compact slider controls.");
                     Assert(MainForm.UpscaleDensityForLogicalWidth(639) == "compact"
                         && MainForm.UpscaleDensityForLogicalWidth(640) == "standard"
                         && MainForm.UpscaleDensityForLogicalWidth(960) == "standard"
@@ -1760,21 +1784,20 @@ namespace Splined.WindowsGui
                         "Restored Artwork Filter source choice remained excluded in saved Interface Settings.");
                     Control upscalableCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 11);
                     ((CheckBox)upscalableCard.Controls["candidateChoice"]).Checked = true;
-                    Button upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
-                    showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
                     PictureBox projectedPreview = form.Controls.Find("artworkPreviewImage", true).OfType<PictureBox>().Single();
                     Label selectedCandidatePreviewTitle = (Label)typeof(MainForm)
                         .GetField("artworkPreviewTitle", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    Assert(upscalePreviewButton.Enabled && selectedCandidatePreviewTitle.Text == "Selected Candidate Artwork"
-                        && projectedPreview.Image != null,
-                        "Selecting one result did not focus its artwork preview and activate editing.");
-                    Assert(showFullPreview.Enabled,
-                        "Upscale Show Full did not activate beside Upscale Preview for the selected result.");
+                    Assert(selectedCandidatePreviewTitle.Text == "Selected Candidate Artwork"
+                        && projectedPreview.Image != null && projectedPreview.Cursor == Cursors.Hand,
+                        "Selecting one result did not focus its clickable artwork preview and activate editing.");
+                    Assert(form.Controls.Find("upscalePreviewButton", true).Length == 0
+                        && form.Controls.Find("upscaleShowFullButton", true).Length == 0,
+                        "Removed main-pane Upscale action buttons are still present.");
                     foreach (CheckBox choice in candidateCards.Controls.Cast<Control>()
                         .Select(card => card.Controls["candidateChoice"] as CheckBox).Where(choice => choice != null))
                         choice.Checked = false;
-                    Assert(upscalePreviewButton.Enabled && showFullPreview.Enabled,
-                        "Upscale controls were disabled when candidate selection state changed.");
+                    Assert(projectedPreview.Cursor == Cursors.Default,
+                        "Artwork Preview remained actionable without one editable selection.");
                     ((CheckBox)upscalableCard.Controls["candidateChoice"]).Checked = true;
                     UiState hoverUi = (UiState)typeof(MainForm)
                         .GetField("uiState", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
@@ -1806,24 +1829,45 @@ namespace Splined.WindowsGui
                     Assert(cropPreview == new Rectangle(6, 0, 1188, 1188)
                         && uncroppedPreview == new Rectangle(0, 0, 1200, 1188),
                         "Upscale Preview does not mirror configured center-square crop authority.");
-                    typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
-                        .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
-                    Assert(projectedPreview.Image != null && projectedPreview.Image.Width == 1800
-                        && projectedPreview.Image.Height == 1800,
-                        "Upscale Preview did not render the projected Ideal-size image in memory.");
-                    Assert(artworkCaption.Text.Contains("brightness +3%") && artworkCaption.Text.Contains("contrast")
-                        && artworkCaption.Text.Contains("preview only"),
-                        "Upscale Preview did not disclose the live saved profile correction: " + artworkCaption.Text);
-                    typeof(MainForm).GetMethod("UpscaleShowFullClicked", BindingFlags.Instance | BindingFlags.NonPublic)
-                        .Invoke(form, new object[] { showFullPreview, EventArgs.Empty });
-                    FullSizeArtworkPreviewForm fullPreview = (FullSizeArtworkPreviewForm)typeof(MainForm)
-                        .GetField("fullUpscalePreview", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    PictureBox fullPreviewImage = Descendants(fullPreview).OfType<PictureBox>().Single();
-                    Assert(fullPreview.Visible && fullPreviewImage.SizeMode == PictureBoxSizeMode.Normal
-                        && fullPreviewImage.Image.Width == 1800 && fullPreviewImage.Image.Height == 1800
-                        && fullPreviewImage.Size == fullPreviewImage.Image.Size,
-                        "Upscale Show Full did not open the upscaled edit at 100% actual pixel size.");
-                    fullPreview.Close();
+                    Console.WriteLine("WinForms QA: approved two-pane filter layout passed; opening the separate upscale editor.");
+                    MethodInfo openUpscaleEditor = typeof(MainForm).GetMethod(
+                        "ArtworkPreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic);
+                    openUpscaleEditor.Invoke(form, new object[] { projectedPreview, EventArgs.Empty });
+                    Application.DoEvents();
+                    UpscaleEditorForm editor = (UpscaleEditorForm)typeof(MainForm)
+                        .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(editor != null && editor.Visible && editor.FormBorderStyle == FormBorderStyle.Sizable
+                        && editor.Controls.Find("upscaleEditorCurrentImage", true).OfType<PictureBox>().Single().Image != null
+                        && editor.Controls.Find("upscaleEditorUpscaledImage", true).OfType<PictureBox>().Single().Image.Width == 1800
+                        && editor.Controls.Find("upscaleEditorUpscaledImage", true).OfType<PictureBox>().Single().Image.Height == 1800
+                        && editor.Controls.Find("upscaleEditorSliderGrid", true).OfType<TableLayoutPanel>().Single().ColumnCount == 8,
+                        "Artwork click did not open the separate two-pane current/upscaled editor.");
+                    UpscaleEditorForm firstEditor = editor;
+                    openUpscaleEditor.Invoke(form, new object[] { projectedPreview, EventArgs.Empty });
+                    Application.DoEvents();
+                    Assert(Object.ReferenceEquals(firstEditor, typeof(MainForm)
+                            .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form)),
+                        "Repeated artwork clicks opened duplicate Upscale editor windows.");
+                    RadioButton editorPreview = editor.Controls.Find("upscaleEditorPreviewOnly", true)
+                        .OfType<RadioButton>().Single();
+                    RadioButton editorApply = editor.Controls.Find("upscaleEditorApply", true)
+                        .OfType<RadioButton>().Single();
+                    Button editorSave = editor.Controls.Find("upscaleEditorSaveExisting", true)
+                        .OfType<Button>().Single();
+                    Button editorCancel = editor.Controls.Find("upscaleEditorCancel", true)
+                        .OfType<Button>().Single();
+                    Assert(editorPreview.Checked && !editorApply.Checked && !editorSave.Enabled
+                        && editorSave.Text == "Save Existing" && editorCancel.Text == "Cancel Upscale"
+                        && Convert.ToString(editorCancel.Tag) == "danger",
+                        "Upscale editor did not open in non-saving Preview mode with the approved actions.");
+                    editorApply.Checked = true;
+                    Assert(editorApply.Checked && !editorPreview.Checked && editorSave.Enabled,
+                        "Apply Upscale did not enable Save Existing inside the editor.");
+                    editorCancel.PerformClick();
+                    Application.DoEvents();
+                    Assert(editor.IsDisposed && typeof(MainForm)
+                            .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form) == null,
+                        "Cancel Upscale did not close the separate editor without saving.");
                     Dictionary<string, object> ladderEdit = CandidatePayload(13, "itunes", 3000, 3000, false, "");
                     ladderEdit["source_range_class"] = "ladder";
                     ladderEdit["range_class"] = "ladder";
@@ -1833,17 +1877,22 @@ namespace Splined.WindowsGui
                     showCandidates.Invoke(form, new object[] { new object[] { ladderEdit } });
                     Control ladderCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 13);
                     ((CheckBox)ladderCard.Controls["candidateChoice"]).Checked = true;
-                    upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
-                    showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
-                    Assert(upscalePreviewButton.Enabled && showFullPreview.Enabled,
-                        "A Ladder candidate was incorrectly blocked from manual editing and full-size preview.");
-                    typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
-                        .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
+                    Assert(projectedPreview.Cursor == Cursors.Hand,
+                        "A Ladder candidate was incorrectly blocked from artwork-click editing.");
+                    openUpscaleEditor.Invoke(form, new object[] { projectedPreview, EventArgs.Empty });
+                    Application.DoEvents();
+                    editor = (UpscaleEditorForm)typeof(MainForm)
+                        .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     HashSet<int> editedCandidates = (HashSet<int>)typeof(MainForm)
                         .GetField("editedCandidateIndexes", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    Assert(editedCandidates.Contains(13) && projectedPreview.Image.Width == 3000
-                        && projectedPreview.Image.Height == 3000,
+                    PictureBox ladderUpscaled = editor.Controls.Find("upscaleEditorUpscaledImage", true)
+                        .OfType<PictureBox>().Single();
+                    Assert(editedCandidates.Contains(13) && ladderUpscaled.Image.Width == 3000
+                        && ladderUpscaled.Image.Height == 3000,
                         "Manual editing did not retain a non-upscaled Ladder result at native resolution.");
+                    editor.Close();
+                    Application.DoEvents();
+                    Console.WriteLine("WinForms QA: separate current/upscaled editor coverage passed.");
                     FieldInfo candidateRunningField = typeof(MainForm).GetField("running", BindingFlags.Instance | BindingFlags.NonPublic);
                     FieldInfo candidateSessionField = typeof(MainForm).GetField("currentSession", BindingFlags.Instance | BindingFlags.NonPublic);
                     MethodInfo setReviewDecisionPhase = typeof(MainForm).GetMethod(
@@ -1870,24 +1919,28 @@ namespace Splined.WindowsGui
                     existingIdeal["cache_path"] = upscalePreviewPath;
                     existingIdeal["local_reference"] = "cover.jpg";
                     showCandidates.Invoke(form, new object[] { new object[] { existingIdeal } });
-                    upscalePreviewButton = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
                     Control existingIdealCard = candidateCards.Controls.Cast<Control>().Single(card => (int)card.Tag == 12);
                     Assert(((CheckBox)existingIdealCard.Controls["candidateChoice"]).Checked,
                         "An existing local cover was not preselected for immediate preview and editing.");
-                    Assert(upscalePreviewButton.Enabled,
-                        "An existing ideal cover did not keep its direct editing action enabled.");
+                    Assert(projectedPreview.Cursor == Cursors.Hand,
+                        "An existing ideal cover did not keep artwork-click editing enabled.");
                     Assert(selectedCandidatePreviewTitle.Text == "Existing Cover Editing",
                         "Selecting an existing local cover did not focus it in Selected Album Artwork; title was '"
                         + selectedCandidatePreviewTitle.Text + "'.");
                     SpectrumSlider pictureProfile = form.Controls.Find("upscaleProfileSlider_picture", true).OfType<SpectrumSlider>().Single();
                     pictureProfile.Value = 2;
-                    typeof(MainForm).GetMethod("UpscalePreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
-                        .Invoke(form, new object[] { upscalePreviewButton, EventArgs.Empty });
-                    Label artworkPreviewTitle = (Label)typeof(MainForm)
-                        .GetField("artworkPreviewTitle", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    Assert(artworkPreviewTitle.Text == "Existing Cover Edit Preview"
-                        && artworkCaption.Text.Contains("picture +2%"),
-                        "Existing cover edits were not rendered through the live preview path.");
+                    openUpscaleEditor.Invoke(form, new object[] { projectedPreview, EventArgs.Empty });
+                    Application.DoEvents();
+                    editor = (UpscaleEditorForm)typeof(MainForm)
+                        .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    SpectrumSlider editorPicture = editor.Controls.Find("upscaleEditorSlider_picture", true)
+                        .OfType<SpectrumSlider>().Single();
+                    Assert(editorPicture.Value == 2
+                        && editor.Controls.Find("upscaleEditorCurrentImage", true).OfType<PictureBox>().Single().Image != null
+                        && editor.Controls.Find("upscaleEditorUpscaledImage", true).OfType<PictureBox>().Single().Image != null,
+                        "Existing cover edits were not carried into the separate current/upscaled editor.");
+                    editor.Close();
+                    Application.DoEvents();
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
                     Assert(!artworkFilterPanel.Visible && filterSplit.SplitterDistance == filterClosedDistance
                         && filterSplit.Panel2MinSize == filterClosedPanel2Minimum,

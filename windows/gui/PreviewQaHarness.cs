@@ -202,15 +202,24 @@ namespace Splined.WindowsGui
                             Application.DoEvents();
                             TableLayoutPanel expandedGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
                             SplitContainer artworkSplit = form.Controls.Find("activityArtworkSplit", true)[0] as SplitContainer;
-                            FluentButton previewButton = form.Controls.Find("upscalePreviewButton", true)[0] as FluentButton;
-                            FluentButton fullButton = form.Controls.Find("upscaleShowFullButton", true)[0] as FluentButton;
+                            TableLayoutPanel twoPane = form.Controls.Find("candidateTwoPaneLayout", true)[0] as TableLayoutPanel;
+                            FluentGroupBox findingsPane = form.Controls.Find("candidateFindingsPane", true)[0] as FluentGroupBox;
+                            FluentGroupBox upscalePane = form.Controls.Find("candidateUpscalePane", true)[0] as FluentGroupBox;
+                            RadioButton previewMode = form.Controls.Find("upscalePreviewOnly", true)[0] as RadioButton;
+                            RadioButton applyMode = form.Controls.Find("upscaleApply", true)[0] as RadioButton;
                             Require(expandedGrid != null && expandedGrid.ColumnCount == 8 && expandedGrid.RowCount == 1,
                                 "Expanded Candidate Findings did not retain the adaptive 8 x 1 Upscale grid.");
                             Require(artworkSplit != null && Math.Abs(artworkSplit.Panel2.Width - artworkSplit.ClientSize.Height) <= 2,
                                 "The Artwork pane is not square at the joined splitter corner.");
-                            Require(previewButton != null && fullButton != null && previewButton.Enabled && fullButton.Enabled
-                                && previewButton.SpectrumBorder && fullButton.SpectrumBorder,
-                                "The shared framed Upscale actions are not active.");
+                            Require(twoPane != null && twoPane.ColumnCount == 3
+                                && findingsPane != null && upscalePane != null
+                                && findingsPane.SpectrumBorder && upscalePane.SpectrumBorder
+                                && findingsPane.Height == upscalePane.Height,
+                                "Expanded Candidate Findings did not expose exactly two equal spectrum panes.");
+                            Require(previewMode != null && applyMode != null && previewMode.Checked && !applyMode.Checked
+                                && form.Controls.Find("upscalePreviewButton", true).Length == 0
+                                && form.Controls.Find("upscaleShowFullButton", true).Length == 0,
+                                "The two mutually exclusive Upscale modes did not replace the old action buttons.");
                             string[] profileKeys = { "picture", "sharpen", "softness", "contrast",
                                 "exposure", "brightness", "gamma", "temperature" };
                             string[] expectedValues = { "+17", "+2", "0", "+13", "-5", "-5", "-6", "-17" };
@@ -230,18 +239,13 @@ namespace Splined.WindowsGui
                                 && !filterPanel.VerticalScroll.Visible && !activityCard.VerticalScroll.Visible
                                 && filterPanel.ClientSize.Height >= filterStack.Height,
                                 "Expanded Candidate Findings introduced a scrollbar or clipped the single Upscale row.");
-                            Require(new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
-                                .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
-                                "Expanded Candidate Findings did not expose all four internal spectrum frames.");
                             Label candidateDimensions = form.Controls.Find("upscaleCandidateDimensions", true)
                                 .OfType<Label>().Single();
-                            FluentGroupBox sourceSummary = form.Controls.Find("candidateSourcesGroup", true)
-                                .OfType<FluentGroupBox>().Single();
-                            TableLayoutPanel summaryPanel = form.Controls.Find("candidateSummaryPanel", true)
+                            TableLayoutPanel summaryColumns = form.Controls.Find("candidateSummaryColumns", true)
                                 .OfType<TableLayoutPanel>().Single();
                             Require(form.Controls.Find("upscaleResolutionTile", true).Length == 0
-                                && candidateDimensions.Parent == sourceSummary
-                                && candidateDimensions.Dock == DockStyle.Bottom
+                                && findingsPane.Controls.Find("upscaleCandidateDimensions", true).Contains(candidateDimensions)
+                                && candidateDimensions.Dock == DockStyle.Fill
                                 && candidateDimensions.ForeColor.ToArgb()
                                     == ThemeManager.PaletteFor("Dark").Warning.ToArgb()
                                 && candidateDimensions.Text.Contains("→")
@@ -249,38 +253,49 @@ namespace Splined.WindowsGui
                                     new Size(Int32.MaxValue, Int32.MaxValue),
                                     TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width
                                     <= candidateDimensions.ClientSize.Width
-                                && summaryPanel.Margin == Padding.Empty
-                                && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
-                                    .Select(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single())
-                                    .All(group => group.Bottom <= summaryPanel.ClientSize.Height),
-                                "Aspect ratio text was not moved unframed to Source Selection or a summary frame was clipped.");
+                                && summaryColumns.ColumnCount == 5
+                                && new[] { 0, 2, 4 }.All(column =>
+                                    summaryColumns.GetControlFromPosition(column, 0) is TableLayoutPanel),
+                                "The first pane did not retain three status columns and its yellow aspect text.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-expanded-qa.png"));
-                            Label summaryToggle = form.Controls.Find("candidateSummaryToggle", true)[0] as Label;
-                            if (summaryToggle != null)
-                                typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)
-                                    .Invoke(summaryToggle, new object[] { EventArgs.Empty });
+                            typeof(MainForm).GetMethod("ArtworkPreviewClicked", BindingFlags.Instance | BindingFlags.NonPublic)
+                                .Invoke(form, new object[] { form.Controls.Find("artworkPreviewImage", true)[0], EventArgs.Empty });
+                            Application.DoEvents();
+                            UpscaleEditorForm upscaleEditor = (UpscaleEditorForm)typeof(MainForm)
+                                .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                            Require(upscaleEditor != null && upscaleEditor.Visible
+                                && upscaleEditor.Controls.Find("upscaleEditorCurrentImage", true).Length == 1
+                                && upscaleEditor.Controls.Find("upscaleEditorUpscaledImage", true).Length == 1
+                                && upscaleEditor.Controls.Find("upscaleEditorSliderGrid", true)
+                                    .OfType<TableLayoutPanel>().Single().ColumnCount == 8
+                                && upscaleEditor.Controls.Find("upscaleEditorSaveExisting", true)
+                                    .OfType<Button>().Single().Text == "Save Existing"
+                                && upscaleEditor.Controls.Find("upscaleEditorCancel", true)
+                                    .OfType<Button>().Single().Text == "Cancel Upscale",
+                                "Artwork click did not open the approved separate current/upscaled editor.");
+                            CaptureWindow(upscaleEditor, Path.Combine(ConfigStore.AppRoot, "upscale-editor-qa.png"));
+                            upscaleEditor.Close();
+                            Application.DoEvents();
+                            typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
+                                .Invoke(form, new object[] { false, false });
                             form.PerformLayout();
                             Application.DoEvents();
-                            Require(form.Controls.Find("candidateFindingsGroup", true).Length == 0
-                                && form.Controls.Find("candidateSourcesGroup", true).Length == 0
-                                && form.Controls.Find("candidateRangesGroup", true).Length == 0
-                                && form.Controls.Find("candidateUpscaleGroup", true).Length == 0
-                                && form.Controls.Find("upscaleCandidateDimensions", true).Length == 0
-                                && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0,
-                                "Collapsed Candidate Findings left its attached Upscale / Advanced section visible.");
+                            Label activityTitle = form.Controls.Find("scanActivityTitle", true)[0] as Label;
+                            Require(filterPanel != null && !filterPanel.Visible
+                                && activityTitle != null && activityTitle.Text == "Scan Activity and Decisions",
+                                "Collapsed Artwork Filter did not reveal Scan Activity and Decisions.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-collapsed-qa.png"));
-                            if (summaryToggle != null)
-                                typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)
-                                    .Invoke(summaryToggle, new object[] { EventArgs.Empty });
+                            typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
+                                .Invoke(form, new object[] { true, false });
                             form.PerformLayout();
                             Application.DoEvents();
                             TableLayoutPanel restoredGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
                             Require(restoredGrid != null && restoredGrid.ColumnCount == 8 && restoredGrid.RowCount == 1
                                 && restoredGrid.Size == expandedGridSize
                                 && restoredGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize
-                                && form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single().SpectrumBorder
-                                && form.Controls.Find("upscaleCandidateDimensions", true).OfType<Label>().Single().Dock == DockStyle.Bottom,
-                                "Expanded Candidate Findings did not restore the attached Upscale grid proportions.");
+                                && form.Controls.Find("candidateFindingsPane", true).OfType<FluentGroupBox>().Single().SpectrumBorder
+                                && form.Controls.Find("candidateUpscalePane", true).OfType<FluentGroupBox>().Single().SpectrumBorder,
+                                "Expanded Artwork Filter did not restore both panes and the compact Upscale grid.");
                             typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
                                 .Invoke(form, new object[] { false, false });
                             form.Size = candidateSize;
