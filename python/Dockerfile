@@ -59,6 +59,8 @@ COPY splined_tui_overlay_policy.py /app/splined_tui_overlay_policy.py
 COPY splined_entry.py /app/splined_entry.py
 COPY splined.py /app/splined.py
 COPY splined_scan.py /app/splined_scan.py
+COPY splined_backup.py /app/splined_backup.py
+COPY splined_update.py /app/splined_update.py
 COPY splined_oauth_validation.py /app/splined_oauth_validation.py
 COPY tui /app/tui
 RUN python3 -m py_compile \
@@ -81,6 +83,8 @@ RUN python3 -m py_compile \
         /app/splined_entry.py \
         /app/splined.py \
         /app/splined_scan.py \
+        /app/splined_backup.py \
+        /app/splined_update.py \
         /app/splined_oauth_validation.py \
     && python3 -m compileall -q /app/tui \
     && chmod 0444 /app/splined_schema.sql \
@@ -104,6 +108,8 @@ RUN python3 -m py_compile \
         /app/splined_entry.py \
         /app/splined.py \
         /app/splined_scan.py \
+        /app/splined_backup.py \
+        /app/splined_update.py \
         /app/splined_oauth_validation.py \
     && find /app/tui -type f -name '*.py' -exec chmod 0555 {} + \
     && ln -s /app/splined_entry.py /usr/local/bin/splined

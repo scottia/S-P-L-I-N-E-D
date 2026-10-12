@@ -119,8 +119,8 @@ def select_auto_ideal(
             strict_policy.auto_eligible(candidate)
             and projected["acceptable"]
             and projected["range_type"] == "Ideal"
-            and not projected["upscaled"]
-            and not projected["cropped"]
+            and not bool(projected.get("upscaled", False))
+            and not bool(projected.get("cropped", False))
         ):
             ideal.append(candidate)
     return (
@@ -1022,8 +1022,6 @@ def _manual_discovery_options(
 ) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
     for item in items:
-        year = str(item.release_date or "")[:4]
-        decade = f"{year[:3]}0s" if len(year) == 4 and year.isdigit() else "Unknown"
         options.append(
             {
                 "id": str(item.release_mbid),
@@ -1036,7 +1034,7 @@ def _manual_discovery_options(
                 "release_class": str(item.release_class).title(),
                 "release_group_id": str(item.release_group_mbid),
                 "group": (
-                    f"{item.recording_artist} · {decade} · "
+                    f"{item.recording_artist} · "
                     f"{str(item.release_class).title()}"
                 ),
                 "score": str(item.score),
@@ -1054,6 +1052,8 @@ def _manual_choose_release(
     *,
     current_release_id: str = "",
     inspected_resolutions: dict[str, str] | None = None,
+    authority: dict[str, str] | None = None,
+    friendly: dict[str, str] | None = None,
 ) -> tuple[str, Any | None]:
     options = _manual_discovery_options(
         items,
@@ -1076,6 +1076,13 @@ def _manual_choose_release(
             "    MusicBrainz release #: ",
             kind="musicbrainz-results",
             options=options,
+            authority={
+                "artist": str((friendly or {}).get("artist", "")),
+                "album": str((friendly or {}).get("album", "")),
+                "artist_mbids": str((authority or {}).get("artist_id", "")),
+                "release_mbid": str((authority or {}).get("release_id", "")),
+                "recording_mbid": str((authority or {}).get("recording_id", "")),
+            },
         ).strip().lower()
         if answer in {"__cancel__", "__manual_album_exit__", "b"}:
             return "exit-album", None
@@ -1248,6 +1255,7 @@ def run_manual_compilation_album(
     api_queried: set[str],
     unresolved_items: list[dict[str, str]],
     state: dict[str, Any],
+    target_track_paths: set[str] | None = None,
 ) -> bool:
     """Resolve and approve embedded artwork independently for every track."""
     if not core.compilation_manual_album_eligible(tracks):
@@ -1301,6 +1309,7 @@ def run_manual_compilation_album(
             cfg=cfg,
         )
 
+    explicit_targets = {str(value) for value in (target_track_paths or set())}
     for track_number, track in enumerate(tracks, 1):
         print()
         print(
@@ -1308,7 +1317,13 @@ def run_manual_compilation_album(
             f"{core.white(str(track.artist or ''))} · "
             f"{core.orange(str(track.title or track.path.name))}"
         )
-        if str(track.path) in completed_paths:
+        if explicit_targets and str(track.path) not in explicit_targets:
+            print(
+                f"    {core.cyan('Target:'):11} "
+                f"{core.gray('not explicitly selected')} · skipped"
+            )
+            continue
+        if str(track.path) in completed_paths and str(track.path) not in explicit_targets:
             print(
                 f"    {core.cyan('Progress:'):11} "
                 f"{core.green('already complete')} · skipped"
@@ -1403,6 +1418,8 @@ def run_manual_compilation_album(
                         inspected_resolutions=state.setdefault(
                             "release_resolutions", {}
                         ),
+                        authority=authority,
+                        friendly=friendly,
                     )
                     if decision == "exit-album":
                         if mode == "write":
@@ -2173,6 +2190,7 @@ def _run_scan_dir_batch(
     albums: list[core.AlbumDir] = []
     postponed_albums: list[tuple[core.AlbumDir, float]] = []
     selected_scan_mode = "normal"
+    explicit_track_targets: dict[str, set[str]] = {}
     if core.tui_active():
         bypassed_paths = (
             set()
@@ -2200,7 +2218,7 @@ def _run_scan_dir_batch(
                     path,
                 )
 
-        albums, bypass_overrides, timeout_paths, sources, discovered_albums, selected_scan_mode = (
+        albums, bypass_overrides, timeout_paths, sources, discovered_albums, selected_scan_mode, explicit_track_targets = (
             core.prepare_tui_library_selection(
                 config_file,
                 cfg,
@@ -2527,6 +2545,7 @@ def _run_scan_dir_batch(
                 api_queried=api_queried,
                 unresolved_items=unresolved_items,
                 state=manual_state,
+                target_track_paths=explicit_track_targets.get(str(album.path)),
             )
             print()
             if not manual_completed:
@@ -3709,6 +3728,16 @@ def main() -> int:
             return 0
         if args.config_edit:
             return core.run_config_edit(path)
+        try:
+            backup_result = core.run_backup_command(args, path, cfg)
+        except (OSError, ValueError, TypeError, core.json.JSONDecodeError) as exc:
+            raise core.SplinedError(
+                f"Unable to process the SPLINED backup: {exc}"
+            ) from exc
+        if backup_result is not None:
+            return backup_result
+        if args.check_for_updates:
+            return core.run_update_check()
         if args.fanarttv_credentials:
             return core.configure_fanarttv_credentials(path, cfg)
         if args.lastfm_credentials:

@@ -30,6 +30,10 @@ class Action(str, Enum):
     SAVE = "save"
     URL = "url"
     FILTER = "filter"
+    COMPARE = "compare"
+    PREVIEW = "preview"
+    ABOUT = "about"
+    TRACKS = "tracks"
     PAGE_UP = "page-up"
     PAGE_DOWN = "page-down"
     HOME = "home"
@@ -91,6 +95,14 @@ def map_key(code: str, *, ctrl: bool = False, shift: bool = False) -> Action:
         return Action.URL
     if value == "/":
         return Action.FILTER
+    if value == "c":
+        return Action.COMPARE
+    if value == "v":
+        return Action.PREVIEW
+    if value == "a":
+        return Action.ABOUT
+    if value == "t":
+        return Action.TRACKS
     if value == "r":
         return Action.REFRESH
     if value in {"backspace", "delete"}:

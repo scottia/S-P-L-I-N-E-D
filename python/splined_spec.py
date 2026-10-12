@@ -183,6 +183,7 @@ CONFIG_EXPECTED_KEYS: dict[str, tuple[str, ...]] = {
         "square_mode",
         "square_round_to",
         "upscale_below_ideal",
+        "upscale_max_percent",
         "evaluate_final_image",
     ),
     "range": ("min", "ideal", "max", "ladder"),
@@ -218,6 +219,7 @@ HELP_EXPECTED_TOKENS: dict[str, str] = {
     "output.square_mode": "square_mode",
     "output.square_round_to": "square_round_to",
     "output.upscale_below_ideal": "upscale_below_ideal",
+    "output.upscale_max_percent": "upscale_max_percent",
     "output.evaluate_final_image": "evaluate_final_image",
     "range.min": "range.min",
     "range.ideal": "range.ideal",
@@ -378,12 +380,12 @@ def check_status_and_selection(audit: Audit) -> None:
         bypassed = AlbumItem("/music/A/B", "A", "Bypassed", AlbumStatus.BYPASSED)
         timed = AlbumItem("/music/A/T", "A", "Timed", AlbumStatus.TIMEOUT)
         model = LibraryModel("/music", [bypassed, timed])
-        assert model.toggle_album(bypassed) == "bypass-confirmation-required"
+        assert model.toggle_album(bypassed) == "bypass-removal-required"
         assert not bypassed.selected
         assert model.toggle_album(timed) == "timeout-active"
         assert not timed.selected
-        assert model.toggle_album(bypassed, bypass_override=True) == "selected"
-        assert bypassed.selected and bypassed.bypass_override
+        assert model.toggle_album(timed, timeout_override=True) == "selected"
+        assert timed.selected
 
     audit.check(
         "SELECT-002",
@@ -492,7 +494,7 @@ def check_targeted_regressions(audit: Audit) -> None:
             "PICKER-001",
             "startup reads only root Artist folders and never opens picker SQLite",
             "test_tui_inventory.DirectLazyInventoryTests."
-            "test_initial_startup_reads_root_only_without_picker_cache",
+            "test_initial_startup_renders_without_loading_picker_albums",
         ),
         (
             "PICKER-002",
@@ -508,9 +510,9 @@ def check_targeted_regressions(audit: Audit) -> None:
         ),
         (
             "PICKER-004",
-            "Select ALL is the explicit full Artist traversal",
+            "Auto Scan ALL is the explicit full library traversal",
             "test_tui_inventory.DirectLazyInventoryTests."
-            "test_select_all_explicitly_reads_every_artist",
+            "test_auto_all_is_an_explicit_whole_library_traversal",
         ),
         (
             "PICKER-005",

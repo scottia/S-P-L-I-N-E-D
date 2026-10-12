@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import platform
 import secrets
 import re
 import shutil
@@ -47,6 +48,7 @@ from tui.picker_index import (
     PickerArtist,
     should_ignore as picker_should_ignore,
 )
+from tui.result_filters import order_musicbrainz_results
 
 USER_AGENT = "SPLINED/1.0.82 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
@@ -149,6 +151,9 @@ class PickerSessionState:
     selected_paths: set[str] = field(default_factory=set)
     selected_statistics: dict[str, dict[str, Any]] = field(default_factory=dict)
     selected_statistics_pending: set[str] = field(default_factory=set)
+    selected_statistics_threads: list[threading.Thread] = field(
+        default_factory=list, repr=False
+    )
     initialized_paths: set[str] = field(default_factory=set)
     probed_artist_statuses: dict[str, str] = field(default_factory=dict)
     status_probe_started: bool = False
@@ -1210,11 +1215,95 @@ def tagged_artist(tracks: list[Track]) -> str | None:
     return None
 
 
+def embedded_artwork_bytes(path: Path) -> bytes | None:
+    """Read the preferred embedded front/cover image from a supported track."""
+
+    try:
+        suffix = path.suffix.casefold()
+        if suffix == ".mp3":
+            pictures = list(ID3(path).getall("APIC"))
+            picture = next(
+                (item for item in pictures if int(getattr(item, "type", 0) or 0) == 3),
+                pictures[0] if pictures else None,
+            )
+            return bytes(picture.data) if picture is not None else None
+        if suffix == ".flac":
+            pictures = list(FLAC(path).pictures)
+            picture = next(
+                (item for item in pictures if int(getattr(item, "type", 0) or 0) == 3),
+                pictures[0] if pictures else None,
+            )
+            return bytes(picture.data) if picture is not None else None
+        if suffix in {".m4a", ".mp4"}:
+            pictures = list((MP4(path).tags or {}).get("covr") or [])
+            return bytes(pictures[0]) if pictures else None
+        parsed = MutagenFile(path)
+        pictures = getattr(parsed, "pictures", None)
+        if pictures:
+            picture = next(
+                (item for item in pictures if int(getattr(item, "type", 0) or 0) == 3),
+                pictures[0],
+            )
+            data = getattr(picture, "data", None)
+            return bytes(data) if data else None
+        tags = getattr(parsed, "tags", None)
+        if tags:
+            encoded = tags.get("coverart") or tags.get("metadata_block_picture")
+            if isinstance(encoded, list):
+                encoded = encoded[0] if encoded else None
+            if encoded:
+                return base64.b64decode(str(encoded), validate=True)
+    except Exception:
+        return None
+    return None
+
+
+def embedded_artwork_present(path: Path) -> bool:
+    """Return whether a supported track has an embedded front/cover image."""
+
+    return embedded_artwork_bytes(path) is not None
+
+
+def embedded_artwork_preview(path: Path, cache: Path) -> dict[str, Any] | None:
+    """Materialize one deterministic, disposable embedded-art preview."""
+
+    data = embedded_artwork_bytes(path)
+    if not data:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            fmt = image_format(image)
+            width, height = image.size
+            image.verify()
+    except Exception:
+        return None
+    if cache.exists() and (cache.is_symlink() or not cache.is_dir()):
+        return None
+    cache.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(
+        str(path).encode("utf-8", "surrogateescape") + data
+    ).hexdigest()[:24]
+    preview = cache / f"splined-track-preview-{digest}.{EXTENSIONS[fmt]}"
+    if preview.is_symlink():
+        return None
+    if not preview.is_file():
+        preview.write_bytes(data)
+    return {
+        "path": str(preview),
+        "width": int(width),
+        "height": int(height),
+        "format": fmt,
+    }
+
+
 
 def selected_album_statistics(
     album_path: Path,
     *,
     cover_name: str = "cover",
+    config_file: Path | None = None,
+    cfg: dict[str, Any] | None = None,
+    include_tracks: bool = False,
 ) -> dict[str, Any]:
     """Read on-demand statistics for one explicitly selected Album.
 
@@ -1242,6 +1331,7 @@ def selected_album_statistics(
         "compilation": False,
         "album_mbid_missing": False,
         "manual_compilation_eligible": False,
+        "track_items": [],
     }
     try:
         root_files = sorted(
@@ -1264,6 +1354,52 @@ def selected_album_statistics(
     # other supported audio files through the same Mutagen interface.
     tag_files = mp3_files if mp3_files else audio_files
     result["tracks"] = len(audio_files)
+
+    parsed_tracks: list[Track] = []
+    track_items: list[dict[str, Any]] = []
+    if include_tracks:
+        preview_cache = (
+            runtime_cache_dir(config_file, cfg) / "track-preview"
+            if config_file is not None and cfg is not None
+            else None
+        )
+        for number, track_path in enumerate(
+            sorted(audio_files, key=lambda value: str(value).casefold()), 1
+        ):
+            try:
+                track = read_track(track_path)
+            except SplinedError:
+                track = Track(
+                    track_path,
+                    track_path.stem,
+                    "",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            parsed_tracks.append(track)
+            preview = (
+                embedded_artwork_preview(track.path, preview_cache)
+                if preview_cache is not None
+                else None
+            )
+            track_items.append(
+                {
+                    "number": number,
+                    "path": str(track.path),
+                    "artist": str(track.artist or ""),
+                    "title": str(track.title or track.path.stem),
+                    "embedded_art": preview is not None or embedded_artwork_present(track.path),
+                    "preview_path": str((preview or {}).get("path", "")),
+                    "preview_width": int((preview or {}).get("width", 0) or 0),
+                    "preview_height": int((preview or {}).get("height", 0) or 0),
+                    "completed": False,
+                }
+            )
+        result["track_items"] = track_items
 
     # Compilation track-art recovery is exposed from the representative track
     # only after an Album is explicitly selected.  Do not inspect every track
@@ -1288,6 +1424,28 @@ def selected_album_statistics(
             # Scan launch performs the authoritative read and reports the
             # specific failure. Selection statistics remain non-authoritative.
             pass
+
+    if (
+        include_tracks
+        and result["manual_compilation_eligible"]
+        and config_file is not None
+        and cfg is not None
+        and callable(globals().get("compilation_completed_track_paths"))
+    ):
+        try:
+            completed_paths = compilation_completed_track_paths(  # type: ignore[name-defined]
+                config_file,
+                cfg,
+                str(path),
+                parsed_tracks,
+            )
+            for item in track_items:
+                item["completed"] = str(item["path"]) in completed_paths
+        except Exception as exc:
+            debug_log(
+                "selected_stats.track_progress_error "
+                f"path={str(path)!r} error={type(exc).__name__}: {exc}"
+            )
 
     debug_log(
         "selected_stats.begin "
@@ -1451,6 +1609,7 @@ def prepare_tui_library_selection(
     list[str],
     list[AlbumDir],
     str,
+    dict[str, set[str]],
 ]:
     """Run direct/lazy Select Media and return exact launched Albums.
 
@@ -1482,6 +1641,7 @@ def prepare_tui_library_selection(
     overrides: set[str] = set()
     timeout_paths: set[str] = set()
     original_configured = resolve_sources(cfg, None, None, [])
+    explicit_track_targets: dict[str, set[str]] = {}
 
     def path_is_within(path: Path, parent: Path) -> bool:
         try:
@@ -1946,6 +2106,8 @@ def prepare_tui_library_selection(
                         stats = selected_album_statistics(
                             Path(selected_path),
                             cover_name=cover_name,
+                            config_file=config_file,
+                            cfg=cfg,
                         )
                     except Exception as exc:
                         debug_log(
@@ -1976,12 +2138,21 @@ def prepare_tui_library_selection(
             finally:
                 with session.lock:
                     session.selected_statistics_pending.difference_update(missing)
+                    current = threading.current_thread()
+                    session.selected_statistics_threads = [
+                        item
+                        for item in session.selected_statistics_threads
+                        if item is not current
+                    ]
 
-        threading.Thread(
+        thread = threading.Thread(
             target=worker,
             name="splined-selected-stats",
             daemon=True,
-        ).start()
+        )
+        with session.lock:
+            session.selected_statistics_threads.append(thread)
+        thread.start()
 
     def start_status_probe(
         *,
@@ -1994,18 +2165,19 @@ def prepare_tui_library_selection(
                 should_wait_existing = (
                     wait and existing is not None and existing.is_alive()
                 )
+                should_start = False
             else:
                 should_wait_existing = False
                 session.status_probe_started = True
                 session.status_probe_complete = False
+                should_start = True
 
         if should_wait_existing:
             assert existing is not None
             existing.join()
             return
-        if session.status_probe_started and existing is not None and not existing.is_alive():
-            if session.status_probe_complete:
-                return
+        if not should_start:
+            return
 
         def worker() -> None:
             started_probe = time.perf_counter()
@@ -2228,6 +2400,18 @@ def prepare_tui_library_selection(
             status_counts=status_counts,
             artist_status_counts=artist_status_counts,
             config=cfg,
+            runtime_info={
+                "version": display_version(),
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "config": str(config_file),
+                "library": str(index_root),
+                "database": str(runtime_cache_dir(config_file, cfg) / "splined.db"),
+                "cache": str(runtime_cache_dir(config_file, cfg)),
+                "logs": str(runtime_log_dir(config_file, cfg)),
+                "credentials": str(runtime_credential_dir(config_file, cfg)),
+                "providers": dict(authentication_statuses(config_file, cfg)),
+            },
             aisplined=aisplined_settings(cfg),
             ai_runtime_available=False,
         )
@@ -2239,6 +2423,13 @@ def prepare_tui_library_selection(
         and session.library_root == str(index_root)
     )
     if same_session:
+        with session.lock:
+            existing_probe = session.status_probe_thread
+            if existing_probe is None or not existing_probe.is_alive():
+                session.status_probe_cancel.clear()
+                session.status_probe_started = False
+                session.status_probe_complete = False
+                session.status_probe_thread = None
         debug_log("picker.library.resident_session_ready")
     else:
         artists = discover_root_artists()
@@ -2353,6 +2544,15 @@ def prepare_tui_library_selection(
                 for value in response.get("bypass_overrides", [])
                 if str(value)
             }
+        raw_track_targets = response.get("track_targets", {})
+        explicit_track_targets = {}
+        if isinstance(raw_track_targets, dict):
+            for album_path, raw_paths in raw_track_targets.items():
+                if not isinstance(raw_paths, list):
+                    continue
+                paths = {str(value) for value in raw_paths if str(value)}
+                if paths:
+                    explicit_track_targets[str(album_path)] = paths
 
         action = str(response.get("action", ""))
         debug_log(
@@ -2518,6 +2718,41 @@ def prepare_tui_library_selection(
             )
             continue
 
+        if action == "load-track-details":
+            album_path = str(response.get("album_path", ""))
+            if not album_path or album_path not in selected_paths:
+                emit_ui(
+                    "activity",
+                    category="selection",
+                    state="error",
+                    source="track-expansion",
+                    message="Check the fallback compilation Album before expanding tracks",
+                )
+                emit_library(event, preserve_selection=True)
+                continue
+            stats = selected_album_statistics(
+                Path(album_path),
+                cover_name=str(output.get("file_name", "cover")),
+                config_file=config_file,
+                cfg=cfg,
+                include_tracks=True,
+            )
+            with session.lock:
+                session.selected_statistics[album_path] = stats
+                current_targets = selected_stats_targets()
+                ready = [
+                    session.selected_statistics[path]
+                    for path in current_targets
+                    if path in session.selected_statistics
+                ]
+            emit_ui(
+                "library_selected_stats",
+                selected_paths=current_targets,
+                selected_album_stats=ready,
+                limit=SELECTED_STATS_LIMIT,
+            )
+            continue
+
         if action == "edit-config":
             session.select_media_active = False
             raise TuiConfigEditRequested(str(config_file))
@@ -2595,6 +2830,67 @@ def prepare_tui_library_selection(
             emit_library(event)
             continue
 
+        if action == "save-runtime-settings":
+            from tui.runtime_settings import persist_runtime_settings
+
+            settings = response.get("settings")
+            if not isinstance(settings, dict):
+                raise SplinedError("The TUI structured settings draft is invalid.")
+            try:
+                updated = persist_runtime_settings(
+                    config_file, settings, validate_config_v5
+                )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise SplinedError(
+                    f"Unable to save structured Config v5 settings: {exc}"
+                ) from exc
+            cfg.clear()
+            cfg.update(updated)
+            newly_configured = resolve_sources(cfg, None, None, [])
+            if sources == original_configured:
+                sources = newly_configured
+            else:
+                sources = [source for source in newly_configured if source in sources]
+            original_configured = newly_configured
+            emit_ui(
+                "activity",
+                category="settings",
+                state="done",
+                source="config-v5",
+                message=(
+                    "Structured settings saved atomically; path changes apply "
+                    "on the next SPLINED run"
+                ),
+            )
+            emit_library(event)
+            continue
+
+        if action == "check-updates":
+            from splined_update import check_latest_release
+
+            try:
+                update = check_latest_release(VERSION)
+                emit_ui(
+                    "update_status",
+                    installed=update.installed,
+                    available=update.available,
+                    update_available=update.update_available,
+                    release_url=update.release_url,
+                    message=(
+                        f"Update available: {update.installed} → {update.available} · {update.release_url}"
+                        if update.update_available
+                        else "No SPLINED update is available."
+                    ),
+                )
+            except Exception as exc:
+                emit_ui(
+                    "update_status",
+                    update_available=False,
+                    message=f"Unable to check for updates: {exc}",
+                )
+            emit_library(event, preserve_selection=True)
+            continue
+
         if action != "launch":
             raise SplinedError(
                 "The TUI library workspace did not select a scan mode."
@@ -2670,7 +2966,35 @@ def prepare_tui_library_selection(
         for selected_path in valid_selected_paths:
             session.selected_statistics.pop(selected_path, None)
         session.select_media_active = False
-        return selected, overrides, timeout_paths, sources, known, scan_mode
+        session.status_probe_cancel.set()
+        with session.lock:
+            statistics_threads = list(session.selected_statistics_threads)
+            status_thread = session.status_probe_thread
+        background_deadline = time.monotonic() + 5.0
+        for background in (*statistics_threads, status_thread):
+            if (
+                background is not None
+                and background is not threading.current_thread()
+                and background.is_alive()
+            ):
+                remaining = background_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                background.join(timeout=remaining)
+        launch_track_targets = {
+            album_path: paths
+            for album_path, paths in explicit_track_targets.items()
+            if album_path in valid_selected_paths
+        }
+        return (
+            selected,
+            overrides,
+            timeout_paths,
+            sources,
+            known,
+            scan_mode,
+            launch_track_targets,
+        )
 
 
 def compact(paths: list[Path]) -> str:
@@ -4482,6 +4806,14 @@ def output_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         raise SplinedError("[output].square_round_to cannot be negative.")
 
     upscale = bool(out.get("upscale_below_ideal", False))
+    try:
+        upscale_max_percent = int(out.get("upscale_max_percent", 200) or 0)
+    except (TypeError, ValueError) as exc:
+        raise SplinedError("[output].upscale_max_percent must be an integer.") from exc
+    if not 100 <= upscale_max_percent <= 800:
+        raise SplinedError(
+            "[output].upscale_max_percent must be between 100 and 800."
+        )
     evaluate_final = bool(out.get("evaluate_final_image", True))
 
     return {
@@ -4489,6 +4821,7 @@ def output_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "square_mode": square_mode,
         "square_round_to": round_to,
         "upscale_below_ideal": upscale,
+        "upscale_max_percent": upscale_max_percent,
         "evaluate_final_image": evaluate_final,
     }
 
@@ -4555,19 +4888,23 @@ def project_dimensions(width: int, height: int, cfg: dict[str, Any]) -> tuple[in
             operations["rounded"] = True
             operations["rounded_to"] = round_to
 
-    # Existing SPLINED short-side range policy, always proportional.
+    # Ideal is a minimum quality target, not an output ceiling. Accepted
+    # artwork already at or above Ideal keeps its native resolution. Below-
+    # Ideal enlargement remains proportional and is allowed only when the
+    # requested scale is within the explicit Config v5 safety limit.
     short_side = min(w, h)
-    if short_side > ideal:
+    if short_side < ideal and settings["upscale_below_ideal"]:
         scale = ideal / short_side
-        w = max(1, int(round(w * scale)))
-        h = max(1, int(round(h * scale)))
-        operations["resized"] = True
-    elif short_side < ideal and settings["upscale_below_ideal"]:
-        scale = ideal / short_side
-        w = max(1, int(round(w * scale)))
-        h = max(1, int(round(h * scale)))
-        operations["resized"] = True
-        operations["upscaled"] = True
+        requested_percent = scale * 100.0
+        operations["upscale_percent"] = requested_percent
+        operations["upscale_limited"] = (
+            requested_percent > settings["upscale_max_percent"]
+        )
+        if not operations["upscale_limited"]:
+            w = max(1, int(round(w * scale)))
+            h = max(1, int(round(h * scale)))
+            operations["resized"] = True
+            operations["upscaled"] = True
 
     return w, h, operations
 
@@ -5011,8 +5348,8 @@ def musicbrainz_search_releases(
             http.last_mb_request = time.monotonic()
             response = http.get(
                 f"{MB_BASE}/release/",
-                # One bounded request can return enough rows for useful decade
-                # and release-type grouping without paging the MusicBrainz API.
+                # One bounded request supplies the flat deterministic match
+                # list without paging the MusicBrainz API.
                 params={"query": query, "fmt": "json", "limit": 99},
                 headers=headers,
                 timeout=timeout,
@@ -5067,29 +5404,14 @@ def musicbrainz_search_releases(
                 "release_class": release_class,
                 "release_group_id": str(release_group.get("id") or "").strip(),
             })
-            year = out[-1]["date"][:4]
-            decade = (
-                f"{year[:3]}0s"
-                if len(year) == 4 and year.isdigit()
-                else "Unknown"
-            )
             out[-1]["track"] = ""
             out[-1]["group"] = (
-                f"{out[-1]['artist']} · {decade} · "
+                f"{out[-1]['artist']} · "
                 f"{out[-1]['release_class'].title()}"
             )
         return out
 
     return []
-
-
-MUSICBRAINZ_RELEASE_TYPE_ORDER = (
-    "Album",
-    "Single",
-    "EP",
-    "Compilation",
-    "Soundtrack",
-)
 
 
 def musicbrainz_result_decade(item: dict[str, Any]) -> str:
@@ -5151,25 +5473,10 @@ def decorate_musicbrainz_results(
         item["original_index"] = str(original_index)
         decorated.append(item)
 
-    type_order = {
-        value.casefold(): index
-        for index, value in enumerate(MUSICBRAINZ_RELEASE_TYPE_ORDER)
-    }
-
-    def sort_key(item: dict[str, str]) -> tuple[Any, ...]:
-        decade = item.get("decade", "Unknown")
-        decade_rank = -int(decade[:4]) if decade[:4].isdigit() else 1
-        release_type = item.get("release_class", "Release")
-        return (
-            decade_rank,
-            type_order.get(release_type.casefold(), len(type_order)),
-            release_type.casefold(),
-            item.get("artist", "").casefold(),
-            item.get("date", ""),
-            int(item.get("original_index", "0") or 0),
-        )
-
-    return sorted(decorated, key=sort_key)
+    # Presentation follows the accepted Windows family/artist/date/country
+    # ordering. Decade remains harmless diagnostic metadata but is never a
+    # visible category or a sort authority.
+    return [dict(item) for item in order_musicbrainz_results(decorated)]
 
 
 def musicbrainz_picker(
@@ -5247,29 +5554,19 @@ def musicbrainz_picker(
 
     print()
     print(f"  {cyan('MusicBrainz release search')}")
-    previous_decade = ""
-    previous_type = ""
+    print(
+        "  "
+        + ljust_color(cyan("[#]"), 5) + " "
+        + ljust_color(cyan("Artist"), 24) + " "
+        + ljust_color(cyan("Country"), 8) + " "
+        + ljust_color(cyan("Date"), 10) + " "
+        + ljust_color(cyan("Release Type"), 16) + " "
+        + ljust_color(cyan("Resolution"), 12) + " "
+        + ljust_color(cyan("Release"), 34) + " "
+        + cyan("URL")
+    )
+    print("  " + gray("-" * 129))
     for index, result in enumerate(results, 1):
-        decade = result["decade"]
-        release_type = result["release_class"]
-        if decade != previous_decade:
-            print(f"  {cyan('[' + decade + '] DECADE GROUP')}")
-            previous_decade = decade
-            previous_type = ""
-        if release_type != previous_type:
-            print(f"  {orange('RELEASE TYPE [' + release_type.upper() + ']')}")
-            print(
-                "  "
-                + ljust_color(cyan("[#]"), 5) + " "
-                + ljust_color(cyan("Artist"), 24) + " "
-                + ljust_color(cyan("Country"), 8) + " "
-                + ljust_color(cyan("Date"), 10) + " "
-                + ljust_color(cyan("Resolution"), 12) + " "
-                + ljust_color(cyan("Release"), 34) + " "
-                + cyan("URL")
-            )
-            print("  " + gray("-" * 112))
-            previous_type = release_type
         state_color = (
             green
             if result.get("selection_state") == "current"
@@ -5283,6 +5580,7 @@ def musicbrainz_picker(
             + ljust_color(state_color(result["artist"][:24]), 24) + " "
             + ljust_color(state_color(result["country"][:8]), 8) + " "
             + ljust_color(state_color(result["date"][:10]), 10) + " "
+            + ljust_color(state_color(result["release_class"][:16]), 16) + " "
             + ljust_color(state_color(result["resolution"][:12]), 12) + " "
             + ljust_color(state_color(result["title"][:34]), 34) + " "
             + magenta("[URL]")
@@ -5294,6 +5592,25 @@ def musicbrainz_picker(
             kind="musicbrainz-results",
             options=results,
             back_action="source-results",
+            authority={
+                "artist": str(
+                    current_release.artist_credit
+                    if current_release is not None
+                    else artist
+                ),
+                "album": str(
+                    current_release.title
+                    if current_release is not None
+                    else album
+                ),
+                "artist_mbids": "",
+                "release_mbid": str(
+                    current_release.mbid
+                    if current_release is not None
+                    else current_release_id
+                ),
+                "recording_mbid": "",
+            },
         ).strip().lower()
         if answer == "__batch_return__":
             raise TuiBatchReturn()
@@ -5892,7 +6209,7 @@ def _run_scan_dir_batch(
     discovered_albums: list[AlbumDir] = []
     ignored_dirs: list[Path] = []
     if tui_active():
-        albums, _, timeout_paths, sources, discovered_albums, _scan_mode = prepare_tui_library_selection(
+        albums, _, timeout_paths, sources, discovered_albums, _scan_mode, _track_targets = prepare_tui_library_selection(
             config_file,
             cfg,
             sources,
@@ -7010,6 +7327,14 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
     )
     if square_round_to < 0:
         raise SplinedError("[output].square_round_to cannot be negative.")
+    upscale_max_percent = _non_negative_int(
+        output.get("upscale_max_percent", 200) or 0,
+        "[output].upscale_max_percent",
+    )
+    if not 100 <= upscale_max_percent <= 800:
+        raise SplinedError(
+            "[output].upscale_max_percent must be between 100 and 800."
+        )
     scan_timeout_hours(cfg)
 
 
@@ -7308,6 +7633,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     )
     config_row("output.square_round_to", output.get("square_round_to", 0))
     config_row("output.upscale_below_ideal", bool(output.get("upscale_below_ideal", False)))
+    config_row("output.upscale_max_percent", output.get("upscale_max_percent", 200))
     config_row(
         "output.evaluate_final_image",
         bool(output.get("evaluate_final_image", output.get("square", False))),
@@ -7508,6 +7834,12 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      --tui-theme CHALK", "Use the muted mineral/charcoal theme")
     help_row("      interactive TTY", "Operational scans enter the TUI automatically")
     help_row("      redirected/non-TTY", "Operational scans remain in the plain CLI automatically")
+    print()
+    print("Portable maintenance:")
+    help_row("      --backup-export PATH", "Create a selective cross-platform .spl backup")
+    help_row("      --backup-restore PATH", "Restore selected categories from a .spl backup")
+    help_row("      --backup-components LIST", "settings,interface,credentials,database,diagnostics")
+    help_row("      --check-for-updates", "Check published numeric SPLINED versions (notification only)")
 
 
 
@@ -7529,6 +7861,8 @@ def print_config(path: Path, cfg: dict[str, Any]) -> None:
         f"Square output: {out.get('square', False)}\n"
         f"Square mode: {out.get('square_mode', 'crop' if out.get('square', False) else 'off')}\n"
         f"Square round to: {out.get('square_round_to', 0)}\n"
+        f"Upscale below Ideal: {out.get('upscale_below_ideal', False)}\n"
+        f"Upscale maximum percent: {out.get('upscale_max_percent', 200)}\n"
         f"Evaluate final image: {out.get('evaluate_final_image', out.get('square', False))}\n"
         f"Runtime log directory: {logs / 'run'}\n"
         f"Runtime log: {runtime_log_path() or 'not initialized'}"
@@ -7552,6 +7886,15 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config", action="store_true")
     p.add_argument("--config-check", action="store_true")
     p.add_argument("--config-edit", action="store_true")
+    backup_group = p.add_mutually_exclusive_group()
+    backup_group.add_argument("--backup-export", metavar="PATH")
+    backup_group.add_argument("--backup-restore", metavar="PATH")
+    p.add_argument(
+        "--backup-components",
+        default="settings,interface,credentials",
+        help="comma-separated settings,interface,credentials,database,diagnostics",
+    )
+    p.add_argument("--check-for-updates", action="store_true")
     p.add_argument("--scan", action="store_true")
     p.add_argument("--scan-dir", nargs="*", default=None, metavar="PATH")
     p.add_argument("-p", "--preserve-file", choices=["true", "false"])
@@ -7570,6 +7913,85 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--tui-theme", choices=("OLED", "CHALK"), type=str.upper, default="OLED")
     p.add_argument("--idle", action="store_true", help=argparse.SUPPRESS)
     return p
+
+
+def selected_backup_components(value: str) -> list[str]:
+    return [item.strip().casefold() for item in str(value).split(",") if item.strip()]
+
+
+def run_backup_command(
+    args: argparse.Namespace,
+    config_file: Path,
+    cfg: dict[str, Any],
+) -> int | None:
+    if not args.backup_export and not args.backup_restore:
+        return None
+    from splined_backup import export_backup, read_backup, restore_backup
+
+    components = selected_backup_components(args.backup_components)
+    cache = runtime_cache_dir(config_file, cfg)
+    credentials = runtime_credential_dir(config_file, cfg)
+    interface_path = config_file.with_name("ui.toml")
+    if args.backup_export:
+        destination = export_backup(
+            Path(args.backup_export),
+            config_path=config_file,
+            credential_dir=credentials,
+            database_path=cache / "splined.db",
+            interface_path=interface_path,
+            splined_version=VERSION,
+            components=components,
+            diagnostics=(
+                f"verbosity={cfg.get('verbosity', 'info')};"
+                f"log_retention_days={section(cfg, 'logging').get('retention_days', 14)}"
+            ),
+        )
+        print(f"SPLINED backup written: {destination}")
+        return 0
+
+    source = Path(args.backup_restore)
+    payload = read_backup(source)
+    destination_cfg = cfg
+    settings = payload.get("settings")
+    if "settings" in components and isinstance(settings, str) and settings.strip():
+        try:
+            parsed = tomllib.loads(settings)
+        except tomllib.TOMLDecodeError as exc:
+            raise SplinedError(f"Backup Config v5 is invalid: {exc}") from exc
+        validate_config_v5(parsed)
+        destination_cfg = parsed
+        cache = runtime_cache_dir(config_file, destination_cfg)
+        credentials = runtime_credential_dir(config_file, destination_cfg)
+    restored = restore_backup(
+        source,
+        components=components,
+        config_path=config_file,
+        credential_dir=credentials,
+        database_path=cache / "splined.db",
+        interface_path=interface_path,
+    )
+    print(
+        "SPLINED backup restored: "
+        + (", ".join(sorted(restored)) if restored else "no selected data present")
+    )
+    return 0
+
+
+def run_update_check() -> int:
+    from splined_update import check_latest_release
+
+    try:
+        result = check_latest_release(VERSION)
+    except Exception as exc:
+        raise SplinedError(f"Unable to check for SPLINED updates: {exc}") from exc
+    if result.update_available:
+        print("A newer SPLINED version is available.")
+        print(f"Installed version: {result.installed}")
+        print(f"Available version: {result.available}")
+        print(result.release_url)
+    else:
+        print("No SPLINED update is available.")
+    return 0
 
 
 def run_operational_interface(
@@ -7651,6 +8073,14 @@ def main() -> int:
         if args.config: print_config(path,cfg); return 0
         if args.config_check: print(f"OK: {path}\nconfig_version = {CONFIG_VERSION}"); return 0
         if args.config_edit: return run_config_edit(path)
+        try:
+            backup_result = run_backup_command(args, path, cfg)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise SplinedError(f"Unable to process the SPLINED backup: {exc}") from exc
+        if backup_result is not None:
+            return backup_result
+        if args.check_for_updates:
+            return run_update_check()
         if args.fanarttv_credentials: return configure_fanarttv_credentials(path,cfg)
         if args.lastfm_credentials: return configure_lastfm_credentials(path,cfg)
         if args.lastfm_login: return run_lastfm_login(path,cfg)

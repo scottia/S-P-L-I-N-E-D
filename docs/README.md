@@ -1,6 +1,6 @@
 # S:P:L:I:N:E:D Documentation
 
-This directory documents the current **S:P:L:I:N:E:D 1.0.31** behavior and
+This directory documents the current supported **S:P:L:I:N:E:D** behavior and
 Config v5 schema. It is organized by task so one subject has one authoritative
 home. Historical changes and release notes are maintained in
 [GitHub Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases), not mixed
@@ -23,8 +23,9 @@ with the current product documentation.
   Linux, macOS, Docker, initial indexing, and the first safe scan.
 - [Windows guide](windows-guide.md) — the native interface, portable settings,
   candidate review, MusicBrainz Matches, backup, updates, and troubleshooting.
-- [Python Ratatui guide](ratatui-tui.md) — persistent Select Media, controls,
-  candidate decisions, MusicBrainz review, reports, and terminal cleanup.
+- [Python Ratatui guide](ratatui-tui.md) — persistent Select Media, structured
+  settings, candidate filters/comparison, compilation-track reopen,
+  MusicBrainz authority, diagnostics, reports, and terminal cleanup.
 
 ### Configure artwork and providers
 

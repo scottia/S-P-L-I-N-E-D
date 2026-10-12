@@ -128,7 +128,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             "open",
             side_effect=AssertionError("SQLite picker cache opened"),
         ):
-            (selected, _overrides, _timeouts, _sources, known, scan_mode), emitted = self._run(
+            (selected, _overrides, _timeouts, _sources, known, scan_mode, _track_targets), emitted = self._run(
                 [{"action": "launch", "scan_mode": "auto-selected", "selected": []}]
             )
 
@@ -196,7 +196,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             },
         ]
         with mock.patch.object(splined, "inventory", side_effect=inventory):
-            (selected, _overrides, _timeouts, _sources, known, scan_mode), emitted = self._run(
+            (selected, _overrides, _timeouts, _sources, known, scan_mode, _track_targets), emitted = self._run(
                 responses
             )
 
@@ -259,11 +259,11 @@ class DirectLazyInventoryTests(unittest.TestCase):
                 {"action": "launch", "scan_mode": "auto-selected"},
             ]
         )
-        self.assertEqual([album.path for album in selected], [self.eden])
+        self.assertEqual([album.path for album in selected], [self.love, self.eden])
 
-    def test_select_all_scopes_to_active_artist_and_excludes_processed(self) -> None:
+    def test_select_all_scopes_to_active_artist_and_excludes_protected(self) -> None:
         artist_path = str(self.root / "10,000 Maniacs")
-        (selected, _overrides, _timeouts, _sources, _known, _scan), _emitted = self._run(
+        (selected, _overrides, _timeouts, _sources, _known, _scan, _track_targets), _emitted = self._run(
             [
                 {
                     "action": "select-all",
@@ -276,10 +276,10 @@ class DirectLazyInventoryTests(unittest.TestCase):
                 },
             ]
         )
-        self.assertEqual([album.path for album in selected], [self.eden])
+        self.assertEqual([album.path for album in selected], [self.love, self.eden])
 
     def test_select_filtered_is_library_wide_text_and_includes_processed(self) -> None:
-        (selected, _overrides, _timeouts, _sources, _known, _scan), _emitted = self._run(
+        (selected, _overrides, _timeouts, _sources, _known, _scan, _track_targets), _emitted = self._run(
             [
                 {
                     "action": "select-filtered",
@@ -301,7 +301,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             {self.love, self.eden},
         )
 
-        (selected, _overrides, _timeouts, _sources, _known, _scan), _emitted = self._run(
+        (selected, _overrides, _timeouts, _sources, _known, _scan, _track_targets), _emitted = self._run(
             [
                 {
                     "action": "select-filtered",
@@ -365,7 +365,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
 
     def test_select_all_explicitly_targets_current_artist(self) -> None:
         artist_path = self.root / "10,000 Maniacs"
-        (selected, _overrides, _timeouts, _sources, known, _scan), _emitted = self._run(
+        (selected, _overrides, _timeouts, _sources, known, _scan, _track_targets), _emitted = self._run(
             [
                 {
                     "action": "select-all",
@@ -380,9 +380,10 @@ class DirectLazyInventoryTests(unittest.TestCase):
         )
 
         # Select [ALL] is intentionally scoped to the active Artist. The
-        # processed Album is protected; only the unprocessed child is selected.
+        # A folder cover is inventory evidence only; both children remain
+        # unprocessed until SQLite records a SPLINED completion.
         self.assertEqual({album.path for album in known}, {self.love, self.eden})
-        self.assertEqual({album.path for album in selected}, {self.eden})
+        self.assertEqual({album.path for album in selected}, {self.love, self.eden})
 
     def test_auto_all_is_an_explicit_whole_library_traversal(self) -> None:
         calls: list[Path] = []
@@ -393,7 +394,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             return original_inventory(path, *args, **kwargs)
 
         with mock.patch.object(splined, "inventory", side_effect=inventory):
-            (selected, _overrides, _timeouts, _sources, known, _scan), _emitted = self._run(
+            (selected, _overrides, _timeouts, _sources, known, _scan, _track_targets), _emitted = self._run(
                 [{"action": "launch", "scan_mode": "auto-all", "selected": []}]
             )
 
@@ -402,7 +403,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
             {self.root / "10,000 Maniacs", self.root / "Aerosmith"},
         )
         self.assertEqual({album.path for album in known}, {self.love, self.eden, self.toys})
-        self.assertEqual({album.path for album in selected}, {self.eden, self.toys})
+        self.assertEqual({album.path for album in selected}, {self.love, self.eden, self.toys})
 
     def test_refresh_only_reloads_root_artist_folders(self) -> None:
         with mock.patch.object(
@@ -492,7 +493,7 @@ class DirectLazyInventoryTests(unittest.TestCase):
         update = [payload for event, payload in emitted if event == "library_update"][-1]
         love = next(row for row in update["albums"] if row["path"] == str(self.love))
         self.assertEqual(love["formats"], ["JPEG"])
-        self.assertEqual(love["status"], "processed")
+        self.assertEqual(love["status"], "unprocessed")
 
     def test_hidden_ignored_and_symlink_roots_never_enter_picker(self) -> None:
         outside = self.base / "outside"

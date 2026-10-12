@@ -350,9 +350,12 @@ The compilation branch is explicit and per track:
    (`M` in Ratatui or **MusicBrainz Matches...** on Windows). Release-first
    discovery prevents the first 100 Recording-search hits from hiding a valid
    Album edition, while the exact and supplemental Recording branches retain
-   Various Artists compilations. Ratatui shows matches by newest-to-oldest decade (`Unknown` last),
-   then populated Album, Single, EP, Compilation, Soundtrack, and additional
-   release types. Each row exposes the Cover Art
+   Various Artists compilations. Ratatui and Windows use the same deterministic
+   result families without decade grouping: named Artists A–Z first, followed
+   by Soundtrack, Compilation, Various Artists, and blank-artist results, with
+   newest releases leading within each family. Artist and Release Type filters
+   combine without filtering the single current-Album authority row. Each row
+   exposes the Cover Art
    Archive release-group front-image URL for Artwork preview, falling back to
    the exact-release endpoint when no group MBID is available. Selecting a
    match makes its Recording/Artist/Release IDs session authority and performs
