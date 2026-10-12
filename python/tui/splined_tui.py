@@ -74,9 +74,15 @@ from .layout import (
     layout_spec,
 )
 from .preview import ArtworkPreview, generate_preview
+from .result_filters import (
+    CandidateFilter,
+    MusicBrainzFilter,
+    comparison_pair,
+)
 from .semantic import Semantic, log_semantic, outcome_semantic, range_semantic
 from .status import use_adapter
 from .source_settings import PolicyDraft, PRIMARY_METADATA_SOURCES
+from .runtime_settings import RuntimeSettingsDraft, SETTING_SPECS
 from .theme import Theme, select_theme
 from .widgets import card, panel_style, spectral_title, style, title_paragraph
 
@@ -262,6 +268,12 @@ class TuiState:
     fallback_edit_buffer: str = ""
     candidates: list[CandidateView] = field(default_factory=list)
     release_options: list[dict[str, str]] = field(default_factory=list)
+    musicbrainz_authority: dict[str, str] = field(default_factory=dict)
+    musicbrainz_filter: MusicBrainzFilter | None = None
+    candidate_filter: CandidateFilter | None = None
+    filter_open: bool = False
+    filter_dimension: int = 0
+    filter_option: int = 0
     selected_index: int = 0
     input_request: InputRequest | None = None
     input_buffer: str = ""
@@ -277,6 +289,12 @@ class TuiState:
     activity: list[ActivityEntry] = field(default_factory=list)
     library: LibraryModel | None = None
     policy: PolicyDraft | None = None
+    settings: RuntimeSettingsDraft | None = None
+    settings_index: int = 0
+    settings_scroll: int = 0
+    settings_editing: bool = False
+    settings_buffer: str = ""
+    runtime_info: dict[str, Any] = field(default_factory=dict)
     workspace: str = "library"
     library_focus: int = 0
     status_index: int = 0
@@ -314,6 +332,14 @@ class TuiState:
     preview_identity: dict[str, tuple[int, int]] = field(default_factory=dict)
     preview_modal_open: bool = False
     preview_modal_index: int = 0
+    compare_modal_open: bool = False
+    compare_modal_pair: tuple[int, int] | None = None
+    track_modal_open: bool = False
+    track_album_path: str = ""
+    track_items: list[dict[str, Any]] = field(default_factory=list)
+    track_index: int = 0
+    track_targets: dict[str, set[str]] = field(default_factory=dict)
+    track_pending_album_path: str = ""
     remote_hover_index: int = -1
     remote_hover_url: str = ""
     remote_hover_overlay: Any | None = None
@@ -494,6 +520,7 @@ class TuiState:
             config = payload.get("config", {})
             if isinstance(config, dict):
                 self.policy = PolicyDraft.from_config(config)
+                self.settings = RuntimeSettingsDraft.from_config(config)
                 ai = payload.get("aisplined", config.get("aisplined", {}))
                 output = config.get("output", {})
                 if isinstance(ai, dict):
@@ -501,6 +528,9 @@ class TuiState:
                     self.ai_runtime_available = bool(payload.get("ai_runtime_available", False))
                 if isinstance(output, dict):
                     self.upscale_below_ideal = bool(output.get("upscale_below_ideal", False))
+            runtime_info = payload.get("runtime_info", {})
+            if isinstance(runtime_info, dict):
+                self.runtime_info = dict(runtime_info)
         elif event == "library_selected_stats":
             if self.library is None:
                 return
@@ -536,6 +566,28 @@ class TuiState:
             )
             if self.selected_album_stats and any(str(item.get("path", "")) == self.album_info_target for item in self.selected_album_stats):
                 self.album_info_loading = False
+            if self.track_pending_album_path:
+                pending = next(
+                    (
+                        item
+                        for item in self.selected_album_stats
+                        if str(item.get("path", ""))
+                        == self.track_pending_album_path
+                    ),
+                    None,
+                )
+                rows = pending.get("track_items", []) if pending is not None else []
+                if isinstance(rows, list) and rows:
+                    self.track_album_path = self.track_pending_album_path
+                    self.track_items = [
+                        item for item in rows if isinstance(item, dict)
+                    ]
+                    self.track_index = 0
+                    self.track_modal_open = bool(self.track_items)
+                    self.track_pending_album_path = ""
+                    self.transient = (
+                        "Compilation tracks loaded; focus alone does not target a track."
+                    )
             _runtime_trace(
                 f"library_stats_async_apply selected_stats={len(self.selected_album_stats)} "
                 f"{_library_snapshot(self)}"
@@ -679,6 +731,8 @@ class TuiState:
                 for item in payload.get("items", [])
                 if isinstance(item, dict)
             ]
+            self.candidate_filter = CandidateFilter.from_items(self.candidates)
+            self.filter_open = False
             selected = next(
                 (
                     index
@@ -757,6 +811,10 @@ class TuiState:
                     self.active_report.candidate_total,
                     len(self.candidates) + hidden,
                 )
+        elif event == "update_status":
+            self.transient = str(
+                payload.get("message", "No SPLINED update is available.")
+            )
         elif event == "input":
             context = dict(payload.get("context") or {})
             input_kind = str(context.get("kind", "picker"))
@@ -812,9 +870,21 @@ class TuiState:
                     for item in context.get("options", [])
                     if isinstance(item, dict)
                 ]
+                authority = context.get("authority", {})
+                self.musicbrainz_authority = (
+                    {str(key): str(value or "") for key, value in authority.items()}
+                    if isinstance(authority, dict)
+                    else {}
+                )
+                self.musicbrainz_filter = MusicBrainzFilter.from_items(
+                    self.release_options
+                )
+                self.filter_open = False
                 self.selected_index = 0
             else:
                 self.release_options.clear()
+                self.musicbrainz_authority.clear()
+                self.musicbrainz_filter = None
             if self.active_report is not None and self.input_request.kind not in {
                 "library-selection",
                 "batch-summary",
@@ -2551,22 +2621,26 @@ def _render_library_tools(
 ) -> None:
     full = (
         ("[P] Source Policy", "source-policy-open"),
-        ("[E] Edit Settings", "settings-edit"),
+        ("[E] Settings", "settings-edit"),
+        ("[A] About", "about-open"),
         ("[R] Refresh Library Index", "library-refresh"),
     )
     medium = (
         ("[P] Policy", "source-policy-open"),
         ("[E] Settings", "settings-edit"),
+        ("[A] About", "about-open"),
         ("[R] Refresh", "library-refresh"),
     )
     compact = (
         ("[P] Policy", "source-policy-open"),
         ("[E] Edit", "settings-edit"),
+        ("[A] About", "about-open"),
         ("[R] Refresh", "library-refresh"),
     )
     tiny = (
         ("[P]", "source-policy-open"),
         ("[E]", "settings-edit"),
+        ("[A]", "about-open"),
         ("[R]", "library-refresh"),
     )
     inner_width = max(1, int(area.width) - 2)
@@ -2587,7 +2661,7 @@ def _render_library_tools(
         else tiny
     )
     spans: list[Span] = []
-    semantics = (Semantic.SPECIAL, Semantic.ACTIVE, Semantic.ACCEPTED)
+    semantics = (Semantic.SPECIAL, Semantic.ACTIVE, Semantic.DEBUG, Semantic.ACCEPTED)
     for index, (label, _target) in enumerate(controls):
         if index:
             spans.append(Span(separator, style(theme, Semantic.MUTED)))
@@ -2857,70 +2931,31 @@ def _render_candidate_table(frame: Any, area: Rect, state: TuiState, theme: Them
     frame.render_stateful_table(table, area, table_state)
 
 
-MUSICBRAINZ_BASE_RELEASE_TYPES = (
-    "Album",
-    "Single",
-    "EP",
-    "Compilation",
-    "Soundtrack",
-)
-
-
 def _musicbrainz_grouped_rows(
     options: list[dict[str, str]],
+    option_indexes: list[int] | None = None,
 ) -> list[tuple[str, int, str]]:
-    """Build non-selectable decade/type/header rows around selectable results."""
-    decades: list[str] = []
-    for option in options:
-        decade = option.get("decade", "Unknown") or "Unknown"
-        if decade not in decades:
-            decades.append(decade)
-    decades.sort(
-        key=lambda value: (
-            1 if value == "Unknown" else 0,
-            -int(value[:4]) if value[:4].isdigit() else 0,
-        )
-    )
+    """Build the Windows-style flat result table without decade groups."""
+    indexes = option_indexes or list(range(len(options)))
+    if not options:
+        return []
+    return [
+        ("header", -1, ""),
+        ("separator", -1, ""),
+        *[("result", option_index, "") for option_index in indexes],
+    ]
 
-    rows: list[tuple[str, int, str]] = []
-    for decade in decades:
-        rows.append(("blank", -1, ""))
-        rows.append(("decade", -1, decade))
-        present_types = []
-        for option in options:
-            if (option.get("decade", "Unknown") or "Unknown") != decade:
-                continue
-            release_type = option.get("release_class", "Release") or "Release"
-            if release_type not in present_types:
-                present_types.append(release_type)
-        extra_types = sorted(
-            (
-                value
-                for value in present_types
-                if value not in MUSICBRAINZ_BASE_RELEASE_TYPES
-            ),
-            key=str.casefold,
-        )
-        release_types = [
-            value
-            for value in MUSICBRAINZ_BASE_RELEASE_TYPES
-            if value in present_types
-        ] + extra_types
-        header_added = False
-        for release_type in release_types:
-            rows.append(("type", -1, release_type))
-            if not header_added:
-                rows.append(("header", -1, ""))
-                rows.append(("separator", -1, ""))
-                header_added = True
-            for option_index, option in enumerate(options):
-                if (
-                    (option.get("decade", "Unknown") or "Unknown") == decade
-                    and (option.get("release_class", "Release") or "Release")
-                    == release_type
-                ):
-                    rows.append(("result", option_index, ""))
-    return rows
+
+def _musicbrainz_visible_indexes(state: TuiState) -> list[int]:
+    if state.musicbrainz_filter is None:
+        return list(range(len(state.release_options)))
+    visible = state.musicbrainz_filter.visible(state.release_options)
+    return [
+        index
+        for item in visible
+        for index, original in enumerate(state.release_options)
+        if original is item
+    ]
 
 
 def _render_musicbrainz(
@@ -2967,7 +3002,9 @@ def _render_musicbrainz(
         0,
         prefix_width - sum(numeric_widths[:-1]),
     )
-    display_rows = _musicbrainz_grouped_rows(state.release_options)
+    visible_indexes = _musicbrainz_visible_indexes(state)
+    visible_options = [state.release_options[index] for index in visible_indexes]
+    display_rows = _musicbrainz_grouped_rows(visible_options, visible_indexes)
     selected_option = max(
         0,
         min(state.selected_index, max(0, len(state.release_options) - 1)),
@@ -2980,40 +3017,46 @@ def _render_musicbrainz(
         ),
         0,
     )
-    page_size = max(1, int(area.height) - 4)
+    page_size = max(1, int(area.height) - 6)
     start = max(0, min(selected_display - page_size // 2, len(display_rows) - page_size))
     visible_rows = display_rows[start : start + page_size]
 
+    authority = state.musicbrainz_authority
+    authority_artist = authority.get("artist", state.artist)
+    authority_album = authority.get("album", state.album)
     current_album = " • ".join(
-        part for part in (state.artist, state.album) if part
+        part for part in (authority_artist, authority_album) if part
     ) or state.album_path or "Unknown Album"
+    authority_ids = " · ".join(
+        value
+        for value in (
+            f"Artist {authority.get('artist_mbids', '')}" if authority.get("artist_mbids") else "",
+            f"Release {authority.get('release_mbid', '')}" if authority.get("release_mbid") else "",
+            f"Recording {authority.get('recording_mbid', '')}" if authority.get("recording_mbid") else "",
+        )
+        if value
+    ) or "Explicit IDs unavailable"
     rendered: list[Line] = [
         Line(
             [
-                Span("CURRENT ALBUM · ", style(theme, Semantic.ACTIVE, bold=True)),
+                Span("[CURRENT ALBUM]", style(theme, Semantic.ACTIVE, bold=True)),
+            ]
+        ),
+        Line(
+            [
+                Span("[*] ", style(theme, Semantic.ACTIVE, bold=True)),
                 Span(
                     _truncate(current_album, max(1, int(area.width) - 22)),
                     style(theme, Semantic.ACTIVE),
                 ),
             ]
         ),
+        Line([Span(_truncate(authority_ids, max(1, int(area.width) - 4)), style(theme, Semantic.ACTIVE))]),
         Line([Span("")]),
     ]
     for kind, option_index, label in visible_rows:
         if kind == "blank":
             rendered.append(Line([Span("")]))
-            continue
-        if kind == "decade":
-            rendered.append(
-                Line(
-                    [
-                        Span(
-                            f"[{label}] DECADE GROUP",
-                            style(theme, Semantic.SPECIAL, bold=True),
-                        )
-                    ]
-                )
-            )
             continue
         if kind == "type":
             rendered.append(
@@ -3077,7 +3120,7 @@ def _render_musicbrainz(
     paragraph = Paragraph(Text(rendered)).block(
         card(
             theme,
-            "MUSICBRAINZ MATCHES · DECADE / RELEASE TYPE",
+            "MUSICBRAINZ MATCHES · ARTIST / RELEASE TYPE FILTERS [/ ]",
             Semantic.SPECIAL,
         )
     )
@@ -3097,7 +3140,7 @@ def _render_musicbrainz(
     for visible_index, (kind, option_index, _label) in enumerate(visible_rows):
         if kind != "result":
             continue
-        row_y = int(area.y) + 3 + visible_index
+        row_y = int(area.y) + 5 + visible_index
         _register_hit(
             state,
             "musicbrainz-result-row",
@@ -3138,7 +3181,9 @@ CANDIDATE_HEADERS = {
 
 def _candidate_value(candidate: CandidateView, column: str, state: TuiState) -> str:
     selected = bool(
-        state.candidates and state.candidates[state.selected_index] is candidate
+        state.candidates
+        and 0 <= state.selected_index < len(state.candidates)
+        and state.candidates[state.selected_index] is candidate
     )
     enhancement = (
         state.ai_selection.label(candidate.ai_key)
@@ -3170,7 +3215,9 @@ def _candidate_cell_style(
     theme: Theme,
 ) -> Style:
     selected = bool(
-        state.candidates and state.candidates[state.selected_index] is candidate
+        state.candidates
+        and 0 <= state.selected_index < len(state.candidates)
+        and state.candidates[state.selected_index] is candidate
     )
     semantic = Semantic.TEXT
     if column == "range":
@@ -3363,15 +3410,14 @@ def _render_candidate_table_group(
         # render or persist a separate cached-thumbnail affordance here.
 
 
-def _candidate_preview(
+def _path_preview(
     state: TuiState,
-    candidate: CandidateView,
-    width: int = 28,
-    height: int = 12,
+    source: str,
+    width: int,
+    height: int,
     *,
     mode: str = "half",
 ) -> ArtworkPreview | None:
-    source = candidate.path
     if not source:
         return None
     if source not in state.preview_identity:
@@ -3385,11 +3431,28 @@ def _candidate_preview(
     if key not in state.preview_cache:
         state.preview_cache[key] = generate_preview(
             source,
-            width=width,
-            height=height,
+            width=max(1, width),
+            height=max(1, height),
             mode=mode,
         )
     return state.preview_cache[key]
+
+
+def _candidate_preview(
+    state: TuiState,
+    candidate: CandidateView,
+    width: int = 28,
+    height: int = 12,
+    *,
+    mode: str = "half",
+) -> ArtworkPreview | None:
+    return _path_preview(
+        state,
+        candidate.path,
+        width,
+        height,
+        mode=mode,
+    )
 
 
 def _preferred_candidate_index(state: TuiState) -> int:
@@ -3698,7 +3761,12 @@ def _render_candidate_preview(
 def _candidate_groups(state: TuiState) -> list[tuple[str, list[CandidateView], Semantic]]:
     grouped: dict[str, list[CandidateView]] = {}
     order: list[str] = []
-    for candidate in state.candidates:
+    candidates = (
+        state.candidate_filter.visible(state.candidates)
+        if state.candidate_filter is not None
+        else state.candidates
+    )
+    for candidate in candidates:
         # The engine's suggested candidate has a dedicated always-visible
         # section. Keep it out of its provider group to avoid presenting the
         # same actionable row twice; other candidates from that source remain.
@@ -3730,6 +3798,20 @@ def _candidate_groups(state: TuiState) -> list[tuple[str, list[CandidateView], S
             semantic = Semantic.FALLBACK
         result.append((name, grouped[name], semantic))
     return result
+
+
+def _candidate_visible_indexes(state: TuiState) -> list[int]:
+    visible = (
+        state.candidate_filter.visible(state.candidates)
+        if state.candidate_filter is not None
+        else state.candidates
+    )
+    return [
+        index
+        for candidate in visible
+        for index, original in enumerate(state.candidates)
+        if original is candidate
+    ]
 
 
 def _render_activity(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -4500,6 +4582,87 @@ def _render_policy(frame: Any, area: Rect, state: TuiState, theme: Theme) -> Non
         _register_hit(state, "policy-global-field", _row_rect(panels[2], index + 1), index=index, value=key)
 
 
+def _render_runtime_settings(
+    frame: Any, area: Rect, state: TuiState, theme: Theme
+) -> None:
+    draft = state.settings
+    if draft is None:
+        frame.render_widget(
+            Paragraph.from_string("Structured Config v5 settings are unavailable.")
+            .block(card(theme, "SETTINGS", Semantic.WARNING)),
+            area,
+        )
+        return
+    capacity = max(1, int(area.height) - 6)
+    state.settings_index = max(0, min(state.settings_index, len(SETTING_SPECS) - 1))
+    state.settings_scroll = _keep_visible(
+        state.settings_index,
+        state.settings_scroll,
+        capacity,
+        len(SETTING_SPECS),
+    )
+    visible = SETTING_SPECS[state.settings_scroll : state.settings_scroll + capacity]
+    lines: list[Line] = []
+    for offset, spec in enumerate(visible):
+        index = state.settings_scroll + offset
+        focused = index == state.settings_index
+        value = state.settings_buffer if focused and state.settings_editing else draft.display(spec)
+        marker = "✎" if focused and state.settings_editing else "›" if focused else " "
+        lines.append(
+            Line(
+                [
+                    Span(
+                        f"{marker} {spec.label:<31} {_truncate(value, max(8, int(area.width) - 38))}",
+                        style(theme, Semantic.ACTIVE if focused else Semantic.TEXT, bold=focused),
+                    )
+                ]
+            )
+        )
+    lines.extend(
+        [
+            Line([Span("")]),
+            Line([Span("Enter edit/toggle · ←/→ adjust · Ctrl+S save · Esc back", style(theme, Semantic.DEBUG))]),
+        ]
+    )
+    title = "STRUCTURED CONFIG V5 SETTINGS" + (" · UNSAVED" if draft.dirty else "")
+    frame.render_widget(Paragraph(Text(lines)).block(card(theme, title, Semantic.ACTIVE)), area)
+
+
+def _render_about(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    info = state.runtime_info
+    ordered = (
+        ("SPLINED", info.get("version", "Unknown")),
+        ("Python", info.get("python", sys.version.split()[0])),
+        ("Platform", info.get("platform", sys.platform)),
+        ("Config", info.get("config", "")),
+        ("Library", info.get("library", "")),
+        ("SQLite", info.get("database", "")),
+        ("Cache", info.get("cache", "")),
+        ("Logs", info.get("logs", "")),
+        ("Credentials", info.get("credentials", "")),
+        ("Interface", "Python Ratatui · SQLite authority"),
+    )
+    lines = [
+        Line(
+            [
+                Span(f"{label:<14}", style(theme, Semantic.SPECIAL, bold=True)),
+                Span(_truncate(str(value), max(1, int(area.width) - 20)), style(theme, Semantic.TEXT)),
+            ]
+        )
+        for label, value in ordered
+    ]
+    providers = info.get("providers", {})
+    if isinstance(providers, dict) and providers:
+        lines.extend([Line([Span("")]), Line([Span("PROVIDER AUTHENTICATION", style(theme, Semantic.ACCEPTED, bold=True))])])
+        for provider, status_value in sorted(providers.items()):
+            lines.append(Line([Span(f"{provider:<14} {status_value}", style(theme, Semantic.TEXT))]))
+    lines.extend([Line([Span("")]), Line([Span("[U] Check for updates · Esc return", style(theme, Semantic.DEBUG))])])
+    frame.render_widget(
+        Paragraph(Text(lines)).wrap(True, False).block(card(theme, "ABOUT / RUNTIME DIAGNOSTICS", Semantic.SPECIAL)),
+        area,
+    )
+
+
 def _render_history(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     lines: list[Line] = []
     entries = state.history[-max(1, area.height - 3) :]
@@ -4709,28 +4872,32 @@ def _footer_text(state: TuiState) -> str:
                     "↑/↓ settings • PgUp/PgDn scroll • Mouse/touch enabled • "
                     "Ctrl+S Save/Apply • Esc library • Ctrl+C [Exit] • ? help"
                 )
+            if state.workspace == "settings":
+                return "↑/↓ setting • Enter edit/toggle • ←/→ adjust • Ctrl+S save • Esc library • ? help"
+            if state.workspace == "about":
+                return "U semantic update check • Esc library • Ctrl+C [Exit] • ? help"
             return staging_footer
         if kind in {"artist", "album", "text"}:
             return f"{state.input_request.prompt}{state.input_buffer}   Enter confirm • Esc keep current • Ctrl+C [Exit] • ? help"
         if kind == "local-comparison":
             return "↑/↓ choose • Enter exact • S suggested • K keep local • U URL • M MusicBrainz • B bypass • Ctrl+C [Exit] • ? help"
         if kind == "musicbrainz":
-            return "↑/↓ choose release • Enter select • B/Esc back • Ctrl+C [Exit] • ? help"
+            return "↑/↓ choose release • / Artist/Type filter • Enter select • B/Esc back • Ctrl+C [Exit] • ? help"
         if kind == "musicbrainz-results":
             back = (
                 "source results"
                 if state.input_request.context.get("back_action") == "source-results"
                 else "album list"
             )
-            return f"↑/↓ or click choose MB match • Enter search artwork • Esc {back} • Ctrl+C [Exit] • ? help"
+            return f"↑/↓ choose MB match • / Artist/Type filter • Enter search artwork • Esc {back} • Ctrl+C [Exit] • ? help"
         if kind == "fallback-picker":
             back = (
                 "MB results"
                 if state.input_request.context.get("musicbrainz_back")
                 else "album list"
             )
-            return f"↑/↓ choose • Enter exact • S suggested • Click [E] edit MBID • M MB search • B leave • Esc {back} • Ctrl+C [Exit] • ? help"
-        return "↑/↓ choose • Enter exact • S suggested • U URL • B bypass • Ctrl+C [Exit] • ? help"
+            return f"↑/↓ choose • / filter • C compare • V full preview • Enter exact • M MB search • Esc {back} • ? help"
+        return "↑/↓ choose • / filter • C compare • V full preview • Enter exact • S suggested • U URL • B bypass • ? help"
     if state.finished:
         return "Enter / q Exit SPLINED • Ctrl+C [Exit] • ? help"
     return options_footer
@@ -4780,6 +4947,8 @@ def _help_content(topic: str) -> tuple[str, str]:
             "Resolution, Range Type, Distance, Square, Acceptable, and Approved are "
             "evaluated together with Artwork Source Priority. Hover or click [URL] "
             "to preview the exact remote image in memory.\n\n"
+            "/ filters source, image type, policy, and resolution. C compares two "
+            "visible candidates and V opens the highlighted result full-size. "
             "Enter chooses the highlighted row; S chooses the suggested row. M "
             "returns to MusicBrainz Matches so another Release can be inspected. "
             "Only final approval writes artwork.",
@@ -4809,7 +4978,9 @@ def _help_content(topic: str) -> tuple[str, str]:
             "Home / End     first / last row\n"
             "Mouse / touch  rows, controls, filters, links, dialogs, scrolling\n"
             "P / Ctrl+S     source policy / explicit Save & Apply\n"
-            "E              edit Config v5 in micro; reload scan on save\n"
+            "E              structured Config v5 settings\n"
+            "A              About / runtime diagnostics\n"
+            "T              compilation tracks / explicit reopen\n"
             "R              refresh immediate Artist folder list\n"
             "S              use suggested candidate\n"
             "K              keep local artwork\n"
@@ -4818,6 +4989,8 @@ def _help_content(topic: str) -> tuple[str, str]:
             "B              confirm bypass\n"
             "0-9            exact candidate selection\n"
             "U              identify highlighted [URL]\n"
+            "/              Artwork or MusicBrainz filters\n"
+            "C / V          compare candidates / full-size preview\n"
             "[?] / ?        contextual help / close help\n"
             "Ctrl+C         stop and restore terminal",
         ),
@@ -4959,6 +5132,208 @@ def _render_candidate_preview_modal(
     _register_hit(state, "preview-modal-close", popup)
 
 
+def _render_candidate_compare_modal(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    pair = state.compare_modal_pair
+    if pair is None or len(state.candidates) < 2:
+        return
+    left_index, right_index = pair
+    if not (
+        0 <= left_index < len(state.candidates)
+        and 0 <= right_index < len(state.candidates)
+    ):
+        return
+    width = min(max(72, int(area.width) - 4), 160)
+    height = min(max(24, int(area.height) - 2), 50)
+    popup = Rect(
+        int(area.x) + max(0, (int(area.width) - width) // 2),
+        int(area.y) + max(0, (int(area.height) - height) // 2),
+        width,
+        height,
+    )
+    panes = _split_horizontal(
+        popup, [Constraint.percentage(50), Constraint.fill(1)]
+    )
+    frame.render_widget(Clear(), popup)
+    for pane, candidate in zip(
+        panes,
+        (state.candidates[left_index], state.candidates[right_index]),
+    ):
+        title = (
+            f"{candidate.source.upper()} · {candidate.width}×{candidate.height}"
+        )
+        _render_candidate_preview(
+            frame, pane, state, theme, candidate, title=title
+        )
+    _register_hit(state, "compare-modal-close", popup)
+
+
+def _filter_dimensions(state: TuiState) -> list[tuple[str, list[str], set[str]]]:
+    request = state.input_request
+    if request is not None and request.kind in {"musicbrainz", "musicbrainz-results"}:
+        draft = state.musicbrainz_filter
+        if draft is None:
+            return []
+        return [
+            ("Artist", draft.available_artists(state.release_options), draft.artists),
+            (
+                "Release Type",
+                draft.available_release_types(state.release_options),
+                draft.release_types,
+            ),
+        ]
+    draft = state.candidate_filter
+    if draft is None:
+        return []
+    return [
+        ("Source", sorted({item.source for item in state.candidates}, key=str.casefold), draft.sources),
+        (
+            "Image Type",
+            ["Recommended", "Upscalable", "Rejected", "Local"],
+            draft.image_types,
+        ),
+        ("Policy", ["Acceptable", "Strict"], draft.policies),
+        (
+            "Resolution",
+            [value for value in ("BelowMinimum", "LowerRange", "Ideal", "UpperRange", "Ladder", "AboveLadder") if any(item.range_type == value for item in state.candidates)],
+            draft.ranges,
+        ),
+    ]
+
+
+def _render_filter_overlay(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    dimensions = _filter_dimensions(state)
+    if not dimensions:
+        return
+    state.filter_dimension = max(0, min(state.filter_dimension, len(dimensions) - 1))
+    label, options, selected = dimensions[state.filter_dimension]
+    state.filter_option = max(0, min(state.filter_option, max(0, len(options) - 1)))
+    width = min(max(54, max((len(value) for value in options), default=12) + 18), max(20, int(area.width) - 4))
+    height = min(max(10, len(options) + 7), max(8, int(area.height) - 2))
+    popup = Rect(
+        int(area.x) + max(0, (int(area.width) - width) // 2),
+        int(area.y) + max(0, (int(area.height) - height) // 2),
+        width,
+        height,
+    )
+    tabs = "  ".join(
+        (f"[{name}]" if index == state.filter_dimension else name)
+        for index, (name, _values, _chosen) in enumerate(dimensions)
+    )
+    lines = [Line([Span(_truncate(tabs, width - 4), style(theme, Semantic.SPECIAL, bold=True))]), Line([Span("")])]
+    for index, option in enumerate(options):
+        marker = "›" if index == state.filter_option else " "
+        checked = "●" if option in selected else "○"
+        semantic = Semantic.ACCEPTED if option in selected else Semantic.MUTED
+        lines.append(Line([Span(f"{marker} {checked} {option}", style(theme, semantic, bold=index == state.filter_option))]))
+    lines.extend(
+        [
+            Line([Span("")]),
+            Line([Span("←/→ dimension · ↑/↓ option · Space toggle · R reset · Enter close", style(theme, Semantic.MUTED))]),
+        ]
+    )
+    frame.render_widget(Clear(), popup)
+    frame.render_widget(
+        Paragraph(Text(lines)).block(card(theme, f"ARTWORK FILTER · {label.upper()}", Semantic.SPECIAL)),
+        popup,
+    )
+    _register_hit(state, "filter-close", popup)
+
+
+def _render_track_overlay(
+    frame: Any,
+    area: Rect,
+    state: TuiState,
+    theme: Theme,
+) -> None:
+    width = min(max(76, int(area.width) - 8), 150)
+    height = min(max(18, len(state.track_items) + 7), max(12, int(area.height) - 4))
+    popup = Rect(
+        int(area.x) + max(0, (int(area.width) - width) // 2),
+        int(area.y) + max(0, (int(area.height) - height) // 2),
+        width,
+        height,
+    )
+    content, footer = _split_vertical(
+        popup,
+        [Constraint.fill(1), Constraint.length(3)],
+    )
+    if int(content.width) >= 96:
+        list_area, preview_area = _split_horizontal(
+            content,
+            [Constraint.percentage(62), Constraint.fill(1)],
+        )
+    else:
+        list_area, preview_area = _split_vertical(
+            content,
+            [Constraint.percentage(58), Constraint.fill(1)],
+        )
+    capacity = max(1, int(list_area.height) - 2)
+    state.track_index = max(0, min(state.track_index, max(0, len(state.track_items) - 1)))
+    start = max(0, min(state.track_index - capacity // 2, max(0, len(state.track_items) - capacity)))
+    selected = state.track_targets.setdefault(state.track_album_path, set())
+    lines: list[Line] = []
+    for index, item in enumerate(state.track_items[start : start + capacity], start):
+        path = str(item.get("path", ""))
+        focused = index == state.track_index
+        chosen = path in selected
+        art = "art" if bool(item.get("embedded_art")) else "no art"
+        progress = "complete · reopen" if bool(item.get("completed")) else "unfinished"
+        label = f"{'›' if focused else ' '} {'●' if chosen else '○'} {int(item.get('number', index + 1)):>3}. {item.get('artist', '')} · {item.get('title', '')} · {art} · {progress}"
+        lines.append(Line([Span(_truncate(label, width - 4), style(theme, Semantic.ACCEPTED if chosen else Semantic.ACTIVE if focused else Semantic.TEXT, bold=focused))]))
+    frame.render_widget(Clear(), popup)
+    frame.render_widget(
+        Paragraph(Text(lines)).block(
+            card(theme, "COMPILATION EMBEDDED ART TRACKS", Semantic.SPECIAL)
+        ),
+        list_area,
+    )
+    focused = state.track_items[state.track_index] if state.track_items else {}
+    preview_path = str(focused.get("preview_path", ""))
+    preview = _path_preview(
+        state,
+        preview_path,
+        max(1, int(preview_area.width) - 2),
+        max(1, int(preview_area.height) - 2),
+    )
+    if preview is None:
+        frame.render_widget(
+            Paragraph.from_string("NO EMBEDDED ARTWORK")
+            .centered()
+            .block(card(theme, "TRACK PREVIEW", Semantic.MUTED)),
+            preview_area,
+        )
+    else:
+        dimensions = (
+            f"{int(focused.get('preview_width', 0))} × "
+            f"{int(focused.get('preview_height', 0))}"
+        )
+        _render_prepared_preview(
+            frame,
+            preview_area,
+            preview,
+            theme,
+            title=f"TRACK EMBEDDED ART · {dimensions}",
+        )
+    frame.render_widget(
+        Paragraph.from_string(
+            "Focus previews only · Space explicitly targets · completed tracks may reopen · Enter close"
+        )
+        .centered()
+        .block(card(theme, "TRACK ACTION", Semantic.DEBUG)),
+        footer,
+    )
+
+
 def render(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
     state.hit_regions.clear()
@@ -5010,6 +5385,10 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_batch_report(frame, content, state, theme)
     elif state.workflow == "library" and state.workspace == "policy":
         _render_policy(frame, content, state, theme)
+    elif state.workflow == "library" and state.workspace == "settings":
+        _render_runtime_settings(frame, content, state, theme)
+    elif state.workflow == "library" and state.workspace == "about":
+        _render_about(frame, content, state, theme)
     elif state.workflow == "library":
         _render_library(frame, content, state, theme)
     elif state.input_request and state.input_request.kind == "musicbrainz":
@@ -5048,6 +5427,12 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_dialog(frame, area, state, theme)
     if state.preview_modal_open:
         _render_candidate_preview_modal(frame, area, state, theme)
+    if state.compare_modal_open:
+        _render_candidate_compare_modal(frame, area, state, theme)
+    if state.filter_open:
+        _render_filter_overlay(frame, area, state, theme)
+    if state.track_modal_open:
+        _render_track_overlay(frame, area, state, theme)
 
 
 def _submit(state: TuiState, adapter: TuiAdapter, response: str) -> bool:
@@ -5157,11 +5542,19 @@ def _submit_library(state: TuiState, adapter: TuiAdapter) -> None:
             f"{_library_snapshot(state)}"
         )
         return
+    payload["track_targets"] = {
+        album_path: sorted(paths, key=str.casefold)
+        for album_path, paths in state.track_targets.items()
+        if album_path in selected and paths
+    }
     _runtime_trace(
         f"library_launch.send mode={mode!r} {_library_snapshot(state)}"
     )
     state.scan_scope = ""
-    _submit(state, adapter, json.dumps(payload, separators=(",", ":")))
+    if _submit(state, adapter, json.dumps(payload, separators=(",", ":"))):
+        # Explicit targeting belongs to one launch only. A subsequent Album
+        # launch resumes normally unless tracks are deliberately checked again.
+        state.track_targets.clear()
 
 
 def _respond_library_action(
@@ -5209,6 +5602,7 @@ def _library_input_ready(state: TuiState, adapter: TuiAdapter) -> bool:
 def _sync_library_selection(state: TuiState, adapter: TuiAdapter) -> None:
     if state.library is None:
         return
+    state.track_targets.clear()
     _respond_library_action(state, adapter, "selection-change")
 
 
@@ -5344,6 +5738,64 @@ def _handle_library_key(
         state.exit_after_worker = True
         state.transient = "Closing SPLINED after the engine session stops safely…"
         return True
+    if state.workspace == "settings":
+        draft = state.settings
+        if draft is None:
+            state.workspace = "library"
+            return True
+        spec = SETTING_SPECS[state.settings_index]
+        if state.settings_editing:
+            lowered = code.casefold()
+            if action is Action.BACK:
+                state.settings_editing = False
+                state.settings_buffer = ""
+            elif action is Action.ACTIVATE:
+                try:
+                    draft.set_text(spec, state.settings_buffer)
+                except (TypeError, ValueError):
+                    state.transient = f"Invalid value for {spec.label}."
+                    return True
+                state.settings_editing = False
+                state.settings_buffer = ""
+            elif lowered in {"backspace", "delete"}:
+                state.settings_buffer = state.settings_buffer[:-1]
+            elif len(code) == 1 and code.isprintable() and not bool(getattr(event, "ctrl", False)):
+                state.settings_buffer += code
+            return True
+        if action is Action.BACK:
+            state.workspace = "library"
+        elif action is Action.UP:
+            state.settings_index = (state.settings_index - 1) % len(SETTING_SPECS)
+        elif action is Action.DOWN:
+            state.settings_index = (state.settings_index + 1) % len(SETTING_SPECS)
+        elif action in {Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END}:
+            if action is Action.HOME:
+                state.settings_index = 0
+            elif action is Action.END:
+                state.settings_index = len(SETTING_SPECS) - 1
+            else:
+                delta = -8 if action is Action.PAGE_UP else 8
+                state.settings_index = max(0, min(len(SETTING_SPECS) - 1, state.settings_index + delta))
+        elif action in {Action.LEFT, Action.RIGHT}:
+            if spec.kind in {"bool", "choice", "int"}:
+                draft.toggle_or_cycle(spec, -1 if action is Action.LEFT else 1)
+        elif action in {Action.ACTIVATE, Action.TOGGLE}:
+            if spec.kind in {"text", "list"}:
+                state.settings_buffer = draft.display(spec)
+                state.settings_editing = True
+            else:
+                draft.toggle_or_cycle(spec, 1)
+        elif action is Action.SAVE:
+            response = {"action": "save-runtime-settings", "settings": draft.as_payload()}
+            _submit(state, adapter, json.dumps(response, separators=(",", ":")))
+        return True
+    if state.workspace == "about":
+        if action is Action.BACK:
+            state.workspace = "library"
+        elif action is Action.URL:
+            state.transient = "Checking the latest semantic SPLINED release…"
+            _respond_library_action(state, adapter, "check-updates")
+        return True
     if state.workspace == "policy":
         draft = state.policy
         if draft is None:
@@ -5477,8 +5929,50 @@ def _handle_library_key(
         state.library_focus = 0
         return True
     if action is Action.EDIT_SETTINGS:
-        state.transient = "Opening Config v5 in micro…"
-        _respond_library_action(state, adapter, "edit-config")
+        state.workspace = "settings"
+        state.settings_index = 0
+        state.settings_scroll = 0
+        state.settings_editing = False
+        state.settings_buffer = ""
+        return True
+    if action is Action.ABOUT:
+        state.workspace = "about"
+        return True
+    if action is Action.TRACKS:
+        albums = model.visible_albums(active_artist_only=True)
+        if not albums:
+            state.transient = "No Album is focused for track expansion."
+            return True
+        album = albums[max(0, min(state.album_index_cursor, len(albums) - 1))]
+        stats = next(
+            (
+                item
+                for item in state.selected_album_stats
+                if str(item.get("path", "")) == album.path
+            ),
+            None,
+        )
+        if stats is None:
+            state.transient = "Check this Album first; embedded track details load on demand."
+            return True
+        if not bool(stats.get("manual_compilation_eligible")):
+            state.transient = "Explicit track reopen is available for fallback compilation Albums."
+            return True
+        rows = stats.get("track_items", [])
+        state.track_items = [item for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
+        if not state.track_items:
+            state.track_pending_album_path = album.path
+            state.transient = "Loading embedded compilation track details…"
+            _respond_library_action(
+                state,
+                adapter,
+                "load-track-details",
+                album_path=album.path,
+            )
+            return True
+        state.track_album_path = album.path
+        state.track_index = 0
+        state.track_modal_open = True
         return True
     if action is Action.REFRESH:
         state.transient = "Refreshing Artist folder list…"
@@ -5880,12 +6374,14 @@ def _focus_candidate(state: TuiState, index: int, adapter: TuiAdapter | None = N
 def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
     model = state.library
     if region.target == "musicbrainz-scroll":
-        count = len(state.release_options)
-        if count:
-            state.selected_index = max(
-                0,
-                min(state.selected_index + delta * 3, count - 1),
-            )
+        visible = _musicbrainz_visible_indexes(state)
+        if visible:
+            try:
+                position = visible.index(state.selected_index)
+            except ValueError:
+                position = 0
+            position = max(0, min(position + delta * 3, len(visible) - 1))
+            state.selected_index = visible[position]
             state.input_buffer = str(state.selected_index + 1)
             _clear_remote_hover_preview(state)
     elif region.target == "artist-scroll" and model is not None:
@@ -6122,8 +6618,13 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.workspace = "policy"
         state.library_focus = 0
     elif region.target == "settings-edit":
-        state.transient = "Opening Config v5 in micro…"
-        _respond_library_action(state, adapter, "edit-config")
+        state.workspace = "settings"
+        state.settings_index = 0
+        state.settings_scroll = 0
+        state.settings_editing = False
+        state.settings_buffer = ""
+    elif region.target == "about-open":
+        state.workspace = "about"
     elif region.target == "library-refresh":
         state.transient = "Refreshing Artist folder list…"
         _respond_library_action(state, adapter, "refresh-index")
@@ -6175,6 +6676,11 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         _focus_candidate_url(state, region.index)
     elif region.target == "preview-modal-close":
         close_candidate_preview(state)
+    elif region.target == "compare-modal-close":
+        state.compare_modal_open = False
+        state.compare_modal_pair = None
+    elif region.target == "filter-close":
+        state.filter_open = False
     elif region.target == "candidate-ai":
         _toggle_candidate_ai(state, region.index)
 
@@ -6186,7 +6692,79 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         state.exit_requested = True
         adapter.cancel_wait()
         return
+    if state.track_modal_open:
+        lowered = code.casefold()
+        if lowered in {"esc", "escape", "enter", "return", "t"}:
+            state.track_modal_open = False
+            return
+        if lowered == "up" and state.track_items:
+            state.track_index = (state.track_index - 1) % len(state.track_items)
+            return
+        if lowered == "down" and state.track_items:
+            state.track_index = (state.track_index + 1) % len(state.track_items)
+            return
+        if lowered in {"space", " "} and state.track_items:
+            item = state.track_items[state.track_index]
+            path = str(item.get("path", ""))
+            selected = state.track_targets.setdefault(state.track_album_path, set())
+            if path in selected:
+                selected.remove(path)
+            elif path:
+                selected.add(path)
+            if not selected:
+                state.track_targets.pop(state.track_album_path, None)
+            return
+        return
     if state.status_loading:
+        return
+    if state.filter_open:
+        dimensions = _filter_dimensions(state)
+        lowered = code.casefold()
+        if lowered in {"esc", "escape", "enter", "return", "/"}:
+            state.filter_open = False
+            return
+        if not dimensions:
+            state.filter_open = False
+            return
+        if lowered == "left":
+            state.filter_dimension = (state.filter_dimension - 1) % len(dimensions)
+            state.filter_option = 0
+            return
+        if lowered == "right":
+            state.filter_dimension = (state.filter_dimension + 1) % len(dimensions)
+            state.filter_option = 0
+            return
+        _label, options, selected = dimensions[state.filter_dimension]
+        if lowered == "up" and options:
+            state.filter_option = (state.filter_option - 1) % len(options)
+            return
+        if lowered == "down" and options:
+            state.filter_option = (state.filter_option + 1) % len(options)
+            return
+        if lowered in {"space", " "} and options:
+            option = options[state.filter_option]
+            if option in selected:
+                if len(selected) > 1:
+                    selected.remove(option)
+            else:
+                selected.add(option)
+            visible = _musicbrainz_visible_indexes(state)
+            if visible and state.input_request is not None and state.input_request.kind in {"musicbrainz", "musicbrainz-results"}:
+                if state.selected_index not in visible:
+                    state.selected_index = visible[0]
+            return
+        if lowered == "r":
+            if state.input_request is not None and state.input_request.kind in {"musicbrainz", "musicbrainz-results"}:
+                state.musicbrainz_filter = MusicBrainzFilter.from_items(state.release_options)
+            elif state.candidate_filter is not None:
+                state.candidate_filter.reset(state.candidates)
+            state.filter_option = 0
+            return
+        return
+    if state.compare_modal_open:
+        if code.casefold() in {"esc", "escape", "enter", "return", "space", " ", "c"}:
+            state.compare_modal_open = False
+            state.compare_modal_pair = None
         return
     if state.preview_modal_open:
         if str(event.code).lower() in {"esc", "escape", "enter", "return", "space", " "}:
@@ -6256,6 +6834,33 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             state.transient = "Scan is active; use Ctrl+C to stop safely."
         return
 
+    if action is Action.FILTER and (
+        state.candidates
+        or request.kind in {"musicbrainz", "musicbrainz-results"}
+    ):
+        state.filter_dimension = 0
+        state.filter_option = 0
+        state.filter_open = True
+        return
+    visible_candidate_indexes = _candidate_visible_indexes(state)
+    visible_candidates = [state.candidates[index] for index in visible_candidate_indexes]
+    if action is Action.COMPARE and len(visible_candidates) >= 2:
+        try:
+            visible_selection = visible_candidate_indexes.index(state.selected_index)
+        except ValueError:
+            visible_selection = 0
+        pair = comparison_pair(visible_candidates, visible_selection)
+        if pair is not None:
+            state.compare_modal_pair = (
+                visible_candidate_indexes[pair[0]],
+                visible_candidate_indexes[pair[1]],
+            )
+            state.compare_modal_open = True
+        return
+    if action is Action.PREVIEW and state.candidates:
+        _open_candidate_preview(state, state.selected_index)
+        return
+
     if request.kind == "batch-summary":
         if action in {Action.UP, Action.DOWN, Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END}:
             if action is Action.HOME:
@@ -6289,63 +6894,69 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             state.input_buffer += code
         return
 
-    selection_count = (
-        len(state.release_options)
-        if request.kind in {"musicbrainz", "musicbrainz-results"}
-        else len(state.candidates)
+    musicbrainz_selection = request.kind in {"musicbrainz", "musicbrainz-results"}
+    selection_indexes = (
+        _musicbrainz_visible_indexes(state)
+        if musicbrainz_selection
+        else visible_candidate_indexes
     )
-    if action is Action.UP and selection_count:
-        index = (
-            max(0, state.selected_index - 1)
-            if request.kind in {"musicbrainz", "musicbrainz-results"}
-            else (state.selected_index - 1) % selection_count
-        )
-        if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
-            _focus_candidate(state, index, adapter)
+    selection_count = len(selection_indexes)
+
+    def select_visible(position: int) -> None:
+        if not selection_indexes:
+            return
+        actual = selection_indexes[max(0, min(position, selection_count - 1))]
+        if musicbrainz_selection:
+            state.selected_index = actual
+            state.input_buffer = str(actual + 1)
         else:
-            state.selected_index = index
-            state.input_buffer = str(index + 1)
+            _focus_candidate(state, actual, adapter)
+
+    try:
+        selection_position = selection_indexes.index(state.selected_index)
+    except ValueError:
+        selection_position = 0
+
+    if action is Action.UP and selection_count:
+        position = (
+            max(0, selection_position - 1)
+            if musicbrainz_selection
+            else (selection_position - 1) % selection_count
+        )
+        select_visible(position)
         return
     if action is Action.DOWN and selection_count:
-        index = (
-            min(selection_count - 1, state.selected_index + 1)
-            if request.kind in {"musicbrainz", "musicbrainz-results"}
-            else (state.selected_index + 1) % selection_count
+        position = (
+            min(selection_count - 1, selection_position + 1)
+            if musicbrainz_selection
+            else (selection_position + 1) % selection_count
         )
-        if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
-            _focus_candidate(state, index, adapter)
-        else:
-            state.selected_index = index
-            state.input_buffer = str(index + 1)
+        select_visible(position)
         return
     if action in {Action.PAGE_UP, Action.PAGE_DOWN, Action.HOME, Action.END} and selection_count:
         if action is Action.HOME:
-            index = 0
+            position = 0
         elif action is Action.END:
-            index = selection_count - 1
+            position = selection_count - 1
         else:
-            index = state.selected_index + (-10 if action is Action.PAGE_UP else 10)
-        if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
-            _focus_candidate(state, index, adapter)
-        else:
-            state.selected_index = max(0, min(index, selection_count - 1))
-            state.input_buffer = str(state.selected_index + 1)
+            position = selection_position + (-10 if action is Action.PAGE_UP else 10)
+        select_visible(position)
         return
     if action is Action.DIGIT and selection_count:
         proposed = (state.input_buffer + code)[-2:]
         number = int(proposed)
-        index: int | None = None
-        if 1 <= number <= selection_count:
+        actual: int | None = None
+        if number - 1 in selection_indexes:
             state.input_buffer = proposed
-            index = number - 1
-        elif code != "0" and int(code) <= selection_count:
+            actual = number - 1
+        elif code != "0" and int(code) - 1 in selection_indexes:
             state.input_buffer = code
-            index = int(code) - 1
-        if index is not None:
-            if request.kind not in {"musicbrainz", "musicbrainz-results"} and state.candidates:
-                _focus_candidate(state, index, adapter)
+            actual = int(code) - 1
+        if actual is not None:
+            if not musicbrainz_selection:
+                _focus_candidate(state, actual, adapter)
             else:
-                state.selected_index = index
+                state.selected_index = actual
         return
     manual_fallback = bool(
         request.kind == "fallback-picker"
@@ -6411,6 +7022,8 @@ def handle_key(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             and request.context.get("musicbrainz_back")
         ):
             _submit(state, adapter, "m")
+        elif request.kind in {"picker", "fallback-picker"}:
+            _submit(state, adapter, "__cancel__")
         else:
             _submit(state, adapter, "__batch_return__")
         return

@@ -352,8 +352,8 @@ Stop/error ended the previous run. The cursor advances only as the runtime
 reaches each next track and is cleared after a normal pass reaches the end;
 completed-track skipping remains authoritative throughout.
 
-A targeted Windows edit passes one explicitly checked compilation track to the
-runtime. Highlighting or clicking a track is preview focus only and never sets
+A targeted Windows or Python/Ratatui edit passes explicitly checked compilation
+tracks to the runtime. Highlighting or clicking a track is preview focus only and never sets
 the target environment value, so an ordinary Album launch still reads the
 ledger and interruption cursor. Checking the Album clears any explicit track
 target. A checked track bypasses the resume skip for that track only, including
@@ -489,6 +489,14 @@ For Python/Docker installations, back up:
 /config
 /credentials
 /_cache/splined.db
+```
+
+The Python CLI can also create a selective `.spl` archive and restore chosen
+categories atomically:
+
+```text
+splined --backup-export state.spl --backup-components settings,interface,credentials,database
+splined --backup-restore state.spl --backup-components settings,credentials
 ```
 
 The WAL/SHM sidecars may exist while SPLINED is running. Stop SPLINED before

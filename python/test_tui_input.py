@@ -22,6 +22,7 @@ from tui.splined_tui import (
     TuiAdapter,
     _folder_status_count,
     _musicbrainz_grouped_rows,
+    _musicbrainz_visible_indexes,
     TuiState,
     _clear_stale_remote_overlay,
     _draw_remote_hover_overlay,
@@ -1084,7 +1085,12 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         self.assertEqual(state.artist_index, 2)
 
         render(_Frame(150, 44), state, select_theme("CHALK"))
-        minimum_range = _region(state, "policy-field", 2)
+        minimum_range = next(
+            region
+            for region in state.hit_regions
+            if region.target == "policy-field"
+            and region.value == "minimum_range_type"
+        )
         source = state.policy.source_order[state.artist_index]  # type: ignore[union-attr]
         old_range = state.policy.policies[source]["minimum_range_type"]  # type: ignore[union-attr]
         handle_mouse(state, adapter, _center(minimum_range))
@@ -1408,16 +1414,17 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         for _ in range(100):
             handle_mouse(state, adapter, event)
 
-        self.assertEqual(state.selected_index, len(options) - 1)
-        self.assertEqual(state.input_buffer, str(len(options)))
+        expected_last = _musicbrainz_visible_indexes(state)[-1]
+        self.assertEqual(state.selected_index, expected_last)
+        self.assertEqual(state.input_buffer, str(expected_last + 1))
         self.assertFalse(state.exit_requested)
         self.assertTrue(adapter.responses.empty())
         render(_Frame(220, 50), state, select_theme("OLED"))
 
         handle_key(state, adapter, _Event("Down"))
-        self.assertEqual(state.selected_index, len(options) - 1)
+        self.assertEqual(state.selected_index, expected_last)
         handle_key(state, adapter, _Event("End"))
-        self.assertEqual(state.selected_index, len(options) - 1)
+        self.assertEqual(state.selected_index, expected_last)
 
     def test_panel_help_opens_the_selected_context_and_consumes_close(self) -> None:
         state = self._candidate_state()
@@ -1464,7 +1471,7 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
         self.assertFalse(state.help_open)
         self.assertTrue(adapter.responses.empty())
 
-    def test_musicbrainz_rows_group_newest_decade_and_base_release_types(self) -> None:
+    def test_musicbrainz_rows_are_flat_without_decades_or_type_groups(self) -> None:
         rows = _musicbrainz_grouped_rows(
             [
                 {"decade": "2000s", "release_class": "EP"},
@@ -1472,19 +1479,15 @@ class PolicyAndCandidateMouseTests(unittest.TestCase):
                 {"decade": "Unknown", "release_class": "Compilation"},
             ]
         )
-        decades = [label for kind, _index, label in rows if kind == "decade"]
-        self.assertEqual(decades, ["2010s", "2000s", "Unknown"])
-        decade_positions = [
-            index for index, row in enumerate(rows) if row[0] == "decade"
-        ]
-        first_decade_end = decade_positions[1]
-        first_types = [
-            label for kind, _index, label in rows[:first_decade_end] if kind == "type"
-        ]
-        self.assertEqual(first_types, ["Album"])
+        self.assertFalse(any(kind == "decade" for kind, _index, _label in rows))
+        self.assertFalse(any(kind == "type" for kind, _index, _label in rows))
+        self.assertEqual(
+            [index for kind, index, _label in rows if kind == "result"],
+            [0, 1, 2],
+        )
         self.assertEqual(
             sum(1 for kind, _index, _label in rows if kind == "blank"),
-            3,
+            0,
         )
 
     def test_empty_manual_result_keeps_authority_edit_controls_visible(self) -> None:

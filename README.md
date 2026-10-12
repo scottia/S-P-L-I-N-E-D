@@ -37,9 +37,9 @@ the selected artwork into the Album folder.
 - 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and fast warm startup in Python/Docker
 - ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
 - 🪟 **Portable Windows settings** — `data/config.toml` and `data/ui.toml` move with the application folder
-- 💾 **Selective `.spl` backup** — export/import settings, interface state, credentials, SQLite, or diagnostics with optional password protection
+- 💾 **Selective `.spl` backup** — export/import settings, interface state, credentials, SQLite, or diagnostics; Windows can optionally password-protect its archives and Python supports unprotected cross-platform archives
 - 🐳 **Docker image** provides a Linux/server deployment path
-- 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, local `cover.*` preview/resolution, URL-backed candidate preview, and mouse/touch operation
+- 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, structured settings, candidate filtering/comparison, full-size preview, MusicBrainz authority filters, explicit compilation-track reopen, runtime diagnostics, and mouse/touch operation
 - 📦 **Portable releases** separate replaceable program files from explicitly selected persistent data
 
 ---
@@ -348,6 +348,15 @@ Interactive Python scans use OLED by default. Use `--tui-theme CHALK`, or
 `--no-tui` for plain output. See the
 [Python Ratatui TUI guide](docs/ratatui-tui.md).
 
+Python maintenance commands are notification-only for updates and selective
+for portable state transfer:
+
+```text
+splined --check-for-updates
+splined --backup-export state.spl --backup-components settings,interface,credentials,database
+splined --backup-restore state.spl --backup-components settings,credentials
+```
+
 A bare native invocation scans the caller's current directory recursively.
 Windows portable users launch `splined.exe`; its desktop workflow always uses
 the saved portable Config v5 paths and is independent of process CWD.
@@ -386,7 +395,8 @@ library, backup, or snapshot first.
 
 On Windows, use **File > Backup > Export Backup...** to select portable settings,
 interface state, credentials, SQLite, and diagnostics independently. On
-file-backed runtimes, preserve Config v5, the credential directory, and
+Python/file-backed runtimes, use the selective unprotected `.spl` CLI above or
+preserve Config v5, the credential directory, and
 `<scan.cache_dir>/splined.db`. The database contains durable completion,
 bypass, timeout, source-selection, and compilation-progress state. Diagnostic
 logs and temporary run-cache candidate/sample data remain disposable.

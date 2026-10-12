@@ -173,6 +173,19 @@ Select the alternate CHALK theme with:
 docker compose exec splined splined --tui-theme CHALK --scan-dir
 ```
 
+Python maintenance commands are also available inside the container. Update
+checks compare published numeric versions and remain notification-only; `.spl`
+state transfer is selective and uses the mounted paths from Config v5:
+
+```bash
+docker compose exec splined splined --check-for-updates
+docker compose exec splined splined --backup-export /config/state.spl --backup-components settings,interface,credentials,database
+docker compose exec splined splined --backup-restore /config/state.spl --backup-components settings,credentials
+```
+
+Python/Docker creates and restores unprotected cross-platform `.spl` archives.
+Password-protected Windows archives must be restored by the Windows client.
+
 Scan one Artist or directory:
 
 ```bash

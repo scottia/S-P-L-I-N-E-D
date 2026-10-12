@@ -132,7 +132,7 @@ See [SPLINED media database](splined-media-database.md).
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
 | `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
-| `upscale_max_percent` | `200` | Maximum enlargement relative to the original short side; `200` permits 2×, and candidates exceeding the limit remain manual-only |
+| `upscale_max_percent` | `200` | Hard maximum enlargement relative to the original short side, valid from `100` through `800`; `200` permits 2×. A requested enlargement above this limit is not performed, while artwork already above Ideal remains at native resolution. |
 | `upscale_adaptive_defaults` | `true` | Analyze exposure/contrast and apply only SPLINED's bounded correction when the source demonstrably needs it |
 | `upscale_picture_percent` | `0` | Color-intensity/saturation adjustment, `-20`–`20` percent |
 | `upscale_sharpen_percent` | `0` | Explicit artwork-profile sharpening, `0`–`20`; the default pipeline never sharpens |
@@ -356,7 +356,20 @@ shared Python/Docker and Windows `splined.db` materializes those facts for
 Select Media and stores completion, bypass, timeout, and source-selection state
 in that same database.
 
-Back up Python/Docker Config v5, credentials, and the authoritative database.
+Python/Docker can export and selectively restore an unprotected, cross-platform
+`.spl` archive containing settings, interface state, credentials, SQLite, or
+diagnostics:
+
+```text
+splined --backup-export state.spl --backup-components settings,interface,credentials,database
+splined --backup-restore state.spl --backup-components settings,credentials
+```
+
+The Python path validates the archive manifest and SHA-256 before an atomic
+restore. Password-protected Windows `.spl` archives remain a Windows-only
+encryption boundary; Python reports them as unsupported instead of guessing a
+password format. Back up Python/Docker Config v5, credentials, and the
+authoritative database.
 On Windows use **File > Backup > Export Backup...** to choose portable settings,
 interface state, credential JSON, SQLite, and diagnostic metadata separately.
 The `.spl` export may be password protected and can be opened with SPLINED for

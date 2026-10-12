@@ -34,6 +34,7 @@ square = true
 square_mode = "crop"
 square_round_to = 16
 upscale_below_ideal = false
+upscale_max_percent = 200
 evaluate_final_image = true
 
 [range]

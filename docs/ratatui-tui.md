@@ -47,6 +47,30 @@ selection authority, and engine behavior remain identical. Native artwork
 cleanup repaints using the active theme background, so stale image strips do
 not become black blocks in CHALK.
 
+## Windows-aligned Python controls
+
+The Python TUI exposes the same practical review authorities while retaining a
+terminal-native workflow:
+
+- `E` opens structured Config v5 settings for library/cache/log/credential
+  paths, output formats and squaring, bounded upscaling, and retention. Changes
+  are written atomically only with `Ctrl+S`; `P` remains the dedicated artwork
+  source-policy editor.
+- `A` opens About/runtime diagnostics with the active SPLINED and Python
+  versions plus platform, Config, library, SQLite, cache, logs, credentials,
+  and provider-authentication status. `U` performs a notification-only numeric
+  semantic-version check.
+- `/` opens the context filter. Candidate decisions filter by source, image
+  type, policy, and resolution range. MusicBrainz results combine actual Artist
+  values—including Various Artists—with Release Type.
+- `C` compares the highlighted visible candidate with local artwork (or the
+  next stable alternative), and `V` opens the highlighted cached artwork in a
+  full-size terminal preview. Neither action selects or writes an image.
+- `T` expands an eligible fallback compilation into tracks. Merely focusing a
+  track previews it; `Space` explicitly checks a track for one-track reopen,
+  including a completed track. A normal Album launch clears explicit track
+  targeting and resumes from authoritative SQLite progress.
+
 ## Persistent Select Media startup
 
 Python/Docker Select Media is loaded from:
@@ -278,6 +302,12 @@ For a selected Album whose representative track has no Album/Release ID and
 has `compilation=1`, the panel keeps a yellow warning that the unified scan will
 use per-track embedded artwork. There is no separate Manual Scan selector.
 
+Press `T` on a checked eligible compilation to expand its tracks. Moving focus
+previews the current embedded front image only. `Space` explicitly checks a
+track for one-track reopen, including a track already completed in the durable
+ledger. Launching the Album normally clears explicit track targeting and
+resumes from authoritative SQLite progress.
+
 It does not silently choose READ. A Launch mode is mandatory:
 
 ```text
@@ -393,15 +423,13 @@ title. These edits and search selections never write MBID tags; only approved
 embedded artwork is written.
 
 When local IDs are absent, ID lookup fails, or `M` is pressed, the lower
-Candidate Decision area becomes `MUSICBRAINZ MATCHES`. Decades are ordered
-newest to oldest with `UNKNOWN` last and a blank row before each decade. Only
-release types containing matches are shown, ordered Album, Single, EP,
-Compilation, Soundtrack, then any additional MusicBrainz types. Decade and
-release-type labels begin at the left edge. A fixed `CURRENT ALBUM` context
-row remains above the scrollable results so the active Artist and Album stay
-visible while candidates are compared. One heading per decade labels the
-number, Artist, Country, Date, known Resolution, Release, and URL columns; its
-URL aligns with the source-candidate URL column above. A direct Cover Art
+Candidate Decision area becomes `MUSICBRAINZ MATCHES`. Exactly one
+`[CURRENT ALBUM]` category and one authority row remain fixed above and outside
+result filtering. Press `/` to combine actual Artist values (including
+Various Artists) with Release Type filters. Ordinary results have no decade
+groups and use the same deterministic ordering as Windows: named Artist
+families A–Z first, then Soundtrack, Compilation, Various Artists, and blank-artist
+families, with newest dates leading inside each family. A direct Cover Art
 Archive release-group front-image `[URL]` can be hovered or clicked to preview
 that row in Artwork before selecting it. SPLINED falls back to the exact-release
 front endpoint when no release-group MBID is available. A valid endpoint may
@@ -522,11 +550,32 @@ exact remote resource on hover, arrow movement, or numeric selection. This
 preview is memory-only and does not install the image. The chosen candidate is
 processed and written only when required by the final action.
 
+Press `/` on source results to filter the already-discovered candidates by
+source, image type, policy, and resolution range. Filtering never changes the
+engine's discovery or ranking authority. Press `C` for a local-versus-selected
+visual comparison and `V` for a full-size preview of the selected result.
+
 Remote URLs and fallback MusicBrainz IDs use OSC-8 hyperlink metadata. SPLINED
 does not launch a browser inside the Docker/SSH host.
 
 Repeated identical provider diagnostics are collapsed in the final report with
 a count rather than printed once per rejected reference.
+
+## Backup, restore, and update checks
+
+Python provides selective unprotected `.spl` state transfer and a
+notification-only semantic-version check:
+
+```text
+splined --backup-export state.spl --backup-components settings,interface,credentials,database
+splined --backup-restore state.spl --backup-components settings,credentials
+splined --check-for-updates
+```
+
+Restore verifies the archive manifest and SHA-256 before replacing selected
+files atomically. Password-protected Windows archives retain their Windows
+encryption boundary and are reported as unsupported by Python. Update checks
+compare numeric releases only; they never install or replace SPLINED.
 
 ## Mouse, touch, and scrolling
 

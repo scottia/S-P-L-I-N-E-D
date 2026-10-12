@@ -120,11 +120,35 @@ def install(core: Any, scan: Any | None = None) -> None:
         path: Path,
         *,
         cover_name: str = "cover",
+        config_file: Path | None = None,
+        cfg: dict[str, Any] | None = None,
+        include_tracks: bool = False,
     ) -> dict[str, Any]:
         cached = cached_stats(path)
-        if cached is not None:
+        if cached is not None and not include_tracks:
             return cached
-        return original_selected_stats(path, cover_name=cover_name)
+        live = original_selected_stats(
+            path,
+            cover_name=cover_name,
+            config_file=config_file,
+            cfg=cfg,
+            include_tracks=include_tracks,
+        )
+        if cached is not None:
+            # SQLite keeps fast folder-level statistics; track expansion is a
+            # deliberate on-demand read and must retain embedded/progress data.
+            cached.update(
+                {
+                    "track_items": live.get("track_items", []),
+                    "compilation": live.get("compilation", False),
+                    "album_mbid_missing": live.get("album_mbid_missing", False),
+                    "manual_compilation_eligible": live.get(
+                        "manual_compilation_eligible", False
+                    ),
+                }
+            )
+            return cached
+        return live
 
     def emit_ui(event: str, **payload: Any) -> None:
         if event == "album":
