@@ -230,6 +230,9 @@ namespace Splined.WindowsGui
                                 && !filterPanel.VerticalScroll.Visible && !activityCard.VerticalScroll.Visible
                                 && filterPanel.ClientSize.Height >= filterStack.Height,
                                 "Expanded Candidate Findings introduced a scrollbar or clipped the single Upscale row.");
+                            Require(new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
+                                .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
+                                "Expanded Candidate Findings did not expose all four internal spectrum frames.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-expanded-qa.png"));
                             Label summaryToggle = form.Controls.Find("candidateSummaryToggle", true)[0] as Label;
                             if (summaryToggle != null)
@@ -240,7 +243,7 @@ namespace Splined.WindowsGui
                             Require(form.Controls.Find("candidateFindingsGroup", true).Length == 0
                                 && form.Controls.Find("candidateSourcesGroup", true).Length == 0
                                 && form.Controls.Find("candidateRangesGroup", true).Length == 0
-                                && form.Controls.Find("candidateUpscaleSection", true).Length == 0
+                                && form.Controls.Find("candidateUpscaleGroup", true).Length == 0
                                 && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0,
                                 "Collapsed Candidate Findings left its attached Upscale / Advanced section visible.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-collapsed-qa.png"));
@@ -252,7 +255,8 @@ namespace Splined.WindowsGui
                             TableLayoutPanel restoredGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
                             Require(restoredGrid != null && restoredGrid.ColumnCount == 8 && restoredGrid.RowCount == 1
                                 && restoredGrid.Size == expandedGridSize
-                                && restoredGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize,
+                                && restoredGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize
+                                && form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single().SpectrumBorder,
                                 "Expanded Candidate Findings did not restore the attached Upscale grid proportions.");
                             typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
                                 .Invoke(form, new object[] { false, false });

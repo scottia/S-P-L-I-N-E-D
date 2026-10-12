@@ -1537,7 +1537,8 @@ namespace Splined.WindowsGui
                         && Math.Abs(artworkSplit.Panel2.Width - artworkSplit.ClientSize.Height) <= 2,
                         "Artwork Filter did not replace Scan Activity while retaining the shared square Artwork corner.");
                     TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
-                    Control upscaleSection = form.Controls.Find("candidateUpscaleSection", true).Single();
+                    FluentGroupBox upscaleSection = form.Controls.Find("candidateUpscaleGroup", true)
+                        .OfType<FluentGroupBox>().Single();
                     TableLayoutPanel summaryPanel = form.Controls.Find("candidateSummaryPanel", true).OfType<TableLayoutPanel>().Single();
                     Assert(filterColumns.ColumnCount == 1
                         && filterColumns.ColumnStyles.Count == 1 && filterColumns.RowCount == 2
@@ -1548,10 +1549,9 @@ namespace Splined.WindowsGui
                         && filterColumns.GetPositionFromControl(summaryPanel).Row == 0
                         && filterColumns.GetPositionFromControl(upscaleSection).Row == 1
                         && !Descendants(summaryPanel).Contains(upscaleSection)
-                        && !(upscaleSection is GroupBox)
-                        && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
+                        && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
                             .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
-                        "Artwork Filter did not expose exactly three aligned spectrum summary frames over an unframed Upscale section.");
+                        "Artwork Filter did not expose three aligned summary frames and one spectrum-framed Upscale workspace.");
                     FluentGroupBox[] summaryGroups = new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
                         .Select(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single()).ToArray();
                     Assert(summaryGroups.Select(group => group.Height).Distinct().Count() == 1
@@ -1649,7 +1649,7 @@ namespace Splined.WindowsGui
                         && form.Controls.Find("candidateFindingsGroup", true).Length == 0
                         && form.Controls.Find("candidateSourcesGroup", true).Length == 0
                         && form.Controls.Find("candidateRangesGroup", true).Length == 0
-                        && form.Controls.Find("candidateUpscaleSection", true).Length == 0
+                        && form.Controls.Find("candidateUpscaleGroup", true).Length == 0
                         && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0
                         && form.Controls.Find("upscalePreviewButton", true).Length == 0
                         && form.Controls.Find("upscaleShowFullButton", true).Length == 0,
@@ -1662,7 +1662,7 @@ namespace Splined.WindowsGui
                     Assert(advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
                         && advancedGrid.Size == expandedGridSize
                         && advancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize
-                        && form.Controls.Find("candidateUpscaleSection", true).Length == 1
+                        && form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single().SpectrumBorder
                         && form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single().Enabled
                         && form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single().Enabled,
                         "Expanding Candidate Findings did not restore its attached Upscale section with the same proportions.");

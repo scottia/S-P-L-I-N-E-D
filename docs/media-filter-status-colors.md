@@ -310,11 +310,13 @@ The lower Selected Album Statistics panel remains scrollable.
 The expanded Windows Artwork Filter replaces the Scan Activity workspace beside
 Selected Album Artwork while its activation button remains above the candidate
 cards. A compact three-column summary contains Image Type/Policy, Source
-Selection, and Wanted/Unwanted; the unframed Upscale/Advanced section is attached
-directly below it. Within each summary column, the complete option name
-receives a measured fixed-width cell and the live count follows immediately in
-its own cell. Remaining space stays after the count. Percentage layout must not
-collapse option names into ellipses, including at supported DPI scales.
+Selection, and Wanted/Unwanted; a fourth spectrum-framed Upscale/Advanced panel
+is attached directly below it and encloses its action buttons and sliders. The
+shared outer workspace remains unframed. Within each summary column, the
+complete option name receives a measured fixed-width cell and the live count
+follows immediately in its own cell. Remaining space stays after the count.
+Percentage layout must not collapse option names into ellipses, including at
+supported DPI scales.
 
 Filter exclusions are persistent interface state rather than per-Album scratch
 state. They survive candidate clearing, later Albums, concurrent batches, and
@@ -336,8 +338,10 @@ over 960 pixels respectively. Startup, window-state, RDP/display, per-monitor
 DPI, and splitter changes resize existing modules in place without rebuilding
 them. Width is capped in Spacious mode, and the square Artwork pane yields width
 when Compact needs it, so the slider row neither wraps nor needs a scrollbar.
-Only the three summary groups and square Artwork preview use spectrum panel
-frames; the Upscale section and individual slider modules are unframed.
+The expanded left workspace therefore has exactly four spectrum panel frames:
+the three summary groups and the shared Upscale/Advanced panel. Individual
+slider modules remain unframed. The square Artwork preview retains its own
+separate preview frame to the right.
 Existing local covers remain eligible for explicit preview/edit even when
 already Ideal or above Ideal; their dimensions are not reduced automatically.
 

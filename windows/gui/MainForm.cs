@@ -3196,7 +3196,9 @@ namespace Splined.WindowsGui
                 columns.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryHeight));
                 columns.Controls.Add(summary, 0, summaryRow);
 
-                Control upscaleSection = BuildUnframedUpscaleSection(BuildUpscaleFilterColumn());
+                GroupBox upscaleSection = WrapCandidateFilterGroup(
+                    "candidateUpscaleGroup", "Upscale / Advanced", BuildUpscaleFilterColumn());
+                upscaleSection.Margin = new Padding(0, ThemeManager.Space4, 0, 0);
                 int upscaleRow = columns.RowCount++;
                 columns.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 columns.Controls.Add(upscaleSection, 0, upscaleRow);
@@ -3214,37 +3216,6 @@ namespace Splined.WindowsGui
                 ApplyUpscaleResponsiveLayout();
             }
             candidateFilterPanel.Invalidate(true);
-        }
-
-        private static Control BuildUnframedUpscaleSection(Control content)
-        {
-            TableLayoutPanel section = new BufferedTableLayoutPanel
-            {
-                Name = "candidateUpscaleSection",
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 1,
-                RowCount = 2,
-                Padding = Padding.Empty,
-                Margin = new Padding(0, ThemeManager.Space4, 0, 0)
-            };
-            section.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            section.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
-            section.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            section.Controls.Add(new Label
-            {
-                Name = "candidateUpscaleTitle",
-                Text = "Upscale / Advanced",
-                Dock = DockStyle.Fill,
-                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Margin = Padding.Empty,
-                Padding = new Padding(ThemeManager.Space4, 0, 0, 0)
-            }, 0, 0);
-            content.Dock = DockStyle.Top;
-            section.Controls.Add(content, 0, 1);
-            return section;
         }
 
         private static GroupBox WrapCandidateFilterGroup(string name, string title, Control content)

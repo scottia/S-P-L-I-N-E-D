@@ -98,17 +98,16 @@ existing-cover editing. Compare and full-size preview use the cached candidate
 bytes that the Rust backend evaluated.
 
 The single unframed arrow immediately before **Candidate Findings | Upscale
-Artwork Editing** expands or collapses one unified workspace: the three
-finding/source/resolution summaries followed directly by **Upscale / Advanced**.
-All three summary frames retain the height of the tallest summary. They and the
-square Artwork preview are the only four spectrum-framed panels in the upper
-workspace; the shared Upscale section is unframed so no larger outer border can
-be clipped by the joined splitters. The eight editing controls use one frameless
-template: a centered title, exactly 20 segmented spectrum bars, compact one-step
-up/down glyphs, and a centered reset glyph. The current signed value is painted
-as a bold white number in the middle of each spectrum bar without angle
-brackets. Mouse, wheel, keyboard, reset, and persisted-value behavior remain
-unchanged.
+Artwork Editing** expands or collapses one unified workspace. Its unframed outer
+host contains four thin spectrum-framed panels: **Candidate Findings**, **Source
+Selection**, **Resolution**, and **Upscale / Advanced**. The first three retain
+the height of the tallest summary, and the fourth frame encloses the shared
+Upscale action buttons and all eight sliders. Each editing control remains an
+unframed template within that shared fourth panel: a centered title, exactly 20
+segmented spectrum bars, compact one-step up/down glyphs, and a centered reset
+glyph. The current signed value is painted as a bold white number in the middle
+of each spectrum bar without angle brackets. Mouse, wheel, keyboard, reset, and
+persisted-value behavior remain unchanged.
 
 SPLINED measures the live editor width in DPI-normalized pixels instead of
 guessing a physical device from its resolution. Under 640 pixels uses Compact,
