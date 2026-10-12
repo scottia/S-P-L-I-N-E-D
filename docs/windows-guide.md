@@ -98,11 +98,12 @@ existing-cover editing. Compare and full-size preview use the cached candidate
 bytes that the Rust backend evaluated.
 
 The single unframed arrow immediately before **Candidate Findings | Upscale
-Artwork Editing** collapses only the three finding/source/resolution summaries.
-Those summaries and **Upscale / Advanced** occupy separate compact layout
-panels, so expanding the candidate-results area cannot stretch a summary frame
-over the upscale buttons or cut off the sliders. All three summary frames retain
-the height of the tallest summary. The eight editing controls use one frameless
+Artwork Editing** expands or collapses one unified workspace: the three
+finding/source/resolution summaries followed directly by **Upscale / Advanced**.
+All three summary frames retain the height of the tallest summary. They and the
+square Artwork preview are the only four spectrum-framed panels in the upper
+workspace; the shared Upscale section is unframed so no larger outer border can
+be clipped by the joined splitters. The eight editing controls use one frameless
 template: a centered title, exactly 20 segmented spectrum bars, compact one-step
 up/down glyphs, and a centered reset glyph. The current signed value is painted
 as a bold white number in the middle of each spectrum bar without angle
@@ -118,13 +119,13 @@ other high-resolution Remote Desktop sessions gain breathing room instead of
 oversized controls. The row is recalculated after startup, maximize/restore,
 display or RDP resolution changes, per-monitor DPI changes, and splitter
 movement. Resize events update existing bounds without rebuilding the controls,
-preventing preview-selection flicker. Expanded Candidate Findings adds only the
-three summaries above the same row. The slider row does not wrap or require a
-scrollbar.
+preventing preview-selection flicker. Expanding the workspace restores the three
+summaries and the same attached slider row together. The slider row does not wrap
+or require a scrollbar.
 
-The buttons and sliders share one hairline spectrum enclosure, while individual
-slider modules remain unframed. Preview actions use SPLINED's shared action
-font, glyph, and framed-button treatment.
+Individual slider modules and their containing Upscale section remain unframed.
+Preview actions use SPLINED's shared action font, glyph, and framed-button
+treatment.
 
 **Upscale Preview** is enabled by default. It keeps Upscale and full-size
 preview available, but **Use Selected** saves the chosen source at its source
@@ -133,7 +134,12 @@ enter explicit **Upscale** save mode. The framed resolution tile beside
 **Upscale Show Full** shows the source aspect ratio and projected dimensions.
 Both preview buttons remain available across candidate-state changes; when no
 editable result is selected they give selection guidance instead of becoming
-disabled. When Config v5 enables square crop output and the Rust projection is
+disabled. A refreshed result set without a formal recommendation focuses its
+first editable result without submitting it, so Upscale / Advanced never loses
+its preview target merely because MusicBrainz returned a different release.
+Re-focusing the active Album in the media tree preserves the current candidate
+or MusicBrainz decision workspace; it does not restart or close the run. When
+Config v5 enables square crop output and the Rust projection is
 square, the in-memory Upscale preview uses the same centered square source crop
 before resizing, so the preview does not stretch a near-square source.
 Settings remains available for passive local/candidate previews and is blocked

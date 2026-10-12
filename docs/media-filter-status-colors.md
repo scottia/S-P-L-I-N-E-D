@@ -310,8 +310,8 @@ The lower Selected Album Statistics panel remains scrollable.
 The expanded Windows Artwork Filter replaces the Scan Activity workspace beside
 Selected Album Artwork while its activation button remains above the candidate
 cards. A compact three-column summary contains Image Type/Policy, Source
-Selection, and Wanted/Unwanted; the separately sized Upscale/Advanced panel sits
-below it. Within each summary column, the complete option name
+Selection, and Wanted/Unwanted; the unframed Upscale/Advanced section is attached
+directly below it. Within each summary column, the complete option name
 receives a measured fixed-width cell and the live count follows immediately in
 its own cell. Remaining space stays after the count. Percentage layout must not
 collapse option names into ellipses, including at supported DPI scales.
@@ -327,18 +327,19 @@ template: title centered over exactly 20 bars, compact up/down glyphs, then a
 centered reset glyph. The current signed value is a bold white number in the
 middle of the bar with no angle brackets. They expose the same mouse, wheel,
 keyboard, reset, and persisted-value behavior as the previous vertical controls.
-The single unframed symbol-font arrow before the Candidate Findings title hides
-only the three summary groups. Upscale remains one adaptive row of eight in
-expanded and collapsed states. Its Compact, Standard, and Spacious density is
-selected from the live DPI-normalized editor width at under 640, 640–960, and
+The single unframed symbol-font arrow before the Candidate Findings title expands
+or collapses the three summary groups and the attached Upscale/Advanced section
+together. When expanded, Upscale remains one adaptive row of eight. Its Compact,
+Standard, or Spacious density is selected from the live DPI-normalized editor
+width at under 640, 640–960, and
 over 960 pixels respectively. Startup, window-state, RDP/display, per-monitor
 DPI, and splitter changes resize existing modules in place without rebuilding
 them. Width is capped in Spacious mode, and the square Artwork pane yields width
 when Compact needs it, so the slider row neither wraps nor needs a scrollbar.
-One hairline spectrum frame encloses the Upscale actions and all eight sliders,
-with no separate frames around individual slider modules. Existing local covers
-remain eligible for explicit preview/edit even when already Ideal or above
-Ideal; their dimensions are not reduced automatically.
+Only the three summary groups and square Artwork preview use spectrum panel
+frames; the Upscale section and individual slider modules are unframed.
+Existing local covers remain eligible for explicit preview/edit even when
+already Ideal or above Ideal; their dimensions are not reduced automatically.
 
 **Upscale Preview** is enabled by default. Preview and full-size inspection
 still apply the visible profile in memory, while **Use Selected** preserves the

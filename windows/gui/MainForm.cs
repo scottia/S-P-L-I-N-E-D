@@ -309,6 +309,7 @@ namespace Splined.WindowsGui
         private const int ActivityPanelMinimumHeight = 230;
         private const int CandidatePanelMinimumWidth = 720;
         private const int CandidatePanelMinimumHeight = 420;
+        private const int CandidateFilterResultsMinimumHeight = 44;
         private const int UpscaleCompactWidthBreakpoint = 640;
         private const int UpscaleSpaciousWidthBreakpoint = 960;
         private const int UpscaleCompactMinimumEditorWidth = 520;
@@ -684,13 +685,17 @@ namespace Splined.WindowsGui
                 Font = new Font("Segoe UI Symbol", ThemeManager.UiFont(ThemeFontRole.PanelTitle).SizeInPoints,
                     FontStyle.Regular, GraphicsUnit.Point),
                 Cursor = Cursors.Hand,
-                AccessibleName = "Expand or collapse Candidate Findings, Source Selection, and Resolution"
+                AccessibleName = "Expand or collapse Candidate Findings, Source Selection, Resolution, and Upscale Advanced"
             };
             candidateSummaryToggle.Click += delegate
             {
                 uiState.CandidateSummaryExpanded = !uiState.CandidateSummaryExpanded;
                 candidateSummaryToggle.Text = uiState.CandidateSummaryExpanded ? "▾" : "▸";
-                if (candidates.Count > 0) RebuildCandidateFilterPanel();
+                if (candidates.Count > 0)
+                {
+                    RebuildCandidateFilterPanel();
+                    UpdateCandidateActions();
+                }
                 SaveUiState();
             };
             row.Controls.Add(candidateSummaryToggle, 0, 0);
@@ -914,14 +919,13 @@ namespace Splined.WindowsGui
 
         private Panel BuildCandidateFilterPanel()
         {
-            Panel frame = new FluentCardPanel
+            Panel frame = new Panel
             {
                 Name = "candidateFilterPanel",
                 Dock = DockStyle.Fill,
                 AutoScroll = true,
-                Padding = new Padding(ThemeManager.Space4),
-                Margin = Padding.Empty,
-                VisualRole = CardVisualRole.SpectrumNested
+                Padding = Padding.Empty,
+                Margin = Padding.Empty
             };
             return frame;
         }
@@ -965,7 +969,9 @@ namespace Splined.WindowsGui
                 candidateFilterPanel.Visible = true;
                 candidateFilterPanel.BringToFront();
                 if (activityColumn != null) activityColumn.Visible = false;
-                if (scanActivityTitle != null) scanActivityTitle.Text = "Candidate Findings | Upscale Artwork Editing";
+                Control candidateStack = candidateFilterPanel.Controls.Cast<Control>().FirstOrDefault();
+                if (candidateStack != null)
+                    EnsureCandidateFilterWorkspaceHeight(candidateStack.PreferredSize.Height);
             }
             else
             {
@@ -983,6 +989,11 @@ namespace Splined.WindowsGui
             }
             ApplyArtworkPanelVisibility();
             UpdateArtworkSquareLayout(false);
+            // Rendering the newly visible shared Artwork panel can refresh the
+            // displayed Album. Apply the workspace title afterward so that
+            // refresh cannot restore the ordinary Activity caption.
+            if (visible && scanActivityTitle != null)
+                scanActivityTitle.Text = "Candidate Findings | Upscale Artwork Editing";
             if (visible && IsHandleCreated)
                 BeginInvoke((MethodInvoker)delegate
                 {
@@ -998,7 +1009,8 @@ namespace Splined.WindowsGui
                 candidateFilterPreviousSplitterDistance = rightSplit.SplitterDistance;
             if (candidateFilterPreviousPanel2MinSize < 0)
                 candidateFilterPreviousPanel2MinSize = rightSplit.Panel2MinSize;
-            rightSplit.Panel2MinSize = Math.Min(rightSplit.Panel2MinSize, 120);
+            rightSplit.Panel2MinSize = Math.Min(rightSplit.Panel2MinSize,
+                CandidateFilterResultsMinimumHeight);
             // Opening Candidate Findings must not invent a second layout. The
             // user's horizontal divider remains authoritative; overflow stays
             // inside this workspace and the square Artwork corner is preserved.
@@ -1353,7 +1365,11 @@ namespace Splined.WindowsGui
                 ? split.ClientSize.Width : split.ClientSize.Height;
             int minimum = Math.Max(0, split.Panel1MinSize);
             int maximum = extent - split.Panel2MinSize - split.SplitterWidth;
-            if (maximum < minimum) return false;
+            // Defer while WinForms reports an undersized layout or has only
+            // coerced the control to the exact sum of both panel minima. With
+            // no usable splitter range, assigning SplitterDistance can still
+            // throw during nested resize/DPI layout even when min == max.
+            if (maximum <= minimum) return false;
             int distance = Math.Max(minimum, Math.Min(preferredDistance, maximum));
             try
             {
@@ -1677,7 +1693,8 @@ namespace Splined.WindowsGui
             upper.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             rightSplit.Panel1.Controls.Add(upper);
             Control activityTitleRow = BuildProcessingPanelTitle();
-            scanActivityTitle = activityTitleRow.Controls.OfType<Label>().First();
+            scanActivityTitle = activityTitleRow.Controls.Find("scanActivityTitle", false)
+                .OfType<Label>().Single();
             upper.Controls.Add(activityTitleRow, 0, 0);
             activityWorkspace = new TableLayoutPanel { Name = "activityWorkspace", Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
             activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -3056,6 +3073,17 @@ namespace Splined.WindowsGui
             foreach (Control child in candidateFilterPanel.Controls.Cast<Control>().ToArray()) child.Dispose();
             candidateFilterPanel.Controls.Clear();
             candidateFilterBindings.Clear();
+            upscalePreviewTimer.Stop();
+            upscalePreview = null;
+            upscaleShowFull = null;
+            upscaleAdaptiveDefaults = null;
+            upscalePreviewOnly = null;
+            upscaleCandidateDimensions = null;
+            upscaleAdvancedControls = null;
+            upscaleAdvancedGrid = null;
+            upscaleFilterColumn = null;
+            upscaleAdvancedRowIndex = -1;
+            upscaleProfileSliders.Clear();
             ThemePalette palette = ThemeManager.PaletteFor(uiState.Theme);
             bool summaryExpanded = uiState.CandidateSummaryExpanded;
             TableLayoutPanel columns = new BufferedTableLayoutPanel
@@ -3066,7 +3094,7 @@ namespace Splined.WindowsGui
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 1,
                 RowCount = 0,
-                Padding = new Padding(ThemeManager.Space4),
+                Padding = Padding.Empty,
                 Margin = new Padding(0)
             };
             columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -3131,8 +3159,6 @@ namespace Splined.WindowsGui
                 CandidateRangeOption("BelowMinimum", palette.Error, "Below minimum")
             }, true, true);
 
-            TableLayoutPanel upscale = BuildUpscaleFilterColumn();
-
             if (summaryExpanded)
             {
                 GroupBox findingsGroup = WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types);
@@ -3169,20 +3195,56 @@ namespace Splined.WindowsGui
                 int summaryRow = columns.RowCount++;
                 columns.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryHeight));
                 columns.Controls.Add(summary, 0, summaryRow);
+
+                Control upscaleSection = BuildUnframedUpscaleSection(BuildUpscaleFilterColumn());
+                int upscaleRow = columns.RowCount++;
+                columns.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                columns.Controls.Add(upscaleSection, 0, upscaleRow);
             }
-            FluentGroupBox upscaleGroup = (FluentGroupBox)WrapCandidateFilterGroup(
-                "candidateUpscaleGroup", "Upscale / Advanced", upscale);
-            upscaleGroup.SpectrumBorderWidth = 1f;
-            int upscaleRow = columns.RowCount++;
-            columns.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            columns.Controls.Add(upscaleGroup, 0, upscaleRow);
             candidateFilterPanel.Controls.Add(columns);
             ThemeManager.Apply(candidateFilterPanel, uiState.Theme);
             RefreshCandidateFilterDependencies();
             candidateFilterPanel.ResumeLayout(true);
             columns.PerformLayout();
             candidateFilterPanel.AutoScrollMinSize = new Size(0, columns.PreferredSize.Height);
+            if (summaryExpanded)
+            {
+                EnsureCandidateFilterWorkspaceHeight(columns.PreferredSize.Height);
+                candidateFilterPanel.PerformLayout();
+                ApplyUpscaleResponsiveLayout();
+            }
             candidateFilterPanel.Invalidate(true);
+        }
+
+        private static Control BuildUnframedUpscaleSection(Control content)
+        {
+            TableLayoutPanel section = new BufferedTableLayoutPanel
+            {
+                Name = "candidateUpscaleSection",
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 2,
+                Padding = Padding.Empty,
+                Margin = new Padding(0, ThemeManager.Space4, 0, 0)
+            };
+            section.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            section.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+            section.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            section.Controls.Add(new Label
+            {
+                Name = "candidateUpscaleTitle",
+                Text = "Upscale / Advanced",
+                Dock = DockStyle.Fill,
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = Padding.Empty,
+                Padding = new Padding(ThemeManager.Space4, 0, 0, 0)
+            }, 0, 0);
+            content.Dock = DockStyle.Top;
+            section.Controls.Add(content, 0, 1);
+            return section;
         }
 
         private static GroupBox WrapCandidateFilterGroup(string name, string title, Control content)
@@ -3309,6 +3371,7 @@ namespace Splined.WindowsGui
                 LeadingGlyph = "◉",
                 SpectrumBorder = true,
                 Dock = DockStyle.Fill,
+                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
                 Enabled = true,
                 Tag = uiState.UpscalePreviewOnly ? "success" : "primary",
                 Margin = new Padding(0)
@@ -3322,6 +3385,7 @@ namespace Splined.WindowsGui
                 LeadingGlyph = "↗",
                 SpectrumBorder = true,
                 Dock = DockStyle.Fill,
+                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
                 Enabled = true,
                 Tag = "primary",
                 Margin = new Padding(ThemeManager.Space4, 0, 0, 0)
@@ -4096,10 +4160,15 @@ namespace Splined.WindowsGui
             if (selectedCandidateIndex < 0)
             {
                 CandidateView editableLocal = candidates.Values.FirstOrDefault(candidate => candidate.IsLocal && CandidateCanEdit(candidate));
-                if (editableLocal != null)
+                CandidateView defaultFocus = editableLocal
+                    ?? SortedCandidateViews().FirstOrDefault(CandidateCanEdit);
+                if (defaultFocus != null)
                 {
-                    compareCandidateIndexes.Add(editableLocal.Index);
-                    selectedCandidateIndex = editableLocal.Index;
+                    compareCandidateIndexes.Add(defaultFocus.Index);
+                    selectedCandidateIndex = defaultFocus.Index;
+                    RuntimeLog.Write("debug", "windows.candidate.default_focus index=" + defaultFocus.Index
+                        + " source=" + defaultFocus.Source
+                        + " reason=" + (editableLocal != null ? "local" : "first-editable"));
                 }
             }
             ApplyCandidateFilters();
@@ -5534,6 +5603,26 @@ namespace Splined.WindowsGui
         private void ShowSelectedAlbum(AlbumInfo album)
         {
             displayedAlbum = running && activeLaunchAlbum != null ? activeLaunchAlbum : album;
+            bool activeReview = running && activeLaunchAlbum != null && awaitingDecision
+                && reviewDecisionPhase != ReviewDecisionPhase.None;
+            if (activeReview)
+            {
+                if (reviewDecisionPhase == ReviewDecisionPhase.Candidate)
+                {
+                    if (!FocusSelectedCandidatePreview(false)) RenderDisplayedAlbum();
+                    SetStatus(selectedCandidateIndex >= 0
+                        ? "Current Album review remains active; the selected artwork result is still in focus."
+                        : "Current Album review remains active; select one artwork result to enable Upscale / Advanced preview.");
+                }
+                else
+                {
+                    SetStatus("Current MusicBrainz review remains active; Album focus did not restart or close it.");
+                }
+                RuntimeLog.Write("debug", "windows.selection.active_review_refocus album="
+                    + activeLaunchAlbum.Path + " phase=" + reviewDecisionPhase
+                    + " candidate=" + selectedCandidateIndex);
+                return;
+            }
             candidatePreviewActive = false;
             bool embeddedCompilationPreview = displayedAlbum != null
                 && displayedAlbum.Compilation && displayedAlbum.CompilationTrackArtworkEligible;
@@ -5823,6 +5912,10 @@ namespace Splined.WindowsGui
                     activityArtworkSplit.Panel2.Width);
             }
             finally { adjustingArtworkLayout = false; }
+            // Square-art coupling can change the live editor width after the
+            // first responsive pass. Re-measure the existing controls once the
+            // paired splitters have settled; bounds change, controls do not.
+            if (!applyingUpscaleResponsiveLayout) QueueUpscaleResponsiveLayout();
         }
 
         private void StopRun()

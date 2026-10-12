@@ -237,12 +237,23 @@ namespace Splined.WindowsGui
                                     .Invoke(summaryToggle, new object[] { EventArgs.Empty });
                             form.PerformLayout();
                             Application.DoEvents();
-                            TableLayoutPanel collapsedGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
-                            Require(collapsedGrid != null && collapsedGrid.ColumnCount == 8 && collapsedGrid.RowCount == 1
-                                && collapsedGrid.Size == expandedGridSize
-                                && collapsedGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize,
-                                "Collapsed Candidate Findings changed the Upscale grid proportions.");
+                            Require(form.Controls.Find("candidateFindingsGroup", true).Length == 0
+                                && form.Controls.Find("candidateSourcesGroup", true).Length == 0
+                                && form.Controls.Find("candidateRangesGroup", true).Length == 0
+                                && form.Controls.Find("candidateUpscaleSection", true).Length == 0
+                                && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0,
+                                "Collapsed Candidate Findings left its attached Upscale / Advanced section visible.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-collapsed-qa.png"));
+                            if (summaryToggle != null)
+                                typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)
+                                    .Invoke(summaryToggle, new object[] { EventArgs.Empty });
+                            form.PerformLayout();
+                            Application.DoEvents();
+                            TableLayoutPanel restoredGrid = form.Controls.Find("upscaleAdvancedGrid", true)[0] as TableLayoutPanel;
+                            Require(restoredGrid != null && restoredGrid.ColumnCount == 8 && restoredGrid.RowCount == 1
+                                && restoredGrid.Size == expandedGridSize
+                                && restoredGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize,
+                                "Expanded Candidate Findings did not restore the attached Upscale grid proportions.");
                             typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
                                 .Invoke(form, new object[] { false, false });
                             form.Size = candidateSize;

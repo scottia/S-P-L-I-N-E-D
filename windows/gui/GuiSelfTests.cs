@@ -1147,7 +1147,7 @@ namespace Splined.WindowsGui
                         transientSplit.Panel2MinSize = 80;
                         transientSplit.Size = new Size(150, 120);
                         Assert(!MainForm.TrySetSplitterDistance(transientSplit, 90),
-                            "A transient undersized splitter extent was treated as a valid distance.");
+                            "A transient undersized or minimum-only splitter extent was treated as a usable range.");
                     }
                     artworkUi.ArtworkPreviewWidth = 320;
                     typeof(MainForm).GetMethod("RestoreArtworkPreviewWidth", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -1179,11 +1179,11 @@ namespace Splined.WindowsGui
                         Assert(titleLabel.Parent.Controls.OfType<InfoButton>().Any(), titleText + " does not have its replacement information tooltip beside the heading.");
                     }
                     Button artworkFilter = form.Controls.Find("candidateFilterButton", true).OfType<Button>().Single();
-                    FluentCardPanel artworkFilterPanel = (FluentCardPanel)typeof(MainForm)
+                    Panel artworkFilterPanel = (Panel)typeof(MainForm)
                         .GetField("candidateFilterPanel", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     Assert(artworkFilter is SpectrumToggleButton && artworkFilter.Text.Contains("Artwork Filter")
-                        && artworkFilterPanel.VisualRole == CardVisualRole.SpectrumNested,
-                        "Artwork Candidates did not use the Media Selection-style dropdown and spectrum filter frame.");
+                        && !(artworkFilterPanel is FluentCardPanel),
+                        "Artwork Candidates did not use the Media Selection-style dropdown with its unframed workspace.");
                     MethodInfo invokeArtworkFilter = typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic);
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
                     Assert(artworkFilterPanel.Parent == null && artworkFilter.Text.Contains("▸") && !artworkFilter.Enabled,
@@ -1514,6 +1514,10 @@ namespace Splined.WindowsGui
                     object[] upscaleCandidates = { belowMinimum, upscalable };
                     showCandidates.Invoke(form, new object[] { upscaleCandidates });
                     Assert(artworkFilter.Enabled, "Artwork Filter did not become available with candidate results.");
+                    int defaultCandidateFocus = (int)typeof(MainForm)
+                        .GetField("selectedCandidateIndex", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Assert(defaultCandidateFocus == 11,
+                        "A refreshed candidate set without a recommendation or local result left Upscale / Advanced without an editable target.");
                     typeof(MainForm).GetMethod("UpdateSelectionControls", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(form, null);
                     Assert(((ToolStripMenuItem)typeof(MainForm)
@@ -1524,6 +1528,7 @@ namespace Splined.WindowsGui
                     int filterClosedDistance = filterSplit.SplitterDistance;
                     int filterClosedPanel2Minimum = filterSplit.Panel2MinSize;
                     invokeArtworkFilter.Invoke(artworkFilter, new object[] { EventArgs.Empty });
+                    Application.DoEvents();
                     Panel activityHost = form.Controls.Find("activityContentHost", true).OfType<Panel>().Single();
                     Label activityTitle = form.Controls.Find("scanActivityTitle", true).OfType<Label>().Single();
                     Assert(activityHost.Controls.Contains(artworkFilterPanel) && artworkFilter.Text.Contains("▾")
@@ -1532,19 +1537,21 @@ namespace Splined.WindowsGui
                         && Math.Abs(artworkSplit.Panel2.Width - artworkSplit.ClientSize.Height) <= 2,
                         "Artwork Filter did not replace Scan Activity while retaining the shared square Artwork corner.");
                     TableLayoutPanel filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
-                    FluentGroupBox upscaleGroup = form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single();
+                    Control upscaleSection = form.Controls.Find("candidateUpscaleSection", true).Single();
                     TableLayoutPanel summaryPanel = form.Controls.Find("candidateSummaryPanel", true).OfType<TableLayoutPanel>().Single();
                     Assert(filterColumns.ColumnCount == 1
                         && filterColumns.ColumnStyles.Count == 1 && filterColumns.RowCount == 2
                         && filterColumns.Dock == DockStyle.Top && artworkFilterPanel.AutoScroll
+                        && !(artworkFilterPanel is FluentCardPanel)
                         && !artworkFilterPanel.VerticalScroll.Visible
                         && !form.Controls.Find("scanActivityCard", true).OfType<ScrollableControl>().Single().VerticalScroll.Visible
                         && filterColumns.GetPositionFromControl(summaryPanel).Row == 0
-                        && filterColumns.GetPositionFromControl(upscaleGroup).Row == 1
-                        && !Descendants(summaryPanel).Contains(upscaleGroup)
-                        && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
+                        && filterColumns.GetPositionFromControl(upscaleSection).Row == 1
+                        && !Descendants(summaryPanel).Contains(upscaleSection)
+                        && !(upscaleSection is GroupBox)
+                        && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
                             .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
-                        "Artwork Filter does not keep its compact summary and Upscale controls in separate vertically scrolling panels.");
+                        "Artwork Filter did not expose exactly three aligned spectrum summary frames over an unframed Upscale section.");
                     FluentGroupBox[] summaryGroups = new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
                         .Select(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single()).ToArray();
                     Assert(summaryGroups.Select(group => group.Height).Distinct().Count() == 1
@@ -1596,8 +1603,7 @@ namespace Splined.WindowsGui
                         && ((FluentButton)showFullPreview).LeadingGlyph == "↗"
                         && compactPreview.Font.Name == launch.Font.Name
                         && Math.Abs(compactPreview.Font.SizeInPoints - launch.Font.SizeInPoints) < 0.1f
-                        && compactPreview.Enabled && showFullPreview.Enabled
-                        && upscaleGroup.SpectrumBorderWidth <= 1f,
+                        && compactPreview.Enabled && showFullPreview.Enabled,
                         "Artwork Filter did not expose the saved Default Upscale / Advanced profile.");
                     TableLayoutPanel modeLine = form.Controls.Find("upscaleModeLine", true).OfType<TableLayoutPanel>().Single();
                     Assert(modeLine.GetPositionFromControl(previewOnlyMode).Column == 1
@@ -1639,26 +1645,15 @@ namespace Splined.WindowsGui
                     Size expandedProfileSize = advancedGrid.GetControlFromPosition(0, 0).Size;
                     invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
                     Application.DoEvents();
-                    TableLayoutPanel compactAdvancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
                     Assert(summaryToggle.Text == "▸"
                         && form.Controls.Find("candidateFindingsGroup", true).Length == 0
                         && form.Controls.Find("candidateSourcesGroup", true).Length == 0
                         && form.Controls.Find("candidateRangesGroup", true).Length == 0
-                        && compactAdvancedGrid.ColumnCount == 8 && compactAdvancedGrid.RowCount == 1
-                        && compactAdvancedGrid.Size == expandedGridSize
-                        && compactAdvancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize
-                        && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
-                            button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)) == 8
-                        && Descendants(compactAdvancedGrid).OfType<Button>().Count(button =>
-                            button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal)) == 8
-                        && Descendants(compactAdvancedGrid).OfType<SpectrumSlider>().All(slider => slider.Height >= 62
-                            && slider.SegmentCount == 20)
-                        && Descendants(compactAdvancedGrid).OfType<Button>().Where(button =>
-                            button.Name.StartsWith("upscaleProfileIncrease_", StringComparison.Ordinal)
-                            || button.Name.StartsWith("upscaleProfileDecrease_", StringComparison.Ordinal))
-                            .All(button => button.Width <= 24 && button.Anchor == AnchorStyles.None
-                                && ((FluentButton)button).ChromeLess),
-                        "Collapsing Candidate Findings changed the adaptive single-row slider proportions or compact nudge controls.");
+                        && form.Controls.Find("candidateUpscaleSection", true).Length == 0
+                        && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0
+                        && form.Controls.Find("upscalePreviewButton", true).Length == 0
+                        && form.Controls.Find("upscaleShowFullButton", true).Length == 0,
+                        "Collapsing Candidate Findings did not collapse its attached Upscale / Advanced section.");
                     invokeSummaryToggle.Invoke(summaryToggle, new object[] { EventArgs.Empty });
                     Application.DoEvents();
                     filterColumns = artworkFilterPanel.Controls.OfType<TableLayoutPanel>().Single();
@@ -1666,8 +1661,11 @@ namespace Splined.WindowsGui
                     advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
                     Assert(advancedGrid.ColumnCount == 8 && advancedGrid.RowCount == 1
                         && advancedGrid.Size == expandedGridSize
-                        && advancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize,
-                        "Expanding Candidate Findings rebuilt the Upscale controls with different proportions.");
+                        && advancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize
+                        && form.Controls.Find("candidateUpscaleSection", true).Length == 1
+                        && form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single().Enabled
+                        && form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single().Enabled,
+                        "Expanding Candidate Findings did not restore its attached Upscale section with the same proportions.");
                     Assert(MainForm.UpscaleDensityForLogicalWidth(639) == "compact"
                         && MainForm.UpscaleDensityForLogicalWidth(640) == "standard"
                         && MainForm.UpscaleDensityForLogicalWidth(960) == "standard"
@@ -1894,6 +1892,11 @@ namespace Splined.WindowsGui
                     Assert(embeddedView.DisplaySource == "Embedded from track · track.mp3"
                         && fileView.DisplaySource == "Cover file · cover-(2).png",
                         "Local candidates do not identify embedded-track versus cover-file origin.");
+                    // VerifyMediaFilter intentionally rebuilds the library and
+                    // clears the previous Album's source cards. Restore the
+                    // cached source decision that the MusicBrainz round trip is
+                    // specifically meant to preserve.
+                    showCandidates.Invoke(form, new object[] { new object[] { existingIdeal } });
                     candidateRunningField.SetValue(form, true);
                     candidateSessionField.SetValue(form,
                         System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(NativeCoreSession)));
@@ -2098,18 +2101,24 @@ namespace Splined.WindowsGui
 
                     SplitContainer mainPanels = (SplitContainer)typeof(MainForm).GetField("mainSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     SplitContainer rightPanels = (SplitContainer)typeof(MainForm).GetField("rightSplit", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    int expectedMainDistance = Math.Min(mainPanels.Width - mainPanels.Panel2MinSize - mainPanels.SplitterWidth, mainPanels.Panel1MinSize + 37);
-                    int expectedRightDistance = Math.Min(rightPanels.Height - rightPanels.Panel2MinSize - rightPanels.SplitterWidth, rightPanels.Panel1MinSize + 41);
-                    mainPanels.SplitterDistance = expectedMainDistance;
-                    rightPanels.SplitterDistance = expectedRightDistance;
-                    int expectedArtworkWidth = Math.Max(artworkSplit.Panel2MinSize,
+                    int requestedMainDistance = Math.Min(mainPanels.Width - mainPanels.Panel2MinSize - mainPanels.SplitterWidth, mainPanels.Panel1MinSize + 37);
+                    int requestedRightDistance = Math.Min(rightPanels.Height - rightPanels.Panel2MinSize - rightPanels.SplitterWidth, rightPanels.Panel1MinSize + 41);
+                    mainPanels.SplitterDistance = requestedMainDistance;
+                    rightPanels.SplitterDistance = requestedRightDistance;
+                    int requestedArtworkWidth = Math.Max(artworkSplit.Panel2MinSize,
                         Math.Min(artworkSplit.Width - artworkSplit.SplitterWidth - artworkSplit.Panel1MinSize, 310));
-                    artworkSplit.SplitterDistance = artworkSplit.Width - artworkSplit.SplitterWidth - expectedArtworkWidth;
+                    artworkSplit.SplitterDistance = artworkSplit.Width - artworkSplit.SplitterWidth - requestedArtworkWidth;
+                    typeof(MainForm).GetMethod("UpdateArtworkSquareLayout", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(form, new object[] { true });
+                    Application.DoEvents();
+                    int expectedMainDistance = mainPanels.SplitterDistance;
+                    int expectedRightDistance = rightPanels.SplitterDistance;
+                    int expectedArtworkWidth = artworkSplit.Panel2.Width;
                     typeof(MainForm).GetMethod("SaveUiState", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
                     UiState savedPanelState = ConfigStore.LoadUi();
                     Assert(savedPanelState.MainSplitterDistance == expectedMainDistance
                         && savedPanelState.RightSplitterDistance == expectedRightDistance
-                        && Math.Abs(savedPanelState.ArtworkPreviewWidth - artworkSplit.Panel2.Width) <= 2,
+                        && Math.Abs(savedPanelState.ArtworkPreviewWidth - expectedArtworkWidth) <= 2,
                         "Main library, Activity/Candidate, and Artwork preview panel sizes were not retained on exit/save.");
 
                     MethodInfo applyLayoutPreset = typeof(MainForm).GetMethod("ApplyLayoutPreset", BindingFlags.Instance | BindingFlags.NonPublic);
