@@ -342,6 +342,11 @@ The expanded left workspace therefore has exactly four spectrum panel frames:
 the three summary groups and the shared Upscale/Advanced panel. Individual
 slider modules remain unframed. The square Artwork preview retains its own
 separate preview frame to the right.
+The selected source aspect ratio, native dimensions, and projected dimensions
+appear as unframed yellow text docked to the bottom of Source Selection. The
+text wraps without ellipsis at compact widths. The summary table itself has no
+competing bottom margin, so all three aligned frame borders remain visible at
+wide and high-DPI layouts.
 Existing local covers remain eligible for explicit preview/edit even when
 already Ideal or above Ideal; their dimensions are not reduced automatically.
 

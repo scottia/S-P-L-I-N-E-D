@@ -1555,20 +1555,39 @@ namespace Splined.WindowsGui
                     FluentGroupBox[] summaryGroups = new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
                         .Select(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single()).ToArray();
                     Assert(summaryGroups.Select(group => group.Height).Distinct().Count() == 1
-                        && summaryGroups.All(group => group.Dock == DockStyle.Fill),
-                        "Candidate Findings, Source Selection, and Resolution did not retain the tallest shared panel height.");
+                        && summaryGroups.All(group => group.Dock == DockStyle.Fill
+                            && group.Bottom <= summaryPanel.ClientSize.Height)
+                        && summaryPanel.Margin == Padding.Empty,
+                        "Candidate Findings, Source Selection, and Resolution did not retain an unclipped tallest shared panel height.");
                     TableLayoutPanel previewLine = form.Controls.Find("upscalePreviewLine", true).OfType<TableLayoutPanel>().Single();
                     Panel advancedControls = form.Controls.Find("upscaleAdvancedControls", true).OfType<Panel>().Single();
                     TableLayoutPanel advancedGrid = form.Controls.Find("upscaleAdvancedGrid", true).OfType<TableLayoutPanel>().Single();
                     Button compactPreview = form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single();
                     Button showFullPreview = form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single();
                     CheckBox previewOnlyMode = form.Controls.Find("upscalePreviewOnly", true).OfType<CheckBox>().Single();
-                    FluentCardPanel resolutionTile = form.Controls.Find("upscaleResolutionTile", true).OfType<FluentCardPanel>().Single();
+                    Label candidateDimensions = form.Controls.Find("upscaleCandidateDimensions", true).OfType<Label>().Single();
+                    FluentGroupBox sourceSummary = form.Controls.Find("candidateSourcesGroup", true)
+                        .OfType<FluentGroupBox>().Single();
+                    Assert(form.Controls.Find("upscaleResolutionTile", true).Length == 0,
+                        "The obsolete framed Upscale resolution tile is still present.");
+                    Assert(candidateDimensions.Parent == sourceSummary && candidateDimensions.Dock == DockStyle.Bottom,
+                        "Aspect ratio text is not docked directly to the bottom of Source Selection.");
+                    Assert(candidateDimensions.Text.StartsWith("▣", StringComparison.Ordinal)
+                        && candidateDimensions.Text.Contains("→"),
+                        "Aspect ratio text does not include its source-to-projected resolution context: "
+                        + candidateDimensions.Text.Replace(Environment.NewLine, " / "));
+                    int candidateDimensionTextWidth = TextRenderer.MeasureText(candidateDimensions.Text,
+                        candidateDimensions.Font, new Size(Int32.MaxValue, Int32.MaxValue),
+                        TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
+                    Assert(candidateDimensionTextWidth <= candidateDimensions.ClientSize.Width,
+                        "Aspect ratio text was clipped in Source Selection: required="
+                        + candidateDimensionTextWidth + " available=" + candidateDimensions.ClientSize.Width + ".");
+                    Assert(candidateDimensions.ForeColor.ToArgb()
+                            == ThemeManager.PaletteFor("Dark").Warning.ToArgb(),
+                        "Aspect ratio text is not using the requested yellow warning color.");
                     Assert(form.Controls.Find("upscaleAdaptiveDefaults", true).OfType<CheckBox>().Single().Checked
                         && previewOnlyMode.Checked && previewOnlyMode.Text == "Upscale Preview"
                         && compactPreview.Text == "Upscale Preview" && Convert.ToString(compactPreview.Tag) == "success"
-                        && resolutionTile.VisualRole == CardVisualRole.SpectrumNested
-                        && resolutionTile.Controls.OfType<Label>().Single().Text.StartsWith("▣", StringComparison.Ordinal)
                         && new[] { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" }
                             .All(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().Dock == DockStyle.Fill)
                         && form.Controls.Find("upscaleProfileSlider_sharpen", true).OfType<SpectrumSlider>().Single().Value == 0
@@ -1595,7 +1614,8 @@ namespace Splined.WindowsGui
                             .Select(key => form.Controls.Find("upscaleProfileSlider_" + key, true).OfType<SpectrumSlider>().Single().SpectrumIndex)
                             .Distinct().Count() == 8
                         && form.Controls.Find("upscaleProfileControl_brightness", true).Single().Controls.OfType<Button>().Count() == 3
-                        && previewLine.ColumnCount == 3 && previewLine.GetPositionFromControl(showFullPreview).Column == 1
+                        && previewLine.ColumnCount == 3 && previewLine.Controls.Count == 2
+                        && previewLine.GetPositionFromControl(showFullPreview).Column == 1
                         && previewLine.ColumnStyles[0].SizeType == SizeType.Absolute
                         && previewLine.ColumnStyles[0].Width == 168 && compactPreview.Width <= 170
                         && ((FluentButton)compactPreview).SpectrumBorder && ((FluentButton)showFullPreview).SpectrumBorder
@@ -1650,6 +1670,7 @@ namespace Splined.WindowsGui
                         && form.Controls.Find("candidateSourcesGroup", true).Length == 0
                         && form.Controls.Find("candidateRangesGroup", true).Length == 0
                         && form.Controls.Find("candidateUpscaleGroup", true).Length == 0
+                        && form.Controls.Find("upscaleCandidateDimensions", true).Length == 0
                         && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0
                         && form.Controls.Find("upscalePreviewButton", true).Length == 0
                         && form.Controls.Find("upscaleShowFullButton", true).Length == 0,
@@ -1663,6 +1684,7 @@ namespace Splined.WindowsGui
                         && advancedGrid.Size == expandedGridSize
                         && advancedGrid.GetControlFromPosition(0, 0).Size == expandedProfileSize
                         && form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single().SpectrumBorder
+                        && form.Controls.Find("upscaleCandidateDimensions", true).OfType<Label>().Single().Dock == DockStyle.Bottom
                         && form.Controls.Find("upscalePreviewButton", true).OfType<Button>().Single().Enabled
                         && form.Controls.Find("upscaleShowFullButton", true).OfType<Button>().Single().Enabled,
                         "Expanding Candidate Findings did not restore its attached Upscale section with the same proportions.");

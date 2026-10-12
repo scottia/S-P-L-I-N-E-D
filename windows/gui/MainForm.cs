@@ -3164,6 +3164,28 @@ namespace Splined.WindowsGui
                 GroupBox findingsGroup = WrapCandidateFilterGroup("candidateFindingsGroup", "Candidate Findings", types);
                 GroupBox sourcesGroup = WrapCandidateFilterGroup("candidateSourcesGroup", "Source Selection", sources);
                 GroupBox rangesGroup = WrapCandidateFilterGroup("candidateRangesGroup", "Resolution", ranges);
+                upscaleCandidateDimensions = new Label
+                {
+                    Name = "upscaleCandidateDimensions",
+                    Text = "▣  Aspect ratio / Resolution",
+                    Dock = DockStyle.Bottom,
+                    AutoEllipsis = false,
+                    Height = 52,
+                    ForeColor = palette.Warning,
+                    Font = ThemeManager.UiFont(ThemeFontRole.Minor, FontStyle.Bold),
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Margin = Padding.Empty,
+                    Padding = new Padding(ThemeManager.Space4, 0, ThemeManager.Space4, 0)
+                };
+                upscaleCandidateDimensions.SizeChanged += delegate
+                {
+                    CandidateView selected;
+                    UpdateUpscaleCandidateContext(selectedCandidateIndex >= 0
+                        && candidates.TryGetValue(selectedCandidateIndex, out selected)
+                        && CandidateCanEdit(selected) ? selected : null);
+                };
+                sourcesGroup.Controls.Add(upscaleCandidateDimensions);
+                upscaleCandidateDimensions.BringToFront();
                 GroupBox[] summaryGroups = { findingsGroup, sourcesGroup, rangesGroup };
                 int summaryHeight = summaryGroups.Max(group => group.GetPreferredSize(new Size(420, 0)).Height);
                 foreach (GroupBox group in summaryGroups)
@@ -3180,7 +3202,7 @@ namespace Splined.WindowsGui
                     Height = summaryHeight,
                     ColumnCount = 5,
                     RowCount = 1,
-                    Margin = new Padding(0, 0, 0, ThemeManager.Space4),
+                    Margin = Padding.Empty,
                     Padding = Padding.Empty
                 };
                 summary.RowStyles.Add(new RowStyle(SizeType.Absolute, summaryHeight));
@@ -3205,6 +3227,8 @@ namespace Splined.WindowsGui
             }
             candidateFilterPanel.Controls.Add(columns);
             ThemeManager.Apply(candidateFilterPanel, uiState.Theme);
+            if (upscaleCandidateDimensions != null)
+                upscaleCandidateDimensions.ForeColor = palette.Warning;
             RefreshCandidateFilterDependencies();
             candidateFilterPanel.ResumeLayout(true);
             columns.PerformLayout();
@@ -3363,27 +3387,6 @@ namespace Splined.WindowsGui
             };
             upscaleShowFull.Click += UpscaleShowFullClicked;
             upscaleShowFull.EnabledChanged += delegate { ThemeManager.StyleButton(upscaleShowFull, uiState.Theme); };
-            upscaleCandidateDimensions = new Label
-            {
-                Name = "upscaleCandidateDimensions",
-                Text = "Aspect ratio / Resolution",
-                Dock = DockStyle.Fill,
-                AutoEllipsis = true,
-                ForeColor = palette.TextSecondary,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Margin = new Padding(ThemeManager.Space8, 0, ThemeManager.Space8, 0)
-            };
-            Panel resolutionTile = new FluentCardPanel
-            {
-                Name = "upscaleResolutionTile",
-                Dock = DockStyle.Fill,
-                Height = 34,
-                Margin = new Padding(ThemeManager.Space4, 0, 0, 0),
-                Padding = new Padding(1),
-                VisualRole = CardVisualRole.SpectrumNested
-            };
-            upscaleCandidateDimensions.Text = "▣  Aspect ratio / Resolution";
-            resolutionTile.Controls.Add(upscaleCandidateDimensions);
             TableLayoutPanel previewLine = new BufferedTableLayoutPanel
             {
                 Name = "upscalePreviewLine",
@@ -3397,7 +3400,6 @@ namespace Splined.WindowsGui
             previewLine.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             previewLine.Controls.Add(upscalePreview, 0, 0);
             previewLine.Controls.Add(upscaleShowFull, 1, 0);
-            previewLine.Controls.Add(resolutionTile, 2, 0);
             AddUpscaleFilterRow(column, previewLine, 38);
             AddUpscaleFilterRow(column, new Label
             {
@@ -4415,6 +4417,7 @@ namespace Splined.WindowsGui
         private void UpdateUpscaleCandidateContext(CandidateView candidate)
         {
             if (upscaleCandidateDimensions == null) return;
+            upscaleCandidateDimensions.ForeColor = ThemeManager.PaletteFor(uiState.Theme).Warning;
             if (candidate == null)
             {
                 upscaleCandidateDimensions.Text = "▣  Select one result to edit";
@@ -4424,8 +4427,23 @@ namespace Splined.WindowsGui
             string ratio = (candidate.PixelWidth / divisor) + ":" + (candidate.PixelHeight / divisor);
             int targetWidth = candidate.ProjectedWidth > 0 ? candidate.ProjectedWidth : state.RangeIdeal;
             int targetHeight = candidate.ProjectedHeight > 0 ? candidate.ProjectedHeight : state.RangeIdeal;
-            upscaleCandidateDimensions.Text = "▣  " + ratio + "  /  " + candidate.PixelWidth + " × " + candidate.PixelHeight
-                + " → " + targetWidth + " × " + targetHeight;
+            string sourceSize = candidate.PixelWidth + "×" + candidate.PixelHeight;
+            string targetSize = targetWidth + "×" + targetHeight;
+            string oneLine = "▣ " + ratio + " · " + sourceSize + " → " + targetSize;
+            int availableWidth = Math.Max(1,
+                upscaleCandidateDimensions.ClientSize.Width - upscaleCandidateDimensions.Padding.Horizontal);
+            int requiredWidth = TextRenderer.MeasureText(oneLine, upscaleCandidateDimensions.Font,
+                new Size(Int32.MaxValue, Int32.MaxValue),
+                TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
+            string twoLines = "▣ " + ratio + " · " + sourceSize + Environment.NewLine + "→ " + targetSize;
+            int twoLineWidth = TextRenderer.MeasureText(twoLines, upscaleCandidateDimensions.Font,
+                new Size(Int32.MaxValue, Int32.MaxValue),
+                TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
+            upscaleCandidateDimensions.Text = requiredWidth <= availableWidth || availableWidth <= 1
+                ? oneLine
+                : twoLineWidth <= availableWidth
+                    ? twoLines
+                    : "▣ " + ratio + Environment.NewLine + sourceSize + Environment.NewLine + "→ " + targetSize;
         }
 
         private static int GreatestCommonDivisor(int left, int right)

@@ -122,15 +122,19 @@ preventing preview-selection flicker. Expanding the workspace restores the three
 summaries and the same attached slider row together. The slider row does not wrap
 or require a scrollbar.
 
-Individual slider modules and their containing Upscale section remain unframed.
-Preview actions use SPLINED's shared action font, glyph, and framed-button
-treatment.
+Individual slider modules remain unframed inside the shared fourth
+Upscale/Advanced frame. Preview actions use SPLINED's shared action font, glyph,
+and framed-button treatment.
 
 **Upscale Preview** is enabled by default. It keeps Upscale and full-size
 preview available, but **Use Selected** saves the chosen source at its source
 resolution without applying upscale or edit-profile filtering. Turn it off to
-enter explicit **Upscale** save mode. The framed resolution tile beside
-**Upscale Show Full** shows the source aspect ratio and projected dimensions.
+enter explicit **Upscale** save mode. The former framed resolution tile beside
+**Upscale Show Full** has been removed. Its source aspect ratio and projected
+dimensions now appear as unframed yellow text at the bottom of **Source
+Selection**, using otherwise unused summary space and leaving the Upscale action
+row uncluttered. The text stays on one line when space permits and wraps into
+short complete lines at compact widths rather than truncating a dimension.
 Both preview buttons remain available across candidate-state changes; when no
 editable result is selected they give selection guidance instead of becoming
 disabled. A refreshed result set without a formal recommendation focuses its

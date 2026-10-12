@@ -233,6 +233,27 @@ namespace Splined.WindowsGui
                             Require(new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup", "candidateUpscaleGroup" }
                                 .All(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single().SpectrumBorder),
                                 "Expanded Candidate Findings did not expose all four internal spectrum frames.");
+                            Label candidateDimensions = form.Controls.Find("upscaleCandidateDimensions", true)
+                                .OfType<Label>().Single();
+                            FluentGroupBox sourceSummary = form.Controls.Find("candidateSourcesGroup", true)
+                                .OfType<FluentGroupBox>().Single();
+                            TableLayoutPanel summaryPanel = form.Controls.Find("candidateSummaryPanel", true)
+                                .OfType<TableLayoutPanel>().Single();
+                            Require(form.Controls.Find("upscaleResolutionTile", true).Length == 0
+                                && candidateDimensions.Parent == sourceSummary
+                                && candidateDimensions.Dock == DockStyle.Bottom
+                                && candidateDimensions.ForeColor.ToArgb()
+                                    == ThemeManager.PaletteFor("Dark").Warning.ToArgb()
+                                && candidateDimensions.Text.Contains("→")
+                                && TextRenderer.MeasureText(candidateDimensions.Text, candidateDimensions.Font,
+                                    new Size(Int32.MaxValue, Int32.MaxValue),
+                                    TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width
+                                    <= candidateDimensions.ClientSize.Width
+                                && summaryPanel.Margin == Padding.Empty
+                                && new[] { "candidateFindingsGroup", "candidateSourcesGroup", "candidateRangesGroup" }
+                                    .Select(name => form.Controls.Find(name, true).OfType<FluentGroupBox>().Single())
+                                    .All(group => group.Bottom <= summaryPanel.ClientSize.Height),
+                                "Aspect ratio text was not moved unframed to Source Selection or a summary frame was clipped.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-expanded-qa.png"));
                             Label summaryToggle = form.Controls.Find("candidateSummaryToggle", true)[0] as Label;
                             if (summaryToggle != null)
@@ -244,6 +265,7 @@ namespace Splined.WindowsGui
                                 && form.Controls.Find("candidateSourcesGroup", true).Length == 0
                                 && form.Controls.Find("candidateRangesGroup", true).Length == 0
                                 && form.Controls.Find("candidateUpscaleGroup", true).Length == 0
+                                && form.Controls.Find("upscaleCandidateDimensions", true).Length == 0
                                 && form.Controls.Find("upscaleAdvancedGrid", true).Length == 0,
                                 "Collapsed Candidate Findings left its attached Upscale / Advanced section visible.");
                             CaptureWindow(form, Path.Combine(ConfigStore.AppRoot, "main-artwork-filter-collapsed-qa.png"));
@@ -256,7 +278,8 @@ namespace Splined.WindowsGui
                             Require(restoredGrid != null && restoredGrid.ColumnCount == 8 && restoredGrid.RowCount == 1
                                 && restoredGrid.Size == expandedGridSize
                                 && restoredGrid.GetControlFromPosition(0, 0).Size == expandedModuleSize
-                                && form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single().SpectrumBorder,
+                                && form.Controls.Find("candidateUpscaleGroup", true).OfType<FluentGroupBox>().Single().SpectrumBorder
+                                && form.Controls.Find("upscaleCandidateDimensions", true).OfType<Label>().Single().Dock == DockStyle.Bottom,
                                 "Expanded Candidate Findings did not restore the attached Upscale grid proportions.");
                             typeof(MainForm).GetMethod("SetCandidateFilterExpanded", BindingFlags.Instance | BindingFlags.NonPublic)
                                 .Invoke(form, new object[] { false, false });
