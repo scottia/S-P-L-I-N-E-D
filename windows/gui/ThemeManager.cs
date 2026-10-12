@@ -342,6 +342,11 @@ namespace Splined.WindowsGui
             using (Font source = UiFont(role)) return new Font(source.FontFamily, source.Size, style, GraphicsUnit.Point);
         }
 
+        public static Font UiFont(float sizeInPoints, FontStyle style)
+        {
+            return new Font(UiFontFamily, Math.Max(5.5f, sizeInPoints), style, GraphicsUnit.Point);
+        }
+
         public static Color StatusColor(ThemeStatusColor status, string theme)
         {
             ThemePalette palette = PaletteFor(theme);
@@ -2334,6 +2339,8 @@ namespace Splined.WindowsGui
 
     internal sealed class SplinedWordmark : Control
     {
+        internal const string ExactWordmark = "S.P.L.I.N.E.D";
+
         public SplinedWordmark()
         {
             DoubleBuffered = true;
@@ -2341,31 +2348,133 @@ namespace Splined.WindowsGui
             BackColor = Color.Transparent;
             using (Font baseFont = ThemeManager.UiFont(ThemeFontRole.AppTitle, FontStyle.Bold))
                 Font = new Font(baseFont.FontFamily, 15f, FontStyle.Bold, GraphicsUnit.Point);
-            MinimumSize = new Size(158, 38);
-            Size = new Size(158, 38);
-            AccessibleName = "S:P:L:I:N:E:D";
+            MinimumSize = new Size(184, 34);
+            Size = new Size(184, 34);
+            AccessibleName = ExactWordmark;
+            Name = "splinedWordmark";
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            const string wordmark = "S:P:L:I:N:E:D";
             Color[] spectrum = ThemeManager.SpectrumColors(1f);
             float x = 4f;
             using (StringFormat format = new StringFormat(StringFormat.GenericTypographic))
             {
                 format.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
-                for (int index = 0; index < wordmark.Length; index++)
+                for (int index = 0; index < ExactWordmark.Length; index++)
                 {
-                    string glyph = wordmark[index].ToString();
-                    Color color = glyph == ":"
+                    string glyph = ExactWordmark[index].ToString();
+                    Color color = glyph == "."
                         ? ThemeManager.CurrentPalette.TextSecondary
                         : spectrum[(index / 2) % (spectrum.Length - 1)];
                     using (Brush brush = new SolidBrush(color))
-                        e.Graphics.DrawString(glyph, Font, brush, x, 4f, format);
+                        e.Graphics.DrawString(glyph, Font, brush, x, 2f, format);
                     x += e.Graphics.MeasureString(glyph, Font, PointF.Empty, format).Width - 0.4f;
                 }
             }
+        }
+    }
+
+    internal sealed class SplinedSlogan : Control
+    {
+        internal const string ExactSlogan =
+            "SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD";
+
+        private static readonly string[] Segments =
+        {
+            "SƎARCHABLƎ", "PІXƎL", "LІNKS", "ІDƎNTІFІƎD",
+            "NORMALІZƎD", "ƎNRІCHƎD", "DƎFІNƎD"
+        };
+
+        private static readonly Color[] SeparatorColors =
+        {
+            Color.FromArgb(255, 59, 48),
+            Color.FromArgb(255, 149, 0),
+            Color.FromArgb(255, 214, 10),
+            Color.FromArgb(48, 209, 88),
+            Color.FromArgb(50, 173, 230),
+            Color.FromArgb(191, 90, 242)
+        };
+
+        public SplinedSlogan()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            MinimumSize = new Size(280, 20);
+            Size = new Size(560, 22);
+            Name = "splinedSlogan";
+            AccessibleName = ExactSlogan;
+            AccessibleDescription = "SPLINED expanded name with spectrum separators";
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            float fontSize = Math.Min(8.5f, Math.Max(5.5f, ClientSize.Height * 0.38f));
+            Font sloganFont = null;
+            StringFormat format = new StringFormat(StringFormat.GenericTypographic);
+            using (Font baseFont = ThemeManager.UiFont(ThemeFontRole.Minor))
+            try
+            {
+                format.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
+                while (true)
+                {
+                    if (sloganFont != null) sloganFont.Dispose();
+                    sloganFont = new Font(baseFont.FontFamily,
+                        fontSize, FontStyle.Bold, GraphicsUnit.Point);
+                    float required = MeasureRequiredWidth(e.Graphics, sloganFont, format);
+                    if (required <= Math.Max(1, ClientSize.Width - 4) || fontSize <= 5.5f) break;
+                    fontSize -= 0.25f;
+                }
+
+                float x = 2f;
+                float textHeight = e.Graphics.MeasureString("Ag", sloganFont, PointF.Empty, format).Height;
+                float y = Math.Max(0f, (ClientSize.Height - textHeight) / 2f);
+                using (Brush textBrush = new SolidBrush(ThemeManager.CurrentPalette.TextSecondary))
+                {
+                    for (int index = 0; index < Segments.Length; index++)
+                    {
+                        string segment = Segments[index];
+                        e.Graphics.DrawString(segment, sloganFont, textBrush, x, y, format);
+                        x += e.Graphics.MeasureString(segment, sloganFont, PointF.Empty, format).Width;
+                        if (index >= SeparatorColors.Length) continue;
+                        float separatorWidth = Math.Max(8f, fontSize * 1.35f);
+                        float radius = Math.Max(1.15f, fontSize * 0.16f);
+                        float centerX = x + (separatorWidth / 2f);
+                        float centerY = ClientSize.Height / 2f;
+                        using (Brush separator = new SolidBrush(SeparatorColors[index]))
+                        {
+                            e.Graphics.FillEllipse(separator, centerX - radius,
+                                centerY - radius - (radius * 1.25f), radius * 2f, radius * 2f);
+                            e.Graphics.FillEllipse(separator, centerX - radius,
+                                centerY - radius + (radius * 1.25f), radius * 2f, radius * 2f);
+                        }
+                        x += separatorWidth;
+                    }
+                }
+            }
+            finally
+            {
+                if (sloganFont != null) sloganFont.Dispose();
+                format.Dispose();
+            }
+        }
+
+        private static float MeasureRequiredWidth(Graphics graphics, Font font, StringFormat format)
+        {
+            float width = 0f;
+            for (int index = 0; index < Segments.Length; index++)
+            {
+                width += graphics.MeasureString(Segments[index], font, PointF.Empty, format).Width;
+                if (index < SeparatorColors.Length) width += Math.Max(8f, font.Size * 1.35f);
+            }
+            return width;
         }
     }
 

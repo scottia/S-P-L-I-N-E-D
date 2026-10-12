@@ -89,7 +89,9 @@ namespace Splined.WindowsGui
             {
                 string warning = "Credential file created; user-specific filesystem ACL protection\r\n"
                     + "is unavailable on this storage location.\r\n\r\n" + path;
-                if (Application.MessageLoop)
+                bool isolatedGuiTest = !String.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("SPLINED_INTERNAL_SETTINGS_TEST_DIR"));
+                if (Application.MessageLoop && !isolatedGuiTest)
                     MessageBox.Show(warning, "SPLINED credential protection",
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 else
