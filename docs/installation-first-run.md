@@ -19,7 +19,10 @@ The Cargo-built executable contains the Rust application and Slint GUI. Normal
 startup and scans do not extract executable code, load an application bridge,
 or launch a SPLINED processing child; the application runs as one process.
 
-On first save, the application creates:
+Before first save, launching the executable creates none of the configuration,
+database, cache, log, credential, or obsolete bootstrap directories. The
+ordinary workspace stays unavailable and structured Setup opens. After valid
+choices are explicitly saved, the application creates:
 
 ```text
 SPLINED\
@@ -34,18 +37,19 @@ does not affect resolution. Relative paths resolve from the directory containing
 the complete directory carries portable settings. Deleting it removes
 SPLINED-owned settings.
 
-If neither portable file exists, one legacy ConfigV5/UiV4 pair may be imported
-once. Imported values are written to the portable files. Legacy values are not
-deleted, are never written by the new desktop, and cannot override an existing
-portable file or resurrect after the migration marker is recorded.
+No Registry value is consulted as current or migration authority. An existing
+`data\config.toml` is discovered automatically; the user is never asked to
+browse to it. If that file is missing, invalid, or operationally incomplete,
+Setup displays the real error instead of silently continuing with defaults.
 
 ### Windows first-run checklist
 
-1. Open Settings.
-2. Set `library.music_library` and `scan.scan_library_dir`.
-3. Confirm `scan.cache_dir`; `splined.db` remains authoritative there.
-4. Confirm temporary cache, log, history, and credential locations.
-5. Save Config v5.
+1. In Setup, choose the Music Library.
+2. Choose the SQLite/database directory; it owns `splined.db`.
+3. Choose separate temporary cache, log, and credential directories.
+4. Review ignored subdirectories, then select **Save and Continue**.
+5. Use structured Settings for scan behavior, source order/policies, artwork
+   ranges, output, square/upscale, adjustments, and retention options.
 6. Add provider JSON in Credentials and complete authorization where required.
 7. Refresh Media Library Selection.
 8. Run a READ scan before enabling LIVE WRITE.
@@ -60,7 +64,8 @@ manifest-owned `.spl` association, and normal Windows uninstall. Its application
 payload is the same x64 Rust/Slint `splined.exe`.
 
 Because an MSIX installation directory is read-only, Config v5 and interface
-state live under the package's per-user LocalState directory. Configured
+state live under
+`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data`. Configured
 absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.

@@ -36,6 +36,15 @@ authoritative Rust backend. The Windows frontend receives a compact snapshot
 through the in-process command boundary. It does not link another SQLite
 implementation or maintain a separate JSON-derived Select Media authority.
 
+On startup Windows discovers Config v5 from the portable or packaged state
+root, resolves relative paths against that root, and derives the database only
+as `<scan.cache_dir>\splined.db`. It does not probe legacy default folders or
+fall back to a second database. Startup diagnostics report the active state,
+Config, and SQLite paths plus loaded Album, Artist, and Folder counts without
+including credentials. If Config v5 is missing, invalid, or operationally
+incomplete, structured Setup opens before any database or runtime directory is
+created.
+
 ## Shared Windows/Linux database
 
 Two installations use the same physical database by selecting cache

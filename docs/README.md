@@ -71,7 +71,7 @@ with the current product documentation.
 
 | Runtime | User interface | Configuration | Persistent state |
 | --- | --- | --- | --- |
-| Windows | Cargo-built Rust application + Slint GUI | Portable `data/config.toml`/`data/ui.toml`, or per-user package LocalState for MSIX | `splined.db` plus separately stored credentials |
+| Windows | Cargo-built Rust application + Slint GUI | Auto-discovered portable `data/config.toml`/`data/ui.toml`, or `<LocalState>\SPLINED\data` for MSIX; structured Setup/Settings write Config v5 | `<scan.cache_dir>\splined.db` plus configured credentials |
 | Python/Docker | Ratatui when attached to a terminal; plain CLI when redirected or disabled | File-backed Config v5 | `splined.db` plus separately stored credentials |
 | Linux/macOS native CLI | Command line | File-backed Config v5 | Runtime-selected cache and database paths |
 

@@ -413,6 +413,12 @@ jobs:
             $env:SPLINED_INTERNAL_STATE_ROOT = $priorStateRoot
           }
           if ($smoke.ExitCode -ne 0) { throw "The clean portable Rust/Slint smoke test failed." }
+          $unexpectedState = @("data", "_cache", "_logs", "credentials", "docker_builds") | Where-Object {
+            Test-Path -LiteralPath (Join-Path $smokeStateRoot $_)
+          }
+          if ($unexpectedState) {
+            throw "Clean first-run smoke created state before Setup Save: $($unexpectedState -join ', ')"
+          }
 
           Compress-Archive -Path $portableRoot -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
           $archiveEntries = @(tar -tf release-assets/splined-windows-x86_64.zip | Where-Object { -not $_.EndsWith('/') } | Sort-Object)

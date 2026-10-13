@@ -1,12 +1,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use splined_core::application::{
     ApplicationState, LaunchMode, LibraryView, RunPhase, ScanScope, SelectionResult, StatusFilter,
 };
 use splined_core::backup::{BackupSelection, export_backup, restore_backup};
 use splined_core::candidate::{Candidate, StaticFormat};
-use splined_core::config::{Config, Mode};
+use splined_core::config::{Config, Mode, Verbosity};
 use splined_core::credential_store::{CredentialEditor, load_editor, save_editor, test_editor};
 use splined_core::final_artwork::{
     install_prepared_artwork, prepare_existing_cover_edit, prepare_selected_artwork_edit,
@@ -18,8 +18,9 @@ use splined_core::range::Range;
 use splined_core::safe_write::{replace_binary_file, take_credential_protection_warning};
 use splined_core::scan_controller::ScanController;
 use splined_core::settings::UiPreferences;
+use splined_core::source_policy::{MinimumRangeType, SourcePolicyConfig};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -39,11 +40,11 @@ fn main() -> Result<(), slint::PlatformError> {
         package_identity_smoke();
         return Ok(());
     }
-    let (mut state, startup_error) = load_application_state();
+    let (mut state, setup_required, startup_error) = load_application_state();
     let preferences = splined_core::settings::load_ui_preferences().unwrap_or_default();
     apply_ui_preferences(&mut state, &preferences);
     let state = Arc::new(Mutex::new(state));
-    if let Some(error) = startup_error
+    if let Some(ref error) = startup_error
         && let Ok(mut state) = state.lock()
     {
         state.last_error = Some(error.clone());
@@ -53,6 +54,13 @@ fn main() -> Result<(), slint::PlatformError> {
     let (controller, notices) = ScanController::new(Arc::clone(&state));
     let controller = Arc::new(controller);
     let ui = AppWindow::new()?;
+    ui.set_setup_required(setup_required);
+    if setup_required {
+        ui.set_page_index(3);
+        ui.set_setup_message(SharedString::from(startup_error.clone().unwrap_or_else(
+            || "Config v5 was not found. Complete SPLINED Setup.".to_string(),
+        )));
+    }
     ui.set_include_bypassed(preferences.include_bypassed);
     if preferences.window_width >= 800 && preferences.window_height >= 600 {
         ui.window().set_size(slint::PhysicalSize::new(
@@ -96,7 +104,9 @@ fn main() -> Result<(), slint::PlatformError> {
             window_height: size.height,
         })
         .unwrap_or_default();
-    if let Err(error) = splined_core::settings::save_ui_preferences(&preferences) {
+    if !ui.get_setup_required()
+        && let Err(error) = splined_core::settings::save_ui_preferences(&preferences)
+    {
         eprintln!("Unable to save SPLINED interface preferences: {error}");
     }
     result
@@ -126,11 +136,56 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
 
 fn command_line_operation() -> Option<Result<(), String>> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments
+        .iter()
+        .any(|value| value == "--slint-library-diagnostics")
+    {
+        let output = arguments
+            .iter()
+            .position(|value| value == "--slint-library-diagnostics")
+            .and_then(|index| arguments.get(index + 1));
+        let result = run_slint_library_diagnostics().and_then(|report| {
+            write_diagnostic_report(output, &report, "Slint library diagnostics")
+        });
+        return Some(result);
+    }
+    if arguments
+        .iter()
+        .any(|value| value == "--navidrome-diagnostics")
+    {
+        let output = arguments
+            .iter()
+            .position(|value| value == "--navidrome-diagnostics")
+            .and_then(|index| arguments.get(index + 1));
+        let (report, outcome) = match run_navidrome_diagnostics() {
+            Ok(report) => (format!("result=ok\n{report}"), Ok(())),
+            Err(error) => (format!("result=error\nmessage={error}\n"), Err(error)),
+        };
+        let write = write_diagnostic_report(output, &report, "Navidrome diagnostics");
+        return Some(write.and(outcome));
+    }
+    if arguments
+        .iter()
+        .any(|value| value == "--library-diagnostics")
+    {
+        let result = run_library_diagnostics().and_then(|report| {
+            let output = arguments
+                .iter()
+                .position(|value| value == "--library-diagnostics")
+                .and_then(|index| arguments.get(index + 1));
+            write_diagnostic_report(output, &report, "library diagnostics")
+        });
+        return Some(result);
+    }
     if arguments.iter().any(|value| value == "--native-smoke") {
         return Some(
-            splined_core::portable::initialize_process_roots()
-                .and_then(|_| splined_core::config::load_config())
-                .map(|_| ()),
+            splined_core::portable::initialize_process_roots().and_then(|layout| {
+                match splined_core::config::load_config() {
+                    Ok(config) => splined_core::settings::validate_operational_config(&config),
+                    Err(_) if !layout.config_file.exists() => Ok(()),
+                    Err(error) => Err(error),
+                }
+            }),
         );
     }
     let index = arguments
@@ -156,6 +211,158 @@ fn command_line_operation() -> Option<Result<(), String>> {
                 })
             }),
     )
+}
+
+fn write_diagnostic_report(
+    output: Option<&std::ffi::OsString>,
+    report: &str,
+    label: &str,
+) -> Result<(), String> {
+    if let Some(output) = output {
+        std::fs::write(output, report).map_err(|error| {
+            format!(
+                "Unable to write {label} {}: {error}",
+                std::path::Path::new(output).display()
+            )
+        })
+    } else {
+        print!("{report}");
+        Ok(())
+    }
+}
+
+fn run_navidrome_diagnostics() -> Result<String, String> {
+    let layout = splined_core::portable::initialize_process_roots()?;
+    let config = splined_core::config::load_config()?;
+    splined_core::settings::validate_operational_config(&config)?;
+    let credential_path = splined_core::credential_store::credential_path(&config, "Navidrome")?;
+    let editor = load_editor(&config, "Navidrome")?;
+    let auth_method = editor.auth_method.clone();
+    let status = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Unable to start Navidrome diagnostic runtime: {error}"))?
+        .block_on(test_editor(&editor))?;
+    Ok(format!(
+        "state_root={}\nconfig_v5={}\ncredential_file={}\nauth_method={}\nstatus={}\n",
+        layout.root.display(),
+        layout.config_file.display(),
+        credential_path.display(),
+        auth_method,
+        status
+    ))
+}
+
+fn run_slint_library_diagnostics() -> Result<String, String> {
+    splined_core::portable::initialize_process_roots()?;
+    let config = splined_core::config::load_config()?;
+    splined_core::settings::validate_operational_config(&config)?;
+    let snapshot = media_snapshot(&config, false)?;
+    let state = Arc::new(Mutex::new(ApplicationState::new(config, snapshot)?));
+    let (controller, _notices) = ScanController::new(Arc::clone(&state));
+    let ui = AppWindow::new().map_err(|error| format!("Unable to create Slint UI: {error}"))?;
+    ui.set_setup_required(false);
+    sync_ui(&ui, &state);
+    bind_callbacks(&ui, Arc::clone(&state), Arc::new(controller));
+
+    let visible_artists = ui.get_library_rows().row_count();
+    ui.invoke_change_library_view(1);
+    let visible_albums = ui.get_library_rows().row_count();
+    ui.invoke_change_library_view(2);
+    let visible_folders = ui.get_library_rows().row_count();
+    ui.invoke_change_library_view(0);
+
+    let artists = ui.get_library_rows();
+    let artist = (0..artists.row_count())
+        .filter_map(|index| artists.row_data(index))
+        .find(|row| row.eligible)
+        .ok_or_else(|| "The Slint Artist model has no selectable row.".to_string())?;
+    ui.invoke_library_row_activated(artist.key, false);
+    let artist_click_selected_albums = ui.get_selected_count();
+    ui.invoke_change_library_view(1);
+    let artist_navigation_rows = ui.get_library_rows().row_count();
+    let album = ui
+        .get_library_rows()
+        .row_data(0)
+        .ok_or_else(|| "The selected Artist produced no Slint Album row.".to_string())?;
+    ui.invoke_library_row_activated(album.key, false);
+    let current_album_populated = !ui.get_current_artist().trim().is_empty()
+        && !ui.get_current_album().trim().is_empty()
+        && !ui.get_current_path().trim().is_empty();
+    ui.invoke_select_none();
+    let select_none_count = ui.get_selected_count();
+
+    Ok(format!(
+        "visible_artists={visible_artists}\nvisible_albums={visible_albums}\nvisible_folders={visible_folders}\nartist_click_selected_albums={artist_click_selected_albums}\nartist_navigation_rows={artist_navigation_rows}\ncurrent_album_populated={current_album_populated}\nselect_none_count={select_none_count}\n"
+    ))
+}
+
+fn run_library_diagnostics() -> Result<String, String> {
+    let layout = splined_core::portable::initialize_process_roots()?;
+    let config = splined_core::config::load_config()?;
+    splined_core::settings::validate_operational_config(&config)?;
+    let snapshot = media_snapshot(&config, false)?;
+    let album_count = snapshot.albums.len();
+    let artist_count = snapshot
+        .albums
+        .iter()
+        .map(|album| album.artist.trim().to_ascii_lowercase())
+        .filter(|artist| !artist.is_empty())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let folder_count = snapshot
+        .albums
+        .iter()
+        .map(|album| album.path.trim().to_ascii_lowercase())
+        .filter(|path| !path.is_empty())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let mut state = ApplicationState::new(config.clone(), snapshot)?;
+    state.library.set_text_filter("");
+    state.library.set_status_filter(StatusFilter::All);
+    state.library.clear_artist_scope();
+    state.library.set_view(LibraryView::Artists);
+    let visible_artists = state.library.rows().len();
+    state.library.set_view(LibraryView::Albums);
+    let visible_albums = state.library.rows().len();
+    state.library.set_view(LibraryView::Folders);
+    let visible_folders = state.library.rows().len();
+    state.library.set_view(LibraryView::Artists);
+    let artist_key = state
+        .library
+        .rows()
+        .into_iter()
+        .find(|row| row.eligible)
+        .map(|row| row.key)
+        .ok_or_else(|| "The real library has no selectable Artist row.".to_string())?;
+    let artist_click_changed =
+        state.library.toggle_row(&artist_key, false) == SelectionResult::Changed;
+    let artist_click_selected_albums = state.library.selected_count();
+    state.library.set_view(LibraryView::Albums);
+    let artist_navigation_rows = state.library.rows().len();
+    let album_key = state
+        .library
+        .rows()
+        .into_iter()
+        .next()
+        .map(|row| row.key)
+        .ok_or_else(|| "The selected Artist produced no visible Album rows.".to_string())?;
+    let album_click_changed =
+        state.library.toggle_row(&album_key, false) == SelectionResult::Changed;
+    let current_album_populated = state.synchronize_focused_album()
+        && !state.current_artist.trim().is_empty()
+        && !state.current_album.trim().is_empty()
+        && !state.current_album_path.trim().is_empty();
+    state.library.select_none();
+    let select_none_count = state.library.selected_count();
+
+    Ok(format!(
+        "state_root={}\nconfig_v5={}\nscan_cache_dir={}\nsqlite={}\nalbums={album_count}\nartists={artist_count}\nfolders={folder_count}\nvisible_artists={visible_artists}\nvisible_albums={visible_albums}\nvisible_folders={visible_folders}\nartist_click_changed={artist_click_changed}\nartist_click_selected_albums={artist_click_selected_albums}\nartist_navigation_rows={artist_navigation_rows}\nalbum_click_changed={album_click_changed}\ncurrent_album_populated={current_album_populated}\nselect_none_count={select_none_count}\n",
+        layout.root.display(),
+        layout.config_file.display(),
+        config.scan.cache_dir,
+        splined_core::media_database::database_path(&config.scan.cache_dir).display()
+    ))
 }
 
 fn restore_request_from_args(
@@ -211,13 +418,8 @@ fn package_identity_smoke() {
     }
 }
 
-fn load_application_state() -> (ApplicationState, Option<String>) {
+fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     let mut first_error = splined_core::portable::initialize_process_roots().err();
-    if first_error.is_none()
-        && let Err(error) = splined_core::portable::migrate_legacy_settings_if_needed()
-    {
-        first_error = Some(error);
-    }
     if first_error.is_none()
         && let Err(error) = splined_core::config_migration::migrate_config_if_needed()
     {
@@ -227,37 +429,99 @@ fn load_application_state() -> (ApplicationState, Option<String>) {
         Ok(config) => config,
         Err(error) => {
             first_error.get_or_insert(error);
-            Config::default()
+            let mut setup = Config::default();
+            setup.library.music_library.clear();
+            setup.scan.scan_library_dir.clear();
+            setup.scan.cache_dir.clear();
+            setup.scan.temporary_cache_dir.clear();
+            setup.scan.log_dir.clear();
+            setup.credentials.credential_dir.clear();
+            let snapshot = empty_snapshot(&setup);
+            let mut state = ApplicationState::new(setup, snapshot)
+                .expect("the Rust first-run setup model must remain valid");
+            state.service_status = "Setup required".to_string();
+            state.log.clear();
+            if let Some(error) = first_error.as_ref() {
+                state.last_error = Some(error.clone());
+                state.push_log(format!("SETUP REQUIRED: {error}"));
+            }
+            return (state, true, first_error);
         }
     };
+    if let Err(error) = splined_core::settings::validate_operational_config(&config) {
+        let error = format!("Config v5 is not ready for use: {error}");
+        first_error.get_or_insert_with(|| error.clone());
+        let snapshot = empty_snapshot(&config);
+        let mut state = ApplicationState::new(config, snapshot)
+            .expect("a parsed Config v5 must initialize the Rust setup model");
+        state.service_status = "Setup required".to_string();
+        state.last_error = Some(error.clone());
+        state.push_log(format!("SETUP REQUIRED: {error}"));
+        return (state, true, first_error);
+    }
     let snapshot = match media_snapshot(&config, false) {
         Ok(snapshot) => snapshot,
         Err(error) => {
             first_error.get_or_insert(error);
-            MediaSnapshot {
-                schema_version: splined_core::media_database::SCHEMA_VERSION,
-                database_path: String::new(),
-                canonical_root: config.library.music_library.clone(),
-                local_root: config.library.music_library.clone(),
-                albums: Vec::new(),
-            }
+            empty_snapshot(&config)
         }
     };
-    let state = ApplicationState::new(config, snapshot).unwrap_or_else(|error| {
-        first_error.get_or_insert(error);
-        ApplicationState::new(
-            Config::default(),
-            MediaSnapshot {
-                schema_version: splined_core::media_database::SCHEMA_VERSION,
-                database_path: String::new(),
-                canonical_root: String::new(),
-                local_root: String::new(),
-                albums: Vec::new(),
-            },
-        )
-        .expect("the built-in SPLINED configuration is valid")
-    });
-    (state, first_error)
+    let diagnostics = startup_diagnostics(&config, &snapshot);
+    let mut state = ApplicationState::new(config, snapshot)
+        .expect("a parsed Config v5 and database snapshot must initialize application state");
+    for diagnostic in diagnostics {
+        state.push_log(diagnostic);
+    }
+    (state, false, first_error)
+}
+
+fn empty_snapshot(config: &Config) -> MediaSnapshot {
+    MediaSnapshot {
+        schema_version: splined_core::media_database::SCHEMA_VERSION,
+        database_path: String::new(),
+        canonical_root: config.library.music_library.clone(),
+        local_root: config.library.music_library.clone(),
+        albums: Vec::new(),
+    }
+}
+
+fn startup_diagnostics(config: &Config, snapshot: &MediaSnapshot) -> Vec<String> {
+    let artists = snapshot
+        .albums
+        .iter()
+        .map(|album| album.artist.trim().to_ascii_lowercase())
+        .filter(|artist| !artist.is_empty())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let folders = snapshot
+        .albums
+        .iter()
+        .map(|album| album.path.trim().to_ascii_lowercase())
+        .filter(|folder| !folder.is_empty())
+        .collect::<BTreeSet<_>>()
+        .len();
+    vec![
+        format!(
+            "State root: {}",
+            splined_core::portable::state_root()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|error| format!("unavailable ({error})"))
+        ),
+        format!(
+            "Config v5: {}",
+            splined_core::config::config_path()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unavailable".to_string())
+        ),
+        format!(
+            "SQLite: {}",
+            splined_core::media_database::database_path(&config.scan.cache_dir).display()
+        ),
+        format!(
+            "Library loaded: {} albums · {artists} artists · {folders} folders",
+            snapshot.albums.len()
+        ),
+    ]
 }
 
 fn bind_callbacks(
@@ -663,15 +927,29 @@ fn bind_callbacks(
 }
 
 fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
+    let settings_draft = Arc::new(Mutex::new(
+        state
+            .lock()
+            .map(|app| app.config.clone())
+            .unwrap_or_default(),
+    ));
     {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
-        ui.on_load_config(move || {
-            let result = splined_core::settings::config_text();
+        let settings_draft = Arc::clone(&settings_draft);
+        ui.on_load_settings(move || {
             if let Some(ui) = weak.upgrade() {
-                match result {
-                    Ok(text) => ui.set_config_text_value(SharedString::from(text)),
-                    Err(error) => record_action_result(&state, Err(error)),
+                match state.lock() {
+                    Ok(app) => {
+                        if let Ok(mut draft) = settings_draft.lock() {
+                            *draft = app.config.clone();
+                        }
+                        set_settings_ui(&ui, &app.config);
+                    }
+                    Err(_) => record_action_result(
+                        &state,
+                        Err("The SPLINED application state is unavailable.".to_string()),
+                    ),
                 }
             }
         });
@@ -679,19 +957,127 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
     {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
-        ui.on_save_config(move |text| {
-            let result = (|| {
-                let mut app = state
-                    .lock()
-                    .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
-                if app.phase != RunPhase::Idle {
-                    return Err("Config v5 cannot be saved during an active run.".to_string());
-                }
-                let config = splined_core::settings::save_config_text(text.as_str())?;
-                app.replace_config(config)?;
-                app.push_log("Validated and saved Config v5.".to_string());
-                Ok(())
-            })();
+        let settings_draft = Arc::clone(&settings_draft);
+        ui.on_load_source_policy(move |source| {
+            let result = settings_draft
+                .lock()
+                .map_err(|_| "The structured Settings draft is unavailable.".to_string())
+                .map(|draft| draft.clone());
+            if let (Ok(draft), Some(ui)) = (result, weak.upgrade()) {
+                set_source_policy_ui(&ui, &draft, source.as_str());
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        let settings_draft = Arc::clone(&settings_draft);
+        ui.on_update_source_policy(move || {
+            let result = weak
+                .upgrade()
+                .ok_or_else(|| "The SPLINED Settings window is unavailable.".to_string())
+                .and_then(|ui| {
+                    let mut draft = settings_draft
+                        .lock()
+                        .map_err(|_| "The structured Settings draft is unavailable.".to_string())?;
+                    update_source_policy_from_ui(&ui, &mut draft)
+                });
+            if result.is_ok()
+                && let Ok(mut app) = state.lock()
+            {
+                app.service_status =
+                    "Source policy updated in the Settings draft. Save to apply.".to_string();
+            }
+            record_action_result(&state, result);
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        let settings_draft = Arc::clone(&settings_draft);
+        ui.on_save_settings(move || {
+            let result =
+                (|| {
+                    let ui = weak
+                        .upgrade()
+                        .ok_or_else(|| "The SPLINED Settings window is unavailable.".to_string())?;
+                    if state
+                        .lock()
+                        .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
+                        .phase
+                        != RunPhase::Idle
+                    {
+                        return Err("Config v5 cannot be saved during an active run.".to_string());
+                    }
+                    let mut config = settings_draft
+                        .lock()
+                        .map_err(|_| "The structured Settings draft is unavailable.".to_string())?
+                        .clone();
+                    apply_settings_ui(&ui, &mut config)?;
+                    let config = splined_core::settings::save_config(&config)?;
+                    let snapshot = media_snapshot(&config, false)?;
+                    let diagnostics = startup_diagnostics(&config, &snapshot);
+                    let mut replacement = ApplicationState::new(config.clone(), snapshot)?;
+                    replacement.push_log("Validated and atomically saved Config v5.".to_string());
+                    for diagnostic in diagnostics {
+                        replacement.push_log(diagnostic);
+                    }
+                    *state.lock().map_err(|_| {
+                        "The SPLINED application state is unavailable.".to_string()
+                    })? = replacement;
+                    *settings_draft.lock().map_err(|_| {
+                        "The structured Settings draft is unavailable.".to_string()
+                    })? = config.clone();
+                    set_settings_ui(&ui, &config);
+                    if let Ok(editor) = load_editor(&config, "Navidrome") {
+                        set_credential_ui(&ui, &editor);
+                    }
+                    Ok(())
+                })();
+            record_action_result(&state, result);
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        let settings_draft = Arc::clone(&settings_draft);
+        ui.on_save_setup(move || {
+            let result =
+                (|| {
+                    let ui = weak
+                        .upgrade()
+                        .ok_or_else(|| "The SPLINED Setup window is unavailable.".to_string())?;
+                    let mut config = Config::default();
+                    apply_settings_ui(&ui, &mut config)?;
+                    if config.scan.scan_library_dir.trim().is_empty() {
+                        config.scan.scan_library_dir = config.library.music_library.clone();
+                    }
+                    let config = splined_core::settings::save_config(&config)?;
+                    let snapshot = media_snapshot(&config, false)?;
+                    let diagnostics = startup_diagnostics(&config, &snapshot);
+                    let mut replacement = ApplicationState::new(config.clone(), snapshot)?;
+                    replacement.push_log("First-run Setup completed.".to_string());
+                    for diagnostic in diagnostics {
+                        replacement.push_log(diagnostic);
+                    }
+                    *state.lock().map_err(|_| {
+                        "The SPLINED application state is unavailable.".to_string()
+                    })? = replacement;
+                    *settings_draft.lock().map_err(|_| {
+                        "The structured Settings draft is unavailable.".to_string()
+                    })? = config.clone();
+                    ui.set_setup_required(false);
+                    ui.set_page_index(0);
+                    set_settings_ui(&ui, &config);
+                    splined_core::settings::save_ui_preferences(&UiPreferences::default())?;
+                    if let Ok(editor) = load_editor(&config, "Navidrome") {
+                        set_credential_ui(&ui, &editor);
+                    }
+                    Ok(())
+                })();
             record_action_result(&state, result);
             refresh_weak(&weak, &state);
         });
@@ -916,6 +1302,287 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
     }
 }
 
+fn set_settings_ui(ui: &AppWindow, config: &Config) {
+    ui.set_settings_music_library(config.library.music_library.clone().into());
+    ui.set_settings_scan_library(config.scan.scan_library_dir.clone().into());
+    ui.set_settings_database_dir(config.scan.cache_dir.clone().into());
+    ui.set_settings_temporary_cache_dir(config.scan.temporary_cache_dir.clone().into());
+    ui.set_settings_log_dir(config.scan.log_dir.clone().into());
+    ui.set_settings_credential_dir(config.credentials.credential_dir.clone().into());
+    ui.set_settings_ignored_subs(config.library.ignored_subs.join(", ").into());
+    ui.set_settings_mode(
+        match config.mode {
+            Mode::Read => "read",
+            Mode::Write => "write",
+        }
+        .into(),
+    );
+    ui.set_settings_verbosity(
+        match config.verbosity {
+            Verbosity::Error => "error",
+            Verbosity::Warn => "warn",
+            Verbosity::Info => "info",
+            Verbosity::Debug => "debug",
+            Verbosity::Trace => "trace",
+        }
+        .into(),
+    );
+    ui.set_settings_scan_mode(config.scan.scan_mode);
+    ui.set_settings_library_scan(config.scan.library_scan);
+    ui.set_settings_scan_timeout(config.scan.scan_mode_timeout.0.to_string().into());
+    ui.set_settings_sqlite_shared(config.scan.sqlite_shared);
+    ui.set_settings_sample_write(config.samples.sample_write);
+    ui.set_settings_file_formats(config.output.file_formats.join(", ").into());
+    ui.set_settings_file_name(config.output.file_name.clone().into());
+    ui.set_settings_preserve_file(config.output.preserve_file);
+    ui.set_settings_square(config.output.square);
+    ui.set_settings_square_mode(config.output.square_mode.clone().into());
+    ui.set_settings_square_round_to(config.output.square_round_to.to_string().into());
+    ui.set_settings_upscale_below_ideal(config.output.upscale_below_ideal);
+    ui.set_settings_upscale_max_percent(config.output.upscale_max_percent.to_string().into());
+    ui.set_settings_upscale_adaptive(config.output.upscale_adaptive_defaults);
+    ui.set_settings_upscale_picture(config.output.upscale_picture_percent.to_string().into());
+    ui.set_settings_upscale_sharpen(config.output.upscale_sharpen_percent.to_string().into());
+    ui.set_settings_upscale_softness(config.output.upscale_softness_percent.to_string().into());
+    ui.set_settings_upscale_contrast(config.output.upscale_contrast_percent.to_string().into());
+    ui.set_settings_upscale_exposure(config.output.upscale_exposure_percent.to_string().into());
+    ui.set_settings_upscale_brightness(config.output.upscale_brightness_percent.to_string().into());
+    ui.set_settings_upscale_gamma(config.output.upscale_gamma_percent.to_string().into());
+    ui.set_settings_upscale_color(config.output.upscale_color_temperature.to_string().into());
+    ui.set_settings_evaluate_final(config.output.evaluate_final_image);
+    ui.set_settings_range_min(config.range.min.to_string().into());
+    ui.set_settings_range_ideal(config.range.ideal.to_string().into());
+    ui.set_settings_range_max(config.range.max.to_string().into());
+    ui.set_settings_range_ladder(config.range.ladder.to_string().into());
+    ui.set_settings_source_order(config.sources.cover_sources.join(", ").into());
+    ui.set_settings_source_exclusions(config.sources.exclude_cover_sources.join(", ").into());
+    ui.set_settings_history_enabled(config.history.enabled);
+    ui.set_settings_history_retention(config.history.retention_days.to_string().into());
+    ui.set_settings_log_retention(config.logging.retention_days.to_string().into());
+    ui.set_settings_ai_enabled(config.aisplined.enabled);
+    ui.set_settings_ai_endpoint(config.aisplined.endpoint.clone().into());
+    ui.set_settings_ai_minimum(config.aisplined.minimum_short_side.to_string().into());
+    ui.set_settings_ai_allow_below(config.aisplined.allow_below_minimum_override);
+    let source = ui.get_settings_policy_source().to_string();
+    let source = if splined_core::config::SUPPORTED_SOURCE_POLICIES.contains(&source.as_str()) {
+        source
+    } else {
+        splined_core::config::SUPPORTED_SOURCE_POLICIES[0].to_string()
+    };
+    set_source_policy_ui(ui, config, &source);
+}
+
+fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
+    let source = source.trim().to_ascii_lowercase();
+    let policy = config
+        .source_policies
+        .get(&source)
+        .cloned()
+        .unwrap_or_else(|| SourcePolicyConfig {
+            enabled: config
+                .sources
+                .cover_sources
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(&source))
+                && !config
+                    .sources
+                    .exclude_cover_sources
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(&source)),
+            ..SourcePolicyConfig::default()
+        });
+    ui.set_settings_policy_source(source.into());
+    ui.set_settings_policy_enabled(policy.enabled);
+    ui.set_settings_policy_strict(policy.strict_override);
+    ui.set_settings_policy_override(policy.source_override);
+    ui.set_settings_policy_minimum_range(minimum_range_label(policy.minimum_range_type).into());
+    ui.set_settings_policy_fallback(policy.allow_below_minimum_fallback);
+    ui.set_settings_policy_minimum_short(optional_number(policy.minimum_short_side).into());
+    ui.set_settings_policy_maximum_short(optional_number(policy.maximum_short_side).into());
+    ui.set_settings_policy_minimum_width(optional_number(policy.minimum_width).into());
+    ui.set_settings_policy_minimum_height(optional_number(policy.minimum_height).into());
+    ui.set_settings_policy_primary_only(policy.primary_image_only);
+}
+
+fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
+    config.library.music_library = ui.get_settings_music_library().trim().to_string();
+    config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
+    config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
+    config.scan.temporary_cache_dir = ui.get_settings_temporary_cache_dir().trim().to_string();
+    config.scan.log_dir = ui.get_settings_log_dir().trim().to_string();
+    config.credentials.credential_dir = ui.get_settings_credential_dir().trim().to_string();
+    config.library.ignored_subs = split_values(ui.get_settings_ignored_subs().as_str());
+    config.mode = match ui.get_settings_mode().as_str() {
+        "write" => Mode::Write,
+        "read" => Mode::Read,
+        value => return Err(format!("Unsupported mode: {value}")),
+    };
+    config.verbosity = match ui.get_settings_verbosity().as_str() {
+        "error" => Verbosity::Error,
+        "warn" => Verbosity::Warn,
+        "info" => Verbosity::Info,
+        "debug" => Verbosity::Debug,
+        "trace" => Verbosity::Trace,
+        value => return Err(format!("Unsupported verbosity: {value}")),
+    };
+    config.scan.scan_mode = ui.get_settings_scan_mode();
+    config.scan.library_scan = ui.get_settings_library_scan();
+    config.scan.scan_mode_timeout.0 =
+        parse_setting(&ui.get_settings_scan_timeout(), "Scan timeout")?;
+    config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
+    config.samples.sample_write = ui.get_settings_sample_write();
+    config.output.file_formats = split_values(ui.get_settings_file_formats().as_str());
+    config.output.file_name = ui.get_settings_file_name().trim().to_string();
+    config.output.preserve_file = ui.get_settings_preserve_file();
+    config.output.square = ui.get_settings_square();
+    config.output.square_mode = ui.get_settings_square_mode().trim().to_string();
+    config.output.square_round_to =
+        parse_setting(&ui.get_settings_square_round_to(), "Square round-to")?;
+    config.output.upscale_below_ideal = ui.get_settings_upscale_below_ideal();
+    config.output.upscale_max_percent = parse_setting(
+        &ui.get_settings_upscale_max_percent(),
+        "Maximum upscale percent",
+    )?;
+    config.output.upscale_adaptive_defaults = ui.get_settings_upscale_adaptive();
+    config.output.upscale_picture_percent =
+        parse_setting(&ui.get_settings_upscale_picture(), "Picture adjustment")?;
+    config.output.upscale_sharpen_percent =
+        parse_setting(&ui.get_settings_upscale_sharpen(), "Sharpen adjustment")?;
+    config.output.upscale_softness_percent =
+        parse_setting(&ui.get_settings_upscale_softness(), "Softness adjustment")?;
+    config.output.upscale_contrast_percent =
+        parse_setting(&ui.get_settings_upscale_contrast(), "Contrast adjustment")?;
+    config.output.upscale_exposure_percent =
+        parse_setting(&ui.get_settings_upscale_exposure(), "Exposure adjustment")?;
+    config.output.upscale_brightness_percent = parse_setting(
+        &ui.get_settings_upscale_brightness(),
+        "Brightness adjustment",
+    )?;
+    config.output.upscale_gamma_percent =
+        parse_setting(&ui.get_settings_upscale_gamma(), "Gamma adjustment")?;
+    config.output.upscale_color_temperature =
+        parse_setting(&ui.get_settings_upscale_color(), "Color temperature")?;
+    config.output.evaluate_final_image = ui.get_settings_evaluate_final();
+    config.range.min = parse_setting(&ui.get_settings_range_min(), "Range minimum")?;
+    config.range.ideal = parse_setting(&ui.get_settings_range_ideal(), "Range ideal")?;
+    config.range.max = parse_setting(&ui.get_settings_range_max(), "Range maximum")?;
+    config.range.ladder = parse_setting(&ui.get_settings_range_ladder(), "Range ladder")?;
+    config.sources.cover_sources = split_values(ui.get_settings_source_order().as_str());
+    config.sources.exclude_cover_sources =
+        split_values(ui.get_settings_source_exclusions().as_str());
+    config.history.enabled = ui.get_settings_history_enabled();
+    config.history.retention_days =
+        parse_setting(&ui.get_settings_history_retention(), "History retention")?;
+    config.logging.retention_days =
+        parse_setting(&ui.get_settings_log_retention(), "Log retention")?;
+    config.aisplined.enabled = ui.get_settings_ai_enabled();
+    config.aisplined.endpoint = ui.get_settings_ai_endpoint().trim().to_string();
+    config.aisplined.minimum_short_side = parse_setting(
+        &ui.get_settings_ai_minimum(),
+        "AISPLINED minimum short side",
+    )?;
+    config.aisplined.allow_below_minimum_override = ui.get_settings_ai_allow_below();
+    update_source_policy_from_ui(ui, config)?;
+    Ok(())
+}
+
+fn update_source_policy_from_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
+    let source = ui.get_settings_policy_source().trim().to_ascii_lowercase();
+    if !splined_core::config::SUPPORTED_SOURCE_POLICIES.contains(&source.as_str()) {
+        return Err(format!("Unsupported source policy provider: {source}"));
+    }
+    let policy = SourcePolicyConfig {
+        enabled: ui.get_settings_policy_enabled(),
+        strict_override: ui.get_settings_policy_strict(),
+        source_override: ui.get_settings_policy_override(),
+        minimum_range_type: parse_minimum_range(ui.get_settings_policy_minimum_range().as_str())?,
+        allow_below_minimum_fallback: ui.get_settings_policy_fallback(),
+        minimum_short_side: parse_optional_setting(
+            &ui.get_settings_policy_minimum_short(),
+            "Minimum short side",
+        )?,
+        maximum_short_side: parse_optional_setting(
+            &ui.get_settings_policy_maximum_short(),
+            "Maximum short side",
+        )?,
+        minimum_width: parse_optional_setting(
+            &ui.get_settings_policy_minimum_width(),
+            "Minimum width",
+        )?,
+        minimum_height: parse_optional_setting(
+            &ui.get_settings_policy_minimum_height(),
+            "Minimum height",
+        )?,
+        primary_image_only: ui.get_settings_policy_primary_only(),
+    };
+    policy.validate()?;
+    config.source_policies.insert(source, policy);
+    Ok(())
+}
+
+fn split_values(value: &str) -> Vec<String> {
+    value
+        .split([',', '\n', '\r'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_setting<T>(value: &SharedString, label: &str) -> Result<T, String>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    value
+        .trim()
+        .parse::<T>()
+        .map_err(|error| format!("Invalid {label}: {error}"))
+}
+
+fn parse_optional_setting<T>(value: &SharedString, label: &str) -> Result<Option<T>, String>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        value
+            .parse::<T>()
+            .map(Some)
+            .map_err(|error| format!("Invalid {label}: {error}"))
+    }
+}
+
+fn parse_minimum_range(value: &str) -> Result<MinimumRangeType, String> {
+    match value.trim() {
+        "BelowMinimum" => Ok(MinimumRangeType::BelowMinimum),
+        "LowerRange" => Ok(MinimumRangeType::LowerRange),
+        "Ideal" => Ok(MinimumRangeType::Ideal),
+        "UpperRange" => Ok(MinimumRangeType::UpperRange),
+        "Ladder" => Ok(MinimumRangeType::Ladder),
+        "AboveLadder" => Ok(MinimumRangeType::AboveLadder),
+        value => Err(format!("Unsupported minimum range type: {value}")),
+    }
+}
+
+fn minimum_range_label(value: MinimumRangeType) -> &'static str {
+    match value {
+        MinimumRangeType::BelowMinimum => "BelowMinimum",
+        MinimumRangeType::LowerRange => "LowerRange",
+        MinimumRangeType::Ideal => "Ideal",
+        MinimumRangeType::UpperRange => "UpperRange",
+        MinimumRangeType::Ladder => "Ladder",
+        MinimumRangeType::AboveLadder => "AboveLadder",
+    }
+}
+
+fn optional_number(value: Option<u32>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
+}
+
 fn credential_from_fields(
     provider: SharedString,
     server: SharedString,
@@ -952,13 +1619,13 @@ fn initialize_service_ui(ui: &AppWindow, state: &Arc<Mutex<ApplicationState>>) {
         env!("SPLINED_BUILD_COMMIT")
     )));
     ui.set_packaged_build(splined_core::portable::is_packaged_process().unwrap_or(false));
-    if let Ok(text) = splined_core::settings::config_text() {
-        ui.set_config_text_value(SharedString::from(text));
-    }
-    if let Ok(app) = state.lock()
-        && let Ok(editor) = load_editor(&app.config, "Navidrome")
-    {
-        set_credential_ui(ui, &editor);
+    if let Ok(app) = state.lock() {
+        set_settings_ui(ui, &app.config);
+        if !ui.get_setup_required()
+            && let Ok(editor) = load_editor(&app.config, "Navidrome")
+        {
+            set_credential_ui(ui, &editor);
+        }
     }
 }
 
@@ -1301,6 +1968,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_current_album(SharedString::from(state.current_album.clone()));
     ui.set_current_path(SharedString::from(state.current_album_path.clone()));
     ui.set_current_status(SharedString::from(match state.phase {
+        RunPhase::Idle if ui.get_setup_required() => "Setup required",
         RunPhase::Idle => "Ready",
         RunPhase::Running => "Processing",
         RunPhase::AwaitingCandidate => "Awaiting artwork decision",
@@ -1312,7 +1980,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         state.last_error.clone().unwrap_or_default(),
     ));
     ui.set_service_status(SharedString::from(state.service_status.clone()));
-    ui.set_can_launch(state.can_launch());
+    ui.set_can_launch(!ui.get_setup_required() && state.can_launch());
     ui.set_running(state.phase != RunPhase::Idle);
     ui.set_live_write(state.launch_mode == LaunchMode::LiveWrite);
     ui.set_awaiting_candidate(state.phase == RunPhase::AwaitingCandidate);

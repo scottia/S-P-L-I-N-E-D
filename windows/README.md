@@ -39,14 +39,20 @@ SPLINED\
   README-WINDOWS.txt
 ```
 
-On first portable launch SPLINED creates its application-owned directories next
-to the executable: `data`, `_cache`, `_logs`, `credentials`, and
-`docker_builds`. A packaged MSIX launch instead stores mutable state under the
-current package family's `LocalState\SPLINED` directory. The executable and
-read-only package assets remain separate from writable state.
+Portable startup discovers `data\config.toml` and `data\ui.toml` beside the
+executable. A packaged MSIX launch discovers them beneath the current package
+family's `LocalState\SPLINED\data` directory. Discovery is read-only: a clean
+launch creates no `data`, database, cache, log, credential, or obsolete
+bootstrap directories. Missing, invalid, or operationally incomplete Config v5
+opens structured Setup. Only explicit validated **Save and Continue** creates
+the configured application-owned directories and writes Config v5 atomically.
+The executable and read-only package assets remain separate from writable
+state.
 
-Config v5 remains authoritative. `data\config.toml`, `data\ui.toml`, provider
-credential JSON files, and `splined.db` keep their established responsibilities.
+Config v5 remains authoritative. Structured Slint Settings maps directly onto
+the Rust Config model; it does not use raw TOML or a separate settings
+authority. `data\config.toml`, `data\ui.toml`, provider credential JSON files,
+and `<scan.cache_dir>\splined.db` keep their established responsibilities.
 Credentials are not written into Config v5, SQLite, logs, or backups unless the
 operator explicitly selects credentials for a protected `.spl` export.
 

@@ -21,21 +21,21 @@ validated document at `<portable root>/data/config.toml` and interface state at
 `<portable root>/data/ui.toml`. There is no Registry authority for either file.
 Moving the complete Windows folder carries both; deleting it removes them.
 
-If both files are absent, a compatible Windows build performs a one-time copy
-from the former per-path HKCU `ConfigV5` and `UiV4` values. It records completed
-migration but does not delete those legacy values. After migration, only the
-portable files are authoritative and missing files are not reconstructed from
-the Registry.
+Packaged Windows stores the same files beneath
+`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data`. No Registry
+value or migration marker is an active configuration authority. If Config v5
+is missing or cannot be loaded, structured Setup opens; SPLINED does not
+substitute `Config::default()` and present an initialized workspace.
 
-On first Windows launch the library, SQL database, temporary run cache, log, and credential directories are
-mandatory choices. SPLINED creates only the selected database, run-cache, log, and credential
-directories after **Save and Continue**. The ZIP does not precreate `data`,
-`_cache`, `_logs`, `credentials`, or `docker_builds`.
-Database, run-cache, log, and credential fields initially point beneath
-`%LOCALAPPDATA%\SPLINED`, not machine-wide `%PROGRAMDATA%`, and remain editable.
-Existing saved and UNC paths are not migrated automatically.
+On first Windows launch the library, SQL database, temporary run cache, log,
+and credential directories are mandatory choices. SPLINED creates only the
+selected database, run-cache, log, and credential directories after explicit,
+validated **Save and Continue**. The ZIP and an ordinary pre-save launch do not
+precreate `data`, `_cache`, `_logs`, `credentials`, or `docker_builds`. Existing
+saved absolute, mapped-drive, and UNC paths are preserved unchanged.
 
-Relative runtime paths are resolved from the SPLINED application directory.
+Relative Windows runtime paths are resolved from the active portable or
+packaged state root.
 External, NAS, mapped-drive, and UNC paths remain absolute. Docker paths are
 normally absolute container paths supplied by bind mounts.
 
@@ -67,11 +67,9 @@ normally absolute container paths supplied by bind mounts.
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; Python owns shared inventory, while rollback journaling and a 30-second busy timeout protect shared writes |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 
-The `_cache` and `_logs` values above are file-backed native defaults. Windows
-first-run defaults are `%LOCALAPPDATA%\SPLINED\cache`,
-`%LOCALAPPDATA%\SPLINED\run-cache`, and
-`%LOCALAPPDATA%\SPLINED\logs`; the saved Config v5 values are whatever the user
-accepts or selects in Settings.
+The `_cache` and `_logs` values above are schema defaults used to describe a
+new Rust Config model. Windows first-run Setup leaves required path choices
+unset and creates nothing until the user explicitly saves valid choices.
 
 ### SQLite and temporary run cache
 
@@ -281,9 +279,10 @@ This is the only normal credential setting. Standard provider JSON filenames
 are resolved internally. API keys, OAuth tokens, shared secrets, and provider
 filenames do not belong in `config.toml`.
 
-`credentials` is the file-backed native default. Windows first run proposes
-`%LOCALAPPDATA%\SPLINED\credentials`; the user may select another local or UNC
-directory before saving.
+`credentials` is the file-backed schema default. Windows first-run Setup leaves
+the required credential location unset; the user may select a local or UNC
+directory before saving. Relative values resolve from the portable or packaged
+state root.
 
 ### MusicBrainz runtime options
 
@@ -416,21 +415,20 @@ Legacy `[splineai]` remains a compatibility concern for existing installations;
 ## Windows portable interface settings
 
 Windows interface state is stored in `data/ui.toml` beside the portable Config
-v5 record. It includes theme, window placement, library/workspace mode,
-filters, splitter positions, collapsible replacement-shell cards, Selected
-Artwork visibility/zoom, the five selected primary adjustments and their
-order, tri-state candidate categories, hover behavior, and current selections.
-It does not change provider policy, credentials, the media database, or
-artwork-writing rules. Moving the portable directory between displays retains
-that state while the replacement shell recalculates card density and horizontal
-strip extents from the current client size and DPI.
+v5 record. It contains window dimensions and non-authoritative interface
+preferences such as the library view, status filter, and bypass visibility. It
+does not change provider policy, credentials, the media database, or
+artwork-writing rules. Config v5 remains the only application-configuration
+authority.
 
 ## Validation
 
-Windows Settings validates `data/config.toml` before saving. The validated
-configuration is consumed directly by the Rust backend in the same application
-process. Native and Python/container implementations also validate Config v5;
-use the container example for container-specific paths.
+Windows structured Settings projects controls into the Rust Config model,
+validates the complete model, atomically replaces `data/config.toml`, and
+reloads application state. Config v5 remains the sole configuration authority;
+Slint does not keep a parallel settings document. Native and Python/container
+implementations also validate Config v5; use the container example for
+container-specific paths.
 
 The Windows portable release contains one `splined.exe`. A user-approved
 production update uses the signed standard update package. Application updates

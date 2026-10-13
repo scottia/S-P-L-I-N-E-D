@@ -50,7 +50,7 @@ fn windows_desktop_is_one_cargo_built_rust_slint_executable() {
     assert!(main.contains("ApplicationState"));
     assert!(main.contains("ScanController"));
     assert!(main.contains("config_migration::migrate_config_if_needed"));
-    assert!(main.contains("portable::migrate_legacy_settings_if_needed"));
+    assert!(!main.contains("migrate_legacy_settings_if_needed"));
     assert!(main.contains("restore_request_from_args"));
     assert!(!library.contains("pub mod ffi"));
     assert!(!manifest.to_ascii_lowercase().contains("tauri"));
@@ -143,6 +143,19 @@ fn portable_and_packaged_state_authorities_are_distinct() {
     assert!(portable.contains("pub fn is_packaged_process"));
     assert!(main.contains("package_identity_smoke"));
     assert!(main.contains("package-identity-smoke.ok"));
+    for retired in [
+        "WindowsV4",
+        "ConfigV5",
+        "UiV4",
+        "PortableFilesMigrated",
+        "bootstrap_portable_install",
+        "docker_builds",
+    ] {
+        assert!(
+            !portable.contains(retired),
+            "portable startup retained retired behavior: {retired}"
+        );
+    }
 }
 
 #[test]

@@ -2952,6 +2952,68 @@ mod tests {
     }
 
     #[test]
+    fn saved_config_is_rediscovered_and_loads_the_complete_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        for (artist, albums) in [
+            ("Artist One", ["First Album", "Second Album"].as_slice()),
+            ("Artist Two", ["Only Album"].as_slice()),
+        ] {
+            for album in albums {
+                let folder = library.join(artist).join(album);
+                fs::create_dir_all(&folder).unwrap();
+                File::create(folder.join("01.mp3")).unwrap();
+            }
+        }
+
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.scan_library_dir = config.library.music_library.clone();
+        config.scan.cache_dir = temp.path().join("database").to_string_lossy().into_owned();
+        config.scan.temporary_cache_dir =
+            temp.path().join("temporary").to_string_lossy().into_owned();
+        config.scan.log_dir = temp.path().join("logs").to_string_lossy().into_owned();
+        config.credentials.credential_dir = temp
+            .path()
+            .join("credentials")
+            .to_string_lossy()
+            .into_owned();
+
+        crate::settings::save_config_at_root(&config, temp.path()).unwrap();
+        let rediscovered = crate::config::load_config_at_root(temp.path()).unwrap();
+        assert_eq!(
+            rediscovered.library.music_library,
+            config.library.music_library
+        );
+        assert_eq!(rediscovered.scan.cache_dir, config.scan.cache_dir);
+
+        let snapshot = media_snapshot(&rediscovered, false).unwrap();
+        assert_eq!(
+            snapshot.database_path,
+            database_path(&config.scan.cache_dir).to_string_lossy()
+        );
+        assert_eq!(snapshot.albums.len(), 3);
+        assert_eq!(
+            snapshot
+                .albums
+                .iter()
+                .map(|album| album.artist.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+        assert_eq!(
+            snapshot
+                .albums
+                .iter()
+                .map(|album| album.path.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
     fn snapshot_projects_cached_compilation_tracks_and_embedded_artwork_state() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
