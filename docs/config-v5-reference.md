@@ -224,6 +224,11 @@ matching uses exact Release MBID first and otherwise one unique normalized
 Artist + Album identity. Its downloaded-artwork reference is an in-memory,
 secret-free session URI rather than an authenticated server URL.
 
+The credential selects exactly one OpenSubsonic authentication method:
+`api_key` (preferred; create it in Navidrome **Settings > Players & API keys**)
+or `password` (username plus a fresh salted token challenge per request).
+Native Navidrome Web-API bearer tokens are not used for `/rest/*` access.
+
 ## `[source_policies.<provider>]`
 
 | Key | Default | Meaning |

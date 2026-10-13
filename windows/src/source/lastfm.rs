@@ -424,7 +424,7 @@ fn api_signature(params: &[(&str, &str)], shared_secret: &str) -> String {
     md5_hex(material.as_bytes())
 }
 
-fn md5_hex(input: &[u8]) -> String {
+pub(crate) fn md5_hex(input: &[u8]) -> String {
     const S: [u32; 64] = [
         7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5,
         9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10,

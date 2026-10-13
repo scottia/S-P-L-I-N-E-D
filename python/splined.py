@@ -3324,15 +3324,40 @@ def authentication_statuses(
         if musicbrainz and str(musicbrainz.get("access_token") or "").strip()
         else "Anonymous"
     )
+    navidrome_auth_method = (
+        str(navidrome.get("auth_method") or "").strip().casefold()
+        if navidrome
+        else ""
+    )
+    navidrome_api_key = bool(
+        navidrome
+        and str(navidrome.get("api_key") or "").strip()
+        and (
+            navidrome_auth_method == "api_key"
+            or (
+                navidrome_auth_method != "password"
+                and not (
+                    str(navidrome.get("username") or "").strip()
+                    and str(navidrome.get("password") or "")
+                )
+            )
+        )
+    )
+    navidrome_password = bool(
+        navidrome
+        and str(navidrome.get("username") or "").strip()
+        and str(navidrome.get("password") or "")
+        and not navidrome_api_key
+    )
     navidrome_complete = bool(
         navidrome
         and str(navidrome.get("server_url") or "").strip()
-        and str(navidrome.get("bearer_token") or "").strip()
+        and (navidrome_api_key or navidrome_password)
     )
     navidrome_mode = (
-        "OpenSubsonic API Key / Bearer"
-        if navidrome_complete and str(navidrome.get("api_key") or "").strip()
-        else "OpenSubsonic / Bearer"
+        "OpenSubsonic API Key"
+        if navidrome_complete and navidrome_api_key
+        else "OpenSubsonic Username / Password"
         if navidrome_complete
         else "Not Configured"
     )
@@ -3410,14 +3435,15 @@ def load_navidrome_credentials(
 ) -> dict[str, str]:
     """Load the cross-runtime Navidrome credential contract.
 
-    The Bearer token is intentionally required even when an OpenSubsonic API
-    key or password is present.  It is kept in the credential file only and is
-    never copied into Config v5, candidate URLs, SQLite, or diagnostics.
+    Username/password and API-key authentication are mutually exclusive.
+    Legacy bearer_token values are retained when an existing JSON document is
+    read, but native Navidrome JWTs are not sent to OpenSubsonic endpoints.
     """
     path = credential_file(config_file, cfg, "navidrome")
     raw = load_json(path, "Navidrome")
     credential = {
         "server_url": str(raw.get("server_url") or "").strip().rstrip("/"),
+        "auth_method": str(raw.get("auth_method") or "").strip().casefold(),
         "username": str(raw.get("username") or "").strip(),
         "password": str(raw.get("password") or ""),
         "api_key": str(raw.get("api_key") or "").strip(),
@@ -3428,8 +3454,22 @@ def load_navidrome_credentials(
         raise SplinedError(
             "Navidrome server_url must be an absolute HTTP or HTTPS URL."
         )
-    if not credential["bearer_token"]:
-        raise SplinedError("Navidrome bearer_token is required by SPLINED.")
+    use_api_key = credential["auth_method"] == "api_key" or (
+        credential["auth_method"] != "password"
+        and bool(credential["api_key"])
+        and not (credential["username"] and credential["password"])
+    )
+    credential["auth_method"] = "api_key" if use_api_key else "password"
+    if use_api_key and not credential["api_key"]:
+        raise SplinedError(
+            "Navidrome api_key is required for the selected authentication method."
+        )
+    if not use_api_key and not (
+        credential["username"] and credential["password"]
+    ):
+        raise SplinedError(
+            "Navidrome username and password are required, or select API key authentication."
+        )
     return credential
 
 
@@ -3444,16 +3484,25 @@ def configure_navidrome_credentials(config_file: Path, cfg: dict[str, Any]) -> i
         print("Navidrome credential update cancelled.")
         return 0
     server_url = input("Navidrome server URL: ").strip().rstrip("/")
-    username = input("Username / account (optional with API key): ").strip()
-    password = getpass.getpass("Compatible API password (optional): ")
-    api_key = getpass.getpass("OpenSubsonic API key (optional): ").strip()
-    bearer_token = getpass.getpass("Bearer Token (required): ").strip()
+    auth_method = input(
+        "Authentication method [password/api_key] (default password): "
+    ).strip().casefold() or "password"
+    if auth_method not in {"password", "api_key"}:
+        raise SplinedError("Choose either password or api_key authentication.")
+    username = ""
+    password = ""
+    api_key = ""
+    if auth_method == "api_key":
+        api_key = getpass.getpass("OpenSubsonic API key: ").strip()
+    else:
+        username = input("Username / account: ").strip()
+        password = getpass.getpass("Password: ")
     candidate = {
         "server_url": server_url,
+        "auth_method": auth_method,
         "username": username,
         "password": password,
         "api_key": api_key,
-        "bearer_token": bearer_token,
     }
     # Validate before the atomic write without ever placing secrets in errors.
     parsed = urlsplit(server_url)
@@ -3461,8 +3510,10 @@ def configure_navidrome_credentials(config_file: Path, cfg: dict[str, Any]) -> i
         raise SplinedError(
             "Navidrome server URL must be an absolute HTTP or HTTPS URL."
         )
-    if not bearer_token:
-        raise SplinedError("Navidrome Bearer Token cannot be empty.")
+    if auth_method == "api_key" and not api_key:
+        raise SplinedError("Navidrome API key cannot be empty.")
+    if auth_method == "password" and not (username and password):
+        raise SplinedError("Navidrome username and password cannot be empty.")
     save_json_atomic(path, candidate)
     credential_created_notice(path)
     return 0
@@ -4683,10 +4734,10 @@ def _navidrome_auth(
         "c": NAVIDROME_CLIENT_NAME,
         "f": "json",
     }
-    if credential["api_key"]:
+    if credential.get("auth_method") == "api_key":
         # OpenSubsonic API-key authentication must not also send `u`.
         params["apiKey"] = credential["api_key"]
-    elif credential["password"]:
+    else:
         salt = secrets.token_hex(6)
         # MD5 is required by the compatible Subsonic challenge protocol; it is
         # not used as a password-storage primitive.
@@ -4700,13 +4751,9 @@ def _navidrome_auth(
                 ).hexdigest(),
             }
         )
-    else:
-        # Bearer-only authentication remains in the request header. Never put the
-        # bearer token in a URL/query where proxies or diagnostics may retain it.
-        pass
-    return params, {
-        "X-ND-Authorization": "Bearer " + credential["bearer_token"]
-    }
+    # X-ND-Authorization belongs to Navidrome's separate native Web API.
+    # OpenSubsonic /rest requests use exactly one mechanism above.
+    return params, {}
 
 
 def _navidrome_get(

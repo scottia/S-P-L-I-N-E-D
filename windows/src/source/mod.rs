@@ -74,7 +74,14 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn from_source_order(source_order: &[String]) -> Result<Self, String> {
-        Self::from_source_order_with_credentials(source_order, "", "", "", "", Duration::from_secs(20))
+        Self::from_source_order_with_credentials(
+            source_order,
+            "",
+            "",
+            "",
+            "",
+            Duration::from_secs(20),
+        )
     }
 
     pub fn from_source_order_with_credentials(

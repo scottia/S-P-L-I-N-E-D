@@ -6,6 +6,170 @@ using System.Windows.Forms;
 
 namespace Splined.WindowsGui
 {
+    internal sealed class LibraryEntityListItem
+    {
+        public string Title = "";
+        public string Subtitle = "";
+        public string ImagePath = "";
+        public string ArtistScope = "";
+        public object Entity;
+        public bool Current;
+
+        public override string ToString()
+        {
+            return Title;
+        }
+    }
+
+    /// <summary>
+    /// Owner-drawn library navigation. A ListBox owns one native window handle
+    /// regardless of library size; the previous implementation created a panel,
+    /// PictureBox and two Labels for every album and exhausted the Windows USER
+    /// handle quota on real libraries.
+    /// </summary>
+    internal sealed class GraphicalLibraryListBox : ListBox
+    {
+        public System.Func<string, Image> ThumbnailLoader { get; set; }
+        public event EventHandler ViewportChanged;
+
+        public GraphicalLibraryListBox()
+        {
+            DrawMode = DrawMode.OwnerDrawFixed;
+            ItemHeight = 62;
+            IntegralHeight = false;
+            BorderStyle = BorderStyle.None;
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer, true);
+            Cursor = Cursors.Hand;
+        }
+
+        protected override void OnDrawItem(DrawItemEventArgs e)
+        {
+            ThemePalette palette = ThemeManager.CurrentPalette;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            // DrawItem is raised once per visible row. Clearing the full native
+            // ListBox surface here erased every row painted before the current
+            // one, which made populated libraries look blank in both the live
+            // shell and screenshot QA. Only clear this row's bounds.
+            using (SolidBrush rowBackground = new SolidBrush(palette.SurfacePrimary))
+                e.Graphics.FillRectangle(rowBackground, e.Bounds);
+            if (e.Index < 0 || e.Index >= Items.Count) return;
+
+            LibraryEntityListItem item = Items[e.Index] as LibraryEntityListItem;
+            if (item == null) return;
+            bool selected = (e.State & DrawItemState.Selected) != 0 || item.Current;
+            Rectangle card = new Rectangle(e.Bounds.Left + 1, e.Bounds.Top + 2,
+                Math.Max(1, e.Bounds.Width - 4), Math.Max(1, e.Bounds.Height - 4));
+            using (GraphicsPath path = NeonCardPanel.Rounded(card, 8))
+            {
+                if (selected)
+                {
+                    using (LinearGradientBrush fill = new LinearGradientBrush(card,
+                        Color.FromArgb(42, 36, 52, 146),
+                        Color.FromArgb(52, 13, 126, 166),
+                        LinearGradientMode.Horizontal))
+                        e.Graphics.FillPath(fill, path);
+                    using (Pen glow = new Pen(Color.FromArgb(230, 81, 98, 255), 1.8f))
+                        e.Graphics.DrawPath(glow, path);
+                }
+                else
+                {
+                    using (SolidBrush fill = new SolidBrush(palette.NestedCardSurface))
+                        e.Graphics.FillPath(fill, path);
+                    using (Pen border = new Pen(palette.BorderSubtle, 1f))
+                        e.Graphics.DrawPath(border, path);
+                }
+            }
+
+            Rectangle artwork = new Rectangle(card.Left + 7, card.Top + 7, 44, 44);
+            Image thumbnail = null;
+            try
+            {
+                if (!String.IsNullOrWhiteSpace(item.ImagePath) && ThumbnailLoader != null)
+                    thumbnail = ThumbnailLoader(item.ImagePath);
+                if (thumbnail != null)
+                {
+                    e.Graphics.DrawImage(thumbnail, FitImage(thumbnail, artwork));
+                }
+                else
+                {
+                    using (LinearGradientBrush placeholder = new LinearGradientBrush(artwork,
+                        Color.FromArgb(62, 74, 74, 225),
+                        Color.FromArgb(76, 238, 49, 167),
+                        LinearGradientMode.ForwardDiagonal))
+                        e.Graphics.FillEllipse(placeholder, artwork);
+                    string initial = String.IsNullOrWhiteSpace(item.Title)
+                        ? "♪" : item.Title.Substring(0, 1).ToUpperInvariant();
+                    using (Font placeholderFont = ThemeManager.UiFont(
+                        ThemeFontRole.Control, FontStyle.Bold))
+                        TextRenderer.DrawText(e.Graphics, initial, placeholderFont,
+                            artwork, Color.White, TextFormatFlags.HorizontalCenter
+                                | TextFormatFlags.VerticalCenter);
+                }
+            }
+            finally
+            {
+                if (thumbnail != null) thumbnail.Dispose();
+            }
+
+            Rectangle title = new Rectangle(artwork.Right + 10, card.Top + 7,
+                Math.Max(1, card.Right - artwork.Right - 18), 22);
+            Rectangle subtitle = new Rectangle(title.Left, card.Top + 30, title.Width, 19);
+            TextRenderer.DrawText(e.Graphics, item.Title ?? "", Font, title,
+                palette.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                    | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            using (Font subtitleFont = ThemeManager.UiFont(ThemeFontRole.Minor))
+                TextRenderer.DrawText(e.Graphics, item.Subtitle ?? "", subtitleFont,
+                    subtitle, palette.TextSecondary, TextFormatFlags.Left
+                        | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis
+                        | TextFormatFlags.NoPrefix);
+            if ((e.State & DrawItemState.Focus) != 0)
+                ControlPaint.DrawFocusRectangle(e.Graphics, card, palette.TextPrimary,
+                    selected ? Color.FromArgb(35, 39, 102) : palette.SurfacePrimary);
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            OnViewportChanged();
+        }
+
+        protected override void OnSelectedIndexChanged(EventArgs e)
+        {
+            base.OnSelectedIndexChanged(e);
+            OnViewportChanged();
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            const int WmVScroll = 0x0115;
+            base.WndProc(ref message);
+            if (message.Msg == WmVScroll) OnViewportChanged();
+        }
+
+        public void RefreshItem(LibraryEntityListItem item)
+        {
+            int index = Items.IndexOf(item);
+            if (index >= 0) Invalidate(GetItemRectangle(index));
+        }
+
+        private void OnViewportChanged()
+        {
+            EventHandler handler = ViewportChanged;
+            if (handler != null) handler(this, EventArgs.Empty);
+        }
+
+        private static Rectangle FitImage(Image image, Rectangle bounds)
+        {
+            double scale = Math.Min(bounds.Width / (double)image.Width,
+                bounds.Height / (double)image.Height);
+            int width = Math.Max(1, (int)Math.Round(image.Width * scale));
+            int height = Math.Max(1, (int)Math.Round(image.Height * scale));
+            return new Rectangle(bounds.Left + (bounds.Width - width) / 2,
+                bounds.Top + (bounds.Height - height) / 2, width, height);
+        }
+    }
+
     internal sealed class NeonCardPanel : Panel
     {
         public bool SpectrumBorder { get; set; }
@@ -32,11 +196,43 @@ namespace Splined.WindowsGui
         {
             ThemePalette palette = ThemeManager.CurrentPalette;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
             RectangleF bounds = new RectangleF(0.5f, 0.5f,
                 Math.Max(1, Width - 1f), Math.Max(1, Height - 1f));
             using (GraphicsPath path = Rounded(bounds, Radius))
-            using (SolidBrush background = new SolidBrush(palette.SurfacePrimary))
-                e.Graphics.FillPath(background, path);
+            {
+                Color top = Selected
+                    ? ThemeManager.Blend(palette.AccentPrimary,
+                        palette.NestedCardSurface, palette.Dark ? 0.82f : 0.93f)
+                    : palette.NestedCardSurface;
+                Color bottom = Selected
+                    ? ThemeManager.Blend(palette.StatusPurple,
+                        palette.SurfacePrimary, palette.Dark ? 0.91f : 0.97f)
+                    : ThemeManager.Blend(palette.SurfacePrimary,
+                        palette.WindowBackground, palette.Dark ? 0.16f : 0.03f);
+                using (LinearGradientBrush background = new LinearGradientBrush(
+                    Rectangle.Round(bounds), top, bottom,
+                    LinearGradientMode.Vertical))
+                    e.Graphics.FillPath(background, path);
+                RectangleF highlightBounds = new RectangleF(bounds.Left + 2f,
+                    bounds.Top + 2f, Math.Max(1f, bounds.Width - 4f),
+                    Math.Max(1f, bounds.Height * 0.24f));
+                using (GraphicsPath highlightPath = Rounded(highlightBounds,
+                    Math.Max(2, Radius - 2)))
+                using (LinearGradientBrush highlight = new LinearGradientBrush(
+                    Rectangle.Round(highlightBounds), Color.FromArgb(
+                        Selected ? 35 : 20, Color.White),
+                    Color.FromArgb(0, Color.White), LinearGradientMode.Vertical))
+                    e.Graphics.FillPath(highlight, highlightPath);
+            }
+
+            if (Selected)
+            {
+                using (GraphicsPath glowPath = Rounded(new RectangleF(2f, 2f,
+                    Math.Max(1, Width - 4f), Math.Max(1, Height - 4f)), Radius))
+                using (Pen glow = new Pen(Color.FromArgb(80, palette.BorderFocus), 3f))
+                    e.Graphics.DrawPath(glow, glowPath);
+            }
 
             if (SpectrumBorder)
             {
@@ -72,6 +268,48 @@ namespace Splined.WindowsGui
             path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
             path.CloseFigure();
             return path;
+        }
+    }
+
+    internal sealed class NeonBadgeLabel : Label
+    {
+        public Color BadgeColor { get; set; }
+
+        public NeonBadgeLabel()
+        {
+            AutoSize = true;
+            BadgeColor = Color.Empty;
+            Padding = new Padding(8, 3, 8, 3);
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw
+                | ControlStyles.SupportsTransparentBackColor, true);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            ThemePalette palette = ThemeManager.CurrentPalette;
+            Color accent = BadgeColor.IsEmpty ? palette.BorderFocus : BadgeColor;
+            Rectangle bounds = new Rectangle(0, 0, Math.Max(1, Width - 1),
+                Math.Max(1, Height - 1));
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath path = ThemeManager.RoundedPath(bounds,
+                Math.Max(4, Math.Min(8, Height / 2))))
+            using (SolidBrush fill = new SolidBrush(ThemeManager.Blend(accent,
+                palette.SurfacePrimary, palette.Dark ? 0.86f : 0.94f)))
+            using (Pen border = new Pen(Color.FromArgb(palette.Dark ? 185 : 210,
+                accent), 1f))
+            {
+                e.Graphics.FillPath(fill, path);
+                e.Graphics.DrawPath(border, path);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            TextRenderer.DrawText(e.Graphics, Text ?? "", Font, ClientRectangle,
+                Enabled ? ForeColor : ThemeManager.CurrentPalette.TextDisabled,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
         }
     }
 

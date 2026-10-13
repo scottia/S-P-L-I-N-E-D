@@ -186,7 +186,16 @@ namespace Splined.WindowsGui
                 .SetValue(form, albums[0]);
             typeof(MainForm).GetMethod("UpdateSelectionControls",
                 BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
+            ToolStripStatusLabel fixtureStatus = (ToolStripStatusLabel)typeof(MainForm)
+                .GetField("statusLabel", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(form);
+            fixtureStatus.Text = "Ready  ·  1 album selected  ·  9 candidates found";
+            ToolStripProgressBar fixtureProgress = (ToolStripProgressBar)typeof(MainForm)
+                .GetField("progress", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(form);
+            fixtureProgress.Visible = false;
             form.PerformLayout();
+            form.Refresh();
             Application.DoEvents();
         }
 
@@ -322,6 +331,8 @@ namespace Splined.WindowsGui
         {
             form.CreateControl();
             form.PerformLayout();
+            form.Refresh();
+            form.Update();
             Application.DoEvents();
             using (Bitmap screenshot = new Bitmap(Math.Max(1, form.Width),
                 Math.Max(1, form.Height)))

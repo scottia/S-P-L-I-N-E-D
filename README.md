@@ -381,8 +381,9 @@ Credential files contain sensitive information and should **never** be
 committed to GitHub.
 
 Navidrome uses the fixed `navidrome.json` credential contract with an absolute
-server URL and required Bearer Token, plus an optional compatible OpenSubsonic
-API key or account credential when the server requires it. See the
+server URL and exactly one OpenSubsonic authentication method: a dedicated API
+key (preferred) or a Navidrome username/password. Password mode sends a fresh
+salted challenge on every request rather than the password itself. See the
 [provider credential guide](docs/credentials-providers.md).
 
 ---

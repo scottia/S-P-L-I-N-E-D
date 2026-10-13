@@ -36,8 +36,8 @@ Generated artifacts are written by `windows/gui/TEST-PREVIEW-WINDOWS-GUI.cmd` to
   reorder, excluded-source position, horizontal strips, tri-state filters, five-primary
   adjustment state, graphical library, responsive bounds, MusicBrainz integration,
   deterministic Navidrome matching, and credential isolation.
-- Root Rust suite: 193 unit tests and 23 integration/architecture tests.
-- Windows Rust suite: 273 unit tests.
+- Root Rust suite: 195 unit tests and 23 integration/architecture tests.
+- Windows Rust suite: 275 unit tests.
 - Python suite: 271 tests passed, 1 platform-conditional test skipped.
 - Release Windows build: `splined.exe` plus the in-process `splined_core.dll` built for
   `x86_64-pc-windows-msvc`.
@@ -53,5 +53,11 @@ Generated artifacts are written by `windows/gui/TEST-PREVIEW-WINDOWS-GUI.cmd` to
   change was necessary: artwork is cached under the configured cache directory and
   deterministic identity is held in the active projection. `splined.db` remains the
   only durable media/workflow authority.
+- Navidrome authentication is a mutually exclusive API-key or username/password
+  choice. API keys are generated in Navidrome's **Players & API keys** settings;
+  native Web-API bearer tokens are not mixed into OpenSubsonic `/rest/*` requests.
+- Navtagger's targeted scan transport remains the v15.8.5 restricted Docker API
+  call that executes Navidrome's native `scan -t` command; it is not reused as a
+  library/artwork authentication mechanism.
 - Optional server path enrichment is reported only when the compatible album response
   supplies paths. It is never used to overwrite canonical SPLINED paths.

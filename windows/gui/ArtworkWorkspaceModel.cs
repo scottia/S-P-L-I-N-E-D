@@ -37,6 +37,7 @@ namespace Splined.WindowsGui
         public bool BuiltIn;
         public bool Enabled;
         public bool CredentialConfigured;
+        public string CredentialStatus = "PENDING";
         public int Priority;
         public int CandidateCount;
         public string Activity = "";
@@ -105,7 +106,9 @@ namespace Splined.WindowsGui
                 descriptor.Priority = priority++;
                 descriptor.Enabled = !state.ExcludedSources.Contains(key, StringComparer.OrdinalIgnoreCase)
                     && (!state.SourcePolicies.ContainsKey(key) || state.SourcePolicies[key].Enabled);
-                descriptor.CredentialConfigured = CredentialConfigured(state, key);
+                descriptor.CredentialStatus = CredentialStore.Status(state, key);
+                descriptor.CredentialConfigured = CredentialStore.IsConfiguredStatus(
+                    descriptor.CredentialStatus);
                 descriptor.CandidateCount = Count(candidateCounts, key);
                 result.Add(descriptor);
             }
@@ -167,12 +170,6 @@ namespace Splined.WindowsGui
             return counts != null && counts.TryGetValue(key, out count) ? count : 0;
         }
 
-        private static bool CredentialConfigured(ConfigState state, string key)
-        {
-            if (key == "deezer" || key == "itunes" || key == "coverartarchive"
-                || key == "amazon") return true;
-            return CredentialStore.IsConfiguredStatus(CredentialStore.Status(state, key));
-        }
     }
 
     internal sealed class AdjustmentDefinition

@@ -2,6 +2,7 @@ use crate::download::MAX_DOWNLOAD_BYTES;
 use crate::source::{
     ArtworkProvider, ArtworkQuery, ArtworkReference, ProviderContext, ProviderDiscoveryFuture,
 };
+use rand::Rng;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -20,6 +21,7 @@ static DOWNLOAD_SESSIONS: OnceLock<Mutex<HashMap<u64, NavidromeCredential>>> = O
 #[serde(default)]
 struct NavidromeCredential {
     server_url: String,
+    auth_method: String,
     username: String,
     password: String,
     api_key: String,
@@ -42,6 +44,7 @@ impl NavidromeCredential {
             )
         })?;
         value.server_url = value.server_url.trim().trim_end_matches('/').to_string();
+        value.auth_method = value.auth_method.trim().to_ascii_lowercase();
         value.username = value.username.trim().to_string();
         value.api_key = value.api_key.trim().to_string();
         value.bearer_token = value.bearer_token.trim().to_string();
@@ -55,10 +58,30 @@ impl NavidromeCredential {
         if !valid_url {
             return Err("Navidrome server_url must be an absolute HTTP or HTTPS URL.".to_string());
         }
-        if self.bearer_token.is_empty() {
-            return Err("Navidrome bearer_token is required by SPLINED.".to_string());
+        if self.uses_api_key() {
+            if self.api_key.is_empty() {
+                return Err(
+                    "Navidrome api_key is required for the selected authentication method."
+                        .to_string(),
+                );
+            }
+        } else if self.username.is_empty() || self.password.is_empty() {
+            return Err(
+                "Navidrome username and password are required, or select API key authentication."
+                    .to_string(),
+            );
         }
         Ok(())
+    }
+
+    fn uses_api_key(&self) -> bool {
+        if self.auth_method.eq_ignore_ascii_case("api_key") {
+            return true;
+        }
+        if self.auth_method.eq_ignore_ascii_case("password") {
+            return false;
+        }
+        !self.api_key.is_empty() && (self.username.is_empty() || self.password.is_empty())
     }
 }
 
@@ -180,7 +203,7 @@ impl Navidrome {
         let response = request
             .send()
             .await
-            .map_err(|error| format!("Unable to query Navidrome/OpenSubsonic: {error}"))?;
+            .map_err(|_| "Unable to query Navidrome/OpenSubsonic.".to_string())?;
         if matches!(
             response.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -189,7 +212,7 @@ impl Navidrome {
         }
         let response = response
             .error_for_status()
-            .map_err(|error| format!("Navidrome/OpenSubsonic search failed: {error}"))?;
+            .map_err(|_| "Navidrome/OpenSubsonic search failed.".to_string())?;
         let envelope = response
             .json::<Envelope>()
             .await
@@ -261,7 +284,7 @@ pub async fn download_cover(client: &Client, internal_url: &str) -> Result<Vec<u
     let response = authenticated_request(client, &credential, "getCoverArt", &[("id", cover_id)])
         .send()
         .await
-        .map_err(|error| format!("Unable to download Navidrome cover art: {error}"))?;
+        .map_err(|_| "Unable to download Navidrome cover art.".to_string())?;
     if matches!(
         response.status(),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -273,7 +296,7 @@ pub async fn download_cover(client: &Client, internal_url: &str) -> Result<Vec<u
     }
     let response = response
         .error_for_status()
-        .map_err(|error| format!("Navidrome cover-art download failed: {error}"))?;
+        .map_err(|_| "Navidrome cover-art download failed.".to_string())?;
     let bytes = response
         .bytes()
         .await
@@ -295,27 +318,25 @@ fn authenticated_request(
         ("c".to_string(), CLIENT_NAME.to_string()),
         ("f".to_string(), "json".to_string()),
     ];
-    if !credential.api_key.is_empty() {
+    if credential.uses_api_key() {
         query.push(("apiKey".to_string(), credential.api_key.clone()));
-    } else if !credential.password.is_empty() {
-        query.push(("u".to_string(), credential.username.clone()));
-        query.push((
-            "p".to_string(),
-            format!("enc:{}", encode_hex(credential.password.as_bytes())),
-        ));
     } else {
-        // Bearer-only authentication stays in X-ND-Authorization. It must never
-        // be copied into the request URL where proxies or diagnostics may retain it.
+        let mut salt_bytes = [0_u8; 6];
+        rand::rng().fill_bytes(&mut salt_bytes);
+        let salt = encode_hex(&salt_bytes);
+        let token =
+            crate::source::lastfm::md5_hex(format!("{}{}", credential.password, salt).as_bytes());
+        query.push(("u".to_string(), credential.username.clone()));
+        query.push(("s".to_string(), salt));
+        query.push(("t".to_string(), token));
     }
     for (key, value) in parameters {
         query.push((key.as_ref().to_string(), value.clone()));
     }
+    // X-ND-Authorization is for Navidrome's separate native Web API. The
+    // OpenSubsonic /rest contract uses exactly one query authentication mode.
     client
         .get(format!("{}/rest/{method}.view", credential.server_url))
-        .header(
-            "X-ND-Authorization",
-            format!("Bearer {}", credential.bearer_token),
-        )
         .query(&query)
 }
 
@@ -457,10 +478,11 @@ mod tests {
     }
 
     #[test]
-    fn bearer_only_authentication_never_places_secret_in_url() {
+    fn api_key_authentication_does_not_require_bearer_or_username() {
         let credential = NavidromeCredential {
             server_url: "https://music.example".to_string(),
-            bearer_token: "bearer-secret".to_string(),
+            auth_method: "api_key".to_string(),
+            api_key: "api-secret".to_string(),
             ..NavidromeCredential::default()
         };
         credential.validate().unwrap();
@@ -468,10 +490,45 @@ mod tests {
         let request = authenticated_request(&Client::new(), &credential, "ping", &parameters)
             .build()
             .unwrap();
-        assert!(!request.url().as_str().contains("bearer-secret"));
-        assert_eq!(
-            request.headers().get("X-ND-Authorization").unwrap(),
-            "Bearer bearer-secret"
-        );
+        assert!(request.url().as_str().contains("apiKey=api-secret"));
+        assert!(!request.url().as_str().contains("u="));
+        assert!(request.headers().get("X-ND-Authorization").is_none());
+    }
+
+    #[test]
+    fn password_authentication_does_not_require_bearer() {
+        let credential = NavidromeCredential {
+            server_url: "https://music.example".to_string(),
+            auth_method: "password".to_string(),
+            username: "listener".to_string(),
+            password: "secret".to_string(),
+            ..NavidromeCredential::default()
+        };
+        credential.validate().unwrap();
+        let parameters: Vec<(String, String)> = Vec::new();
+        let request = authenticated_request(&Client::new(), &credential, "ping", &parameters)
+            .build()
+            .unwrap();
+        assert!(request.url().as_str().contains("u=listener"));
+        assert!(request.url().as_str().contains("s="));
+        assert!(request.url().as_str().contains("t="));
+        assert!(!request.url().as_str().contains("secret"));
+        assert!(request.headers().get("X-ND-Authorization").is_none());
+    }
+
+    #[test]
+    fn legacy_native_bearer_is_not_sent_to_opensubsonic() {
+        let credential = NavidromeCredential {
+            server_url: "https://music.example".to_string(),
+            auth_method: "api_key".to_string(),
+            api_key: "api-secret".to_string(),
+            bearer_token: "legacy-native-jwt".to_string(),
+            ..NavidromeCredential::default()
+        };
+        let parameters: Vec<(String, String)> = Vec::new();
+        let request = authenticated_request(&Client::new(), &credential, "ping", &parameters)
+            .build()
+            .unwrap();
+        assert!(request.headers().get("X-ND-Authorization").is_none());
     }
 }
