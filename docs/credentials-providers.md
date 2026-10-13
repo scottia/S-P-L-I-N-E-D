@@ -9,10 +9,11 @@ portable `data/config.toml` record stores only the directory:
 credential_dir = "credentials"
 ```
 
-Docker normally uses `/credentials`. Windows first run proposes
-`%LOCALAPPDATA%\SPLINED\credentials`, but the field may be changed before save.
-Standard filenames are fixed beneath the selected directory; `credential_file`
-and `token_file` are not Config v5 settings.
+Docker normally uses `/credentials`. Windows structured Setup requires the
+operator to choose a credential directory before the first save. Existing
+portable or packaged Config v5 values are loaded automatically and are not
+replaced with a legacy path. Standard filenames are fixed beneath the selected
+directory; `credential_file` and `token_file` are not Config v5 settings.
 
 | Provider | File | Normal artwork access |
 | --- | --- | --- |

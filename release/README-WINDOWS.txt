@@ -11,10 +11,11 @@ FIRST RUN
 
 1. Extract the complete SPLINED directory to a writable location.
 2. Run splined.exe.
-3. Complete Settings and save Config v5.
+3. Complete structured Setup and select Save and Continue.
 
-The fresh archive has no data directory. First save or one-time migration
-creates:
+The fresh archive has no data directory. Launch does not create configuration,
+database, cache, log, credential, or obsolete bootstrap folders. A validated
+explicit first save creates:
 
   data\config.toml
   data\ui.toml
@@ -28,7 +29,9 @@ CONFIGURATION AND DATA
 
 Config v5 controls the music library, SQLite database/cache directory,
 temporary run cache, credentials, logs, and history. Existing external paths are
-not relocated. Rust remains the sole SQLite processing authority.
+not relocated. Existing data\config.toml is discovered automatically; missing
+or invalid configuration opens Setup rather than silently loading defaults.
+Rust remains the sole SQLite processing authority.
 
 BACKUP
 

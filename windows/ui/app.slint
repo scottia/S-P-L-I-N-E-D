@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView } from "std-widgets.slint";
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, selected: bool, eligible: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, completed: bool, selected: bool }
@@ -10,6 +10,22 @@ export struct UiAdjustmentRow { name: string, value: int, unit: string }
 component Panel inherits Rectangle { background: #0c2135; border-color: #28506f; border-width: 1px; border-radius: 5px; }
 component Heading inherits Text { color: #eef8ff; font-size: 17px; font-weight: 700; vertical-alignment: center; }
 component Label inherits Text { color: #9fc1d5; font-size: 11px; vertical-alignment: center; }
+component SettingField {
+    in property <string> label;
+    in-out property <string> value;
+    in property <string> hint;
+    height: 34px;
+    HorizontalLayout { spacing: 8px;
+        Label { text: root.label; width: 190px; }
+        LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; }
+    }
+}
+component SettingToggle {
+    in property <string> label;
+    in-out property <bool> value;
+    height: 28px;
+    CheckBox { text: root.label; checked <=> root.value; }
+}
 
 export component AppWindow inherits Window {
     title: "S:P:L:I:N:E:D — Rust/Slint";
@@ -45,7 +61,64 @@ export component AppWindow inherits Window {
     in-out property <string> status-filter-label: "All";
     in-out property <int> page-index: 0;
     in-out property <string> selected-source-name: "All";
-    in-out property <string> config-text-value;
+    in-out property <bool> setup-required: false;
+    in property <string> setup-message;
+    in-out property <string> settings-music-library;
+    in-out property <string> settings-scan-library;
+    in-out property <string> settings-database-dir;
+    in-out property <string> settings-temporary-cache-dir;
+    in-out property <string> settings-log-dir;
+    in-out property <string> settings-credential-dir;
+    in-out property <string> settings-ignored-subs;
+    in-out property <string> settings-mode: "read";
+    in-out property <string> settings-verbosity: "info";
+    in-out property <bool> settings-scan-mode: true;
+    in-out property <bool> settings-library-scan: false;
+    in-out property <string> settings-scan-timeout: "24";
+    in-out property <bool> settings-sqlite-shared: false;
+    in-out property <bool> settings-sample-write: true;
+    in-out property <string> settings-file-formats: "jpeg, png, webp";
+    in-out property <string> settings-file-name: "cover";
+    in-out property <bool> settings-preserve-file: true;
+    in-out property <bool> settings-square: true;
+    in-out property <string> settings-square-mode: "crop";
+    in-out property <string> settings-square-round-to: "16";
+    in-out property <bool> settings-upscale-below-ideal: false;
+    in-out property <string> settings-upscale-max-percent: "200";
+    in-out property <bool> settings-upscale-adaptive: true;
+    in-out property <string> settings-upscale-picture: "0";
+    in-out property <string> settings-upscale-sharpen: "0";
+    in-out property <string> settings-upscale-softness: "0";
+    in-out property <string> settings-upscale-contrast: "0";
+    in-out property <string> settings-upscale-exposure: "0";
+    in-out property <string> settings-upscale-brightness: "0";
+    in-out property <string> settings-upscale-gamma: "0";
+    in-out property <string> settings-upscale-color: "0";
+    in-out property <bool> settings-evaluate-final: true;
+    in-out property <string> settings-range-min: "1200";
+    in-out property <string> settings-range-ideal: "1800";
+    in-out property <string> settings-range-max: "2400";
+    in-out property <string> settings-range-ladder: "3600";
+    in-out property <string> settings-source-order;
+    in-out property <string> settings-source-exclusions;
+    in-out property <bool> settings-history-enabled: true;
+    in-out property <string> settings-history-retention: "0";
+    in-out property <string> settings-log-retention: "14";
+    in-out property <bool> settings-ai-enabled: false;
+    in-out property <string> settings-ai-endpoint;
+    in-out property <string> settings-ai-minimum: "600";
+    in-out property <bool> settings-ai-allow-below: false;
+    in-out property <string> settings-policy-source: "deezer";
+    in-out property <bool> settings-policy-enabled: true;
+    in-out property <bool> settings-policy-strict: false;
+    in-out property <bool> settings-policy-override: false;
+    in-out property <string> settings-policy-minimum-range: "LowerRange";
+    in-out property <bool> settings-policy-fallback: false;
+    in-out property <string> settings-policy-minimum-short;
+    in-out property <string> settings-policy-maximum-short;
+    in-out property <string> settings-policy-minimum-width;
+    in-out property <string> settings-policy-minimum-height;
+    in-out property <bool> settings-policy-primary-only: true;
     in-out property <string> credential-provider: "Navidrome";
     in-out property <string> credential-server;
     in-out property <string> credential-auth: "password";
@@ -73,7 +146,8 @@ export component AppWindow inherits Window {
     callback candidate-range-filter(string); callback source-action(string, string);
     callback musicbrainz-selected(int); callback musicbrainz-apply-authority(); callback musicbrainz-leave-unchanged(); callback adjustment-step(string, int);
     callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
-    callback load-config(); callback save-config(string); callback load-credential(string);
+    callback load-settings(); callback save-settings(); callback save-setup();
+    callback load-source-policy(string); callback update-source-policy(); callback load-credential(string);
     callback save-credential(string, string, string, string, string, string);
     callback test-credential(string, string, string, string, string, string);
     callback backup-action(string, string, string, bool, bool, bool, bool, bool); callback check-update();
@@ -86,14 +160,34 @@ export component AppWindow inherits Window {
             HorizontalLayout { padding-left: 14px; padding-right: 10px; spacing: 12px;
                 Text { text: "S:P:L:I:N:E:D"; color: #42d7ff; font-size: 24px; font-weight: 800; vertical-alignment: center; }
                 Text { text: "Rust application authority · Slint presentation"; color: #86a8bd; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                Button { text: "Workspace"; clicked => { root.page-index = 0; } }
-                Button { text: "Settings & Credentials"; clicked => { root.page-index = 1; root.load-config(); root.load-credential(root.credential-provider); } }
-                Button { text: "Backup & Updates"; clicked => { root.page-index = 2; } }
+                Button { text: "Workspace"; enabled: !root.setup-required; clicked => { root.page-index = 0; } }
+                Button { text: "Settings & Credentials"; enabled: !root.setup-required; clicked => { root.page-index = 1; root.load-settings(); root.load-credential(root.credential-provider); } }
+                Button { text: "Backup & Updates"; enabled: !root.setup-required; clicked => { root.page-index = 2; } }
                 Text { text: root.version-label; color: #8fb3c9; font-size: 11px; vertical-alignment: center; }
             }
         }
 
-        if root.page-index == 0: HorizontalLayout {
+        if root.setup-required: Panel { vertical-stretch: 1;
+            VerticalLayout { padding: 20px; spacing: 8px;
+                Heading { text: "SPLINED First-Run Setup"; height: 34px; }
+                Text { text: root.setup-message; color: #f1c458; font-size: 12px; wrap: word-wrap; height: 54px; }
+                Text { text: "Nothing is created until Save and Continue. The music library must already exist; SPLINED creates only the selected database, temporary-cache, log, credential, and application data directories."; color: #9fc1d5; font-size: 11px; wrap: word-wrap; height: 48px; }
+                SettingField { label: "Music Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC music directory"; }
+                SettingField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Directory that owns splined.db"; }
+                SettingField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; }
+                SettingField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; }
+                SettingField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; }
+                SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated; optional"; }
+                Rectangle { vertical-stretch: 1; background: transparent; }
+                HorizontalLayout { spacing: 8px;
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Button { text: "Save and Continue"; width: 180px; clicked => root.save-setup(); }
+                }
+                Text { text: root.error-text; color: #ff6b76; font-size: 11px; wrap: word-wrap; height: 48px; }
+            }
+        }
+
+        if !root.setup-required && root.page-index == 0: HorizontalLayout {
             spacing: 7px; vertical-stretch: 1;
             Panel { width: 350px;
                 VerticalLayout { padding: 10px; spacing: 7px;
@@ -243,15 +337,99 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.page-index == 1: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+        if !root.setup-required && root.page-index == 1: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
             Panel { horizontal-stretch: 1;
                 VerticalLayout { padding: 12px; spacing: 7px;
-                    Heading { text: "Config v5"; height: 28px; }
-                    Text { text: "Saving validates the complete authoritative document before atomic replacement."; color: #9fc1d5; font-size: 11px; wrap: word-wrap; }
-                    TextEdit { text <=> root.config-text-value; vertical-stretch: 1; }
+                    Heading { text: "Structured Settings · Config v5 authority"; height: 28px; }
+                    Text { text: "Controls edit the Rust Config model. Save validates every field, atomically writes data/config.toml, and reloads the library."; color: #9fc1d5; font-size: 11px; wrap: word-wrap; height: 34px; }
+                    ScrollView { vertical-stretch: 1;
+                        VerticalLayout { spacing: 5px;
+                            Heading { text: "Locations"; height: 27px; }
+                            SettingField { label: "Music Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC directory"; }
+                            SettingField { label: "Music Library scan folder"; value <=> root.settings-scan-library; hint: "Existing local or UNC directory"; }
+                            SettingField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Owns splined.db"; }
+                            SettingField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; }
+                            SettingField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Diagnostics"; }
+                            SettingField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; }
+                            SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated"; }
+                            Heading { text: "Scan and runtime"; height: 27px; }
+                            HorizontalLayout { spacing: 8px;
+                                Label { text: "Mode"; width: 190px; }
+                                ComboBox { model: ["read", "write"]; current-value <=> root.settings-mode; }
+                                Label { text: "Verbosity"; width: 100px; }
+                                ComboBox { model: ["error", "warn", "info", "debug", "trace"]; current-value <=> root.settings-verbosity; }
+                            }
+                            SettingToggle { label: "Scan mode enabled"; value <=> root.settings-scan-mode; }
+                            SettingToggle { label: "Full library scan"; value <=> root.settings-library-scan; }
+                            SettingToggle { label: "Shared/network SQLite"; value <=> root.settings-sqlite-shared; }
+                            SettingToggle { label: "Write sample output"; value <=> root.settings-sample-write; }
+                            SettingField { label: "Scan timeout (hours; 0=off)"; value <=> root.settings-scan-timeout; hint: "24"; }
+                            SettingField { label: "Log retention days"; value <=> root.settings-log-retention; hint: "14"; }
+                            SettingToggle { label: "Status history enabled"; value <=> root.settings-history-enabled; }
+                            SettingField { label: "History retention (0=forever)"; value <=> root.settings-history-retention; hint: "0"; }
+                            Heading { text: "Artwork output and range"; height: 27px; }
+                            SettingField { label: "Output filename stem"; value <=> root.settings-file-name; hint: "cover"; }
+                            SettingField { label: "Output formats"; value <=> root.settings-file-formats; hint: "jpeg, png, webp"; }
+                            SettingToggle { label: "Preserve existing file"; value <=> root.settings-preserve-file; }
+                            SettingToggle { label: "Square artwork"; value <=> root.settings-square; }
+                            HorizontalLayout { spacing: 8px;
+                                Label { text: "Square mode"; width: 190px; }
+                                ComboBox { model: ["crop", "off"]; current-value <=> root.settings-square-mode; }
+                            }
+                            SettingField { label: "Square round-to"; value <=> root.settings-square-round-to; hint: "16"; }
+                            SettingField { label: "Range min / ideal / max / ladder"; value <=> root.settings-range-min; hint: "minimum"; }
+                            HorizontalLayout { spacing: 5px;
+                                LineEdit { text <=> root.settings-range-ideal; placeholder-text: "ideal"; }
+                                LineEdit { text <=> root.settings-range-max; placeholder-text: "maximum"; }
+                                LineEdit { text <=> root.settings-range-ladder; placeholder-text: "ladder"; }
+                            }
+                            SettingToggle { label: "Upscale below Ideal"; value <=> root.settings-upscale-below-ideal; }
+                            SettingField { label: "Maximum upscale percent"; value <=> root.settings-upscale-max-percent; hint: "100–800"; }
+                            SettingToggle { label: "Adaptive upscale defaults"; value <=> root.settings-upscale-adaptive; }
+                            SettingToggle { label: "Evaluate final image"; value <=> root.settings-evaluate-final; }
+                            SettingField { label: "Picture / Sharpen / Softness"; value <=> root.settings-upscale-picture; hint: "picture"; }
+                            HorizontalLayout { spacing: 5px;
+                                LineEdit { text <=> root.settings-upscale-sharpen; placeholder-text: "sharpen"; }
+                                LineEdit { text <=> root.settings-upscale-softness; placeholder-text: "softness"; }
+                            }
+                            SettingField { label: "Contrast / Exposure / Brightness"; value <=> root.settings-upscale-contrast; hint: "contrast"; }
+                            HorizontalLayout { spacing: 5px;
+                                LineEdit { text <=> root.settings-upscale-exposure; placeholder-text: "exposure"; }
+                                LineEdit { text <=> root.settings-upscale-brightness; placeholder-text: "brightness"; }
+                            }
+                            SettingField { label: "Gamma / Color temperature"; value <=> root.settings-upscale-gamma; hint: "gamma"; }
+                            LineEdit { text <=> root.settings-upscale-color; placeholder-text: "color temperature"; }
+                            Heading { text: "Sources and policies"; height: 27px; }
+                            SettingField { label: "Source priority"; value <=> root.settings-source-order; hint: "Comma-separated ordered providers"; }
+                            SettingField { label: "Excluded sources"; value <=> root.settings-source-exclusions; hint: "Comma-separated providers"; }
+                            HorizontalLayout { spacing: 8px;
+                                Label { text: "Policy source"; width: 190px; }
+                                ComboBox { model: ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome"]; current-value <=> root.settings-policy-source; selected(value) => root.load-source-policy(value); }
+                            }
+                            SettingToggle { label: "Source enabled"; value <=> root.settings-policy-enabled; }
+                            SettingToggle { label: "Strict/global-range override"; value <=> root.settings-policy-strict; }
+                            SettingToggle { label: "Custom source policy"; value <=> root.settings-policy-override; }
+                            HorizontalLayout { spacing: 8px;
+                                Label { text: "Minimum range"; width: 190px; }
+                                ComboBox { model: ["BelowMinimum", "LowerRange", "Ideal", "UpperRange", "Ladder", "AboveLadder"]; current-value <=> root.settings-policy-minimum-range; }
+                            }
+                            SettingToggle { label: "Allow adjacent lower fallback"; value <=> root.settings-policy-fallback; }
+                            SettingToggle { label: "Primary image only"; value <=> root.settings-policy-primary-only; }
+                            SettingField { label: "Minimum short side"; value <=> root.settings-policy-minimum-short; hint: "Optional"; }
+                            SettingField { label: "Maximum short side"; value <=> root.settings-policy-maximum-short; hint: "Optional"; }
+                            SettingField { label: "Minimum width"; value <=> root.settings-policy-minimum-width; hint: "Optional"; }
+                            SettingField { label: "Minimum height"; value <=> root.settings-policy-minimum-height; hint: "Optional"; }
+                            Button { text: "Update selected source policy"; clicked => root.update-source-policy(); }
+                            Heading { text: "AISPLINED provider options"; height: 27px; }
+                            SettingToggle { label: "AISPLINED enabled"; value <=> root.settings-ai-enabled; }
+                            SettingField { label: "AISPLINED endpoint"; value <=> root.settings-ai-endpoint; hint: "Optional endpoint"; }
+                            SettingField { label: "AISPLINED minimum short side"; value <=> root.settings-ai-minimum; hint: "600"; }
+                            SettingToggle { label: "Allow below-minimum override"; value <=> root.settings-ai-allow-below; }
+                        }
+                    }
                     HorizontalLayout { spacing: 6px;
-                        Button { text: "Reload"; clicked => root.load-config(); }
-                        Button { text: "Validate & Save"; clicked => root.save-config(root.config-text-value); }
+                        Button { text: "Reload"; clicked => root.load-settings(); }
+                        Button { text: "Validate, Save & Reload Library"; clicked => root.save-settings(); }
                     }
                 }
             }
@@ -280,7 +458,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if root.page-index == 2: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+        if !root.setup-required && root.page-index == 2: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
             Panel { horizontal-stretch: 1;
                 VerticalLayout { padding: 12px; spacing: 8px;
                     Heading { text: "Selective .spl Backup / Restore"; height: 28px; }
@@ -316,7 +494,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        Panel { height: 150px;
+        if !root.setup-required: Panel { height: 150px;
             HorizontalLayout { padding: 9px; spacing: 8px;
                 VerticalLayout { width: 530px; spacing: 5px;
                     Heading { text: "Run Controls"; height: 24px; }

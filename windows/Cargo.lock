@@ -4789,7 +4789,6 @@ dependencies = [
  "unicode-normalization",
  "wgpu",
  "windows 0.61.3",
- "windows-registry",
  "windows-sys 0.61.2",
 ]
 

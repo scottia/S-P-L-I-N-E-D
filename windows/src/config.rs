@@ -1,5 +1,5 @@
 use crate::musicbrainz::MusicBrainzConfig;
-use crate::portable::{app_layout, bootstrap_portable_install, state_root};
+use crate::portable::{app_layout, state_root};
 use crate::source_policy::SourcePolicyConfig;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
@@ -484,6 +484,10 @@ pub fn config_path() -> Option<PathBuf> {
     app_layout().ok().map(|layout| layout.config_file)
 }
 
+pub fn config_path_for_root(root: &Path) -> PathBuf {
+    root.join("data").join("config.toml")
+}
+
 pub fn default_toml() -> Result<String, toml::ser::Error> {
     toml::to_string_pretty(&Config::default())
 }
@@ -667,19 +671,35 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
 }
 
 pub fn load_config() -> Result<Config, String> {
-    let defaults =
-        default_toml().map_err(|error| format!("Unable to generate SPLINED defaults: {error}"))?;
-    let layout = bootstrap_portable_install(&defaults)?;
-    let text = std::fs::read_to_string(&layout.config_file).map_err(|error| {
+    let root = state_root()?;
+    load_config_at_root(&root)
+}
+
+/// Discover and load the sole Config v5 authority beneath an explicit state
+/// root. This function is intentionally read-only and never substitutes a
+/// default document when the file is absent or invalid.
+pub fn load_config_at_root(root: &Path) -> Result<Config, String> {
+    let path = config_path_for_root(root);
+    if !path.is_file() {
+        return Err(format!(
+            "Config v5 was not found. Complete SPLINED Setup.\nExpected: {}",
+            path.display()
+        ));
+    }
+    let text = std::fs::read_to_string(&path).map_err(|error| {
         format!(
             "Unable to read SPLINED configuration {}: {error}",
-            layout.config_file.display()
+            path.display()
         )
     })?;
 
-    let mut config = parse_config(&text)?;
-    let root = state_root()?;
-    resolve_runtime_paths(&mut config, &root);
+    let mut config = parse_config(&text).map_err(|error| {
+        format!(
+            "Config v5 could not be loaded from {}:\n{error}",
+            path.display()
+        )
+    })?;
+    resolve_runtime_paths(&mut config, root);
 
     Ok(config)
 }
@@ -1137,12 +1157,6 @@ mod tests {
         assert_eq!(
             after_layout.config_file,
             portable_root.join("data").join("config.toml")
-        );
-        assert_eq!(after_layout.cache_dir, portable_root.join("_cache"));
-        assert_eq!(after_layout.logs_dir, portable_root.join("_logs"));
-        assert_eq!(
-            after_layout.credentials_dir,
-            portable_root.join("credentials")
         );
         let source = parse_config(&default_toml().unwrap()).unwrap();
         let mut before = source.clone();

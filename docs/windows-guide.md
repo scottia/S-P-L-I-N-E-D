@@ -17,20 +17,47 @@ root. MSIX mode obtains the current package family through Windows and uses:
 %LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED
 ```
 
-SPLINED creates these application-owned locations as needed:
+Configuration authority is discovered automatically; the normal startup path
+does not ask for a configuration filename. Portable files are:
 
 ```text
-data\config.toml       Config v5
-data\ui.toml           interface preferences
-credentials\*.json    separate provider credentials
-splined.db             authoritative media/workflow database (configured path)
-_cache\                provider and preview cache
-_logs\                 diagnostics
+<splined.exe directory>\data\config.toml       Config v5
+<splined.exe directory>\data\ui.toml           interface preferences
+<configured credential directory>\*.json       provider credentials
+<scan.cache_dir>\splined.db                     media/workflow database
 ```
 
-The first generated Config v5 is neutral: the music-library and scan-directory
-fields are empty. Open **Settings & Credentials**, enter valid library paths,
-save the complete document, and use **Reload DB** or **Rebuild Index**.
+The packaged equivalents are
+`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data\config.toml`
+and `data\ui.toml` beneath that same root. Existing absolute and UNC paths are
+preserved; relative Config v5 paths resolve against the selected state root.
+
+SPLINED does not generate a default Config v5 or create database, temporary
+cache, log, credential, or obsolete bootstrap directories merely because the
+executable launched. If Config v5 is absent, invalid, or operationally
+incomplete, the ordinary workspace stays unavailable and structured **Setup**
+opens with the actual error. Setup collects the music library, SQLite/database,
+temporary cache, log, and credential locations. Only **Save and Continue**
+validates them, creates the configured application-owned directories, writes
+Config v5 atomically, and loads the library. `ui.toml` is separate UI state.
+
+With an existing Config v5, startup opens `<scan.cache_dir>\splined.db`
+automatically and reports the active state root, Config path, SQLite path, and
+loaded Album/Artist/Folder counts without logging credentials.
+
+Release builds also provide opt-in, read-only support diagnostics. Because the
+Windows GUI subsystem does not attach stdout, pass an output filename:
+
+```powershell
+splined.exe --library-diagnostics library-diagnostics.txt
+splined.exe --slint-library-diagnostics slint-library-diagnostics.txt
+splined.exe --navidrome-diagnostics navidrome-diagnostics.txt
+```
+
+The library reports include the active paths, complete resident counts, Slint
+model counts, and non-writing selection/navigation checks. The Navidrome report
+uses the configured credential file for a live capability request but never
+records its secret.
 
 ## Media Library
 
@@ -117,8 +144,13 @@ the same validated final-artwork pipeline and safe replacement behavior.
 
 ## Settings and credentials
 
-The Config v5 editor validates the complete document before an atomic save.
-Application configuration is never duplicated in a Slint-specific format.
+Normal Settings is a structured Slint surface for paths, scan behavior, SQLite
+sharing, source order and exclusions, source policies, ranges, output and
+square/upscale behavior, adjustment defaults, history/log retention, and
+supported provider options. Controls update the Rust Config model, validate the
+complete document, atomically write Config v5, and reload application state.
+Application configuration is never duplicated in a Slint-specific authority,
+and raw TOML is not the normal Settings workflow.
 
 Provider credentials remain separate JSON files. The credential surface
 supports Navidrome/OpenSubsonic, Fanart.tv, Last.fm, Discogs, and MusicBrainz.
