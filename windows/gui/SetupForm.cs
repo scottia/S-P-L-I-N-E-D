@@ -1347,7 +1347,8 @@ namespace Splined.WindowsGui
             return "musicbrainz".Equals(source, StringComparison.OrdinalIgnoreCase)
                 || "coverartarchive".Equals(source, StringComparison.OrdinalIgnoreCase)
                 || "discogs".Equals(source, StringComparison.OrdinalIgnoreCase)
-                || "amazon".Equals(source, StringComparison.OrdinalIgnoreCase);
+                || "amazon".Equals(source, StringComparison.OrdinalIgnoreCase)
+                || "navidrome".Equals(source, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string SourceDisplayName(string source)
@@ -1362,6 +1363,7 @@ namespace Splined.WindowsGui
                 case "deezer": return "Deezer";
                 case "musicbrainz": return "MusicBrainz / CAA";
                 case "amazon": return "Amazon Store";
+                case "navidrome": return "Navidrome / Current Server Art";
                 default: return source;
             }
         }

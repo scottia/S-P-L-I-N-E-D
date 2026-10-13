@@ -21,8 +21,11 @@ with the current product documentation.
 
 - [Installation and first run](installation-first-run.md) — Windows portable,
   Linux, macOS, Docker, initial indexing, and the first safe scan.
-- [Windows guide](windows-guide.md) — the native interface, portable settings,
-  candidate review, MusicBrainz Matches, backup, updates, and troubleshooting.
+- [Windows guide](windows-guide.md) — the replacement artwork shell, graphical
+  library, dynamic source strip, Navidrome enrichment, candidate review,
+  MusicBrainz Matches, Custom Upscale, backup, updates, and troubleshooting.
+- [Windows replacement GUI validation](windows-gui-redesign-qa.md) — screenshot
+  comparison matrix, test coverage, and deliberate reference adaptations.
 - [Python Ratatui guide](ratatui-tui.md) — persistent Select Media, structured
   settings, candidate filters/comparison, compilation-track reopen,
   MusicBrainz authority, diagnostics, reports, and terminal cleanup.

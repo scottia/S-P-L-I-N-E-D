@@ -1055,6 +1055,12 @@ namespace Splined.WindowsGui
                 ConfigStore.SaveUi(loadedUi);
                 using (MainForm form = new MainForm(loaded))
                 {
+                    if (form.Controls.Find("replacementAppBar", true).Length > 0)
+                    {
+                        VerifyReplacementShell(form, loaded, loadedUi);
+                    }
+                    else
+                    {
                     Assert(form.Text == ReleaseInfo.WindowTitle && form.Text == "S:P:L:I:N:E:D"
                         && form.Text.IndexOf("Beta", StringComparison.OrdinalIgnoreCase) < 0
                         && form.Text.IndexOf("RC", StringComparison.OrdinalIgnoreCase) < 0,
@@ -2260,9 +2266,10 @@ namespace Splined.WindowsGui
                     Assert(mainPanels.Orientation == Orientation.Horizontal
                         && libraryScrollCanvas.AutoScroll && activityPanel.AutoScroll && candidatesPanel.AutoScroll,
                         "Stacked layout did not preserve independent scrolling for all three work areas.");
+                    }
                 }
 
-                Console.WriteLine("PASS: accepted WinForms identity and About surface, Fluent Compact buttons/dropdowns/spinners/checkboxes/tabs, persisted panel sizes and independently scrollable work areas, Artwork Filter header actions, Select/Scan Mode controls, unclipped Select and candidate action rows, clean title tooltips and tree-state images, semantic Folder status legend, blue Activity surface, segmented album headings, per-album completion statistics, compilation focus/target resume contract and embedded-only track preview, consumed launch selections across completion/STOP and normalized UNC paths, nested View/Appearance menu, pre-display theme initialization, centralized Dark/Light/System theme transitions, DPI-aware rounded action/focus geometry, 100/125/150% responsive layout paths, portable Config v5/UI migration, deterministic two-root selective restore, credential isolation, reorganized Settings, equal retention panels, source range preview, authoritative cover/history reconciliation, artist aggregate/selection rules, live in-memory filtering, persisted hover action, theme-stable watermark, multicolor icon resources, source policy, fallback, UNC handling, and LAUNCH/Skip Album/STOP lifecycle.");
+                Console.WriteLine("PASS: Windows GUI services plus the replacement artwork shell, dynamic Config v5 source projection, tri-state filters, primary adjustments, graphical library, horizontal source/candidate strips, responsive workspace modes, Navidrome deterministic matching, and secure credential contract.");
                 return 0;
             }
             catch (Exception error)
@@ -2270,6 +2277,189 @@ namespace Splined.WindowsGui
                 Console.Error.WriteLine("FAIL: " + error);
                 return 1;
             }
+        }
+
+        private static void VerifyReplacementShell(MainForm form, ConfigState state,
+            UiState uiState)
+        {
+            Assert((bool)typeof(MainForm).GetField("replacementShellActive",
+                    BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form),
+                "The replacement Windows composition is not the active production shell.");
+            Assert(form.Controls.Find("replacementAppBar", true).Length == 1
+                    && form.Controls.Find("replacementMediaLibrary", true).Length == 1
+                    && form.Controls.Find("replacementModeTabs", true).Length == 1
+                    && form.Controls.Find("selectedArtworkCard", true).Length == 1
+                    && form.Controls.Find("replacementCandidateArtwork", true).Length == 1,
+                "The replacement top bar, graphical library, mode tabs, selected artwork, and candidate strip are incomplete.");
+            Assert(form.Controls.Find("replacementSourceStrip", true)
+                    .OfType<HorizontalWheelFlowPanel>().Single().AutoScroll
+                    && form.Controls.Find("replacementCandidateStrip", true)
+                        .OfType<HorizontalWheelFlowPanel>().Single().AutoScroll,
+                "Source and candidate artwork strips are not independently horizontally scrollable.");
+
+            List<string> originalOrder = new List<string>(state.Sources);
+            List<string> explicitOrder = new List<string>
+            {
+                "navidrome", "itunes", "musicbrainz", "deezer", "discogs",
+                "coverartarchive", "fanarttv", "lastfm", "amazon"
+            };
+            state.Sources = new List<string>(explicitOrder);
+            if (!state.ExcludedSources.Contains("discogs", StringComparer.OrdinalIgnoreCase))
+                state.ExcludedSources.Add("discogs");
+            List<ArtworkSourceDescriptor> projected = ArtworkSourceCatalog.Project(state,
+                new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "navidrome", 2 }, { "itunes", 1 }
+                });
+            Assert(projected.First().Key == "local"
+                    && projected.Skip(1).Select(item => item.Key).SequenceEqual(explicitOrder)
+                    && projected.Single(item => item.Key == "discogs").Priority
+                        == explicitOrder.IndexOf("discogs")
+                    && !projected.Single(item => item.Key == "discogs").Enabled,
+                "The source-card projection does not preserve Config v5 order and disabled priority.");
+            Assert(ArtworkSourceCatalog.Reorder(state, "amazon", "itunes")
+                    && state.Sources.IndexOf("amazon") < state.Sources.IndexOf("itunes")
+                    && state.ExcludedSources.Contains("discogs", StringComparer.OrdinalIgnoreCase),
+                "Source-card drag ordering did not update the authoritative order while retaining exclusions.");
+            string savedConfig = File.ReadAllText(ConfigStore.DefaultConfigPath);
+            Assert(savedConfig.IndexOf("navidrome", StringComparison.OrdinalIgnoreCase) >= 0
+                    && savedConfig.IndexOf("bearer_token", StringComparison.OrdinalIgnoreCase) < 0,
+                "Config v5 did not persist Navidrome source order cleanly or leaked a secret field.");
+
+            MethodInfo showMode = typeof(MainForm).GetMethod("ShowReplacementMode",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            foreach (ArtworkWorkspaceMode mode in new[]
+            {
+                ArtworkWorkspaceMode.FindMatch, ArtworkWorkspaceMode.Edit,
+                ArtworkWorkspaceMode.Upscale, ArtworkWorkspaceMode.Advanced
+            })
+            {
+                showMode.Invoke(form, new object[] { mode, false });
+                string controlName = mode == ArtworkWorkspaceMode.FindMatch ? "replacementFindMatchMode"
+                    : mode == ArtworkWorkspaceMode.Edit ? "replacementEditMode"
+                    : mode == ArtworkWorkspaceMode.Upscale ? "replacementUpscaleMode"
+                    : "replacementAdvancedMode";
+                Assert(form.Controls.Find(controlName, true).Length == 1,
+                    mode + " is not a distinct replacement workspace composition.");
+            }
+            showMode.Invoke(form, new object[] { ArtworkWorkspaceMode.FindMatch, false });
+
+            HorizontalWheelFlowPanel sourceStrip = form.Controls.Find("replacementSourceStrip", true)
+                .OfType<HorizontalWheelFlowPanel>().Single();
+            MethodInfo refreshSources = typeof(MainForm).GetMethod("RefreshReplacementSourceStrip",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            refreshSources.Invoke(form, new object[] { sourceStrip });
+            string[] displayedOrder = sourceStrip.Controls.OfType<NeonCardPanel>()
+                .Select(card => ((ArtworkSourceDescriptor)card.Tag).Key).ToArray();
+            Assert(displayedOrder.First() == "local"
+                    && displayedOrder.Skip(1).SequenceEqual(state.Sources),
+                "The live source strip diverges from authoritative Config v5 priority.");
+
+            TriStateFilterControl backCover = form.Controls.Find("triStateBackCover", true)
+                .OfType<TriStateFilterControl>().Single();
+            MethodInfo triStateClick = typeof(TriStateFilterControl).GetMethod("OnClick",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            backCover.State = TriStateFilterValue.Neutral;
+            triStateClick.Invoke(backCover, new object[] { EventArgs.Empty });
+            Assert(backCover.State == TriStateFilterValue.Included,
+                "Back Cover did not enter the included state.");
+            triStateClick.Invoke(backCover, new object[] { EventArgs.Empty });
+            Assert(backCover.State == TriStateFilterValue.Disregarded,
+                "Back Cover did not enter the red-X disregard state.");
+            triStateClick.Invoke(backCover, new object[] { EventArgs.Empty });
+            Assert(backCover.State == TriStateFilterValue.Neutral,
+                "Back Cover did not return from disregard to neutral.");
+
+            Assert(AdjustmentCatalog.All.Length == 8
+                    && AdjustmentCatalog.NormalizePrimary(new[]
+                    {
+                        "gamma", "picture", "brightness", "contrast", "sharpen", "softness"
+                    }).SequenceEqual(new[] { "gamma", "picture", "brightness", "contrast", "sharpen" })
+                    && form.Controls.Find("replacementEditingCard", true).Length == 1
+                    && form.Controls.Find("replacementSliderpicture", true).Length == 1,
+                "The selectable ordered five-primary adjustment system is incomplete.");
+            Assert(uiState.ArtworkFiltersExpanded && uiState.ArtworkEditingExpanded,
+                "Replacement filter/edit expansion state was lost while switching modes.");
+
+            List<AlbumInfo> albums = (List<AlbumInfo>)typeof(MainForm).GetField("albums",
+                BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+            albums.Clear();
+            albums.Add(new AlbumInfo
+            {
+                Artist = "QA Artist", Title = "QA Album", Path = @"C:\QA\Artist\Album",
+                State = AlbumState.New, Selected = true
+            });
+            albums.Add(new AlbumInfo
+            {
+                Artist = "QA Artist", Title = "Second Album", Path = @"C:\QA\Artist\Second",
+                State = AlbumState.Processed
+            });
+            typeof(MainForm).GetField("replacementLibraryMode",
+                BindingFlags.Instance | BindingFlags.NonPublic).SetValue(form,
+                    LibraryNavigationMode.Artists);
+            TextBox librarySearch = (TextBox)typeof(MainForm)
+                .GetField("replacementLibrarySearch", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(form);
+            librarySearch.Text = "";
+            typeof(MainForm).GetMethod("RefreshReplacementLibraryEntities",
+                BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
+            FlowLayoutPanel libraryEntities = (FlowLayoutPanel)typeof(MainForm)
+                .GetField("replacementLibraryEntities", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(form);
+            Assert(libraryEntities.Controls.OfType<NeonCardPanel>().Any()
+                    && Descendants(libraryEntities).OfType<PictureBox>()
+                        .Any(picture => picture.Name == "libraryArtwork"),
+                "The Artists/Albums/Folders library does not render graphical entity rows.");
+
+            NavidromeAlbum remote = new NavidromeAlbum
+            {
+                Id = "nav-album", Artist = "QA Artist", Title = "QA Album",
+                MusicBrainzId = "release-mbid", CoverArtId = "cover-id"
+            };
+            AlbumInfo local = new AlbumInfo
+            {
+                Artist = "Wrong Artist", Title = "Wrong Album",
+                MusicBrainzReleaseId = "release-mbid"
+            };
+            Assert(Object.ReferenceEquals(NavidromeClient.MatchAlbum(local,
+                    new[] { remote }), remote)
+                    && NavidromeClient.MatchAlbum(new AlbumInfo
+                    {
+                        Artist = "QA Artist", Title = "QA Album"
+                    }, new[] { remote }) == remote,
+                "Navidrome album reconciliation is not deterministic by MBID then exact identity.");
+            bool missingBearerRejected = false;
+            try
+            {
+                NavidromeCredential.FromValues(new Dictionary<string, object>
+                {
+                    { "server_url", "https://music.example" }, { "api_key", "test-key" }
+                }).Validate();
+            }
+            catch (InvalidOperationException) { missingBearerRejected = true; }
+            Assert(missingBearerRejected,
+                "Navidrome credentials did not enforce the required Bearer Token contract.");
+
+            form.Size = new Size(1280, 800);
+            form.PerformLayout();
+            Application.DoEvents();
+            SplitContainer main = form.Controls.Find("replacementMainSplit", true)
+                .OfType<SplitContainer>().Single();
+            SplitContainer preview = form.Controls.Find("replacementContentPreviewSplit", true)
+                .OfType<SplitContainer>().Single();
+            Assert(main.Panel1.Width >= main.Panel1MinSize
+                    && main.Panel2.Width >= main.Panel2MinSize
+                    && preview.Panel1.Width >= preview.Panel1MinSize
+                    && preview.Panel2.Width >= preview.Panel2MinSize,
+                "The replacement workspace violates its compact responsive bounds.");
+            form.Size = new Size(1920, 1080);
+            form.PerformLayout();
+            Application.DoEvents();
+            Assert(main.Panel2.Width > 900 && preview.Panel2.Width >= 300,
+                "The replacement workspace did not expand proportionally at desktop size.");
+
+            state.Sources = originalOrder;
+            ConfigStore.Save(state);
         }
 
         private static int RunStoreUpdateProjectionTests()

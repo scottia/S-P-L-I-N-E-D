@@ -442,6 +442,10 @@ settings from exact-release `coverartarchive` discovery. `amazon` searches the
 Amazon Store, accepts only primary `m.media-amazon.com/images/I/` artwork, and
 removes between-dots resize transforms before preview and evaluation. Amazon is
 opt-in because public Store HTML may throttle requests or change markup.
+`navidrome` supplies current-server artwork only after an exact Release MBID or
+one unique normalized Artist + Album match. It uses the same downloaded-image,
+range, strict-evidence, and final-image evaluation path as other candidates;
+server membership alone is never Preferred/Auto authority.
 
 ---
 

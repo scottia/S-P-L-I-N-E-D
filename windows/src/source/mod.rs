@@ -10,6 +10,8 @@ pub mod fanarttv;
 pub mod itunes;
 pub mod lastfm;
 pub mod musicbrainz_artwork;
+#[path = "../../../src/source/navidrome.rs"]
+pub mod navidrome;
 
 use amazon::AmazonStore;
 use coverartarchive::CoverArtArchive;
@@ -19,6 +21,7 @@ use fanarttv::FanartTv;
 use itunes::ITunes;
 use lastfm::LastFm;
 use musicbrainz_artwork::MusicBrainzArtwork;
+use navidrome::Navidrome;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtworkQuery {
@@ -33,7 +36,7 @@ impl ArtworkQuery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderContext {
     pub artist_credit: String,
     pub release_title: String,
@@ -71,7 +74,7 @@ pub struct ProviderRegistry {
 
 impl ProviderRegistry {
     pub fn from_source_order(source_order: &[String]) -> Result<Self, String> {
-        Self::from_source_order_with_credentials(source_order, "", "", "", Duration::from_secs(20))
+        Self::from_source_order_with_credentials(source_order, "", "", "", "", Duration::from_secs(20))
     }
 
     pub fn from_source_order_with_credentials(
@@ -79,6 +82,7 @@ impl ProviderRegistry {
         fanarttv_credential_file: &str,
         lastfm_credential_file: &str,
         discogs_credential_file: &str,
+        navidrome_credential_file: &str,
         authority_request_timeout: Duration,
     ) -> Result<Self, String> {
         let mut providers: Vec<Box<dyn ArtworkProvider>> = Vec::new();
@@ -97,6 +101,7 @@ impl ProviderRegistry {
                 }
                 "discogs" => providers.push(Box::new(Discogs::new(discogs_credential_file)?)),
                 "amazon" => providers.push(Box::new(AmazonStore::new()?)),
+                "navidrome" => providers.push(Box::new(Navidrome::new(navidrome_credential_file)?)),
                 _ => {
                     return Err(format!(
                         "Unsupported SPLINED cover source in provider registry: {source}"
@@ -159,6 +164,7 @@ mod tests {
             "fanarttv.json",
             "lastfm.json",
             "discogs.json",
+            "navidrome.json",
             Duration::from_secs(7),
         )
         .unwrap();

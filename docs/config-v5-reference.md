@@ -203,7 +203,7 @@ min < ideal <= max < ladder
 
 `cover_sources` stores artwork-source priority. Supported sources are Deezer,
 iTunes, Fanart.tv, Last.fm, MusicBrainz / Cover Art Archive, Cover Art Archive,
-Discogs, and Amazon Store.
+Discogs, Amazon Store, and Navidrome.
 `exclude_cover_sources` disables listed sources without changing saved order.
 
 The `musicbrainz` priority uses MusicBrainz as release authority and Cover Art
@@ -216,6 +216,13 @@ only primary `https://m.media-amazon.com/images/I/` URLs. It removes Amazon's
 between-dots image transform (for example `._AC_UY218_`) before download so the
 candidate URL points to the original image. Amazon is disabled by default;
 blocking or markup changes appear as provider diagnostics.
+
+`navidrome` provides supplemental library/current-server artwork through
+OpenSubsonic-compatible APIs. It is not MusicBrainz authority and does not
+replace `splined.db`. It requires `credentials/navidrome.json`; deterministic
+matching uses exact Release MBID first and otherwise one unique normalized
+Artist + Album identity. Its downloaded-artwork reference is an in-memory,
+secret-free session URI rather than an authenticated server URL.
 
 ## `[source_policies.<provider>]`
 
@@ -405,22 +412,14 @@ Legacy `[splineai]` remains a compatibility concern for existing installations;
 ## Windows portable interface settings
 
 Windows interface state is stored in `data/ui.toml` beside the portable Config
-v5 record. It includes theme, window placement, filters, splitter positions
-(including the coupled square Artwork-pane corner), panel-layout preset, Show
-Artwork, hover behavior, and current selections. It also retains Artwork Filter expansion and Media Album
-Selector visibility. It does not change source policy, credentials, the media
-database, or artwork-writing rules. **View > Panel Layout** supplies presets;
-splitters remain draggable and custom positions persist. The Artwork-only
-vertical divider and the horizontal divider beneath it move together so the
-outer Artwork pane remains square; the Select Media divider stays independent.
-The upscale editor derives Compact, Standard, or Spacious density from its live
-DPI-normalized width and does not persist a device name or RDP resolution as
-configuration. Moving the portable directory between displays therefore keeps
-the user's state while recalculating the eight-control single row for the active
-session.
-**View > Show
-Artwork** controls the embedded selected-Album/candidate preview; disabling it
-restores the floating hover preview without changing artwork policy.
+v5 record. It includes theme, window placement, library/workspace mode,
+filters, splitter positions, collapsible replacement-shell cards, Selected
+Artwork visibility/zoom, the five selected primary adjustments and their
+order, tri-state candidate categories, hover behavior, and current selections.
+It does not change provider policy, credentials, the media database, or
+artwork-writing rules. Moving the portable directory between displays retains
+that state while the replacement shell recalculates card density and horizontal
+strip extents from the current client size and DPI.
 
 ## Validation
 

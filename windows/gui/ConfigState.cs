@@ -160,8 +160,8 @@ namespace Splined.WindowsGui
         // Keep the native GUI default in the same priority order as the
         // authoritative Python help/config. Existing Config v5 files retain
         // their explicitly saved order.
-        public static readonly string[] ArtworkSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon" };
-        public static readonly string[] KnownSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon" };
+        public static readonly string[] ArtworkSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome" };
+        public static readonly string[] KnownSources = new[] { "deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome" };
         public string ConfigPath;
         public string Mode = "read";
         public string Verbosity = "info";
@@ -238,7 +238,13 @@ namespace Splined.WindowsGui
         public bool MediaFilterExpanded = true;
         public bool CandidateFilterExpanded;
         public bool CandidateSummaryExpanded = true;
+        public bool ArtworkFiltersExpanded = true;
+        public bool ArtworkEditingExpanded = true;
         public bool UpscalePreviewOnly = true;
+        public string ArtworkWorkspaceMode = "FindMatch";
+        public string LibraryNavigationMode = "Artists";
+        public List<string> PrimaryAdjustments = new List<string>(AdjustmentCatalog.DefaultPrimary);
+        public List<string> CandidateIncludedTypes = new List<string>();
         public List<string> CandidateExcludedSources = new List<string>();
         public List<string> CandidateExcludedTypes = new List<string>();
         public List<string> CandidateExcludedPolicies = new List<string>();
@@ -695,7 +701,13 @@ namespace Splined.WindowsGui
                 state.MediaFilterExpanded = ReadBool(text, "ui", "media_filter_expanded", true);
                 state.CandidateFilterExpanded = ReadBool(text, "ui", "candidate_filter_expanded", false);
                 state.CandidateSummaryExpanded = ReadBool(text, "ui", "candidate_summary_expanded", true);
+                state.ArtworkFiltersExpanded = ReadBool(text, "ui", "artwork_filters_expanded", true);
+                state.ArtworkEditingExpanded = ReadBool(text, "ui", "artwork_editing_expanded", true);
                 state.UpscalePreviewOnly = ReadBool(text, "ui", "upscale_preview_only", true);
+                state.ArtworkWorkspaceMode = ReadString(text, "ui", "artwork_workspace_mode", "FindMatch");
+                state.LibraryNavigationMode = ReadString(text, "ui", "library_navigation_mode", "Artists");
+                state.PrimaryAdjustments = AdjustmentCatalog.NormalizePrimary(ReadArray(text, "ui", "primary_adjustments"));
+                state.CandidateIncludedTypes = ReadArray(text, "ui", "candidate_included_types");
                 state.CandidateExcludedSources = ReadArray(text, "ui", "candidate_excluded_sources");
                 state.CandidateExcludedTypes = ReadArray(text, "ui", "candidate_excluded_types");
                 state.CandidateExcludedPolicies = ReadArray(text, "ui", "candidate_excluded_policies");
@@ -773,7 +785,13 @@ namespace Splined.WindowsGui
                 + "media_filter_expanded = " + Bool(state.MediaFilterExpanded) + Environment.NewLine
                 + "candidate_filter_expanded = " + Bool(state.CandidateFilterExpanded) + Environment.NewLine
                 + "candidate_summary_expanded = " + Bool(state.CandidateSummaryExpanded) + Environment.NewLine
+                + "artwork_filters_expanded = " + Bool(state.ArtworkFiltersExpanded) + Environment.NewLine
+                + "artwork_editing_expanded = " + Bool(state.ArtworkEditingExpanded) + Environment.NewLine
                 + "upscale_preview_only = " + Bool(state.UpscalePreviewOnly) + Environment.NewLine
+                + "artwork_workspace_mode = " + Quote(state.ArtworkWorkspaceMode) + Environment.NewLine
+                + "library_navigation_mode = " + Quote(state.LibraryNavigationMode) + Environment.NewLine
+                + "primary_adjustments = " + FormatArray(AdjustmentCatalog.NormalizePrimary(state.PrimaryAdjustments)) + Environment.NewLine
+                + "candidate_included_types = " + FormatArray(state.CandidateIncludedTypes) + Environment.NewLine
                 + "candidate_excluded_sources = " + FormatArray(state.CandidateExcludedSources) + Environment.NewLine
                 + "candidate_excluded_types = " + FormatArray(state.CandidateExcludedTypes) + Environment.NewLine
                 + "candidate_excluded_policies = " + FormatArray(state.CandidateExcludedPolicies) + Environment.NewLine

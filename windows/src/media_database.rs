@@ -60,6 +60,9 @@ pub struct MediaAlbumSnapshot {
     pub compilation_tracks: Vec<MediaTrackSnapshot>,
     pub track_count: i64,
     pub release_year: String,
+    pub artist_mbid: String,
+    pub album_mbid: String,
+    pub release_group_mbid: String,
     pub has_local_artwork: bool,
     pub local_artwork_files: Vec<String>,
     pub cover_path: String,
@@ -2106,7 +2109,7 @@ fn load_snapshot(
     drop(track_statement);
 
     let mut statement = connection.prepare(
-        "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source, COALESCE(albums.musicbrainz_albumid,'') \
+        "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source, COALESCE(albums.musicbrainz_albumid,''), COALESCE(albums.musicbrainz_releasegroupid,''), COALESCE(artists.musicbrainz_artistid,'') \
          FROM albums JOIN artists ON artists.artist_key=albums.artist_key ORDER BY albums.path COLLATE NOCASE",
     ).map_err(db_error("prepare Select Media snapshot"))?;
     let albums = statement
@@ -2147,6 +2150,9 @@ fn load_snapshot(
                     .unwrap_or_default(),
                 track_count: row.get(7)?,
                 release_year: row.get(8)?,
+                artist_mbid: row.get(23)?,
+                album_mbid: album_mbid.clone(),
+                release_group_mbid: row.get(22)?,
                 has_local_artwork: row.get::<_, i64>(9)? != 0,
                 local_artwork_files: mapper.json_paths_to_local(&local_art_json),
                 cover_path: mapper

@@ -8,7 +8,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub const CURRENT_CONFIG_VERSION: u32 = 5;
-pub const SUPPORTED_COVER_SOURCES: [&str; 8] = [
+pub const SUPPORTED_COVER_SOURCES: [&str; 9] = [
     "deezer",
     "itunes",
     "fanarttv",
@@ -17,8 +17,9 @@ pub const SUPPORTED_COVER_SOURCES: [&str; 8] = [
     "coverartarchive",
     "discogs",
     "amazon",
+    "navidrome",
 ];
-pub const SUPPORTED_SOURCE_POLICIES: [&str; 8] = [
+pub const SUPPORTED_SOURCE_POLICIES: [&str; 9] = [
     "deezer",
     "itunes",
     "fanarttv",
@@ -27,6 +28,7 @@ pub const SUPPORTED_SOURCE_POLICIES: [&str; 8] = [
     "discogs",
     "musicbrainz",
     "amazon",
+    "navidrome",
 ];
 
 // Public portable defaults are deliberately neutral. User library locations,

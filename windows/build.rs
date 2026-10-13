@@ -20,7 +20,11 @@ const GUI_SOURCES: &[&str] = &[
     "SetupForm.cs",
     "SupportWindows.cs",
     "LibraryModel.cs",
+    "ArtworkWorkspaceModel.cs",
+    "ArtworkWorkspaceControls.cs",
+    "NavidromeClient.cs",
     "MainForm.cs",
+    "MainForm.ReplacementShell.cs",
 ];
 
 const GUI_RESOURCES: &[(&str, &str)] = &[

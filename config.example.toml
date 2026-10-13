@@ -44,7 +44,7 @@ max = 2400
 ladder = 3600
 
 [sources]
-cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon"]
+cover_sources = ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome"]
 exclude_cover_sources = []
 
 # Strict Override makes decoded content evidence authoritative for Preferred
@@ -113,6 +113,16 @@ primary_image_only = true
 [source_policies.amazon]
 enabled = false
 strict_override = true
+source_override = false
+minimum_range_type = "LowerRange"
+allow_below_minimum_fallback = false
+primary_image_only = true
+
+# Navidrome is supplemental library/current-server artwork. It uses
+# credentials/navidrome.json and never replaces MusicBrainz or splined.db.
+[source_policies.navidrome]
+enabled = true
+strict_override = false
 source_override = false
 minimum_range_type = "LowerRange"
 allow_below_minimum_fallback = false

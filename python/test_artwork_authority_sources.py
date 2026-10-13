@@ -124,9 +124,11 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
         draft = PolicyDraft.from_config({"sources": {"cover_sources": []}})
         self.assertIn("musicbrainz", draft.source_order)
         self.assertIn("amazon", draft.source_order)
+        self.assertIn("navidrome", draft.source_order)
         self.assertTrue(draft.policies["musicbrainz"]["enabled"])
         self.assertFalse(draft.policies["amazon"]["enabled"])
         self.assertTrue(draft.policies["amazon"]["strict_override"])
+        self.assertTrue(draft.policies["navidrome"]["enabled"])
         self.assertEqual(
             draft.policies["musicbrainz"]["minimum_range_type"],
             "LowerRange",

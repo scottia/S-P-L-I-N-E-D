@@ -15,7 +15,7 @@ if not exist "%CSC%" (
 )
 if not exist "%QA_OUT%" mkdir "%QA_OUT%"
 if not exist "%QA_STATE%" mkdir "%QA_STATE%"
-"%CSC%" /nologo /target:exe /platform:x64 /main:Splined.WindowsGui.CredentialQaHarness /optimize+ /win32icon:app.ico /resource:splined-watermark.png,Splined.WindowsGui.Resources.splined-watermark.png /resource:splined-app-icon.png,Splined.WindowsGui.Resources.splined-app-icon.png /out:"%QA_OUT%\credential-qa.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll ReleaseInfo.cs BuildInfo.Test.cs Program.cs AppIcon.cs EmbeddedAssets.cs NativeCore.cs ConfigState.cs BackupWindows.cs MusicBrainzMatchesForm.cs RuntimeLog.cs UpdateService.cs ThemeManager.cs SetupForm.cs SupportWindows.cs LibraryModel.cs MainForm.cs GuiSelfTests.cs CredentialQaHarness.cs
+"%CSC%" /nologo /target:exe /platform:x64 /main:Splined.WindowsGui.CredentialQaHarness /optimize+ /win32icon:app.ico /resource:splined-watermark.png,Splined.WindowsGui.Resources.splined-watermark.png /resource:splined-app-icon.png,Splined.WindowsGui.Resources.splined-app-icon.png /out:"%QA_OUT%\credential-qa.exe" /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll ReleaseInfo.cs BuildInfo.Test.cs Program.cs AppIcon.cs EmbeddedAssets.cs NativeCore.cs ConfigState.cs BackupWindows.cs MusicBrainzMatchesForm.cs RuntimeLog.cs UpdateService.cs ThemeManager.cs SetupForm.cs SupportWindows.cs LibraryModel.cs ArtworkWorkspaceModel.cs ArtworkWorkspaceControls.cs NavidromeClient.cs MainForm.cs MainForm.ReplacementShell.cs GuiSelfTests.cs CredentialQaHarness.cs
 if errorlevel 1 (
   popd
   exit /b 1

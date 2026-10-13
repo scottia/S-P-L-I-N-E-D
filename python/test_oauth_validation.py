@@ -124,6 +124,7 @@ class OAuthValidationTests(unittest.TestCase):
                 ("Fanart.tv", "API Key v3.2"),
                 ("Last.fm", "API Key / Session"),
                 ("MusicBrainz", "OAuth Bearer"),
+                ("Navidrome", "Not Configured"),
                 ("iTunes", "Anonymous"),
                 ("CoverArt", "Anonymous"),
                 ("Amazon", "Anonymous / opt-in"),

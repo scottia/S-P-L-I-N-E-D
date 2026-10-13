@@ -20,6 +20,7 @@ and `token_file` are not Config v5 settings.
 | Last.fm | `lastfm.json` | API key required; account session optional |
 | Discogs | `discogs.json` | Personal access token required |
 | MusicBrainz / Cover Art Archive | `musicbrainz.json` | Anonymous release authority and artwork; OAuth optional |
+| Navidrome / OpenSubsonic | `navidrome.json` | Server URL, compatible API credential, and required Bearer Token |
 | iTunes / Apple | none | Anonymous |
 | Cover Art Archive | none | Anonymous |
 | Deezer | none | Anonymous |
@@ -142,6 +143,41 @@ metadata lookup. If a nominally current bearer token is rejected, it forces one
 refresh and retries once. Successful renewal atomically updates only the
 MusicBrainz credential while preserving its other fields.
 
+## Navidrome / OpenSubsonic
+
+Navidrome is supplemental library and current-server artwork enrichment. It
+does not replace MusicBrainz release authority, the SPLINED media index, or
+canonical path mapping. The shared credential contract is:
+
+```json
+{
+  "server_url": "https://music.example.invalid",
+  "username": "synthetic-account",
+  "password": "synthetic-compatible-password",
+  "api_key": "synthetic-opensubsonic-api-key",
+  "bearer_token": "synthetic-required-bearer-token"
+}
+```
+
+`server_url` must be an absolute HTTP or HTTPS URL. `bearer_token` is required
+by SPLINED and supports bearer-only authentication. An OpenSubsonic API key or
+compatible account/password can also be supplied when required by that server.
+SPLINED uses the compatible `search3` and `getCoverArt` endpoints first. The
+Bearer Token is sent only in the masked `X-ND-Authorization` header—never in a
+request URL—and is never copied into Config v5, SQLite, candidate references,
+logs, or screenshots.
+
+Windows **Credentials > Navidrome** masks all secret fields and performs a live
+ping/capability test. Python/Docker can create the same fixed file with:
+
+```text
+splined --navidrome-credentials
+```
+
+Candidate discovery prefers an exact MusicBrainz Release ID. Without that ID,
+one and only one normalized exact Artist + Album result is accepted. Ambiguous
+server matches return no candidate rather than guessing.
+
 ## Windows authorization
 
 Use **Credentials** to edit provider JSON. For MusicBrainz, save the application
@@ -152,7 +188,9 @@ commands expose the corresponding `--mb-oauth-login` option.
 
 ## Moving or backing up credentials
 
-Changing `credential_dir` does not move existing JSON files. Close SPLINED, move the four standard files deliberately, update Config v5, verify filesystem permissions, then test provider status before deleting the old copy.
+Changing `credential_dir` does not move existing JSON files. Close SPLINED,
+move the five standard files deliberately, update Config v5, verify filesystem
+permissions, then test provider status before deleting the old copy.
 
 On Windows, use selective `.spl` export to include credentials, internal
 settings, and SQLite as needed. On file-backed runtimes, back up the credential

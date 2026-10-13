@@ -27,6 +27,7 @@ SOURCE_NAMES = (
     "coverartarchive",
     "discogs",
     "amazon",
+    "navidrome",
 )
 RANGE_TYPES = (
     "BelowMinimum",
@@ -45,7 +46,7 @@ OPTIONAL_DIMENSIONS = (
 # Only these providers expose a differentiated front/primary flag in current
 # Python discovery. Other providers return one logical album-cover class.
 PRIMARY_METADATA_SOURCES = frozenset(
-    {"musicbrainz", "coverartarchive", "discogs", "amazon"}
+    {"musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome"}
 )
 
 

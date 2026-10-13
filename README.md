@@ -263,9 +263,15 @@ Current provider support includes:
 - 🔵 Deezer
 - 🟠 Discogs
 - 🛒 Amazon Store original primary images (opt-in)
+- 🟢 Navidrome / OpenSubsonic current-server artwork and library enrichment
 
 Sources can be reordered, enabled, or excluded. Source priority breaks otherwise
 equal scoring decisions.
+
+The Windows replacement workspace projects that authoritative Config v5 order
+into a mouse-scrollable, drag-reorderable source strip. Navidrome is
+supplemental enrichment only: MusicBrainz remains release authority and
+`splined.db` remains media/workflow authority.
 
 ---
 
@@ -373,6 +379,11 @@ volume.
 
 Credential files contain sensitive information and should **never** be
 committed to GitHub.
+
+Navidrome uses the fixed `navidrome.json` credential contract with an absolute
+server URL and required Bearer Token, plus an optional compatible OpenSubsonic
+API key or account credential when the server requires it. See the
+[provider credential guide](docs/credentials-providers.md).
 
 ---
 

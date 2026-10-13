@@ -76,6 +76,7 @@ SUPPORTED_SOURCES = (
     "coverartarchive",
     "discogs",
     "amazon",
+    "navidrome",
 )
 SUPPORTED_SOURCE_POLICIES = SUPPORTED_SOURCES
 FIXED_CREDENTIAL_FILES = {
@@ -83,6 +84,7 @@ FIXED_CREDENTIAL_FILES = {
     "lastfm": "lastfm.json",
     "discogs": "discogs.json",
     "musicbrainz": "musicbrainz.json",
+    "navidrome": "navidrome.json",
 }
 RANGE_TYPES = (
     "BelowMinimum",
@@ -93,6 +95,12 @@ RANGE_TYPES = (
     "AboveLadder",
 )
 EXTENSIONS = {"jpeg": "jpg", "png": "png", "webp": "webp"}
+NAVIDROME_INTERNAL_SCHEME = "splined+navidrome://"
+NAVIDROME_PROTOCOL_VERSION = "1.16.1"
+NAVIDROME_CLIENT_NAME = "SPLINED"
+_NAVIDROME_SESSION_LOCK = threading.Lock()
+_NAVIDROME_SESSIONS: dict[int, dict[str, str]] = {}
+_NAVIDROME_NEXT_SESSION = 1
 
 
 class SplinedError(RuntimeError):
@@ -3291,6 +3299,7 @@ def authentication_statuses(
     fanarttv = credential("fanarttv", "Fanart.tv")
     lastfm = credential("lastfm", "Last.fm")
     musicbrainz = credential("musicbrainz", "MusicBrainz")
+    navidrome = credential("navidrome", "Navidrome")
 
     discogs_mode = (
         "Personal Token"
@@ -3315,12 +3324,25 @@ def authentication_statuses(
         if musicbrainz and str(musicbrainz.get("access_token") or "").strip()
         else "Anonymous"
     )
+    navidrome_complete = bool(
+        navidrome
+        and str(navidrome.get("server_url") or "").strip()
+        and str(navidrome.get("bearer_token") or "").strip()
+    )
+    navidrome_mode = (
+        "OpenSubsonic API Key / Bearer"
+        if navidrome_complete and str(navidrome.get("api_key") or "").strip()
+        else "OpenSubsonic / Bearer"
+        if navidrome_complete
+        else "Not Configured"
+    )
 
     return (
         ("Discogs", discogs_mode),
         ("Fanart.tv", fanarttv_mode),
         ("Last.fm", lastfm_mode),
         ("MusicBrainz", musicbrainz_mode),
+        ("Navidrome", navidrome_mode),
         ("iTunes", "Anonymous"),
         ("CoverArt", "Anonymous"),
         ("Amazon", "Anonymous / opt-in"),
@@ -3380,6 +3402,70 @@ def confirm_replace(path: Path) -> bool:
     print(cyan(str(path)))
     answer = input("Replace stored credentials? [y/N]: ").strip().lower()
     return answer in {"y", "yes"}
+
+
+def load_navidrome_credentials(
+    config_file: Path,
+    cfg: dict[str, Any],
+) -> dict[str, str]:
+    """Load the cross-runtime Navidrome credential contract.
+
+    The Bearer token is intentionally required even when an OpenSubsonic API
+    key or password is present.  It is kept in the credential file only and is
+    never copied into Config v5, candidate URLs, SQLite, or diagnostics.
+    """
+    path = credential_file(config_file, cfg, "navidrome")
+    raw = load_json(path, "Navidrome")
+    credential = {
+        "server_url": str(raw.get("server_url") or "").strip().rstrip("/"),
+        "username": str(raw.get("username") or "").strip(),
+        "password": str(raw.get("password") or ""),
+        "api_key": str(raw.get("api_key") or "").strip(),
+        "bearer_token": str(raw.get("bearer_token") or "").strip(),
+    }
+    parsed = urlsplit(credential["server_url"])
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise SplinedError(
+            "Navidrome server_url must be an absolute HTTP or HTTPS URL."
+        )
+    if not credential["bearer_token"]:
+        raise SplinedError("Navidrome bearer_token is required by SPLINED.")
+    return credential
+
+
+def configure_navidrome_credentials(config_file: Path, cfg: dict[str, Any]) -> int:
+    path = credential_file(config_file, cfg, "navidrome")
+    print(cyan("SPLINED Navidrome / OpenSubsonic Credentials"))
+    print()
+    print("Credential file:")
+    print(cyan(str(path)))
+    print()
+    if not confirm_replace(path):
+        print("Navidrome credential update cancelled.")
+        return 0
+    server_url = input("Navidrome server URL: ").strip().rstrip("/")
+    username = input("Username / account (optional with API key): ").strip()
+    password = getpass.getpass("Compatible API password (optional): ")
+    api_key = getpass.getpass("OpenSubsonic API key (optional): ").strip()
+    bearer_token = getpass.getpass("Bearer Token (required): ").strip()
+    candidate = {
+        "server_url": server_url,
+        "username": username,
+        "password": password,
+        "api_key": api_key,
+        "bearer_token": bearer_token,
+    }
+    # Validate before the atomic write without ever placing secrets in errors.
+    parsed = urlsplit(server_url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise SplinedError(
+            "Navidrome server URL must be an absolute HTTP or HTTPS URL."
+        )
+    if not bearer_token:
+        raise SplinedError("Navidrome Bearer Token cannot be empty.")
+    save_json_atomic(path, candidate)
+    credential_created_notice(path)
+    return 0
 
 
 def _pkce_pair() -> tuple[str, str]:
@@ -4548,6 +4634,265 @@ def discover_discogs(
     return refs
 
 
+def _register_navidrome_session(credential: dict[str, str]) -> int:
+    global _NAVIDROME_NEXT_SESSION
+    with _NAVIDROME_SESSION_LOCK:
+        session_id = _NAVIDROME_NEXT_SESSION
+        _NAVIDROME_NEXT_SESSION += 1
+        _NAVIDROME_SESSIONS[session_id] = dict(credential)
+    return session_id
+
+
+def _navidrome_internal_cover_url(session_id: int, cover_id: str) -> str:
+    return (
+        f"{NAVIDROME_INTERNAL_SCHEME}{session_id}/"
+        + cover_id.encode("utf-8").hex()
+    )
+
+
+def _navidrome_internal_cover(
+    value: str,
+) -> tuple[dict[str, str], str]:
+    if not value.startswith(NAVIDROME_INTERNAL_SCHEME):
+        raise SplinedError("Invalid internal Navidrome artwork reference.")
+    body = value[len(NAVIDROME_INTERNAL_SCHEME) :]
+    try:
+        session_text, cover_hex = body.split("/", 1)
+        session_id = int(session_text)
+        cover_id = bytes.fromhex(cover_hex).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise SplinedError(
+            "Invalid internal Navidrome artwork reference."
+        ) from exc
+    with _NAVIDROME_SESSION_LOCK:
+        credential = _NAVIDROME_SESSIONS.get(session_id)
+        if credential is not None:
+            credential = dict(credential)
+    if credential is None:
+        raise SplinedError("Navidrome artwork credential session has expired.")
+    if not cover_id:
+        raise SplinedError("Invalid internal Navidrome artwork identity.")
+    return credential, cover_id
+
+
+def _navidrome_auth(
+    credential: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    params = {
+        "v": NAVIDROME_PROTOCOL_VERSION,
+        "c": NAVIDROME_CLIENT_NAME,
+        "f": "json",
+    }
+    if credential["api_key"]:
+        # OpenSubsonic API-key authentication must not also send `u`.
+        params["apiKey"] = credential["api_key"]
+    elif credential["password"]:
+        salt = secrets.token_hex(6)
+        # MD5 is required by the compatible Subsonic challenge protocol; it is
+        # not used as a password-storage primitive.
+        params.update(
+            {
+                "u": credential["username"],
+                "s": salt,
+                "t": hashlib.md5(
+                    (credential["password"] + salt).encode("utf-8"),
+                    usedforsecurity=False,
+                ).hexdigest(),
+            }
+        )
+    else:
+        # Bearer-only authentication remains in the request header. Never put the
+        # bearer token in a URL/query where proxies or diagnostics may retain it.
+        pass
+    return params, {
+        "X-ND-Authorization": "Bearer " + credential["bearer_token"]
+    }
+
+
+def _navidrome_get(
+    http: Http,
+    credential: dict[str, str],
+    method: str,
+    parameters: dict[str, str],
+    *,
+    stream: bool = False,
+) -> requests.Response:
+    query, headers = _navidrome_auth(credential)
+    query.update(parameters)
+    url = f"{credential['server_url']}/rest/{method}.view"
+    try:
+        return http.get(
+            url,
+            params=query,
+            headers=headers,
+            allow_redirects=True,
+            stream=stream,
+        )
+    except requests.RequestException as exc:
+        # requests exceptions often include a prepared URL. Never include the
+        # exception string because that URL can contain API authentication.
+        raise SplinedError(
+            f"Unable to reach Navidrome/OpenSubsonic ({type(exc).__name__})."
+        ) from None
+
+
+def _navidrome_json(response: requests.Response) -> dict[str, Any]:
+    if response.status_code in {401, 403}:
+        raise SplinedError(
+            "Navidrome rejected the saved authentication credentials."
+        )
+    if response.status_code != 200:
+        raise SplinedError(
+            f"Navidrome/OpenSubsonic returned HTTP {response.status_code}."
+        )
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SplinedError(
+            "Navidrome/OpenSubsonic returned invalid JSON."
+        ) from exc
+    if not isinstance(payload, dict):
+        raise SplinedError("Navidrome/OpenSubsonic returned an invalid response.")
+    envelope = payload.get("subsonic-response")
+    if not isinstance(envelope, dict):
+        raise SplinedError(
+            "Navidrome/OpenSubsonic response envelope is missing."
+        )
+    if str(envelope.get("status") or "").strip().lower() != "ok":
+        raise SplinedError("Navidrome/OpenSubsonic request failed.")
+    return envelope
+
+
+def _navidrome_album_title(album: dict[str, Any]) -> str:
+    for key in ("album", "title", "name"):
+        value = str(album.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _navidrome_album_mbid(album: dict[str, Any]) -> str:
+    for key, value in album.items():
+        if str(key).replace("-", "").replace("_", "").casefold() in {
+            "musicbrainzid",
+            "musicbrainzreleaseid",
+        }:
+            return str(value or "").strip()
+    return ""
+
+
+def _navidrome_identity(value: str) -> str:
+    return "".join(character.casefold() for character in value if character.isalnum())
+
+
+def match_navidrome_albums(
+    rel: Release,
+    albums: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Use MBID first, otherwise require one unique exact identity match."""
+    release_mbid = rel.mbid.strip()
+    if release_mbid:
+        by_mbid = [
+            album
+            for album in albums
+            if _navidrome_album_mbid(album).casefold() == release_mbid.casefold()
+        ]
+        if by_mbid:
+            return by_mbid
+    artist = _navidrome_identity(rel.artist_credit)
+    title = _navidrome_identity(rel.title)
+    exact = [
+        album
+        for album in albums
+        if _navidrome_identity(str(album.get("artist") or "")) == artist
+        and _navidrome_identity(_navidrome_album_title(album)) == title
+    ]
+    return exact if len(exact) == 1 else []
+
+
+def discover_navidrome(
+    http: Http,
+    config_file: Path,
+    cfg: dict[str, Any],
+    rel: Release,
+) -> list[Ref]:
+    credential = load_navidrome_credentials(config_file, cfg)
+    response = _navidrome_get(
+        http,
+        credential,
+        "search3",
+        {
+            "query": f"{rel.artist_credit} {rel.title}",
+            "artistCount": "0",
+            "albumCount": "50",
+            "songCount": "0",
+        },
+    )
+    try:
+        envelope = _navidrome_json(response)
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    result = envelope.get("searchResult3")
+    albums_raw = result.get("album", []) if isinstance(result, dict) else []
+    if not isinstance(albums_raw, list):
+        return []
+    albums = [album for album in albums_raw if isinstance(album, dict)]
+    matched = match_navidrome_albums(rel, albums)
+    matched = [
+        album for album in matched if str(album.get("coverArt") or "").strip()
+    ]
+    if not matched:
+        return []
+    session_id = _register_navidrome_session(credential)
+    refs: list[Ref] = []
+    for album in matched:
+        cover_id = str(album.get("coverArt") or "").strip()
+        album_id = str(album.get("id") or cover_id).strip()
+        refs.append(
+            Ref(
+                "navidrome",
+                album_id,
+                _navidrome_internal_cover_url(session_id, cover_id),
+                front=True,
+                approved=True,
+                types=["Front"],
+            )
+        )
+    return refs
+
+
+def download_navidrome_cover(http: Http, internal_url: str) -> requests.Response:
+    credential, cover_id = _navidrome_internal_cover(internal_url)
+    response = _navidrome_get(
+        http,
+        credential,
+        "getCoverArt",
+        {"id": cover_id},
+        stream=True,
+    )
+    if response.status_code in {401, 403}:
+        response.close()
+        raise SplinedError(
+            "Navidrome rejected the saved authentication credentials."
+        )
+    if response.status_code != 200:
+        status = response.status_code
+        response.close()
+        raise SplinedError(
+            f"Navidrome cover-art download returned HTTP {status}."
+        )
+    try:
+        content_length = int(response.headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    if content_length > MAX_DOWNLOAD_BYTES:
+        response.close()
+        raise SplinedError("Navidrome cover art exceeded the download size limit.")
+    return response
+
+
 def discover_fallback(
     http: Http,
     config_file: Path,
@@ -4598,6 +4943,8 @@ def discover_fallback(
                 found = discover_musicbrainz_artwork(http, synthetic)
             elif source == "amazon":
                 found = discover_amazon(http, synthetic)
+            elif source == "navidrome":
+                found = discover_navidrome(http, config_file, cfg, synthetic)
             else:
                 found = []
             elapsed = time.perf_counter() - started
@@ -4681,6 +5028,8 @@ def discover_all(
                 )
             elif source == "amazon":
                 found = discover_amazon(http, rel)
+            elif source == "navidrome":
+                found = discover_navidrome(http, config_file, cfg, rel)
             else:
                 found = []
             elapsed = time.perf_counter() - started
@@ -5123,13 +5472,18 @@ def download_candidates(
                 source=ref.source,
                 message=f"Downloading {provider_label(ref.source)} candidate",
             )
-            with http.get(ref.url, allow_redirects=True, stream=True) as response:
+            response_context = (
+                download_navidrome_cover(http, ref.url)
+                if ref.url.startswith(NAVIDROME_INTERNAL_SCHEME)
+                else http.get(ref.url, allow_redirects=True, stream=True)
+            )
+            with response_context as response:
                 if response.status_code != 200:
                     raise SplinedError(
                         f"artwork download returned HTTP {response.status_code}"
                     )
                 resolved_url = str(getattr(response, "url", "") or ref.url).strip()
-                if resolved_url:
+                if resolved_url and not ref.url.startswith(NAVIDROME_INTERNAL_SCHEME):
                     ref.browser_url = resolved_url
                 artwork = read_bounded_artwork_response(response)
             with Image.open(io.BytesIO(artwork)) as im:
@@ -7502,6 +7856,7 @@ def provider_label(source: str) -> str:
         "discogs": "Discogs",
         "musicbrainz": "MB / CAA",
         "amazon": "Amazon",
+        "navidrome": "Navidrome",
     }
     value = mapping.get(source.lower(), source.title())
     return value[:8]
@@ -7784,6 +8139,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      --lastfm-credentials", "Configure SPLINED Last.fm API credentials")
     help_row("      --lastfm-login", "Authorize SPLINED with a Last.fm user account")
     help_row("      --fanarttv-credentials", "Configure SPLINED Fanart.tv API credentials")
+    help_row("      --navidrome-credentials", "Configure Navidrome/OpenSubsonic credentials")
     help_row("      --oauth-validation", "Test saved credential tokens")
     help_row(
         "      Discogs",
@@ -7811,7 +8167,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     help_row("      " + "-" * 114)
     help_row(
         "      Sources",
-        "Fallback can use Deezer, iTunes, Last.fm and Discogs without MusicBrainz authority",
+        "Fallback can use Deezer, iTunes, Last.fm, Discogs, and deterministic Navidrome matches without MusicBrainz authority",
     )
     help_row(
         "      Manual picks",
@@ -7906,6 +8262,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--lastfm-credentials", action="store_true")
     p.add_argument("--lastfm-login", action="store_true")
     p.add_argument("--fanarttv-credentials", action="store_true")
+    p.add_argument("--navidrome-credentials", action="store_true")
     p.add_argument("--oauth-validation", action="store_true")
     tui_group = p.add_mutually_exclusive_group()
     tui_group.add_argument("--tui", action="store_true")
@@ -8082,6 +8439,7 @@ def main() -> int:
         if args.check_for_updates:
             return run_update_check()
         if args.fanarttv_credentials: return configure_fanarttv_credentials(path,cfg)
+        if args.navidrome_credentials: return configure_navidrome_credentials(path,cfg)
         if args.lastfm_credentials: return configure_lastfm_credentials(path,cfg)
         if args.lastfm_login: return run_lastfm_login(path,cfg)
         if args.mb_oauth_login: return run_musicbrainz_login(path,cfg)
