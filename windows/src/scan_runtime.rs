@@ -1746,6 +1746,7 @@ fn emit_normal_source_results(event: NormalSourceResultsEvent<'_>) {
                     "cover-file"
                 } else { "" },
                 "local_reference": item.reference.id, "url": item.reference.url,
+                "image_type": candidate_image_category(&item.reference.types),
                 "cache_path": item.downloaded.path(),
                 "recommended": Some(*candidate_index) == event.suggested_index,
             })
@@ -2579,6 +2580,7 @@ async fn run_compilation_album(
                         "embedded-track"
                     } else if candidate.source == "local" { "cover-file" } else { "" },
                     "local_reference": item.reference.id, "url": item.reference.url,
+                    "image_type": candidate_image_category(&item.reference.types),
                     "cache_path": item.downloaded.path(), "recommended": Some(*candidate_index) == suggested_index })
             }).collect::<Vec<_>>();
             gui_events::emit(
@@ -2714,6 +2716,29 @@ async fn run_compilation_album(
         "unresolved_tracks": tracks.len().saturating_sub(completed) }),
     );
     Ok(result)
+}
+
+fn candidate_image_category(types: &[String]) -> &'static str {
+    if types.iter().any(|value| value.eq_ignore_ascii_case("Back")) {
+        "BackCover"
+    } else if types.iter().any(|value| {
+        value.eq_ignore_ascii_case("Artist") || value.eq_ignore_ascii_case("ArtistImage")
+    }) {
+        "ArtistImage"
+    } else if types.iter().any(|value| {
+        value.eq_ignore_ascii_case("Media")
+            || value.eq_ignore_ascii_case("Booklet")
+            || value.eq_ignore_ascii_case("Medium")
+    }) {
+        "MediaBooklet"
+    } else if types
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case("Front"))
+    {
+        "FrontCover"
+    } else {
+        "Other"
+    }
 }
 
 fn compilation_track_is_already_complete(
@@ -3623,6 +3648,24 @@ fn projected_range_class(short_side: u32, range: &Range) -> &'static str {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn candidate_image_categories_preserve_filterable_provider_evidence() {
+        assert_eq!(
+            candidate_image_category(&["Front".to_string()]),
+            "FrontCover"
+        );
+        assert_eq!(candidate_image_category(&["Back".to_string()]), "BackCover");
+        assert_eq!(
+            candidate_image_category(&["ArtistImage".to_string()]),
+            "ArtistImage"
+        );
+        assert_eq!(
+            candidate_image_category(&["Booklet".to_string()]),
+            "MediaBooklet"
+        );
+        assert_eq!(candidate_image_category(&[]), "Other");
+    }
 
     #[test]
     fn manual_gui_review_keeps_existing_ideal_cover_in_candidate_results() {

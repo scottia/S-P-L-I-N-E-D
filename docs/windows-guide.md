@@ -5,8 +5,10 @@ layer. One Cargo-built `splined.exe` contains the application, workflow, and UI;
 there is no managed frontend, application DLL bridge, or helper process.
 
 The current Slint interface is deliberately a functional migration surface.
-It restores real application operation and establishes the native architecture
-for the separate graphical redesign.
+It restores the mature 1.0.88 Windows workflows in the native architecture;
+the separate graphical redesign has not been applied. The detailed comparison
+is maintained in the
+[1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md).
 
 ## First run and state
 
@@ -75,15 +77,23 @@ card so a native-resolution cover cannot cover the library or intercept its
 controls. The Media Library heading reports the current visible-row count, and
 an empty compilation-track section yields its space to the scrollable library.
 
-Text and status filters change only visibility. They never rewrite history,
-bypass, timeout, processed state, provider policy, or database identity.
-Available states are Unprocessed, Incomplete, Processed, Bypassed,
-Partial/Timeout, Artist Complete, and Artist Contains Bypass.
+Text and status filters change only visibility. Artist and Album filters can
+be combined with general search and multiple independently enabled status
+categories. They never rewrite history, bypass, timeout, processed state,
+provider policy, or database identity. Available states are Unprocessed,
+Partial / Error, Artist Bypass, Artist Complete, Processed, Incomplete, and
+Bypassed.
 
 **All**, **Filtered**, and **None** operate on the Rust-owned selection set.
+ALL respects an active artist scope; FILTERED requires an intentional filter
+scope and selects reviewable results rather than hidden albums.
 Bypassed albums require the explicit one-run override; active timeouts remain
 protected. Incomplete compilation work remains eligible according to the
 authoritative database snapshot.
+
+**Show Tracks / Embedded Art** projects cached compilation tracks for direct
+track-level reopen while retaining the parent album's queue and completion
+authority.
 
 ## Running work
 
@@ -107,9 +117,17 @@ exclude, and priority actions save back to the same authoritative source list;
 there is no UI-only provider order. Local artwork retains its fixed review role.
 Provider status and candidate counts are projections of runtime events.
 
-Candidate rows contain real source provenance, dimensions, range class, policy
-status, cache path, and recommendation state. Source and range controls filter
-the resident result set. They do not repeat provider discovery.
+Candidate rows contain real source provenance, native/projected dimensions,
+image type, range class, policy status, cache path, recommendation, comparison,
+and selection state. Source, type, policy, and range controls filter the
+resident result set. Each control cycles among include, neutral, and disregard
+and the filter state persists in `ui.toml`. Filtering never repeats provider
+discovery.
+
+Optional hover preview does not replace the selected decision. **Compare**
+opens a separate resizable horizontal comparison window. When no acceptable
+candidate survives, the fallback reason and editable artist/album refinement
+use the existing Rust retry decision.
 
 Available decisions include:
 
@@ -128,8 +146,12 @@ Rust pipeline is permitted to install validated output.
 **CURRENT ALBUM** is rendered separately from ordinary search results and is
 the authority row. It carries the current recording, artist, and release IDs.
 Applying IDs submits an authority decision to the Rust runtime. Ordinary result
-selection retains its release-row identity and visited state. After an authority
-choice the existing artwork workflow resumes in the same run.
+selection retains its release-row identity and visited state; **Use Release**
+is a separate action. Artist and release-type filters use the mature release
+ordering without decade groups. Retry and Back to MB retain the active result
+history. Editable recording, artist, and release identifiers are normalized
+and UUID-validated before **Apply IDs**. After an authority choice the existing
+artwork workflow resumes in the same run.
 
 ## Artwork editing and upscale
 
@@ -143,6 +165,12 @@ profile for the candidate decision. **Apply Upscale** enables the configured
 profile and existing maximum-upscale enforcement. The real final-artwork code
 continues to preserve native artwork above Ideal resolution, apply square/crop
 policy, and enforce `upscale_max_percent`.
+
+**Custom Upscale** opens a separate resizable Current/Upscaled comparison and
+editing window. Resolution and ratio labels are display overlays only. All
+eight controls provide increment, decrement, and reset; exactly five may be
+promoted and reordered as primary controls. Adaptive defaults remain Config v5
+backed.
 
 Existing-cover editing requires LIVE WRITE and a current local cover. It uses
 the same validated final-artwork pipeline and safe replacement behavior.

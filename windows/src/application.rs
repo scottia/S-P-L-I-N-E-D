@@ -26,7 +26,7 @@ impl LibraryView {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StatusFilter {
     All,
     Unprocessed,
@@ -46,11 +46,25 @@ impl StatusFilter {
             Self::Incomplete => "Incomplete",
             Self::Processed => "Processed",
             Self::Bypassed => "Bypassed",
-            Self::PartialTimeout => "Partial / Timeout",
+            Self::PartialTimeout => "Partial / Error",
             Self::ArtistComplete => "Artist Complete",
-            Self::ArtistContainsBypass => "Artist Contains Bypass",
+            Self::ArtistContainsBypass => "Artist Bypass",
         }
     }
+}
+
+fn all_status_filters() -> BTreeSet<StatusFilter> {
+    [
+        StatusFilter::Unprocessed,
+        StatusFilter::Incomplete,
+        StatusFilter::Processed,
+        StatusFilter::Bypassed,
+        StatusFilter::PartialTimeout,
+        StatusFilter::ArtistComplete,
+        StatusFilter::ArtistContainsBypass,
+    ]
+    .into_iter()
+    .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +113,7 @@ impl AlbumState {
             Self::New => "Unprocessed",
             Self::Incomplete => "Incomplete",
             Self::Processed => "Processed",
-            Self::TimeoutActive => "Partial / Timeout",
+            Self::TimeoutActive => "Partial / Error",
             Self::Bypassed => "Bypassed",
         }
     }
@@ -117,9 +131,9 @@ impl ArtistState {
     pub fn label(self) -> &'static str {
         match self {
             Self::Unprocessed => "Unprocessed",
-            Self::Partial => "Partial / Timeout",
+            Self::Partial => "Partial / Error",
             Self::Complete => "Artist Complete",
-            Self::ContainsBypass => "Artist Contains Bypass",
+            Self::ContainsBypass => "Artist Bypass",
         }
     }
 }
@@ -214,7 +228,11 @@ pub struct LibraryState {
     pub albums: Vec<AlbumEntry>,
     pub view: LibraryView,
     pub status_filter: StatusFilter,
+    pub status_filters: BTreeSet<StatusFilter>,
     pub text_filter: String,
+    pub artist_filter: String,
+    pub album_filter: String,
+    pub show_tracks: bool,
     pub focused_artist: Option<String>,
     pub focused_album_key: Option<String>,
     pub selected_compilation_track_paths: BTreeSet<String>,
@@ -259,7 +277,11 @@ impl LibraryState {
             albums,
             view: LibraryView::Artists,
             status_filter: StatusFilter::All,
+            status_filters: all_status_filters(),
             text_filter: String::new(),
+            artist_filter: String::new(),
+            album_filter: String::new(),
+            show_tracks: false,
             focused_artist: None,
             focused_album_key: None,
             selected_compilation_track_paths: BTreeSet::new(),
@@ -275,7 +297,11 @@ impl LibraryState {
             albums: Vec::new(),
             view: LibraryView::Artists,
             status_filter: StatusFilter::All,
+            status_filters: all_status_filters(),
             text_filter: String::new(),
+            artist_filter: String::new(),
+            album_filter: String::new(),
+            show_tracks: false,
             focused_artist: None,
             focused_album_key: None,
             selected_compilation_track_paths: BTreeSet::new(),
@@ -287,32 +313,45 @@ impl LibraryState {
     }
 
     pub fn compilation_track_rows(&self) -> Vec<CompilationTrackRow> {
-        let Some(album_key) = self.focused_album_key.as_ref() else {
-            return Vec::new();
-        };
-        let Some(album) = self
-            .albums
+        let focused = self.focused_album_key.as_deref();
+        self.albums
             .iter()
-            .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
-        else {
-            return Vec::new();
-        };
-        album
-            .snapshot
-            .compilation_tracks
-            .iter()
-            .map(|track| CompilationTrackRow {
-                album_key: album.snapshot.album_key.clone(),
-                path: track.path.clone(),
-                file_name: std::path::Path::new(&track.path)
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or(&track.path)
-                    .to_string(),
-                embedded_artwork_recorded: track.embedded_artwork_recorded,
-                selected: self
-                    .selected_compilation_track_paths
-                    .contains(&track.path.to_ascii_lowercase()),
+            .filter(|album| {
+                self.show_tracks
+                    || focused.is_some_and(|album_key| {
+                        album.snapshot.album_key.eq_ignore_ascii_case(album_key)
+                    })
+            })
+            .flat_map(|album| {
+                album
+                    .snapshot
+                    .compilation_tracks
+                    .iter()
+                    .map(move |track| CompilationTrackRow {
+                        album_key: album.snapshot.album_key.clone(),
+                        path: track.path.clone(),
+                        file_name: if self.show_tracks {
+                            format!(
+                                "{} — {} — {}",
+                                album.snapshot.artist,
+                                album.snapshot.title,
+                                std::path::Path::new(&track.path)
+                                    .file_name()
+                                    .and_then(|value| value.to_str())
+                                    .unwrap_or(&track.path)
+                            )
+                        } else {
+                            std::path::Path::new(&track.path)
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or(&track.path)
+                                .to_string()
+                        },
+                        embedded_artwork_recorded: track.embedded_artwork_recorded,
+                        selected: self
+                            .selected_compilation_track_paths
+                            .contains(&track.path.to_ascii_lowercase()),
+                    })
             })
             .collect()
     }
@@ -351,16 +390,24 @@ impl LibraryState {
 
     fn text_matches(&self, album: &AlbumEntry) -> bool {
         let needle = self.text_filter.trim().to_ascii_lowercase();
-        if needle.is_empty() {
-            return true;
-        }
-        album.snapshot.artist.to_ascii_lowercase().contains(&needle)
+        let global_matches = needle.is_empty()
+            || album.snapshot.artist.to_ascii_lowercase().contains(&needle)
             || album.snapshot.title.to_ascii_lowercase().contains(&needle)
-            || album.snapshot.path.to_ascii_lowercase().contains(&needle)
+            || album.snapshot.path.to_ascii_lowercase().contains(&needle);
+        let artist = self.artist_filter.trim().to_ascii_lowercase();
+        let album_title = self.album_filter.trim().to_ascii_lowercase();
+        global_matches
+            && (artist.is_empty() || album.snapshot.artist.to_ascii_lowercase().contains(&artist))
+            && (album_title.is_empty()
+                || album
+                    .snapshot
+                    .title
+                    .to_ascii_lowercase()
+                    .contains(&album_title))
     }
 
     fn status_matches(&self, album: &AlbumEntry, artist_state: ArtistState) -> bool {
-        match self.status_filter {
+        let matches = |filter| match filter {
             StatusFilter::All => true,
             StatusFilter::Unprocessed => album.state == AlbumState::New,
             StatusFilter::Incomplete => album.state == AlbumState::Incomplete,
@@ -371,7 +418,8 @@ impl LibraryState {
             }
             StatusFilter::ArtistComplete => artist_state == ArtistState::Complete,
             StatusFilter::ArtistContainsBypass => artist_state == ArtistState::ContainsBypass,
-        }
+        };
+        self.status_filters.iter().copied().any(matches)
     }
 
     fn album_visible(&self, index: usize, artists: &BTreeMap<String, Vec<usize>>) -> bool {
@@ -461,8 +509,103 @@ impl LibraryState {
         self.text_filter = value.into();
     }
 
+    pub fn set_artist_filter(&mut self, value: impl Into<String>) {
+        self.artist_filter = value.into();
+    }
+
+    pub fn set_album_filter(&mut self, value: impl Into<String>) {
+        self.album_filter = value.into();
+    }
+
     pub fn set_status_filter(&mut self, value: StatusFilter) {
         self.status_filter = value;
+        self.status_filters = if value == StatusFilter::All {
+            all_status_filters()
+        } else {
+            [value].into_iter().collect()
+        };
+    }
+
+    pub fn set_status_filters(&mut self, values: impl IntoIterator<Item = StatusFilter>) {
+        let selected = values
+            .into_iter()
+            .filter(|value| *value != StatusFilter::All)
+            .collect::<BTreeSet<_>>();
+        self.status_filters = if selected.is_empty() {
+            all_status_filters()
+        } else {
+            selected
+        };
+        self.status_filter = StatusFilter::All;
+    }
+
+    pub fn toggle_status_filter(&mut self, value: StatusFilter) {
+        if value == StatusFilter::All {
+            self.status_filters = all_status_filters();
+        } else if !self.status_filters.remove(&value) {
+            self.status_filters.insert(value);
+        }
+        self.status_filter = StatusFilter::All;
+    }
+
+    pub fn status_filter_enabled(&self, value: StatusFilter) -> bool {
+        if value == StatusFilter::All {
+            self.status_filters == all_status_filters()
+        } else {
+            self.status_filters.contains(&value)
+        }
+    }
+
+    pub fn status_count(&self, value: StatusFilter) -> usize {
+        if value == StatusFilter::All {
+            return self.albums.len();
+        }
+        if matches!(
+            value,
+            StatusFilter::ArtistComplete | StatusFilter::ArtistContainsBypass
+        ) {
+            return self
+                .artists()
+                .values()
+                .filter(|indices| {
+                    let state =
+                        Self::artist_state(indices.iter().map(|index| &self.albums[*index]));
+                    matches!(
+                        (value, state),
+                        (StatusFilter::ArtistComplete, ArtistState::Complete)
+                            | (
+                                StatusFilter::ArtistContainsBypass,
+                                ArtistState::ContainsBypass
+                            )
+                    )
+                })
+                .count();
+        }
+        self.albums
+            .iter()
+            .filter(|album| match value {
+                StatusFilter::Unprocessed => album.state == AlbumState::New,
+                StatusFilter::Incomplete => album.state == AlbumState::Incomplete,
+                StatusFilter::Processed => album.state == AlbumState::Processed,
+                StatusFilter::Bypassed => album.state == AlbumState::Bypassed,
+                StatusFilter::PartialTimeout => album.state == AlbumState::TimeoutActive,
+                StatusFilter::All
+                | StatusFilter::ArtistComplete
+                | StatusFilter::ArtistContainsBypass => false,
+            })
+            .count()
+    }
+
+    pub fn embedded_art_track_count(&self) -> usize {
+        self.albums
+            .iter()
+            .flat_map(|album| album.snapshot.compilation_tracks.iter())
+            .filter(|track| track.embedded_artwork_recorded)
+            .count()
+    }
+
+    pub fn set_show_tracks(&mut self, enabled: bool) {
+        self.show_tracks = enabled;
     }
 
     pub fn clear_artist_scope(&mut self) {
@@ -620,6 +763,22 @@ impl LibraryState {
         }
     }
 
+    pub fn select_all_for_focused_artist(&mut self) -> Result<usize, String> {
+        let artist = self
+            .focused_artist
+            .clone()
+            .ok_or_else(|| "Select [ALL] requires an Artist.".to_string())?;
+        self.select_none();
+        for album in &mut self.albums {
+            if album.snapshot.artist.eq_ignore_ascii_case(&artist) && album.eligible_by_default() {
+                album.selected = true;
+                album.bypass_override = album.state == AlbumState::Bypassed
+                    && album.compilation_track_artwork_pending();
+            }
+        }
+        Ok(self.selected_count())
+    }
+
     pub fn select_filtered(&mut self) {
         let artists = self.artists();
         let visible = self
@@ -632,12 +791,29 @@ impl LibraryState {
         self.select_none();
         for index in visible {
             let album = &mut self.albums[index];
-            if album.eligible_by_default() {
+            if matches!(
+                album.state,
+                AlbumState::New | AlbumState::Incomplete | AlbumState::Processed
+            ) || album.compilation_track_artwork_pending()
+            {
                 album.selected = true;
                 album.bypass_override = album.state == AlbumState::Bypassed
                     && album.compilation_track_artwork_pending();
             }
         }
+    }
+
+    pub fn select_filtered_for_review(&mut self) -> Result<usize, String> {
+        if self.text_filter.trim().is_empty()
+            && self.artist_filter.trim().is_empty()
+            && self.album_filter.trim().is_empty()
+        {
+            return Err(
+                "Select [FILTERED] requires Artist, Album, or library search text.".to_string(),
+            );
+        }
+        self.select_filtered();
+        Ok(self.selected_count())
     }
 
     pub fn queue(&self, scope: ScanScope) -> Vec<ScanTarget> {
@@ -714,14 +890,22 @@ impl LibraryState {
             .collect::<HashMap<_, _>>();
         let view = self.view;
         let status_filter = self.status_filter;
+        let status_filters = self.status_filters.clone();
         let text_filter = self.text_filter.clone();
+        let artist_filter = self.artist_filter.clone();
+        let album_filter = self.album_filter.clone();
+        let show_tracks = self.show_tracks;
         let focused_artist = self.focused_artist.clone();
         let focused_album_key = self.focused_album_key.clone();
         let selected_compilation_track_paths = self.selected_compilation_track_paths.clone();
         let mut refreshed = Self::from_snapshot(snapshot)?;
         refreshed.view = view;
         refreshed.status_filter = status_filter;
+        refreshed.status_filters = status_filters;
         refreshed.text_filter = text_filter;
+        refreshed.artist_filter = artist_filter;
+        refreshed.album_filter = album_filter;
+        refreshed.show_tracks = show_tracks;
         refreshed.focused_artist = focused_artist;
         refreshed.focused_album_key = focused_album_key;
         refreshed.selected_compilation_track_paths = selected_compilation_track_paths;
@@ -751,13 +935,73 @@ pub struct CandidateState {
     pub index: usize,
     pub source: String,
     pub dimensions: String,
+    pub width: u32,
+    pub height: u32,
+    pub projected_width: u32,
+    pub projected_height: u32,
+    pub source_range_class: String,
     pub range_class: String,
     pub policy_status: String,
+    pub policy_reason: String,
     pub image_type: String,
     pub cache_path: String,
     pub url: String,
+    pub local_origin: String,
+    pub acceptable: bool,
+    pub strict_override_active: bool,
+    pub upscaled: bool,
+    pub approved: bool,
     pub recommended: bool,
     pub selected: bool,
+}
+
+impl CandidateState {
+    pub fn is_local(&self) -> bool {
+        self.source.eq_ignore_ascii_case("local") || !self.local_origin.trim().is_empty()
+    }
+
+    pub fn is_rejected(&self) -> bool {
+        self.policy_status.eq_ignore_ascii_case("reject") || !self.acceptable
+    }
+
+    pub fn is_upscalable(&self) -> bool {
+        self.upscaled && self.acceptable && !self.is_rejected()
+    }
+
+    fn matches_filter(&self, dimension: &str, key: &str) -> bool {
+        match dimension {
+            "source" => self.source.eq_ignore_ascii_case(key),
+            "range" => {
+                range_filter_matches(&self.source_range_class, key)
+                    || range_filter_matches(&self.range_class, key)
+            }
+            "policy" if key.eq_ignore_ascii_case("Acceptable") => self.acceptable,
+            "policy" if key.eq_ignore_ascii_case("Strict") => self.strict_override_active,
+            "type" if key.eq_ignore_ascii_case("Recommended") => self.recommended,
+            "type" if key.eq_ignore_ascii_case("Upscalable") => self.is_upscalable(),
+            "type" if key.eq_ignore_ascii_case("Rejected") => self.is_rejected(),
+            "type" if key.eq_ignore_ascii_case("Local") => self.is_local(),
+            "type" => self.image_type.eq_ignore_ascii_case(key),
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CandidateFilterDisposition {
+    Neutral,
+    Included,
+    Disregarded,
+}
+
+impl CandidateFilterDisposition {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Neutral => "Neutral",
+            Self::Included => "Included",
+            Self::Disregarded => "Disregarded",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -778,6 +1022,8 @@ pub struct MusicBrainzResult {
     pub release_artist: String,
     pub release_date: String,
     pub release_class: String,
+    pub country: String,
+    pub resolution: String,
     pub release_mbid: String,
     pub url: String,
     pub current: bool,
@@ -851,6 +1097,7 @@ pub struct ApplicationState {
     pub library: LibraryState,
     pub sources: Vec<SourceState>,
     pub scan_scope: ScanScope,
+    pub auto_scan_enabled: bool,
     pub launch_mode: LaunchMode,
     pub phase: RunPhase,
     pub current_album_path: String,
@@ -862,12 +1109,41 @@ pub struct ApplicationState {
     pub selected_candidate: Option<usize>,
     pub candidate_source_filter: Option<String>,
     pub candidate_range_filter: Option<String>,
+    pub candidate_included_sources: BTreeSet<String>,
+    pub candidate_included_types: BTreeSet<String>,
+    pub candidate_included_policies: BTreeSet<String>,
+    pub candidate_included_ranges: BTreeSet<String>,
+    pub candidate_excluded_sources: BTreeSet<String>,
+    pub candidate_excluded_types: BTreeSet<String>,
+    pub candidate_excluded_policies: BTreeSet<String>,
+    pub candidate_excluded_ranges: BTreeSet<String>,
+    pub comparison_candidates: BTreeSet<usize>,
+    pub hover_enabled: bool,
+    pub hovered_candidate: Option<usize>,
+    pub fallback_active: bool,
+    pub fallback_reason: String,
+    pub fallback_artist: String,
+    pub fallback_album: String,
+    pub musicbrainz_retry_available: bool,
+    pub musicbrainz_back_available: bool,
+    pub musicbrainz_artist_filter: Option<String>,
+    pub musicbrainz_release_type_filter: Option<String>,
     pub musicbrainz_authority: MusicBrainzAuthority,
     pub musicbrainz_results: Vec<MusicBrainzResult>,
+    pub selected_musicbrainz_result: Option<usize>,
     pub adjustments: AdjustmentState,
+    pub primary_adjustments: Vec<String>,
+    pub media_selector_expanded: bool,
+    pub candidate_filter_expanded: bool,
+    pub artwork_editing_expanded: bool,
+    pub show_artwork: bool,
+    pub upscale_preview_only: bool,
     pub log: Vec<String>,
     pub last_error: Option<String>,
     pub service_status: String,
+    pub run_total: usize,
+    pub run_completed: usize,
+    pub run_failed: usize,
 }
 
 impl ApplicationState {
@@ -896,6 +1172,7 @@ impl ApplicationState {
             library: LibraryState::from_snapshot(snapshot)?,
             sources,
             scan_scope: ScanScope::Selected,
+            auto_scan_enabled: false,
             launch_mode,
             phase: RunPhase::Idle,
             current_album_path: String::new(),
@@ -907,12 +1184,41 @@ impl ApplicationState {
             selected_candidate: None,
             candidate_source_filter: None,
             candidate_range_filter: None,
+            candidate_included_sources: BTreeSet::new(),
+            candidate_included_types: BTreeSet::new(),
+            candidate_included_policies: BTreeSet::new(),
+            candidate_included_ranges: BTreeSet::new(),
+            candidate_excluded_sources: BTreeSet::new(),
+            candidate_excluded_types: BTreeSet::new(),
+            candidate_excluded_policies: BTreeSet::new(),
+            candidate_excluded_ranges: BTreeSet::new(),
+            comparison_candidates: BTreeSet::new(),
+            hover_enabled: false,
+            hovered_candidate: None,
+            fallback_active: false,
+            fallback_reason: String::new(),
+            fallback_artist: String::new(),
+            fallback_album: String::new(),
+            musicbrainz_retry_available: false,
+            musicbrainz_back_available: false,
+            musicbrainz_artist_filter: None,
+            musicbrainz_release_type_filter: None,
             musicbrainz_authority: MusicBrainzAuthority::default(),
             musicbrainz_results: Vec::new(),
+            selected_musicbrainz_result: None,
             adjustments,
+            primary_adjustments: default_primary_adjustments(),
+            media_selector_expanded: true,
+            candidate_filter_expanded: true,
+            artwork_editing_expanded: true,
+            show_artwork: true,
+            upscale_preview_only: true,
             log: vec!["SPLINED Rust application initialized.".to_string()],
             last_error: None,
             service_status: "Ready".to_string(),
+            run_total: 0,
+            run_completed: 0,
+            run_failed: 0,
         })
     }
 
@@ -1011,9 +1317,197 @@ impl ApplicationState {
             .filter(|candidate| {
                 self.candidate_range_filter
                     .as_ref()
-                    .is_none_or(|range| candidate.range_class.eq_ignore_ascii_case(range))
+                    .is_none_or(|range| range_filter_matches(&candidate.range_class, range))
             })
+            .filter(|candidate| self.candidate_passes_dimension(candidate, "source"))
+            .filter(|candidate| self.candidate_passes_dimension(candidate, "type"))
+            .filter(|candidate| self.candidate_passes_dimension(candidate, "policy"))
+            .filter(|candidate| self.candidate_passes_dimension(candidate, "range"))
             .collect()
+    }
+
+    fn candidate_filter_sets(
+        &self,
+        dimension: &str,
+    ) -> Option<(&BTreeSet<String>, &BTreeSet<String>)> {
+        match dimension {
+            "source" => Some((
+                &self.candidate_included_sources,
+                &self.candidate_excluded_sources,
+            )),
+            "type" => Some((
+                &self.candidate_included_types,
+                &self.candidate_excluded_types,
+            )),
+            "policy" => Some((
+                &self.candidate_included_policies,
+                &self.candidate_excluded_policies,
+            )),
+            "range" => Some((
+                &self.candidate_included_ranges,
+                &self.candidate_excluded_ranges,
+            )),
+            _ => None,
+        }
+    }
+
+    fn candidate_filter_sets_mut(
+        &mut self,
+        dimension: &str,
+    ) -> Option<(&mut BTreeSet<String>, &mut BTreeSet<String>)> {
+        match dimension {
+            "source" => Some((
+                &mut self.candidate_included_sources,
+                &mut self.candidate_excluded_sources,
+            )),
+            "type" => Some((
+                &mut self.candidate_included_types,
+                &mut self.candidate_excluded_types,
+            )),
+            "policy" => Some((
+                &mut self.candidate_included_policies,
+                &mut self.candidate_excluded_policies,
+            )),
+            "range" => Some((
+                &mut self.candidate_included_ranges,
+                &mut self.candidate_excluded_ranges,
+            )),
+            _ => None,
+        }
+    }
+
+    fn candidate_passes_dimension(&self, candidate: &CandidateState, dimension: &str) -> bool {
+        let Some((included, excluded)) = self.candidate_filter_sets(dimension) else {
+            return true;
+        };
+        if excluded
+            .iter()
+            .any(|key| candidate.matches_filter(dimension, key))
+        {
+            return false;
+        }
+        included.is_empty()
+            || included
+                .iter()
+                .any(|key| candidate.matches_filter(dimension, key))
+    }
+
+    pub fn candidate_filter_disposition(
+        &self,
+        dimension: &str,
+        key: &str,
+    ) -> CandidateFilterDisposition {
+        let Some((included, excluded)) = self.candidate_filter_sets(dimension) else {
+            return CandidateFilterDisposition::Neutral;
+        };
+        if included.iter().any(|value| value.eq_ignore_ascii_case(key)) {
+            CandidateFilterDisposition::Included
+        } else if excluded.iter().any(|value| value.eq_ignore_ascii_case(key)) {
+            CandidateFilterDisposition::Disregarded
+        } else {
+            CandidateFilterDisposition::Neutral
+        }
+    }
+
+    pub fn cycle_candidate_filter(
+        &mut self,
+        dimension: &str,
+        key: &str,
+    ) -> Result<CandidateFilterDisposition, String> {
+        let current = self.candidate_filter_disposition(dimension, key);
+        let Some((included, excluded)) = self.candidate_filter_sets_mut(dimension) else {
+            return Err(format!("Unknown candidate filter dimension: {dimension}"));
+        };
+        let remove_case_insensitive = |set: &mut BTreeSet<String>| {
+            if let Some(existing) = set
+                .iter()
+                .find(|value| value.eq_ignore_ascii_case(key))
+                .cloned()
+            {
+                set.remove(&existing);
+            }
+        };
+        remove_case_insensitive(included);
+        remove_case_insensitive(excluded);
+        let next = match current {
+            CandidateFilterDisposition::Neutral => {
+                included.insert(key.to_string());
+                CandidateFilterDisposition::Included
+            }
+            CandidateFilterDisposition::Included => {
+                excluded.insert(key.to_string());
+                CandidateFilterDisposition::Disregarded
+            }
+            CandidateFilterDisposition::Disregarded => CandidateFilterDisposition::Neutral,
+        };
+        Ok(next)
+    }
+
+    pub fn clear_candidate_filters(&mut self) {
+        self.candidate_source_filter = None;
+        self.candidate_range_filter = None;
+        self.candidate_included_sources.clear();
+        self.candidate_included_types.clear();
+        self.candidate_included_policies.clear();
+        self.candidate_included_ranges.clear();
+        self.candidate_excluded_sources.clear();
+        self.candidate_excluded_types.clear();
+        self.candidate_excluded_policies.clear();
+        self.candidate_excluded_ranges.clear();
+    }
+
+    pub fn candidate_filter_count(&self, dimension: &str, key: &str) -> usize {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.matches_filter(dimension, key))
+            .count()
+    }
+
+    pub fn toggle_candidate_comparison(&mut self, index: usize) -> bool {
+        if !self
+            .candidates
+            .iter()
+            .any(|candidate| candidate.index == index)
+        {
+            return false;
+        }
+        if !self.comparison_candidates.remove(&index) {
+            self.comparison_candidates.insert(index);
+        }
+        true
+    }
+
+    pub fn comparison_candidates(&self) -> Vec<&CandidateState> {
+        let mut candidates = self
+            .candidates
+            .iter()
+            .filter(|candidate| self.comparison_candidates.contains(&candidate.index))
+            .collect::<Vec<_>>();
+        if candidates.is_empty()
+            && let Some(selected) = self.selected_candidate()
+        {
+            candidates.push(selected);
+        }
+        candidates
+    }
+
+    pub fn set_candidate_hover(&mut self, index: usize, active: bool) {
+        self.hovered_candidate = if self.hover_enabled && active {
+            self.candidates
+                .iter()
+                .any(|candidate| candidate.index == index)
+                .then_some(index)
+        } else if self.hovered_candidate == Some(index) || !active {
+            None
+        } else {
+            self.hovered_candidate
+        };
+    }
+
+    pub fn preview_candidate(&self) -> Option<&CandidateState> {
+        self.hovered_candidate
+            .and_then(|index| self.candidates.iter().find(|item| item.index == index))
+            .or_else(|| self.selected_candidate())
     }
 
     pub fn set_candidate_source_filter(&mut self, source: &str) {
@@ -1030,6 +1524,40 @@ impl ApplicationState {
         } else {
             Some(range.to_string())
         };
+    }
+
+    pub fn set_musicbrainz_artist_filter(&mut self, artist: &str) {
+        self.musicbrainz_artist_filter = if artist.eq_ignore_ascii_case("all") {
+            None
+        } else {
+            Some(artist.to_string())
+        };
+    }
+
+    pub fn set_musicbrainz_release_type_filter(&mut self, release_type: &str) {
+        self.musicbrainz_release_type_filter = if release_type.eq_ignore_ascii_case("all") {
+            None
+        } else {
+            Some(release_type.to_string())
+        };
+    }
+
+    pub fn visible_musicbrainz_results(&self) -> Vec<&MusicBrainzResult> {
+        self.musicbrainz_results
+            .iter()
+            .filter(|item| {
+                self.musicbrainz_artist_filter
+                    .as_ref()
+                    .is_none_or(|artist| item.release_artist.eq_ignore_ascii_case(artist))
+            })
+            .filter(|item| {
+                self.musicbrainz_release_type_filter
+                    .as_ref()
+                    .is_none_or(|release_type| {
+                        item.release_class.eq_ignore_ascii_case(release_type)
+                    })
+            })
+            .collect()
     }
 
     pub fn set_source_enabled(&mut self, source: &str, enabled: bool) -> Result<(), String> {
@@ -1114,6 +1642,94 @@ impl ApplicationState {
         self.config.output.upscale_color_temperature = self.adjustments.color_temperature;
     }
 
+    pub fn set_primary_adjustments(&mut self, requested: &[String]) {
+        let catalog = [
+            "Picture",
+            "Sharpen",
+            "Softness",
+            "Contrast",
+            "Exposure",
+            "Brightness",
+            "Gamma",
+            "Color",
+        ];
+        let mut normalized = Vec::new();
+        for value in requested {
+            if let Some(canonical) = catalog
+                .iter()
+                .find(|candidate| candidate.eq_ignore_ascii_case(value.trim()))
+                && !normalized
+                    .iter()
+                    .any(|existing: &String| existing.eq_ignore_ascii_case(canonical))
+            {
+                normalized.push((*canonical).to_string());
+            }
+        }
+        for fallback in catalog {
+            if normalized.len() >= 5 {
+                break;
+            }
+            if !normalized
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(fallback))
+            {
+                normalized.push(fallback.to_string());
+            }
+        }
+        normalized.truncate(5);
+        self.primary_adjustments = normalized;
+    }
+
+    pub fn move_primary_adjustment(&mut self, name: &str, direction: isize) -> bool {
+        let Some(index) = self
+            .primary_adjustments
+            .iter()
+            .position(|value| value.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        let target = index
+            .saturating_add_signed(direction)
+            .min(self.primary_adjustments.len().saturating_sub(1));
+        if target == index {
+            return false;
+        }
+        self.primary_adjustments.swap(index, target);
+        true
+    }
+
+    pub fn promote_primary_adjustment(&mut self, name: &str) -> bool {
+        let catalog = [
+            "Picture",
+            "Sharpen",
+            "Softness",
+            "Contrast",
+            "Exposure",
+            "Brightness",
+            "Gamma",
+            "Color",
+        ];
+        let Some(canonical) = catalog
+            .iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        if self
+            .primary_adjustments
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(canonical))
+        {
+            return false;
+        }
+        if self.primary_adjustments.len() >= 5 {
+            self.primary_adjustments.pop();
+        }
+        self.primary_adjustments.insert(0, (*canonical).to_string());
+        self.set_primary_adjustments(&self.primary_adjustments.clone());
+        true
+    }
+
     pub fn candidate_decision(&self, action: &str) -> Result<Value, String> {
         match action {
             "use" => {
@@ -1145,6 +1761,20 @@ impl ApplicationState {
         }
     }
 
+    pub fn fallback_retry_decision(&self, artist: &str, album: &str) -> Result<Value, String> {
+        if !self.fallback_active {
+            return Err(
+                "Fallback refinement is available only during fallback review.".to_string(),
+            );
+        }
+        let artist = artist.trim();
+        let album = album.trim();
+        if artist.is_empty() || album.is_empty() {
+            return Err("Fallback retry requires both Artist and Album.".to_string());
+        }
+        Ok(json!({"action": "retry", "artist": artist, "album": album}))
+    }
+
     pub fn musicbrainz_result_decision(&self, index: usize) -> Result<Value, String> {
         self.musicbrainz_results
             .iter()
@@ -1153,15 +1783,67 @@ impl ApplicationState {
         Ok(json!({"action": "use_musicbrainz_match", "index": index}))
     }
 
+    pub fn select_musicbrainz_result(&mut self, index: usize) -> bool {
+        if !self
+            .musicbrainz_results
+            .iter()
+            .any(|item| item.index == index)
+        {
+            return false;
+        }
+        self.selected_musicbrainz_result = Some(index);
+        true
+    }
+
+    pub fn selected_musicbrainz_result_decision(&mut self) -> Result<Value, String> {
+        let index = self.selected_musicbrainz_result.ok_or_else(|| {
+            "Select a MusicBrainz release before choosing Use Release.".to_string()
+        })?;
+        if let Some(item) = self
+            .musicbrainz_results
+            .iter_mut()
+            .find(|item| item.index == index)
+        {
+            item.visited = true;
+        }
+        self.musicbrainz_result_decision(index)
+    }
+
     pub fn musicbrainz_authority_decision(&self) -> Result<Value, String> {
-        if self.musicbrainz_authority.release_mbid.trim().is_empty() {
-            return Err("CURRENT ALBUM requires a MusicBrainz Release ID.".to_string());
+        self.musicbrainz_authority_decision_with_ids(
+            &self.musicbrainz_authority.recording_mbid,
+            &self.musicbrainz_authority.artist_mbids,
+            &self.musicbrainz_authority.release_mbid,
+        )
+    }
+
+    pub fn musicbrainz_authority_decision_with_ids(
+        &self,
+        recording_mbid: &str,
+        artist_mbids: &str,
+        release_mbid: &str,
+    ) -> Result<Value, String> {
+        let recording_mbid = recording_mbid.trim();
+        let release_mbid = release_mbid.trim();
+        let artist_mbids = artist_mbids
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if !valid_optional_mbid(recording_mbid)
+            || !valid_mbid(release_mbid)
+            || artist_mbids.iter().any(|value| !valid_mbid(value))
+        {
+            return Err(
+                "Release requires one MusicBrainz UUID. Recording accepts one UUID, and Artist accepts one or more comma-separated UUIDs."
+                    .to_string(),
+            );
         }
         Ok(json!({
             "action": "use_musicbrainz_authority",
-            "recording_mbid": self.musicbrainz_authority.recording_mbid,
-            "artist_mbids": self.musicbrainz_authority.artist_mbids,
-            "release_mbid": self.musicbrainz_authority.release_mbid,
+            "recording_mbid": recording_mbid,
+            "artist_mbids": artist_mbids.join(","),
+            "release_mbid": release_mbid,
         }))
     }
 
@@ -1195,6 +1877,10 @@ impl ApplicationState {
                 self.musicbrainz_authority.artist = string_field(event, "artist");
                 self.musicbrainz_authority.album = string_field(event, "release");
                 self.musicbrainz_authority.release_mbid = string_field(event, "release_mbid");
+                self.fallback_active = bool_field(event, "fallback");
+                self.fallback_reason = string_field(event, "reason");
+                self.fallback_artist = self.musicbrainz_authority.artist.clone();
+                self.fallback_album = self.musicbrainz_authority.album.clone();
                 self.push_log(format!(
                     "MusicBrainz authority: {} — {}",
                     self.musicbrainz_authority.artist, self.musicbrainz_authority.album
@@ -1203,11 +1889,13 @@ impl ApplicationState {
             "candidates" => self.apply_candidates(event),
             "decision_required" => {
                 self.phase = RunPhase::AwaitingCandidate;
+                self.musicbrainz_back_available = bool_field(event, "musicbrainz_back_available");
                 self.push_log("Artwork decision required.".to_string());
             }
             "musicbrainz_matches" => self.apply_musicbrainz_matches(event),
             "album_completed" => {
                 self.phase = RunPhase::Running;
+                self.run_completed = self.run_completed.saturating_add(1);
                 self.push_log(format!(
                     "Completed {} ({})",
                     string_field(event, "album_path"),
@@ -1225,10 +1913,15 @@ impl ApplicationState {
             )),
             "album_error" | "scan_error" => {
                 let message = string_field(event, "message");
+                self.run_failed = self.run_failed.saturating_add(1);
                 self.last_error = Some(message.clone());
                 self.push_log(format!("ERROR: {message}"));
             }
             "activity" => self.push_log(string_field(event, "message")),
+            "source_results_restored" => {
+                self.phase = RunPhase::AwaitingCandidate;
+                self.push_log("Returned to the cached artwork source results.".to_string());
+            }
             "provider_timing" => {
                 let source = string_field(event, "source");
                 if let Some(item) = self
@@ -1245,6 +1938,8 @@ impl ApplicationState {
     }
 
     fn apply_candidates(&mut self, event: &Value) {
+        self.comparison_candidates.clear();
+        self.hovered_candidate = None;
         let items = event
             .get("items")
             .and_then(Value::as_array)
@@ -1260,11 +1955,31 @@ impl ApplicationState {
                     index,
                     source: string_field(item, "source"),
                     dimensions: format!("{width} × {height}"),
+                    width: width as u32,
+                    height: height as u32,
+                    projected_width: item
+                        .get("projected_width")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(width) as u32,
+                    projected_height: item
+                        .get("projected_height")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(height) as u32,
+                    source_range_class: string_field(item, "source_range_class"),
                     range_class: string_field(item, "range_class"),
                     policy_status: string_field(item, "policy_status"),
+                    policy_reason: string_field(item, "policy_reason"),
                     image_type: string_field(item, "image_type"),
                     cache_path: string_field(item, "cache_path"),
                     url: string_field(item, "url"),
+                    local_origin: string_field(item, "local_origin"),
+                    acceptable: item
+                        .get("acceptable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                    strict_override_active: bool_field(item, "strict_override_active"),
+                    upscaled: bool_field(item, "upscaled"),
+                    approved: bool_field(item, "approved"),
                     recommended: item
                         .get("recommended")
                         .and_then(Value::as_bool)
@@ -1280,7 +1995,12 @@ impl ApplicationState {
             .or_else(|| self.candidates.first().map(|item| item.index));
         if let Some(index) = selected {
             self.select_candidate(index);
+            self.comparison_candidates.insert(index);
         }
+        self.fallback_active = bool_field(event, "fallback");
+        self.fallback_reason = string_field(event, "fallback_reason");
+        self.musicbrainz_retry_available = bool_field(event, "musicbrainz_retry_available");
+        self.musicbrainz_back_available = bool_field(event, "musicbrainz_back_available");
         for source in &mut self.sources {
             source.candidate_count = self
                 .candidates
@@ -1296,6 +2016,7 @@ impl ApplicationState {
 
     fn apply_musicbrainz_matches(&mut self, event: &Value) {
         self.phase = RunPhase::AwaitingMusicBrainz;
+        self.selected_musicbrainz_result = None;
         self.musicbrainz_authority = MusicBrainzAuthority {
             artist: string_field(event, "album_artist"),
             album: string_field(event, "album"),
@@ -1317,6 +2038,8 @@ impl ApplicationState {
                     release_artist: string_field(item, "release_artist"),
                     release_date: string_field(item, "release_date"),
                     release_class: string_field(item, "release_class"),
+                    country: string_field(item, "country"),
+                    resolution: string_field(item, "resolution"),
                     release_mbid: string_field(item, "release_mbid"),
                     url: string_field(item, "url"),
                     current: item
@@ -1330,6 +2053,26 @@ impl ApplicationState {
                 })
             })
             .collect();
+        self.musicbrainz_results.sort_by(|left, right| {
+            musicbrainz_family_rank(left)
+                .cmp(&musicbrainz_family_rank(right))
+                .then_with(|| {
+                    if musicbrainz_family_rank(left) == 0 {
+                        left.release_artist
+                            .to_ascii_lowercase()
+                            .cmp(&right.release_artist.to_ascii_lowercase())
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then_with(|| right.release_date.cmp(&left.release_date))
+                .then_with(|| country_rank(&left.country).cmp(&country_rank(&right.country)))
+                .then_with(|| {
+                    left.release_title
+                        .to_ascii_lowercase()
+                        .cmp(&right.release_title.to_ascii_lowercase())
+                })
+        });
         self.push_log(format!(
             "MusicBrainz returned {} release results.",
             self.musicbrainz_results.len()
@@ -1354,6 +2097,74 @@ fn string_field(value: &Value, name: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
+}
+
+fn default_primary_adjustments() -> Vec<String> {
+    ["Picture", "Sharpen", "Contrast", "Brightness", "Color"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+fn valid_optional_mbid(value: &str) -> bool {
+    value.is_empty() || valid_mbid(value)
+}
+
+fn valid_mbid(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, value)| match index {
+            8 | 13 | 18 | 23 => *value == b'-',
+            _ => value.is_ascii_hexdigit(),
+        })
+}
+
+fn range_filter_matches(value: &str, filter: &str) -> bool {
+    let normalize = |value: &str| {
+        let token = value
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        match token.as_str() {
+            "upper" => "upperrange".to_string(),
+            "lower" => "lowerrange".to_string(),
+            "above" => "aboveladder".to_string(),
+            "below" => "belowminimum".to_string(),
+            _ => token,
+        }
+    };
+    let value = normalize(value);
+    let filter = normalize(filter);
+    value == filter
+}
+
+fn bool_field(value: &Value, name: &str) -> bool {
+    value.get(name).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn musicbrainz_family_rank(item: &MusicBrainzResult) -> u8 {
+    if item.release_class.eq_ignore_ascii_case("soundtrack") {
+        1
+    } else if item.release_class.eq_ignore_ascii_case("compilation") {
+        2
+    } else if item.release_artist.eq_ignore_ascii_case("Various Artists") {
+        3
+    } else if item.release_artist.trim().is_empty() {
+        4
+    } else {
+        0
+    }
+}
+
+fn country_rank(country: &str) -> u8 {
+    if country.eq_ignore_ascii_case("US") {
+        0
+    } else if country.trim().is_empty() {
+        2
+    } else {
+        1
+    }
 }
 
 #[cfg(test)]
@@ -1665,10 +2476,10 @@ mod tests {
             "event":"musicbrainz_matches",
             "album_artist":"Alpha",
             "album":"Fresh",
-            "authority_recording_mbid":"recording",
-            "authority_artist_mbids":"artist",
-            "authority_release_mbid":"release",
-            "items":[{"index":1,"release_title":"Fresh","release_artist":"Alpha","release_date":"2024","release_class":"album","release_mbid":"release","url":"https://musicbrainz.org/release/release","current":true,"visited":false}]
+            "authority_recording_mbid":"11111111-1111-1111-1111-111111111111",
+            "authority_artist_mbids":"22222222-2222-2222-2222-222222222222",
+            "authority_release_mbid":"33333333-3333-3333-3333-333333333333",
+            "items":[{"index":1,"release_title":"Fresh","release_artist":"Alpha","release_date":"2024","release_class":"album","release_mbid":"33333333-3333-3333-3333-333333333333","url":"https://musicbrainz.org/release/33333333-3333-3333-3333-333333333333","current":true,"visited":false}]
         }));
         assert_eq!(state.phase, RunPhase::AwaitingMusicBrainz);
         assert_eq!(state.musicbrainz_results.len(), 1);
@@ -1787,5 +2598,150 @@ mod tests {
         assert_eq!(apply["apply_edit_profile"], true);
         state.persist_adjustments_to_config();
         assert_eq!(state.config.output.upscale_picture_percent, 7);
+    }
+
+    #[test]
+    fn mature_media_filters_and_selection_modes_are_composable() {
+        let mut state = library();
+        state.set_view(LibraryView::Albums);
+        state.set_status_filters([StatusFilter::Unprocessed, StatusFilter::Incomplete]);
+        assert_eq!(state.rows().len(), 2);
+        assert_eq!(state.status_count(StatusFilter::Processed), 1);
+        state.set_artist_filter("Alpha");
+        state.set_album_filter("Fresh");
+        assert_eq!(state.rows().len(), 1);
+        assert_eq!(state.select_filtered_for_review().unwrap(), 1);
+        assert_eq!(state.selected_count(), 1);
+
+        state.select_none();
+        state.set_artist_filter("");
+        state.set_album_filter("");
+        assert!(state.select_filtered_for_review().is_err());
+        state.toggle_artist("Alpha", false);
+        state.select_none();
+        assert_eq!(state.select_all_for_focused_artist().unwrap(), 1);
+        assert!(
+            state
+                .albums
+                .iter()
+                .any(|album| { album.snapshot.album_key == "a" && album.selected })
+        );
+        assert!(
+            !state
+                .albums
+                .iter()
+                .any(|album| { album.snapshot.album_key == "b" && album.selected })
+        );
+    }
+
+    #[test]
+    fn candidate_tri_state_comparison_hover_and_fallback_are_rust_owned() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![album("a", "Alpha", "Fresh", "unprocessed")],
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.apply_runtime_event(&json!({
+            "event":"candidates",
+            "recommended_index":1,
+            "items":[
+                {"index":1,"source":"local","width":1800,"height":1800,"source_range_class":"Ideal","range_class":"Ideal","policy_status":"accept","acceptable":true,"image_type":"FrontCover","cache_path":"a.jpg"},
+                {"index":2,"source":"discogs","width":500,"height":500,"source_range_class":"BelowMinimum","range_class":"BelowMinimum","policy_status":"reject","acceptable":false,"image_type":"BackCover","cache_path":"b.jpg"}
+            ]
+        }));
+        assert_eq!(
+            state.cycle_candidate_filter("type", "FrontCover").unwrap(),
+            CandidateFilterDisposition::Included
+        );
+        assert_eq!(state.visible_candidates().len(), 1);
+        assert_eq!(
+            state.cycle_candidate_filter("type", "FrontCover").unwrap(),
+            CandidateFilterDisposition::Disregarded
+        );
+        assert_eq!(state.visible_candidates().len(), 1);
+        assert_eq!(state.visible_candidates()[0].index, 2);
+        state.clear_candidate_filters();
+        assert!(state.toggle_candidate_comparison(2));
+        assert_eq!(state.comparison_candidates().len(), 2);
+        state.hover_enabled = true;
+        state.set_candidate_hover(2, true);
+        assert_eq!(state.preview_candidate().unwrap().index, 2);
+        state.fallback_active = true;
+        state.fallback_reason = "no deterministic authority".to_string();
+        state.fallback_artist = "Alpha".to_string();
+        state.fallback_album = "Fresh".to_string();
+        let retry = state.fallback_retry_decision("Alpha", "Fresh").unwrap();
+        assert_eq!(retry["action"], "retry");
+    }
+
+    #[test]
+    fn musicbrainz_filters_order_and_authority_editing_match_the_mature_contract() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![album("a", "Alpha", "Fresh", "unprocessed")],
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.apply_runtime_event(&json!({
+            "event":"musicbrainz_matches",
+            "album_artist":"Alpha",
+            "album":"Fresh",
+            "authority_release_mbid":"33333333-3333-3333-3333-333333333333",
+            "items":[
+                {"index":2,"release_title":"Compilation","release_artist":"Various Artists","release_date":"2020","release_class":"compilation","release_mbid":"44444444-4444-4444-4444-444444444444","country":"GB"},
+                {"index":1,"release_title":"Fresh","release_artist":"Alpha","release_date":"2024","release_class":"album","release_mbid":"33333333-3333-3333-3333-333333333333","country":"US","current":true}
+            ]
+        }));
+        assert_eq!(state.musicbrainz_results[0].index, 1);
+        assert!(state.select_musicbrainz_result(1));
+        assert_eq!(
+            state.selected_musicbrainz_result_decision().unwrap()["index"],
+            1
+        );
+        assert!(state.musicbrainz_results[0].visited);
+        state.set_musicbrainz_artist_filter("Various Artists");
+        assert_eq!(state.visible_musicbrainz_results().len(), 1);
+        let edited = state
+            .musicbrainz_authority_decision_with_ids(
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+                "33333333-3333-3333-3333-333333333333",
+            )
+            .unwrap();
+        assert_eq!(edited["action"], "use_musicbrainz_authority");
+        assert!(
+            state
+                .musicbrainz_authority_decision_with_ids("bad", "", "bad")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn primary_adjustments_are_exactly_five_and_reorderable() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![],
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.set_primary_adjustments(&[
+            "Gamma".to_string(),
+            "Gamma".to_string(),
+            "Softness".to_string(),
+        ]);
+        assert_eq!(state.primary_adjustments.len(), 5);
+        assert_eq!(state.primary_adjustments[0], "Gamma");
+        assert!(state.move_primary_adjustment("Gamma", 1));
+        assert_eq!(state.primary_adjustments[1], "Gamma");
+        assert!(state.promote_primary_adjustment("Brightness"));
+        assert_eq!(state.primary_adjustments[0], "Brightness");
+        assert_eq!(state.primary_adjustments.len(), 5);
     }
 }

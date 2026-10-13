@@ -24,6 +24,8 @@ with the current product documentation.
 - [Windows guide](windows-guide.md) — the replacement artwork shell, graphical
   library, dynamic source strip, Navidrome enrichment, candidate review,
   MusicBrainz Matches, Custom Upscale, backup, updates, and troubleshooting.
+- [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md)
+  — feature-by-feature migration status, validation, and explicit retirements.
 - [Windows replacement GUI validation](windows-gui-redesign-qa.md) — screenshot
   comparison matrix, test coverage, and deliberate reference adaptations.
 - [Python Ratatui guide](ratatui-tui.md) — persistent Select Media, structured

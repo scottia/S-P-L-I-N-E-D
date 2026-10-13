@@ -77,6 +77,13 @@ not a current build or runtime option.
 - [x] Portable update notification and native Store update handling retain their
       separate supported channels.
 
+The workflow-level comparison with the final mature WinForms behavior is in
+[Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md).
+That pass restores track navigation, multi-status and filtered selection,
+tri-state candidate filters, comparison/hover/fallback, MusicBrainz history and
+edited authority, Custom Upscale, primary-adjustment selection, persisted
+collapsible regions, and run statistics without restoring managed code.
+
 ## Validation gates
 
 - [x] `cargo fmt --check` for the Windows crate.
@@ -93,7 +100,7 @@ not a current build or runtime option.
 
 ## Configuration-correction evidence
 
-- Windows Rust/Slint: 306 library tests and 1 executable test passed.
+- Windows Rust/Slint: 313 library tests passed.
 - Root Rust: 199 library, 3 public-config, 9 release-automation, and 10
   architecture tests passed (221 total).
 - Python parity: 271 tests passed with 1 expected skip.
@@ -109,7 +116,7 @@ not a current build or runtime option.
 - Clean portable and unpacked Store-payload smoke runs created none of `data`,
   `_cache`, `_logs`, `credentials`, or `docker_builds` before Setup Save.
 - The two-file portable allowlist and unsigned Store package were validated.
-  Store identity remained `Psycotix.SPLINED`, version `1.0.90.0`, x64,
+  Store identity remained `Psycotix.SPLINED`, version `1.0.92.0`, x64,
   `Windows.Desktop`, with the `.spl` association and no DLL host artifact.
 
 ## Safety invariants

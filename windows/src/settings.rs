@@ -12,7 +12,29 @@ use std::path::{Path, PathBuf};
 pub struct UiPreferences {
     pub library_view: String,
     pub status_filter: String,
+    pub status_filters: Vec<String>,
     pub include_bypassed: bool,
+    pub auto_scan_enabled: bool,
+    pub auto_scan_scope: String,
+    pub launch_mode: String,
+    pub show_tracks: bool,
+    pub media_selector_expanded: bool,
+    pub candidate_filter_expanded: bool,
+    pub artwork_editing_expanded: bool,
+    pub show_artwork: bool,
+    pub hover_enabled: bool,
+    pub upscale_preview_only: bool,
+    pub artist_filter: String,
+    pub album_filter: String,
+    pub candidate_included_sources: Vec<String>,
+    pub candidate_included_types: Vec<String>,
+    pub candidate_included_policies: Vec<String>,
+    pub candidate_included_ranges: Vec<String>,
+    pub candidate_excluded_sources: Vec<String>,
+    pub candidate_excluded_types: Vec<String>,
+    pub candidate_excluded_policies: Vec<String>,
+    pub candidate_excluded_ranges: Vec<String>,
+    pub primary_adjustments: Vec<String>,
     pub window_width: u32,
     pub window_height: u32,
 }
@@ -22,7 +44,35 @@ impl Default for UiPreferences {
         Self {
             library_view: "artists".to_string(),
             status_filter: "all".to_string(),
+            status_filters: Vec::new(),
             include_bypassed: false,
+            auto_scan_enabled: false,
+            auto_scan_scope: "selected".to_string(),
+            launch_mode: "read".to_string(),
+            show_tracks: false,
+            media_selector_expanded: true,
+            candidate_filter_expanded: true,
+            artwork_editing_expanded: true,
+            show_artwork: true,
+            hover_enabled: false,
+            upscale_preview_only: true,
+            artist_filter: String::new(),
+            album_filter: String::new(),
+            candidate_included_sources: Vec::new(),
+            candidate_included_types: Vec::new(),
+            candidate_included_policies: Vec::new(),
+            candidate_included_ranges: Vec::new(),
+            candidate_excluded_sources: Vec::new(),
+            candidate_excluded_types: Vec::new(),
+            candidate_excluded_policies: Vec::new(),
+            candidate_excluded_ranges: Vec::new(),
+            primary_adjustments: vec![
+                "Picture".to_string(),
+                "Sharpen".to_string(),
+                "Contrast".to_string(),
+                "Brightness".to_string(),
+                "Color".to_string(),
+            ],
             window_width: 1380,
             window_height: 860,
         }
@@ -257,5 +307,35 @@ mod tests {
             portable_path(root, r"\\server\share\credentials"),
             r"\\server\share\credentials"
         );
+    }
+
+    #[test]
+    fn mature_interface_preferences_round_trip_without_a_second_authority() {
+        let preferences = UiPreferences {
+            library_view: "folders".to_string(),
+            status_filters: vec!["Unprocessed".to_string(), "Incomplete".to_string()],
+            show_tracks: true,
+            media_selector_expanded: false,
+            candidate_filter_expanded: false,
+            artwork_editing_expanded: true,
+            show_artwork: true,
+            hover_enabled: true,
+            upscale_preview_only: false,
+            artist_filter: "Beyoncé".to_string(),
+            album_filter: "Renaissance".to_string(),
+            candidate_included_types: vec!["FrontCover".to_string()],
+            candidate_excluded_types: vec!["BackCover".to_string()],
+            primary_adjustments: vec![
+                "Gamma".to_string(),
+                "Color".to_string(),
+                "Picture".to_string(),
+                "Sharpen".to_string(),
+                "Contrast".to_string(),
+            ],
+            ..UiPreferences::default()
+        };
+        let text = toml::to_string(&preferences).unwrap();
+        let restored: UiPreferences = toml::from_str(&text).unwrap();
+        assert_eq!(restored, preferences);
     }
 }

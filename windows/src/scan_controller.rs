@@ -48,7 +48,7 @@ impl ScanController {
             return Err("A SPLINED run is already active.".to_string());
         }
 
-        let (base_config, queue, launch_mode) = {
+        let (base_config, queue, launch_mode, auto_ideal) = {
             let mut state = self
                 .state
                 .lock()
@@ -60,6 +60,9 @@ impl ScanController {
             }
             state.phase = RunPhase::Running;
             state.last_error = None;
+            state.run_total = queue.len();
+            state.run_completed = 0;
+            state.run_failed = 0;
             let launch_label = match state.launch_mode {
                 crate::application::LaunchMode::Read => "READ",
                 crate::application::LaunchMode::LiveWrite => "LIVE WRITE",
@@ -70,7 +73,12 @@ impl ScanController {
                 if queue.len() == 1 { "" } else { "s" },
                 launch_label
             ));
-            (state.config.clone(), queue, state.launch_mode)
+            (
+                state.config.clone(),
+                queue,
+                state.launch_mode,
+                state.auto_scan_enabled,
+            )
         };
         let _ = self.notices.send(ControllerNotice::StateChanged);
 
@@ -115,9 +123,9 @@ impl ScanController {
                     }
                 };
 
-                if let Err(error) =
-                    run_target(&runtime, &state, &notices, &config, &sources, &target)
-                {
+                if let Err(error) = run_target(
+                    &runtime, &state, &notices, &config, &sources, &target, auto_ideal,
+                ) {
                     if !gui_events::cancelled()
                         && let Ok(mut app) = state.lock()
                     {
@@ -148,6 +156,20 @@ impl ScanController {
                 } else if app.last_error.is_none() {
                     app.push_log("SPLINED run completed.".to_string());
                 }
+                app.service_status = if cancelled {
+                    format!(
+                        "Stopped · {} of {} completed",
+                        app.run_completed, app.run_total
+                    )
+                } else if app.run_failed > 0 || app.last_error.is_some() {
+                    format!(
+                        "Run stopped · {} completed · {} failed",
+                        app.run_completed,
+                        app.run_failed.max(1)
+                    )
+                } else {
+                    format!("Run complete · {} completed", app.run_completed)
+                };
             }
             running.store(false, Ordering::SeqCst);
             let _ = notices.send(ControllerNotice::RunFinished);
@@ -205,9 +227,10 @@ fn run_target(
     config: &crate::config::Config,
     sources: &[String],
     target: &ScanTarget,
+    auto_ideal: bool,
 ) -> Result<(), String> {
     let (event_sender, event_receiver) = mpsc::channel::<Value>();
-    gui_events::begin_in_process(event_sender, true, false)?;
+    gui_events::begin_in_process(event_sender, true, auto_ideal)?;
     gui_events::set_bypass_overrides(target.bypass_override.then(|| PathBuf::from(&target.path)));
     gui_events::set_scan_context(ScanContext {
         compilation_track_path: target.compilation_track_path.as_ref().map(PathBuf::from),
@@ -252,6 +275,7 @@ fn finish_with_error(
     gui_events::reset_cancel();
     if let Ok(mut state) = state.lock() {
         state.phase = RunPhase::Idle;
+        state.run_failed = state.run_failed.saturating_add(1);
         state.last_error = Some(error.clone());
         state.push_log(format!("ERROR: {error}"));
     }
