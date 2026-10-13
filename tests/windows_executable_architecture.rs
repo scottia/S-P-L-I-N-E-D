@@ -120,6 +120,17 @@ fn slint_surface_exposes_real_migrated_workflows() {
         "first-run Setup does not expose the optional shared SQLite authority"
     );
     assert!(
+        ui.contains("preferred-width: 1380px")
+            && ui.contains("min-width: 960px")
+            && !ui.contains("width: 1380px; height: 860px"),
+        "the Slint application window is fixed-size instead of resizable"
+    );
+    assert!(
+        ui.contains("clip: true")
+            && ui.contains("source: root.current-preview; width: parent.width; height: parent.height"),
+        "the artwork preview can overflow and intercept the workspace"
+    );
+    assert!(
         main.contains("import_settings_from_opened_backup")
             && main.contains("Config v5 settings imported from the opened .spl backup"),
         "associated .spl files do not import Config v5 settings before startup"

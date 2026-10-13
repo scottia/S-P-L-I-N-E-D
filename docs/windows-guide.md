@@ -70,6 +70,11 @@ three views over the same album authority:
 - **Folders** displays physical album paths while retaining the same album keys
   and selection set.
 
+The main window is resizable and maximizable. Artwork is clipped to its preview
+card so a native-resolution cover cannot cover the library or intercept its
+controls. The Media Library heading reports the current visible-row count, and
+an empty compilation-track section yields its space to the scrollable library.
+
 Text and status filters change only visibility. They never rewrite history,
 bypass, timeout, processed state, provider policy, or database identity.
 Available states are Unprocessed, Incomplete, Processed, Bypassed,

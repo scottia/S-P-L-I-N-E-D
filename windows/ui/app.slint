@@ -30,7 +30,9 @@ component SettingToggle {
 export component AppWindow inherits Window {
     title: "S:P:L:I:N:E:D — Rust/Slint";
     icon: @image-url("../gui/splined-app-icon.png");
-    width: 1380px; height: 860px; background: #061522;
+    preferred-width: 1380px; preferred-height: 860px;
+    min-width: 960px; min-height: 640px;
+    background: #061522;
     in property <[UiLibraryRow]> library-rows;
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <[UiSourceRow]> source-rows;
@@ -193,7 +195,7 @@ export component AppWindow inherits Window {
             spacing: 7px; vertical-stretch: 1;
             Panel { width: 350px;
                 VerticalLayout { padding: 10px; spacing: 7px;
-                    Heading { text: "Media Library"; height: 28px; }
+                    Heading { text: "Media Library · " + root.library-rows.length + " rows"; height: 28px; }
                     HorizontalLayout { spacing: 5px;
                         Button { text: "Artists"; clicked => root.change-library-view(0); }
                         Button { text: "Albums"; clicked => root.change-library-view(1); }
@@ -221,8 +223,8 @@ export component AppWindow inherits Window {
                             touch := TouchArea { clicked => root.library-row-activated(row.key, root.include-bypassed); }
                         }
                     }
-                    Text { text: "Compilation Tracks · explicit embedded-art reopen"; color: #9fc1d5; font-size: 10px; height: 18px; }
-                    ListView { height: 112px;
+                    Text { text: "Compilation Tracks · explicit embedded-art reopen"; visible: root.compilation-track-rows.length > 0; color: #9fc1d5; font-size: 10px; height: root.compilation-track-rows.length > 0 ? 18px : 0px; }
+                    ListView { height: root.compilation-track-rows.length > 0 ? 112px : 0px;
                         for track in root.compilation-track-rows: Rectangle {
                             height: 34px; background: track.selected ? #173e58 : #0a1c2c;
                             border-color: track.selected ? #30c8ff : #183a55; border-width: 1px;
@@ -314,7 +316,14 @@ export component AppWindow inherits Window {
             Panel { width: 350px;
                 VerticalLayout { padding: 10px; spacing: 7px;
                     Heading { text: "Artwork Preview & Editing"; height: 28px; }
-                    Rectangle { height: 290px; background: #06111b; border-color: #274e6a; border-width: 1px; Image { source: root.current-preview; image-fit: contain; } }
+                    Rectangle {
+                        height: 290px;
+                        background: #06111b;
+                        border-color: #274e6a;
+                        border-width: 1px;
+                        clip: true;
+                        Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
+                    }
                     HorizontalLayout { spacing: 5px;
                         Button { text: "Upscale Preview"; enabled: root.awaiting-candidate; clicked => root.set-upscale-preview(true); }
                         Button { text: "Apply Upscale"; enabled: root.awaiting-candidate; clicked => root.set-upscale-preview(false); }
