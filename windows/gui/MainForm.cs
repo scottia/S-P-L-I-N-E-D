@@ -103,7 +103,7 @@ namespace Splined.WindowsGui
         Incomplete
     }
 
-    internal sealed class MainForm : FluentForm
+    internal sealed partial class MainForm : FluentForm
     {
         private struct ToneCorrection
         {
@@ -427,7 +427,7 @@ namespace Splined.WindowsGui
             return toolTip;
         }
 
-        private void BuildLayout()
+        private void BuildLegacyLayout()
         {
             MenuStrip menu = BuildMenu();
             MainMenuStrip = menu;
@@ -793,6 +793,22 @@ namespace Splined.WindowsGui
 
         private void SetMediaSelectorVisible(bool visible, bool save)
         {
+            if (replacementShellActive)
+            {
+                // The replacement sidebar is a first-class navigation surface.
+                // Compact widths are handled responsively rather than leaving a
+                // dead collapsed rail with no way back into the library.
+                uiState.ShowMediaSelector = true;
+                if (mainSplit != null)
+                {
+                    mainSplit.Panel1Collapsed = false;
+                    mainSplit.Panel1MinSize = 230;
+                }
+                if (replacementLibrarySidebar != null) replacementLibrarySidebar.Visible = true;
+                if (showMediaSelectorMenuItem != null) showMediaSelectorMenuItem.Checked = true;
+                if (save) SaveUiState();
+                return;
+            }
             uiState.ShowMediaSelector = visible;
             if (mainSplit != null)
             {
@@ -966,6 +982,14 @@ namespace Splined.WindowsGui
 
         private void SetCandidateFilterExpanded(bool expanded, bool save)
         {
+            if (replacementShellActive)
+            {
+                // Legacy candidate-filter visibility no longer owns the two
+                // independently collapsible replacement cards.
+                if (save) SaveUiState();
+                ApplyReplacementCollapsedState();
+                return;
+            }
             if (expanded && candidates.Count == 0) expanded = false;
             if (save) uiState.CandidateFilterExpanded = expanded;
             ApplyCandidateFilterWorkspace(expanded);
@@ -984,6 +1008,14 @@ namespace Splined.WindowsGui
 
         private void ApplyCandidateFilterWorkspace(bool visible)
         {
+            if (replacementShellActive)
+            {
+                candidateFilterWorkspaceActive = visible;
+                if (activityColumn != null) activityColumn.Visible = !visible || musicBrainzMatchesPanel == null;
+                if (visible && replacementMode != ArtworkWorkspaceMode.FindMatch)
+                    ShowReplacementMode(ArtworkWorkspaceMode.FindMatch, false);
+                return;
+            }
             if (candidateFilterPanel == null || activityContentHost == null) return;
             if (visible)
             {
@@ -1426,6 +1458,26 @@ namespace Splined.WindowsGui
 
         private void RestoreMediaFilterState()
         {
+            if (replacementShellActive)
+            {
+                updatingFilteredControls = true;
+                try
+                {
+                    if (replacementLibrarySearch != null)
+                        replacementLibrarySearch.Text = uiState.MediaArtistFilter ?? "";
+                    string launchMode = state.Mode;
+                    uiState.FilteredScanMode = launchMode;
+                    filteredScanRead.Checked = String.Equals(launchMode, "read", StringComparison.OrdinalIgnoreCase);
+                    filteredScanWrite.Checked = String.Equals(launchMode, "write", StringComparison.OrdinalIgnoreCase);
+                    autoScanScope = String.Equals(uiState.AutoScanScope, "all", StringComparison.OrdinalIgnoreCase)
+                        ? "all" : "selected";
+                    autoScanEnabled = uiState.AutoScanEnabled;
+                }
+                finally { updatingFilteredControls = false; }
+                RefreshReplacementLibraryTabs();
+                UpdateSelectionControlsCore(false);
+                return;
+            }
             updatingFilteredControls = true;
             try
             {
@@ -1917,6 +1969,7 @@ namespace Splined.WindowsGui
                 suppressTreeEvents = false;
                 UpdateMediaFilterCounts();
                 UpdateSelectionControlsCore(false);
+                if (replacementShellActive) RefreshReplacementLibraryEntities();
                 return;
             }
             string artistText = (artistFilter == null ? "" : artistFilter.Text).Trim();
@@ -1966,6 +2019,7 @@ namespace Splined.WindowsGui
             suppressTreeEvents = false;
             UpdateMediaFilterCounts();
             UpdateSelectionControlsCore(false);
+            if (replacementShellActive) RefreshReplacementLibraryEntities();
         }
 
         private void BuildTrackTree()
@@ -2564,6 +2618,7 @@ namespace Splined.WindowsGui
                     : autoScanEnabled
                         ? count + " album(s) queued by Auto Scan [" + (autoScanScope == "all" ? "All" : "Selected") + "]; only Ideal candidates are accepted unattended."
                         : count + " selected album(s) queued for operator review.");
+            if (replacementShellActive) UpdateReplacementLibraryStatus();
         }
 
         private List<AlbumInfo> GetLaunchAlbums()
@@ -3111,6 +3166,12 @@ namespace Splined.WindowsGui
 
         private void RebuildCandidateFilterPanel()
         {
+            if (replacementShellActive)
+            {
+                RebuildReplacementFilters();
+                RefreshReplacementModeAfterCandidateChange();
+                return;
+            }
             if (candidateFilterPanel == null) return;
             candidateFilterPanel.SuspendLayout();
             foreach (Control child in candidateFilterPanel.Controls.Cast<Control>().ToArray()) child.Dispose();
@@ -4074,12 +4135,15 @@ namespace Splined.WindowsGui
         {
             DisposeCandidateCards();
             foreach (CandidateView view in SortedCandidateViews().Where(CandidatePassesFilters))
-                candidateCards.Controls.Add(BuildCandidateCard(view));
+                candidateCards.Controls.Add(replacementShellActive
+                    ? BuildReplacementCandidateCard(view, false)
+                    : BuildCandidateCard(view));
             RefreshCandidateFilterDependencies();
             ResizeCandidateCards();
             UpdateHoverButton();
             UpdateCandidateActions();
             RefreshSelectedCandidatePreview();
+            if (replacementShellActive) RefreshReplacementModeAfterCandidateChange();
         }
 
         private int CandidateActiveFilterCount()
@@ -4117,6 +4181,22 @@ namespace Splined.WindowsGui
             if (ignoredDimension != "source" && excludedCandidateSources.Contains(view.SourceKey)) return false;
             if (ignoredDimension != "type")
             {
+                string[] imageCategories = { "FrontCover", "BackCover", "ArtistImage", "MediaBooklet", "Other" };
+                List<string> includedImages = (uiState.CandidateIncludedTypes ?? new List<string>())
+                    .Where(value => imageCategories.Contains(value, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+                if (includedImages.Count > 0 && !includedImages.Contains(view.ImageCategory,
+                    StringComparer.OrdinalIgnoreCase)) return false;
+                if (excludedCandidateTypes.Contains(view.ImageCategory)) return false;
+                List<string> includedClasses = (uiState.CandidateIncludedTypes ?? new List<string>())
+                    .Where(value => !imageCategories.Contains(value, StringComparer.OrdinalIgnoreCase))
+                    .ToList();
+                if (includedClasses.Count > 0
+                    && !((view.Recommended && includedClasses.Contains("Recommended", StringComparer.OrdinalIgnoreCase))
+                        || (view.UpscaleEligible && includedClasses.Contains("Upscalable", StringComparer.OrdinalIgnoreCase))
+                        || (view.IsNegative && includedClasses.Contains("Rejected", StringComparer.OrdinalIgnoreCase))
+                        || (view.IsLocal && includedClasses.Contains("Local", StringComparer.OrdinalIgnoreCase))))
+                    return false;
                 if (view.Recommended && excludedCandidateTypes.Contains("Recommended")) return false;
                 if (view.UpscaleEligible && excludedCandidateTypes.Contains("Upscalable")) return false;
                 if (view.IsNegative && excludedCandidateTypes.Contains("Rejected")) return false;
@@ -4168,6 +4248,8 @@ namespace Splined.WindowsGui
                 view.Url = ReadString(candidate, "url");
                 view.LocalOrigin = ReadString(candidate, "local_origin");
                 view.LocalReference = ReadString(candidate, "local_reference");
+                view.ImageCategory = NormalizeCandidateImageCategory(
+                    ReadString(candidate, "image_type"));
                 if (String.IsNullOrWhiteSpace(view.SourceRange)) view.SourceRange = CandidateRangeKey(Math.Min(view.PixelWidth, view.PixelHeight));
                 if (String.IsNullOrWhiteSpace(view.Range)) view.Range = CandidateRangeKey(Math.Min(view.ProjectedWidth, view.ProjectedHeight));
                 view.UpscaleEligible = view.Upscaled && view.Acceptable && !view.IsRejected
@@ -4207,6 +4289,20 @@ namespace Splined.WindowsGui
             if (shortSide <= state.RangeMax) return "UpperRange";
             if (shortSide <= state.RangeLadder) return "Ladder";
             return "AboveLadder";
+        }
+
+        private static string NormalizeCandidateImageCategory(string value)
+        {
+            string compact = (value ?? "").Replace("-", "").Replace("_", "")
+                .Replace(" ", "").ToLowerInvariant();
+            if (compact == "back" || compact == "backcover") return "BackCover";
+            if (compact == "artist" || compact == "artistimage" || compact == "performer")
+                return "ArtistImage";
+            if (compact == "media" || compact == "booklet" || compact == "mediabooklet"
+                || compact == "disc") return "MediaBooklet";
+            if (compact.Length > 0 && compact != "front" && compact != "frontcover"
+                && compact != "primary") return "Other";
+            return "FrontCover";
         }
 
         private Control BuildCandidateCard(CandidateView view)
@@ -4315,6 +4411,7 @@ namespace Splined.WindowsGui
                 case "discogs": return "Discogs";
                 case "lastfm": return "Last.fm";
                 case "deezer": return "Deezer";
+                case "navidrome": return "Navidrome";
                 case "webpstill": return "Local";
                 default: return source;
             }
@@ -4334,6 +4431,7 @@ namespace Splined.WindowsGui
                 case "discogs": return palette.StatusPurple;
                 case "lastfm": return palette.Error;
                 case "deezer": return palette.StatusBlue;
+                case "navidrome": return palette.Success;
                 default: return palette.TextPrimary;
             }
         }
@@ -4376,6 +4474,23 @@ namespace Splined.WindowsGui
         private void ResizeCandidateCards()
         {
             if (candidateCards == null || candidateCards.Controls.Count == 0) return;
+            if (replacementShellActive)
+            {
+                int height = Math.Max(96, candidateCards.ClientSize.Height - 6);
+                int modernWidth = Math.Max(132, Math.Min(188, height + 8));
+                foreach (Control card in candidateCards.Controls)
+                {
+                    card.Size = new Size(modernWidth, height);
+                    PictureBox picture = card.Controls["candidateImage"] as PictureBox;
+                    Label source = card.Controls["candidateSource"] as Label;
+                    Label dimensions = card.Controls["candidateDimensions"] as Label;
+                    if (picture != null) picture.Height = Math.Max(50, height - 42);
+                    if (source != null) source.Height = 20;
+                    if (dimensions != null) dimensions.Height = 18;
+                }
+                candidateCards.PerformLayout();
+                return;
+            }
             int available = Math.Max(156, candidateCards.ClientSize.Width - candidateCards.Padding.Horizontal - 22);
             int gap = ThemeManager.Space4 * 2;
             int columns = Math.Max(1, Math.Min(candidateCards.Controls.Count, (available + gap) / (180 + gap)));
@@ -5063,8 +5178,17 @@ namespace Splined.WindowsGui
             };
             musicBrainzMatchesPanel.ArtworkPreviewEnded += delegate { EndMusicBrainzArtworkPreview(); };
             activityColumn.Visible = false;
-            activityContentHost.Controls.Add(musicBrainzMatchesPanel);
-            musicBrainzMatchesPanel.BringToFront();
+            if (replacementShellActive)
+            {
+                replacementMusicBrainzHost = BuildReplacementMusicBrainzWorkspace(musicBrainzMatchesPanel);
+                activityContentHost.Controls.Add(replacementMusicBrainzHost);
+                replacementMusicBrainzHost.BringToFront();
+            }
+            else
+            {
+                activityContentHost.Controls.Add(musicBrainzMatchesPanel);
+                musicBrainzMatchesPanel.BringToFront();
+            }
             if (scanActivityTitle != null) scanActivityTitle.Text = "MusicBrainz Matches";
             ApplyArtworkPanelVisibility();
             UpdateArtworkSquareLayout(false);
@@ -5077,8 +5201,17 @@ namespace Splined.WindowsGui
             musicBrainzMatchesPanel = null;
             if (panel != null)
             {
-                activityContentHost.Controls.Remove(panel);
-                panel.Dispose();
+                if (replacementMusicBrainzHost != null)
+                {
+                    activityContentHost.Controls.Remove(replacementMusicBrainzHost);
+                    replacementMusicBrainzHost.Dispose();
+                    replacementMusicBrainzHost = null;
+                }
+                else
+                {
+                    activityContentHost.Controls.Remove(panel);
+                    panel.Dispose();
+                }
                 candidatePreviewActive = false;
             }
             if (restoreCandidateFilter && uiState.CandidateFilterExpanded && candidates.Count > 0)
@@ -5263,7 +5396,8 @@ namespace Splined.WindowsGui
                 || String.IsNullOrWhiteSpace(candidate.CachePath)
                 || !File.Exists(candidate.CachePath)) return false;
             candidatePreviewActive = true;
-            artworkPreviewTitle.Text = candidate.IsLocal ? "Existing Cover Editing" : "Selected Candidate Artwork";
+            artworkPreviewTitle.Text = replacementShellActive ? "●  Selected Artwork"
+                : candidate.IsLocal ? "Existing Cover Editing" : "Selected Candidate Artwork";
             SetArtworkPreview(candidate.CachePath,
                 candidate.DisplaySource + " · " + candidate.Resolution + " · " + DisplayRange(candidate.SourceRangeKey));
             if (updateLayout) ApplyArtworkPanelVisibility();
@@ -5309,6 +5443,11 @@ namespace Splined.WindowsGui
                     ? "Click to open the full current and upscaled artwork comparison editor."
                     : "Select one editable artwork result to open the upscale editor.";
             }
+            if (replacementCustomUpscale != null)
+            {
+                replacementCustomUpscale.Enabled = enabled;
+                ThemeManager.StyleButton(replacementCustomUpscale, uiState.Theme);
+            }
         }
 
         private void OpenUpscaleEditor()
@@ -5350,7 +5489,8 @@ namespace Splined.WindowsGui
                 delegate(ConfigState profile) { return RenderUpscaleImage(candidate, profile); },
                 delegate(ConfigState profile) { return SaveUpscaleEditorAsync(candidate, profile); },
                 uiState.Theme,
-                uiState.UpscalePreviewOnly);
+                uiState.UpscalePreviewOnly,
+                uiState.PrimaryAdjustments);
             upscaleEditor.FormClosed += delegate { upscaleEditor = null; };
             upscaleEditor.Show(this);
         }
@@ -5883,7 +6023,7 @@ namespace Splined.WindowsGui
                 RenderCompilationTrackPreview();
                 return;
             }
-            artworkPreviewTitle.Text = "Selected Album Artwork";
+            artworkPreviewTitle.Text = replacementShellActive ? "●  Selected Artwork" : "Selected Album Artwork";
             if (displayedAlbum == null)
             {
                 selectedAlbumInfo.Text = "";
@@ -5903,6 +6043,18 @@ namespace Splined.WindowsGui
                 + "Year " + year + "  ·  Tracks " + displayedAlbum.TrackCount + "  ·  " + displayedAlbum.State + Environment.NewLine
                 + "Artwork " + coverName + "  ·  " + resolution + "  ·  Root files " + displayedAlbum.RootFiles + "  ·  Cover files " + displayedAlbum.CoverFiles + Environment.NewLine
                 + "Path " + displayedAlbum.Path;
+            if (replacementShellActive)
+            {
+                selectedAlbumInfo.Text = displayedAlbum.Artist + "  ›  " + displayedAlbum.Title;
+                if (replacementArtworkBadge != null) replacementArtworkBadge.Text = resolution;
+                if (replacementQualityBadge != null)
+                {
+                    int shortSide = Math.Min(displayedAlbum.CoverWidth, displayedAlbum.CoverHeight);
+                    replacementQualityBadge.Text = shortSide <= 0 ? "No artwork"
+                        : shortSide >= state.RangeIdeal ? "High Quality"
+                        : shortSide >= state.RangeMin ? "Usable" : "Below minimum";
+                }
+            }
             string coverPath = ResolveExistingAlbumArtworkPath(displayedAlbum);
             SetArtworkPreview(coverPath, coverName + " · " + resolution);
         }
@@ -5959,6 +6111,9 @@ namespace Splined.WindowsGui
             artworkPreviewImage.Image = replacement;
             if (previous != null) previous.Dispose();
             artworkPreviewCaption.Text = String.IsNullOrWhiteSpace(caption) ? "No artwork selected" : caption;
+            if (replacementShellActive && replacementArtworkBadge != null)
+                replacementArtworkBadge.Text = replacement == null ? "—"
+                    : replacement.Width + " x " + replacement.Height;
         }
 
         private void DisposeArtworkPreviewImage()
@@ -5970,6 +6125,13 @@ namespace Splined.WindowsGui
 
         private void ApplyArtworkPanelVisibility()
         {
+            if (replacementShellActive)
+            {
+                if (artworkPreviewCard != null) artworkPreviewCard.Visible = true;
+                if (activityArtworkSplit != null) activityArtworkSplit.Panel2Collapsed = false;
+                if (showArtworkMenuItem != null) showArtworkMenuItem.Checked = true;
+                return;
+            }
             if (activityArtworkSplit == null) return;
             // MusicBrainz review temporarily forces the shared Artwork panel
             // visible without changing the user's persisted View preference.
@@ -5992,6 +6154,7 @@ namespace Splined.WindowsGui
 
         private void UpdateArtworkSquareLayout(bool artworkWidthIsAuthority)
         {
+            if (replacementShellActive) return;
             if (adjustingArtworkLayout || activityArtworkSplit == null) return;
             if ((!uiState.ShowArtwork && musicBrainzMatchesPanel == null && !CandidateFilterWorkspaceVisible && !candidatePreviewActive)
                 || activityArtworkSplit.Panel2Collapsed || activityArtworkSplit.Panel2.Width <= 0)
@@ -6903,6 +7066,7 @@ namespace Splined.WindowsGui
         public string Url = "";
         public string LocalOrigin = "";
         public string LocalReference = "";
+        public string ImageCategory = "FrontCover";
         public string SourceKey
         {
             get { return IsLocal ? "local" : (Source ?? "").Trim().ToLowerInvariant(); }
@@ -7162,19 +7326,24 @@ namespace Splined.WindowsGui
         private readonly Button saveExisting;
         private readonly Label editorStatus;
         private readonly System.Windows.Forms.Timer previewTimer;
-        private readonly Dictionary<string, SpectrumSlider> sliders =
-            new Dictionary<string, SpectrumSlider>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, ModernSpectrumSlider> sliders =
+            new Dictionary<string, ModernSpectrumSlider>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> primaryAdjustmentKeys;
 
         public int CandidateIndex { get; private set; }
 
         public UpscaleEditorForm(CandidateView candidate, Image current, ConfigState initialProfile,
             Func<ConfigState, Image> renderer, Func<ConfigState, Task<bool>> saver,
-            string theme, bool previewOnly = true)
+            string theme, bool previewOnly = true,
+            IEnumerable<string> selectedPrimaryAdjustments = null)
         {
             if (candidate == null) throw new ArgumentNullException("candidate");
             if (current == null) throw new ArgumentNullException("current");
             CandidateIndex = candidate.Index;
             profile = initialProfile == null ? new ConfigState() : initialProfile.Clone();
+            primaryAdjustmentKeys = AdjustmentCatalog.NormalizePrimary(
+                selectedPrimaryAdjustments == null
+                    ? new List<string>() : selectedPrimaryAdjustments.ToList());
             renderUpscaled = renderer;
             saveUpscaled = saver;
             Text = "SPLINED - Upscale Comparison & Editing";
@@ -7197,18 +7366,18 @@ namespace Splined.WindowsGui
                 Margin = Padding.Empty
             };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 238));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 190));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
             Controls.Add(root);
 
             root.Controls.Add(new Label
             {
-                Text = candidate.DisplaySource + " · " + candidate.Resolution
-                    + " · full upscale comparison and editing",
+                Text = "↗  Custom Upscale    ·    " + candidate.DisplaySource + "    ·    "
+                    + candidate.Resolution,
                 Dock = DockStyle.Fill,
-                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
+                Font = ThemeManager.UiFont(ThemeFontRole.AppTitle, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true
             }, 0, 0);
@@ -7216,23 +7385,26 @@ namespace Splined.WindowsGui
             TableLayoutPanel comparisons = new BufferedTableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 3,
+                ColumnCount = 5,
                 RowCount = 1,
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
-            comparisons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            comparisons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
             comparisons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
-            comparisons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            comparisons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
+            comparisons.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, ThemeManager.Space8));
+            comparisons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
             comparisons.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             currentPicture = BuildPreviewPane(comparisons, "[CURRENT]", current, 0);
             upscaledPicture = BuildPreviewPane(comparisons, "[UPSCALED]", null, 2);
+            comparisons.Controls.Add(BuildUpscaleSettingsPanel(candidate), 4, 0);
             root.Controls.Add(comparisons, 0, 1);
 
             FluentGroupBox controlsFrame = new FluentGroupBox
             {
                 Name = "upscaleEditorControlsFrame",
-                Text = "Upscale / Advanced",
+                Text = "Primary Enhancement Controls",
                 SpectrumBorder = true,
                 Dock = DockStyle.Fill,
                 Padding = new Padding(ThemeManager.Space8),
@@ -7247,7 +7419,7 @@ namespace Splined.WindowsGui
                 Padding = Padding.Empty
             };
             controls.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            controls.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            controls.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
             controls.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             controlsFrame.Controls.Add(controls);
 
@@ -7295,25 +7467,22 @@ namespace Splined.WindowsGui
             {
                 Name = "upscaleEditorSliderGrid",
                 Dock = DockStyle.Fill,
-                ColumnCount = 8,
+                ColumnCount = primaryAdjustmentKeys.Count,
                 RowCount = 1,
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
             sliderGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            for (int column = 0; column < 8; column++)
-                sliderGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 12.5f));
-            string[] keys = { "picture", "sharpen", "softness", "contrast", "exposure", "brightness", "gamma", "temperature" };
-            string[] labels = { "Picture", "Sharpen", "Softness", "Contrast", "Exposure", "Brightness", "Gamma", "Color" };
-            int[] minimums = { -20, 0, 0, -20, -20, -20, -20, -100 };
-            int[] maximums = { 20, 20, 20, 20, 20, 20, 20, 100 };
-            int[] values = { profile.UpscalePicturePercent, profile.UpscaleSharpenPercent,
-                profile.UpscaleSoftnessPercent, profile.UpscaleContrastPercent,
-                profile.UpscaleExposurePercent, profile.UpscaleBrightnessPercent,
-                profile.UpscaleGammaPercent, profile.UpscaleColorTemperature };
-            for (int index = 0; index < keys.Length; index++)
-                sliderGrid.Controls.Add(BuildEditorSlider(keys[index], labels[index], minimums[index],
-                    maximums[index], values[index], index), index, 0);
+            for (int column = 0; column < primaryAdjustmentKeys.Count; column++)
+                sliderGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,
+                    100f / primaryAdjustmentKeys.Count));
+            for (int index = 0; index < primaryAdjustmentKeys.Count; index++)
+            {
+                AdjustmentDefinition definition = AdjustmentCatalog.Find(primaryAdjustmentKeys[index]);
+                sliderGrid.Controls.Add(BuildEditorSlider(definition.Key, definition.Label,
+                    definition.Minimum, definition.Maximum,
+                    AdjustmentCatalog.GetValue(profile, definition.Key), index), index, 0);
+            }
             controls.Controls.Add(sliderGrid, 0, 1);
             root.Controls.Add(controlsFrame, 0, 2);
 
@@ -7341,7 +7510,7 @@ namespace Splined.WindowsGui
             saveExisting = new FluentButton
             {
                 Name = "upscaleEditorSaveExisting",
-                Text = "Save Existing",
+                Text = candidate.IsLocal ? "Save Existing" : "Apply Upscale",
                 Dock = DockStyle.Fill,
                 Tag = "success",
                 SpectrumBorder = true,
@@ -7457,92 +7626,162 @@ namespace Splined.WindowsGui
             return picture;
         }
 
+        private Control BuildUpscaleSettingsPanel(CandidateView candidate)
+        {
+            NeonCardPanel panel = new NeonCardPanel
+            {
+                Name = "customUpscaleSettings",
+                Dock = DockStyle.Fill,
+                SpectrumBorder = true,
+                Padding = new Padding(12),
+                Margin = Padding.Empty
+            };
+            TableLayoutPanel rows = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 7,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            for (int index = 1; index < 6; index++)
+                rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+            rows.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            rows.Controls.Add(new Label
+            {
+                Text = "☷  Upscale Settings",
+                Dock = DockStyle.Fill,
+                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            }, 0, 0);
+            int targetWidth = candidate.ProjectedWidth > 0 ? candidate.ProjectedWidth : profile.RangeIdeal;
+            int targetHeight = candidate.ProjectedHeight > 0 ? candidate.ProjectedHeight : profile.RangeIdeal;
+            string[] facts =
+            {
+                "Source\r\n" + candidate.DisplaySource,
+                "Original\r\n" + candidate.Resolution,
+                "Target resolution\r\n" + targetWidth + " x " + targetHeight,
+                "Maximum scale\r\n" + profile.UpscaleMaxPercent + "%",
+                "Square output\r\n" + (profile.Square ? "Enabled · " + profile.SquareMode : "Disabled")
+            };
+            for (int index = 0; index < facts.Length; index++)
+                rows.Controls.Add(new Label
+                {
+                    Text = facts[index],
+                    Dock = DockStyle.Fill,
+                    ForeColor = index == 2 ? ThemeManager.CurrentPalette.Warning
+                        : ThemeManager.CurrentPalette.TextSecondary,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    AutoEllipsis = true
+                }, 0, index + 1);
+            rows.Controls.Add(new Label
+            {
+                Text = "SPLINED preserves native artwork above the Ideal range and enforces the configured upscale ceiling.",
+                Dock = DockStyle.Fill,
+                ForeColor = ThemeManager.CurrentPalette.TextSecondary,
+                TextAlign = ContentAlignment.BottomLeft,
+                Padding = new Padding(0, 0, 0, 8)
+            }, 0, 6);
+            panel.Controls.Add(rows);
+            return panel;
+        }
+
         private Control BuildEditorSlider(string key, string label, int minimum, int maximum,
             int value, int spectrumIndex)
         {
-            TableLayoutPanel module = new BufferedTableLayoutPanel
+            NeonCardPanel card = new NeonCardPanel
             {
                 Name = "upscaleEditorModule_" + key,
                 Dock = DockStyle.Fill,
+                SpectrumBorder = spectrumIndex == 0,
+                Margin = new Padding(3),
+                Padding = new Padding(9)
+            };
+            TableLayoutPanel module = new BufferedTableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 5,
-                Margin = new Padding(2),
+                RowCount = 3,
+                Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
+            card.Controls.Add(module);
             module.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
-            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             module.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
-            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             module.Controls.Add(new Label
             {
                 Text = ProfileIcon(key) + "  " + label,
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
+                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft,
                 AutoEllipsis = true
             }, 0, 0);
-            SpectrumSlider slider = new SpectrumSlider
+            ModernSpectrumSlider slider = new ModernSpectrumSlider
             {
                 Name = "upscaleEditorSlider_" + key,
                 Minimum = minimum,
                 Maximum = maximum,
-                SmallChange = 1,
-                LargeChange = key == "temperature" ? 10 : 5,
                 Value = Math.Max(minimum, Math.Min(maximum, value)),
-                SpectrumIndex = spectrumIndex,
-                ShowValueOverlay = true,
                 Dock = DockStyle.Fill,
-                Margin = Padding.Empty
+                Margin = new Padding(0, 4, 0, 3)
             };
             sliders[key] = slider;
+            TableLayoutPanel actions = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 1,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty
+            };
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 34));
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
+            Button decrease = new FluentButton
+            {
+                Text = "−", Dock = DockStyle.Fill, Margin = new Padding(0, 1, 2, 1), Tag = "compact"
+            };
+            Label currentValue = new Label
+            {
+                Dock = DockStyle.Fill,
+                Font = ThemeManager.UiFont(ThemeFontRole.Control, FontStyle.Bold),
+                ForeColor = Color.White,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            Button increase = new FluentButton
+            {
+                Text = "+", Dock = DockStyle.Fill, Margin = new Padding(2, 1, 2, 1), Tag = "compact"
+            };
+            Button reset = new FluentButton
+            {
+                Text = "↺", Dock = DockStyle.Fill, Margin = new Padding(2, 1, 0, 1), Tag = "compact"
+            };
+            Action updateText = delegate
+            {
+                currentValue.Text = slider.Value > 0 ? "+" + slider.Value : slider.Value.ToString();
+                currentValue.AccessibleDescription = label + " current value " + slider.Value;
+            };
             slider.ValueChanged += delegate
             {
                 SetProfileValue(key, slider.Value);
+                updateText();
                 SchedulePreview();
             };
-            FluentButton increase = new FluentButton
-            {
-                Name = "upscaleEditorIncrease_" + key,
-                Text = "",
-                CenteredGlyph = "▲",
-                ChromeLess = true,
-                AccessibleName = "Increase " + label,
-                Anchor = AnchorStyles.None,
-                Size = new Size(26, 18),
-                Margin = Padding.Empty,
-                Tag = "compact"
-            };
-            FluentButton decrease = new FluentButton
-            {
-                Name = "upscaleEditorDecrease_" + key,
-                Text = "",
-                CenteredGlyph = "▼",
-                ChromeLess = true,
-                AccessibleName = "Decrease " + label,
-                Anchor = AnchorStyles.None,
-                Size = new Size(26, 18),
-                Margin = Padding.Empty,
-                Tag = "compact"
-            };
-            increase.Click += delegate { slider.Value = Math.Min(slider.Maximum, slider.Value + slider.SmallChange); };
-            decrease.Click += delegate { slider.Value = Math.Max(slider.Minimum, slider.Value - slider.SmallChange); };
-            module.Controls.Add(increase, 0, 1);
-            module.Controls.Add(slider, 0, 2);
-            module.Controls.Add(decrease, 0, 3);
-            FluentButton reset = new FluentButton
-            {
-                Text = "",
-                CenteredGlyph = "↺",
-                ChromeLess = true,
-                AccessibleName = "Reset " + label,
-                Anchor = AnchorStyles.None,
-                Size = new Size(24, 20),
-                Tag = "compact"
-            };
+            increase.Click += delegate { slider.Value = Math.Min(slider.Maximum, slider.Value + 1); };
+            decrease.Click += delegate { slider.Value = Math.Max(slider.Minimum, slider.Value - 1); };
             reset.Click += delegate { slider.Value = 0; };
-            module.Controls.Add(reset, 0, 4);
-            return module;
+            actions.Controls.Add(decrease, 0, 0);
+            actions.Controls.Add(currentValue, 1, 0);
+            actions.Controls.Add(increase, 2, 0);
+            actions.Controls.Add(reset, 3, 0);
+            module.Controls.Add(slider, 0, 1);
+            module.Controls.Add(actions, 0, 2);
+            updateText();
+            return card;
         }
 
         private void SetProfileValue(string key, int value)

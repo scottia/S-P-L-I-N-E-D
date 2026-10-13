@@ -48,6 +48,9 @@ namespace Splined.WindowsGui
         public List<string> LocalArtworkFiles = new List<string>();
         public int TrackCount;
         public string ReleaseYear;
+        public string MusicBrainzArtistId;
+        public string MusicBrainzReleaseId;
+        public string MusicBrainzReleaseGroupId;
         public string CoverPath;
         public string CoverName;
         public string CoverFormat;
@@ -232,6 +235,9 @@ namespace Splined.WindowsGui
             public SnapshotTrack[] compilation_tracks;
             public int track_count;
             public string release_year;
+            public string artist_mbid;
+            public string album_mbid;
+            public string release_group_mbid;
             public bool has_local_artwork;
             public string[] local_artwork_files;
             public string cover_path;
@@ -293,6 +299,9 @@ namespace Splined.WindowsGui
                     Compilation = item.compilation,
                     CompilationTrackArtworkEligible = item.compilation_track_art_eligible,
                     ReleaseYear = item.release_year,
+                    MusicBrainzArtistId = item.artist_mbid,
+                    MusicBrainzReleaseId = item.album_mbid,
+                    MusicBrainzReleaseGroupId = item.release_group_mbid,
                     CoverPath = item.cover_path,
                     CoverName = item.cover_name,
                     CoverFormat = item.cover_format,

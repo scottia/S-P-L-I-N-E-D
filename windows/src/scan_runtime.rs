@@ -103,12 +103,17 @@ pub async fn run_scan_library_read_report(
         .join("discogs.json")
         .to_string_lossy()
         .into_owned();
+    let navidrome_credential_file = Path::new(&config.credentials.credential_dir)
+        .join("navidrome.json")
+        .to_string_lossy()
+        .into_owned();
 
     let registry = ProviderRegistry::from_source_order_with_credentials(
         resolved_sources,
         &config.fanarttv.credential_file,
         &config.lastfm.credential_file,
         &discogs_credential_file,
+        &navidrome_credential_file,
         Duration::from_secs_f64(musicbrainz.recording_timeout_seconds()),
     )?;
 
@@ -679,6 +684,7 @@ pub async fn run_scan_library_read_report(
                 &config.fanarttv.credential_file,
                 &config.lastfm.credential_file,
                 &discogs_credential_file,
+                &navidrome_credential_file,
                 Duration::from_secs_f64(musicbrainz.recording_timeout_seconds()),
             )?)
         } else {

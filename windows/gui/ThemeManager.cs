@@ -1776,8 +1776,25 @@ namespace Splined.WindowsGui
     internal class FluentTextBox : TextBox
     {
         private const int WmPaint = 0x000F;
+        private const int EmSetCueBanner = 0x1501;
         private ThemePalette palette;
         private string theme;
+        private string cueText = "";
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessage(IntPtr handle, int message,
+            IntPtr wParam, string lParam);
+
+        public string CueText
+        {
+            get { return cueText; }
+            set
+            {
+                cueText = value ?? "";
+                if (IsHandleCreated)
+                    SendMessage(Handle, EmSetCueBanner, new IntPtr(1), cueText);
+            }
+        }
 
         internal string Theme { get { return theme; } set { theme = value; Invalidate(); } }
         internal ThemePalette Palette
@@ -1800,6 +1817,13 @@ namespace Splined.WindowsGui
             BorderStyle = BorderStyle.None;
             AutoSize = false;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            if (!String.IsNullOrWhiteSpace(cueText))
+                SendMessage(Handle, EmSetCueBanner, new IntPtr(1), cueText);
         }
 
         protected override void WndProc(ref Message message)

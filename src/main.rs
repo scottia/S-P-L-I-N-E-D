@@ -650,6 +650,9 @@ async fn run_release_discovery(config: &Config, resolved_sources: &[String], rel
         &std::path::Path::new(&config.credentials.credential_dir)
             .join("discogs.json")
             .to_string_lossy(),
+        &std::path::Path::new(&config.credentials.credential_dir)
+            .join("navidrome.json")
+            .to_string_lossy(),
     ) {
         Ok(registry) => registry,
         Err(error) => {

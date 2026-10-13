@@ -3740,6 +3740,8 @@ def main() -> int:
             return core.run_update_check()
         if args.fanarttv_credentials:
             return core.configure_fanarttv_credentials(path, cfg)
+        if args.navidrome_credentials:
+            return core.configure_navidrome_credentials(path, cfg)
         if args.lastfm_credentials:
             return core.configure_lastfm_credentials(path, cfg)
         if args.lastfm_login:

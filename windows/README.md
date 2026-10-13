@@ -1,12 +1,20 @@
 # SPLINED Windows desktop
 
-The Windows frontend is the mature WinForms application accepted in 1.0.60,
-with later correctness fixes retained. `splined.exe` loads the fixed
+The Windows frontend is the replacement native WinForms application shell for
+the graphical Media Library and artwork workflow. Existing backend behavior is
+reconnected rather than replaced: `splined.exe` loads the fixed
 `runtime\splined-core.dll` and calls authoritative Rust processing in-process
 through a stable UTF-8 C ABI. Structured callbacks carry progress, decisions,
 candidates, MusicBrainz results, compilation events, cancellation, errors, and
 completion without redirected process streams. No SPLINED worker or updater
 process exists.
+
+The shell provides graphical Artists/Albums/Folders, a Config v5-derived
+horizontal source strip, tri-state artwork filters, selectable/reorderable
+primary adjustments, a dominant Selected Artwork preview, horizontal candidate
+cards, embedded MusicBrainz authority, and a separate Custom Upscale window.
+Navidrome/OpenSubsonic supplies optional asynchronous library/current-server
+artwork enrichment while `splined.db` remains authoritative.
 
 ## Build and test
 
@@ -18,6 +26,7 @@ cargo check --locked --manifest-path windows/Cargo.toml --all-targets --target x
 cargo test --locked --manifest-path windows/Cargo.toml --lib --target x86_64-pc-windows-msvc
 cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 windows\gui\RUN-GUI-QA.cmd
+windows\gui\TEST-PREVIEW-WINDOWS-GUI.cmd
 windows\gui\BUILD-WINDOWS-GUI.cmd
 ```
 

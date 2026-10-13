@@ -86,6 +86,10 @@ impl DownloadCache {
         source_priority: usize,
     ) -> Result<DownloadedCandidate, String> {
         let source = source.into();
+        if crate::source::navidrome::is_internal_url(url) {
+            let bytes = crate::source::navidrome::download_cover(&self.client, url).await?;
+            return self.candidate_from_bytes(source, url, source_priority, &bytes);
+        }
         let mut request = self.client.get(url);
 
         if source == "deezer" {
