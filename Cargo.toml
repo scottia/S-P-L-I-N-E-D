@@ -1,6 +1,6 @@
 [package]
 name = "splined"
-version = "1.0.86"
+version = "1.0.87"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/scottia/S-P-L-I-N-E-D"
