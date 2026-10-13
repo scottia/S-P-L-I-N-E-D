@@ -1094,6 +1094,24 @@ namespace Splined.WindowsGui
                             == "SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD : DƎFІNƎD"
                         && form.Controls.Find("splinedBrandLogo", true).OfType<PictureBox>().Single().Image != null,
                         "The top menu does not use the centralized first-frame Fluent menu surface.");
+                    PictureBox brandLogo = form.Controls.Find("splinedBrandLogo", true).OfType<PictureBox>().Single();
+                    SplinedWordmark brandWordmark = Descendants(form).OfType<SplinedWordmark>().Single();
+                    SplinedSlogan brandSlogan = Descendants(form).OfType<SplinedSlogan>().Single();
+                    TableLayoutPanel headerLayout = form.Controls.Find("splinedHeaderLayout", true)
+                        .OfType<TableLayoutPanel>().Single();
+                    TableLayoutPanel brandText = form.Controls.Find("splinedBrandText", true)
+                        .OfType<TableLayoutPanel>().Single();
+                    int[] brandRowHeights = brandText.GetRowHeights();
+                    Assert(headerLayout.GetPositionFromControl(brandLogo).Column == 0
+                        && headerLayout.GetPositionFromControl(brandText).Column == 1
+                        && brandLogo.Dock == DockStyle.Top && brandRowHeights.Length == 3
+                        && Math.Abs(brandLogo.Height - brandRowHeights[0] - brandRowHeights[1]) <= 2
+                        && brandLogo.Margin.Bottom == 0 && brandText.RowCount == 3
+                        && brandText.GetPositionFromControl(brandWordmark).Row == 0
+                        && brandText.GetPositionFromControl(brandSlogan).Row == 1
+                        && brandWordmark.Dock == DockStyle.Fill && brandSlogan.Dock == DockStyle.Fill
+                        && brandWordmark.Margin == Padding.Empty && brandSlogan.Margin == Padding.Empty,
+                        "The repository logo, colorized wordmark, and expanded slogan are not aligned in the upper-left header.");
                     form.MainMenuStrip.CreateControl();
                     form.MainMenuStrip.PerformLayout();
                     using (Bitmap menuBitmap = new Bitmap(Math.Max(1, form.MainMenuStrip.Width), Math.Max(1, form.MainMenuStrip.Height)))
@@ -1608,7 +1626,9 @@ namespace Splined.WindowsGui
                         && adaptiveMode.Text == "Apply Upscale Default"
                         && previewOnlyMode.Checked && !applyMode.Checked
                         && previewOnlyMode.Text == "Upscale Preview"
-                        && applyMode.Text == "🔘 Apply Upscale",
+                        && applyMode.Text == "Apply Upscale"
+                        && previewOnlyMode is FluentRadioButton && applyMode is FluentRadioButton
+                        && !applyMode.Text.Contains("🔘"),
                         "Artwork Filter did not expose mutually exclusive Preview/Apply modes with adaptive defaults.");
                     Assert(form.Controls.Find("upscalePreviewButton", true).Length == 0
                         && form.Controls.Find("upscaleShowFullButton", true).Length == 0
@@ -1647,6 +1667,20 @@ namespace Splined.WindowsGui
                     Assert(form.Controls.Find("upscaleProfileControl_brightness", true).Single()
                             .Controls.OfType<Button>().Count() == 3,
                         "Artwork Filter slider controls do not retain their up, down, and reset glyph actions.");
+                    Assert(profileKeys.All(key => form.Controls.Find("upscaleProfileIncrease_" + key, true)
+                            .OfType<FluentButton>().Single().CenteredGlyph == "▲")
+                        && profileKeys.All(key => form.Controls.Find("upscaleProfileDecrease_" + key, true)
+                            .OfType<FluentButton>().Single().CenteredGlyph == "▼"),
+                        "Artwork Filter sliders do not expose the visible incremental up/down arrows.");
+                    TableLayoutPanel candidateFilterHeader = form.Controls.Find("candidateFilterHeader", true)
+                        .OfType<TableLayoutPanel>().Single();
+                    TableLayoutPanel scanActivityCard = form.Controls.Find("scanActivityCard", true)
+                        .OfType<TableLayoutPanel>().Single();
+                    Assert(Object.ReferenceEquals(candidateFilterHeader.Parent, scanActivityCard)
+                        && scanActivityCard.GetPositionFromControl(candidateFilterHeader).Row == 1
+                        && !form.Controls.Find("artworkCandidatesCard", true).Single()
+                            .Contains(candidateFilterHeader),
+                        "Candidate Findings / Artwork Filter is not the first interactive row at the top of Home.");
                     TableLayoutPanel modeLine = form.Controls.Find("upscaleModeLine", true).OfType<TableLayoutPanel>().Single();
                     Assert(modeLine.GetPositionFromControl(previewOnlyMode).Column == 0
                         && modeLine.GetPositionFromControl(applyMode).Column == 1
@@ -1836,12 +1870,19 @@ namespace Splined.WindowsGui
                     Application.DoEvents();
                     UpscaleEditorForm editor = (UpscaleEditorForm)typeof(MainForm)
                         .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    UpscaleComparisonPictureBox currentComparison = editor == null ? null : editor.Controls
+                        .Find("upscaleEditorCurrentImage", true).OfType<UpscaleComparisonPictureBox>().Single();
+                    UpscaleComparisonPictureBox upscaledComparison = editor == null ? null : editor.Controls
+                        .Find("upscaleEditorUpscaledImage", true).OfType<UpscaleComparisonPictureBox>().Single();
                     Assert(editor != null && editor.Visible && editor.FormBorderStyle == FormBorderStyle.Sizable
-                        && editor.Controls.Find("upscaleEditorCurrentImage", true).OfType<PictureBox>().Single().Image != null
-                        && editor.Controls.Find("upscaleEditorUpscaledImage", true).OfType<PictureBox>().Single().Image.Width == 1800
-                        && editor.Controls.Find("upscaleEditorUpscaledImage", true).OfType<PictureBox>().Single().Image.Height == 1800
+                        && currentComparison != null && currentComparison.Image != null
+                        && upscaledComparison != null && upscaledComparison.Image.Width == 1800
+                        && upscaledComparison.Image.Height == 1800
+                        && currentComparison.ReferenceOverlayText.StartsWith("RESOLUTION ", StringComparison.Ordinal)
+                        && currentComparison.ReferenceOverlayText.Contains("  RATIO ")
+                        && upscaledComparison.ReferenceOverlayText == "RESOLUTION 1800x1800  RATIO 1:1"
                         && editor.Controls.Find("upscaleEditorSliderGrid", true).OfType<TableLayoutPanel>().Single().ColumnCount == 8,
-                        "Artwork click did not open the separate two-pane current/upscaled editor.");
+                        "Artwork click did not open the separate editor with non-destructive resolution/ratio references.");
                     UpscaleEditorForm firstEditor = editor;
                     openUpscaleEditor.Invoke(form, new object[] { projectedPreview, EventArgs.Empty });
                     Application.DoEvents();
@@ -1857,9 +1898,27 @@ namespace Splined.WindowsGui
                     Button editorCancel = editor.Controls.Find("upscaleEditorCancel", true)
                         .OfType<Button>().Single();
                     Assert(editorPreview.Checked && !editorApply.Checked && !editorSave.Enabled
+                        && editorPreview is FluentRadioButton && editorApply is FluentRadioButton
+                        && editorApply.Text == "Apply Upscale" && !editorApply.Text.Contains("🔘")
                         && editorSave.Text == "Save Existing" && editorCancel.Text == "Cancel Upscale"
                         && Convert.ToString(editorCancel.Tag) == "danger",
                         "Upscale editor did not open in non-saving Preview mode with the approved actions.");
+                    string[] editorSliderKeys = { "picture", "sharpen", "softness", "contrast",
+                        "exposure", "brightness", "gamma", "temperature" };
+                    Assert(editorSliderKeys.All(key => editor.Controls.Find("upscaleEditorIncrease_" + key, true)
+                            .OfType<FluentButton>().Single().CenteredGlyph == "▲")
+                        && editorSliderKeys.All(key => editor.Controls.Find("upscaleEditorDecrease_" + key, true)
+                            .OfType<FluentButton>().Single().CenteredGlyph == "▼"),
+                        "Upscale comparison sliders are missing their incremental up/down arrows.");
+                    SpectrumSlider editorPictureSlider = editor.Controls.Find("upscaleEditorSlider_picture", true)
+                        .OfType<SpectrumSlider>().Single();
+                    int editorPictureBefore = editorPictureSlider.Value;
+                    editor.Controls.Find("upscaleEditorIncrease_picture", true).OfType<Button>().Single().PerformClick();
+                    Assert(editorPictureSlider.Value == Math.Min(editorPictureSlider.Maximum, editorPictureBefore + 1),
+                        "Upscale comparison increment arrow did not change the slider by one step.");
+                    editor.Controls.Find("upscaleEditorDecrease_picture", true).OfType<Button>().Single().PerformClick();
+                    Assert(editorPictureSlider.Value == editorPictureBefore,
+                        "Upscale comparison decrement arrow did not restore the slider by one step.");
                     editorApply.Checked = true;
                     Assert(editorApply.Checked && !editorPreview.Checked && editorSave.Enabled,
                         "Apply Upscale did not enable Save Existing inside the editor.");
@@ -2446,9 +2505,16 @@ namespace Splined.WindowsGui
             {
                 Label bullet = (Label)entry.Value;
                 Label description = (Label)statusDescriptions[entry.Key];
-                Assert(bullet.Width >= 23 && bullet.Height >= 23 && bullet.ForeColor.ToArgb() == description.ForeColor.ToArgb(),
+                Assert(bullet is SemanticBulletLabel && bullet.Width >= 23 && bullet.Height >= 23
+                    && bullet.ForeColor.ToArgb() == description.ForeColor.ToArgb(),
                     "A Folder status bullet is too small or its label does not match the semantic status color.");
             }
+            int folderBulletDiameter = ThemeManager.SemanticBulletDiameter((Control)statusBullets.Values.Cast<object>().First());
+            Assert(Descendants(form).OfType<FluentCheckBox>()
+                    .All(check => ThemeManager.SemanticBulletDiameter(check) == folderBulletDiameter)
+                && Descendants(form).OfType<FluentRadioButton>()
+                    .All(radio => ThemeManager.SemanticBulletDiameter(radio) == folderBulletDiameter),
+                "SPLINED status/filter bullets do not share the Folder status diameter.");
             CheckBox scanRead = form.Controls.Find("filteredScanRead", true).OfType<CheckBox>().Single();
             CheckBox scanWrite = form.Controls.Find("filteredScanWrite", true).OfType<CheckBox>().Single();
             Button primaryLaunch = (Button)typeof(MainForm).GetField("launch", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
