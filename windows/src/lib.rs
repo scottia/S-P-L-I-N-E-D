@@ -9,6 +9,7 @@ pub mod credentials;
 pub mod download;
 pub mod embedded_artwork;
 pub mod evaluate;
+pub mod file_association;
 pub mod final_artwork;
 #[cfg(windows)]
 mod gpu_upscale;

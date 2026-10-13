@@ -58,6 +58,12 @@ not a current build or runtime option.
       status requires a real live request and `splined.db` remains authority.
 - [x] Config/UI/credential/database backup and restore retain separate
       categories and atomic writes.
+- [x] Portable `.spl` shell opening imports unprotected Config v5 settings
+      before startup; protected archives fall back to the visible restore
+      surface with their path preselected.
+- [x] Setup exposes the optional shared/network SQLite choice and preserves
+      the remaining loaded Config v5 model when correcting a database path or
+      ownership mismatch.
 
 ## Workflow behavior retained
 
@@ -103,7 +109,7 @@ not a current build or runtime option.
 - Clean portable and unpacked Store-payload smoke runs created none of `data`,
   `_cache`, `_logs`, `credentials`, or `docker_builds` before Setup Save.
 - The two-file portable allowlist and unsigned Store package were validated.
-  Store identity remained `Psycotix.SPLINED`, version `1.0.89.0`, x64,
+  Store identity remained `Psycotix.SPLINED`, version `1.0.90.0`, x64,
   `Windows.Desktop`, with the `.spl` association and no DLL host artifact.
 
 ## Safety invariants

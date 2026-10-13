@@ -169,13 +169,17 @@ The maintenance page exports or restores selected Config v5 settings,
 credentials, SQLite, interface preferences, and diagnostics in the established
 `.spl` envelope. Protected backups use PBKDF2-HMAC-SHA1, AES-256-CBC, and an
 HMAC-SHA256 envelope compatible with existing Windows backups. Restore validates
-paths and content and uses atomic replacement. Restart after restoring settings
-or SQLite.
+paths and content and uses atomic replacement. A successful restore reloads
+Config v5, SQLite, and the workspace immediately.
 
-Opening an associated `.spl` file, or launching `splined.exe --restore <file>`,
-opens the maintenance/restore surface with that archive preselected. SPLINED
-does not restore automatically: the operator must review the components and
-confirm the restore in the application.
+Opening an associated unprotected `.spl` file, or launching
+`splined.exe --restore <file>`, automatically imports the archive's Config v5
+settings before startup and then loads the configured database. Other backup
+categories are not changed. If the archive is password protected or its Config
+v5 cannot be imported, SPLINED opens the maintenance/restore surface with the
+archive preselected so the operator can enter the password and review the
+categories. Portable startup maintains the current user-scoped `.spl` shell
+association; packaged installs use the manifest-owned association.
 
 ## Updates
 

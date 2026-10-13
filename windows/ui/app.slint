@@ -162,12 +162,13 @@ export component AppWindow inherits Window {
                 Text { text: "Rust application authority · Slint presentation"; color: #86a8bd; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
                 Button { text: "Workspace"; enabled: !root.setup-required; clicked => { root.page-index = 0; } }
                 Button { text: "Settings & Credentials"; enabled: !root.setup-required; clicked => { root.page-index = 1; root.load-settings(); root.load-credential(root.credential-provider); } }
-                Button { text: "Backup & Updates"; enabled: !root.setup-required; clicked => { root.page-index = 2; } }
+                Button { text: "Setup"; visible: root.setup-required; clicked => { root.page-index = 3; } }
+                Button { text: "Backup & Updates"; clicked => { root.page-index = 2; } }
                 Text { text: root.version-label; color: #8fb3c9; font-size: 11px; vertical-alignment: center; }
             }
         }
 
-        if root.setup-required: Panel { vertical-stretch: 1;
+        if root.setup-required && root.page-index != 2: Panel { vertical-stretch: 1;
             VerticalLayout { padding: 20px; spacing: 8px;
                 Heading { text: "SPLINED First-Run Setup"; height: 34px; }
                 Text { text: root.setup-message; color: #f1c458; font-size: 12px; wrap: word-wrap; height: 54px; }
@@ -177,6 +178,7 @@ export component AppWindow inherits Window {
                 SettingField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; }
                 SettingField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; }
                 SettingField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; }
+                CheckBox { text: "Shared/network SQLite (Python/Docker owns the inventory)"; checked <=> root.settings-sqlite-shared; }
                 SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated; optional"; }
                 Rectangle { vertical-stretch: 1; background: transparent; }
                 HorizontalLayout { spacing: 8px;
@@ -458,7 +460,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.setup-required && root.page-index == 2: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+        if root.page-index == 2: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
             Panel { horizontal-stretch: 1;
                 VerticalLayout { padding: 12px; spacing: 8px;
                     Heading { text: "Selective .spl Backup / Restore"; height: 28px; }
@@ -475,7 +477,7 @@ export component AppWindow inherits Window {
                         Button { text: "Export .spl"; enabled: !root.running; clicked => root.backup-action("export", root.backup-path, root.backup-password, root.backup-settings, root.backup-credentials, root.backup-database, root.backup-interface, root.backup-diagnostics); }
                         Button { text: "Restore selected"; enabled: !root.running; clicked => root.backup-action("restore", root.backup-path, root.backup-password, root.backup-settings, root.backup-credentials, root.backup-database, root.backup-interface, root.backup-diagnostics); }
                     }
-                    Text { text: "Restart after restoring settings or SQLite. Restore is disabled while a scan is active."; color: #9fc1d5; wrap: word-wrap; vertical-stretch: 1; }
+                    Text { text: "A successful restore reloads Config v5 and the workspace immediately. Restore is disabled while a scan is active."; color: #9fc1d5; wrap: word-wrap; vertical-stretch: 1; }
                 }
             }
             Panel { width: 470px;

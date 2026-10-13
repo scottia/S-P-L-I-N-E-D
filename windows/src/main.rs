@@ -29,6 +29,7 @@ use std::time::Duration;
 slint::include_modules!();
 
 fn main() -> Result<(), slint::PlatformError> {
+    let restore_request = restore_request_from_args(std::env::args_os().skip(1));
     if let Some(result) = command_line_operation() {
         if let Err(error) = result {
             eprintln!("{error}");
@@ -40,6 +41,11 @@ fn main() -> Result<(), slint::PlatformError> {
         package_identity_smoke();
         return Ok(());
     }
+    let automatic_settings_import = restore_request
+        .as_deref()
+        .map(import_settings_from_opened_backup);
+    let association_warning =
+        splined_core::file_association::register_portable_backup_association().err();
     let (mut state, setup_required, startup_error) = load_application_state();
     let preferences = splined_core::settings::load_ui_preferences().unwrap_or_default();
     apply_ui_preferences(&mut state, &preferences);
@@ -49,6 +55,18 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         state.last_error = Some(error.clone());
         state.push_log(format!("ERROR: {error}"));
+    }
+    if let Some(warning) = association_warning
+        && let Ok(mut state) = state.lock()
+    {
+        state.push_log(format!("WARNING: {warning}"));
+    }
+    if let Some(Ok(_)) = automatic_settings_import.as_ref()
+        && let Ok(mut state) = state.lock()
+    {
+        let message = "Config v5 settings imported from the opened .spl backup.".to_string();
+        state.service_status = message.clone();
+        state.push_log(message);
     }
 
     let (controller, notices) = ScanController::new(Arc::clone(&state));
@@ -69,11 +87,20 @@ fn main() -> Result<(), slint::PlatformError> {
         ));
     }
     initialize_service_ui(&ui, &state);
-    if let Some(path) = restore_request_from_args(std::env::args_os().skip(1)) {
+    if let Some(path) = restore_request
+        && let Some(Err(error)) = automatic_settings_import
+    {
         ui.set_page_index(2);
         ui.set_backup_path(SharedString::from(path.to_string_lossy().into_owned()));
+        ui.set_backup_settings(true);
+        ui.set_backup_credentials(false);
+        ui.set_backup_database(false);
+        ui.set_backup_interface(false);
+        ui.set_backup_diagnostics(false);
         if let Ok(mut app) = state.lock() {
-            app.service_status = "Backup selected for restore. Review the included categories, then choose Restore selected.".to_string();
+            app.service_status = format!(
+                "Automatic Config v5 import needs attention: {error} Enter the backup password if required, then choose Restore selected."
+            );
         }
     }
     sync_ui(&ui, &state);
@@ -380,6 +407,26 @@ fn restore_request_from_args(
         .then_some(path)
 }
 
+fn import_settings_from_opened_backup(path: &Path) -> Result<Config, String> {
+    splined_core::portable::initialize_process_roots()?;
+    let current = splined_core::config::load_config().unwrap_or_default();
+    restore_backup(
+        path,
+        &current,
+        BackupSelection {
+            settings: true,
+            credentials: false,
+            database: false,
+            interface: false,
+            diagnostics: false,
+        },
+        "",
+    )?;
+    splined_core::config::load_config().map_err(|error| {
+        format!("The opened .spl backup did not provide a usable Config v5: {error}")
+    })
+}
+
 fn package_identity_smoke_requested() -> bool {
     if std::env::args_os().any(|argument| argument == "--package-identity-smoke") {
         return true;
@@ -462,8 +509,15 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     let snapshot = match media_snapshot(&config, false) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            first_error.get_or_insert(error);
-            empty_snapshot(&config)
+            let error = format!("Configured SQLite database could not be loaded: {error}");
+            first_error.get_or_insert_with(|| error.clone());
+            let snapshot = empty_snapshot(&config);
+            let mut state = ApplicationState::new(config, snapshot)
+                .expect("a parsed Config v5 must initialize the Rust setup model");
+            state.service_status = "Setup required".to_string();
+            state.last_error = Some(error.clone());
+            state.push_log(format!("SETUP REQUIRED: {error}"));
+            return (state, true, first_error);
         }
     };
     let diagnostics = startup_diagnostics(&config, &snapshot);
@@ -1050,7 +1104,10 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                     let ui = weak
                         .upgrade()
                         .ok_or_else(|| "The SPLINED Setup window is unavailable.".to_string())?;
-                    let mut config = Config::default();
+                    let mut config = settings_draft
+                        .lock()
+                        .map_err(|_| "The structured Settings draft is unavailable.".to_string())?
+                        .clone();
                     apply_settings_ui(&ui, &mut config)?;
                     if config.scan.scan_library_dir.trim().is_empty() {
                         config.scan.scan_library_dir = config.library.music_library.clone();
@@ -1168,6 +1225,7 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
     {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
+        let settings_draft = Arc::clone(&settings_draft);
         ui.on_backup_action(
             move |action,
                   path,
@@ -1187,31 +1245,74 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                 let path = std::path::PathBuf::from(path.as_str());
                 let password = password.to_string();
                 let config = state.lock().ok().map(|app| app.config.clone());
+                let setup_required = weak.upgrade().is_some_and(|ui| ui.get_setup_required());
                 let weak = weak.clone();
                 let state = Arc::clone(&state);
+                let settings_draft = Arc::clone(&settings_draft);
                 std::thread::spawn(move || {
-                    let result = match (action.as_str(), config) {
+                    let result: Result<(String, Option<(Config, ApplicationState)>), String> =
+                        match (action.as_str(), config) {
                         (_, None) => {
                             Err("The SPLINED application state is unavailable.".to_string())
                         }
                         ("export", Some(config)) => {
                             export_backup(&path, &config, selection, &password)
-                                .map(|saved| format!("Backup created: {}", saved.display()))
+                                .map(|saved| (format!("Backup created: {}", saved.display()), None))
                         }
+                        ("restore", _) if setup_required && !selection.settings => Err(
+                            "Select Config v5 settings when restoring before Setup is complete."
+                                .to_string(),
+                        ),
                         ("restore", Some(config)) => {
-                            restore_backup(&path, &config, selection, &password).map(|_| {
-                                "Backup restored. Restart SPLINED before processing albums."
-                                    .to_string()
-                            })
+                            restore_backup(&path, &config, selection, &password).and_then(
+                                |restored| {
+                                    let snapshot = media_snapshot(&restored, false)?;
+                                    let diagnostics = startup_diagnostics(&restored, &snapshot);
+                                    let mut replacement =
+                                        ApplicationState::new(restored.clone(), snapshot)?;
+                                    replacement.push_log(
+                                        "Backup restored and Config v5 loaded.".to_string(),
+                                    );
+                                    for diagnostic in diagnostics {
+                                        replacement.push_log(diagnostic);
+                                    }
+                                    Ok((
+                                        "Backup restored and loaded.".to_string(),
+                                        Some((restored, replacement)),
+                                    ))
+                                },
+                            )
                         }
                         _ => Err("Unsupported backup action.".to_string()),
                     };
                     let _ = slint::invoke_from_event_loop(move || {
-                        if let Ok(mut app) = state.lock() {
-                            app.service_status =
-                                result.clone().unwrap_or_else(|error| error.clone());
+                        match result {
+                            Ok((message, Some((config, mut replacement)))) => {
+                                replacement.service_status = message;
+                                if let Ok(mut app) = state.lock() {
+                                    *app = replacement;
+                                }
+                                if let Ok(mut draft) = settings_draft.lock() {
+                                    *draft = config.clone();
+                                }
+                                if let Some(ui) = weak.upgrade() {
+                                    ui.set_setup_required(false);
+                                    ui.set_page_index(0);
+                                    set_settings_ui(&ui, &config);
+                                }
+                            }
+                            Ok((message, None)) => {
+                                if let Ok(mut app) = state.lock() {
+                                    app.service_status = message;
+                                }
+                            }
+                            Err(error) => {
+                                if let Ok(mut app) = state.lock() {
+                                    app.service_status = error.clone();
+                                }
+                                record_action_result(&state, Err(error));
+                            }
                         }
-                        record_action_result(&state, result.map(|_| ()));
                         refresh_weak(&weak, &state);
                     });
                 });
@@ -1521,9 +1622,17 @@ fn update_source_policy_from_ui(ui: &AppWindow, config: &mut Config) -> Result<(
 }
 
 fn split_values(value: &str) -> Vec<String> {
+    let value = value.trim();
+    let value = if (value.starts_with("[\"") && value.ends_with("\"]"))
+        || (value.starts_with("['") && value.ends_with("']"))
+    {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    };
     value
         .split([',', '\n', '\r'])
-        .map(str::trim)
+        .map(|value| value.trim().trim_matches(['"', '\'']).trim())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect()
@@ -2065,12 +2174,12 @@ fn load_image(path: &str) -> slint::Image {
 
 #[cfg(test)]
 mod tests {
-    use super::restore_request_from_args;
+    use super::{restore_request_from_args, split_values};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
     #[test]
-    fn spl_file_association_and_explicit_restore_open_the_restore_surface() {
+    fn spl_file_association_and_explicit_restore_resolve_the_backup_request() {
         let backup = OsString::from(r"C:\Backups\library.spl");
         assert_eq!(
             restore_request_from_args([backup.clone()]),
@@ -2083,6 +2192,18 @@ mod tests {
         assert_eq!(
             restore_request_from_args([OsString::from("notes.txt")]),
             None
+        );
+    }
+
+    #[test]
+    fn structured_list_fields_accept_plain_and_pasted_array_values() {
+        assert_eq!(
+            split_values(r#""[Octo-Fiesta]", "[Artist Singles]", [videos]", _noinfo"#),
+            vec!["[Octo-Fiesta]", "[Artist Singles]", "[videos]", "_noinfo"]
+        );
+        assert_eq!(
+            split_values(r#"["deezer", "itunes", "navidrome"]"#),
+            vec!["deezer", "itunes", "navidrome"]
         );
     }
 }

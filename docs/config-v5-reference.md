@@ -99,10 +99,12 @@ SPLINED uses:
 ```
 
 Windows Setup exposes separate **SQL Database Directory** and **Temporary Run
-Cache** fields. The database field derives the same filename. A local database
-directory creates an independent database; a shared UNC database directory can
-expose the same physical database as another installation while the disposable
-run cache remains on fast local storage.
+Cache** fields plus an explicit **Shared/network SQLite** control. The database
+field derives the same filename. A local database directory creates an
+independent database; an operator-enabled shared database may expose the same
+physical database as Python/Docker or another installation while the disposable
+run cache remains on fast local storage. The shared setting is optional and is
+never inferred merely because the path is mapped or UNC.
 Raw UNC paths are supported directly through Windows Settings. SPLINED creates an internal,
 provider-aware Windows drive adapter for SQLite because Windows network locking
 can differ between raw UNC and drive-letter paths. An existing connection to
@@ -382,8 +384,11 @@ password format. Back up Python/Docker Config v5, credentials, and the
 authoritative database.
 On Windows use **File > Backup > Export Backup...** to choose portable settings,
 interface state, credential JSON, SQLite, and diagnostic metadata separately.
-The `.spl` export may be password protected and can be opened with SPLINED for
-guided restore.
+The `.spl` export may be password protected. On Windows, opening an associated
+unprotected `.spl` automatically imports only its Config v5 settings before
+startup. Password-protected archives and settings-import failures open the
+guided restore surface with the archive preselected; remaining categories are
+restored only when explicitly selected.
 
 ## `[aisplined]`
 

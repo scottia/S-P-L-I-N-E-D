@@ -1725,8 +1725,18 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
     };
     for field in fields {
         if saved.get(field) != expected.get(field) {
+            let authority = if config.scan.sqlite_shared {
+                "shared"
+            } else {
+                "local"
+            };
+            let guidance = if !config.scan.sqlite_shared && *field != "schema_version" {
+                " If Python/Docker owns this inventory, enable Shared/network SQLite in Setup or Settings."
+            } else {
+                ""
+            };
             return Err(format!(
-                "SPLINED shared database is incompatible for {field}; the database was not rebuilt or modified."
+                "SPLINED {authority} database is incompatible for {field}; the database was not rebuilt or modified.{guidance}"
             ));
         }
     }

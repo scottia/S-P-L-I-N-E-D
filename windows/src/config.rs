@@ -682,7 +682,7 @@ pub fn load_config_at_root(root: &Path) -> Result<Config, String> {
     let path = config_path_for_root(root);
     if !path.is_file() {
         return Err(format!(
-            "Config v5 was not found. Complete SPLINED Setup.\nExpected: {}",
+            "Config v5 was not found. Open a .spl backup to import its settings, or complete SPLINED Setup.\nPortable Config v5 location: {}",
             path.display()
         ));
     }

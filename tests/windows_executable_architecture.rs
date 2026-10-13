@@ -115,6 +115,15 @@ fn slint_surface_exposes_real_migrated_workflows() {
         ui.contains("launch-mode-label") && main.contains("\"LIVE WRITE\""),
         "Slint launch mode is not projected from the Rust LIVE WRITE state"
     );
+    assert!(
+        ui.contains("Shared/network SQLite (Python/Docker owns the inventory)"),
+        "first-run Setup does not expose the optional shared SQLite authority"
+    );
+    assert!(
+        main.contains("import_settings_from_opened_backup")
+            && main.contains("Config v5 settings imported from the opened .spl backup"),
+        "associated .spl files do not import Config v5 settings before startup"
+    );
     for action in [
         "toggle_row",
         "candidate_decision",

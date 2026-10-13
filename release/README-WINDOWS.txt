@@ -31,13 +31,19 @@ Config v5 controls the music library, SQLite database/cache directory,
 temporary run cache, credentials, logs, and history. Existing external paths are
 not relocated. Existing data\config.toml is discovered automatically; missing
 or invalid configuration opens Setup rather than silently loading defaults.
-Rust remains the sole SQLite processing authority.
+The Rust application opens the configured SQLite database directly. In
+optional shared mode, Python/Docker owns the published inventory and Windows
+uses the shared-safe database contract.
 
 BACKUP
 
 The Backup screen exports and restores selected .spl categories. Selected
 categories overwrite their destinations. Unselected categories remain
-unchanged. Password protection is optional.
+unchanged. Password protection is optional. Double-clicking an unprotected .spl
+backup automatically imports its Config v5 settings and loads the configured
+database. Password-protected backups open the Backup screen with the file
+preselected so its password can be entered. Portable SPLINED maintains the
+current-user .spl file association when it starts.
 
 PORTABLE UPDATES
 

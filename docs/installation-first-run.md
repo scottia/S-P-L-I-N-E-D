@@ -46,13 +46,20 @@ Setup displays the real error instead of silently continuing with defaults.
 
 1. In Setup, choose the Music Library.
 2. Choose the SQLite/database directory; it owns `splined.db`.
-3. Choose separate temporary cache, log, and credential directories.
-4. Review ignored subdirectories, then select **Save and Continue**.
-5. Use structured Settings for scan behavior, source order/policies, artwork
+3. Enable **Shared/network SQLite** only when Python/Docker owns that same
+   inventory. Leave it disabled for an independent Windows database.
+4. Choose separate temporary cache, log, and credential directories.
+5. Review ignored subdirectories, then select **Save and Continue**.
+6. Use structured Settings for scan behavior, source order/policies, artwork
    ranges, output, square/upscale, adjustments, and retention options.
-6. Add provider JSON in Credentials and complete authorization where required.
-7. Refresh Media Library Selection.
-8. Run a READ scan before enabling LIVE WRITE.
+7. Add provider JSON in Credentials and complete authorization where required.
+8. Refresh Media Library Selection.
+9. Run a READ scan before enabling LIVE WRITE.
+
+As an alternative to typing an existing configuration, double-click an
+unprotected `.spl` backup. Portable SPLINED imports its Config v5 settings into
+`data\config.toml` before startup. A password-protected backup opens Backup &
+Updates with the archive preselected so its password can be entered.
 
 ### Windows installed Microsoft Store MSIX
 
