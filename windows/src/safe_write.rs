@@ -1,7 +1,10 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::{Builder, NamedTempFile};
+
+static CREDENTIAL_PROTECTION_WARNING: AtomicBool = AtomicBool::new(false);
 
 fn backup_path(path: &Path) -> PathBuf {
     let file_name = path
@@ -166,9 +169,16 @@ fn apply_user_only_file_protection(_path: &Path) -> bool {
 }
 
 fn warn_unavailable_credential_protection() {
-    println!();
-    println!("Credential file created; user-specific filesystem ACL protection");
-    println!("is unavailable on this storage location.");
+    CREDENTIAL_PROTECTION_WARNING.store(true, Ordering::SeqCst);
+    eprintln!(
+        "Credential file created; user-specific filesystem ACL protection is unavailable on this storage location."
+    );
+}
+
+/// Return and clear the warning raised when a newly created credential file
+/// could not receive restrictive platform filesystem permissions.
+pub fn take_credential_protection_warning() -> bool {
+    CREDENTIAL_PROTECTION_WARNING.swap(false, Ordering::SeqCst)
 }
 
 pub fn recover_backup_if_needed(path: &Path, label: &str) -> Result<(), String> {

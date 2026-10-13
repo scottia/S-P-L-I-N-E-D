@@ -1,116 +1,105 @@
 use std::env;
-use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-const GUI_SOURCES: &[&str] = &[
-    "ReleaseInfo.cs",
-    "NativeCore.cs",
-    "Program.cs",
-    "AssemblyInfo.cs",
-    "AppIcon.cs",
-    "EmbeddedAssets.cs",
-    "ConfigState.cs",
-    "BackupWindows.cs",
-    "MusicBrainzMatchesForm.cs",
-    "RuntimeLog.cs",
-    "UpdateService.cs",
-    "ThemeManager.cs",
-    "SetupForm.cs",
-    "SupportWindows.cs",
-    "LibraryModel.cs",
-    "ArtworkWorkspaceModel.cs",
-    "ArtworkWorkspaceControls.cs",
-    "NavidromeClient.cs",
-    "MainForm.cs",
-    "MainForm.ReplacementShell.cs",
-];
-
-const GUI_RESOURCES: &[(&str, &str)] = &[
-    (
-        "splined-watermark.png",
-        "Splined.WindowsGui.Resources.splined-watermark.png",
-    ),
-    (
-        "splined-app-icon.png",
-        "Splined.WindowsGui.Resources.splined-app-icon.png",
-    ),
-];
-
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=ui/app.slint");
+    println!("cargo:rerun-if-changed=gui/app.ico");
+    println!("cargo:rerun-if-changed=gui/app.manifest");
+    println!("cargo:rerun-if-env-changed=SPLINED_BUILD_COMMIT");
+
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"));
-    let gui_dir = manifest_dir.join("gui");
-
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=gui/app.manifest");
-    println!("cargo:rerun-if-changed=gui/app.ico");
-    println!("cargo:rerun-if-env-changed=SPLINED_BUILD_COMMIT");
-    println!("cargo:rerun-if-env-changed=SPLINED_BUILD_GUI");
-    for source in GUI_SOURCES {
-        println!("cargo:rerun-if-changed=gui/{source}");
-    }
-    for (asset, _) in GUI_RESOURCES {
-        println!("cargo:rerun-if-changed=gui/{asset}");
-    }
-
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        println!("cargo:warning=The SPLINED Windows GUI is compiled only for a Windows target.");
-        return;
-    }
-
-    // Cargo checks and Rust tests must not manufacture additional GUI executables.
-    // The release/packaging entry point opts in once after the Rust DLL is built.
-    if env::var("SPLINED_BUILD_GUI").as_deref() != Ok("1") {
-        return;
-    }
-
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is not set"));
-    let profile_dir = out_dir
-        .ancestors()
-        .nth(3)
-        .unwrap_or_else(|| panic!("Unable to determine the Cargo profile output directory"));
-    let gui_executable = profile_dir.join("splined.exe");
     let commit = build_commit(&manifest_dir);
     println!("cargo:rustc-env=SPLINED_BUILD_COMMIT={commit}");
-    let build_info = write_build_info(&out_dir, &commit);
-    compile_gui(&gui_dir, &gui_executable, &build_info);
-}
 
-fn compile_gui(gui_dir: &Path, output_path: &Path, build_info: &Path) {
-    let csc = locate_csc()
-        .unwrap_or_else(|| panic!("Microsoft .NET Framework C# compiler csc.exe was not found"));
-    let manifest = gui_dir.join("app.manifest");
-    let icon = gui_dir.join("app.ico");
-    let mut arguments = vec![
-        OsString::from("/nologo"),
-        OsString::from("/target:winexe"),
-        OsString::from("/platform:x64"),
-        OsString::from("/main:Splined.WindowsGui.Program"),
-        OsString::from("/optimize+"),
-        option("/win32manifest:", &manifest),
-        option("/win32icon:", &icon),
-        option("/out:", output_path),
-        OsString::from("/reference:System.dll"),
-        OsString::from("/reference:System.Core.dll"),
-        OsString::from("/reference:System.Drawing.dll"),
-        OsString::from("/reference:System.Windows.Forms.dll"),
-        OsString::from("/reference:System.Web.Extensions.dll"),
-    ];
-    for (asset, name) in GUI_RESOURCES {
-        arguments.push(resource_option(&gui_dir.join(asset), name));
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        let manifest = manifest_dir.join("gui/app.manifest");
+        let icon = manifest_dir.join("gui/app.ico");
+        let resource = compile_windows_resources(&manifest_dir, &icon);
+        println!("cargo:rustc-link-arg-bin=splined=/MANIFEST:EMBED");
+        println!(
+            "cargo:rustc-link-arg-bin=splined=/MANIFESTINPUT:{}",
+            manifest.display()
+        );
+        println!("cargo:rustc-link-arg-bin=splined={}", resource.display());
     }
-    arguments.extend(GUI_SOURCES.iter().map(OsString::from));
-    arguments.push(build_info.as_os_str().to_os_string());
 
-    run_checked(
-        Command::new(&csc).current_dir(gui_dir).args(&arguments),
-        "SPLINED Windows GUI compilation failed",
-    );
+    slint_build::compile("ui/app.slint").expect("unable to compile the SPLINED Slint UI");
 }
 
-fn build_commit(manifest_dir: &Path) -> String {
+fn compile_windows_resources(manifest_dir: &std::path::Path, icon: &std::path::Path) -> PathBuf {
+    let output_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is not set"));
+    let script = output_dir.join("splined-icon.rc");
+    let resource = output_dir.join("splined-icon.res");
+    let icon_path = icon.display().to_string().replace(['\\', '/'], "\\\\");
+    fs::write(&script, format!("1 ICON \"{icon_path}\"\r\n"))
+        .expect("unable to write the SPLINED Windows resource script");
+    let compiler = find_resource_compiler(manifest_dir)
+        .expect("Windows SDK rc.exe is required to embed the SPLINED executable icon");
+    let status = Command::new(&compiler)
+        .arg("/nologo")
+        .arg("/fo")
+        .arg(&resource)
+        .arg(&script)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "unable to run Windows resource compiler {}: {error}",
+                compiler.display()
+            )
+        });
+    assert!(
+        status.success() && resource.is_file(),
+        "Windows resource compiler failed while embedding gui/app.ico"
+    );
+    resource
+}
+
+fn find_resource_compiler(manifest_dir: &std::path::Path) -> Option<PathBuf> {
+    if let Some(configured) = env::var_os("RC").map(PathBuf::from)
+        && configured.is_file()
+    {
+        return Some(configured);
+    }
+    if let Ok(output) = Command::new("where.exe").arg("rc.exe").output()
+        && output.status.success()
+        && let Ok(text) = String::from_utf8(output.stdout)
+        && let Some(path) = text.lines().map(str::trim).find(|line| !line.is_empty())
+    {
+        return Some(PathBuf::from(path));
+    }
+
+    let kits = env::var_os("ProgramFiles(x86)")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files (x86)"))
+        .join("Windows Kits/10/bin");
+    let architecture = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x64",
+        Ok("x86") => "x86",
+        Ok("aarch64") => "arm64",
+        _ => "x64",
+    };
+    let mut candidates = fs::read_dir(kits)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join(architecture).join("rc.exe"))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.pop().or_else(|| {
+        // Keeps the diagnostic rooted at the Cargo project when a custom SDK
+        // wrapper is checked into a controlled build environment.
+        let local = manifest_dir.join("tools/rc.exe");
+        local.is_file().then_some(local)
+    })
+}
+
+fn build_commit(manifest_dir: &std::path::Path) -> String {
     env::var("SPLINED_BUILD_COMMIT")
         .ok()
         .filter(|value| valid_commit(value))
@@ -118,31 +107,12 @@ fn build_commit(manifest_dir: &Path) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn write_build_info(out_dir: &Path, commit: &str) -> PathBuf {
-    let short_commit = if commit == "unknown" {
-        commit.to_string()
-    } else {
-        commit.chars().take(7).collect()
-    };
-    let source = format!(
-        "namespace Splined.WindowsGui\n{{\n    internal static class BuildInfo\n    {{\n        public const string Commit = \"{commit}\";\n        public const string ShortCommit = \"{short_commit}\";\n    }}\n}}\n"
-    );
-    let path = out_dir.join("BuildInfo.cs");
-    fs::write(&path, source).unwrap_or_else(|error| {
-        panic!(
-            "Unable to write Windows GUI build metadata {}: {error}",
-            path.display()
-        )
-    });
-    path
-}
-
 fn valid_commit(value: &str) -> bool {
     let value = value.trim();
     (7..=40).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn git_commit(manifest_dir: &Path) -> Option<String> {
+fn git_commit(manifest_dir: &std::path::Path) -> Option<String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(manifest_dir)
@@ -154,38 +124,4 @@ fn git_commit(manifest_dir: &Path) -> Option<String> {
     let value = String::from_utf8(output.stdout).ok()?;
     let value = value.trim();
     valid_commit(value).then(|| value.to_ascii_lowercase())
-}
-
-fn locate_csc() -> Option<PathBuf> {
-    let windows = PathBuf::from(env::var_os("WINDIR")?);
-    [
-        windows.join("Microsoft.NET/Framework64/v4.0.30319/csc.exe"),
-        windows.join("Microsoft.NET/Framework/v4.0.30319/csc.exe"),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.is_file())
-}
-
-fn run_checked(command: &mut Command, failure: &str) {
-    let output = command
-        .output()
-        .expect("unable to start Windows build tool");
-    if !output.status.success() {
-        eprintln!("{}", String::from_utf8_lossy(&output.stdout));
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-        panic!("{failure}");
-    }
-}
-
-fn option(prefix: &str, path: &Path) -> OsString {
-    let mut value = OsString::from(prefix);
-    value.push(path.as_os_str());
-    value
-}
-
-fn resource_option(path: &Path, name: &str) -> OsString {
-    let mut value = option("/resource:", path);
-    value.push(",");
-    value.push(name);
-    value
 }

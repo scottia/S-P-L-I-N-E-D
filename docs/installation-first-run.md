@@ -12,15 +12,12 @@ fresh archive contains exactly:
 ```text
 SPLINED\
   splined.exe
-  runtime\
-    splined-core.dll
   README-WINDOWS.txt
 ```
 
-The WinForms executable loads the fixed Rust DLL in-process. Rust remains the
-authoritative processing implementation. Normal startup and scans do not
-extract executable code or launch a SPLINED processing child; the application
-runs as one normal process.
+The Cargo-built executable contains the Rust application and Slint GUI. Normal
+startup and scans do not extract executable code, load an application bridge,
+or launch a SPLINED processing child; the application runs as one process.
 
 On first save, the application creates:
 
@@ -59,8 +56,8 @@ The managed-install/update path is
 **[Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)**.
 The live Store package provides Windows-managed installation, Microsoft Store
 production signing and updates, package identity, Start menu activation,
-manifest-owned `.spl` association, and normal Windows uninstall. Its payload is
-the same x64 `splined.exe` plus `runtime\splined-core.dll`.
+manifest-owned `.spl` association, and normal Windows uninstall. Its application
+payload is the same x64 Rust/Slint `splined.exe`.
 
 Because an MSIX installation directory is read-only, Config v5 and interface
 state live under the package's per-user LocalState directory. Configured
@@ -68,8 +65,8 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, `SPLINED (All OS) and GHCR` builds the x64 Windows runtime pair
-once. The same `splined.exe` and `runtime\splined-core.dll` feed the Portable ZIP
+For maintainers, `SPLINED (All OS) and GHCR` builds the x64 Windows executable
+once. The same `splined.exe` feeds the Portable ZIP
 and, when **Microsoft Store** is enabled, the unsigned Store MSIX. Portable and
 selected Store validation must both succeed before the numeric release tag is
 created. After the GitHub Release and GHCR publish, the workflow automatically
@@ -98,7 +95,6 @@ downloads the current portable ZIP, closes SPLINED, and replaces only:
 
 ```text
 splined.exe
-runtime\splined-core.dll
 README-WINDOWS.txt
 ```
 
@@ -106,14 +102,12 @@ Never replace or delete `data\`, SQLite, credentials, history, cache, logs, or
 configured external state. No updater executable, hidden helper, command shell,
 or self-replacement loop participates in this process.
 
-For Microsoft Store installations, the same menu command uses Microsoft Store
-package APIs instead of GitHub. It reports when the Store package is current;
-when an update exists, **UPDATE NOW** asks Windows/Microsoft Store to download
-and install it and **LATER** defers it. If direct Store integration is
-unavailable, SPLINED offers the official Store product page. Store users never
-receive Portable ZIP replacement instructions. The separate App Installer
-template remains disabled and is not the Store update path. Windows builds
-target only `x86_64-pc-windows-msvc`.
+For Microsoft Store installations, the same action uses native Microsoft Store
+package APIs instead of GitHub and reports the available Store update count.
+Installation remains owned by Microsoft Store (Library > Get updates). Store
+users never receive Portable ZIP replacement instructions. The separate App
+Installer template remains disabled and is not the Store update path. Windows
+builds target only `x86_64-pc-windows-msvc`.
 
 ## Linux
 

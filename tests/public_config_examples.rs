@@ -117,10 +117,6 @@ fn windows_and_release_versions_advance_coherently() {
     let version = root_manifest["package"]["version"]
         .as_str()
         .expect("root version");
-    let release_info =
-        fs::read_to_string("windows/gui/ReleaseInfo.cs").expect("WinForms release identity");
-    assert!(release_info.contains(&format!("NumericVersion = \"{version}\"")));
-    assert!(release_info.contains(&format!("SemanticVersion = \"{version}\"")));
     let package = fs::read_to_string("windows/package/Package.appxmanifest")
         .expect("Windows package manifest");
     assert!(package.contains(&format!("Version=\"{version}.0\"")));
@@ -129,7 +125,7 @@ fn windows_and_release_versions_advance_coherently() {
         .expect("release workflow")
         .replace("\r\n", "\n");
     assert!(workflow.contains(
-        "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/gui/AssemblyInfo.cs\" \"windows/gui/ReleaseInfo.cs\" \"windows/gui/app.manifest\" \"windows/package/Package.appxmanifest\" \"windows/package/SPLINED.appinstaller.template\")"
+        "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/gui/app.manifest\" \"windows/package/Package.appxmanifest\" \"windows/package/SPLINED.appinstaller.template\")"
     ));
     assert!(workflow.contains("compatible_versions"));
     assert!(workflow.contains("baseline = max([source_version, *compatible_versions])"));

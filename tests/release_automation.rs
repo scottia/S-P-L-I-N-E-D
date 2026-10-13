@@ -170,7 +170,7 @@ fn normal_release_notes_and_store_option_follow_the_release_contract() {
             .matches("cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET")
             .count(),
         1,
-        "normal release must compile the Windows runtime pair once"
+        "normal release must compile the Windows Rust/Slint executable once"
     );
     assert_eq!(
         windows_job
@@ -180,7 +180,8 @@ fn normal_release_notes_and_store_option_follow_the_release_contract() {
         "all Store build/QA/upload steps must be gated by the Store option"
     );
     assert!(windows_job.contains("$releaseRoot/splined.exe"));
-    assert!(windows_job.contains("$releaseRoot/splined_core.dll"));
+    assert!(!windows_job.contains("splined_core.dll"));
+    assert!(!windows_job.contains("splined-core.dll"));
     assert!(windows_job.contains("name: splined-windows-store-package"));
 
     let public_release = workflow

@@ -14,7 +14,7 @@ on:
           - "macOS"
           - "All"
       extended_windows_validation:
-        description: "Run the full Rust and WinForms GUI regression suite before Windows packaging"
+        description: "Run the full Rust/Slint Windows regression suite before packaging"
         required: false
         default: false
         type: boolean
@@ -166,50 +166,10 @@ jobs:
               raise SystemExit("windows/Cargo.lock package version was not updated")
           windows_lock_path.write_text(windows_lock, encoding="utf-8")
 
-          release_info_path = Path("windows/gui/ReleaseInfo.cs")
-          release_info = release_info_path.read_text(encoding="utf-8-sig")
-          for field in ("NumericVersion", "SemanticVersion"):
-              release_info, count = re.subn(
-                  rf'(public const string {field} = ")[^"]+(";)',
-                  rf'\g<1>{release_version}\g<2>',
-                  release_info,
-                  count=1,
-              )
-              if count != 1:
-                  raise SystemExit(f"Windows {field} was not updated")
-          release_info, count = re.subn(
-              r'(public const string PackageName = "SPLINED-Windows-)[^"]+(";)',
-              rf'\g<1>{release_version}\g<2>',
-              release_info,
-              count=1,
-          )
-          if count != 1:
-              raise SystemExit("Windows package name was not updated")
-          release_info_path.write_text(release_info, encoding="utf-8")
-
-          assembly_path = Path("windows/gui/AssemblyInfo.cs")
-          assembly = assembly_path.read_text(encoding="utf-8-sig")
-          assembly = re.sub(
-              r'(native Windows interface - v)[^ ]+( Stable)',
-              rf'\g<1>{release_version}\g<2>',
-              assembly,
-              count=1,
-          )
-          for attribute in ("AssemblyVersion", "AssemblyFileVersion"):
-              assembly, count = re.subn(
-                  rf'(\[assembly: {attribute}\(")[^"]+("\)\])',
-                  rf'\g<1>{release_version}.0\g<2>',
-                  assembly,
-                  count=1,
-              )
-              if count != 1:
-                  raise SystemExit(f"Windows {attribute} was not updated")
-          assembly_path.write_text(assembly, encoding="utf-8")
-
           app_manifest_path = Path("windows/gui/app.manifest")
           app_manifest = app_manifest_path.read_text(encoding="utf-8-sig")
           app_manifest, count = re.subn(
-              r'(<assemblyIdentity version=")[^"]+(" name="SPLINED\.Windows\.GUI"/>)',
+              r'(<assemblyIdentity version=")[^"]+(" name="SPLINED\.Windows"/>)',
               rf'\g<1>{release_version}.0\g<2>',
               app_manifest,
               count=1,
@@ -274,14 +234,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mapfile -t changed < <(git diff --name-only | sort)
-          expected=("Cargo.lock" "Cargo.toml" "python/splined.py" "windows/Cargo.lock" "windows/Cargo.toml" "windows/gui/AssemblyInfo.cs" "windows/gui/ReleaseInfo.cs" "windows/gui/app.manifest" "windows/package/Package.appxmanifest" "windows/package/SPLINED.appinstaller.template")
+          expected=("Cargo.lock" "Cargo.toml" "python/splined.py" "windows/Cargo.lock" "windows/Cargo.toml" "windows/gui/app.manifest" "windows/package/Package.appxmanifest" "windows/package/SPLINED.appinstaller.template")
           if [ "${changed[*]}" != "${expected[*]}" ]; then
             echo "ERROR: Release provisioning changed unexpected files."
             printf '  %s\n' "${changed[@]}"
             exit 1
           fi
 
-          git add Cargo.toml Cargo.lock python/splined.py windows/Cargo.toml windows/Cargo.lock windows/gui/AssemblyInfo.cs windows/gui/ReleaseInfo.cs windows/gui/app.manifest windows/package/Package.appxmanifest windows/package/SPLINED.appinstaller.template
+          git add Cargo.toml Cargo.lock python/splined.py windows/Cargo.toml windows/Cargo.lock windows/gui/app.manifest windows/package/Package.appxmanifest windows/package/SPLINED.appinstaller.template
           git commit -m "release: prepare ${RELEASE_VERSION}"
 
           RELEASE_COMMIT=$(git rev-parse HEAD)
@@ -386,10 +346,8 @@ jobs:
           cargo fmt --manifest-path windows/Cargo.toml -- --check
           cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
           cargo test --locked --manifest-path windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
-          Push-Location windows/gui
-          try { cmd /d /c RUN-GUI-QA.cmd } finally { Pop-Location }
 
-      - name: Build clean x64 WinForms and Rust DLL pair
+      - name: Build clean x64 Rust/Slint executable
         id: windows-build
         shell: pwsh
         env:
@@ -401,7 +359,6 @@ jobs:
           if (Test-Path -LiteralPath $releaseRoot) {
             Remove-Item -LiteralPath $releaseRoot -Recurse -Force
           }
-          $env:SPLINED_BUILD_GUI = "1"
           $started = Get-Date
           cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET
           "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
@@ -416,9 +373,8 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
           $portableRoot = "release-package/SPLINED"
-          New-Item -ItemType Directory -Force -Path "$portableRoot/runtime", release-assets | Out-Null
+          New-Item -ItemType Directory -Force -Path $portableRoot, release-assets | Out-Null
           Copy-Item "$releaseRoot/splined.exe" "$portableRoot/splined.exe"
-          Copy-Item "$releaseRoot/splined_core.dll" "$portableRoot/runtime/splined-core.dll"
           Copy-Item release/README-WINDOWS.txt "$portableRoot/README-WINDOWS.txt"
 
           function Assert-Amd64Pe([string]$path) {
@@ -431,28 +387,36 @@ jobs:
             if ($machine -ne 0x8664) { throw ("Expected AMD64 PE Machine 0x8664 for {0}; found 0x{1:X4}." -f $path, $machine) }
           }
           Assert-Amd64Pe "$portableRoot/splined.exe"
-          Assert-Amd64Pe "$portableRoot/runtime/splined-core.dll"
 
-          $version = (Get-Item -LiteralPath "$portableRoot/splined.exe").VersionInfo.FileVersion
-          if ($version -ne "$env:RELEASE_VERSION.0") { throw "The Windows executable version does not match the release tag." }
-          $assembly = [Reflection.Assembly]::LoadFile((Resolve-Path -LiteralPath "$portableRoot/splined.exe").Path)
-          $buildInfo = $assembly.GetType("Splined.WindowsGui.BuildInfo", $true)
-          $commitField = $buildInfo.GetField("Commit", [Reflection.BindingFlags] "Static,Public,NonPublic")
-          if ($commitField.GetValue($null) -ne $env:RELEASE_COMMIT) { throw "The Windows executable commit does not match the release commit." }
+          $buildInfoPath = Join-Path $env:RUNNER_TEMP "splined-build-info.json"
+          $identity = Start-Process -FilePath (Resolve-Path "$portableRoot/splined.exe") -ArgumentList @("--write-build-info", $buildInfoPath) -Wait -PassThru
+          if ($identity.ExitCode -ne 0) { throw "The Rust/Slint executable could not report its build identity." }
+          $buildInfo = Get-Content -Raw -LiteralPath $buildInfoPath | ConvertFrom-Json
+          if ($buildInfo.version -ne $env:RELEASE_VERSION) { throw "The Windows executable version does not match the release tag." }
+          if ($buildInfo.commit -ne $env:RELEASE_COMMIT) { throw "The Windows executable commit does not match the release commit." }
+          if ($buildInfo.architecture -ne "rust-slint") { throw "The Windows executable is not the Rust/Slint architecture." }
 
           $files = @(Get-ChildItem -LiteralPath $portableRoot -Recurse -File | ForEach-Object {
             $_.FullName.Substring((Resolve-Path $portableRoot).Path.Length + 1).Replace('\', '/')
           } | Sort-Object)
-          $expected = @("README-WINDOWS.txt", "runtime/splined-core.dll", "splined.exe")
+          $expected = @("README-WINDOWS.txt", "splined.exe")
           if (Compare-Object $files $expected) { throw "Portable package contents do not match the release allowlist." }
           if (Test-Path -LiteralPath "$portableRoot/data") { throw "A fresh portable package must not contain data/." }
 
-          $smoke = Start-Process -FilePath (Resolve-Path "$portableRoot/splined.exe") -ArgumentList "--native-smoke" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
-          if ($smoke.ExitCode -ne 0) { throw "The clean portable WinForms-to-Rust DLL smoke test failed." }
+          $smokeStateRoot = Join-Path $env:RUNNER_TEMP "splined-portable-smoke-state"
+          New-Item -ItemType Directory -Force -Path $smokeStateRoot | Out-Null
+          $priorStateRoot = $env:SPLINED_INTERNAL_STATE_ROOT
+          $env:SPLINED_INTERNAL_STATE_ROOT = $smokeStateRoot
+          try {
+            $smoke = Start-Process -FilePath (Resolve-Path "$portableRoot/splined.exe") -ArgumentList "--native-smoke" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
+          } finally {
+            $env:SPLINED_INTERNAL_STATE_ROOT = $priorStateRoot
+          }
+          if ($smoke.ExitCode -ne 0) { throw "The clean portable Rust/Slint smoke test failed." }
 
           Compress-Archive -Path $portableRoot -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
           $archiveEntries = @(tar -tf release-assets/splined-windows-x86_64.zip | Where-Object { -not $_.EndsWith('/') } | Sort-Object)
-          $expectedEntries = @("SPLINED/README-WINDOWS.txt", "SPLINED/runtime/splined-core.dll", "SPLINED/splined.exe")
+          $expectedEntries = @("SPLINED/README-WINDOWS.txt", "SPLINED/splined.exe")
           if (Compare-Object $archiveEntries $expectedEntries) { throw "Portable archive contents do not match the release allowlist." }
 
           $manifest = [ordered]@{
@@ -496,7 +460,6 @@ jobs:
           $storePackage = Join-Path $artifactRoot "SPLINED-x64-store-unsigned.msix"
           $result = & windows/package/Build-StorePackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -CoreDllPath "$releaseRoot/splined_core.dll" `
             -ManifestPath windows/package/Package.appxmanifest `
             -IconPath windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
@@ -515,7 +478,6 @@ jobs:
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
           & windows/package/Test-DevelopmentPackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -CoreDllPath "$releaseRoot/splined_core.dll" `
             -ManifestPath windows/package/Package.appxmanifest `
             -IconPath windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")

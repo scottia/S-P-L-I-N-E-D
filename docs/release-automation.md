@@ -25,8 +25,8 @@ The workflow prepares an exact untagged release commit, builds and validates
 the selected targets, and only then atomically creates the numeric tag and
 advances `main` to that exact release commit. The tag and `main` update are
 one atomic Git push, so a successful release cannot leave its version commit
-outside branch ancestry. A selected Windows build compiles the x64 WinForms
-executable and Rust DLL once. The Portable ZIP
+outside branch ancestry. A selected Windows build compiles the x64 Rust/Slint
+executable once. The Portable ZIP
 always contains that pair. With Microsoft Store enabled, the unsigned Store
 MSIX is created and validated from the same pair before tagging.
 
@@ -138,6 +138,6 @@ retained non-expired `splined-windows-store-submission` artifact, verifies the
 MSIX identity and requested numeric version, and regenerates
 `STORE-HIGHLIGHTS.txt` from current Store history immediately before submission.
 A stale retained Highlights file is never trusted. It never compiles
-Rust/WinForms or rebuilds an MSIX. If no matching retained package exists, it
+Rust/Slint executable or rebuilds an MSIX. If no matching retained package exists, it
 fails and directs the operator to run the tagged Store Package Resolution
 workflow first.

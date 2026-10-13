@@ -1,63 +1,41 @@
-# Windows replacement GUI validation
+# Windows Rust/Slint functional UI QA
 
-This record covers the replacement WinForms artwork workspace introduced from the
-authoritative `SPLINED_GUI_Redesign_Implementation_Pack` references. The legacy
-`MainForm` composition remains only as retired implementation code; the production
-constructor activates the replacement shell.
+This record covers the functional Slint validation surface introduced by the
+Windows native migration. It is not the later graphical canvas redesign.
 
-## Visual comparison
+## Automated gates
 
-The WinForms preview harness renders deterministic local artwork and real application
-controls. It does not contact providers or fabricate ratings, AI model names, provider
-results, or release metadata.
+- `cargo fmt --manifest-path windows/Cargo.toml -- --check`
+- `cargo check --locked --manifest-path windows/Cargo.toml --all-targets`
+- `cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets -- -D warnings`
+- `cargo test --locked --manifest-path windows/Cargo.toml --lib`
+- root architecture and release-automation tests
+- x64 release build
+- `splined.exe --native-smoke`
+- `splined.exe --write-build-info <file>`
+- portable allowlist audit
+- Store MSIX unpack/identity/PE audit
+- installed development-package LocalState smoke
 
-| Reference | Production state captured | Result |
-| --- | --- | --- |
-| `01_FIND_MATCH_ARTWORK.png` | Top shell, graphical library, dynamic source strip, collapsible filters/editing, dominant Selected Artwork, candidate strip | Composition present |
-| `02_EDIT_ARTWORK.png` | Dedicated editing composition with persisted ordered primary controls | Composition present |
-| `03_UPSCALE_ENHANCE.png` | Before/after workspace using SPLINED's implemented upscale and adjustment semantics | Composition present |
-| `04_MUSICBRAINZ_RESULTS.png` | Existing authority/results behavior embedded in the replacement workspace | Composition present |
-| `05_CUSTOM_UPSCALE.png` | Dedicated resizable comparison and editing window opened from Selected Artwork | Composition present |
-| Annotated responsive requirements | 1280 x 800 compact layout with horizontal source and candidate scrolling | Composition present |
+Architecture tests additionally fail if an active `.cs` source, managed GUI
+compiler path, application DLL bridge, or extra Windows package runtime appears.
 
-Generated artifacts are written by `windows/gui/TEST-PREVIEW-WINDOWS-GUI.cmd` to:
+## Interactive gate
 
-- `target-windows/winforms-qa/preview/replacement/actual_01_FIND_MATCH_ARTWORK.png`
-- `target-windows/winforms-qa/preview/replacement/actual_02_EDIT_ARTWORK.png`
-- `target-windows/winforms-qa/preview/replacement/actual_03_UPSCALE_ENHANCE.png`
-- `target-windows/winforms-qa/preview/replacement/actual_04_MUSICBRAINZ_RESULTS.png`
-- `target-windows/winforms-qa/preview/replacement/actual_05_CUSTOM_UPSCALE.png`
-- `target-windows/winforms-qa/preview/replacement/actual_06_NAVIDROME_CREDENTIALS.png`
-- `target-windows/winforms-qa/preview/replacement/actual_07_RESPONSIVE_1280x800.png`
+Run against an existing SPLINED state root without modifying the database:
 
-## Functional validation
+1. Confirm Artists, Albums, and Folders populate from `splined.db`.
+2. Confirm text and each status filter change visibility only.
+3. Confirm direct album, additive album, artist cascade, All, Filtered, and None.
+4. Launch one intentionally selected album in READ and review real candidates.
+5. Exercise source/range filtering, candidate selection, Keep Local, Skip,
+   MusicBrainz authority/results, and return to candidate review.
+6. Verify STOP releases both active processing and a decision wait.
+7. Verify current/local artwork and the existing-cover preview path.
+8. Use a controlled album for an intentional LIVE WRITE validation; confirm the
+   application remains usable and SQLite reflects the final outcome.
+9. Verify Config v5, provider credential test/save, `.spl` backup/restore, and
+   channel-correct update check.
 
-- Windows GUI self-test: replacement production shell, Config v5 source projection and
-  reorder, excluded-source position, horizontal strips, tri-state filters, five-primary
-  adjustment state, graphical library, responsive bounds, MusicBrainz integration,
-  deterministic Navidrome matching, and credential isolation.
-- Root Rust suite: 195 unit tests and 23 integration/architecture tests.
-- Windows Rust suite: 275 unit tests.
-- Python suite: 271 tests passed, 1 platform-conditional test skipped.
-- Release Windows build: `splined.exe` plus the in-process `splined_core.dll` built for
-  `x86_64-pc-windows-msvc`.
-
-## Deliberate reference adaptations
-
-- Controls use native WinForms drawing, repository branding, and actual SPLINED data;
-  generated illustration assets and unsupported stars/model labels are omitted.
-- Custom Upscale is a separate resizable WinForms window so comparison work has a
-  focused surface without duplicating it below the main workspace. Closing it restores
-  the existing selection and workspace.
-- Navidrome is an OpenSubsonic-first, read-only enrichment/candidate source. No schema
-  change was necessary: artwork is cached under the configured cache directory and
-  deterministic identity is held in the active projection. `splined.db` remains the
-  only durable media/workflow authority.
-- Navidrome authentication is a mutually exclusive API-key or username/password
-  choice. API keys are generated in Navidrome's **Players & API keys** settings;
-  native Web-API bearer tokens are not mixed into OpenSubsonic `/rest/*` requests.
-- Navtagger's targeted scan transport remains the v15.8.5 restricted Docker API
-  call that executes Navidrome's native `scan -t` command; it is not reused as a
-  library/artwork authentication mechanism.
-- Optional server path enrichment is reported only when the compatible album response
-  supplies paths. It is never used to overwrite canonical SPLINED paths.
+Do not use a fixture-only run as the final functional acceptance. Any LIVE WRITE
+test must be explicitly selected so unrelated media is never changed.

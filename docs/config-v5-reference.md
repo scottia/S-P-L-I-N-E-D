@@ -155,7 +155,7 @@ does not rewrite it. Setting Apply adaptive defaults false disables the
 analyze-first correction but retains explicit values. The Windows Upscale
 Preview reports the effective corrections. When `square = true` and
 `square_mode = "crop"`, a square Rust projection is previewed from the same
-centered square source crop before resize; the WinForms preview therefore does
+centered square source crop before resize; the Slint preview therefore does
 not stretch a near-square source merely to show the projected dimensions.
 
 Enlargement capability is not Preferred/Auto authority. An upscaled candidate
@@ -338,10 +338,9 @@ Credentials, tokens, authorization headers, client secrets, and private
 credential values must never be logged. SPLINED applies central redaction to UI
 and persistent runtime-log messages as a final safety boundary.
 
-Windows also records unexpected WinForms thread/domain exceptions in this
-current-run file, including bounded stack and inner-exception details. The
-continue dialog reports the file path. The same central redaction is applied to
-those diagnostic records.
+Windows also records Rust application and runtime errors in the current-run
+activity surface and configured diagnostics. The same central redaction is
+applied to those diagnostic records.
 
 Python/Docker runtime and debug records are single-line and limited to 2,048
 characters. Embedded newlines are escaped and an oversized record ends with a

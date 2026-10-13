@@ -16,10 +16,10 @@ static CANCELLED: AtomicBool = AtomicBool::new(false);
 static IN_PROCESS: AtomicBool = AtomicBool::new(false);
 static REVIEW_REQUIRED: AtomicBool = AtomicBool::new(false);
 static AUTO_IDEAL: AtomicBool = AtomicBool::new(false);
-static SCAN_CONTEXT: OnceLock<Mutex<ScanBridgeContext>> = OnceLock::new();
+static SCAN_CONTEXT: OnceLock<Mutex<ScanContext>> = OnceLock::new();
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ScanBridgeContext {
+pub struct ScanContext {
     pub compilation_track_path: Option<PathBuf>,
     pub fallback_album: Option<String>,
     pub fallback_artist: Option<String>,
@@ -74,21 +74,21 @@ pub fn end_in_process() {
         *current = None;
     }
     set_bypass_overrides(std::iter::empty());
-    set_scan_context(ScanBridgeContext::default());
+    set_scan_context(ScanContext::default());
 }
 
-pub fn set_scan_context(context: ScanBridgeContext) {
+pub fn set_scan_context(context: ScanContext) {
     if let Ok(mut current) = SCAN_CONTEXT
-        .get_or_init(|| Mutex::new(ScanBridgeContext::default()))
+        .get_or_init(|| Mutex::new(ScanContext::default()))
         .lock()
     {
         *current = context;
     }
 }
 
-pub fn scan_context() -> ScanBridgeContext {
+pub fn scan_context() -> ScanContext {
     SCAN_CONTEXT
-        .get_or_init(|| Mutex::new(ScanBridgeContext::default()))
+        .get_or_init(|| Mutex::new(ScanContext::default()))
         .lock()
         .map(|current| current.clone())
         .unwrap_or_default()

@@ -4,9 +4,12 @@ use crate::source::{
 };
 use rand::Rng;
 use reqwest::{Client, RequestBuilder, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::Path;
+use std::error::Error as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -17,19 +20,20 @@ const INTERNAL_SCHEME: &str = "splined+navidrome://";
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 static DOWNLOAD_SESSIONS: OnceLock<Mutex<HashMap<u64, NavidromeCredential>>> = OnceLock::new();
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
-struct NavidromeCredential {
-    server_url: String,
-    auth_method: String,
-    username: String,
-    password: String,
-    api_key: String,
-    bearer_token: String,
+pub struct NavidromeCredential {
+    pub server_url: String,
+    pub auth_method: String,
+    pub username: String,
+    pub password: String,
+    pub api_key: String,
+    pub bearer_token: String,
 }
 
 impl NavidromeCredential {
-    fn load(path: &str) -> Result<Self, String> {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
         let path = Path::new(path);
         let body = std::fs::read_to_string(path).map_err(|error| {
             format!(
@@ -52,7 +56,7 @@ impl NavidromeCredential {
         Ok(value)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         let valid_url =
             self.server_url.starts_with("https://") || self.server_url.starts_with("http://");
         if !valid_url {
@@ -74,7 +78,7 @@ impl NavidromeCredential {
         Ok(())
     }
 
-    fn uses_api_key(&self) -> bool {
+    pub fn uses_api_key(&self) -> bool {
         if self.auth_method.eq_ignore_ascii_case("api_key") {
             return true;
         }
@@ -85,13 +89,298 @@ impl NavidromeCredential {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavidromeCapabilities {
+    pub connected: bool,
+    pub library_available: bool,
+    pub artist_artwork_available: bool,
+    pub album_artwork_available: bool,
+    pub path_enrichment_available: bool,
+    pub open_subsonic: bool,
+    pub server_type: String,
+    pub server_version: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavidromeArtist {
+    pub id: String,
+    pub name: String,
+    pub cover_art_id: String,
+    pub artist_image_url: String,
+    pub musicbrainz_id: String,
+    pub album_count: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavidromeAlbum {
+    pub id: String,
+    pub artist_id: String,
+    pub artist: String,
+    pub title: String,
+    pub cover_art_id: String,
+    pub musicbrainz_id: String,
+    pub year: String,
+    pub song_count: u32,
+}
+
+/// Read-only OpenSubsonic-first companion projection. SPLINED's SQLite model
+/// remains authoritative; this client only supplies optional server metadata
+/// and artwork for matching local artists/albums.
+#[derive(Clone)]
+pub struct NavidromeCompanion {
+    client: Client,
+    credential: NavidromeCredential,
+}
+
+impl NavidromeCompanion {
+    pub fn new(credential: NavidromeCredential) -> Result<Self, String> {
+        credential.validate()?;
+        let client = navidrome_client(&credential.server_url)?;
+        Ok(Self { client, credential })
+    }
+
+    pub async fn capabilities(&self) -> Result<NavidromeCapabilities, String> {
+        let ping = self.request_value("ping", &[]).await?;
+        let mut result = NavidromeCapabilities {
+            connected: true,
+            open_subsonic: json_bool(&ping, "openSubsonic"),
+            server_type: json_text(&ping, "type"),
+            server_version: json_text(&ping, "serverVersion"),
+            ..NavidromeCapabilities::default()
+        };
+        let folders = self.request_value("getMusicFolders", &[]).await?;
+        result.library_available = nested_array(&folders, "musicFolders", "musicFolder")
+            .is_some_and(|items| !items.is_empty());
+
+        if let Ok(recent) = self
+            .request_value(
+                "getAlbumList2",
+                &[("type", "recent".to_string()), ("size", "1".to_string())],
+            )
+            .await
+            && let Some(album) =
+                nested_array(&recent, "albumList2", "album").and_then(|items| items.first())
+        {
+            result.album_artwork_available = !json_text(album, "coverArt").is_empty();
+            let artist_id = json_text(album, "artistId");
+            if !artist_id.is_empty()
+                && let Ok(info) = self
+                    .request_value("getArtistInfo2", &[("id", artist_id)])
+                    .await
+                && let Some(info) = info.get("artistInfo2")
+            {
+                result.artist_artwork_available =
+                    ["smallImageUrl", "mediumImageUrl", "largeImageUrl"]
+                        .iter()
+                        .any(|key| !json_text(info, key).is_empty());
+            }
+            let album_id = json_text(album, "id");
+            if !album_id.is_empty()
+                && let Ok(details) = self.request_value("getAlbum", &[("id", album_id)]).await
+                && let Some(album) = details.get("album")
+            {
+                result.path_enrichment_available = album
+                    .get("song")
+                    .and_then(Value::as_array)
+                    .is_some_and(|songs| {
+                        songs.iter().any(|song| !json_text(song, "path").is_empty())
+                    });
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn artists(&self) -> Result<Vec<NavidromeArtist>, String> {
+        let response = self.request_value("getArtists", &[]).await?;
+        let mut result = Vec::new();
+        if let Some(indexes) = response
+            .get("artists")
+            .and_then(|artists| artists.get("index"))
+            .and_then(Value::as_array)
+        {
+            for index in indexes {
+                for value in index
+                    .get("artist")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    result.push(NavidromeArtist {
+                        id: json_text(value, "id"),
+                        name: json_text(value, "name"),
+                        cover_art_id: json_text(value, "coverArt"),
+                        artist_image_url: json_text(value, "artistImageUrl"),
+                        musicbrainz_id: json_text(value, "musicBrainzId"),
+                        album_count: json_u32(value, "albumCount"),
+                    });
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn artist_albums(&self, artist_id: &str) -> Result<Vec<NavidromeAlbum>, String> {
+        if artist_id.trim().is_empty() {
+            return Err("Navidrome artist identity is required.".to_string());
+        }
+        let response = self
+            .request_value("getArtist", &[("id", artist_id.to_string())])
+            .await?;
+        Ok(response
+            .get("artist")
+            .and_then(|artist| artist.get("album"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|value| NavidromeAlbum {
+                id: json_text(value, "id"),
+                artist_id: json_text(value, "artistId"),
+                artist: json_text(value, "artist"),
+                title: ["album", "title", "name"]
+                    .iter()
+                    .map(|key| json_text(value, key))
+                    .find(|text| !text.is_empty())
+                    .unwrap_or_default(),
+                cover_art_id: json_text(value, "coverArt"),
+                musicbrainz_id: json_text(value, "musicBrainzId"),
+                year: json_text(value, "year"),
+                song_count: json_u32(value, "songCount"),
+            })
+            .collect())
+    }
+
+    pub async fn cache_cover_art(
+        &self,
+        cover_art_id: &str,
+        cache_directory: &Path,
+        size: u32,
+    ) -> Result<Option<PathBuf>, String> {
+        if cover_art_id.trim().is_empty() {
+            return Ok(None);
+        }
+        std::fs::create_dir_all(cache_directory).map_err(|error| {
+            format!(
+                "Unable to create Navidrome artwork cache {}: {error}",
+                cache_directory.display()
+            )
+        })?;
+        let identity = Sha256::digest(
+            format!("{}\n{}\n{size}", self.credential.server_url, cover_art_id).as_bytes(),
+        );
+        let filename = identity
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = cache_directory.join(format!("{filename}.img"));
+        if path.is_file() && crate::inspect::inspect_image(&path).is_ok() {
+            return Ok(Some(path));
+        }
+        let mut parameters = vec![("id", cover_art_id.to_string())];
+        if size > 0 {
+            parameters.push(("size", size.to_string()));
+        }
+        let response =
+            authenticated_request(&self.client, &self.credential, "getCoverArt", &parameters)
+                .send()
+                .await
+                .map_err(|error| safe_request_error("download Navidrome cover art", error))?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err("Navidrome rejected the saved authentication credentials.".to_string());
+        }
+        if response.content_length().unwrap_or(0) > MAX_DOWNLOAD_BYTES as u64 {
+            return Err("Navidrome cover art exceeded the download size limit.".to_string());
+        }
+        let bytes = response
+            .error_for_status()
+            .map_err(|_| "Navidrome cover-art download failed.".to_string())?
+            .bytes()
+            .await
+            .map_err(|error| format!("Unable to read Navidrome cover art: {error}"))?;
+        if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD_BYTES {
+            return Err("Navidrome returned invalid cover-art bytes.".to_string());
+        }
+        crate::safe_write::replace_binary_file(
+            &path,
+            &bytes,
+            "Navidrome artwork cache",
+            |staged| crate::inspect::inspect_image(staged).map(|_| ()),
+        )?;
+        Ok(Some(path))
+    }
+
+    async fn request_value(
+        &self,
+        method: &str,
+        parameters: &[(&str, String)],
+    ) -> Result<Value, String> {
+        let response = authenticated_request(&self.client, &self.credential, method, parameters)
+            .send()
+            .await
+            .map_err(|error| {
+                safe_request_error(&format!("query Navidrome/OpenSubsonic {method}"), error)
+            })?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err("Navidrome rejected the saved authentication credentials.".to_string());
+        }
+        let document = response
+            .error_for_status()
+            .map_err(|_| format!("Navidrome/OpenSubsonic {method} failed."))?
+            .json::<Value>()
+            .await
+            .map_err(|error| format!("Navidrome/OpenSubsonic returned invalid JSON: {error}"))?;
+        let response = document
+            .get("subsonic-response")
+            .ok_or_else(|| "Navidrome/OpenSubsonic response envelope is missing.".to_string())?;
+        validate_value_response(response)?;
+        Ok(response.clone())
+    }
+}
+
+pub fn match_companion_album<'a>(
+    artist: &str,
+    title: &str,
+    release_mbid: &str,
+    release_year: &str,
+    albums: &'a [NavidromeAlbum],
+) -> Option<&'a NavidromeAlbum> {
+    if !release_mbid.trim().is_empty()
+        && let Some(album) = albums.iter().find(|album| {
+            album
+                .musicbrainz_id
+                .eq_ignore_ascii_case(release_mbid.trim())
+        })
+    {
+        return Some(album);
+    }
+    let artist = normalize_identity(artist);
+    let title = normalize_identity(title);
+    let mut exact = albums.iter().filter(|album| {
+        normalize_identity(&album.artist) == artist && normalize_identity(&album.title) == title
+    });
+    let candidate = exact.next()?;
+    if exact.next().is_some()
+        || (!release_year.trim().is_empty()
+            && !candidate.year.trim().is_empty()
+            && !candidate.year.eq_ignore_ascii_case(release_year.trim()))
+    {
+        return None;
+    }
+    Some(candidate)
+}
+
 #[derive(Debug, Deserialize)]
 struct Envelope {
     #[serde(rename = "subsonic-response")]
     response: SubsonicResponse,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct SubsonicResponse {
     status: String,
@@ -100,28 +389,10 @@ struct SubsonicResponse {
     search_result: Option<SearchResult>,
 }
 
-impl Default for SubsonicResponse {
-    fn default() -> Self {
-        Self {
-            status: String::new(),
-            error: None,
-            search_result: None,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct ApiError {
     message: String,
-}
-
-impl Default for ApiError {
-    fn default() -> Self {
-        Self {
-            message: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -162,11 +433,13 @@ pub struct Navidrome {
 
 impl Navidrome {
     pub fn new(credential_file: &str) -> Result<Self, String> {
-        let client = Client::builder()
-            .user_agent(concat!("SPLINED/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|error| format!("Unable to create Navidrome HTTP client: {error}"))?;
         let credential = NavidromeCredential::load(credential_file);
+        let client = navidrome_client(
+            credential
+                .as_ref()
+                .map(|value| value.server_url.as_str())
+                .unwrap_or_default(),
+        )?;
         let session_id = credential.as_ref().ok().map(|value| {
             let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
             download_sessions()
@@ -203,7 +476,7 @@ impl Navidrome {
         let response = request
             .send()
             .await
-            .map_err(|_| "Unable to query Navidrome/OpenSubsonic.".to_string())?;
+            .map_err(|error| safe_request_error("query Navidrome/OpenSubsonic", error))?;
         if matches!(
             response.status(),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -246,6 +519,69 @@ impl Navidrome {
     }
 }
 
+fn navidrome_client(server_url: &str) -> Result<Client, String> {
+    let mut builder = Client::builder().user_agent(concat!("SPLINED/", env!("CARGO_PKG_VERSION")));
+    // Local Navidrome installations are common. Never route a loopback server
+    // through a machine-wide HTTP proxy; doing so both breaks valid local
+    // connections and exposes authentication query parameters to that proxy.
+    if reqwest::Url::parse(server_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
+    {
+        builder = builder.no_proxy();
+    }
+    builder
+        .build()
+        .map_err(|error| format!("Unable to create Navidrome HTTP client: {error}"))
+}
+
+pub fn save_credential(path: &Path, credential: &NavidromeCredential) -> Result<(), String> {
+    let mut credential = credential.clone();
+    credential.server_url = credential
+        .server_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    credential.auth_method = credential.auth_method.trim().to_ascii_lowercase();
+    credential.username = credential.username.trim().to_string();
+    credential.api_key = credential.api_key.trim().to_string();
+    credential.bearer_token = credential.bearer_token.trim().to_string();
+    credential.validate()?;
+    let json = serde_json::to_string_pretty(&credential)
+        .map_err(|error| format!("Unable to serialize Navidrome credential: {error}"))?;
+    crate::safe_write::replace_text_file(
+        path,
+        &format!("{json}\n"),
+        "Navidrome credential",
+        |candidate| {
+            let parsed: NavidromeCredential = serde_json::from_str(candidate)
+                .map_err(|error| format!("Invalid staged Navidrome credential: {error}"))?;
+            parsed.validate()
+        },
+    )
+}
+
+pub async fn test_credential(credential: &NavidromeCredential) -> Result<String, String> {
+    let capabilities = NavidromeCompanion::new(credential.clone())
+        .map_err(|error| format!("Navidrome credential is invalid: {error}"))?
+        .capabilities()
+        .await
+        .map_err(|error| format!("Unable to verify Navidrome/OpenSubsonic access: {error}"))?;
+    Ok(format!(
+        "Connected to Navidrome/OpenSubsonic. Library access: {}; album artwork: {}; artist artwork: {}; path enrichment: {}.",
+        yes_no(capabilities.library_available),
+        yes_no(capabilities.album_artwork_available),
+        yes_no(capabilities.artist_artwork_available),
+        yes_no(capabilities.path_enrichment_available),
+    ))
+}
+
 impl ArtworkProvider for Navidrome {
     fn name(&self) -> &'static str {
         "navidrome"
@@ -284,7 +620,7 @@ pub async fn download_cover(client: &Client, internal_url: &str) -> Result<Vec<u
     let response = authenticated_request(client, &credential, "getCoverArt", &[("id", cover_id)])
         .send()
         .await
-        .map_err(|_| "Unable to download Navidrome cover art.".to_string())?;
+        .map_err(|error| safe_request_error("download Navidrome cover art", error))?;
     if matches!(
         response.status(),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
@@ -340,6 +676,24 @@ fn authenticated_request(
         .query(&query)
 }
 
+fn safe_request_error(action: &str, error: reqwest::Error) -> String {
+    // OpenSubsonic API-key authentication is carried in the query string.
+    // Strip the URL before returning diagnostics so failures cannot leak it.
+    let error = error.without_url();
+    let mut detail = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let next = cause.source();
+        let description = cause.to_string().replace(['\r', '\n'], " ");
+        if !description.is_empty() && !detail.contains(&description) {
+            detail.push_str(": ");
+            detail.push_str(&description);
+        }
+        source = next;
+    }
+    format!("Unable to {action}: {detail}")
+}
+
 fn validate_response(response: &SubsonicResponse) -> Result<(), String> {
     if response.status.eq_ignore_ascii_case("ok") {
         return Ok(());
@@ -352,6 +706,61 @@ fn validate_response(response: &SubsonicResponse) -> Result<(), String> {
         .map(|message| format!(": {message}"))
         .unwrap_or_default();
     Err(format!("Navidrome/OpenSubsonic request failed{detail}"))
+}
+
+fn validate_value_response(response: &Value) -> Result<(), String> {
+    if json_text(response, "status").eq_ignore_ascii_case("ok") {
+        return Ok(());
+    }
+    let detail = response
+        .get("error")
+        .map(|error| json_text(error, "message"))
+        .filter(|message| !message.is_empty())
+        .map(|message| format!(": {message}"))
+        .unwrap_or_default();
+    Err(format!("Navidrome/OpenSubsonic request failed{detail}"))
+}
+
+fn nested_array<'a>(value: &'a Value, object: &str, array: &str) -> Option<&'a Vec<Value>> {
+    value.get(object)?.get(array)?.as_array()
+}
+
+fn json_text(value: &Value, name: &str) -> String {
+    value
+        .get(name)
+        .map(|value| match value {
+            Value::String(value) => value.clone(),
+            Value::Number(value) => value.to_string(),
+            Value::Bool(value) => value.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default()
+}
+
+fn json_u32(value: &Value, name: &str) -> u32 {
+    value
+        .get(name)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        })
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0)
+}
+
+fn json_bool(value: &Value, name: &str) -> bool {
+    value.get(name).is_some_and(|value| {
+        value.as_bool().unwrap_or_else(|| {
+            value
+                .as_str()
+                .is_some_and(|text| text.eq_ignore_ascii_case("true"))
+        })
+    })
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "available" } else { "not reported" }
 }
 
 fn match_albums(
@@ -424,6 +833,185 @@ fn decode_hex(value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::thread;
+    use std::time::Duration;
+
+    struct MockNavidrome {
+        url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        address: std::net::SocketAddr,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl MockNavidrome {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_requests = Arc::clone(&requests);
+            let worker_stop = Arc::clone(&stop);
+            let worker = thread::spawn(move || {
+                while !worker_stop.load(AtomicOrdering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            // Windows can inherit the listener's nonblocking
+                            // mode on accepted sockets. The mock must wait for
+                            // the complete request instead of treating an
+                            // initial WouldBlock as an empty HTTP request.
+                            stream.set_nonblocking(false).unwrap();
+                            let request = read_request(&mut stream);
+                            worker_requests.lock().unwrap().push(request.clone());
+                            write_response(&mut stream, &request);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                url: format!("http://{address}"),
+                requests,
+                stop,
+                address,
+                worker: Some(worker),
+            }
+        }
+
+        fn credential(&self) -> NavidromeCredential {
+            NavidromeCredential {
+                server_url: self.url.clone(),
+                auth_method: "password".to_string(),
+                username: "listener".to_string(),
+                password: "private-password".to_string(),
+                ..NavidromeCredential::default()
+            }
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for MockNavidrome {
+        fn drop(&mut self) {
+            self.stop.store(true, AtomicOrdering::Release);
+            let _ = TcpStream::connect(self.address);
+            if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+        }
+    }
+
+    fn read_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 2048];
+        while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn write_response(stream: &mut TcpStream, request: &str) {
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default();
+        let (content_type, body) = if target.contains("/rest/ping.view") {
+            ("application/json", ping_response().into_bytes())
+        } else if target.contains("/rest/getMusicFolders.view") {
+            (
+                "application/json",
+                ok_response(r#""musicFolders":{"musicFolder":[{"id":"1","name":"Music"}]}"#)
+                    .into_bytes(),
+            )
+        } else if target.contains("/rest/getAlbumList2.view") {
+            (
+                "application/json",
+                ok_response(
+                    r#""albumList2":{"album":[{"id":"album-1","artistId":"artist-1","coverArt":"cover-1"}]}"#,
+                )
+                .into_bytes(),
+            )
+        } else if target.contains("/rest/getArtistInfo2.view") {
+            (
+                "application/json",
+                ok_response(
+                    r#""artistInfo2":{"mediumImageUrl":"https://example.invalid/artist.jpg"}"#,
+                )
+                .into_bytes(),
+            )
+        } else if target.contains("/rest/getAlbum.view") {
+            (
+                "application/json",
+                ok_response(r#""album":{"song":[{"path":"Artist/Album/01.flac"}]}"#).into_bytes(),
+            )
+        } else if target.contains("/rest/getArtists.view") {
+            (
+                "application/json",
+                ok_response(
+                    r#""artists":{"index":[{"name":"B","artist":[{"id":"artist-1","name":"Beyoncé","coverArt":"artist-cover","musicBrainzId":"artist-mbid","albumCount":2}]}]}"#,
+                )
+                .into_bytes(),
+            )
+        } else if target.contains("/rest/getArtist.view") {
+            (
+                "application/json",
+                ok_response(
+                    r#""artist":{"album":[{"id":"album-1","artistId":"artist-1","artist":"Beyoncé","album":"Renaissance","coverArt":"cover-1","musicBrainzId":"release-mbid","year":2022,"songCount":"16"}]}"#,
+                )
+                .into_bytes(),
+            )
+        } else if target.contains("/rest/getCoverArt.view") {
+            ("image/png", one_pixel_png())
+        } else {
+            ("application/json", Vec::new())
+        };
+        let status = if body.is_empty() {
+            "404 Not Found"
+        } else {
+            "200 OK"
+        };
+        let header = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(header.as_bytes()).unwrap();
+        stream.write_all(&body).unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn ping_response() -> String {
+        r#"{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.54.4","openSubsonic":true}}"#.to_string()
+    }
+
+    fn ok_response(fields: &str) -> String {
+        format!(r#"{{"subsonic-response":{{"status":"ok",{fields}}}}}"#)
+    }
+
+    fn one_pixel_png() -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
 
     #[test]
     fn deterministic_match_prefers_release_mbid() {
@@ -530,5 +1118,92 @@ mod tests {
             .build()
             .unwrap();
         assert!(request.headers().get("X-ND-Authorization").is_none());
+    }
+
+    #[tokio::test]
+    async fn capability_probe_verifies_supported_server_features() {
+        let server = MockNavidrome::start();
+        let companion = NavidromeCompanion::new(server.credential()).unwrap();
+        let capabilities = companion.capabilities().await.unwrap();
+        assert!(capabilities.connected);
+        assert!(capabilities.library_available);
+        assert!(capabilities.artist_artwork_available);
+        assert!(capabilities.album_artwork_available);
+        assert!(capabilities.path_enrichment_available);
+        assert!(capabilities.open_subsonic);
+        assert_eq!(capabilities.server_type, "navidrome");
+        assert_eq!(capabilities.server_version, "0.54.4");
+
+        let requests = server.requests().join("\n");
+        assert!(requests.contains("/rest/ping.view"));
+        assert!(requests.contains("/rest/getMusicFolders.view"));
+        assert!(requests.contains("/rest/getArtistInfo2.view"));
+        assert!(requests.contains("/rest/getAlbum.view"));
+        assert!(!requests.contains("private-password"));
+        assert!(!requests.contains("X-ND-Authorization"));
+    }
+
+    #[tokio::test]
+    async fn companion_projects_artist_and_album_enrichment() {
+        let server = MockNavidrome::start();
+        let companion = NavidromeCompanion::new(server.credential()).unwrap();
+        let artists = companion.artists().await.unwrap();
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists[0].name, "Beyoncé");
+        assert_eq!(artists[0].album_count, 2);
+        assert_eq!(artists[0].musicbrainz_id, "artist-mbid");
+
+        let albums = companion.artist_albums(&artists[0].id).await.unwrap();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].title, "Renaissance");
+        assert_eq!(albums[0].song_count, 16);
+        assert_eq!(
+            match_companion_album("Beyoncé", "Renaissance", "release-mbid", "2022", &albums)
+                .unwrap()
+                .cover_art_id,
+            "cover-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_caches_validated_cover_art_once() {
+        let server = MockNavidrome::start();
+        let companion = NavidromeCompanion::new(server.credential()).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let first = companion
+            .cache_cover_art("cover-1", cache.path(), 512)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = companion
+            .cache_cover_art("cover-1", cache.path(), 512)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first, second);
+        assert!(crate::inspect::inspect_image(&first).is_ok());
+        let cover_requests = server
+            .requests()
+            .iter()
+            .filter(|request| request.contains("/rest/getCoverArt.view"))
+            .count();
+        assert_eq!(cover_requests, 1);
+    }
+
+    #[tokio::test]
+    async fn unavailable_server_is_reported_instead_of_claiming_connected() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let credential = NavidromeCredential {
+            server_url: format!("http://{address}"),
+            auth_method: "password".to_string(),
+            username: "listener".to_string(),
+            password: "private-password".to_string(),
+            ..NavidromeCredential::default()
+        };
+        let error = test_credential(&credential).await.unwrap_err();
+        assert!(error.contains("Unable to verify Navidrome/OpenSubsonic access"));
+        assert!(!error.contains("private-password"));
     }
 }

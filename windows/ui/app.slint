@@ -1,0 +1,337 @@
+import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView, TextEdit } from "std-widgets.slint";
+
+export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, selected: bool, eligible: bool }
+export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, completed: bool, selected: bool }
+export struct UiSourceRow { name: string, count: int, status: string, enabled: bool }
+export struct UiCandidateRow { index: int, source: string, dimensions: string, range-class: string, policy: string, selected: bool, recommended: bool, preview: image }
+export struct UiMusicBrainzRow { index: int, title: string, artist: string, detail: string, current: bool, visited: bool }
+export struct UiAdjustmentRow { name: string, value: int, unit: string }
+
+component Panel inherits Rectangle { background: #0c2135; border-color: #28506f; border-width: 1px; border-radius: 5px; }
+component Heading inherits Text { color: #eef8ff; font-size: 17px; font-weight: 700; vertical-alignment: center; }
+component Label inherits Text { color: #9fc1d5; font-size: 11px; vertical-alignment: center; }
+
+export component AppWindow inherits Window {
+    title: "S:P:L:I:N:E:D — Rust/Slint";
+    icon: @image-url("../gui/splined-app-icon.png");
+    width: 1380px; height: 860px; background: #061522;
+    in property <[UiLibraryRow]> library-rows;
+    in property <[UiCompilationTrackRow]> compilation-track-rows;
+    in property <[UiSourceRow]> source-rows;
+    in property <[string]> source-options: ["All"];
+    in property <[UiCandidateRow]> candidate-rows;
+    in property <[UiMusicBrainzRow]> musicbrainz-rows;
+    in property <[UiAdjustmentRow]> adjustment-rows;
+    in property <int> selected-count;
+    in property <string> database-label;
+    in property <string> current-artist;
+    in property <string> current-album;
+    in property <string> current-path;
+    in property <string> current-status;
+    in property <image> current-preview;
+    in property <string> log-text;
+    in property <string> error-text;
+    in property <bool> can-launch;
+    in property <bool> running;
+    in property <bool> live-write;
+    in property <bool> awaiting-candidate;
+    in property <bool> awaiting-musicbrainz;
+    in property <string> launch-mode-label;
+    in property <string> scan-scope-label;
+    in property <string> authority-artist;
+    in property <string> authority-album;
+    in property <string> authority-release-id;
+    in-out property <bool> include-bypassed: false;
+    in-out property <string> status-filter-label: "All";
+    in-out property <int> page-index: 0;
+    in-out property <string> selected-source-name: "All";
+    in-out property <string> config-text-value;
+    in-out property <string> credential-provider: "Navidrome";
+    in-out property <string> credential-server;
+    in-out property <string> credential-auth: "password";
+    in-out property <string> credential-username;
+    in-out property <string> credential-identifier;
+    in-out property <string> credential-secret;
+    in-out property <string> credential-status;
+    in-out property <string> backup-path;
+    in-out property <string> backup-password;
+    in-out property <bool> backup-settings: true;
+    in-out property <bool> backup-credentials: true;
+    in-out property <bool> backup-database: false;
+    in-out property <bool> backup-interface: true;
+    in-out property <bool> backup-diagnostics: false;
+    in property <string> service-status;
+    in property <string> version-label;
+    in property <bool> packaged-build;
+
+    callback change-library-view(int); callback search-edited(string); callback status-filter-changed(string);
+    callback library-row-activated(string, bool); callback clear-artist-scope(); callback select-all();
+    callback compilation-track-activated(string, string, bool);
+    callback select-filtered(); callback select-none(); callback refresh-library(bool);
+    callback set-scan-scope(bool); callback set-launch-mode(bool); callback launch(); callback stop();
+    callback candidate-selected(int); callback candidate-action(string); callback candidate-source-filter(string);
+    callback candidate-range-filter(string); callback source-action(string, string);
+    callback musicbrainz-selected(int); callback musicbrainz-apply-authority(); callback musicbrainz-leave-unchanged(); callback adjustment-step(string, int);
+    callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
+    callback load-config(); callback save-config(string); callback load-credential(string);
+    callback save-credential(string, string, string, string, string, string);
+    callback test-credential(string, string, string, string, string, string);
+    callback backup-action(string, string, string, bool, bool, bool, bool, bool); callback check-update();
+    callback install-store-update();
+
+    VerticalLayout {
+        padding: 8px; spacing: 7px;
+        Rectangle {
+            height: 54px; background: #091d30; border-color: #1b83bd; border-width: 1px;
+            HorizontalLayout { padding-left: 14px; padding-right: 10px; spacing: 12px;
+                Text { text: "S:P:L:I:N:E:D"; color: #42d7ff; font-size: 24px; font-weight: 800; vertical-alignment: center; }
+                Text { text: "Rust application authority · Slint presentation"; color: #86a8bd; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                Button { text: "Workspace"; clicked => { root.page-index = 0; } }
+                Button { text: "Settings & Credentials"; clicked => { root.page-index = 1; root.load-config(); root.load-credential(root.credential-provider); } }
+                Button { text: "Backup & Updates"; clicked => { root.page-index = 2; } }
+                Text { text: root.version-label; color: #8fb3c9; font-size: 11px; vertical-alignment: center; }
+            }
+        }
+
+        if root.page-index == 0: HorizontalLayout {
+            spacing: 7px; vertical-stretch: 1;
+            Panel { width: 350px;
+                VerticalLayout { padding: 10px; spacing: 7px;
+                    Heading { text: "Media Library"; height: 28px; }
+                    HorizontalLayout { spacing: 5px;
+                        Button { text: "Artists"; clicked => root.change-library-view(0); }
+                        Button { text: "Albums"; clicked => root.change-library-view(1); }
+                        Button { text: "Folders"; clicked => root.change-library-view(2); }
+                    }
+                    LineEdit { placeholder-text: "Filter artists, albums, or folders"; edited(text) => root.search-edited(text); }
+                    ComboBox { model: ["All", "Unprocessed", "Incomplete", "Processed", "Bypassed", "Partial / Timeout", "Artist Complete", "Artist Contains Bypass"]; current-value <=> root.status-filter-label; selected(value) => root.status-filter-changed(value); }
+                    HorizontalLayout { spacing: 5px;
+                        Button { text: "All"; clicked => root.select-all(); }
+                        Button { text: "Filtered"; clicked => root.select-filtered(); }
+                        Button { text: "None"; clicked => root.select-none(); }
+                        Button { text: "All Artists"; clicked => root.clear-artist-scope(); }
+                    }
+                    CheckBox { text: "Allow one-run bypass override"; checked <=> root.include-bypassed; }
+                    Text { text: root.selected-count + " album(s) selected"; color: #65d6ff; font-weight: 700; height: 24px; }
+                    ListView { vertical-stretch: 1;
+                        for row in root.library-rows: Rectangle {
+                            height: 58px; background: row.selected ? #173e58 : (touch.has-hover ? #112f48 : #0a1c2c);
+                            border-color: row.selected ? #30c8ff : #183a55; border-width: 1px; border-radius: 3px;
+                            VerticalLayout { padding: 5px; spacing: 1px;
+                                Text { text: row.primary; color: #f0f8ff; font-size: 13px; overflow: elide; }
+                                Text { text: row.secondary; color: #87a9be; font-size: 10px; overflow: elide; }
+                                Text { text: row.status; color: row.eligible ? #55d790 : #d99b58; font-size: 10px; }
+                            }
+                            touch := TouchArea { clicked => root.library-row-activated(row.key, root.include-bypassed); }
+                        }
+                    }
+                    Text { text: "Compilation Tracks · explicit embedded-art reopen"; color: #9fc1d5; font-size: 10px; height: 18px; }
+                    ListView { height: 112px;
+                        for track in root.compilation-track-rows: Rectangle {
+                            height: 34px; background: track.selected ? #173e58 : #0a1c2c;
+                            border-color: track.selected ? #30c8ff : #183a55; border-width: 1px;
+                            HorizontalLayout { padding: 4px; spacing: 5px;
+                                Text { text: track.completed ? "●" : "○"; color: track.completed ? #55d790 : #9fc1d5; width: 16px; vertical-alignment: center; }
+                                Text { text: track.file-name; color: #eef8ff; font-size: 10px; overflow: elide; vertical-alignment: center; }
+                            }
+                            TouchArea { clicked => root.compilation-track-activated(track.album-key, track.path, root.include-bypassed); }
+                        }
+                    }
+                    HorizontalLayout { spacing: 5px;
+                        Button { text: "Reload DB"; clicked => root.refresh-library(false); }
+                        Button { text: "Rebuild Index"; clicked => root.refresh-library(true); }
+                    }
+                }
+            }
+            VerticalLayout { spacing: 7px; horizontal-stretch: 1;
+                Panel { height: 185px;
+                    VerticalLayout { padding: 10px; spacing: 4px;
+                        Heading { text: "Current Album & Config v5 Sources"; height: 25px; }
+                        Text { text: root.current-artist + (root.current-album == "" ? "" : " — " + root.current-album); color: #f3f8fc; font-size: 15px; font-weight: 700; }
+                        Text { text: root.current-path; color: #8fb1c6; font-size: 11px; overflow: elide; }
+                        Text { text: root.current-status; color: #69dca1; font-size: 11px; }
+                        ScrollView { height: 44px;
+                            HorizontalLayout { spacing: 6px;
+                                for source in root.source-rows: Rectangle { width: 145px; height: 39px; background: source.enabled ? #112b42 : #241d2c; border-color: source.enabled ? #2b6389 : #814352; border-width: 1px; border-radius: 3px;
+                                    VerticalLayout { padding: 4px;
+                                        Text { text: source.name + "  [" + source.count + "]"; color: #d9f1ff; font-size: 11px; overflow: elide; }
+                                        Text { text: source.enabled ? source.status : "Excluded"; color: source.enabled ? #79a4bd : #ee7d86; font-size: 9px; overflow: elide; }
+                                    }
+                                }
+                            }
+                        }
+                        HorizontalLayout { spacing: 5px;
+                            ComboBox { model: root.source-options; current-value <=> root.selected-source-name; selected(value) => root.candidate-source-filter(value); }
+                            Button { text: "Include"; clicked => root.source-action(root.selected-source-name, "include"); }
+                            Button { text: "Exclude"; clicked => root.source-action(root.selected-source-name, "exclude"); }
+                            Button { text: "Priority ←"; clicked => root.source-action(root.selected-source-name, "up"); }
+                            Button { text: "Priority →"; clicked => root.source-action(root.selected-source-name, "down"); }
+                            ComboBox { model: ["All", "ideal", "upper", "ladder", "above", "lower", "below"]; current-value: "All"; selected(value) => root.candidate-range-filter(value); }
+                        }
+                    }
+                }
+                Panel { vertical-stretch: 1;
+                    VerticalLayout { padding: 10px; spacing: 6px;
+                        Heading { text: root.awaiting-musicbrainz ? "MusicBrainz Release Authority" : "Artwork Candidates"; height: 26px; }
+                        if root.awaiting-musicbrainz: Rectangle { height: 92px; background: #102d43; border-color: #e7bd4c; border-width: 1px;
+                            VerticalLayout { padding: 7px;
+                                Text { text: "CURRENT ALBUM (authority)"; color: #f4d264; font-weight: 800; }
+                                Text { text: root.authority-artist + " — " + root.authority-album; color: #f2f7fa; }
+                                Text { text: root.authority-release-id; color: #8fb1c6; font-size: 10px; overflow: elide; }
+                                Button { text: "Apply IDs / Keep Current Authority"; clicked => root.musicbrainz-apply-authority(); }
+                                Button { text: "Return to Artwork Candidates"; clicked => root.musicbrainz-leave-unchanged(); }
+                            }
+                        }
+                        if root.awaiting-musicbrainz: ListView { vertical-stretch: 1;
+                            for item in root.musicbrainz-rows: Rectangle { height: 58px; background: item.current ? #173c55 : #0a1c2c; border-color: item.visited ? #7456a7 : #23516f; border-width: 1px;
+                                VerticalLayout { padding: 5px;
+                                    Text { text: item.title; color: #eef8ff; font-size: 12px; overflow: elide; }
+                                    Text { text: item.artist + " · " + item.detail; color: #8fb1c6; font-size: 10px; overflow: elide; }
+                                }
+                                TouchArea { clicked => root.musicbrainz-selected(item.index); }
+                            }
+                        }
+                        if !root.awaiting-musicbrainz: ListView { vertical-stretch: 1;
+                            for item in root.candidate-rows: Rectangle { height: 86px; background: item.selected ? #173f59 : #0a1c2c; border-color: item.selected ? #31d2ff : (item.recommended ? #59d98b : #24506c); border-width: item.selected ? 2px : 1px; border-radius: 3px;
+                                HorizontalLayout { padding: 5px; spacing: 8px;
+                                    Image { source: item.preview; width: 74px; height: 74px; image-fit: contain; }
+                                    VerticalLayout { spacing: 2px;
+                                        Text { text: "#" + item.index + "  " + item.source; color: #eef8ff; font-size: 13px; font-weight: 700; }
+                                        Text { text: item.dimensions + " · " + item.range-class; color: #8fb1c6; font-size: 11px; }
+                                        Text { text: item.policy + (item.recommended ? " · Recommended" : ""); color: item.recommended ? #59dc8e : #a4bed0; font-size: 10px; }
+                                    }
+                                }
+                                TouchArea { clicked => root.candidate-selected(item.index); }
+                            }
+                        }
+                        HorizontalLayout { spacing: 5px;
+                            Button { text: "Apply Selected"; enabled: root.awaiting-candidate; clicked => root.candidate-action("use"); }
+                            Button { text: "Keep Local"; enabled: root.awaiting-candidate; clicked => root.candidate-action("keep_local"); }
+                            Button { text: "Bypass"; enabled: root.awaiting-candidate; clicked => root.candidate-action("bypass"); }
+                            Button { text: "NO Bypass"; enabled: root.awaiting-candidate; clicked => root.candidate-action("clear_bypass"); }
+                            Button { text: "MusicBrainz"; enabled: root.awaiting-candidate; clicked => root.candidate-action("retry_musicbrainz"); }
+                            Button { text: "Skip Album"; enabled: root.running; clicked => root.candidate-action("skip_album"); }
+                        }
+                    }
+                }
+            }
+            Panel { width: 350px;
+                VerticalLayout { padding: 10px; spacing: 7px;
+                    Heading { text: "Artwork Preview & Editing"; height: 28px; }
+                    Rectangle { height: 290px; background: #06111b; border-color: #274e6a; border-width: 1px; Image { source: root.current-preview; image-fit: contain; } }
+                    HorizontalLayout { spacing: 5px;
+                        Button { text: "Upscale Preview"; enabled: root.awaiting-candidate; clicked => root.set-upscale-preview(true); }
+                        Button { text: "Apply Upscale"; enabled: root.awaiting-candidate; clicked => root.set-upscale-preview(false); }
+                    }
+                    HorizontalLayout { spacing: 5px;
+                        Button { text: "Preview Existing Cover Edit"; enabled: root.current-path != "" && !root.running; clicked => root.edit-existing-cover(false); }
+                        Button { text: "Apply Existing Cover Edit"; enabled: root.current-path != "" && !root.running && root.live-write; clicked => root.edit-existing-cover(true); }
+                    }
+                    Heading { text: "Upscale / Advanced"; height: 24px; }
+                    ListView { vertical-stretch: 1;
+                        for adjustment in root.adjustment-rows: Rectangle { height: 38px; background: #0a1c2b;
+                            HorizontalLayout { padding: 3px;
+                                Text { text: adjustment.name; color: #d9edf8; horizontal-stretch: 1; vertical-alignment: center; }
+                                Button { text: "−"; width: 34px; clicked => root.adjustment-step(adjustment.name, -1); }
+                                Text { text: adjustment.value + adjustment.unit; color: #ffffff; width: 60px; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
+                                Button { text: "+"; width: 34px; clicked => root.adjustment-step(adjustment.name, 1); }
+                            }
+                        }
+                    }
+                    Button { text: "Save adjustment defaults to Config v5"; clicked => root.save-adjustments(); }
+                }
+            }
+        }
+
+        if root.page-index == 1: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+            Panel { horizontal-stretch: 1;
+                VerticalLayout { padding: 12px; spacing: 7px;
+                    Heading { text: "Config v5"; height: 28px; }
+                    Text { text: "Saving validates the complete authoritative document before atomic replacement."; color: #9fc1d5; font-size: 11px; wrap: word-wrap; }
+                    TextEdit { text <=> root.config-text-value; vertical-stretch: 1; }
+                    HorizontalLayout { spacing: 6px;
+                        Button { text: "Reload"; clicked => root.load-config(); }
+                        Button { text: "Validate & Save"; clicked => root.save-config(root.config-text-value); }
+                    }
+                }
+            }
+            Panel { width: 470px;
+                VerticalLayout { padding: 12px; spacing: 7px;
+                    Heading { text: "Provider Credentials"; height: 28px; }
+                    Text { text: "Secrets remain separate from Config v5 and SQLite. Saves are atomic and request user-only filesystem protection."; color: #9fc1d5; font-size: 11px; wrap: word-wrap; }
+                    ComboBox { model: ["Navidrome", "Fanart.tv", "Last.fm", "Discogs", "MusicBrainz OAuth"]; current-value <=> root.credential-provider; selected(value) => root.load-credential(value); }
+                    Label { text: "Server URL (Navidrome/OpenSubsonic)"; height: 22px; }
+                    LineEdit { text <=> root.credential-server; placeholder-text: "https://music.example"; }
+                    Label { text: "Authentication method"; height: 22px; }
+                    ComboBox { model: ["password", "api_key"]; current-value <=> root.credential-auth; }
+                    Label { text: "Username"; height: 22px; }
+                    LineEdit { text <=> root.credential-username; }
+                    Label { text: "API key / Client ID"; height: 22px; }
+                    LineEdit { text <=> root.credential-identifier; }
+                    Label { text: "Password / Token / Client secret"; height: 22px; }
+                    LineEdit { text <=> root.credential-secret; input-type: InputType.password; }
+                    Text { text: root.credential-status; color: root.credential-status.starts-with("Connected") ? #55d790 : #f1c458; wrap: word-wrap; vertical-stretch: 1; }
+                    HorizontalLayout { spacing: 6px;
+                        Button { text: "Reload"; clicked => root.load-credential(root.credential-provider); }
+                        Button { text: "Test"; clicked => root.test-credential(root.credential-provider, root.credential-server, root.credential-auth, root.credential-username, root.credential-identifier, root.credential-secret); }
+                        Button { text: "Save"; clicked => root.save-credential(root.credential-provider, root.credential-server, root.credential-auth, root.credential-username, root.credential-identifier, root.credential-secret); }
+                    }
+                }
+            }
+        }
+
+        if root.page-index == 2: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+            Panel { horizontal-stretch: 1;
+                VerticalLayout { padding: 12px; spacing: 8px;
+                    Heading { text: "Selective .spl Backup / Restore"; height: 28px; }
+                    Label { text: "Backup path"; height: 22px; }
+                    LineEdit { text <=> root.backup-path; placeholder-text: "C:\\Backups\\splined-backup.spl"; }
+                    Label { text: "Password (optional for export)"; height: 22px; }
+                    LineEdit { text <=> root.backup-password; input-type: InputType.password; }
+                    CheckBox { text: "Config v5 settings"; checked <=> root.backup-settings; }
+                    CheckBox { text: "Provider credentials"; checked <=> root.backup-credentials; }
+                    CheckBox { text: "SQLite database"; checked <=> root.backup-database; }
+                    CheckBox { text: "Interface settings"; checked <=> root.backup-interface; }
+                    CheckBox { text: "Diagnostics summary"; checked <=> root.backup-diagnostics; }
+                    HorizontalLayout { spacing: 6px;
+                        Button { text: "Export .spl"; enabled: !root.running; clicked => root.backup-action("export", root.backup-path, root.backup-password, root.backup-settings, root.backup-credentials, root.backup-database, root.backup-interface, root.backup-diagnostics); }
+                        Button { text: "Restore selected"; enabled: !root.running; clicked => root.backup-action("restore", root.backup-path, root.backup-password, root.backup-settings, root.backup-credentials, root.backup-database, root.backup-interface, root.backup-diagnostics); }
+                    }
+                    Text { text: "Restart after restoring settings or SQLite. Restore is disabled while a scan is active."; color: #9fc1d5; wrap: word-wrap; vertical-stretch: 1; }
+                }
+            }
+            Panel { width: 470px;
+                VerticalLayout { padding: 12px; spacing: 8px;
+                    Heading { text: "Updates & Runtime"; height: 28px; }
+                    Text { text: root.version-label; color: #eef8ff; font-weight: 700; }
+                    Text { text: root.database-label; color: #8fb3c9; wrap: word-wrap; }
+                    HorizontalLayout { spacing: 6px;
+                        Button { text: "Check for Updates"; clicked => root.check-update(); }
+                        Button { text: "Install Store Update"; visible: root.packaged-build; clicked => root.install-store-update(); }
+                    }
+                    Text { text: root.service-status; color: #f1c458; wrap: word-wrap; vertical-stretch: 1; }
+                    Heading { text: "Architecture"; height: 28px; }
+                    Text { text: "splined.exe is built directly by Cargo. Rust owns state, SQLite, providers, MusicBrainz, candidate decisions, editing, and scan control. Slint is the only Windows presentation layer."; color: #9fc1d5; wrap: word-wrap; }
+                }
+            }
+        }
+
+        Panel { height: 150px;
+            HorizontalLayout { padding: 9px; spacing: 8px;
+                VerticalLayout { width: 530px; spacing: 5px;
+                    Heading { text: "Run Controls"; height: 24px; }
+                    HorizontalLayout { spacing: 5px;
+                        Button { text: "Auto Scan: " + root.scan-scope-label; enabled: !root.running; clicked => root.set-scan-scope(root.scan-scope-label == "SELECTED"); }
+                        Button { text: "Mode: " + root.launch-mode-label; enabled: !root.running; clicked => root.set-launch-mode(root.launch-mode-label == "READ"); }
+                        Button { text: root.running ? "RUNNING" : "LAUNCH"; enabled: root.can-launch; clicked => root.launch(); }
+                        Button { text: "STOP"; enabled: root.running; clicked => root.stop(); }
+                    }
+                    Text { text: root.error-text; color: #ff6b76; font-size: 11px; wrap: word-wrap; }
+                }
+                VerticalLayout { Heading { text: "Activity"; height: 24px; }
+                    ScrollView { Text { text: root.log-text; color: #a9c6d7; font-size: 10px; wrap: word-wrap; } }
+                }
+            }
+        }
+    }
+}

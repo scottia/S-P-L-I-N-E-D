@@ -4,9 +4,6 @@ param(
     [string]$ExecutablePath,
 
     [Parameter(Mandatory = $true)]
-    [string]$CoreDllPath,
-
-    [Parameter(Mandatory = $true)]
     [string]$ManifestPath,
 
     [Parameter(Mandatory = $true)]
@@ -40,7 +37,7 @@ function Assert-Amd64Pe([string]$Path) {
     }
 }
 
-foreach ($requiredPath in @($ExecutablePath, $CoreDllPath, $ManifestPath, $IconPath)) {
+foreach ($requiredPath in @($ExecutablePath, $ManifestPath, $IconPath)) {
     if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
         throw "Required Store packaging input is missing: $requiredPath"
     }
@@ -50,10 +47,9 @@ if ($ExpectedVersion -notmatch '^\d+\.\d+\.\d+\.0$') {
 }
 
 Remove-Item -LiteralPath $LayoutRoot, $UnpackedRoot -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path (Join-Path $LayoutRoot "runtime") | Out-Null
+New-Item -ItemType Directory -Force -Path $LayoutRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null
 Copy-Item -LiteralPath $ExecutablePath -Destination (Join-Path $LayoutRoot "splined.exe")
-Copy-Item -LiteralPath $CoreDllPath -Destination (Join-Path $LayoutRoot "runtime/splined-core.dll")
 Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $LayoutRoot "Package.appxmanifest")
 winapp manifest update-assets $IconPath --manifest (Join-Path $LayoutRoot "Package.appxmanifest")
 
@@ -120,15 +116,13 @@ if (Test-Path -LiteralPath (Join-Path $UnpackedRoot "AppxSignature.p7x")) {
 }
 
 $storeExe = Join-Path $UnpackedRoot "splined.exe"
-$storeDll = Join-Path $UnpackedRoot "runtime/splined-core.dll"
 if (-not (Test-Path -LiteralPath $storeExe -PathType Leaf)) {
     throw "Store MSIX is missing splined.exe."
 }
-if (-not (Test-Path -LiteralPath $storeDll -PathType Leaf)) {
-    throw "Store MSIX is missing runtime/splined-core.dll."
+if (Get-ChildItem -LiteralPath $UnpackedRoot -Recurse -File -Filter "*.dll") {
+    throw "Store MSIX unexpectedly contains a dynamic-library host artifact."
 }
 Assert-Amd64Pe $storeExe
-Assert-Amd64Pe $storeDll
 
 [pscustomobject]@{
     Name = [string]$identity.Name

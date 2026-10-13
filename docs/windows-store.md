@@ -40,15 +40,16 @@ Packaging fails if either value changes unexpectedly.
 
 ## Runtime architecture
 
-The Store payload is the same x64 application pair used by the portable build:
+The Store payload uses the same single x64 application executable as the
+portable build:
 
 ```text
 splined.exe
-runtime\splined-core.dll
 ```
 
-The WinForms frontend loads the Rust core DLL in-process. Both files target
-`x86_64-pc-windows-msvc` and must report PE Machine `0x8664`. There is no worker
+`splined.exe` is built directly by Cargo, links the Rust application modules,
+and presents them through Slint. It targets `x86_64-pc-windows-msvc` and must
+report PE Machine `0x8664`. There is no application DLL bridge, worker
 executable, updater executable, hidden SPLINED process, or executable extraction.
 
 The installed package uses its per-user package LocalState for Config v5 and UI
@@ -62,7 +63,7 @@ channel and does not require package identity.
 `SPLINED (All OS) and GHCR` is the only workflow that creates a release version
 and numeric tag. For Windows or All releases its **Microsoft Store** input
 defaults to enabled. The Windows job performs one clean x64
-build, uses that exact executable/DLL pair for the Portable ZIP and Store MSIX,
+build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. Ubuntu-only
 and macOS-only runs ignore this Windows option.
 
@@ -81,8 +82,8 @@ development certificate, and is never development-signed. CI unpacks the final
 MSIX and reads back its manifest. Packaging fails unless the exact identity,
 publisher, publisher display name, release version, x64 architecture,
 `Windows.Desktop` family, `.spl` association, and `runFullTrust` capability are
-present. It also verifies `splined.exe` and `runtime\splined-core.dll` exist and
-are AMD64, and confirms that no package signature was added.
+present. It also verifies `splined.exe` exists and is AMD64, rejects unexpected
+DLL host artifacts, and confirms that no package signature was added.
 
 `SPLINED-x64-store-unsigned.msix` is a maintainer-only Partner Center submission
 artifact for future Store releases and updates. It is not an end-user installer
@@ -110,25 +111,24 @@ certificate, be signed, installed, activated, inspected, and uninstalled. The
 temporary certificate and package are removed after validation. Development
 identity and signing never mutate the production layout or Store artifact.
 
-The development package proves x64 installation, application activation,
-in-process Rust DLL initialization, package identity, and the `.spl` association.
+The development package proves x64 installation, Rust/Slint application
+activation, package LocalState initialization, package identity, and the `.spl`
+association.
 A development-signed package is QA-only and is not publicly trusted.
 
 ## Help > Check for Updates
 
-The Windows GUI uses `ConfigStore.IsPackaged` as its channel detector.
+The Rust application uses the native current-package-family query as its channel
+detector.
 
 - **Microsoft Store package:** GitHub releases and the Portable ZIP are not
   update authority. SPLINED queries
   `Windows.Services.Store.StoreContext.GetAppAndOptionalStorePackageUpdatesAsync`.
-  The WinRT operation is awaited through the .NET Windows Runtime task bridge;
-  SPLINED does not poll reflection-only members from a raw COM object.
-  **UPDATE NOW** requests
-  `RequestDownloadAndInstallStorePackageUpdatesAsync`, so Windows/Microsoft
-  Store owns download and installation. **LATER** makes no change. If the Store
-  API is unavailable or cannot complete safely, SPLINED offers the official
-  [Store product page](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)
-  and reports the limitation; it never shows Portable ZIP instructions.
+  The WinRT operation is awaited directly through the Rust Windows bindings.
+  The result reports native Store update availability; installation remains
+  owned by Microsoft Store Library > Get updates. If the Store API is
+  unavailable, SPLINED reports the exact limitation and never substitutes
+  Portable ZIP instructions.
 - **Portable package:** GitHub Releases plus `windows-update.json` remain update
   authority. Availability is strictly a numeric semantic-version comparison:
   only an advertised version newer than the installed version is an update.

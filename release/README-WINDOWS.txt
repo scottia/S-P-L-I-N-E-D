@@ -3,11 +3,9 @@ S:P:L:I:N:E:D — Windows x64 portable release
 CONTENTS
 
   splined.exe
-  runtime\splined-core.dll
   README-WINDOWS.txt
 
-The WinForms frontend loads the fixed Rust processing DLL in the same process.
-Keep splined.exe and runtime\splined-core.dll from the same release together.
+splined.exe is the complete Cargo-built Rust application with its Slint GUI.
 
 FIRST RUN
 
@@ -40,7 +38,7 @@ unchanged. Password protection is optional.
 
 PORTABLE UPDATES
 
-Help > Check for Updates identifies this as SPLINED Portable, reads GitHub
+Check for Updates identifies this as SPLINED Portable, reads GitHub
 Releases plus windows-update.json, and compares semantic release versions. A
 different commit at the installed version is not an update. Manual checks say
 "No SPLINED update is available." when current; automatic no-update checks are
@@ -49,7 +47,6 @@ Portable SPLINED does not download or replace its own binaries. Close SPLINED,
 extract the new release separately, then replace only:
 
   splined.exe
-  runtime\splined-core.dll
   README-WINDOWS.txt
 
 Never replace or delete data\, splined.db, credentials, history, cache, logs, or
@@ -62,9 +59,9 @@ this Portable package remains the supported no-install/direct channel.
 SECURITY
 
 Normal startup and scanning do not extract, generate, rename, replace, launch,
-or delete executable code. There is no worker executable, updater executable,
-hidden helper, command-shell lifecycle, or self-reinvocation. Windows is x64
-only (`x86_64-pc-windows-msvc`).
+or delete executable code. There is no managed GUI host, application DLL bridge,
+worker executable, updater executable, hidden helper, command-shell lifecycle,
+or self-reinvocation. Windows is x64 only (`x86_64-pc-windows-msvc`).
 
 SUPPORT
 

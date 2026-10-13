@@ -1,5 +1,32 @@
 # Windows migration release notes
 
+## Unreleased — native Rust/Slint architecture migration
+
+- Replaced the production C#/WinForms host, C# entry point, `NativeCore` bridge,
+  and runtime DLL pair with one Cargo-built `splined.exe`. Slint is now the only
+  Windows presentation layer and Rust owns application state, selection, scan
+  control, candidate decisions, MusicBrainz review, editing, and services.
+- Added a deliberately basic functional Slint workspace for Artists, Albums,
+  Folders, filtering, selection, READ/LIVE WRITE queues, STOP, artwork review,
+  MusicBrainz authority, local artwork, editing/upscale, Config v5, credentials,
+  selective backup/restore, and channel-aware updates. The graphical canvas
+  redesign remains a separate follow-up after this functional migration.
+- Kept `splined.db`, Config v5, configured paths, provider ordering, credential
+  separation, and album-file safety as the durable authorities. Config v1-v4
+  documents found at the established Config v5 location are upgraded atomically
+  before startup.
+- Preserved Navidrome as a supplemental OpenSubsonic companion for Artist/Album
+  enrichment and cached artwork, with password or API-key authentication,
+  sanitized failures, explicit capabilities, and proxy bypass for loopback
+  servers.
+- Updated Portable and Microsoft Store packaging to ship the same single x64
+  Rust executable. The portable ZIP contains only `splined.exe` and its README;
+  Store packages retain the established identity, file association, LocalState,
+  and Store-managed update path.
+- Corrected Windows extended-path handling so local `\\?\X:\...` SQLite paths
+  are never mistaken for UNC network shares while extended UNC paths continue
+  to use the shared-database adapter.
+
 ## Microsoft Store 1.0.79 update highlights
 
 The Microsoft Store-certified baseline is `1.0.71`. The next Store submission

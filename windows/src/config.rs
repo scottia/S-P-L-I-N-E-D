@@ -1,5 +1,5 @@
 use crate::musicbrainz::MusicBrainzConfig;
-use crate::portable::{app_layout, app_root, bootstrap_portable_install};
+use crate::portable::{app_layout, bootstrap_portable_install, state_root};
 use crate::source_policy::SourcePolicyConfig;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
@@ -678,7 +678,7 @@ pub fn load_config() -> Result<Config, String> {
     })?;
 
     let mut config = parse_config(&text)?;
-    let root = app_root()?;
+    let root = state_root()?;
     resolve_runtime_paths(&mut config, &root);
 
     Ok(config)
@@ -836,9 +836,9 @@ fn normalize_source_list(
     Ok(normalized)
 }
 
-/// Load a GUI-selected configuration without changing the process-wide
-/// portable root. Relative runtime paths retain the same application-root
-/// semantics used by the normal CLI.
+/// Load a user-selected configuration without changing the process-wide state
+/// root. Relative runtime paths retain the same writable-state semantics used
+/// by the application.
 pub fn load_config_from(path: &Path) -> Result<Config, String> {
     let text = std::fs::read_to_string(path).map_err(|error| {
         format!(
@@ -847,16 +847,16 @@ pub fn load_config_from(path: &Path) -> Result<Config, String> {
         )
     })?;
     let mut config = parse_config(&text)?;
-    let root = app_root()?;
+    let root = state_root()?;
     resolve_runtime_paths(&mut config, &root);
     Ok(config)
 }
 
-/// Load an in-memory GUI configuration without creating a runtime file.
-/// Relative paths retain the same application-root semantics as file-backed
+/// Load an in-memory configuration without creating a runtime file.
+/// Relative paths retain the same state-root semantics as file-backed
 /// configuration, and the source text must never be written to diagnostics.
 pub fn load_config_text(text: &str) -> Result<Config, String> {
-    let root = app_root()?;
+    let root = state_root()?;
     load_config_text_at_root(text, &root)
 }
 

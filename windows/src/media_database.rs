@@ -410,10 +410,7 @@ fn wide_null(value: &str) -> Vec<u16> {
 
 #[cfg(windows)]
 fn existing_mapped_path(path: &Path) -> Option<PathBuf> {
-    let unc_path = path.to_string_lossy();
-    if !unc_path.replace('/', "\\").starts_with("\\\\") {
-        return None;
-    }
+    let unc_path = normalized_network_unc(path)?;
     for letter in (b'D'..=b'Z').rev() {
         let local_name = format!("{}:", char::from(letter));
         let local = wide_null(&local_name);
@@ -462,7 +459,7 @@ fn translate_unc_to_drive(unc_path: &str, local_name: &str, remote_name: &str) -
 
 #[cfg(windows)]
 fn split_unc_path(path: &Path) -> Option<(String, String)> {
-    let normalized = path.to_string_lossy().replace('/', "\\");
+    let normalized = normalized_network_unc(path)?;
     let remainder = normalized.strip_prefix("\\\\")?;
     let mut parts = remainder.split('\\').filter(|part| !part.is_empty());
     let server = parts.next()?;
@@ -472,6 +469,18 @@ fn split_unc_path(path: &Path) -> Option<(String, String)> {
         return None;
     }
     Some((format!("\\\\{server}\\{share}"), relative))
+}
+
+#[cfg(windows)]
+fn normalized_network_unc(path: &Path) -> Option<String> {
+    let normalized = path.to_string_lossy().replace('/', "\\");
+    if let Some(relative) = normalized.strip_prefix("\\\\?\\UNC\\") {
+        return Some(format!("\\\\{relative}"));
+    }
+    if normalized.starts_with("\\\\?\\") || normalized.starts_with("\\\\.\\") {
+        return None;
+    }
+    normalized.starts_with("\\\\").then_some(normalized)
 }
 
 pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, String> {
@@ -2733,6 +2742,31 @@ mod tests {
         .unwrap();
         assert_eq!(remote_root, r"\\100.105.181.116\volume2");
         assert_eq!(relative_path, r"data\downloads\splined\_cache\splined.db");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extended_local_paths_are_not_treated_as_network_shares() {
+        assert_eq!(
+            split_unc_path(Path::new(r"\\?\E:\apps\SPLINED\_cache\splined.db")),
+            None
+        );
+        assert_eq!(
+            normalized_network_unc(Path::new(r"\\.\E:\apps\SPLINED\_cache\splined.db")),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extended_unc_paths_are_normalized_for_network_mapping() {
+        assert_eq!(
+            split_unc_path(Path::new(r"\\?\UNC\server\share\cache\splined.db")),
+            Some((
+                r"\\server\share".to_string(),
+                r"cache\splined.db".to_string()
+            ))
+        );
     }
 
     #[cfg(windows)]

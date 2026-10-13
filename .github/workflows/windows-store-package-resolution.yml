@@ -77,10 +77,6 @@ jobs:
               (Read-PackageVersion "windows/Cargo.toml") -ne $env:RELEASE_VERSION) {
             throw "Root/Windows package versions do not match tag $env:RELEASE_VERSION."
           }
-          $releaseInfo = Get-Content -Raw -LiteralPath windows/gui/ReleaseInfo.cs
-          if ($releaseInfo -notmatch ('SemanticVersion = "' + [regex]::Escape($env:RELEASE_VERSION) + '"')) {
-            throw "Windows ReleaseInfo does not match tag $env:RELEASE_VERSION."
-          }
           $manifest = [xml](Get-Content -Raw -LiteralPath windows/package/Package.appxmanifest)
           if ($manifest.Package.Identity.Version -cne "$env:RELEASE_VERSION.0") {
             throw "Store manifest version does not match $env:RELEASE_VERSION.0."
@@ -170,7 +166,7 @@ jobs:
             throw "Microsoft Store authentication failed before read-only release-history resolution. $($_.Exception.Message)"
           }
 
-      - name: Build clean x64 WinForms and Rust DLL pair
+      - name: Build clean x64 Rust/Slint executable
         shell: pwsh
         env:
           SPLINED_BUILD_COMMIT: ${{ steps.release.outputs.commit }}
@@ -179,7 +175,6 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
           if (Test-Path -LiteralPath $releaseRoot) { Remove-Item -LiteralPath $releaseRoot -Recurse -Force }
-          $env:SPLINED_BUILD_GUI = "1"
           cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET
 
       - name: Build and strictly validate unsigned production Store MSIX
@@ -193,7 +188,6 @@ jobs:
           $storePackage = "store-submission/SPLINED-x64-store-unsigned.msix"
           & windows/package/Build-StorePackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -CoreDllPath "$releaseRoot/splined_core.dll" `
             -ManifestPath windows/package/Package.appxmanifest `
             -IconPath windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
@@ -209,7 +203,6 @@ jobs:
           $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
           & windows/package/Test-DevelopmentPackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -CoreDllPath "$releaseRoot/splined_core.dll" `
             -ManifestPath windows/package/Package.appxmanifest `
             -IconPath windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")

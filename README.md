@@ -98,10 +98,11 @@ The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
 portable settings, and selective `.spl` backup/restore.
 
-The x64 Windows portable application restores the mature WinForms interface.
-`splined.exe` loads the fixed `runtime\splined-core.dll` and calls the
-authoritative Rust processing backend in-process through a stable UTF-8 C ABI;
-there is one normal application process. **Help > Check for Updates** is
+The x64 Windows portable application is one native Cargo-built Rust executable
+with a Slint presentation layer. `splined.exe` links directly to the
+authoritative Rust application and processing backend; there is one normal
+application process and no managed host or application DLL bridge. **Check for
+Updates** is
 channel-aware: Portable compares numeric semantic release versions from GitHub
 and remains notification-only/manual replacement, while an installed Store
 package uses Microsoft Store package APIs and Store-managed installation. A
@@ -110,8 +111,8 @@ leave configured external resources untouched.
 See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
-For maintainers, `SPLINED (All OS) and GHCR` builds the Windows runtime pair
-once and uses those same binaries for the Portable ZIP and, when selected, the
+For maintainers, `SPLINED (All OS) and GHCR` builds the Windows executable
+once and uses that same binary for the Portable ZIP and, when selected, the
 unsigned Microsoft Store submission package. Both must validate before the
 numeric tag is created; the selected Store path then submits the validated
 package and generated Store Highlights automatically. Exact-tag recovery is

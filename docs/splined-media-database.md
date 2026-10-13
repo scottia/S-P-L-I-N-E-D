@@ -95,6 +95,13 @@ mount. If none exists, it creates a temporary, non-persistent connection only
 while SQLite is open, then removes it. The internally saved Config v5 path
 remains UNC-based and never depends on a particular drive letter.
 
+Windows extended-length paths are classified before network adaptation.
+`\\\\?\\X:\\...` and `\\\\.\\X:\\...` remain local paths and never invoke the
+UNC adapter; `\\\\?\\UNC\\server\\share\\...` is normalized to the equivalent
+ordinary UNC path before connection discovery. This distinction is covered by
+regression tests because Windows may return extended local paths after
+canonicalization even when Config v5 contains a normal drive path.
+
 The centralized path mapper is the only media-path conversion boundary.
 Windows maps
 the path-bearing Artist/Album snapshot, representative, cover/local-art, and
@@ -451,9 +458,9 @@ unchanged.
 
 The former JSON status and history surfaces are retired. SPLINED neither reads
 nor writes them. Completion, source selection, bypass, timeout, and incomplete
-compilation progress are committed to SQLite. The Windows GUI also reads the
-published SQLite inventory instead of performing a separate C# filesystem
-inventory.
+compilation progress are committed to SQLite. The Windows Rust application also
+reads the published SQLite inventory instead of maintaining a second GUI
+filesystem inventory.
 
 The durable runtime fields and audit surfaces are:
 
