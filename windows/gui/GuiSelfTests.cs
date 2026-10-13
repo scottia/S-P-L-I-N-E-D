@@ -2403,13 +2403,13 @@ namespace Splined.WindowsGui
             librarySearch.Text = "";
             typeof(MainForm).GetMethod("RefreshReplacementLibraryEntities",
                 BindingFlags.Instance | BindingFlags.NonPublic).Invoke(form, null);
-            FlowLayoutPanel libraryEntities = (FlowLayoutPanel)typeof(MainForm)
+            GraphicalLibraryListBox libraryEntities = (GraphicalLibraryListBox)typeof(MainForm)
                 .GetField("replacementLibraryEntities", BindingFlags.Instance | BindingFlags.NonPublic)
                 .GetValue(form);
-            Assert(libraryEntities.Controls.OfType<NeonCardPanel>().Any()
-                    && Descendants(libraryEntities).OfType<PictureBox>()
-                        .Any(picture => picture.Name == "libraryArtwork"),
-                "The Artists/Albums/Folders library does not render graphical entity rows.");
+            Assert(libraryEntities.Items.OfType<LibraryEntityListItem>().Any()
+                    && libraryEntities.DrawMode == DrawMode.OwnerDrawFixed
+                    && libraryEntities.Controls.Count == 0,
+                "The Artists/Albums/Folders library is not using its graphical virtualized rows.");
 
             NavidromeAlbum remote = new NavidromeAlbum
             {
@@ -2428,17 +2428,34 @@ namespace Splined.WindowsGui
                         Artist = "QA Artist", Title = "QA Album"
                     }, new[] { remote }) == remote,
                 "Navidrome album reconciliation is not deterministic by MBID then exact identity.");
-            bool missingBearerRejected = false;
+            NavidromeCredential.FromValues(new Dictionary<string, object>
+            {
+                { "server_url", "https://music.example" },
+                { "auth_method", "api_key" }, { "api_key", "test-key" }
+            }).Validate();
+            NavidromeCredential.FromValues(new Dictionary<string, object>
+            {
+                { "server_url", "https://music.example" },
+                { "auth_method", "password" }, { "username", "listener" },
+                { "password", "test-password" }
+            }).Validate();
+            bool missingCompatibleAuthRejected = false;
             try
             {
                 NavidromeCredential.FromValues(new Dictionary<string, object>
                 {
-                    { "server_url", "https://music.example" }, { "api_key", "test-key" }
+                    { "server_url", "https://music.example" },
+                    { "auth_method", "password" }, { "username", "listener" }
                 }).Validate();
             }
-            catch (InvalidOperationException) { missingBearerRejected = true; }
-            Assert(missingBearerRejected,
-                "Navidrome credentials did not enforce the required Bearer Token contract.");
+            catch (InvalidOperationException) { missingCompatibleAuthRejected = true; }
+            Assert(missingCompatibleAuthRejected,
+                "Navidrome credentials accepted an incomplete compatible authentication method.");
+            Assert(CredentialStore.IsTestedStatus("TESTED")
+                    && CredentialStore.IsTestedStatus("OpenSubsonic TESTED")
+                    && !CredentialStore.IsTestedStatus("SAVED")
+                    && !CredentialStore.IsTestedStatus("INCOMPLETE"),
+                "Navidrome automatic enrichment cannot distinguish saved from live-tested credentials.");
 
             form.Size = new Size(1280, 800);
             form.PerformLayout();

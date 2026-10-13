@@ -78,10 +78,11 @@ class NavidromeSourceTests(unittest.TestCase):
             self.credentials / "navidrome.json",
             {
                 "server_url": "https://navidrome.invalid/",
+                "auth_method": "api_key",
                 "username": "listener",
                 "password": "",
                 "api_key": "api-secret",
-                "bearer_token": "bearer-secret",
+                "bearer_token": "",
             },
         )
 
@@ -120,9 +121,7 @@ class NavidromeSourceTests(unittest.TestCase):
         self.assertEqual(url, "https://navidrome.invalid/rest/search3.view")
         self.assertEqual(options["params"]["apiKey"], "api-secret")
         self.assertNotIn("u", options["params"])
-        self.assertEqual(
-            options["headers"]["X-ND-Authorization"], "Bearer bearer-secret"
-        )
+        self.assertNotIn("X-ND-Authorization", options["headers"])
         self.assertTrue(response.closed)
 
     def test_fallback_requires_one_exact_artist_album_identity(self) -> None:
@@ -146,10 +145,11 @@ class NavidromeSourceTests(unittest.TestCase):
             self.credentials / "navidrome.json",
             {
                 "server_url": "https://navidrome.invalid",
+                "auth_method": "password",
                 "username": "listener",
                 "password": "password-secret",
                 "api_key": "",
-                "bearer_token": "bearer-secret",
+                "bearer_token": "",
             },
         )
         http = _Http(_Response(_envelope([])))
@@ -166,15 +166,15 @@ class NavidromeSourceTests(unittest.TestCase):
         self.assertIn("s", options["params"])
         self.assertIn("t", options["params"])
         self.assertNotIn("p", options["params"])
+        self.assertNotIn("X-ND-Authorization", options["headers"])
 
-    def test_bearer_only_authentication_keeps_secret_out_of_query(self) -> None:
+    def test_legacy_native_bearer_is_not_sent_to_opensubsonic(self) -> None:
         splined.save_json_atomic(
             self.credentials / "navidrome.json",
             {
                 "server_url": "https://navidrome.invalid",
-                "username": "",
-                "password": "",
-                "api_key": "",
+                "auth_method": "api_key",
+                "api_key": "api-secret",
                 "bearer_token": "bearer-secret",
             },
         )
@@ -186,12 +186,9 @@ class NavidromeSourceTests(unittest.TestCase):
             [],
         )
         _url, options = http.calls[0]
-        self.assertNotIn("jwt", options["params"])
+        self.assertEqual(options["params"]["apiKey"], "api-secret")
         self.assertNotIn("bearer-secret", repr(options["params"]))
-        self.assertEqual(
-            options["headers"]["X-ND-Authorization"],
-            "Bearer bearer-secret",
-        )
+        self.assertNotIn("X-ND-Authorization", options["headers"])
 
     def test_internal_cover_download_restores_only_in_memory_identity(self) -> None:
         search = _Response(
@@ -220,16 +217,19 @@ class NavidromeSourceTests(unittest.TestCase):
         self.assertNotIn("api-secret", ref.url)
         self.assertNotIn("bearer-secret", ref.url)
 
-    def test_missing_required_bearer_is_rejected_without_secret_echo(self) -> None:
+    def test_missing_compatible_authentication_is_rejected(self) -> None:
         splined.save_json_atomic(
             self.credentials / "navidrome.json",
             {
                 "server_url": "https://navidrome.invalid",
-                "api_key": "api-secret",
+                "auth_method": "password",
+                "username": "listener",
+                "password": "",
+                "api_key": "",
                 "bearer_token": "",
             },
         )
-        with self.assertRaisesRegex(splined.SplinedError, "bearer_token is required"):
+        with self.assertRaisesRegex(splined.SplinedError, "username and password"):
             splined.load_navidrome_credentials(self.config_path, self.cfg)
 
 

@@ -18,7 +18,11 @@ namespace Splined.WindowsGui
         public string Username = "";
         public string Password = "";
         public string ApiKey = "";
+        // Retained only so older credential JSON remains loadable. Native
+        // Navidrome JWTs are not an OpenSubsonic authentication mechanism and
+        // are intentionally never sent to /rest/* requests.
         public string BearerToken = "";
+        public string AuthMethod = "";
 
         public static NavidromeCredential FromValues(Dictionary<string, object> values)
         {
@@ -28,8 +32,22 @@ namespace Splined.WindowsGui
                 Username = Value(values, "username"),
                 Password = Value(values, "password"),
                 ApiKey = Value(values, "api_key"),
-                BearerToken = Value(values, "bearer_token")
+                BearerToken = Value(values, "bearer_token"),
+                AuthMethod = Value(values, "auth_method")
             };
+        }
+
+        public bool UsesApiKey
+        {
+            get
+            {
+                if (String.Equals(AuthMethod, "api_key", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (String.Equals(AuthMethod, "password", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                return !String.IsNullOrWhiteSpace(ApiKey)
+                    && (String.IsNullOrWhiteSpace(Username) || String.IsNullOrWhiteSpace(Password));
+            }
         }
 
         public void Validate()
@@ -38,11 +56,13 @@ namespace Splined.WindowsGui
             if (!Uri.TryCreate(ServerUrl, UriKind.Absolute, out uri)
                 || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
                 throw new InvalidOperationException("Navidrome Server URL must be an absolute HTTP or HTTPS address.");
-            if (String.IsNullOrWhiteSpace(BearerToken))
-                throw new InvalidOperationException("Navidrome Bearer Token is required by SPLINED.");
-            // The required bearer header is a complete Navidrome authentication
-            // path. API-key and username/password fields are optional compatible
-            // OpenSubsonic alternatives and are never substituted into that header.
+            if (UsesApiKey)
+            {
+                if (String.IsNullOrWhiteSpace(ApiKey))
+                    throw new InvalidOperationException("Enter the OpenSubsonic API key selected for Navidrome authentication.");
+            }
+            else if (String.IsNullOrWhiteSpace(Username) || String.IsNullOrWhiteSpace(Password))
+                throw new InvalidOperationException("Enter both the Navidrome username and password, or select API key authentication.");
         }
 
         private static string Value(Dictionary<string, object> values, string key)
@@ -127,6 +147,12 @@ namespace Splined.WindowsGui
             catch { return false; }
         }
 
+        public static bool IsTested(ConfigState state)
+        {
+            return state != null && CredentialStore.IsTestedStatus(
+                CredentialStore.Status(state, "navidrome"));
+        }
+
         public static NavidromeClient FromState(ConfigState state)
         {
             return new NavidromeClient(NavidromeCredential.FromValues(
@@ -147,26 +173,62 @@ namespace Splined.WindowsGui
                 };
                 Dictionary<string, object> folders = RequestObject("getMusicFolders", null);
                 capabilities.LibraryAvailable = NestedItems(folders, "musicFolders", "musicFolder").Count > 0;
-                List<NavidromeArtist> artists = GetArtists();
-                capabilities.ArtistArtworkAvailable = artists.Any(artist =>
-                    !String.IsNullOrWhiteSpace(artist.CoverArtId)
-                    || !String.IsNullOrWhiteSpace(artist.ArtistImageUrl));
-                NavidromeArtist first = artists.FirstOrDefault();
-                if (first != null)
+                // Do not enumerate an entire server merely to validate a
+                // credential. One recent album is enough to exercise library,
+                // artwork and optional path capabilities on large libraries.
+                try
                 {
-                    List<NavidromeAlbum> albums = GetArtistAlbums(first.Id);
-                    capabilities.AlbumArtworkAvailable = albums.Any(candidateAlbum =>
-                        !String.IsNullOrWhiteSpace(candidateAlbum.CoverArtId));
-                    NavidromeAlbum firstAlbum = albums.FirstOrDefault();
+                    Dictionary<string, object> recent = RequestObject("getAlbumList2",
+                        new Dictionary<string, string>
+                        {
+                            { "type", "recent" }, { "size", "1" }
+                        });
+                    Dictionary<string, object> firstAlbum = NestedItems(recent,
+                        "albumList2", "album").FirstOrDefault();
                     if (firstAlbum != null)
                     {
-                        Dictionary<string, object> details = RequestObject("getAlbum",
-                            new Dictionary<string, string> { { "id", firstAlbum.Id } });
-                        Dictionary<string, object> albumObject = ObjectValue(details, "album");
-                        List<Dictionary<string, object>> songs = ArrayObjects(albumObject, "song");
-                        capabilities.PathEnrichmentAvailable = songs.Any(song =>
-                            !String.IsNullOrWhiteSpace(Text(song, "path")));
+                        string coverArtId = Text(firstAlbum, "coverArt");
+                        capabilities.AlbumArtworkAvailable =
+                            !String.IsNullOrWhiteSpace(coverArtId);
+                        string artistId = Text(firstAlbum, "artistId");
+                        if (!String.IsNullOrWhiteSpace(artistId))
+                        {
+                            try
+                            {
+                                Dictionary<string, object> artistInfo = RequestObject(
+                                    "getArtistInfo2", new Dictionary<string, string>
+                                    {
+                                        { "id", artistId }
+                                    });
+                                Dictionary<string, object> info = ObjectValue(artistInfo,
+                                    "artistInfo2");
+                                capabilities.ArtistArtworkAvailable = info != null
+                                    && new[] { "smallImageUrl", "mediumImageUrl", "largeImageUrl" }
+                                        .Any(key => !String.IsNullOrWhiteSpace(Text(info, key)));
+                            }
+                            catch
+                            {
+                                // Artist-info is optional capability detection;
+                                // failure must not invalidate otherwise working
+                                // OpenSubsonic credentials.
+                            }
+                        }
+                        string albumId = Text(firstAlbum, "id");
+                        if (!String.IsNullOrWhiteSpace(albumId))
+                        {
+                            Dictionary<string, object> details = RequestObject("getAlbum",
+                                new Dictionary<string, string> { { "id", albumId } });
+                            Dictionary<string, object> albumObject = ObjectValue(details, "album");
+                            List<Dictionary<string, object>> songs = ArrayObjects(albumObject, "song");
+                            capabilities.PathEnrichmentAvailable = songs.Any(song =>
+                                !String.IsNullOrWhiteSpace(Text(song, "path")));
+                        }
                     }
+                }
+                catch
+                {
+                    // Older compatible servers can pass ping and music-folder
+                    // validation without supporting every optional probe.
                 }
                 return capabilities;
             });
@@ -314,7 +376,6 @@ namespace Splined.WindowsGui
             request.UserAgent = "SPLINED-Windows-GUI/" + ReleaseInfo.SemanticVersion;
             request.Timeout = 20000;
             request.ReadWriteTimeout = 20000;
-            request.Headers["X-ND-Authorization"] = "Bearer " + credential.BearerToken;
             try
             {
                 using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
@@ -345,20 +406,14 @@ namespace Splined.WindowsGui
                 { "c", ClientName },
                 { "f", "json" }
             };
-            if (!String.IsNullOrWhiteSpace(credential.ApiKey))
+            if (credential.UsesApiKey)
                 query["apiKey"] = credential.ApiKey;
-            else if (!String.IsNullOrWhiteSpace(credential.Password))
+            else
             {
                 string salt = Guid.NewGuid().ToString("N").Substring(0, 12);
                 query["u"] = credential.Username;
                 query["s"] = salt;
                 query["t"] = Md5Hex(credential.Password + salt);
-            }
-            else
-            {
-                // Bearer-only authentication stays in X-ND-Authorization. Keeping
-                // it out of the query prevents secrets from entering URLs, proxy
-                // history, or exception messages.
             }
             if (parameters != null)
                 foreach (KeyValuePair<string, string> pair in parameters) query[pair.Key] = pair.Value;

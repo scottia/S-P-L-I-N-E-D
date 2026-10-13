@@ -1937,10 +1937,11 @@ namespace Splined.WindowsGui
             catch (Exception error)
             {
                 if (version != reloadVersion || IsDisposed) return;
-                albums.Clear();
-                BuildTree();
-                displayedAlbum = null;
-                RenderDisplayedAlbum();
+                RuntimeLog.WriteException("windows.library.reload", error);
+                // A presentation failure must not discard a successfully loaded
+                // SQLite snapshot. Preserve the active in-memory library so a
+                // recoverable view error cannot turn thousands of albums into a
+                // misleading zero-library state.
                 SetStatus(error.Message);
             }
             finally

@@ -182,9 +182,14 @@ namespace Splined.WindowsGui
             }
             if (provider == "navidrome")
             {
-                if (!Has(values, "server_url") || !Has(values, "bearer_token")) return "INCOMPLETE";
-                if (!Has(values, "api_key") && !Has(values, "password") && !Has(values, "username"))
-                    return "INCOMPLETE";
+                if (!Has(values, "server_url")) return "INCOMPLETE";
+                string method = Has(values, "auth_method")
+                    ? Convert.ToString(values["auth_method"]).Trim() : "";
+                bool apiKey = method.Equals("api_key", StringComparison.OrdinalIgnoreCase)
+                    || (method.Length == 0 && Has(values, "api_key")
+                        && (!Has(values, "username") || !Has(values, "password")));
+                if (apiKey ? !Has(values, "api_key")
+                    : !Has(values, "username") || !Has(values, "password")) return "INCOMPLETE";
                 return WasValidated(values) ? "TESTED" : "SAVED";
             }
             if (provider == "lastfm")
@@ -214,7 +219,16 @@ namespace Splined.WindowsGui
 
         public static bool IsConfiguredStatus(string status)
         {
-            return !String.Equals(status, "PENDING", StringComparison.OrdinalIgnoreCase);
+            if (String.IsNullOrWhiteSpace(status)) return false;
+            return String.Equals(status, "READY", StringComparison.OrdinalIgnoreCase)
+                || status.IndexOf("SAVED", StringComparison.OrdinalIgnoreCase) >= 0
+                || status.IndexOf("TESTED", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        public static bool IsTestedStatus(string status)
+        {
+            return !String.IsNullOrWhiteSpace(status)
+                && status.IndexOf("TESTED", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         public static Color StatusColor(string status)
@@ -662,6 +676,9 @@ namespace Splined.WindowsGui
                 statusLabel.ForeColor = ThemeManager.CurrentPalette.Warning;
                 Dictionary<string, object> saved = CredentialStore.Load(state, provider);
                 CredentialValidationResult result = await ProviderCredentialValidator.ValidateAsync(provider, state, saved);
+                RuntimeLog.Write(result.Success ? "info" : "warn",
+                    "windows.credentials.test provider=" + provider
+                    + " success=" + result.Success);
                 if (result.Success)
                 {
                     CredentialStore.ApplyValidationMetadata(saved, result);
@@ -703,6 +720,8 @@ namespace Splined.WindowsGui
         private Button testButton;
         private Label validationStatus;
         private CheckBox musicBrainzOAuthEnabled;
+        private RadioButton navidromePasswordAuth;
+        private RadioButton navidromeApiKeyAuth;
 
         public CredentialEditForm(ConfigState state, string provider, string display)
         {
@@ -724,7 +743,7 @@ namespace Splined.WindowsGui
             MinimizeBox = false;
             bool musicBrainz = provider == "musicbrainz";
             bool navidrome = provider == "navidrome";
-            Size = musicBrainz ? new Size(720, 680) : navidrome ? new Size(740, 620) : new Size(680, 500);
+            Size = musicBrainz ? new Size(720, 680) : navidrome ? new Size(760, 650) : new Size(680, 500);
             Font = ThemeManager.UiFont(ThemeFontRole.Body);
             int rowCount = musicBrainz ? 13 : navidrome ? 12 : 9;
             int validationRow = musicBrainz ? 10 : navidrome ? 9 : 6;
@@ -745,7 +764,7 @@ namespace Splined.WindowsGui
             Label note = new Label { Text = provider == "musicbrainz"
                 ? "All MusicBrainz OAuth settings and tokens are stored only in credentials\\musicbrainz.json. Config v5 stores the credential directory, never provider filenames or credential values."
                 : provider == "navidrome"
-                    ? "Navidrome credentials are stored only in credentials\\navidrome.json. SPLINED uses OpenSubsonic-compatible APIs first; the required Bearer Token is reserved for capability/path enrichment when needed."
+                    ? "Choose one OpenSubsonic authentication method. API keys are preferred; username/password uses a different random salted challenge for every request. Native Web-API bearer tokens are not required."
                 : "Existing fields are loaded and preserved. Test performs a live provider request; SAVED alone does not mean the credential was accepted.", Dock = DockStyle.Fill };
             root.Controls.Add(note, 0, 1); root.SetColumnSpan(note, 2);
             string endpoint = provider == "fanarttv" ? "Fanart.tv API version" : provider == "lastfm" ? "Read test" : provider == "discogs" ? "Identity test" : provider == "navidrome" ? "Compatibility test" : "OAuth test";
@@ -778,10 +797,57 @@ namespace Splined.WindowsGui
             else if (provider == "navidrome")
             {
                 AddField(root, row++, "Server URL", "server_url", false);
+                FlowLayoutPanel auth = new FlowLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    FlowDirection = FlowDirection.LeftToRight,
+                    WrapContents = false,
+                    Padding = new Padding(0, 3, 0, 0)
+                };
+                string configuredMethod = values.ContainsKey("auth_method")
+                    ? Convert.ToString(values["auth_method"]).Trim() : "";
+                bool useApiKey = configuredMethod.Equals("api_key", StringComparison.OrdinalIgnoreCase)
+                    || (configuredMethod.Length == 0 && HasCredentialValue(values, "api_key")
+                        && (!HasCredentialValue(values, "username") || !HasCredentialValue(values, "password")));
+                navidromePasswordAuth = new FluentRadioButton
+                {
+                    Name = "navidromePasswordAuth",
+                    Text = "Username + password",
+                    AutoSize = false,
+                    Width = 190,
+                    Height = 32,
+                    Checked = !useApiKey
+                };
+                navidromeApiKeyAuth = new FluentRadioButton
+                {
+                    Name = "navidromeApiKeyAuth",
+                    Text = "OpenSubsonic API key",
+                    AutoSize = false,
+                    Width = 205,
+                    Height = 32,
+                    Checked = useApiKey
+                };
+                navidromePasswordAuth.CheckedChanged += delegate { UpdateNavidromeAuthFields(); };
+                navidromeApiKeyAuth.CheckedChanged += delegate { UpdateNavidromeAuthFields(); };
+                auth.Controls.Add(navidromePasswordAuth);
+                auth.Controls.Add(navidromeApiKeyAuth);
+                root.Controls.Add(new Label { Text = "Authentication method", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, row);
+                root.Controls.Add(auth, 1, row++);
                 AddField(root, row++, "Username / account", "username", false);
-                AddField(root, row++, "Compatible API password", "password", true);
+                AddField(root, row++, "Password", "password", true);
                 AddField(root, row++, "OpenSubsonic API key", "api_key", true);
-                AddField(root, row++, "Bearer Token (required)", "bearer_token", true);
+                Label apiKeyHelp = new Label
+                {
+                    Text = "Create a dedicated SPLINED key in Navidrome: Settings → Players & API keys → Generate API key. Copy it before saving the player.",
+                    Dock = DockStyle.Fill,
+                    ForeColor = ThemeManager.CurrentPalette.TextSecondary,
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    AutoEllipsis = true
+                };
+                root.Controls.Add(apiKeyHelp, 0, row);
+                root.SetColumnSpan(apiKeyHelp, 2);
+                row++;
+                UpdateNavidromeAuthFields();
             }
             FlowLayoutPanel validation = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
             testButton = new FluentButton { Name = provider + "CredentialTestButton", Text = provider == "fanarttv" ? "Validate v3.2" : "Test credentials", Width = 135, Height = 34, Tag = "primary" };
@@ -827,6 +893,18 @@ namespace Splined.WindowsGui
                 && Convert.ToString(value).Trim().Length > 0;
         }
 
+        private void UpdateNavidromeAuthFields()
+        {
+            if (provider != "navidrome" || navidromeApiKeyAuth == null) return;
+            bool apiKey = navidromeApiKeyAuth.Checked;
+            TextBox username;
+            TextBox password;
+            TextBox key;
+            if (fields.TryGetValue("username", out username)) username.Enabled = !apiKey;
+            if (fields.TryGetValue("password", out password)) password.Enabled = !apiKey;
+            if (fields.TryGetValue("api_key", out key)) key.Enabled = apiKey;
+        }
+
         private async void ValidateClicked(object sender, EventArgs e)
         {
             Dictionary<string, object> current = CurrentValues();
@@ -834,6 +912,9 @@ namespace Splined.WindowsGui
             validationStatus.Text = "Testing live endpoint...";
             validationStatus.ForeColor = ThemeManager.CurrentPalette.Warning;
             CredentialValidationResult result = await ProviderCredentialValidator.ValidateAsync(provider, state, current);
+            RuntimeLog.Write(result.Success ? "info" : "warn",
+                "windows.credentials.test provider=" + provider
+                + " success=" + result.Success);
             if (result.Success)
             {
                 successfulValidation = result;
@@ -860,6 +941,21 @@ namespace Splined.WindowsGui
             foreach (KeyValuePair<string, TextBox> field in fields) current[field.Key] = field.Value.Text.Trim();
             if (provider == "fanarttv") current["api_version"] = "v3.2";
             if (provider == "musicbrainz") current["oauth_enabled"] = musicBrainzOAuthEnabled != null && musicBrainzOAuthEnabled.Checked;
+            if (provider == "navidrome")
+            {
+                bool apiKey = navidromeApiKeyAuth != null && navidromeApiKeyAuth.Checked;
+                current["auth_method"] = apiKey ? "api_key" : "password";
+                if (apiKey)
+                {
+                    current["username"] = "";
+                    current["password"] = "";
+                }
+                else current["api_key"] = "";
+                // Retire native-Web-API JWTs when an older credential is saved
+                // through the OpenSubsonic editor. They are not valid /rest/*
+                // authentication and retaining an unused secret has no benefit.
+                current.Remove("bearer_token");
+            }
             return current;
         }
 
@@ -868,7 +964,7 @@ namespace Splined.WindowsGui
             string[] keys = provider == "fanarttv" ? new[] { "api_key", "client_key", "api_version" }
                 : provider == "lastfm" ? new[] { "api_key", "shared_secret" }
                 : provider == "discogs" ? new[] { "token" }
-                : provider == "navidrome" ? new[] { "server_url", "username", "password", "api_key", "bearer_token" }
+                : provider == "navidrome" ? new[] { "server_url", "auth_method", "username", "password", "api_key" }
                 : new[] { "oauth_enabled", "client_id", "client_secret", "callback_uri", "oauth_scope", "access_token", "refresh_token" };
             return String.Join("\u001f", keys.Select(key => current.ContainsKey(key) && current[key] != null ? Convert.ToString(current[key]).Trim() : ""));
         }
@@ -1019,14 +1115,14 @@ namespace Splined.WindowsGui
             Size = new Size(700, 590);
             MinimumSize = new Size(620, 520);
             Font = ThemeManager.UiFont(ThemeFontRole.Body);
-            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 4, RowCount = 12 };
+            TableLayoutPanel root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(20), ColumnCount = 4, RowCount = 13 };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 31));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));
-            for (int i = 2; i < 10; i++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+            for (int i = 2; i < 11; i++) root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
             Controls.Add(root);
@@ -1034,7 +1130,7 @@ namespace Splined.WindowsGui
             root.Controls.Add(title, 0, 0); root.SetColumnSpan(title, 4);
             Label summary = new Label { Text = "READY needs no credential. SAVED only means local data exists; TESTED means the provider accepted a live request.", Dock = DockStyle.Fill };
             root.Controls.Add(summary, 0, 1); root.SetColumnSpan(summary, 4);
-            string[,] providers = { { "iTunes", "itunes" }, { "Discogs", "discogs" }, { "Last.fm", "lastfm" }, { "Fanart.tv", "fanarttv" }, { "MusicBrainz / CAA", "musicbrainz" }, { "Cover Art Archive", "coverartarchive" }, { "Deezer", "deezer" }, { "Amazon Store", "amazon" } };
+            string[,] providers = { { "iTunes", "itunes" }, { "Discogs", "discogs" }, { "Last.fm", "lastfm" }, { "Fanart.tv", "fanarttv" }, { "MusicBrainz / CAA", "musicbrainz" }, { "Cover Art Archive", "coverartarchive" }, { "Deezer", "deezer" }, { "Amazon Store", "amazon" }, { "Navidrome", "navidrome" } };
             for (int index = 0; index < providers.GetLength(0); index++)
             {
                 string key = providers[index, 1];
@@ -1043,7 +1139,8 @@ namespace Splined.WindowsGui
                 string status = CredentialStore.Status(state, key);
                 root.Controls.Add(new Label { Text = providers[index, 0], Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, index + 2);
                 root.Controls.Add(new Label { Name = "providerStatusLabel", Tag = status, Text = "[" + status + "]", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, index + 2);
-                if (key == "lastfm" || key == "fanarttv" || key == "discogs" || key == "musicbrainz")
+                if (key == "lastfm" || key == "fanarttv" || key == "discogs"
+                    || key == "musicbrainz" || key == "navidrome")
                 {
                     LinkLabel test = new LinkLabel { Name = "status" + key + "TestLink", Text = "Test saved", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft,
                         Enabled = status != "PENDING" && status != "DISABLED" && status != "INCOMPLETE" && status != "AUTH NEEDED" };
@@ -1055,6 +1152,9 @@ namespace Splined.WindowsGui
                         liveStatus.Text = "[TESTING]";
                         Dictionary<string, object> saved = CredentialStore.Load(this.state, providerKey);
                         CredentialValidationResult result = await ProviderCredentialValidator.ValidateAsync(providerKey, this.state, saved);
+                        RuntimeLog.Write(result.Success ? "info" : "warn",
+                            "windows.credentials.test provider=" + providerKey
+                            + " success=" + result.Success);
                         if (result.Success)
                         {
                             CredentialStore.ApplyValidationMetadata(saved, result);
@@ -1068,16 +1168,16 @@ namespace Splined.WindowsGui
                             MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
                     };
                     root.Controls.Add(test, 2, index + 2);
-                    Button configure = new FluentButton { Text = status == "PENDING" ? "Configure" : "Change", Dock = DockStyle.Fill, Margin = new Padding(18, 6, 18, 6), Tag = key };
+                    Button configure = new FluentButton { Text = CredentialStore.IsConfiguredStatus(status) ? "Change" : "Configure", Dock = DockStyle.Fill, Margin = new Padding(18, 6, 18, 6), Tag = key };
                     configure.Click += delegate(object sender, EventArgs args) { using (CredentialsForm form = new CredentialsForm(this.state)) form.ShowDialog(this); Close(); };
                     root.Controls.Add(configure, 3, index + 2);
                 }
             }
             hideOnLaunch = new FluentCheckBox { Text = "Do not show Status on launch", Dock = DockStyle.Fill, Checked = !ConfigStore.LoadUi().ShowStatusOnLaunch };
-            root.Controls.Add(hideOnLaunch, 0, 11); root.SetColumnSpan(hideOnLaunch, 3);
+            root.Controls.Add(hideOnLaunch, 0, 12); root.SetColumnSpan(hideOnLaunch, 3);
             Button close = new FluentButton { Text = "Close", Dock = DockStyle.Fill, Margin = new Padding(18, 6, 18, 6) };
             close.Click += CloseClicked;
-            root.Controls.Add(close, 3, 11);
+            root.Controls.Add(close, 3, 12);
             ThemeManager.Apply(this, ThemeManager.CurrentTheme);
             foreach (Label label in Controls.Find("providerStatusLabel", true).OfType<Label>())
                 label.ForeColor = CredentialStore.StatusColor(Convert.ToString(label.Tag));

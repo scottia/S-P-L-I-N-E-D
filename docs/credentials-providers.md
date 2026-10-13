@@ -20,7 +20,7 @@ and `token_file` are not Config v5 settings.
 | Last.fm | `lastfm.json` | API key required; account session optional |
 | Discogs | `discogs.json` | Personal access token required |
 | MusicBrainz / Cover Art Archive | `musicbrainz.json` | Anonymous release authority and artwork; OAuth optional |
-| Navidrome / OpenSubsonic | `navidrome.json` | Server URL, compatible API credential, and required Bearer Token |
+| Navidrome / OpenSubsonic | `navidrome.json` | Server URL plus either a dedicated API key or username/password |
 | iTunes / Apple | none | Anonymous |
 | Cover Art Archive | none | Anonymous |
 | Deezer | none | Anonymous |
@@ -152,23 +152,35 @@ canonical path mapping. The shared credential contract is:
 ```json
 {
   "server_url": "https://music.example.invalid",
-  "username": "synthetic-account",
-  "password": "synthetic-compatible-password",
-  "api_key": "synthetic-opensubsonic-api-key",
-  "bearer_token": "synthetic-required-bearer-token"
+  "auth_method": "api_key",
+  "username": "",
+  "password": "",
+  "api_key": "synthetic-opensubsonic-api-key"
 }
 ```
 
-`server_url` must be an absolute HTTP or HTTPS URL. `bearer_token` is required
-by SPLINED and supports bearer-only authentication. An OpenSubsonic API key or
-compatible account/password can also be supplied when required by that server.
-SPLINED uses the compatible `search3` and `getCoverArt` endpoints first. The
-Bearer Token is sent only in the masked `X-ND-Authorization` header—never in a
-request URL—and is never copied into Config v5, SQLite, candidate references,
-logs, or screenshots.
+`server_url` must be an absolute HTTP or HTTPS URL. `auth_method` is either
+`api_key` or `password`; the two methods are mutually exclusive on the wire.
+API-key mode sends `apiKey` and deliberately omits the OpenSubsonic `u`
+parameter. Password mode sends `u`, a fresh random `s`, and
+`t = md5(password + salt)`; it never places the password in a request URL.
 
-Windows **Credentials > Navidrome** masks all secret fields and performs a live
-ping/capability test. Python/Docker can create the same fixed file with:
+For current Navidrome servers, create a dedicated SPLINED key in **Settings >
+Players & API keys**, choose or create the SPLINED player, select **Generate API
+key**, copy the one-time value, and save the player. A native Navidrome Web-API
+JWT/bearer token is a separate, unstable API surface and is neither requested
+nor sent for normal OpenSubsonic library/artwork access. Older JSON files that
+contain `bearer_token` remain readable, but that value is ignored by `/rest/*`
+requests.
+
+SPLINED uses compatible `ping`, library, `search3`, and `getCoverArt` endpoints.
+Secrets are never copied into Config v5, SQLite, candidate references, logs, or
+screenshots.
+
+Windows **Credentials > Navidrome** masks the active secret field and performs
+a live ping/library/artwork capability test. `SAVED` and `TESTED` are distinct:
+only a successful request marks the credential tested. Python/Docker can create
+the same fixed file with:
 
 ```text
 splined --navidrome-credentials
@@ -177,6 +189,12 @@ splined --navidrome-credentials
 Candidate discovery prefers an exact MusicBrainz Release ID. Without that ID,
 one and only one normalized exact Artist + Album result is accepted. Ambiguous
 server matches return no candidate rather than guessing.
+
+Navtagger's post-write targeted scan is intentionally separate. Navtagger
+v15.8.5 calls its configured restricted Docker Engine endpoint
+(`navidrome_docker_api`) and runs `navidrome scan -t <library>:<target>` inside
+the configured container. SPLINED does not reinterpret that transport as an
+OpenSubsonic credential and does not invent a second targeted-scan API.
 
 ## Windows authorization
 

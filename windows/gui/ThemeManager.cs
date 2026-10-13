@@ -679,8 +679,43 @@ namespace Splined.WindowsGui
             using (SolidBrush outsideBrush = new SolidBrush(outside))
                 graphics.FillRectangle(outsideBrush, button.ClientRectangle);
             if (fluent != null && fluent.ChromeLess) return;
+            bool primaryGradient = button.Enabled
+                && (role == "primary" || role == "launch");
             using (GraphicsPath path = RoundedPath(bounds, radius))
-            using (SolidBrush brush = new SolidBrush(background)) graphics.FillPath(brush, path);
+            {
+                if (primaryGradient && palette.Dark)
+                {
+                    Color left = pressed ? Color.FromArgb(25, 83, 206)
+                        : hot ? Color.FromArgb(31, 132, 255)
+                        : Color.FromArgb(28, 104, 242);
+                    Color right = pressed ? Color.FromArgb(100, 43, 202)
+                        : hot ? Color.FromArgb(143, 72, 255)
+                        : Color.FromArgb(118, 53, 232);
+                    using (LinearGradientBrush brush = new LinearGradientBrush(
+                        Rectangle.Round(bounds), left, right, LinearGradientMode.Horizontal))
+                        graphics.FillPath(brush, path);
+                    using (Pen glow = new Pen(Color.FromArgb(hot ? 105 : 70,
+                        72, 174, 255), Math.Max(2f, 2.4f * dpiScale)))
+                    {
+                        glow.Alignment = PenAlignment.Inset;
+                        graphics.DrawPath(glow, path);
+                    }
+                    RectangleF shineBounds = new RectangleF(bounds.Left + 2f,
+                        bounds.Top + 2f, Math.Max(1f, bounds.Width - 4f),
+                        Math.Max(1f, bounds.Height * 0.42f));
+                    using (GraphicsPath shinePath = RoundedPath(shineBounds,
+                        Math.Max(2f, radius - 2f)))
+                    using (LinearGradientBrush shine = new LinearGradientBrush(
+                        Rectangle.Round(shineBounds), Color.FromArgb(42, Color.White),
+                        Color.FromArgb(0, Color.White), LinearGradientMode.Vertical))
+                        graphics.FillPath(shine, shinePath);
+                }
+                else
+                {
+                    using (SolidBrush brush = new SolidBrush(background))
+                        graphics.FillPath(brush, path);
+                }
+            }
             using (GraphicsPath path = RoundedPath(bounds, radius))
             {
                 if (fluent != null && fluent.SpectrumBorder)

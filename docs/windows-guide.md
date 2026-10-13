@@ -213,16 +213,24 @@ Candidate matching is deterministic:
 
 Cover art is fetched only after a deterministic match. Candidate references use
 an in-memory `splined+navidrome://` session identity, so API keys, passwords, and
-Bearer tokens cannot enter callback payloads, logs, screenshots, SQLite, or
-Config v5. The 25 MiB artwork limit and decoded-image safety checks still apply.
+authentication challenges cannot enter callback payloads, logs, screenshots,
+SQLite, or Config v5. The 25 MiB artwork limit and decoded-image safety checks
+still apply.
 
 Credentials are stored only in `credentials\navidrome.json` beneath the
-configured credential directory. The contract includes Server URL and a
-required Bearer Token, with optional account/password or OpenSubsonic API key
-for servers that require compatible authentication in addition to bearer. The
+configured credential directory. The contract includes Server URL and exactly
+one normal OpenSubsonic authentication mode: dedicated API key (preferred) or
+username/password. Create a key in Navidrome under **Settings > Players & API
+keys > Generate API key**. API-key mode never sends a username; password mode
+uses a fresh salt/token challenge and never sends the clear password. Native
+Navidrome Web-API bearer tokens are not required or sent to `/rest/*`. The
 Windows credential editor masks secrets and performs a real compatible
 capability test. Python/Docker exposes `--navidrome-credentials` for the same
 file contract.
+
+This is distinct from Navtagger's post-write notification path. Navtagger uses
+its restricted `navidrome_docker_api` endpoint to execute the native
+`navidrome scan -t <library>:<target>` command in the configured container.
 
 See [Credentials and provider setup](credentials-providers.md) and
 [Config v5 reference](config-v5-reference.md).

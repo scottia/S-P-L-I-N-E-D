@@ -18,9 +18,16 @@ namespace Splined.WindowsGui
         private bool replacementShellActive;
         private Panel replacementHeader;
         private Panel replacementLibrarySidebar;
-        private FlowLayoutPanel replacementLibraryEntities;
+        private GraphicalLibraryListBox replacementLibraryEntities;
         private TextBox replacementLibrarySearch;
         private Label replacementLibraryStatus;
+        private bool replacementLibraryRefreshing;
+        private bool replacementNavidromeEnrichmentRunning;
+        private int replacementNavidromeGeneration;
+        private List<NavidromeArtist> replacementNavidromeArtists;
+        private DateTime replacementNavidromeArtistsExpiresUtc = DateTime.MinValue;
+        private readonly Dictionary<string, List<NavidromeAlbum>> replacementNavidromeAlbums =
+            new Dictionary<string, List<NavidromeAlbum>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<LibraryNavigationMode, Button> replacementLibraryTabs =
             new Dictionary<LibraryNavigationMode, Button>();
         private LibraryNavigationMode replacementLibraryMode;
@@ -376,17 +383,20 @@ namespace Splined.WindowsGui
             replacementLibrarySearch.TextChanged += delegate { RefreshReplacementLibraryEntities(); };
             layout.Controls.Add(replacementLibrarySearch, 0, 3);
 
-            replacementLibraryEntities = new FlowLayoutPanel
+            replacementLibraryEntities = new GraphicalLibraryListBox
             {
                 Name = "replacementLibraryEntities",
                 Dock = DockStyle.Fill,
-                AutoScroll = true,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
                 Margin = Padding.Empty,
-                Padding = new Padding(0, 2, 0, 2)
+                Padding = new Padding(0, 2, 0, 2),
+                ThumbnailLoader = LoadImageCopy
             };
-            replacementLibraryEntities.SizeChanged += delegate { SizeReplacementLibraryRows(); };
+            replacementLibraryEntities.SelectedIndexChanged += ReplacementLibrarySelectionChanged;
+            replacementLibraryEntities.DoubleClick += ReplacementLibraryDoubleClicked;
+            replacementLibraryEntities.ViewportChanged += delegate
+            {
+                EnrichReplacementNavidromeArtworkAsync();
+            };
             layout.Controls.Add(replacementLibraryEntities, 0, 4);
 
             NeonCardPanel status = new NeonCardPanel
@@ -684,14 +694,14 @@ namespace Splined.WindowsGui
 
         private Label ReplacementBadge(string text, Color color)
         {
-            return new Label
+            return new NeonBadgeLabel
             {
                 Text = text,
                 AutoSize = true,
                 ForeColor = color,
+                BadgeColor = color,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Margin = new Padding(5, 8, 5, 6),
-                Padding = new Padding(8, 2, 8, 2),
                 Font = ThemeManager.UiFont(ThemeFontRole.Minor, FontStyle.Bold)
             };
         }
@@ -1425,10 +1435,9 @@ namespace Splined.WindowsGui
         {
             if (!replacementShellActive || replacementLibraryEntities == null) return;
             string query = replacementLibrarySearch == null ? "" : replacementLibrarySearch.Text.Trim();
-            replacementLibraryEntities.SuspendLayout();
-            foreach (Control child in replacementLibraryEntities.Controls.Cast<Control>().ToArray())
-                child.Dispose();
-            replacementLibraryEntities.Controls.Clear();
+            replacementLibraryRefreshing = true;
+            replacementLibraryEntities.BeginUpdate();
+            replacementLibraryEntities.Items.Clear();
 
             if (replacementLibraryMode == LibraryNavigationMode.Artists)
             {
@@ -1441,19 +1450,16 @@ namespace Splined.WindowsGui
                 {
                     AlbumInfo representative = artist.OrderBy(item => item.Title,
                         StringComparer.OrdinalIgnoreCase).FirstOrDefault();
-                    Control row = BuildReplacementLibraryRow(artist.Key,
-                        artist.Count() + (artist.Count() == 1 ? " album" : " albums"),
-                        representative == null ? "" : representative.CoverPath,
-                        Object.ReferenceEquals(displayedAlbum, representative), representative);
-                    row.Tag = artist.Key;
-                    row.Click += delegate
+                    replacementLibraryEntities.Items.Add(new LibraryEntityListItem
                     {
-                        replacementArtistScope = artist.Key;
-                        if (representative != null) ShowSelectedAlbum(representative);
-                        HighlightReplacementLibraryRow(row);
-                    };
-                    WireReplacementRowChildren(row);
-                    replacementLibraryEntities.Controls.Add(row);
+                        Title = artist.Key,
+                        Subtitle = artist.Count() + (artist.Count() == 1 ? " album" : " albums"),
+                        ImagePath = representative == null ? "" : representative.CoverPath,
+                        ArtistScope = artist.Key,
+                        Entity = representative,
+                        Current = displayedAlbum != null && displayedAlbum.Artist.Equals(
+                            artist.Key, StringComparison.OrdinalIgnoreCase)
+                    });
                 }
             }
             else
@@ -1474,127 +1480,62 @@ namespace Splined.WindowsGui
                 {
                     string subtitle = replacementLibraryMode == LibraryNavigationMode.Folders
                         ? album.Path : album.Artist;
-                    Control row = BuildReplacementLibraryRow(album.Title, subtitle,
-                        album.CoverPath, ReferenceEquals(displayedAlbum, album), album);
-                    row.Click += delegate
+                    replacementLibraryEntities.Items.Add(new LibraryEntityListItem
                     {
-                        ShowSelectedAlbum(album);
-                        HighlightReplacementLibraryRow(row);
-                    };
-                    row.DoubleClick += delegate
-                    {
-                        if (!running && album.State != AlbumState.TimeoutActive)
-                        {
-                            album.Selected = !album.Selected;
-                            UpdateSelectionControls();
-                            SaveUiState();
-                            RefreshReplacementLibraryEntities();
-                        }
-                    };
-                    WireReplacementRowChildren(row);
-                    replacementLibraryEntities.Controls.Add(row);
+                        Title = album.Title,
+                        Subtitle = subtitle,
+                        ImagePath = album.CoverPath,
+                        ArtistScope = album.Artist,
+                        Entity = album,
+                        Current = ReferenceEquals(displayedAlbum, album)
+                    });
                 }
             }
-            replacementLibraryEntities.ResumeLayout(true);
-            SizeReplacementLibraryRows();
+            replacementLibraryEntities.EndUpdate();
+            int currentIndex = -1;
+            for (int index = 0; index < replacementLibraryEntities.Items.Count; index++)
+            {
+                LibraryEntityListItem item = replacementLibraryEntities.Items[index]
+                    as LibraryEntityListItem;
+                if (item != null && item.Current) { currentIndex = index; break; }
+            }
+            if (currentIndex >= 0) replacementLibraryEntities.SelectedIndex = currentIndex;
+            replacementLibraryRefreshing = false;
             UpdateReplacementLibraryStatus();
             EnrichReplacementNavidromeArtworkAsync();
         }
 
-        private Control BuildReplacementLibraryRow(string title, string subtitle,
-            string imagePath, bool selected, AlbumInfo album)
+        private void ReplacementLibrarySelectionChanged(object sender, EventArgs e)
         {
-            ThemePalette palette = ThemeManager.CurrentPalette;
-            NeonCardPanel row = new NeonCardPanel
-            {
-                Name = "replacementLibraryRow",
-                Width = Math.Max(190, replacementLibraryEntities.ClientSize.Width - 22),
-                Height = 58,
-                Margin = new Padding(0, 2, 0, 2),
-                Padding = new Padding(5),
-                Selected = selected,
-                Cursor = Cursors.Hand,
-                Tag = album
-            };
-            PictureBox image = new PictureBox
-            {
-                Name = "libraryArtwork",
-                Left = 6,
-                Top = 6,
-                Width = 44,
-                Height = 44,
-                SizeMode = PictureBoxSizeMode.Zoom,
-                BackColor = palette.TreeSurface,
-                Image = LoadImageCopy(imagePath),
-                Cursor = Cursors.Hand
-            };
-            row.Disposed += delegate
-            {
-                if (image.Image != null) image.Image.Dispose();
-                image.Image = null;
-            };
-            Label name = new Label
-            {
-                Name = "libraryEntityTitle",
-                Left = 60,
-                Top = 7,
-                Width = Math.Max(90, row.Width - 70),
-                Height = 22,
-                Text = title,
-                Font = ThemeManager.UiFont(ThemeFontRole.Control, selected ? FontStyle.Bold : FontStyle.Regular),
-                ForeColor = palette.TextPrimary,
-                AutoEllipsis = true,
-                Cursor = Cursors.Hand
-            };
-            Label detail = new Label
-            {
-                Name = "libraryEntityDetail",
-                Left = 60,
-                Top = 29,
-                Width = Math.Max(90, row.Width - 70),
-                Height = 20,
-                Text = subtitle,
-                ForeColor = palette.TextSecondary,
-                AutoEllipsis = true,
-                Cursor = Cursors.Hand
-            };
-            row.Controls.Add(image);
-            row.Controls.Add(name);
-            row.Controls.Add(detail);
-            row.Resize += delegate
-            {
-                name.Width = Math.Max(90, row.ClientSize.Width - 70);
-                detail.Width = name.Width;
-            };
-            return row;
+            if (replacementLibraryRefreshing || replacementLibraryEntities == null) return;
+            LibraryEntityListItem item = replacementLibraryEntities.SelectedItem
+                as LibraryEntityListItem;
+            if (item == null) return;
+            AlbumInfo album = item.Entity as AlbumInfo;
+            if (replacementLibraryMode == LibraryNavigationMode.Artists)
+                replacementArtistScope = item.ArtistScope;
+            if (album != null) ShowSelectedAlbum(album);
+            foreach (LibraryEntityListItem candidate in replacementLibraryEntities.Items)
+                candidate.Current = Object.ReferenceEquals(candidate, item);
+            replacementLibraryEntities.Invalidate();
         }
 
-        private static void WireReplacementRowChildren(Control row)
+        private void ReplacementLibraryDoubleClicked(object sender, EventArgs e)
         {
-            foreach (Control child in row.Controls)
+            if (replacementLibraryMode == LibraryNavigationMode.Artists || running) return;
+            LibraryEntityListItem item = replacementLibraryEntities.SelectedItem
+                as LibraryEntityListItem;
+            AlbumInfo album = item == null ? null : item.Entity as AlbumInfo;
+            if (album == null || album.State == AlbumState.TimeoutActive) return;
+            album.Selected = !album.Selected;
+            UpdateSelectionControls();
+            SaveUiState();
+            if (item != null)
             {
-                child.Click += delegate
-                {
-                    NeonCardPanel card = row as NeonCardPanel;
-                    if (card != null) card.ActivateCard();
-                };
+                item.Subtitle = replacementLibraryMode == LibraryNavigationMode.Folders
+                    ? album.Path : album.Artist;
+                replacementLibraryEntities.RefreshItem(item);
             }
-        }
-
-        private void HighlightReplacementLibraryRow(Control selected)
-        {
-            foreach (NeonCardPanel row in replacementLibraryEntities.Controls.OfType<NeonCardPanel>())
-            {
-                row.Selected = Object.ReferenceEquals(row, selected);
-                row.Invalidate();
-            }
-        }
-
-        private void SizeReplacementLibraryRows()
-        {
-            if (replacementLibraryEntities == null) return;
-            int width = Math.Max(190, replacementLibraryEntities.ClientSize.Width - 22);
-            foreach (Control row in replacementLibraryEntities.Controls) row.Width = width;
         }
 
         private void UpdateReplacementLibraryStatus()
@@ -1615,40 +1556,71 @@ namespace Splined.WindowsGui
         private async void EnrichReplacementNavidromeArtworkAsync()
         {
             if (!replacementShellActive || replacementLibraryEntities == null
-                || !NavidromeClient.IsConfigured(state)) return;
+                || !NavidromeClient.IsTested(state)) return;
+            replacementNavidromeGeneration++;
+            if (replacementNavidromeEnrichmentRunning) return;
+            replacementNavidromeEnrichmentRunning = true;
             try
             {
-                NavidromeClient client = NavidromeClient.FromState(state);
-                List<NavidromeArtist> remoteArtists = await client.GetArtistsAsync();
-                if (IsDisposed || replacementLibraryEntities == null) return;
-                string cache = Path.Combine(state.CacheDir, "navidrome-artwork");
-                foreach (Control row in replacementLibraryEntities.Controls.Cast<Control>().ToArray())
+                do
                 {
-                    if (row.IsDisposed) continue;
-                    PictureBox picture = row.Controls["libraryArtwork"] as PictureBox;
-                    if (picture == null || picture.Image != null) continue;
-                    AlbumInfo album = row.Tag as AlbumInfo;
-                    string artistName = album == null ? row.Tag as string : album.Artist;
-                    NavidromeArtist remoteArtist = remoteArtists.FirstOrDefault(item =>
-                        NavidromeClient.NormalizeIdentity(item.Name)
-                        == NavidromeClient.NormalizeIdentity(artistName));
-                    if (remoteArtist == null) continue;
-                    string coverArtId = remoteArtist.CoverArtId;
-                    if (album != null)
+                    int passGeneration = replacementNavidromeGeneration;
+                    NavidromeClient client = NavidromeClient.FromState(state);
+                    if (replacementNavidromeArtists == null
+                        || DateTime.UtcNow >= replacementNavidromeArtistsExpiresUtc)
                     {
-                        List<NavidromeAlbum> remoteAlbums = await client.GetArtistAlbumsAsync(remoteArtist.Id);
-                        NavidromeAlbum remoteAlbum = NavidromeClient.MatchAlbum(album, remoteAlbums);
-                        if (remoteAlbum != null) coverArtId = remoteAlbum.CoverArtId;
+                        replacementNavidromeArtists = await client.GetArtistsAsync();
+                        replacementNavidromeArtistsExpiresUtc = DateTime.UtcNow.AddMinutes(10);
+                        replacementNavidromeAlbums.Clear();
                     }
-                    string cached = await client.CacheCoverArtAsync(coverArtId, cache, 128);
-                    if (row.IsDisposed || picture.IsDisposed || String.IsNullOrWhiteSpace(cached)) continue;
-                    picture.Image = LoadImageCopy(cached);
-                }
+                    List<NavidromeArtist> remoteArtists = replacementNavidromeArtists;
+                    if (IsDisposed || replacementLibraryEntities == null) return;
+                    int first = Math.Max(0, replacementLibraryEntities.TopIndex);
+                    int visible = Math.Max(1, replacementLibraryEntities.ClientSize.Height
+                        / Math.Max(1, replacementLibraryEntities.ItemHeight) + 3);
+                    List<LibraryEntityListItem> items = replacementLibraryEntities.Items
+                        .Cast<LibraryEntityListItem>().Skip(first).Take(visible).ToList();
+                    string cache = Path.Combine(state.CacheDir, "navidrome-artwork");
+                    foreach (LibraryEntityListItem item in items)
+                    {
+                        if (!String.IsNullOrWhiteSpace(item.ImagePath)) continue;
+                        AlbumInfo album = item.Entity as AlbumInfo;
+                        string artistName = String.IsNullOrWhiteSpace(item.ArtistScope)
+                            ? (album == null ? "" : album.Artist) : item.ArtistScope;
+                        NavidromeArtist remoteArtist = remoteArtists.FirstOrDefault(candidate =>
+                            NavidromeClient.NormalizeIdentity(candidate.Name)
+                            == NavidromeClient.NormalizeIdentity(artistName));
+                        if (remoteArtist == null) continue;
+                        string coverArtId = remoteArtist.CoverArtId;
+                        if (album != null && replacementLibraryMode != LibraryNavigationMode.Artists)
+                        {
+                            List<NavidromeAlbum> remoteAlbums;
+                            if (!replacementNavidromeAlbums.TryGetValue(remoteArtist.Id, out remoteAlbums))
+                            {
+                                remoteAlbums = await client.GetArtistAlbumsAsync(remoteArtist.Id);
+                                replacementNavidromeAlbums[remoteArtist.Id] = remoteAlbums;
+                            }
+                            NavidromeAlbum remoteAlbum = NavidromeClient.MatchAlbum(album, remoteAlbums);
+                            if (remoteAlbum != null) coverArtId = remoteAlbum.CoverArtId;
+                        }
+                        string cached = await client.CacheCoverArtAsync(coverArtId, cache, 128);
+                        if (String.IsNullOrWhiteSpace(cached) || IsDisposed
+                            || replacementLibraryEntities == null
+                            || !replacementLibraryEntities.Items.Contains(item)) continue;
+                        item.ImagePath = cached;
+                        replacementLibraryEntities.RefreshItem(item);
+                    }
+                    if (passGeneration == replacementNavidromeGeneration) break;
+                } while (!IsDisposed && replacementLibraryEntities != null);
             }
             catch (Exception error)
             {
                 RuntimeLog.Write("debug", "windows.navidrome.library_enrichment_unavailable error="
                     + error.Message);
+            }
+            finally
+            {
+                replacementNavidromeEnrichmentRunning = false;
             }
         }
 
@@ -1775,6 +1747,9 @@ namespace Splined.WindowsGui
         private void RebuildReplacementEditing(bool fullEditMode)
         {
             if (replacementEditingBody == null) return;
+            bool compactEditor = !fullEditMode && replacementModeContent != null
+                && replacementModeContent.ClientSize.Height > 0
+                && replacementModeContent.ClientSize.Height < 520;
             replacementEditingBody.SuspendLayout();
             foreach (Control child in replacementEditingBody.Controls.Cast<Control>().ToArray())
                 child.Dispose();
@@ -1792,9 +1767,11 @@ namespace Splined.WindowsGui
                 Margin = Padding.Empty
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute,
+                compactEditor ? 20 : 36));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute,
+                compactEditor ? 20 : 34));
 
             FlowLayoutPanel primary = new FlowLayoutPanel
             {
@@ -1816,8 +1793,8 @@ namespace Splined.WindowsGui
                 Button button = new FluentButton
                 {
                     Text = definition.Glyph + "  " + definition.Label,
-                    Width = 84,
-                    Height = 34,
+                    Width = compactEditor ? 58 : 84,
+                    Height = compactEditor ? 18 : 34,
                     Tag = definition.Key,
                     Margin = new Padding(0, 0, 4, 0)
                 };
@@ -1832,8 +1809,8 @@ namespace Splined.WindowsGui
             Button arrange = new FluentButton
             {
                 Text = "☷  Arrange / Select",
-                Width = 126,
-                Height = 34,
+                Width = compactEditor ? 82 : 126,
+                Height = compactEditor ? 18 : 34,
                 Tag = "primary"
             };
             arrange.Click += delegate { ShowReplacementAdjustmentMenu(arrange); };
@@ -1857,7 +1834,8 @@ namespace Splined.WindowsGui
             {
                 string key = selected[index];
                 AdjustmentDefinition definition = AdjustmentCatalog.Find(key);
-                rows.RowStyles.Add(new RowStyle(SizeType.Absolute, fullEditMode ? 42 : 30));
+                rows.RowStyles.Add(new RowStyle(SizeType.Absolute,
+                    fullEditMode ? 42 : compactEditor ? 17 : 30));
                 rows.Controls.Add(new Label
                 {
                     Text = definition.Label,
@@ -1871,7 +1849,8 @@ namespace Splined.WindowsGui
                     Minimum = definition.Minimum,
                     Maximum = definition.Maximum,
                     Value = AdjustmentCatalog.GetValue(state, definition.Key),
-                    Margin = new Padding(4, fullEditMode ? 5 : 2, 10, fullEditMode ? 4 : 2),
+                    Margin = new Padding(4, fullEditMode ? 5 : compactEditor ? 0 : 2,
+                        10, fullEditMode ? 4 : compactEditor ? 0 : 2),
                     Tag = definition.Key
                 };
                 FluentNumericUpDown value = new FluentNumericUpDown
@@ -1880,7 +1859,8 @@ namespace Splined.WindowsGui
                     Minimum = definition.Minimum,
                     Maximum = definition.Maximum,
                     Value = slider.Value,
-                    Margin = new Padding(0, fullEditMode ? 5 : 2, 0, fullEditMode ? 4 : 2)
+                    Margin = new Padding(0, fullEditMode ? 5 : compactEditor ? 0 : 2,
+                        0, fullEditMode ? 4 : compactEditor ? 0 : 2)
                 };
                 slider.ValueChanged += delegate
                 {
@@ -1915,8 +1895,8 @@ namespace Splined.WindowsGui
                 Button toggle = new FluentButton
                 {
                     Text = "+  " + definition.Label,
-                    Width = 108,
-                    Height = 32,
+                    Width = compactEditor ? 98 : 108,
+                    Height = compactEditor ? 18 : 32,
                     Margin = new Padding(0, 0, 4, 0),
                     Enabled = selected.Count < 5
                 };
@@ -2008,6 +1988,8 @@ namespace Splined.WindowsGui
                 .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
             foreach (ArtworkSourceDescriptor source in ArtworkSourceCatalog.Project(state, counts))
             {
+                bool focusedSource = excludedCandidateSources.Count > 0
+                    && !excludedCandidateSources.Contains(source.Key);
                 NeonCardPanel card = new NeonCardPanel
                 {
                     Name = "sourceCard_" + source.Key,
@@ -2015,8 +1997,9 @@ namespace Splined.WindowsGui
                     Height = 94,
                     Margin = new Padding(3),
                     Padding = new Padding(7),
-                    SpectrumBorder = source.Key.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase),
-                    Selected = !excludedCandidateSources.Contains(source.Key),
+                    SpectrumBorder = focusedSource
+                        || source.Key.Equals("musicbrainz", StringComparison.OrdinalIgnoreCase),
+                    Selected = focusedSource,
                     Cursor = Cursors.Hand,
                     Tag = source
                 };
@@ -2040,8 +2023,14 @@ namespace Splined.WindowsGui
                     AutoEllipsis = true,
                     Cursor = Cursors.Hand
                 };
-                string stateText = source.Key.Equals("navidrome", StringComparison.OrdinalIgnoreCase)
-                    ? (source.CredentialConfigured ? "● Connected" : "Credentials needed")
+                bool navidrome = source.Key.Equals("navidrome",
+                    StringComparison.OrdinalIgnoreCase);
+                bool navidromeTested = navidrome
+                    && source.CredentialStatus.IndexOf("TESTED",
+                        StringComparison.OrdinalIgnoreCase) >= 0;
+                string stateText = navidrome
+                    ? navidromeTested ? "● Tested"
+                        : source.CredentialConfigured ? "Configured" : "Credentials needed"
                     : source.Enabled ? source.CandidateCount + " found" : "Disabled";
                 Label status = new Label
                 {
@@ -2049,9 +2038,10 @@ namespace Splined.WindowsGui
                     Text = stateText,
                     Font = ThemeManager.UiFont(ThemeFontRole.Minor),
                     ForeColor = source.Enabled
-                        ? source.Key.Equals("navidrome", StringComparison.OrdinalIgnoreCase)
-                            && source.CredentialConfigured ? ThemeManager.CurrentPalette.Success
-                            : ThemeManager.CurrentPalette.TextSecondary
+                        ? navidromeTested ? ThemeManager.CurrentPalette.Success
+                            : navidrome && source.CredentialConfigured
+                                ? ThemeManager.CurrentPalette.Warning
+                                : ThemeManager.CurrentPalette.TextSecondary
                         : ThemeManager.CurrentPalette.TextDisabled,
                     TextAlign = ContentAlignment.MiddleCenter,
                     Cursor = Cursors.Hand
