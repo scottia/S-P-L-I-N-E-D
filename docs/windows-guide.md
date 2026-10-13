@@ -94,24 +94,27 @@ resolution range, policy, ranking, and selected/recommended state. Artwork
 Filter selections narrow actual candidate values. The branded header uses the
 repository logo, the colorized **S.P.L.I.N.E.D** wordmark, and the exact expanded
 **SƎARCHABLƎ : PІXƎL : LІNKS : ІDƎNTІFІƎD : NORMALІZƎD : ƎNRІCHƎD :
-DƎFІNƎD** slogan with its spectrum separators.
+DƎFІNƎD** slogan with its spectrum separators. The logo and two text rows share
+one aligned brand block so Remote Desktop DPI scaling cannot separate or clip
+the slogan.
 
-The arrow in the **Artwork Filter** bar expands or collapses one unified
-workspace. Up means expanded; down means collapsed. Expanded replaces Scan
-Activity with exactly two thin spectrum-framed panes:
+The **Artwork Filter** bar is the first interactive row at the top of Home,
+above both the live Activity surface and candidate results. Its arrow expands or
+collapses one unified workspace. Up means expanded; down means collapsed.
+Expanded replaces Scan Activity with exactly two thin spectrum-framed panes:
 
 - **Candidate Findings** contains three evenly spaced status columns for image
   type and policy, source selection, and wanted/unwanted resolution ranges.
   Source aspect ratio, native dimensions, and projected dimensions appear as
   unframed yellow text at the bottom of this pane.
 - **Upscale / Advanced** contains the mutually exclusive **Upscale Preview** and
-  **🔘 Apply Upscale** modes, **Apply Upscale Default**, and one compact,
+  **Apply Upscale** modes, **Apply Upscale Default**, and one compact,
   left-grouped row of eight editing controls. Pane resizing never stretches the
   gaps between those controls.
 
 Each editing control remains an unframed template inside the second pane: a
-centered title, exactly 20 segmented spectrum bars, compact one-step up/down
-glyphs, and a centered reset glyph. The current signed value is painted as a
+centered title, exactly 20 segmented spectrum bars, explicit one-step **▲** and
+**▼** controls, and a centered reset glyph. The current signed value is painted as a
 bold white number in the middle of each spectrum bar without angle brackets.
 Mouse, wheel, keyboard, reset, and persisted-value behavior remain unchanged.
 Collapsed mode replaces both panes with the live **Scan Activity and Decisions**
@@ -132,16 +135,20 @@ scrollbar.
 
 **Upscale Preview** is enabled by default. It keeps **Use Selected** at the
 chosen source resolution without applying upscale or edit-profile filtering.
-Selecting **🔘 Apply Upscale** turns Preview off; the two radio modes cannot be
+Selecting **Apply Upscale** turns Preview off; the two radio modes cannot be
 active together. **Apply Upscale Default** retains the saved adaptive-profile
-behavior.
+behavior. Every status, filter, and radio bullet uses the same DPI-scaled
+diameter as the Folder status legend; mode labels never embed a second bullet.
 
 The old **Upscale** and **Upscale Show Full** buttons are removed from the main
 pane. When one editable result is selected, the Artwork Preview uses a hand
 pointer. Clicking it opens one separate, resizable **Upscale Comparison &
 Editing** window—never another panel below the main workspace. Its equal
 **[CURRENT]** and **[UPSCALED]** panes use the cached candidate bytes evaluated
-by Rust. The same eight controls edit the full comparison, **Save Existing**
+by Rust. A centered yellow `RESOLUTION #x#  RATIO #:#` reference is painted over
+the bottom edge of each comparison image; it is display-only and is never
+composited into saved artwork. The same eight controls, including their **▲**,
+**▼**, and reset actions, edit the full comparison, **Save Existing**
 commits only in Apply Upscale mode, and the red **Cancel Upscale** action closes
 without saving. Repeated artwork clicks activate the existing editor rather
 than opening duplicate windows.

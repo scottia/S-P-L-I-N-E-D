@@ -216,7 +216,9 @@ namespace Splined.WindowsGui
                                 && findingsPane.SpectrumBorder && upscalePane.SpectrumBorder
                                 && findingsPane.Height == upscalePane.Height,
                                 "Expanded Candidate Findings did not expose exactly two equal spectrum panes.");
-                            Require(previewMode != null && applyMode != null && previewMode.Checked && !applyMode.Checked
+                            Require(previewMode is FluentRadioButton && applyMode is FluentRadioButton
+                                && previewMode.Checked && !applyMode.Checked
+                                && applyMode.Text == "Apply Upscale" && !applyMode.Text.Contains("🔘")
                                 && form.Controls.Find("upscalePreviewButton", true).Length == 0
                                 && form.Controls.Find("upscaleShowFullButton", true).Length == 0,
                                 "The two mutually exclusive Upscale modes did not replace the old action buttons.");
@@ -230,6 +232,18 @@ namespace Splined.WindowsGui
                                     && slider.ValueOverlayText.IndexOf('<') < 0
                                     && slider.ValueOverlayText.IndexOf('>') < 0),
                                 "The Upscale sliders do not expose plain in-bar values.");
+                            Require(profileKeys.All(key => form.Controls.Find("upscaleProfileIncrease_" + key, true)
+                                    .OfType<FluentButton>().Single().CenteredGlyph == "▲")
+                                && profileKeys.All(key => form.Controls.Find("upscaleProfileDecrease_" + key, true)
+                                    .OfType<FluentButton>().Single().CenteredGlyph == "▼"),
+                                "The main Upscale row is missing visible incremental arrow controls.");
+                            TableLayoutPanel filterHeader = form.Controls.Find("candidateFilterHeader", true)
+                                .OfType<TableLayoutPanel>().Single();
+                            TableLayoutPanel homeTop = form.Controls.Find("scanActivityCard", true)
+                                .OfType<TableLayoutPanel>().Single();
+                            Require(Object.ReferenceEquals(filterHeader.Parent, homeTop)
+                                && homeTop.GetPositionFromControl(filterHeader).Row == 1,
+                                "Artwork Filter is not anchored at the top of Home.");
                             Size expandedGridSize = expandedGrid.Size;
                             Size expandedModuleSize = expandedGrid.GetControlFromPosition(0, 0).Size;
                             Panel filterPanel = form.Controls.Find("candidateFilterPanel", true)[0] as Panel;
@@ -264,10 +278,20 @@ namespace Splined.WindowsGui
                             UpscaleEditorForm upscaleEditor = (UpscaleEditorForm)typeof(MainForm)
                                 .GetField("upscaleEditor", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                             Require(upscaleEditor != null && upscaleEditor.Visible
-                                && upscaleEditor.Controls.Find("upscaleEditorCurrentImage", true).Length == 1
-                                && upscaleEditor.Controls.Find("upscaleEditorUpscaledImage", true).Length == 1
+                                && upscaleEditor.Controls.Find("upscaleEditorCurrentImage", true)
+                                    .OfType<UpscaleComparisonPictureBox>().Single().ReferenceOverlayText
+                                    == "RESOLUTION 800x800  RATIO 1:1"
+                                && upscaleEditor.Controls.Find("upscaleEditorUpscaledImage", true)
+                                    .OfType<UpscaleComparisonPictureBox>().Single().ReferenceOverlayText
+                                    == "RESOLUTION 1800x1800  RATIO 1:1"
                                 && upscaleEditor.Controls.Find("upscaleEditorSliderGrid", true)
                                     .OfType<TableLayoutPanel>().Single().ColumnCount == 8
+                                && profileKeys.All(key => upscaleEditor.Controls
+                                    .Find("upscaleEditorIncrease_" + key, true)
+                                    .OfType<FluentButton>().Single().CenteredGlyph == "▲")
+                                && profileKeys.All(key => upscaleEditor.Controls
+                                    .Find("upscaleEditorDecrease_" + key, true)
+                                    .OfType<FluentButton>().Single().CenteredGlyph == "▼")
                                 && upscaleEditor.Controls.Find("upscaleEditorSaveExisting", true)
                                     .OfType<Button>().Single().Text == "Save Existing"
                                 && upscaleEditor.Controls.Find("upscaleEditorCancel", true)

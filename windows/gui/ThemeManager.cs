@@ -857,6 +857,11 @@ namespace Splined.WindowsGui
             return Math.Max(1, (int)Math.Round(logicalPixels * dpi / 96f));
         }
 
+        internal static int SemanticBulletDiameter(Control control)
+        {
+            return Math.Max(14, Math.Min(24, Scaled(control, 16)));
+        }
+
         private static string ResolveUiFontFamily()
         {
             foreach (string family in new[] { "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI" })
@@ -919,7 +924,7 @@ namespace Splined.WindowsGui
             else if ((control is Panel || control is TableLayoutPanel || control is FlowLayoutPanel) && String.Equals(control.Tag as string, "surface-raised", StringComparison.Ordinal)) control.BackColor = palette.SurfaceRaised;
             else if (control is TabPage) control.BackColor = palette.SurfacePrimary;
             else if (control.Parent is NumericUpDown) control.BackColor = palette.InputBackground;
-            else if (control is FluentCheckBox)
+            else if (control is FluentCheckBox || control is FluentRadioButton)
                 control.BackColor = ContainerSurface(control, palette);
             else if (control is InfoButton)
                 control.BackColor = ContainerSurface(control, palette);
@@ -994,6 +999,12 @@ namespace Splined.WindowsGui
                     AttachCheckDrawing(check, theme);
                 }
             }
+            FluentRadioButton fluentRadio = control as FluentRadioButton;
+            if (fluentRadio != null)
+            {
+                fluentRadio.Theme = theme;
+                fluentRadio.Palette = palette;
+            }
             Button button = control as Button;
             if (button != null && !(button is InfoButton)) StyleButton(button, theme);
             MenuStrip menu = control as MenuStrip;
@@ -1059,7 +1070,7 @@ namespace Splined.WindowsGui
                 {
                     if (key.Appearance == Appearance.Button) return;
                     ThemePalette active = created.Palette ?? CurrentPalette;
-                    int boxSize = Math.Max(12, (int)Math.Round(14f * key.DeviceDpi / 96f));
+                    int boxSize = SemanticBulletDiameter(key);
                     Rectangle box = new Rectangle(1, Math.Max(1, (key.Height - boxSize) / 2), boxSize, boxSize);
                     args.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
                     using (GraphicsPath path = RoundedPath(box, 2))
@@ -1985,6 +1996,7 @@ namespace Splined.WindowsGui
         private string theme;
         private readonly Timer stateAnimation;
         private float animationPulse;
+        private Color indicatorColor = Color.Empty;
 
         internal string Theme { get { return theme; } set { theme = value; Invalidate(); } }
         internal ThemePalette Palette
@@ -1996,6 +2008,11 @@ namespace Splined.WindowsGui
                 ForeColor = ActivePalette.TextPrimary;
                 Invalidate();
             }
+        }
+        internal Color IndicatorColor
+        {
+            get { return indicatorColor; }
+            set { indicatorColor = value; Invalidate(); }
         }
         private ThemePalette ActivePalette { get { return palette ?? ThemeManager.CurrentPalette; } }
 
@@ -2023,13 +2040,14 @@ namespace Splined.WindowsGui
             using (SolidBrush background = new SolidBrush(BackColor))
                 e.Graphics.FillRectangle(background, ClientRectangle);
             ThemePalette active = ActivePalette;
-            int boxSize = Math.Max(14, (int)Math.Round(16f * DeviceDpi / 96f));
+            int boxSize = ThemeManager.SemanticBulletDiameter(this);
             int boxTop = Math.Max(1, (Height - boxSize) / 2);
             bool rightAligned = CheckAlign == ContentAlignment.TopRight
                 || CheckAlign == ContentAlignment.MiddleRight || CheckAlign == ContentAlignment.BottomRight;
             Rectangle box = new Rectangle(rightAligned ? Math.Max(1, Width - boxSize - 1) : 1, boxTop, boxSize, boxSize);
             Color stateColor = CheckState == CheckState.Indeterminate ? active.Warning
-                : Checked ? active.CheckOnBackground : active.CheckOffBackground;
+                : Checked ? (indicatorColor.IsEmpty ? active.CheckOnBackground : indicatorColor)
+                : active.CheckOffBackground;
             if (!Enabled) stateColor = ThemeManager.Blend(stateColor, active.ButtonDisabled, 0.58f);
 
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -2086,6 +2104,98 @@ namespace Splined.WindowsGui
         {
             if (disposing) stateAnimation.Dispose();
             base.Dispose(disposing);
+        }
+    }
+
+    /// <summary>
+    /// Radio behavior with the same semantic status-dot geometry used by every
+    /// SPLINED checkbox, tree state, and Folder status bullet.
+    /// </summary>
+    internal sealed class FluentRadioButton : RadioButton
+    {
+        private ThemePalette palette;
+        private string theme;
+
+        internal string Theme { get { return theme; } set { theme = value; Invalidate(); } }
+        internal ThemePalette Palette
+        {
+            get { return palette; }
+            set { palette = value; Invalidate(); }
+        }
+
+        private ThemePalette ActivePalette { get { return palette ?? ThemeManager.CurrentPalette; } }
+
+        public FluentRadioButton()
+        {
+            theme = ThemeManager.CurrentTheme;
+            palette = ThemeManager.CurrentPalette;
+            UseVisualStyleBackColor = false;
+            FlatStyle = FlatStyle.Flat;
+            AutoEllipsis = true;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            GraphicsState state = e.Graphics.Save();
+            e.Graphics.SetClip(ClientRectangle, CombineMode.Intersect);
+            using (SolidBrush background = new SolidBrush(BackColor))
+                e.Graphics.FillRectangle(background, ClientRectangle);
+
+            ThemePalette active = ActivePalette;
+            int diameter = ThemeManager.SemanticBulletDiameter(this);
+            Rectangle bullet = new Rectangle(1, Math.Max(1, (Height - diameter) / 2), diameter, diameter);
+            Color color = Checked ? active.CheckOnBackground : active.CheckOffBackground;
+            if (!Enabled) color = ThemeManager.Blend(color, active.ButtonDisabled, 0.58f);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            if (Checked)
+                using (SolidBrush fill = new SolidBrush(color)) e.Graphics.FillEllipse(fill, bullet);
+            else
+                using (Pen outline = new Pen(color, Math.Max(1.7f, DeviceDpi / 64f)))
+                    e.Graphics.DrawEllipse(outline, bullet);
+
+            int gap = Math.Max(5, (int)Math.Round(6f * DeviceDpi / 96f));
+            Rectangle textBounds = new Rectangle(bullet.Right + gap, 0,
+                Math.Max(1, Width - bullet.Right - gap), Height);
+            TextRenderer.DrawText(e.Graphics, Text, Font, textBounds,
+                Enabled ? ForeColor : active.TextDisabled,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter
+                | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            e.Graphics.Restore(state);
+        }
+
+        protected override void OnCheckedChanged(EventArgs e)
+        {
+            base.OnCheckedChanged(e);
+            Invalidate();
+        }
+
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+    }
+
+    /// <summary>A colored status bullet that shares the Folder-status diameter everywhere.</summary>
+    internal sealed class SemanticBulletLabel : Label
+    {
+        public SemanticBulletLabel()
+        {
+            Text = "●";
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.UserPaint
+                | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            BackColor = Color.Transparent;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            int diameter = ThemeManager.SemanticBulletDiameter(this);
+            Rectangle bullet = new Rectangle(Math.Max(0, (ClientSize.Width - diameter) / 2),
+                Math.Max(0, (ClientSize.Height - diameter) / 2), diameter, diameter);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (SolidBrush brush = new SolidBrush(Enabled ? ForeColor : ThemeManager.CurrentPalette.TextDisabled))
+                e.Graphics.FillEllipse(brush, bullet);
         }
     }
 
@@ -2348,8 +2458,8 @@ namespace Splined.WindowsGui
             BackColor = Color.Transparent;
             using (Font baseFont = ThemeManager.UiFont(ThemeFontRole.AppTitle, FontStyle.Bold))
                 Font = new Font(baseFont.FontFamily, 15f, FontStyle.Bold, GraphicsUnit.Point);
-            MinimumSize = new Size(184, 34);
-            Size = new Size(184, 34);
+            MinimumSize = new Size(184, 26);
+            Size = new Size(184, 28);
             AccessibleName = ExactWordmark;
             Name = "splinedWordmark";
         }
@@ -2362,6 +2472,8 @@ namespace Splined.WindowsGui
             using (StringFormat format = new StringFormat(StringFormat.GenericTypographic))
             {
                 format.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
+                float glyphHeight = e.Graphics.MeasureString("Ag", Font, PointF.Empty, format).Height;
+                float y = Math.Max(0f, (ClientSize.Height - glyphHeight) / 2f);
                 for (int index = 0; index < ExactWordmark.Length; index++)
                 {
                     string glyph = ExactWordmark[index].ToString();
@@ -2369,7 +2481,7 @@ namespace Splined.WindowsGui
                         ? ThemeManager.CurrentPalette.TextSecondary
                         : spectrum[(index / 2) % (spectrum.Length - 1)];
                     using (Brush brush = new SolidBrush(color))
-                        e.Graphics.DrawString(glyph, Font, brush, x, 2f, format);
+                        e.Graphics.DrawString(glyph, Font, brush, x, y, format);
                     x += e.Graphics.MeasureString(glyph, Font, PointF.Empty, format).Width - 0.4f;
                 }
             }
@@ -2402,8 +2514,8 @@ namespace Splined.WindowsGui
             DoubleBuffered = true;
             SetStyle(ControlStyles.SupportsTransparentBackColor, true);
             BackColor = Color.Transparent;
-            MinimumSize = new Size(280, 20);
-            Size = new Size(560, 22);
+            MinimumSize = new Size(280, 18);
+            Size = new Size(560, 20);
             Name = "splinedSlogan";
             AccessibleName = ExactSlogan;
             AccessibleDescription = "SPLINED expanded name with spectrum separators";
@@ -2429,11 +2541,11 @@ namespace Splined.WindowsGui
                     sloganFont = new Font(baseFont.FontFamily,
                         fontSize, FontStyle.Bold, GraphicsUnit.Point);
                     float required = MeasureRequiredWidth(e.Graphics, sloganFont, format);
-                    if (required <= Math.Max(1, ClientSize.Width - 4) || fontSize <= 5.5f) break;
+                    if (required <= Math.Max(1, ClientSize.Width - 8) || fontSize <= 5.5f) break;
                     fontSize -= 0.25f;
                 }
 
-                float x = 2f;
+                float x = 4f;
                 float textHeight = e.Graphics.MeasureString("Ag", sloganFont, PointF.Empty, format).Height;
                 float y = Math.Max(0f, (ClientSize.Height - textHeight) / 2f);
                 using (Brush textBrush = new SolidBrush(ThemeManager.CurrentPalette.TextSecondary))

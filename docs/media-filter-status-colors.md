@@ -307,9 +307,9 @@ The lower Selected Album Statistics panel remains scrollable.
 
 ## Artwork result filter
 
-The expanded Windows Artwork Filter replaces the Scan Activity workspace beside
-Selected Album Artwork while its activation button remains above the candidate
-cards. Its unframed host contains exactly two equal spectrum-framed panes. The
+The Windows Artwork Filter activation/action row is anchored at the top of Home.
+The expanded filter replaces the Scan Activity workspace beside Selected Album
+Artwork; its unframed host contains exactly two equal spectrum-framed panes. The
 first pane contains three evenly spaced columns for Image Type/Policy, Source
 Selection, and Wanted/Unwanted. The second pane contains Upscale/Advanced modes
 and one compact, left-grouped slider row. Within each status column, the complete
@@ -324,7 +324,7 @@ a `.spl` backup. Controls may be temporarily disabled when the current result
 set cannot satisfy them; this does not discard the saved operator preference.
 The two panes share one required height. The Upscale/Advanced area uses eight
 frameless spectrum controls built from one template: title centered over exactly
-20 bars, compact up/down glyphs, then a centered reset glyph. The current signed
+20 bars, explicit one-step **▲** and **▼** controls, then a centered reset glyph. The current signed
 value is a bold white number in the middle of the bar with no angle brackets.
 They expose the same mouse, wheel, keyboard, reset, and persisted-value behavior
 as the previous vertical controls. The single arrow in the Artwork Filter bar
@@ -348,13 +348,16 @@ Existing local covers remain eligible for explicit preview/edit even when
 already Ideal or above Ideal; their dimensions are not reduced automatically.
 
 **Upscale Preview** is enabled by default and is mutually exclusive with
-**🔘 Apply Upscale**. Preview mode keeps **Use Selected** at the chosen source
+**Apply Upscale**. Preview mode keeps **Use Selected** at the chosen source
 dimensions and omits upscale/edit-profile filtering. Apply mode permits the
 configured profile to affect saved output. The former Upscale and Upscale Show
 Full buttons are removed. Selecting one editable result gives Artwork Preview a
 hand pointer; clicking it opens one separate resizable window with equal
 **[CURRENT]** and **[UPSCALED]** panes, the same eight controls, **Save Existing**,
-and a red **Cancel Upscale** action. Repeated clicks focus the existing window.
+and a red **Cancel Upscale** action. Both views use the same visible incremental
+arrow controls. A yellow `RESOLUTION #x#  RATIO #:#` reference is painted over
+the lower edge of each comparison image without modifying the underlying or
+saved bitmap. Repeated clicks focus the existing window.
 Configured square-crop output is represented there with the same centered crop
 geometry used by the Rust output projection, before the projected resize.
 
@@ -364,6 +367,8 @@ the horizontal divider, and the vertical divider ends at that junction without
 dead space. The independent divider to the right of Select Media is not coupled.
 Folder Status reserves the same
 vertical choice rhythm as Select Mode rather than compressing its fourth row.
+Its DPI-scaled bullet diameter is also the single authority used by candidate
+filters and Upscale radio modes, preventing mismatched or doubled indicators.
 
 ## Performance contract
 

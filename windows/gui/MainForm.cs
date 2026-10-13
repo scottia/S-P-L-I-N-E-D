@@ -436,7 +436,7 @@ namespace Splined.WindowsGui
                 Name = "splinedHeader",
                 Dock = DockStyle.Top,
                 Height = 76,
-                Padding = new Padding(ThemeManager.Space8, ThemeManager.Space4,
+                Padding = new Padding(ThemeManager.Space8, ThemeManager.Space8,
                     ThemeManager.Space8, ThemeManager.Space4),
                 Tag = "titlebar-surface"
             };
@@ -458,7 +458,8 @@ namespace Splined.WindowsGui
             PictureBox logo = new PictureBox
             {
                 Name = "splinedBrandLogo",
-                Dock = DockStyle.Fill,
+                Dock = DockStyle.Top,
+                Height = 54,
                 Margin = new Padding(0, 0, ThemeManager.Space4, 0),
                 Image = repositoryLogo,
                 SizeMode = PictureBoxSizeMode.Zoom,
@@ -476,12 +477,13 @@ namespace Splined.WindowsGui
                 Name = "splinedBrandText",
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 2,
+                RowCount = 3,
                 Margin = Padding.Empty,
                 Padding = Padding.Empty
             };
             brand.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
+            brand.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
             brand.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             SplinedWordmark wordmark = new SplinedWordmark
             {
@@ -847,6 +849,7 @@ namespace Splined.WindowsGui
         {
             TableLayoutPanel row = new TableLayoutPanel
             {
+                Name = "candidateFilterHeader",
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 1,
@@ -1167,12 +1170,11 @@ namespace Splined.WindowsGui
             line.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 23));
             line.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             line.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            Label bullet = new Label
+            Label bullet = new SemanticBulletLabel
             {
                 Text = "●",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
                 Margin = new Padding(0)
             };
             Label description = new Label
@@ -1218,13 +1220,12 @@ namespace Splined.WindowsGui
             line.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 23));
             line.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             line.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            showTracksBullet = new Label
+            showTracksBullet = new SemanticBulletLabel
             {
                 Name = "embeddedArtStatusBullet",
                 Text = "●",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
                 Margin = Padding.Empty
             };
             showTracksDescription = new Label
@@ -1718,15 +1719,17 @@ namespace Splined.WindowsGui
             };
             parent.Controls.Add(rightSplit);
 
-            scanActivityCard = new FluentCardTableLayoutPanel { Name = "scanActivityCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(ActivityPanelMinimumWidth, ActivityPanelMinimumHeight), Padding = new Padding(ThemeManager.Space12, ThemeManager.Space12, ThemeManager.Space12, 0), RowCount = 2, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
+            scanActivityCard = new FluentCardTableLayoutPanel { Name = "scanActivityCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(ActivityPanelMinimumWidth, ActivityPanelMinimumHeight), Padding = new Padding(ThemeManager.Space12, ThemeManager.Space12, ThemeManager.Space12, 0), RowCount = 3, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
             TableLayoutPanel upper = scanActivityCard;
             upper.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            upper.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             upper.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             rightSplit.Panel1.Controls.Add(upper);
             Control activityTitleRow = BuildProcessingPanelTitle();
             scanActivityTitle = activityTitleRow.Controls.Find("scanActivityTitle", false)
                 .OfType<Label>().Single();
             upper.Controls.Add(activityTitleRow, 0, 0);
+            upper.Controls.Add(BuildCandidateFilterHeader(), 0, 1);
             activityWorkspace = new TableLayoutPanel { Name = "activityWorkspace", Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
             activityWorkspace.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             activityWorkspace.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -1800,23 +1803,21 @@ namespace Splined.WindowsGui
             artwork.Click += ArtworkPreviewClicked;
             artworkPreviewCard = artwork;
             activityArtworkSplit.Panel2.Controls.Add(artwork);
-            upper.Controls.Add(activityWorkspace, 0, 1);
+            upper.Controls.Add(activityWorkspace, 0, 2);
             ApplyArtworkPanelVisibility();
 
-            TableLayoutPanel lower = new FluentCardTableLayoutPanel { Name = "artworkCandidatesCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(CandidatePanelMinimumWidth, CandidatePanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 3, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
+            TableLayoutPanel lower = new FluentCardTableLayoutPanel { Name = "artworkCandidatesCard", Dock = DockStyle.Fill, AutoScroll = true, AutoScrollMinSize = new Size(CandidatePanelMinimumWidth, CandidatePanelMinimumHeight), Padding = new Padding(ThemeManager.Space12), RowCount = 2, ColumnCount = 1, VisualRole = CardVisualRole.Panel };
             candidateLayout = lower;
-            lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
             lower.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             lower.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             rightSplit.Panel2.Controls.Add(lower);
-            lower.Controls.Add(BuildCandidateFilterHeader(), 0, 0);
             candidateFilterPanel = BuildCandidateFilterPanel();
             candidateFilterPanel.Visible = false;
             candidateContext = new Label { Text = "", Dock = DockStyle.Fill, AutoEllipsis = true };
-            lower.Controls.Add(candidateContext, 0, 1);
+            lower.Controls.Add(candidateContext, 0, 0);
             candidateCards = new WatermarkFlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(ThemeManager.Space8) };
             candidateCards.Resize += delegate { ResizeCandidateCards(); };
-            lower.Controls.Add(candidateCards, 0, 2);
+            lower.Controls.Add(candidateCards, 0, 1);
         }
 
         private Task ReloadLibraryAsync(bool preserveSelection)
@@ -3183,7 +3184,7 @@ namespace Splined.WindowsGui
                     .Distinct(StringComparer.OrdinalIgnoreCase));
             foreach (string source in sourceOrder.Distinct(StringComparer.OrdinalIgnoreCase))
                 sourceOptions.Add(new CandidateFilterOption(CandidateSourceName(source), true, CandidateSourceColor(source, palette), source));
-            AddCandidateFilterSection(sources, "Source Selection", "source", sourceOptions, false, false);
+            AddCandidateFilterSection(sources, "Source Selection", "source", sourceOptions, true, false);
 
             TableLayoutPanel ranges = CandidateFilterColumn();
             AddCandidateFilterSection(ranges, "Wanted", "range", new[]
@@ -3396,7 +3397,7 @@ namespace Splined.WindowsGui
                 state.UpscaleAdaptiveDefaults = upscaleAdaptiveDefaults.Checked;
                 PersistUpscaleProfile();
             };
-            upscalePreviewOnly = new RadioButton
+            upscalePreviewOnly = new FluentRadioButton
             {
                 Name = "upscalePreviewOnly",
                 Text = "Upscale Preview",
@@ -3415,10 +3416,10 @@ namespace Splined.WindowsGui
                 ApplyUpscalePreviewModeAppearance();
                 SaveUiState();
             };
-            upscaleApply = new RadioButton
+            upscaleApply = new FluentRadioButton
             {
                 Name = "upscaleApply",
-                Text = "🔘 Apply Upscale",
+                Text = "Apply Upscale",
                 Checked = !uiState.UpscalePreviewOnly,
                 Dock = DockStyle.Fill,
                 AutoSize = false,
@@ -3809,7 +3810,7 @@ namespace Splined.WindowsGui
             {
                 Name = "upscaleProfileIncrease_" + key,
                 Text = "",
-                CenteredGlyph = "⌃",
+                CenteredGlyph = "▲",
                 ChromeLess = true,
                 AccessibleName = "Increase " + label,
                 Anchor = AnchorStyles.None,
@@ -3821,7 +3822,7 @@ namespace Splined.WindowsGui
             {
                 Name = "upscaleProfileDecrease_" + key,
                 Text = "",
-                CenteredGlyph = "⌄",
+                CenteredGlyph = "▼",
                 ChromeLess = true,
                 AccessibleName = "Decrease " + label,
                 Anchor = AnchorStyles.None,
@@ -3964,6 +3965,7 @@ namespace Splined.WindowsGui
                     Tag = option.Key,
                     Margin = new Padding(0, 0, ThemeManager.Space4, 0)
                 };
+                ((FluentCheckBox)check).IndicatorColor = option.Color;
                 Label count = new Label
                 {
                     Text = "[0]",
@@ -7086,6 +7088,70 @@ namespace Splined.WindowsGui
         }
     }
 
+    /// <summary>
+    /// Comparison-only artwork surface. Resolution metadata is painted over
+    /// the displayed image and is never composited into the bitmap that can be
+    /// saved back to the album.
+    /// </summary>
+    internal sealed class UpscaleComparisonPictureBox : PictureBox
+    {
+        internal string ReferenceOverlayText
+        {
+            get
+            {
+                if (Image == null || Image.Width <= 0 || Image.Height <= 0) return "";
+                int divisor = GreatestCommonDivisor(Image.Width, Image.Height);
+                return "RESOLUTION " + Image.Width + "x" + Image.Height
+                    + "  RATIO " + (Image.Width / divisor) + ":" + (Image.Height / divisor);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            string reference = ReferenceOverlayText;
+            if (String.IsNullOrWhiteSpace(reference) || Image == null) return;
+
+            Rectangle imageBounds = ZoomedImageBounds();
+            int overlayHeight = Math.Max(24, (int)Math.Round(28f * Math.Max(96, DeviceDpi) / 96f));
+            Rectangle overlay = new Rectangle(imageBounds.Left,
+                Math.Max(imageBounds.Top, imageBounds.Bottom - overlayHeight),
+                Math.Max(1, imageBounds.Width), Math.Min(overlayHeight, imageBounds.Height));
+            using (SolidBrush plate = new SolidBrush(Color.FromArgb(176, 4, 13, 24)))
+                e.Graphics.FillRectangle(plate, overlay);
+            using (Font font = ThemeManager.UiFont(ThemeFontRole.Minor, FontStyle.Bold))
+                TextRenderer.DrawText(e.Graphics, reference, font, overlay,
+                    ThemeManager.CurrentPalette.Warning,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter
+                    | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+        }
+
+        private Rectangle ZoomedImageBounds()
+        {
+            if (Image == null || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+                return ClientRectangle;
+            double scale = Math.Min(ClientSize.Width / (double)Image.Width,
+                ClientSize.Height / (double)Image.Height);
+            int width = Math.Max(1, (int)Math.Round(Image.Width * scale));
+            int height = Math.Max(1, (int)Math.Round(Image.Height * scale));
+            return new Rectangle((ClientSize.Width - width) / 2,
+                (ClientSize.Height - height) / 2, width, height);
+        }
+
+        private static int GreatestCommonDivisor(int left, int right)
+        {
+            left = Math.Abs(left);
+            right = Math.Abs(right);
+            while (right != 0)
+            {
+                int next = left % right;
+                left = right;
+                right = next;
+            }
+            return Math.Max(1, left);
+        }
+    }
+
     internal sealed class UpscaleEditorForm : FluentForm
     {
         private readonly ConfigState profile;
@@ -7197,7 +7263,7 @@ namespace Splined.WindowsGui
             modes.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
             modes.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 210));
             modes.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            RadioButton previewMode = new RadioButton
+            RadioButton previewMode = new FluentRadioButton
             {
                 Name = "upscaleEditorPreviewOnly",
                 Text = "Upscale Preview",
@@ -7205,10 +7271,10 @@ namespace Splined.WindowsGui
                 Dock = DockStyle.Fill,
                 FlatStyle = FlatStyle.Flat
             };
-            RadioButton applyMode = new RadioButton
+            RadioButton applyMode = new FluentRadioButton
             {
                 Name = "upscaleEditorApply",
-                Text = "🔘 Apply Upscale",
+                Text = "Apply Upscale",
                 Checked = !previewOnly,
                 Dock = DockStyle.Fill,
                 FlatStyle = FlatStyle.Flat
@@ -7378,7 +7444,7 @@ namespace Splined.WindowsGui
                 Font = ThemeManager.UiFont(ThemeFontRole.PanelTitle),
                 TextAlign = ContentAlignment.MiddleCenter
             }, 0, 0);
-            PictureBox picture = new PictureBox
+            PictureBox picture = new UpscaleComparisonPictureBox
             {
                 Name = title == "[CURRENT]" ? "upscaleEditorCurrentImage" : "upscaleEditorUpscaledImage",
                 Dock = DockStyle.Fill,
@@ -7399,13 +7465,15 @@ namespace Splined.WindowsGui
                 Name = "upscaleEditorModule_" + key,
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = 5,
                 Margin = new Padding(2),
                 Padding = Padding.Empty
             };
             module.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
             module.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            module.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
             module.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
             module.Controls.Add(new Label
             {
@@ -7433,7 +7501,35 @@ namespace Splined.WindowsGui
                 SetProfileValue(key, slider.Value);
                 SchedulePreview();
             };
-            module.Controls.Add(slider, 0, 1);
+            FluentButton increase = new FluentButton
+            {
+                Name = "upscaleEditorIncrease_" + key,
+                Text = "",
+                CenteredGlyph = "▲",
+                ChromeLess = true,
+                AccessibleName = "Increase " + label,
+                Anchor = AnchorStyles.None,
+                Size = new Size(26, 18),
+                Margin = Padding.Empty,
+                Tag = "compact"
+            };
+            FluentButton decrease = new FluentButton
+            {
+                Name = "upscaleEditorDecrease_" + key,
+                Text = "",
+                CenteredGlyph = "▼",
+                ChromeLess = true,
+                AccessibleName = "Decrease " + label,
+                Anchor = AnchorStyles.None,
+                Size = new Size(26, 18),
+                Margin = Padding.Empty,
+                Tag = "compact"
+            };
+            increase.Click += delegate { slider.Value = Math.Min(slider.Maximum, slider.Value + slider.SmallChange); };
+            decrease.Click += delegate { slider.Value = Math.Max(slider.Minimum, slider.Value - slider.SmallChange); };
+            module.Controls.Add(increase, 0, 1);
+            module.Controls.Add(slider, 0, 2);
+            module.Controls.Add(decrease, 0, 3);
             FluentButton reset = new FluentButton
             {
                 Text = "",
@@ -7445,7 +7541,7 @@ namespace Splined.WindowsGui
                 Tag = "compact"
             };
             reset.Click += delegate { slider.Value = 0; };
-            module.Controls.Add(reset, 0, 2);
+            module.Controls.Add(reset, 0, 4);
             return module;
         }
 
