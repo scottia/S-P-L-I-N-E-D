@@ -94,7 +94,7 @@ commit `63acaf7e680bdada51179046ae45285a8afd8e7b`.
       compatibility shims, and remaining architecture documentation.
 - [x] Run formatting, checks, Clippy with warnings denied, Rust/Python/architecture
       tests, release build, portable QA, and Store package QA.
-- [ ] Merge `dev` to `main` only after all three acceptance gates pass. Do not
+- [x] Merge `dev` to `main` only after all three acceptance gates pass. Do not
       create or move a release/tag.
 
 ## Final acceptance evidence
