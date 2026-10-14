@@ -76,6 +76,13 @@ not a current build or runtime option.
 - [x] Source order saves to Config v5; no widget-local provider authority exists.
 - [x] Portable update notification and native Store update handling retain their
       separate supported channels.
+- [x] Native Slint dividers resize the Media Library, central workspace,
+      Artwork Preview & Editing, candidate/results, and activity regions.
+- [x] Rust owns pane bounds, previous expanded dimensions, normal window size,
+      maximized state, and saved-layout clamping; `data\ui.toml` persists these
+      presentation preferences independently of Config v5.
+- [x] Collapsed panes reclaim their space and restore their previous useful size
+      when expanded, subject to the current window's minimum usable dimensions.
 
 The workflow-level comparison with the final mature WinForms behavior is in
 [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md).

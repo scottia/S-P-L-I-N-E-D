@@ -77,6 +77,28 @@ card so a native-resolution cover cannot cover the library or intercept its
 controls. The Media Library heading reports the current visible-row count, and
 an empty compilation-track section yields its space to the scrollable library.
 
+### Resizable workspace
+
+The Workspace has native Slint drag dividers between the Media Library, central
+candidate/activity workspace, and Artwork Preview & Editing. Horizontal drag
+areas resize both side panes continuously while the center receives or releases
+the remaining width. Vertical drag areas adjust the candidate-filter/results
+boundary and the Run Controls/Activity region. Each divider has a visible hover
+state and a wider hit area than its rendered line.
+
+Rust validates every requested size before Slint renders it. Media, center,
+artwork, candidate-result, and activity regions retain minimum usable sizes;
+saved values are clamped when the window, display resolution, or DPI changes.
+Maximize uses the available space without replacing the last normal window
+size, and restore returns to that normal geometry. Collapsing Media Library,
+Artwork Preview & Editing, or Artwork Filter reclaims its space while retaining
+the previous expanded width or height for the next expansion.
+
+Pane geometry, expanded dimensions, normal window size, maximized state, and
+the **System / Light / Dark** appearance choice are presentation preferences in
+`data\ui.toml`. They are not Config v5 fields. Older `ui.toml` files remain
+valid and acquire safe defaults for fields they do not contain.
+
 Text and status filters change only visibility. Artist and Album filters can
 be combined with general search and multiple independently enabled status
 categories. They never rewrite history, bypass, timeout, processed state,

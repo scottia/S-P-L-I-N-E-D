@@ -1,4 +1,4 @@
-import { Button, CheckBox, ComboBox, LineEdit, ListView, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, LineEdit, ListView, Palette, ScrollView } from "std-widgets.slint";
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, selected: bool, eligible: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, completed: bool, selected: bool }
@@ -9,9 +9,64 @@ export struct UiAdjustmentRow { name: string, value: int, unit: string, primary:
 export struct UiCandidateFilterRow { dimension: string, key: string, label: string, count: int, state: string }
 export struct UiStatusFilterRow { key: string, label: string, count: int, enabled: bool, semantic-color: color }
 
-component Panel inherits Rectangle { background: #0c2135; border-color: #28506f; border-width: 1px; border-radius: 5px; }
-component Heading inherits Text { color: #eef8ff; font-size: 17px; font-weight: 700; vertical-alignment: center; }
-component Label inherits Text { color: #9fc1d5; font-size: 11px; vertical-alignment: center; }
+export global AppTheme {
+    in-out property <string> appearance: "System";
+    out property <bool> light: root.appearance == "Light" || (root.appearance == "System" && Palette.color-scheme != ColorScheme.dark);
+    out property <color> window-background: root.light ? #eaf1f7 : #061522;
+    out property <color> panel-background: root.light ? #f7fbfe : #0c2135;
+    out property <color> header-background: root.light ? #dceaf4 : #091d30;
+    out property <color> foreground: root.light ? #10283a : #eef8ff;
+    out property <color> secondary-foreground: root.light ? #3f647b : #9fc1d5;
+    out property <color> border: root.light ? #6b9dbb : #28506f;
+}
+
+component Panel inherits Rectangle { background: AppTheme.panel-background; border-color: AppTheme.border; border-width: 1px; border-radius: 5px; }
+component Heading inherits Text { color: AppTheme.foreground; font-size: 17px; font-weight: 700; vertical-alignment: center; }
+component Label inherits Text { color: AppTheme.secondary-foreground; font-size: 11px; vertical-alignment: center; }
+component ColumnSplitter inherits Rectangle {
+    in property <float> position;
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <bool> reverse: false;
+    callback resized(float);
+    width: 9px;
+    background: drag-area.pressed ? #39cfff : (drag-area.has-hover ? #286d96 : #163b56);
+    border-color: #36a9df;
+    border-width: drag-area.has-hover || drag-area.pressed ? 1px : 0px;
+    drag-area := TouchArea {
+        property <float> drag-origin: root.position;
+        mouse-cursor: ew-resize;
+        changed pressed => { if (self.pressed) { self.drag-origin = root.position; } }
+        moved => {
+            if (self.pressed) {
+                root.resized(max(root.minimum, min(root.maximum,
+                    self.drag-origin + (root.reverse ? (self.pressed-x - self.mouse-x) / 1px : (self.mouse-x - self.pressed-x) / 1px))));
+            }
+        }
+    }
+}
+component RowSplitter inherits Rectangle {
+    in property <float> position;
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <bool> reverse: false;
+    callback resized(float);
+    height: 9px;
+    background: drag-area.pressed ? #39cfff : (drag-area.has-hover ? #286d96 : #163b56);
+    border-color: #36a9df;
+    border-width: drag-area.has-hover || drag-area.pressed ? 1px : 0px;
+    drag-area := TouchArea {
+        property <float> drag-origin: root.position;
+        mouse-cursor: ns-resize;
+        changed pressed => { if (self.pressed) { self.drag-origin = root.position; } }
+        moved => {
+            if (self.pressed) {
+                root.resized(max(root.minimum, min(root.maximum,
+                    self.drag-origin + (root.reverse ? (self.pressed-y - self.mouse-y) / 1px : (self.mouse-y - self.pressed-y) / 1px))));
+            }
+        }
+    }
+}
 component SettingField {
     in property <string> label;
     in-out property <string> value;
@@ -34,7 +89,7 @@ export component CandidateCompareWindow inherits Window {
     icon: @image-url("../gui/splined-app-icon.png");
     preferred-width: 980px; preferred-height: 620px;
     min-width: 720px; min-height: 440px;
-    background: #061522;
+    background: AppTheme.window-background;
     in property <[UiCandidateRow]> candidate-rows;
     callback choose(int);
     VerticalLayout { padding: 10px; spacing: 8px;
@@ -64,7 +119,7 @@ export component CustomUpscaleWindow inherits Window {
     icon: @image-url("../gui/splined-app-icon.png");
     preferred-width: 1120px; preferred-height: 760px;
     min-width: 820px; min-height: 600px;
-    background: #061522;
+    background: AppTheme.window-background;
     in property <image> current-image;
     in property <image> upscaled-image;
     in property <string> current-reference;
@@ -139,7 +194,7 @@ export component AppWindow inherits Window {
     icon: @image-url("../gui/splined-app-icon.png");
     preferred-width: 1380px; preferred-height: 860px;
     min-width: 960px; min-height: 640px;
-    background: #061522;
+    background: AppTheme.window-background;
     in property <[UiLibraryRow]> library-rows;
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <[UiSourceRow]> source-rows;
@@ -179,6 +234,11 @@ export component AppWindow inherits Window {
     in-out property <bool> candidate-filter-expanded: true;
     in-out property <bool> artwork-editing-expanded: true;
     in-out property <bool> show-artwork: true;
+    in-out property <string> appearance-mode: "System";
+    in-out property <float> media-pane-width: 320;
+    in-out property <float> artwork-pane-width: 340;
+    in-out property <float> candidate-filter-height: 270;
+    in-out property <float> activity-pane-height: 150;
     in-out property <bool> hover-enabled: false;
     in-out property <bool> upscale-preview-only: true;
     in-out property <string> artist-filter-text;
@@ -276,6 +336,7 @@ export component AppWindow inherits Window {
     callback change-library-view(int); callback search-edited(string); callback status-filter-changed(string);
     callback artist-filter-edited(string); callback album-filter-edited(string); callback status-filter-toggled(string);
     callback set-show-tracks(bool); callback set-region-expanded(string, bool);
+    callback pane-resized(string, float); callback set-appearance(string);
     callback set-auto-scan(bool, bool);
     callback library-row-activated(string, bool); callback clear-artist-scope(); callback select-all();
     callback compilation-track-activated(string, string, bool);
@@ -297,10 +358,12 @@ export component AppWindow inherits Window {
     callback backup-action(string, string, string, bool, bool, bool, bool, bool); callback check-update();
     callback install-store-update();
 
+    changed appearance-mode => { AppTheme.appearance = root.appearance-mode; }
+
     VerticalLayout {
         padding: 8px; spacing: 7px;
         Rectangle {
-            height: 54px; background: #091d30; border-color: #1b83bd; border-width: 1px;
+            height: 54px; background: AppTheme.header-background; border-color: #1b83bd; border-width: 1px;
             HorizontalLayout { padding-left: 14px; padding-right: 10px; spacing: 12px;
                 Text { text: "S:P:L:I:N:E:D"; color: #42d7ff; font-size: 24px; font-weight: 800; vertical-alignment: center; }
                 Text { text: "Rust application authority · Slint presentation"; color: #86a8bd; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
@@ -308,6 +371,7 @@ export component AppWindow inherits Window {
                 Button { text: "Settings & Credentials"; enabled: !root.setup-required; clicked => { root.page-index = 1; root.load-settings(); root.load-credential(root.credential-provider); } }
                 Button { text: "Setup"; visible: root.setup-required; clicked => { root.page-index = 3; } }
                 Button { text: "Backup & Updates"; clicked => { root.page-index = 2; } }
+                ComboBox { width: 96px; model: ["System", "Light", "Dark"]; current-value <=> root.appearance-mode; selected(value) => root.set-appearance(value); }
                 Text { text: root.version-label; color: #8fb3c9; font-size: 11px; vertical-alignment: center; }
             }
         }
@@ -334,12 +398,12 @@ export component AppWindow inherits Window {
         }
 
         if !root.setup-required && root.page-index == 0: HorizontalLayout {
-            spacing: 7px; vertical-stretch: 1;
-            Panel { width: 350px;
+            spacing: 0px; vertical-stretch: 1;
+            Panel { width: root.media-pane-width * 1px;
                 VerticalLayout { padding: 10px; spacing: 7px;
                     HorizontalLayout { height: 30px; spacing: 5px;
-                        Heading { text: "Media Library · " + root.library-rows.length + " rows"; horizontal-stretch: 1; }
-                        Button { text: root.media-selector-expanded ? "Select Media  ↑" : "Select Media  ↓"; clicked => { root.media-selector-expanded = !root.media-selector-expanded; root.set-region-expanded("media", root.media-selector-expanded); } }
+                        Heading { visible: root.media-selector-expanded; text: "Media Library · " + root.library-rows.length + " rows"; horizontal-stretch: 1; }
+                        Button { text: root.media-selector-expanded ? "Select Media  ◀" : "▶"; width: root.media-selector-expanded ? 118px : 30px; clicked => { root.media-selector-expanded = !root.media-selector-expanded; root.set-region-expanded("media", root.media-selector-expanded); } }
                     }
                     HorizontalLayout { visible: root.media-selector-expanded; height: root.media-selector-expanded ? 30px : 0px; spacing: 5px;
                         Button { text: "Artists"; clicked => root.change-library-view(0); }
@@ -376,10 +440,10 @@ export component AppWindow inherits Window {
                             Button { text: "All Artists"; clicked => root.clear-artist-scope(); }
                         }
                     }
-                    CheckBox { text: "Allow one-run bypass override"; checked <=> root.include-bypassed; }
-                    CheckBox { text: "Show Artwork Preview & Editing"; checked <=> root.show-artwork; toggled => root.set-region-expanded("show-artwork", self.checked); }
-                    Text { text: root.selected-count + " album(s) selected"; color: #65d6ff; font-weight: 700; height: 24px; }
-                    ListView { vertical-stretch: 1;
+                    CheckBox { visible: root.media-selector-expanded; text: "Allow one-run bypass override"; checked <=> root.include-bypassed; }
+                    CheckBox { visible: root.media-selector-expanded; text: "Show Artwork Preview & Editing"; checked <=> root.show-artwork; toggled => root.set-region-expanded("show-artwork", self.checked); }
+                    Text { visible: root.media-selector-expanded; text: root.selected-count + " album(s) selected"; color: #65d6ff; font-weight: 700; height: root.media-selector-expanded ? 24px : 0px; }
+                    ListView { visible: root.media-selector-expanded; vertical-stretch: 1;
                         for row in root.library-rows: Rectangle {
                             height: 58px; background: row.selected ? #173e58 : (touch.has-hover ? #112f48 : #0a1c2c);
                             border-color: row.selected ? #30c8ff : #183a55; border-width: 1px; border-radius: 3px;
@@ -391,8 +455,8 @@ export component AppWindow inherits Window {
                             touch := TouchArea { clicked => root.library-row-activated(row.key, root.include-bypassed); }
                         }
                     }
-                    Text { text: root.show-tracks ? "Embedded Art Tracks · full cached projection" : "Compilation Tracks · explicit embedded-art reopen"; visible: root.compilation-track-rows.length > 0; color: #6f73ff; font-size: 10px; height: root.compilation-track-rows.length > 0 ? 18px : 0px; }
-                    ListView { height: root.compilation-track-rows.length > 0 ? (root.show-tracks ? 210px : 112px) : 0px;
+                    Text { text: root.show-tracks ? "Embedded Art Tracks · full cached projection" : "Compilation Tracks · explicit embedded-art reopen"; visible: root.media-selector-expanded && root.compilation-track-rows.length > 0; color: #6f73ff; font-size: 10px; height: root.media-selector-expanded && root.compilation-track-rows.length > 0 ? 18px : 0px; }
+                    ListView { visible: root.media-selector-expanded; height: root.media-selector-expanded && root.compilation-track-rows.length > 0 ? (root.show-tracks ? 210px : 112px) : 0px;
                         for track in root.compilation-track-rows: Rectangle {
                             height: 34px; background: track.selected ? #173e58 : #0a1c2c;
                             border-color: track.selected ? #30c8ff : #183a55; border-width: 1px;
@@ -403,14 +467,22 @@ export component AppWindow inherits Window {
                             TouchArea { clicked => root.compilation-track-activated(track.album-key, track.path, root.include-bypassed); }
                         }
                     }
-                    HorizontalLayout { spacing: 5px;
+                    HorizontalLayout { visible: root.media-selector-expanded; spacing: 5px;
                         Button { text: "Reload DB"; clicked => root.refresh-library(false); }
                         Button { text: "Rebuild Index"; clicked => root.refresh-library(true); }
                     }
                 }
             }
+            ColumnSplitter {
+                visible: root.media-selector-expanded;
+                width: root.media-selector-expanded ? 9px : 0px;
+                position: root.media-pane-width;
+                minimum: 230;
+                maximum: max(230, root.width / 1px - root.artwork-pane-width - 380);
+                resized(value) => { root.media-pane-width = value; root.pane-resized("media", value); }
+            }
             VerticalLayout { spacing: 7px; horizontal-stretch: 1;
-                Panel { height: root.candidate-filter-expanded ? 270px : 185px;
+                Panel { height: root.candidate-filter-height * 1px;
                     VerticalLayout { padding: 10px; spacing: 4px;
                         HorizontalLayout { height: 26px; spacing: 5px;
                             Heading { text: "Current Album & Config v5 Sources"; horizontal-stretch: 1; }
@@ -447,6 +519,14 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                }
+                RowSplitter {
+                    visible: root.candidate-filter-expanded;
+                    height: root.candidate-filter-expanded ? 9px : 0px;
+                    position: root.candidate-filter-height;
+                    minimum: 230;
+                    maximum: max(230, root.height / 1px - root.activity-pane-height - 269);
+                    resized(value) => { root.candidate-filter-height = value; root.pane-resized("candidate-filter", value); }
                 }
                 Panel { vertical-stretch: 1;
                     VerticalLayout { padding: 10px; spacing: 6px;
@@ -521,7 +601,16 @@ export component AppWindow inherits Window {
                     }
                 }
             }
-            Panel { width: root.show-artwork ? 350px : 0px; visible: root.show-artwork;
+            ColumnSplitter {
+                visible: root.show-artwork;
+                width: root.show-artwork ? 9px : 0px;
+                reverse: true;
+                position: root.artwork-pane-width;
+                minimum: 280;
+                maximum: max(280, root.width / 1px - root.media-pane-width - 380);
+                resized(value) => { root.artwork-pane-width = value; root.pane-resized("artwork", value); }
+            }
+            Panel { width: root.show-artwork ? root.artwork-pane-width * 1px : 0px; visible: root.show-artwork;
                 VerticalLayout { padding: 10px; spacing: 7px;
                     HorizontalLayout { height: 28px; spacing: 5px;
                         Heading { text: "Artwork Preview & Editing"; horizontal-stretch: 1; }
@@ -722,7 +811,15 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.setup-required: Panel { height: 150px;
+        if !root.setup-required && root.page-index == 0: RowSplitter {
+            reverse: true;
+            position: root.activity-pane-height;
+            minimum: 110;
+            maximum: max(110, root.height / 1px - 499);
+            resized(value) => { root.activity-pane-height = value; root.pane-resized("activity", value); }
+        }
+
+        if !root.setup-required: Panel { height: root.page-index == 0 ? root.activity-pane-height * 1px : 150px;
             HorizontalLayout { padding: 9px; spacing: 8px;
                 VerticalLayout { width: 530px; spacing: 5px;
                     Heading { text: "Run Controls"; height: 24px; }

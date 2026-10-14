@@ -18,7 +18,9 @@ use splined_core::media_database::{MediaSnapshot, media_snapshot};
 use splined_core::range::Range;
 use splined_core::safe_write::{replace_binary_file, take_credential_protection_warning};
 use splined_core::scan_controller::ScanController;
-use splined_core::settings::UiPreferences;
+use splined_core::settings::{
+    UiPreferences, WorkspaceBounds, WorkspaceLayout, normalize_appearance,
+};
 use splined_core::source_policy::{MinimumRangeType, SourcePolicyConfig};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -50,6 +52,16 @@ fn main() -> Result<(), slint::PlatformError> {
     let (mut state, setup_required, startup_error) = load_application_state();
     let preferences = splined_core::settings::load_ui_preferences().unwrap_or_default();
     apply_ui_preferences(&mut state, &preferences);
+    let mut workspace_layout = WorkspaceLayout::from_preferences(&preferences);
+    workspace_layout.clamp_for_window(
+        preferences.window_width,
+        preferences.window_height,
+        state.media_selector_expanded,
+        state.show_artwork,
+        state.candidate_filter_expanded,
+    );
+    let workspace_layout = Rc::new(RefCell::new(workspace_layout));
+    let appearance = Rc::new(RefCell::new(normalize_appearance(&preferences.appearance)));
     let state = Arc::new(Mutex::new(state));
     if let Some(ref error) = startup_error
         && let Ok(mut state) = state.lock()
@@ -81,12 +93,15 @@ fn main() -> Result<(), slint::PlatformError> {
         )));
     }
     ui.set_include_bypassed(preferences.include_bypassed);
-    if preferences.window_width >= 800 && preferences.window_height >= 600 {
+    if preferences.window_width >= 960 && preferences.window_height >= 640 {
         ui.window().set_size(slint::PhysicalSize::new(
             preferences.window_width,
             preferences.window_height,
         ));
     }
+    ui.window().set_maximized(preferences.window_maximized);
+    ui.set_appearance_mode(SharedString::from(appearance.borrow().clone()));
+    apply_workspace_layout(&ui, &workspace_layout.borrow());
     initialize_service_ui(&ui, &state);
     if let Some(path) = restore_request
         && let Some(Err(error)) = automatic_settings_import
@@ -105,7 +120,13 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     sync_ui(&ui, &state);
-    bind_callbacks(&ui, Arc::clone(&state), Arc::clone(&controller));
+    bind_callbacks(
+        &ui,
+        Arc::clone(&state),
+        Arc::clone(&controller),
+        Rc::clone(&workspace_layout),
+        Rc::clone(&appearance),
+    );
 
     let weak = ui.as_weak();
     let timer_state = Arc::clone(&state);
@@ -120,11 +141,53 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let geometry_timer = Timer::default();
+    let geometry_weak = ui.as_weak();
+    let geometry_state = Arc::clone(&state);
+    let geometry_layout = Rc::clone(&workspace_layout);
+    geometry_timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
+        let Some(ui) = geometry_weak.upgrade() else {
+            return;
+        };
+        let size = ui.window().size();
+        let maximized = ui.window().is_maximized();
+        let flags = geometry_state.lock().ok().map(|state| {
+            (
+                state.media_selector_expanded,
+                state.show_artwork,
+                state.candidate_filter_expanded,
+            )
+        });
+        let Some((media_expanded, artwork_visible, candidate_filter_expanded)) = flags else {
+            return;
+        };
+        let mut layout = geometry_layout.borrow_mut();
+        let previous = *layout;
+        layout.record_normal_window(size.width, size.height, maximized);
+        layout.clamp_for_window(
+            size.width,
+            size.height,
+            media_expanded,
+            artwork_visible,
+            candidate_filter_expanded,
+        );
+        if *layout != previous {
+            apply_workspace_layout(&ui, &layout);
+        }
+    });
+
     let result = ui.run();
     let size = ui.window().size();
+    workspace_layout.borrow_mut().record_normal_window(
+        size.width,
+        size.height,
+        ui.window().is_maximized(),
+    );
+    let layout = *workspace_layout.borrow();
     let preferences = state
         .lock()
         .map(|state| UiPreferences {
+            appearance: appearance.borrow().clone(),
             library_view: state.library.view.label().to_ascii_lowercase(),
             status_filter: state.library.status_filter.label().to_ascii_lowercase(),
             status_filters: state
@@ -169,8 +232,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 .collect(),
             candidate_excluded_ranges: state.candidate_excluded_ranges.iter().cloned().collect(),
             primary_adjustments: state.primary_adjustments.clone(),
-            window_width: size.width,
-            window_height: size.height,
+            media_pane_width: layout.media_pane_width,
+            media_pane_expanded_width: layout.media_pane_expanded_width,
+            artwork_pane_width: layout.artwork_pane_width,
+            artwork_pane_expanded_width: layout.artwork_pane_expanded_width,
+            candidate_filter_height: layout.candidate_filter_height,
+            candidate_filter_expanded_height: layout.candidate_filter_expanded_height,
+            activity_pane_height: layout.activity_pane_height,
+            window_width: layout.normal_window_width,
+            window_height: layout.normal_window_height,
+            window_maximized: layout.maximized,
         })
         .unwrap_or_default();
     if !ui.get_setup_required()
@@ -414,7 +485,20 @@ fn run_slint_library_diagnostics() -> Result<String, String> {
     let ui = AppWindow::new().map_err(|error| format!("Unable to create Slint UI: {error}"))?;
     ui.set_setup_required(false);
     sync_ui(&ui, &state);
-    bind_callbacks(&ui, Arc::clone(&state), Arc::new(controller));
+    let preferences = UiPreferences::default();
+    let workspace_layout = Rc::new(RefCell::new(WorkspaceLayout::from_preferences(
+        &preferences,
+    )));
+    let appearance = Rc::new(RefCell::new(normalize_appearance(&preferences.appearance)));
+    apply_workspace_layout(&ui, &workspace_layout.borrow());
+    ui.set_appearance_mode(appearance.borrow().clone().into());
+    bind_callbacks(
+        &ui,
+        Arc::clone(&state),
+        Arc::new(controller),
+        workspace_layout,
+        appearance,
+    );
 
     let visible_artists = ui.get_library_rows().row_count();
     ui.invoke_change_library_view(1);
@@ -702,13 +786,72 @@ fn startup_diagnostics(config: &Config, snapshot: &MediaSnapshot) -> Vec<String>
     ]
 }
 
+fn apply_workspace_layout(ui: &AppWindow, layout: &WorkspaceLayout) {
+    ui.set_media_pane_width(layout.media_pane_width as f32);
+    ui.set_artwork_pane_width(layout.artwork_pane_width as f32);
+    ui.set_candidate_filter_height(layout.candidate_filter_height as f32);
+    ui.set_activity_pane_height(layout.activity_pane_height as f32);
+}
+
 fn bind_callbacks(
     ui: &AppWindow,
     state: Arc<Mutex<ApplicationState>>,
     controller: Arc<ScanController>,
+    workspace_layout: Rc<RefCell<WorkspaceLayout>>,
+    appearance: Rc<RefCell<String>>,
 ) {
     let compare_window: Rc<RefCell<Option<CandidateCompareWindow>>> = Rc::new(RefCell::new(None));
     let upscale_window: Rc<RefCell<Option<CustomUpscaleWindow>>> = Rc::new(RefCell::new(None));
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let workspace_layout = Rc::clone(&workspace_layout);
+        ui.on_pane_resized(move |region, value| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let size = ui.window().size();
+            let flags = state.lock().ok().map(|state| {
+                (
+                    state.media_selector_expanded,
+                    state.show_artwork,
+                    state.candidate_filter_expanded,
+                )
+            });
+            let Some((media_expanded, artwork_visible, candidate_filter_expanded)) = flags else {
+                return;
+            };
+            let requested = if value.is_finite() {
+                value.max(0.0).round() as u32
+            } else {
+                0
+            };
+            let mut layout = workspace_layout.borrow_mut();
+            layout.resize_region(
+                region.as_str(),
+                requested,
+                WorkspaceBounds {
+                    window_width: size.width,
+                    window_height: size.height,
+                    media_expanded,
+                    artwork_visible,
+                    candidate_filter_expanded,
+                },
+            );
+            apply_workspace_layout(&ui, &layout);
+        });
+    }
+    {
+        let appearance = Rc::clone(&appearance);
+        let weak = ui.as_weak();
+        ui.on_set_appearance(move |value| {
+            let normalized = normalize_appearance(value.as_str());
+            *appearance.borrow_mut() = normalized.clone();
+            if let Some(ui) = weak.upgrade() {
+                ui.set_appearance_mode(SharedString::from(normalized));
+            }
+        });
+    }
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
@@ -772,6 +915,7 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let workspace_layout = Rc::clone(&workspace_layout);
         ui.on_set_region_expanded(move |region, expanded| {
             if let Ok(mut app) = state.lock() {
                 match region.as_str() {
@@ -783,6 +927,20 @@ fn bind_callbacks(
                 }
             }
             refresh_weak(&weak, &state);
+            if let Some(ui) = weak.upgrade() {
+                let size = ui.window().size();
+                if let Ok(app) = state.lock() {
+                    let mut layout = workspace_layout.borrow_mut();
+                    layout.clamp_for_window(
+                        size.width,
+                        size.height,
+                        app.media_selector_expanded,
+                        app.show_artwork,
+                        app.candidate_filter_expanded,
+                    );
+                    apply_workspace_layout(&ui, &layout);
+                }
+            }
         });
     }
     {

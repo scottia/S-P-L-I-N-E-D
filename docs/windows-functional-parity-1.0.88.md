@@ -46,6 +46,9 @@ implement the separate graphical redesign.
 | Adaptive defaults | Config-only | Restored | Custom Upscale exposes the established adaptive-default setting without creating a second authority. |
 | Native artwork above Ideal, square/crop, and maximum upscale policy | Present in final-artwork core | Preserved | Complete Windows Rust tests cover native-resolution preservation, crop/square behavior, and `upscale_max_percent`. |
 | Collapsible Media Selector, candidate filter, editing, and artwork regions | Missing | Restored | Expansion state is persisted in `ui.toml` and reapplied without rebuilding business state. |
+| Draggable horizontal and vertical workspace dividers | Fixed temporary Slint widths | Restored | Media, center, artwork, candidate/results, and activity regions resize continuously; Rust clamps and persists useful geometry in `ui.toml`. |
+| Window maximize/restore and saved pane proportions | Window size only | Restored | The last normal size, maximized state, pane sizes, and pre-collapse expanded dimensions restore safely across smaller windows and changed displays. |
+| System / Light / Dark appearance preference | Missing | Restored | The lightweight Slint palette preference is persisted in `ui.toml`; it does not create a second Config v5 authority. |
 | Persisted filters, view, scan choices, hover, preview/apply, and window size | Limited | Restored | Interface preferences round-trip independently of Config v5; Config v5 remains application authority. |
 | Backup/restore, `.spl` association, Updates, Settings, credentials, Navidrome | Present | Preserved | Root architecture tests, Windows tests, and native smoke/package checks cover these paths; the parity pass does not replace their authorities. |
 
@@ -57,14 +60,12 @@ These are explicit decisions, not silent omissions:
   theme renderer, application DLL bridge, and worker-host architecture remain
   retired. Restoring any of them would violate the supported Rust/Slint
   architecture.
-- The old System/Light/Dark WinForms renderer is not reproduced in the current
-  functional Slint shell. The supported shell remains its existing dark theme;
-  appearance redesign and any future multi-theme design belong to the approved
-  visual-redesign pass, not this behavior-only pass.
-- Free-form WinForms splitter geometry is not copied pixel-for-pixel. The
-  functional regions are independently collapsible and their state is
-  persisted. Exact workspace composition belongs to the later graphical
-  redesign.
+- The old WinForms theme renderer is not reproduced pixel-for-pixel. The native
+  Slint shell now honors a lightweight System/Light/Dark preference; the later
+  graphical redesign remains a separate task.
+- WinForms `SplitContainer` itself remains retired. Native Slint drag dividers
+  provide equivalent resizable-pane behavior, with Rust-owned persistence and
+  bounds validation instead of copying legacy pixel coordinates.
 - WinForms-specific modal dialogs and control focus quirks are not preserved.
   Equivalent validation, errors, compare, and Custom Upscale workflows use
   native Slint windows and Rust-owned state.
