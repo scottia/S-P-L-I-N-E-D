@@ -36,7 +36,11 @@ older temporary-shell geometry is encountered, SPLINED replaces only obsolete
 pane dimensions with the numbered-workspace defaults. It preserves appearance,
 library view/filter state, Config v5, and normal window dimensions. Windows and
 Slint native per-monitor DPI remain authoritative; startup never infers an
-interface scale solely from the RDP desktop's pixel dimensions.
+interface scale solely from the RDP desktop's pixel dimensions. The main,
+Custom Upscale, and comparison windows each follow their current monitor's DPI
+and work area. Reflow and splitter clamping consume Slint logical dimensions,
+including after a window crosses monitors; no global `SLINT_SCALE_FACTOR` is
+set.
 
 ## Interactive gate
 
@@ -50,6 +54,8 @@ Run against an existing SPLINED state root without modifying the database:
 2. Collapse Media Library and confirm the narrow rail retains a clickable
    expand control. Re-expand it and confirm the populated list appears at a
    usable clamped width before continuing.
+   Repeat this gate in Custom Upscale and verify its shared sidebar exposes the
+   same Artists, Albums, Folders, search, selection, tracks, and status models.
 3. Confirm text and each status filter change visibility only.
 4. Confirm direct album, additive album, artist cascade, All, Filtered, and None.
 5. Launch one intentionally selected album in READ and review real candidates.
@@ -61,6 +67,9 @@ Run against an existing SPLINED state root without modifying the database:
    application remains usable and SQLite reflects the final outcome.
 10. Verify Config v5, provider credential test/save, `.spl` backup/restore, and
    channel-correct update check.
+11. Move the main, Custom Upscale, and comparison windows between monitors with
+    different Windows scale settings. Confirm each reflows at the destination
+    monitor's DPI, and that maximize/restore uses that monitor's work area.
 
 Do not use a fixture-only run as the final functional acceptance. Any LIVE WRITE
 test must be explicitly selected so unrelated media is never changed.

@@ -280,6 +280,44 @@ impl WorkspaceLayout {
         );
     }
 
+    /// Clamp the shared Media Library pane for a secondary workspace that does
+    /// not have the main window's separate artwork column. The remembered
+    /// expanded width is retained when a smaller window temporarily needs to
+    /// render the pane at its minimum.
+    pub fn clamp_media_for_content(
+        &mut self,
+        window_width: u32,
+        media_expanded: bool,
+        content_minimum: u32,
+    ) {
+        self.media_pane_expanded_width = self
+            .media_pane_expanded_width
+            .clamp(MEDIA_PANE_MIN, MEDIA_PANE_MAX);
+        if !media_expanded {
+            self.media_pane_width = MEDIA_PANE_COLLAPSED;
+            return;
+        }
+        let available = window_width
+            .max(MIN_WINDOW_WIDTH)
+            .saturating_sub(38)
+            .saturating_sub(content_minimum);
+        let maximum = available.clamp(MEDIA_PANE_MIN, MEDIA_PANE_MAX);
+        self.media_pane_width = self.media_pane_expanded_width.min(maximum);
+    }
+
+    pub fn resize_media_for_content(
+        &mut self,
+        requested: u32,
+        window_width: u32,
+        media_expanded: bool,
+        content_minimum: u32,
+    ) {
+        if media_expanded {
+            self.media_pane_expanded_width = requested.clamp(MEDIA_PANE_MIN, MEDIA_PANE_MAX);
+        }
+        self.clamp_media_for_content(window_width, media_expanded, content_minimum);
+    }
+
     pub fn record_normal_window(&mut self, width: u32, height: u32, maximized: bool) {
         self.maximized = maximized;
         if !maximized && width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT {
@@ -730,6 +768,28 @@ window_height = 1977
         layout.clamp_for_window(1280, 720, true, true, true);
         assert_eq!(layout.media_pane_width, MEDIA_PANE_MIN);
         assert_eq!(layout.media_pane_expanded_width, MEDIA_PANE_MIN);
+    }
+
+    #[test]
+    fn secondary_workspace_uses_the_shared_media_width_without_clipping_content() {
+        let preferences = UiPreferences {
+            media_pane_width: 520,
+            media_pane_expanded_width: 520,
+            ..UiPreferences::default()
+        };
+        let mut layout = WorkspaceLayout::from_preferences(&preferences);
+
+        layout.clamp_media_for_content(960, true, 650);
+        assert_eq!(layout.media_pane_width, 272);
+        assert_eq!(layout.media_pane_expanded_width, 520);
+
+        layout.resize_media_for_content(300, 1680, true, 650);
+        assert_eq!(layout.media_pane_width, 300);
+        assert_eq!(layout.media_pane_expanded_width, 300);
+
+        layout.clamp_media_for_content(1680, false, 650);
+        assert_eq!(layout.media_pane_width, MEDIA_PANE_COLLAPSED);
+        assert_eq!(layout.media_pane_expanded_width, 300);
     }
 
     #[test]

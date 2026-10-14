@@ -108,7 +108,12 @@ not contain. A numbered-workspace layout revision retires obsolete temporary-
 shell pane geometry without changing Config v5 or unrelated UI preferences.
 Windows and Slint native per-monitor DPI are authoritative. SPLINED does not
 infer an interface scale from desktop pixel dimensions, so a Retina-sized RDP
-desktop cannot receive a second artificial 1.25x, 1.5x, or 2x scale.
+desktop cannot receive a second artificial 1.25x, 1.5x, or 2x scale. The main,
+Custom Upscale, and candidate-comparison windows are independent native
+PerMonitorV2 windows: each follows the DPI and Windows work area of the monitor
+it currently occupies. Crossing monitors causes Slint to reflow from that
+window's logical dimensions; pane minimums and saved splitter geometry are
+never treated as physical pixels.
 
 ### Artwork workspace modes
 
@@ -220,10 +225,12 @@ continues to preserve native artwork above Ideal resolution, apply square/crop
 policy, and enforce `upscale_max_percent`.
 
 **Custom Upscale** opens a separate resizable Original/Preview comparison and
-editing workspace with library and current-album context. Resolution and ratio
-labels are display overlays only. All eight controls provide increment,
-decrement, and reset; exactly five may be promoted and reordered as primary
-controls. Adaptive defaults remain Config v5 backed.
+editing workspace with the same complete, collapsible, resizable Media Library
+used by the main modes, including Artists/Albums/Folders, search, selection,
+Show Tracks, and status filters. Resolution and ratio labels are display
+overlays only. All eight controls provide increment, decrement, and reset;
+exactly five may be promoted and reordered as primary controls. Adaptive
+defaults remain Config v5 backed.
 
 Existing-cover editing requires LIVE WRITE and a current local cover. It uses
 the same validated final-artwork pipeline and safe replacement behavior.

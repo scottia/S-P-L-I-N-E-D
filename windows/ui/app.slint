@@ -119,6 +119,109 @@ component LibraryItem inherits Rectangle {
     }
     row-touch := TouchArea { mouse-cursor: pointer; clicked => root.activated(root.item.key); }
 }
+component MediaLibraryPane inherits NeonPanel {
+    in property <bool> expanded: true;
+    in-out property <float> pane-width: 270;
+    in property <[UiLibraryRow]> library-rows;
+    in property <[UiCompilationTrackRow]> compilation-track-rows;
+    in property <[UiStatusFilterRow]> status-filter-rows;
+    in property <string> library-view-label;
+    in property <bool> include-bypassed;
+    in-out property <bool> show-tracks;
+    callback set-expanded(bool);
+    callback change-library-view(int);
+    callback search-edited(string);
+    callback select-all();
+    callback select-filtered();
+    callback select-none();
+    callback library-row-activated(string, bool);
+    callback set-show-tracks(bool);
+    callback compilation-track-activated(string, string, bool);
+    callback status-filter-toggled(string);
+
+    width: root.expanded ? root.pane-width * 1px : 52px;
+    border-radius: 8px;
+    VerticalLayout {
+        padding: root.expanded ? 9px : 6px;
+        spacing: 7px;
+        HorizontalLayout { height: 34px; spacing: 6px;
+            if root.expanded: Heading { text: "▣  Media Library"; horizontal-stretch: 1; font-size: 15px; }
+            NeonAction {
+                label: root.expanded ? "‹" : "›";
+                width: root.expanded ? 32px : 40px; height: 30px;
+                clicked => root.set-expanded(!root.expanded);
+            }
+        }
+        if root.expanded: VerticalLayout {
+            spacing: 7px;
+            ComboBox {
+                height: 34px;
+                model: ["Main Music Library"];
+                current-value: "Main Music Library";
+            }
+            HorizontalLayout { height: 35px; spacing: 0px;
+                ModeTab { icon-text: ""; label: "Artists"; selected: root.library-view-label == "Artists"; activated => root.change-library-view(0); }
+                ModeTab { icon-text: ""; label: "Albums"; selected: root.library-view-label == "Albums"; activated => root.change-library-view(1); }
+                ModeTab { icon-text: ""; label: "Folders"; selected: root.library-view-label == "Folders"; activated => root.change-library-view(2); }
+            }
+            Rectangle {
+                height: 36px; border-radius: 7px; background: #081b34;
+                border-color: #285a91; border-width: 1px;
+                HorizontalLayout { padding-left: 9px; spacing: 7px;
+                    Text { text: "⌕"; color: AppTheme.cyan; font-size: 18px; vertical-alignment: center; }
+                    LineEdit { placeholder-text: "Search " + root.library-view-label + "…"; edited(text) => root.search-edited(text); }
+                }
+            }
+            HorizontalLayout { height: 29px; spacing: 4px;
+                NeonAction { label: "All"; width: 54px; height: 29px; clicked => root.select-all(); }
+                NeonAction { label: "Filtered"; height: 29px; clicked => root.select-filtered(); }
+                NeonAction { label: "None"; width: 62px; height: 29px; danger: true; clicked => root.select-none(); }
+            }
+            ListView {
+                min-height: 180px;
+                vertical-stretch: 1;
+                for row in root.library-rows: LibraryItem {
+                    item: row;
+                    activated(key) => root.library-row-activated(key, root.include-bypassed);
+                }
+            }
+            CheckBox {
+                text: "Show Tracks / Embedded Art";
+                checked <=> root.show-tracks;
+                toggled => root.set-show-tracks(self.checked);
+            }
+            if root.compilation-track-rows.length > 0: ListView {
+                height: root.show-tracks ? 142px : 0px;
+                visible: root.show-tracks;
+                for track in root.compilation-track-rows: Rectangle {
+                    height: 34px; background: track.selected ? #173e78 : transparent;
+                    HorizontalLayout { padding-left: 6px; spacing: 5px;
+                        Text { text: track.completed ? "●" : "○"; color: track.completed ? AppTheme.green : #829aaf; width: 18px; vertical-alignment: center; }
+                        Text { text: track.file-name; color: AppTheme.foreground; font-size: 9px; overflow: elide; vertical-alignment: center; }
+                    }
+                    TouchArea { mouse-cursor: pointer; clicked => root.compilation-track-activated(track.album-key, track.path, root.include-bypassed); }
+                }
+            }
+            Rectangle {
+                height: 108px; border-radius: 8px; background: #06172d;
+                border-color: #244f82; border-width: 1px;
+                VerticalLayout { padding: 8px; spacing: 4px;
+                    Text { text: "Library Status"; color: AppTheme.foreground; font-size: 11px; font-weight: 700; }
+                    GridLayout { spacing: 3px;
+                        for status[i] in root.status-filter-rows: Rectangle {
+                            row: i / 2; col: mod(i, 2); height: 20px; background: transparent;
+                            HorizontalLayout { spacing: 4px;
+                                Text { text: status.enabled ? "●" : "○"; color: status.semantic-color; width: 13px; font-size: 10px; vertical-alignment: center; }
+                                Text { text: status.label + "  " + status.count; color: status.semantic-color; font-size: 8px; overflow: elide; vertical-alignment: center; }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => root.status-filter-toggled(status.key); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 component SourceCard inherits Rectangle {
     in property <UiSourceRow> source-row;
     in property <bool> selected: false;
@@ -337,6 +440,15 @@ export component CustomUpscaleWindow inherits Window {
     min-width: 960px; min-height: 640px;
     background: AppTheme.window-background;
     in property <[UiLibraryRow]> library-rows;
+    in property <[UiCompilationTrackRow]> compilation-track-rows;
+    in property <[UiStatusFilterRow]> status-filter-rows;
+    in property <string> library-view-label;
+    in property <bool> include-bypassed;
+    in-out property <bool> show-tracks;
+    in-out property <bool> media-selector-expanded: true;
+    in-out property <float> media-pane-width: 270;
+    out property <float> logical-window-width: root.width / 1px;
+    out property <float> logical-window-height: root.height / 1px;
     in property <int> selected-count;
     in property <string> current-artist;
     in property <string> current-album;
@@ -357,6 +469,20 @@ export component CustomUpscaleWindow inherits Window {
     callback set-adaptive(bool);
     callback save();
     callback cancel();
+    callback change-library-view(int);
+    callback search-edited(string);
+    callback select-all();
+    callback select-filtered();
+    callback select-none();
+    callback library-row-activated(string, bool);
+    callback set-show-tracks(bool);
+    callback compilation-track-activated(string, string, bool);
+    callback status-filter-toggled(string);
+    callback set-media-expanded(bool);
+    callback media-pane-resized(float);
+    callback window-resized(float, float);
+    changed width => root.window-resized(root.width / 1px, root.height / 1px);
+    changed height => root.window-resized(root.width / 1px, root.height / 1px);
     VerticalLayout { spacing: 0px;
         Rectangle { height: 58px; background: #061424; border-color: #174f7c; border-width: 1px;
             HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 14px;
@@ -367,14 +493,35 @@ export component CustomUpscaleWindow inherits Window {
             }
         }
         HorizontalLayout { padding: 8px; spacing: 8px; vertical-stretch: 1;
-            NeonPanel { width: 240px;
-                VerticalLayout { padding: 9px; spacing: 7px;
-                    Heading { text: "▣  Media Library"; height: 30px; }
-                    Text { text: root.selected-count + " album(s) selected"; color: AppTheme.cyan; font-size: 10px; height: 22px; }
-                    ListView { vertical-stretch: 1;
-                        for row in root.library-rows: LibraryItem { item: row; }
-                    }
-                    Text { text: "Custom Upscale keeps the active library and artwork context."; color: AppTheme.secondary-foreground; font-size: 9px; wrap: word-wrap; height: 44px; }
+            MediaLibraryPane {
+                expanded: root.media-selector-expanded;
+                pane-width <=> root.media-pane-width;
+                library-rows: root.library-rows;
+                compilation-track-rows: root.compilation-track-rows;
+                status-filter-rows: root.status-filter-rows;
+                library-view-label: root.library-view-label;
+                include-bypassed: root.include-bypassed;
+                show-tracks <=> root.show-tracks;
+                set-expanded(value) => root.set-media-expanded(value);
+                change-library-view(value) => root.change-library-view(value);
+                search-edited(value) => root.search-edited(value);
+                select-all => root.select-all();
+                select-filtered => root.select-filtered();
+                select-none => root.select-none();
+                library-row-activated(key, include-bypassed) => root.library-row-activated(key, include-bypassed);
+                set-show-tracks(value) => root.set-show-tracks(value);
+                compilation-track-activated(album-key, path, include-bypassed) => root.compilation-track-activated(album-key, path, include-bypassed);
+                status-filter-toggled(value) => root.status-filter-toggled(value);
+            }
+            ColumnSplitter {
+                visible: root.media-selector-expanded;
+                width: root.media-selector-expanded ? 9px : 0px;
+                position: root.media-pane-width;
+                minimum: 230;
+                maximum: max(230, root.width / 1px - 688);
+                resized(value) => {
+                    root.media-pane-width = value;
+                    root.media-pane-resized(value);
                 }
             }
             VerticalLayout { spacing: 8px; horizontal-stretch: 1;
@@ -524,6 +671,8 @@ export component AppWindow inherits Window {
     in-out property <float> artwork-pane-width: 450;
     in-out property <float> candidate-filter-height: 370;
     in-out property <float> activity-pane-height: 210;
+    out property <float> logical-window-width: root.width / 1px;
+    out property <float> logical-window-height: root.height / 1px;
     in-out property <bool> hover-enabled: false;
     in-out property <bool> upscale-preview-only: true;
     in-out property <string> artist-filter-text;
@@ -623,6 +772,9 @@ export component AppWindow inherits Window {
     callback artist-filter-edited(string); callback album-filter-edited(string); callback status-filter-toggled(string);
     callback set-show-tracks(bool); callback set-region-expanded(string, bool);
     callback pane-resized(string, float); callback set-appearance(string);
+    callback window-resized(float, float);
+    changed width => root.window-resized(root.width / 1px, root.height / 1px);
+    changed height => root.window-resized(root.width / 1px, root.height / 1px);
     callback set-auto-scan(bool, bool);
     callback library-row-activated(string, bool); callback clear-artist-scope(); callback select-all();
     callback compilation-track-activated(string, string, bool);
@@ -691,89 +843,25 @@ export component AppWindow inherits Window {
         if !root.setup-required && root.page-index == 0: VerticalLayout {
             spacing: 6px; vertical-stretch: 1;
             HorizontalLayout { spacing: 0px; vertical-stretch: 1;
-                NeonPanel {
-                    width: root.media-selector-expanded ? root.media-pane-width * 1px : 52px;
-                    border-radius: 8px;
-                    VerticalLayout {
-                        padding: root.media-selector-expanded ? 9px : 6px;
-                        spacing: 7px;
-                        HorizontalLayout { height: 34px; spacing: 6px;
-                            if root.media-selector-expanded: Heading { text: "▣  Media Library"; horizontal-stretch: 1; font-size: 15px; }
-                            NeonAction {
-                                label: root.media-selector-expanded ? "‹" : "›";
-                                width: root.media-selector-expanded ? 32px : 40px; height: 30px;
-                                clicked => root.set-region-expanded("media", !root.media-selector-expanded);
-                            }
-                        }
-                        if root.media-selector-expanded: VerticalLayout {
-                            spacing: 7px;
-                            ComboBox {
-                                height: 34px;
-                                model: ["Main Music Library"];
-                                current-value: "Main Music Library";
-                            }
-                            HorizontalLayout { height: 35px; spacing: 0px;
-                                ModeTab { icon-text: ""; label: "Artists"; selected: root.library-view-label == "Artists"; activated => root.change-library-view(0); }
-                                ModeTab { icon-text: ""; label: "Albums"; selected: root.library-view-label == "Albums"; activated => root.change-library-view(1); }
-                                ModeTab { icon-text: ""; label: "Folders"; selected: root.library-view-label == "Folders"; activated => root.change-library-view(2); }
-                            }
-                            Rectangle {
-                                height: 36px; border-radius: 7px; background: #081b34;
-                                border-color: #285a91; border-width: 1px;
-                                HorizontalLayout { padding-left: 9px; spacing: 7px;
-                                    Text { text: "⌕"; color: AppTheme.cyan; font-size: 18px; vertical-alignment: center; }
-                                    LineEdit { placeholder-text: "Search " + root.library-view-label + "…"; edited(text) => root.search-edited(text); }
-                                }
-                            }
-                            HorizontalLayout { height: 29px; spacing: 4px;
-                                NeonAction { label: "All"; width: 54px; height: 29px; clicked => root.select-all(); }
-                                NeonAction { label: "Filtered"; height: 29px; clicked => root.select-filtered(); }
-                                NeonAction { label: "None"; width: 62px; height: 29px; danger: true; clicked => root.select-none(); }
-                            }
-                            ListView {
-                                min-height: 180px;
-                                vertical-stretch: 1;
-                                for row in root.library-rows: LibraryItem {
-                                    item: row;
-                                    activated(key) => root.library-row-activated(key, root.include-bypassed);
-                                }
-                            }
-                            CheckBox {
-                                text: "Show Tracks / Embedded Art";
-                                checked <=> root.show-tracks;
-                                toggled => root.set-show-tracks(self.checked);
-                            }
-                            if root.compilation-track-rows.length > 0: ListView {
-                                height: root.show-tracks ? 142px : 0px;
-                                visible: root.show-tracks;
-                                for track in root.compilation-track-rows: Rectangle {
-                                    height: 34px; background: track.selected ? #173e78 : transparent;
-                                    HorizontalLayout { padding-left: 6px; spacing: 5px;
-                                        Text { text: track.completed ? "●" : "○"; color: track.completed ? AppTheme.green : #829aaf; width: 18px; vertical-alignment: center; }
-                                        Text { text: track.file-name; color: AppTheme.foreground; font-size: 9px; overflow: elide; vertical-alignment: center; }
-                                    }
-                                    TouchArea { mouse-cursor: pointer; clicked => root.compilation-track-activated(track.album-key, track.path, root.include-bypassed); }
-                                }
-                            }
-                            Rectangle {
-                                height: 108px; border-radius: 8px; background: #06172d;
-                                border-color: #244f82; border-width: 1px;
-                                VerticalLayout { padding: 8px; spacing: 4px;
-                                    Text { text: "Library Status"; color: AppTheme.foreground; font-size: 11px; font-weight: 700; }
-                                    GridLayout { spacing: 3px;
-                                        for status[i] in root.status-filter-rows: Rectangle {
-                                            row: i / 2; col: mod(i, 2); height: 20px; background: transparent;
-                                            HorizontalLayout { spacing: 4px;
-                                                Text { text: status.enabled ? "●" : "○"; color: status.semantic-color; width: 13px; font-size: 10px; vertical-alignment: center; }
-                                                Text { text: status.label + "  " + status.count; color: status.semantic-color; font-size: 8px; overflow: elide; vertical-alignment: center; }
-                                            }
-                                            TouchArea { mouse-cursor: pointer; clicked => root.status-filter-toggled(status.key); }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                MediaLibraryPane {
+                    expanded: root.media-selector-expanded;
+                    pane-width <=> root.media-pane-width;
+                    library-rows: root.library-rows;
+                    compilation-track-rows: root.compilation-track-rows;
+                    status-filter-rows: root.status-filter-rows;
+                    library-view-label: root.library-view-label;
+                    include-bypassed: root.include-bypassed;
+                    show-tracks <=> root.show-tracks;
+                    set-expanded(value) => root.set-region-expanded("media", value);
+                    change-library-view(value) => root.change-library-view(value);
+                    search-edited(value) => root.search-edited(value);
+                    select-all => root.select-all();
+                    select-filtered => root.select-filtered();
+                    select-none => root.select-none();
+                    library-row-activated(key, include-bypassed) => root.library-row-activated(key, include-bypassed);
+                    set-show-tracks(value) => root.set-show-tracks(value);
+                    compilation-track-activated(album-key, path, include-bypassed) => root.compilation-track-activated(album-key, path, include-bypassed);
+                    status-filter-toggled(value) => root.status-filter-toggled(value);
                 }
                 ColumnSplitter {
                     visible: root.media-selector-expanded;

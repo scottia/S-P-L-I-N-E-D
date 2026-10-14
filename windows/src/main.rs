@@ -19,7 +19,8 @@ use splined_core::range::Range;
 use splined_core::safe_write::{replace_binary_file, take_credential_protection_warning};
 use splined_core::scan_controller::ScanController;
 use splined_core::settings::{
-    UiPreferences, WorkspaceBounds, WorkspaceLayout, normalize_appearance,
+    MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, UiPreferences, WorkspaceBounds, WorkspaceLayout,
+    normalize_appearance,
 };
 use splined_core::source_policy::{MinimumRangeType, SourcePolicyConfig};
 use std::cell::RefCell;
@@ -30,6 +31,30 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 slint::include_modules!();
+
+const CUSTOM_UPSCALE_CONTENT_MIN: u32 = 650;
+
+fn logical_dimension(value: f32, minimum: u32) -> u32 {
+    if value.is_finite() {
+        (value.max(minimum as f32)).round() as u32
+    } else {
+        minimum
+    }
+}
+
+fn app_logical_window_size(ui: &AppWindow) -> (u32, u32) {
+    (
+        logical_dimension(ui.get_logical_window_width(), MIN_WINDOW_WIDTH),
+        logical_dimension(ui.get_logical_window_height(), MIN_WINDOW_HEIGHT),
+    )
+}
+
+fn custom_logical_window_size(ui: &CustomUpscaleWindow) -> (u32, u32) {
+    (
+        logical_dimension(ui.get_logical_window_width(), MIN_WINDOW_WIDTH),
+        logical_dimension(ui.get_logical_window_height(), MIN_WINDOW_HEIGHT),
+    )
+}
 
 fn main() -> Result<(), slint::PlatformError> {
     let restore_request = restore_request_from_args(std::env::args_os().skip(1));
@@ -95,9 +120,9 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     ui.set_include_bypassed(preferences.include_bypassed);
     if preferences.window_width >= 960 && preferences.window_height >= 640 {
-        ui.window().set_size(slint::PhysicalSize::new(
-            preferences.window_width,
-            preferences.window_height,
+        ui.window().set_size(slint::LogicalSize::new(
+            preferences.window_width as f32,
+            preferences.window_height as f32,
         ));
     }
     ui.window().set_maximized(preferences.window_maximized);
@@ -151,7 +176,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let Some(ui) = geometry_weak.upgrade() else {
             return;
         };
-        let size = ui.window().size();
+        let (window_width, window_height) = app_logical_window_size(&ui);
         let maximized = ui.window().is_maximized();
         let flags = geometry_state.lock().ok().map(|state| {
             (
@@ -165,10 +190,10 @@ fn main() -> Result<(), slint::PlatformError> {
         };
         let mut layout = geometry_layout.borrow_mut();
         let previous = *layout;
-        layout.record_normal_window(size.width, size.height, maximized);
+        layout.record_normal_window(window_width, window_height, maximized);
         layout.clamp_for_window(
-            size.width,
-            size.height,
+            window_width,
+            window_height,
             media_expanded,
             artwork_visible,
             candidate_filter_expanded,
@@ -179,10 +204,10 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     let result = ui.run();
-    let size = ui.window().size();
+    let (window_width, window_height) = app_logical_window_size(&ui);
     workspace_layout.borrow_mut().record_normal_window(
-        size.width,
-        size.height,
+        window_width,
+        window_height,
         ui.window().is_maximized(),
     );
     let layout = *workspace_layout.borrow();
@@ -357,6 +382,103 @@ fn parse_status_filter(value: &str) -> StatusFilter {
         "artist complete" => StatusFilter::ArtistComplete,
         "artist contains bypass" | "artist bypass" => StatusFilter::ArtistContainsBypass,
         _ => StatusFilter::All,
+    }
+}
+
+fn activate_compilation_track(
+    state: &Arc<Mutex<ApplicationState>>,
+    album_key: &str,
+    track_path: &str,
+    include_bypassed: bool,
+) {
+    let preview_request = if let Ok(mut app) = state.lock() {
+        let result = app
+            .library
+            .toggle_compilation_track(album_key, track_path, include_bypassed);
+        if result != SelectionResult::NotFound {
+            app.synchronize_focused_album();
+        }
+        match result {
+            SelectionResult::Changed => {
+                let normalized_track = track_path.to_ascii_lowercase();
+                if app
+                    .library
+                    .selected_compilation_track_paths
+                    .contains(&normalized_track)
+                {
+                    Some((
+                        track_path.to_string(),
+                        app.config.scan.temporary_cache_dir.clone(),
+                    ))
+                } else {
+                    app.edit_preview_path.clear();
+                    app.push_log(format!("Compilation track deselected: {track_path}"));
+                    None
+                }
+            }
+            SelectionResult::NeedsBypassOverride(album) => {
+                app.push_log(format!(
+                    "{album} is bypassed. Enable the one-run bypass override to reopen this track."
+                ));
+                None
+            }
+            SelectionResult::BlockedByTimeout(album) => {
+                app.push_log(format!(
+                    "{album} is protected by its active processing timeout."
+                ));
+                None
+            }
+            SelectionResult::NotFound => {
+                app.push_log("The compilation track is no longer available.".to_string());
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some((track_path, cache_dir)) = preview_request {
+        match embedded_candidate(Path::new(&track_path), Path::new(&cache_dir)) {
+            Ok(Some(candidate)) => {
+                if let Ok(mut app) = state.lock() {
+                    app.edit_preview_path = candidate.path().to_string_lossy().into_owned();
+                    app.push_log(format!("Compilation track selected: {track_path}"));
+                }
+            }
+            Ok(None) => {
+                if let Ok(mut app) = state.lock() {
+                    app.push_log(format!(
+                        "Compilation track has no embedded artwork: {track_path}"
+                    ));
+                }
+            }
+            Err(error) => record_action_result(state, Err(error)),
+        }
+    }
+}
+
+fn activate_library_row(state: &Arc<Mutex<ApplicationState>>, key: &str, include_bypassed: bool) {
+    if let Ok(mut app) = state.lock() {
+        let previous_view = app.library.view;
+        let result = app.library.toggle_row(key, include_bypassed);
+        if result != SelectionResult::NotFound {
+            app.synchronize_focused_album();
+        }
+        match result {
+            SelectionResult::Changed => {
+                if previous_view == LibraryView::Artists {
+                    app.library.set_view(LibraryView::Albums);
+                }
+            }
+            SelectionResult::NeedsBypassOverride(album) => app.push_log(format!(
+                "{album} is bypassed. Enable the one-run bypass override to select it."
+            )),
+            SelectionResult::BlockedByTimeout(album) => app.push_log(format!(
+                "{album} is protected by its active processing timeout."
+            )),
+            SelectionResult::NotFound => {
+                app.push_log("The selected library row is no longer available.".to_string())
+            }
+        }
     }
 }
 
@@ -812,11 +934,39 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         let workspace_layout = Rc::clone(&workspace_layout);
+        ui.on_window_resized(move |width, height| {
+            let flags = state.lock().ok().map(|state| {
+                (
+                    state.media_selector_expanded,
+                    state.show_artwork,
+                    state.candidate_filter_expanded,
+                )
+            });
+            let Some((media_expanded, artwork_visible, candidate_filter_expanded)) = flags else {
+                return;
+            };
+            let mut layout = workspace_layout.borrow_mut();
+            layout.clamp_for_window(
+                logical_dimension(width, MIN_WINDOW_WIDTH),
+                logical_dimension(height, MIN_WINDOW_HEIGHT),
+                media_expanded,
+                artwork_visible,
+                candidate_filter_expanded,
+            );
+            if let Some(ui) = weak.upgrade() {
+                apply_workspace_layout(&ui, &layout);
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let workspace_layout = Rc::clone(&workspace_layout);
         ui.on_pane_resized(move |region, value| {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            let size = ui.window().size();
+            let (window_width, window_height) = app_logical_window_size(&ui);
             let flags = state.lock().ok().map(|state| {
                 (
                     state.media_selector_expanded,
@@ -837,8 +987,8 @@ fn bind_callbacks(
                 region.as_str(),
                 requested,
                 WorkspaceBounds {
-                    window_width: size.width,
-                    window_height: size.height,
+                    window_width,
+                    window_height,
                     media_expanded,
                     artwork_visible,
                     candidate_filter_expanded,
@@ -941,11 +1091,11 @@ fn bind_callbacks(
                 return;
             };
             if let Some(ui) = weak.upgrade() {
-                let size = ui.window().size();
+                let (window_width, window_height) = app_logical_window_size(&ui);
                 let mut layout = workspace_layout.borrow_mut();
                 layout.clamp_for_window(
-                    size.width,
-                    size.height,
+                    window_width,
+                    window_height,
                     media_expanded,
                     artwork_visible,
                     candidate_filter_expanded,
@@ -973,74 +1123,12 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_compilation_track_activated(move |album_key, track_path, include_bypassed| {
-            let preview_request = if let Ok(mut app) = state.lock() {
-                let result = app.library.toggle_compilation_track(
-                    album_key.as_str(),
-                    track_path.as_str(),
-                    include_bypassed,
-                );
-                if result != SelectionResult::NotFound {
-                    app.synchronize_focused_album();
-                }
-                match result {
-                    SelectionResult::Changed => {
-                        let normalized_track = track_path.to_ascii_lowercase();
-                        if app
-                            .library
-                            .selected_compilation_track_paths
-                            .contains(&normalized_track)
-                        {
-                            Some((
-                                track_path.to_string(),
-                                app.config.scan.temporary_cache_dir.clone(),
-                            ))
-                        } else {
-                            app.edit_preview_path.clear();
-                            app.push_log(format!(
-                                "Compilation track deselected: {track_path}"
-                            ));
-                            None
-                        }
-                    }
-                    SelectionResult::NeedsBypassOverride(album) => {
-                        app.push_log(format!(
-                            "{album} is bypassed. Enable the one-run bypass override to reopen this track."
-                        ));
-                        None
-                    }
-                    SelectionResult::BlockedByTimeout(album) => {
-                        app.push_log(format!(
-                            "{album} is protected by its active processing timeout."
-                        ));
-                        None
-                    }
-                    SelectionResult::NotFound => {
-                        app.push_log("The compilation track is no longer available.".to_string());
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-            if let Some((track_path, cache_dir)) = preview_request {
-                match embedded_candidate(Path::new(&track_path), Path::new(&cache_dir)) {
-                    Ok(Some(candidate)) => {
-                        if let Ok(mut app) = state.lock() {
-                            app.edit_preview_path =
-                                candidate.path().to_string_lossy().into_owned();
-                            app.push_log(format!("Compilation track selected: {track_path}"));
-                        }
-                    }
-                    Ok(None) => {
-                        if let Ok(mut app) = state.lock() {
-                            app.push_log(format!(
-                                "Compilation track has no embedded artwork: {track_path}"
-                            ));
-                        }
-                    }
-                    Err(error) => record_action_result(&state, Err(error)),
-                }
-            }
+            activate_compilation_track(
+                &state,
+                album_key.as_str(),
+                track_path.as_str(),
+                include_bypassed,
+            );
             refresh_weak(&weak, &state);
         });
     }
@@ -1165,29 +1253,7 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_library_row_activated(move |key, include_bypassed| {
-            if let Ok(mut app) = state.lock() {
-                let previous_view = app.library.view;
-                let result = app.library.toggle_row(key.as_str(), include_bypassed);
-                if result != SelectionResult::NotFound {
-                    app.synchronize_focused_album();
-                }
-                match result {
-                    SelectionResult::Changed => {
-                        if previous_view == LibraryView::Artists {
-                            app.library.set_view(LibraryView::Albums);
-                        }
-                    }
-                    SelectionResult::NeedsBypassOverride(album) => app.push_log(format!(
-                        "{album} is bypassed. Enable the one-run bypass override to select it."
-                    )),
-                    SelectionResult::BlockedByTimeout(album) => app.push_log(format!(
-                        "{album} is protected by its active processing timeout."
-                    )),
-                    SelectionResult::NotFound => {
-                        app.push_log("The selected library row is no longer available.".to_string())
-                    }
-                }
-            }
+            activate_library_row(&state, key.as_str(), include_bypassed);
             refresh_weak(&weak, &state);
         });
     }
@@ -1366,6 +1432,7 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         let compare_window = Rc::clone(&compare_window);
+        let workspace_layout = Rc::clone(&workspace_layout);
         ui.on_open_candidate_compare(move || {
             if compare_window.borrow().is_none() {
                 match CandidateCompareWindow::new() {
@@ -1394,6 +1461,9 @@ fn bind_callbacks(
             }
             if let Some(window) = compare_window.borrow().as_ref() {
                 sync_candidate_compare(window, &state);
+                window
+                    .window()
+                    .set_maximized(workspace_layout.borrow().maximized);
                 let _ = window.show();
             }
             refresh_weak(&weak, &state);
@@ -1590,6 +1660,7 @@ fn bind_callbacks(
         let weak = ui.as_weak();
         let controller = Arc::clone(&controller);
         let upscale_window = Rc::clone(&upscale_window);
+        let workspace_layout = Rc::clone(&workspace_layout);
         ui.on_open_custom_upscale(move || {
             if let Err(error) = preview_selected_candidate(&state) {
                 record_action_result(&state, Err(error));
@@ -1604,6 +1675,7 @@ fn bind_callbacks(
                             Arc::clone(&state),
                             Arc::clone(&controller),
                             weak.clone(),
+                            Rc::clone(&workspace_layout),
                         );
                         *upscale_window.borrow_mut() = Some(window);
                     }
@@ -1616,6 +1688,19 @@ fn bind_callbacks(
                 }
             }
             if let Some(window) = upscale_window.borrow().as_ref() {
+                if let Some(main) = weak.upgrade() {
+                    window.set_include_bypassed(main.get_include_bypassed());
+                }
+                let expanded = state
+                    .lock()
+                    .map(|app| app.media_selector_expanded)
+                    .unwrap_or(true);
+                let (window_width, _) = custom_logical_window_size(window);
+                let mut layout = workspace_layout.borrow_mut();
+                layout.clamp_media_for_content(window_width, expanded, CUSTOM_UPSCALE_CONTENT_MIN);
+                window.set_media_pane_width(layout.media_pane_width as f32);
+                window.window().set_maximized(layout.maximized);
+                drop(layout);
                 sync_custom_upscale(window, &state);
                 let _ = window.show();
             }
@@ -2651,7 +2736,219 @@ fn bind_custom_upscale_window(
     state: Arc<Mutex<ApplicationState>>,
     controller: Arc<ScanController>,
     main_weak: slint::Weak<AppWindow>,
+    workspace_layout: Rc<RefCell<WorkspaceLayout>>,
 ) {
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_change_library_view(move |value| {
+            if let Ok(mut app) = state.lock() {
+                app.library.set_top_level_view(match value {
+                    1 => LibraryView::Albums,
+                    2 => LibraryView::Folders,
+                    _ => LibraryView::Artists,
+                });
+            }
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_search_edited(move |value| {
+            if let Ok(mut app) = state.lock() {
+                app.library.set_text_filter(value.as_str());
+            }
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_select_all(move || {
+            let result = state
+                .lock()
+                .map_err(|_| "The SPLINED application state is unavailable.".to_string())
+                .and_then(|mut app| app.library.select_all_for_focused_artist().map(|_| ()));
+            record_action_result(&state, result);
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_select_filtered(move || {
+            let result = state
+                .lock()
+                .map_err(|_| "The SPLINED application state is unavailable.".to_string())
+                .and_then(|mut app| app.library.select_filtered_for_review().map(|_| ()));
+            record_action_result(&state, result);
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_select_none(move || {
+            if let Ok(mut app) = state.lock() {
+                app.library.select_none();
+            }
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_library_row_activated(move |key, include_bypassed| {
+            activate_library_row(&state, key.as_str(), include_bypassed);
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_set_show_tracks(move |enabled| {
+            if let Ok(mut app) = state.lock() {
+                app.library.set_show_tracks(enabled);
+            }
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_compilation_track_activated(move |album_key, track_path, include_bypassed| {
+            activate_compilation_track(
+                &state,
+                album_key.as_str(),
+                track_path.as_str(),
+                include_bypassed,
+            );
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_status_filter_toggled(move |value| {
+            if let Ok(mut app) = state.lock() {
+                if value.eq_ignore_ascii_case("Embedded Art") {
+                    let enabled = !app.library.show_tracks;
+                    app.library.set_show_tracks(enabled);
+                } else {
+                    app.library
+                        .toggle_status_filter(parse_status_filter(value.as_str()));
+                }
+            }
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        let workspace_layout = Rc::clone(&workspace_layout);
+        window.on_set_media_expanded(move |expanded| {
+            if let Ok(mut app) = state.lock() {
+                app.media_selector_expanded = expanded;
+            }
+            if let Some(custom) = custom_weak.upgrade() {
+                let (window_width, _) = custom_logical_window_size(&custom);
+                let mut layout = workspace_layout.borrow_mut();
+                layout.clamp_media_for_content(window_width, expanded, CUSTOM_UPSCALE_CONTENT_MIN);
+                custom.set_media_pane_width(layout.media_pane_width as f32);
+                sync_custom_upscale(&custom, &state);
+                if let Some(main) = main_weak.upgrade() {
+                    apply_workspace_layout(&main, &layout);
+                }
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        let workspace_layout = Rc::clone(&workspace_layout);
+        window.on_media_pane_resized(move |value| {
+            let Some(custom) = custom_weak.upgrade() else {
+                return;
+            };
+            let media_expanded = state
+                .lock()
+                .map(|app| app.media_selector_expanded)
+                .unwrap_or(true);
+            let (window_width, _) = custom_logical_window_size(&custom);
+            let requested = logical_dimension(value, 0);
+            let mut layout = workspace_layout.borrow_mut();
+            layout.resize_media_for_content(
+                requested,
+                window_width,
+                media_expanded,
+                CUSTOM_UPSCALE_CONTENT_MIN,
+            );
+            custom.set_media_pane_width(layout.media_pane_width as f32);
+            if let Some(main) = main_weak.upgrade() {
+                apply_workspace_layout(&main, &layout);
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let workspace_layout = Rc::clone(&workspace_layout);
+        window.on_window_resized(move |width, _height| {
+            let media_expanded = state
+                .lock()
+                .map(|app| app.media_selector_expanded)
+                .unwrap_or(true);
+            let mut layout = workspace_layout.borrow_mut();
+            layout.clamp_media_for_content(
+                logical_dimension(width, MIN_WINDOW_WIDTH),
+                media_expanded,
+                CUSTOM_UPSCALE_CONTENT_MIN,
+            );
+            if let Some(custom) = custom_weak.upgrade() {
+                custom.set_media_pane_width(layout.media_pane_width as f32);
+            }
+        });
+    }
     {
         let state = Arc::clone(&state);
         let custom_weak = window.as_weak();
@@ -2780,6 +3077,11 @@ fn sync_custom_upscale(window: &CustomUpscaleWindow, state: &Arc<Mutex<Applicati
         return;
     };
     window.set_library_rows(model(library_ui_rows(&app)));
+    window.set_compilation_track_rows(model(compilation_track_ui_rows(&app)));
+    window.set_status_filter_rows(model(status_filter_ui_rows(&app)));
+    window.set_library_view_label(SharedString::from(app.library.view.label()));
+    window.set_show_tracks(app.library.show_tracks);
+    window.set_media_selector_expanded(app.media_selector_expanded);
     window.set_selected_count(app.library.selected_count() as i32);
     window.set_current_artist(SharedString::from(app.current_artist.clone()));
     window.set_current_album(SharedString::from(app.current_album.clone()));
@@ -2873,20 +3175,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
 
     ui.set_library_rows(model(library_ui_rows(&state)));
     ui.set_library_view_label(SharedString::from(state.library.view.label()));
-    ui.set_compilation_track_rows(model(
-        state
-            .library
-            .compilation_track_rows()
-            .into_iter()
-            .map(|track| UiCompilationTrackRow {
-                album_key: SharedString::from(track.album_key),
-                path: SharedString::from(track.path),
-                file_name: SharedString::from(track.file_name),
-                completed: track.embedded_artwork_recorded,
-                selected: track.selected,
-            })
-            .collect(),
-    ));
+    ui.set_compilation_track_rows(model(compilation_track_ui_rows(&state)));
 
     let sources = state
         .sources
@@ -2980,33 +3269,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_candidate_policy_filter_rows(model(candidate_policy_filters));
     ui.set_candidate_range_filter_rows(model(candidate_range_filters));
 
-    let status_filters = [
-        StatusFilter::All,
-        StatusFilter::Unprocessed,
-        StatusFilter::Incomplete,
-        StatusFilter::Processed,
-        StatusFilter::Bypassed,
-        StatusFilter::PartialTimeout,
-        StatusFilter::ArtistComplete,
-        StatusFilter::ArtistContainsBypass,
-    ]
-    .into_iter()
-    .map(|filter| UiStatusFilterRow {
-        key: SharedString::from(filter.label()),
-        label: SharedString::from(filter.label()),
-        count: state.library.status_count(filter) as i32,
-        enabled: state.library.status_filter_enabled(filter),
-        semantic_color: status_filter_color(filter),
-    })
-    .chain(std::iter::once(UiStatusFilterRow {
-        key: SharedString::from("Embedded Art"),
-        label: SharedString::from("Embedded Art"),
-        count: state.library.embedded_art_track_count() as i32,
-        enabled: state.library.show_tracks,
-        semantic_color: Color::from_rgb_u8(104, 105, 255),
-    }))
-    .collect();
-    ui.set_status_filter_rows(model(status_filters));
+    ui.set_status_filter_rows(model(status_filter_ui_rows(&state)));
 
     let musicbrainz = state
         .visible_musicbrainz_results()
@@ -3229,6 +3492,50 @@ fn library_ui_rows(state: &ApplicationState) -> Vec<UiLibraryRow> {
         .collect()
 }
 
+fn compilation_track_ui_rows(state: &ApplicationState) -> Vec<UiCompilationTrackRow> {
+    state
+        .library
+        .compilation_track_rows()
+        .into_iter()
+        .map(|track| UiCompilationTrackRow {
+            album_key: SharedString::from(track.album_key),
+            path: SharedString::from(track.path),
+            file_name: SharedString::from(track.file_name),
+            completed: track.embedded_artwork_recorded,
+            selected: track.selected,
+        })
+        .collect()
+}
+
+fn status_filter_ui_rows(state: &ApplicationState) -> Vec<UiStatusFilterRow> {
+    [
+        StatusFilter::All,
+        StatusFilter::Unprocessed,
+        StatusFilter::Incomplete,
+        StatusFilter::Processed,
+        StatusFilter::Bypassed,
+        StatusFilter::PartialTimeout,
+        StatusFilter::ArtistComplete,
+        StatusFilter::ArtistContainsBypass,
+    ]
+    .into_iter()
+    .map(|filter| UiStatusFilterRow {
+        key: SharedString::from(filter.label()),
+        label: SharedString::from(filter.label()),
+        count: state.library.status_count(filter) as i32,
+        enabled: state.library.status_filter_enabled(filter),
+        semantic_color: status_filter_color(filter),
+    })
+    .chain(std::iter::once(UiStatusFilterRow {
+        key: SharedString::from("Embedded Art"),
+        label: SharedString::from("Embedded Art"),
+        count: state.library.embedded_art_track_count() as i32,
+        enabled: state.library.show_tracks,
+        semantic_color: Color::from_rgb_u8(104, 105, 255),
+    }))
+    .collect()
+}
+
 fn file_size_label(path: &str) -> String {
     let Ok(bytes) = std::fs::metadata(path).map(|metadata| metadata.len()) else {
         return String::new();
@@ -3367,7 +3674,7 @@ fn load_image(path: &str) -> slint::Image {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_mbid, restore_request_from_args, split_values};
+    use super::{is_valid_mbid, logical_dimension, restore_request_from_args, split_values};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -3406,6 +3713,17 @@ mod tests {
         assert!(is_valid_mbid("4F725973-AAF1-4D0D-A775-0A90ED2A0757"));
         assert!(!is_valid_mbid("not-a-release-id"));
         assert!(!is_valid_mbid("4f725973-aaf1-4d0d-a775-0a90ed2a075z"));
+    }
+
+    #[test]
+    fn workspace_geometry_uses_logical_dimensions_and_per_monitor_v2() {
+        assert_eq!(logical_dimension(1440.4, 960), 1440);
+        assert_eq!(logical_dimension(720.0, 960), 960);
+        assert_eq!(logical_dimension(f32::NAN, 960), 960);
+
+        let manifest = include_str!("../gui/app.manifest");
+        assert!(manifest.contains(">PerMonitorV2</dpiAwareness>"));
+        assert!(manifest.contains(">true/pm</dpiAware>"));
     }
 }
 
