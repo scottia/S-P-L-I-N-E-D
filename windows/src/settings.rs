@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPreferences {
+    #[serde(default = "legacy_workspace_layout_revision")]
+    pub workspace_layout_revision: u32,
     pub appearance: String,
     pub workspace_mode: u8,
     pub library_view: String,
@@ -52,6 +54,7 @@ pub struct UiPreferences {
 impl Default for UiPreferences {
     fn default() -> Self {
         Self {
+            workspace_layout_revision: CURRENT_WORKSPACE_LAYOUT_REVISION,
             appearance: "System".to_string(),
             workspace_mode: 0,
             library_view: "artists".to_string(),
@@ -85,17 +88,44 @@ impl Default for UiPreferences {
                 "Brightness".to_string(),
                 "Color".to_string(),
             ],
-            media_pane_width: 320,
-            media_pane_expanded_width: 320,
-            artwork_pane_width: 340,
-            artwork_pane_expanded_width: 340,
-            candidate_filter_height: 270,
-            candidate_filter_expanded_height: 270,
-            activity_pane_height: 150,
-            window_width: 1380,
-            window_height: 860,
+            media_pane_width: 270,
+            media_pane_expanded_width: 270,
+            artwork_pane_width: 450,
+            artwork_pane_expanded_width: 450,
+            candidate_filter_height: 370,
+            candidate_filter_expanded_height: 370,
+            activity_pane_height: 210,
+            window_width: 1680,
+            window_height: 945,
             window_maximized: false,
         }
+    }
+}
+
+pub const CURRENT_WORKSPACE_LAYOUT_REVISION: u32 = 2;
+
+const fn legacy_workspace_layout_revision() -> u32 {
+    0
+}
+
+impl UiPreferences {
+    /// Migrates only presentation geometry after the numbered-screen workspace
+    /// replaced the validation shell. Workflow, filters, appearance, and all
+    /// Config v5-backed values remain untouched.
+    pub fn migrate_workspace_layout(&mut self) -> bool {
+        if self.workspace_layout_revision >= CURRENT_WORKSPACE_LAYOUT_REVISION {
+            return false;
+        }
+        let defaults = Self::default();
+        self.media_pane_width = defaults.media_pane_width;
+        self.media_pane_expanded_width = defaults.media_pane_expanded_width;
+        self.artwork_pane_width = defaults.artwork_pane_width;
+        self.artwork_pane_expanded_width = defaults.artwork_pane_expanded_width;
+        self.candidate_filter_height = defaults.candidate_filter_height;
+        self.candidate_filter_expanded_height = defaults.candidate_filter_expanded_height;
+        self.activity_pane_height = defaults.activity_pane_height;
+        self.workspace_layout_revision = CURRENT_WORKSPACE_LAYOUT_REVISION;
+        true
     }
 }
 
@@ -571,7 +601,7 @@ mod tests {
 
     #[test]
     fn older_ui_toml_receives_resizable_workspace_defaults() {
-        let restored: UiPreferences = toml::from_str(
+        let mut restored: UiPreferences = toml::from_str(
             r#"
 library_view = "albums"
 window_width = 1200
@@ -580,6 +610,7 @@ window_height = 700
         )
         .unwrap();
         let defaults = UiPreferences::default();
+        assert_eq!(restored.workspace_layout_revision, 0);
         assert_eq!(restored.media_pane_width, defaults.media_pane_width);
         assert_eq!(
             restored.artwork_pane_expanded_width,
@@ -592,6 +623,43 @@ window_height = 700
         assert_eq!(restored.appearance, "System");
         assert_eq!(restored.workspace_mode, 0);
         assert!(!restored.window_maximized);
+        assert!(restored.migrate_workspace_layout());
+        assert_eq!(
+            restored.workspace_layout_revision,
+            CURRENT_WORKSPACE_LAYOUT_REVISION
+        );
+        assert!(!restored.migrate_workspace_layout());
+    }
+
+    #[test]
+    fn numbered_workspace_migration_replaces_only_obsolete_geometry() {
+        let mut restored: UiPreferences = toml::from_str(
+            r#"
+appearance = "Dark"
+library_view = "folders"
+artist_filter = "Blue Merle"
+media_pane_width = 320
+media_pane_expanded_width = 320
+artwork_pane_width = 720
+artwork_pane_expanded_width = 720
+candidate_filter_height = 983
+candidate_filter_expanded_height = 983
+activity_pane_height = 150
+window_width = 2732
+window_height = 1977
+"#,
+        )
+        .unwrap();
+        assert!(restored.migrate_workspace_layout());
+        let defaults = UiPreferences::default();
+        assert_eq!(restored.media_pane_width, defaults.media_pane_width);
+        assert_eq!(restored.artwork_pane_width, defaults.artwork_pane_width);
+        assert_eq!(restored.activity_pane_height, defaults.activity_pane_height);
+        assert_eq!(restored.window_width, 2732);
+        assert_eq!(restored.window_height, 1977);
+        assert_eq!(restored.appearance, "Dark");
+        assert_eq!(restored.library_view, "folders");
+        assert_eq!(restored.artist_filter, "Blue Merle");
     }
 
     #[test]

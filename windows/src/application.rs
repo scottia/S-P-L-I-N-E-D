@@ -505,6 +505,16 @@ impl LibraryState {
         self.view = view;
     }
 
+    /// Switches between the three top-level library tabs.
+    ///
+    /// Artist drill-down uses `set_view` directly so its focused artist remains
+    /// in scope. A user clicking Artists, Albums, or Folders expects the full
+    /// top-level model, so that explicit navigation must clear the drill-down.
+    pub fn set_top_level_view(&mut self, view: LibraryView) {
+        self.clear_artist_scope();
+        self.set_view(view);
+    }
+
     pub fn set_text_filter(&mut self, value: impl Into<String>) {
         self.text_filter = value.into();
     }
@@ -2253,6 +2263,20 @@ mod tests {
         assert_eq!(state.rows()[0].primary, "Done");
         state.set_view(LibraryView::Folders);
         assert!(state.rows()[0].primary.contains("Done"));
+    }
+
+    #[test]
+    fn top_level_folder_navigation_clears_artist_drill_down() {
+        let mut state = library();
+        assert_eq!(
+            state.toggle_artist("Alpha", false),
+            SelectionResult::Changed
+        );
+        state.set_view(LibraryView::Folders);
+        assert_eq!(state.rows().len(), 2);
+
+        state.set_top_level_view(LibraryView::Folders);
+        assert_eq!(state.rows().len(), 5);
     }
 
     #[test]

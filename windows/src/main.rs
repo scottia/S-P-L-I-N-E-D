@@ -32,6 +32,7 @@ use std::time::Duration;
 slint::include_modules!();
 
 fn main() -> Result<(), slint::PlatformError> {
+    configure_interface_scale();
     let restore_request = restore_request_from_args(std::env::args_os().skip(1));
     if let Some(result) = command_line_operation() {
         if let Err(error) = result {
@@ -50,7 +51,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let association_warning =
         splined_core::file_association::register_portable_backup_association().err();
     let (mut state, setup_required, startup_error) = load_application_state();
-    let preferences = splined_core::settings::load_ui_preferences().unwrap_or_default();
+    let mut preferences = splined_core::settings::load_ui_preferences().unwrap_or_default();
+    preferences.migrate_workspace_layout();
     apply_ui_preferences(&mut state, &preferences);
     let mut workspace_layout = WorkspaceLayout::from_preferences(&preferences);
     workspace_layout.clamp_for_window(
@@ -188,6 +190,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let preferences = state
         .lock()
         .map(|state| UiPreferences {
+            workspace_layout_revision: splined_core::settings::CURRENT_WORKSPACE_LAYOUT_REVISION,
             appearance: appearance.borrow().clone(),
             workspace_mode: ui.get_workspace_mode().clamp(0, 3) as u8,
             library_view: state.library.view.label().to_ascii_lowercase(),
@@ -252,6 +255,48 @@ fn main() -> Result<(), slint::PlatformError> {
         eprintln!("Unable to save SPLINED interface preferences: {error}");
     }
     result
+}
+
+#[cfg(windows)]
+fn configure_interface_scale() {
+    if std::env::var_os("SLINT_SCALE_FACTOR").is_some() {
+        return;
+    }
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    // Slint already follows native Windows DPI. Some RDP clients expose a
+    // Retina-sized desktop while reporting 96 DPI, so use the live desktop
+    // extent only for that specific under-scaled case.
+    let (width, height, dpi) = unsafe {
+        (
+            GetSystemMetrics(SM_CXSCREEN).max(0) as u32,
+            GetSystemMetrics(SM_CYSCREEN).max(0) as u32,
+            GetDpiForSystem(),
+        )
+    };
+    if let Some(scale) = inferred_rdp_scale(width, height, dpi) {
+        // SAFETY: this runs on the main thread before Slint initializes its
+        // backend or any worker threads are started.
+        unsafe { std::env::set_var("SLINT_SCALE_FACTOR", scale) };
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_interface_scale() {}
+
+fn inferred_rdp_scale(width: u32, height: u32, system_dpi: u32) -> Option<&'static str> {
+    if system_dpi > 110 {
+        return None;
+    }
+    if width >= 3_400 {
+        Some("2.0")
+    } else if width >= 2_400 || height >= 1_500 {
+        Some("1.5")
+    } else if width >= 2_000 || height >= 1_200 {
+        Some("1.25")
+    } else {
+        None
+    }
 }
 
 fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreferences) {
@@ -516,8 +561,10 @@ fn run_slint_library_diagnostics() -> Result<String, String> {
         .ok_or_else(|| "The Slint Artist model has no selectable row.".to_string())?;
     ui.invoke_library_row_activated(artist.key, false);
     let artist_click_selected_albums = ui.get_selected_count();
-    ui.invoke_change_library_view(1);
     let artist_navigation_rows = ui.get_library_rows().row_count();
+    ui.invoke_change_library_view(2);
+    let folder_rows_after_artist = ui.get_library_rows().row_count();
+    ui.invoke_change_library_view(1);
     let album = ui
         .get_library_rows()
         .row_data(0)
@@ -530,7 +577,7 @@ fn run_slint_library_diagnostics() -> Result<String, String> {
     let select_none_count = ui.get_selected_count();
 
     Ok(format!(
-        "visible_artists={visible_artists}\nvisible_albums={visible_albums}\nvisible_folders={visible_folders}\nartist_click_selected_albums={artist_click_selected_albums}\nartist_navigation_rows={artist_navigation_rows}\ncurrent_album_populated={current_album_populated}\nselect_none_count={select_none_count}\n"
+        "visible_artists={visible_artists}\nvisible_albums={visible_albums}\nvisible_folders={visible_folders}\nartist_click_selected_albums={artist_click_selected_albums}\nartist_navigation_rows={artist_navigation_rows}\nfolder_rows_after_artist={folder_rows_after_artist}\ncurrent_album_populated={current_album_populated}\nselect_none_count={select_none_count}\n"
     ))
 }
 
@@ -859,7 +906,7 @@ fn bind_callbacks(
         let weak = ui.as_weak();
         ui.on_change_library_view(move |value| {
             if let Ok(mut app) = state.lock() {
-                app.library.set_view(match value {
+                app.library.set_top_level_view(match value {
                     1 => LibraryView::Albums,
                     2 => LibraryView::Folders,
                     _ => LibraryView::Artists,
@@ -1156,12 +1203,17 @@ fn bind_callbacks(
         let weak = ui.as_weak();
         ui.on_library_row_activated(move |key, include_bypassed| {
             if let Ok(mut app) = state.lock() {
+                let previous_view = app.library.view;
                 let result = app.library.toggle_row(key.as_str(), include_bypassed);
                 if result != SelectionResult::NotFound {
                     app.synchronize_focused_album();
                 }
                 match result {
-                    SelectionResult::Changed => {}
+                    SelectionResult::Changed => {
+                        if previous_view == LibraryView::Artists {
+                            app.library.set_view(LibraryView::Albums);
+                        }
+                    }
                     SelectionResult::NeedsBypassOverride(album) => app.push_log(format!(
                         "{album} is bypassed. Enable the one-run bypass override to select it."
                     )),
@@ -2603,7 +2655,7 @@ fn project_adjustments(app: &ApplicationState, config: &mut Config) {
 fn candidate_ui_row(candidate: &CandidateState, compared: bool) -> UiCandidateRow {
     UiCandidateRow {
         index: candidate.index as i32,
-        source: SharedString::from(candidate.source.clone()),
+        source: SharedString::from(source_display_name(&candidate.source)),
         dimensions: SharedString::from(candidate.dimensions.clone()),
         range_class: SharedString::from(candidate.range_class.clone()),
         policy: SharedString::from(if candidate.policy_reason.is_empty() {
@@ -2663,6 +2715,34 @@ fn bind_custom_upscale_window(
                 app.edit_preview_path.clear();
             }
             record_action_result(&state, preview_selected_candidate(&state));
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_primary_adjustment_move(move |name, direction| {
+            if let Ok(mut app) = state.lock() {
+                app.move_primary_adjustment(name.as_str(), direction as isize);
+            }
+            if let Some(custom) = custom_weak.upgrade() {
+                sync_custom_upscale(&custom, &state);
+            }
+            refresh_weak(&main_weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let custom_weak = window.as_weak();
+        let main_weak = main_weak.clone();
+        window.on_primary_adjustment_promote(move |name| {
+            if let Ok(mut app) = state.lock() {
+                app.promote_primary_adjustment(name.as_str());
+            }
             if let Some(custom) = custom_weak.upgrade() {
                 sync_custom_upscale(&custom, &state);
             }
@@ -2850,6 +2930,8 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         .iter()
         .map(|source| UiSourceRow {
             name: SharedString::from(source.name.clone()),
+            label: SharedString::from(source_display_name(&source.name)),
+            icon: SharedString::from(source_icon(&source.name)),
             count: source.candidate_count as i32,
             status: SharedString::from(source.status.clone()),
             enabled: source.enabled,
@@ -2872,7 +2954,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         .into_iter()
         .map(|candidate| UiCandidateRow {
             index: candidate.index as i32,
-            source: SharedString::from(candidate.source.clone()),
+            source: SharedString::from(source_display_name(&candidate.source)),
             dimensions: SharedString::from(candidate.dimensions.clone()),
             range_class: SharedString::from(candidate.range_class.clone()),
             policy: SharedString::from(if candidate.policy_reason.is_empty() {
@@ -2898,7 +2980,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             &source.name,
         ));
     }
-    for (key, label) in [
+    let candidate_type_filters = [
         ("Recommended", "Recommended"),
         ("Upscalable", "Upscalable"),
         ("Rejected", "Rejected"),
@@ -2908,23 +2990,32 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         ("ArtistImage", "Artist Image"),
         ("MediaBooklet", "Media / Booklet"),
         ("Other", "Other"),
-    ] {
-        candidate_filters.push(candidate_filter_row(&state, "type", key, label));
-    }
-    for key in ["Acceptable", "Strict"] {
-        candidate_filters.push(candidate_filter_row(&state, "policy", key, key));
-    }
-    for (key, label) in [
+    ]
+    .into_iter()
+    .map(|(key, label)| candidate_filter_row(&state, "type", key, label))
+    .collect::<Vec<_>>();
+    let candidate_policy_filters = ["Acceptable", "Strict"]
+        .into_iter()
+        .map(|key| candidate_filter_row(&state, "policy", key, key))
+        .collect::<Vec<_>>();
+    let candidate_range_filters = [
         ("Ideal", "Ideal"),
         ("UpperRange", "Upper range"),
         ("Ladder", "Ladder"),
         ("AboveLadder", "Above ladder"),
         ("LowerRange", "Lower range"),
         ("BelowMinimum", "Below minimum"),
-    ] {
-        candidate_filters.push(candidate_filter_row(&state, "range", key, label));
-    }
+    ]
+    .into_iter()
+    .map(|(key, label)| candidate_filter_row(&state, "range", key, label))
+    .collect::<Vec<_>>();
+    candidate_filters.extend(candidate_type_filters.iter().cloned());
+    candidate_filters.extend(candidate_policy_filters.iter().cloned());
+    candidate_filters.extend(candidate_range_filters.iter().cloned());
     ui.set_candidate_filter_rows(model(candidate_filters));
+    ui.set_candidate_type_filter_rows(model(candidate_type_filters));
+    ui.set_candidate_policy_filter_rows(model(candidate_policy_filters));
+    ui.set_candidate_range_filter_rows(model(candidate_range_filters));
 
     let status_filters = [
         StatusFilter::All,
@@ -3154,6 +3245,11 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
 }
 
 fn library_ui_rows(state: &ApplicationState) -> Vec<UiLibraryRow> {
+    let icon = match state.library.view {
+        LibraryView::Artists => "◉",
+        LibraryView::Albums => "▣",
+        LibraryView::Folders => "▰",
+    };
     state
         .library
         .rows()
@@ -3163,6 +3259,7 @@ fn library_ui_rows(state: &ApplicationState) -> Vec<UiLibraryRow> {
             primary: SharedString::from(row.primary),
             secondary: SharedString::from(row.secondary),
             status: SharedString::from(row.status),
+            icon: SharedString::from(icon),
             selected: row.selected,
             eligible: row.eligible,
         })
@@ -3179,6 +3276,38 @@ fn file_size_label(path: &str) -> String {
         format!("{:.0} KB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+fn source_display_name(source: &str) -> String {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "local" => "Local Files".to_string(),
+        "navidrome" => "Navidrome".to_string(),
+        "deezer" => "Deezer".to_string(),
+        "itunes" | "apple" => "iTunes".to_string(),
+        "fanarttv" | "fanart.tv" => "Fanart.tv".to_string(),
+        "lastfm" | "last.fm" => "Last.fm".to_string(),
+        "musicbrainz" => "MusicBrainz".to_string(),
+        "coverartarchive" | "cover art archive" => "Cover Art Archive".to_string(),
+        "discogs" => "Discogs".to_string(),
+        "amazon" => "Amazon".to_string(),
+        _ => source.trim().to_string(),
+    }
+}
+
+fn source_icon(source: &str) -> &'static str {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "local" => "▣",
+        "navidrome" => "◉",
+        "deezer" => "▥",
+        "itunes" | "apple" => "♫",
+        "fanarttv" | "fanart.tv" => "▧",
+        "lastfm" | "last.fm" => "∞",
+        "musicbrainz" => "⌘",
+        "coverartarchive" | "cover art archive" => "◇",
+        "discogs" => "◐",
+        "amazon" => "a",
+        _ => "◆",
     }
 }
 
@@ -3275,7 +3404,7 @@ fn load_image(path: &str) -> slint::Image {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_mbid, restore_request_from_args, split_values};
+    use super::{inferred_rdp_scale, is_valid_mbid, restore_request_from_args, split_values};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -3314,6 +3443,15 @@ mod tests {
         assert!(is_valid_mbid("4F725973-AAF1-4D0D-A775-0A90ED2A0757"));
         assert!(!is_valid_mbid("not-a-release-id"));
         assert!(!is_valid_mbid("4f725973-aaf1-4d0d-a775-0a90ed2a075z"));
+    }
+
+    #[test]
+    fn retina_sized_rdp_sessions_receive_readable_slint_scaling() {
+        assert_eq!(inferred_rdp_scale(1920, 1080, 96), None);
+        assert_eq!(inferred_rdp_scale(2732, 2048, 96), Some("1.5"));
+        assert_eq!(inferred_rdp_scale(2048, 1536, 96), Some("1.5"));
+        assert_eq!(inferred_rdp_scale(3840, 2160, 96), Some("2.0"));
+        assert_eq!(inferred_rdp_scale(2732, 2048, 144), None);
     }
 }
 

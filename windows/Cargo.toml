@@ -48,6 +48,6 @@ slint-build = { version = "=1.18.1", default-features = false, features = ["comp
 bytemuck = "1.24.0"
 pollster = "1.0.1"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
-windows = { version = "0.61.3", features = ["Foundation", "Foundation_Collections", "Services_Store", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61.3", features = ["Foundation", "Foundation_Collections", "Services_Store", "Win32_Foundation", "Win32_UI_HiDpi", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 windows-registry = "0.6.1"

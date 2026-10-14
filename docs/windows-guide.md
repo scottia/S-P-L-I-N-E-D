@@ -71,7 +71,9 @@ It provides three views over the same album authority:
   album set and cascades selection to eligible albums.
 - **Albums** provides direct and additive album selection.
 - **Folders** displays physical album paths while retaining the same album keys
-  and selection set.
+  and selection set. Choosing any top-level Artists, Albums, or Folders tab
+  clears an earlier Artist drill-down scope before rebuilding that view; a
+  Folder list therefore cannot remain restricted to the last Artist click.
 
 The main window is resizable and maximizable. Artwork is clipped to its preview
 card so a native-resolution cover cannot cover the library or intercept its
@@ -98,7 +100,10 @@ Pane geometry, expanded dimensions, the active artwork mode, normal window
 size, maximized state, and the **System / Light / Dark** appearance choice are
 presentation preferences in `data\ui.toml`. They are not Config v5 fields.
 Older `ui.toml` files remain valid and acquire safe defaults for fields they do
-not contain.
+not contain. A numbered-workspace layout revision retires obsolete temporary-
+shell pane geometry without changing Config v5 or unrelated UI preferences.
+For Retina-sized RDP sessions that incorrectly report 96 DPI, SPLINED applies a
+bounded startup scale fallback; ordinary native Windows DPI remains in control.
 
 ### Artwork workspace modes
 
