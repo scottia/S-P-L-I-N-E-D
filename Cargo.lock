@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "splined"
-version = "1.0.92"
+version = "1.0.93"
 dependencies = [
  "base64 0.23.1",
  "clap",
