@@ -32,7 +32,6 @@ use std::time::Duration;
 slint::include_modules!();
 
 fn main() -> Result<(), slint::PlatformError> {
-    configure_interface_scale();
     let restore_request = restore_request_from_args(std::env::args_os().skip(1));
     if let Some(result) = command_line_operation() {
         if let Err(error) = result {
@@ -255,48 +254,6 @@ fn main() -> Result<(), slint::PlatformError> {
         eprintln!("Unable to save SPLINED interface preferences: {error}");
     }
     result
-}
-
-#[cfg(windows)]
-fn configure_interface_scale() {
-    if std::env::var_os("SLINT_SCALE_FACTOR").is_some() {
-        return;
-    }
-    use windows::Win32::UI::HiDpi::GetDpiForSystem;
-    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-    // Slint already follows native Windows DPI. Some RDP clients expose a
-    // Retina-sized desktop while reporting 96 DPI, so use the live desktop
-    // extent only for that specific under-scaled case.
-    let (width, height, dpi) = unsafe {
-        (
-            GetSystemMetrics(SM_CXSCREEN).max(0) as u32,
-            GetSystemMetrics(SM_CYSCREEN).max(0) as u32,
-            GetDpiForSystem(),
-        )
-    };
-    if let Some(scale) = inferred_rdp_scale(width, height, dpi) {
-        // SAFETY: this runs on the main thread before Slint initializes its
-        // backend or any worker threads are started.
-        unsafe { std::env::set_var("SLINT_SCALE_FACTOR", scale) };
-    }
-}
-
-#[cfg(not(windows))]
-fn configure_interface_scale() {}
-
-fn inferred_rdp_scale(width: u32, height: u32, system_dpi: u32) -> Option<&'static str> {
-    if system_dpi > 110 {
-        return None;
-    }
-    if width >= 3_400 {
-        Some("2.0")
-    } else if width >= 2_400 || height >= 1_500 {
-        Some("1.5")
-    } else if width >= 2_000 || height >= 1_200 {
-        Some("1.25")
-    } else {
-        None
-    }
 }
 
 fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreferences) {
@@ -966,7 +923,7 @@ fn bind_callbacks(
         let weak = ui.as_weak();
         let workspace_layout = Rc::clone(&workspace_layout);
         ui.on_set_region_expanded(move |region, expanded| {
-            if let Ok(mut app) = state.lock() {
+            let flags = state.lock().ok().map(|mut app| {
                 match region.as_str() {
                     "media" => app.media_selector_expanded = expanded,
                     "candidate-filter" => app.candidate_filter_expanded = expanded,
@@ -974,22 +931,28 @@ fn bind_callbacks(
                     "show-artwork" => app.show_artwork = expanded,
                     _ => {}
                 }
-            }
-            refresh_weak(&weak, &state);
+                (
+                    app.media_selector_expanded,
+                    app.show_artwork,
+                    app.candidate_filter_expanded,
+                )
+            });
+            let Some((media_expanded, artwork_visible, candidate_filter_expanded)) = flags else {
+                return;
+            };
             if let Some(ui) = weak.upgrade() {
                 let size = ui.window().size();
-                if let Ok(app) = state.lock() {
-                    let mut layout = workspace_layout.borrow_mut();
-                    layout.clamp_for_window(
-                        size.width,
-                        size.height,
-                        app.media_selector_expanded,
-                        app.show_artwork,
-                        app.candidate_filter_expanded,
-                    );
-                    apply_workspace_layout(&ui, &layout);
-                }
+                let mut layout = workspace_layout.borrow_mut();
+                layout.clamp_for_window(
+                    size.width,
+                    size.height,
+                    media_expanded,
+                    artwork_visible,
+                    candidate_filter_expanded,
+                );
+                apply_workspace_layout(&ui, &layout);
             }
+            refresh_weak(&weak, &state);
         });
     }
     {
@@ -3404,7 +3367,7 @@ fn load_image(path: &str) -> slint::Image {
 
 #[cfg(test)]
 mod tests {
-    use super::{inferred_rdp_scale, is_valid_mbid, restore_request_from_args, split_values};
+    use super::{is_valid_mbid, restore_request_from_args, split_values};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -3443,15 +3406,6 @@ mod tests {
         assert!(is_valid_mbid("4F725973-AAF1-4D0D-A775-0A90ED2A0757"));
         assert!(!is_valid_mbid("not-a-release-id"));
         assert!(!is_valid_mbid("4f725973-aaf1-4d0d-a775-0a90ed2a075z"));
-    }
-
-    #[test]
-    fn retina_sized_rdp_sessions_receive_readable_slint_scaling() {
-        assert_eq!(inferred_rdp_scale(1920, 1080, 96), None);
-        assert_eq!(inferred_rdp_scale(2732, 2048, 96), Some("1.5"));
-        assert_eq!(inferred_rdp_scale(2048, 1536, 96), Some("1.5"));
-        assert_eq!(inferred_rdp_scale(3840, 2160, 96), Some("2.0"));
-        assert_eq!(inferred_rdp_scale(2732, 2048, 144), None);
     }
 }
 

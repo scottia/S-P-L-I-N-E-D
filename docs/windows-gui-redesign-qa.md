@@ -24,8 +24,8 @@ never fabricated to fill a reference screen.
 - `cargo fmt --manifest-path windows/Cargo.toml --all -- --check`
 - `cargo check --locked --manifest-path windows/Cargo.toml --all-targets`
 - `cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets -- -D warnings`
-- focused Rust tests for workspace-layout migration, high-resolution RDP scale
-  fallback, and returning to the full Folder model after Artist drill-down
+- focused Rust tests for workspace-layout migration, invalid collapsed media
+  geometry recovery, and returning to every full top-level library model
 - `splined.exe --slint-library-diagnostics` against the configured database
 
 Architecture tests additionally fail if an active `.cs` source, managed GUI
@@ -34,10 +34,9 @@ compiler path, application DLL bridge, or extra Windows package runtime appears.
 The current graphical layout revision is stored in `data/ui.toml`. When an
 older temporary-shell geometry is encountered, SPLINED replaces only obsolete
 pane dimensions with the numbered-workspace defaults. It preserves appearance,
-library view/filter state, Config v5, and normal window dimensions. On an RDP
-desktop that reports 96 DPI despite Retina-sized physical dimensions, startup
-applies a bounded Slint scale fallback before creating the backend; native DPI
-remains authoritative everywhere else.
+library view/filter state, Config v5, and normal window dimensions. Windows and
+Slint native per-monitor DPI remain authoritative; startup never infers an
+interface scale solely from the RDP desktop's pixel dimensions.
 
 ## Interactive gate
 
@@ -46,16 +45,21 @@ Run against an existing SPLINED state root without modifying the database:
 1. Confirm Artists, Albums, and Folders populate from `splined.db`.
    Switching to a top-level tab clears any Artist drill-down scope, so Folders
    always restores the complete physical-folder model.
-2. Confirm text and each status filter change visibility only.
-3. Confirm direct album, additive album, artist cascade, All, Filtered, and None.
-4. Launch one intentionally selected album in READ and review real candidates.
-5. Exercise source/range filtering, candidate selection, Keep Local, Skip,
+   The October 2026 real-library regression gate loaded and visibly rendered
+   1,014 Artists, 3,869 Albums, and 3,869 Folders.
+2. Collapse Media Library and confirm the narrow rail retains a clickable
+   expand control. Re-expand it and confirm the populated list appears at a
+   usable clamped width before continuing.
+3. Confirm text and each status filter change visibility only.
+4. Confirm direct album, additive album, artist cascade, All, Filtered, and None.
+5. Launch one intentionally selected album in READ and review real candidates.
+6. Exercise source/range filtering, candidate selection, Keep Local, Skip,
    MusicBrainz authority/results, and return to candidate review.
-6. Verify STOP releases both active processing and a decision wait.
-7. Verify current/local artwork and the existing-cover preview path.
-8. Use a controlled album for an intentional LIVE WRITE validation; confirm the
+7. Verify STOP releases both active processing and a decision wait.
+8. Verify current/local artwork and the existing-cover preview path.
+9. Use a controlled album for an intentional LIVE WRITE validation; confirm the
    application remains usable and SQLite reflects the final outcome.
-9. Verify Config v5, provider credential test/save, `.spl` backup/restore, and
+10. Verify Config v5, provider credential test/save, `.spl` backup/restore, and
    channel-correct update check.
 
 Do not use a fixture-only run as the final functional acceptance. Any LIVE WRITE

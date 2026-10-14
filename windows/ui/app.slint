@@ -692,20 +692,17 @@ export component AppWindow inherits Window {
             spacing: 6px; vertical-stretch: 1;
             HorizontalLayout { spacing: 0px; vertical-stretch: 1;
                 NeonPanel {
-                    width: root.media-selector-expanded ? root.media-pane-width * 1px : 48px;
+                    width: root.media-selector-expanded ? root.media-pane-width * 1px : 52px;
                     border-radius: 8px;
                     VerticalLayout {
                         padding: root.media-selector-expanded ? 9px : 6px;
                         spacing: 7px;
                         HorizontalLayout { height: 34px; spacing: 6px;
-                            Heading { visible: root.media-selector-expanded; text: "▣  Media Library"; horizontal-stretch: 1; font-size: 15px; }
+                            if root.media-selector-expanded: Heading { text: "▣  Media Library"; horizontal-stretch: 1; font-size: 15px; }
                             NeonAction {
                                 label: root.media-selector-expanded ? "‹" : "›";
-                                width: 32px; height: 30px;
-                                clicked => {
-                                    root.media-selector-expanded = !root.media-selector-expanded;
-                                    root.set-region-expanded("media", root.media-selector-expanded);
-                                }
+                                width: root.media-selector-expanded ? 32px : 40px; height: 30px;
+                                clicked => root.set-region-expanded("media", !root.media-selector-expanded);
                             }
                         }
                         if root.media-selector-expanded: VerticalLayout {
@@ -734,6 +731,7 @@ export component AppWindow inherits Window {
                                 NeonAction { label: "None"; width: 62px; height: 29px; danger: true; clicked => root.select-none(); }
                             }
                             ListView {
+                                min-height: 180px;
                                 vertical-stretch: 1;
                                 for row in root.library-rows: LibraryItem {
                                     item: row;
@@ -911,14 +909,11 @@ export component AppWindow inherits Window {
                                     NeonPanel { width: root.candidate-filter-expanded ? 300px : 48px; border-color: AppTheme.violet;
                                         VerticalLayout { padding: 9px; spacing: 6px;
                                             HorizontalLayout { height: 30px;
-                                                Heading { visible: root.candidate-filter-expanded; text: "▽  Filters"; font-size: 15px; horizontal-stretch: 1; }
+                                                if root.candidate-filter-expanded: Heading { text: "▽  Filters"; font-size: 15px; horizontal-stretch: 1; }
                                                 NeonAction {
                                                     label: root.candidate-filter-expanded ? "⌃" : "⌄";
                                                     width: 32px; height: 28px;
-                                                    clicked => {
-                                                        root.candidate-filter-expanded = !root.candidate-filter-expanded;
-                                                        root.set-region-expanded("candidate-filter", root.candidate-filter-expanded);
-                                                    }
+                                                    clicked => root.set-region-expanded("candidate-filter", !root.candidate-filter-expanded);
                                                 }
                                             }
                                             if root.candidate-filter-expanded: ScrollView { vertical-stretch: 1;
@@ -971,15 +966,12 @@ export component AppWindow inherits Window {
                                     NeonPanel { horizontal-stretch: 1; border-color: AppTheme.violet;
                                         VerticalLayout { padding: 9px; spacing: 6px;
                                             HorizontalLayout { height: 30px;
-                                                Heading { visible: root.artwork-editing-expanded; text: "▧  Artwork Preview & Editing"; font-size: 15px; horizontal-stretch: 1; }
-                                                Text { visible: root.artwork-editing-expanded; text: "Select up to 5 primary sliders"; color: AppTheme.secondary-foreground; font-size: 9px; vertical-alignment: center; }
+                                                if root.artwork-editing-expanded: Heading { text: "▧  Artwork Preview & Editing"; font-size: 15px; horizontal-stretch: 1; }
+                                                if root.artwork-editing-expanded: Text { text: "Select up to 5 primary sliders"; color: AppTheme.secondary-foreground; font-size: 9px; vertical-alignment: center; }
                                                 NeonAction {
                                                     label: root.artwork-editing-expanded ? "⌃" : "⌄";
                                                     width: 32px; height: 28px;
-                                                    clicked => {
-                                                        root.artwork-editing-expanded = !root.artwork-editing-expanded;
-                                                        root.set-region-expanded("artwork-editing", root.artwork-editing-expanded);
-                                                    }
+                                                    clicked => root.set-region-expanded("artwork-editing", !root.artwork-editing-expanded);
                                                 }
                                             }
                                             if root.artwork-editing-expanded: ScrollView { vertical-stretch: 1;

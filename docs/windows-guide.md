@@ -79,6 +79,10 @@ The main window is resizable and maximizable. Artwork is clipped to its preview
 card so a native-resolution cover cannot cover the library or intercept its
 controls. The Media Library heading reports the current visible-row count, and
 an empty compilation-track section yields its space to the scrollable library.
+The library list retains a usable minimum height ahead of secondary status
+content. When the sidebar is collapsed, its narrow rail always keeps a visible
+expand control; expansion is requested through Rust, restores a clamped width
+at or above the media-pane minimum, and immediately renders the resident model.
 
 ### Resizable workspace
 
@@ -102,8 +106,9 @@ presentation preferences in `data\ui.toml`. They are not Config v5 fields.
 Older `ui.toml` files remain valid and acquire safe defaults for fields they do
 not contain. A numbered-workspace layout revision retires obsolete temporary-
 shell pane geometry without changing Config v5 or unrelated UI preferences.
-For Retina-sized RDP sessions that incorrectly report 96 DPI, SPLINED applies a
-bounded startup scale fallback; ordinary native Windows DPI remains in control.
+Windows and Slint native per-monitor DPI are authoritative. SPLINED does not
+infer an interface scale from desktop pixel dimensions, so a Retina-sized RDP
+desktop cannot receive a second artificial 1.25x, 1.5x, or 2x scale.
 
 ### Artwork workspace modes
 

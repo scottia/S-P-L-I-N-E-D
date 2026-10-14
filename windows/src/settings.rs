@@ -716,6 +716,23 @@ window_height = 1977
     }
 
     #[test]
+    fn media_expansion_recovers_from_invalid_collapsed_geometry() {
+        let preferences = UiPreferences {
+            media_pane_width: 0,
+            media_pane_expanded_width: 0,
+            ..UiPreferences::default()
+        };
+        let mut layout = WorkspaceLayout::from_preferences(&preferences);
+
+        layout.clamp_for_window(1280, 720, false, true, true);
+        assert_eq!(layout.media_pane_width, MEDIA_PANE_COLLAPSED);
+
+        layout.clamp_for_window(1280, 720, true, true, true);
+        assert_eq!(layout.media_pane_width, MEDIA_PANE_MIN);
+        assert_eq!(layout.media_pane_expanded_width, MEDIA_PANE_MIN);
+    }
+
+    #[test]
     fn resizing_updates_only_the_requested_expanded_dimension() {
         let mut layout = WorkspaceLayout::from_preferences(&UiPreferences::default());
         let artwork_before = layout.artwork_pane_expanded_width;

@@ -2280,6 +2280,20 @@ mod tests {
     }
 
     #[test]
+    fn top_level_library_tabs_restore_each_complete_model() {
+        let mut state = library();
+
+        state.set_top_level_view(LibraryView::Artists);
+        assert_eq!(state.rows().len(), 4);
+        state.set_top_level_view(LibraryView::Albums);
+        assert_eq!(state.rows().len(), 5);
+        state.set_top_level_view(LibraryView::Folders);
+        assert_eq!(state.rows().len(), 5);
+        state.set_top_level_view(LibraryView::Artists);
+        assert_eq!(state.rows().len(), 4);
+    }
+
+    #[test]
     fn focused_album_projects_local_context_without_starting_a_scan() {
         let mut state = ApplicationState::new(
             Config::default(),
