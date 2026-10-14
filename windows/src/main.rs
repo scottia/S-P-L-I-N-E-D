@@ -101,6 +101,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     ui.window().set_maximized(preferences.window_maximized);
     ui.set_appearance_mode(SharedString::from(appearance.borrow().clone()));
+    ui.set_workspace_mode(preferences.workspace_mode.min(3) as i32);
     apply_workspace_layout(&ui, &workspace_layout.borrow());
     initialize_service_ui(&ui, &state);
     if let Some(path) = restore_request
@@ -188,6 +189,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .lock()
         .map(|state| UiPreferences {
             appearance: appearance.borrow().clone(),
+            workspace_mode: ui.get_workspace_mode().clamp(0, 3) as u8,
             library_view: state.library.view.label().to_ascii_lowercase(),
             status_filter: state.library.status_filter.label().to_ascii_lowercase(),
             status_filters: state
@@ -1453,6 +1455,38 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        ui.on_open_musicbrainz_page(move |index| {
+            let target = state
+                .lock()
+                .map_err(|_| "The SPLINED application state is unavailable.".to_string())
+                .and_then(|app| {
+                    let release_mbid = if index < 0 {
+                        app.musicbrainz_authority.release_mbid.clone()
+                    } else {
+                        app.musicbrainz_results
+                            .iter()
+                            .find(|item| item.index == index as usize)
+                            .map(|item| item.release_mbid.clone())
+                            .ok_or_else(|| {
+                                "The selected MusicBrainz result is unavailable.".to_string()
+                            })?
+                    };
+                    if !is_valid_mbid(&release_mbid) {
+                        return Err(
+                            "A valid MusicBrainz release ID is required before opening its page."
+                                .to_string(),
+                        );
+                    }
+                    Ok(format!("https://musicbrainz.org/release/{release_mbid}"))
+                });
+            let result = target.and_then(|url| open_external_url(&url));
+            record_action_result(&state, result);
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
         ui.on_musicbrainz_selected(move |index| {
             if let Ok(mut app) = state.lock() {
                 app.select_musicbrainz_result(index.max(0) as usize);
@@ -2702,6 +2736,10 @@ fn sync_custom_upscale(window: &CustomUpscaleWindow, state: &Arc<Mutex<Applicati
     let Ok(app) = state.lock() else {
         return;
     };
+    window.set_library_rows(model(library_ui_rows(&app)));
+    window.set_selected_count(app.library.selected_count() as i32);
+    window.set_current_artist(SharedString::from(app.current_artist.clone()));
+    window.set_current_album(SharedString::from(app.current_album.clone()));
     let Some(candidate) = app.selected_candidate() else {
         return;
     };
@@ -2762,6 +2800,23 @@ fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
     left
 }
 
+fn is_valid_mbid(value: &str) -> bool {
+    let bytes = value.trim().as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => *byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    std::process::Command::new("explorer.exe")
+        .arg(url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Unable to open the MusicBrainz page: {error}"))
+}
+
 fn refresh_weak(weak: &slint::Weak<AppWindow>, state: &Arc<Mutex<ApplicationState>>) {
     if let Some(ui) = weak.upgrade() {
         sync_ui(&ui, state);
@@ -2773,20 +2828,8 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         return;
     };
 
-    let library_rows = state
-        .library
-        .rows()
-        .into_iter()
-        .map(|row| UiLibraryRow {
-            key: SharedString::from(row.key),
-            primary: SharedString::from(row.primary),
-            secondary: SharedString::from(row.secondary),
-            status: SharedString::from(row.status),
-            selected: row.selected,
-            eligible: row.eligible,
-        })
-        .collect::<Vec<_>>();
-    ui.set_library_rows(model(library_rows));
+    ui.set_library_rows(model(library_ui_rows(&state)));
+    ui.set_library_view_label(SharedString::from(state.library.view.label()));
     ui.set_compilation_track_rows(model(
         state
             .library
@@ -2982,6 +3025,34 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         })
         .unwrap_or(&state.current_cover_path);
     ui.set_current_preview(load_image(preview_path));
+    let preview_candidate = state.preview_candidate();
+    ui.set_selected_artwork_source(SharedString::from(
+        preview_candidate
+            .map(|candidate| candidate.source.as_str())
+            .unwrap_or("Local"),
+    ));
+    ui.set_selected_artwork_type(SharedString::from(
+        preview_candidate
+            .map(|candidate| candidate.image_type.as_str())
+            .unwrap_or("Current Cover"),
+    ));
+    let preview_dimensions = preview_candidate
+        .map(|candidate| candidate.dimensions.clone())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            inspect_image(Path::new(preview_path))
+                .ok()
+                .map(|info| format!("{} × {}", info.width, info.height))
+        })
+        .unwrap_or_else(|| "Resolution unavailable".to_string());
+    ui.set_selected_artwork_dimensions(SharedString::from(preview_dimensions));
+    ui.set_selected_artwork_quality(SharedString::from(
+        preview_candidate
+            .map(|candidate| candidate.range_class.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Current"),
+    ));
+    ui.set_selected_artwork_size(SharedString::from(file_size_label(preview_path)));
     ui.set_selected_count(state.library.selected_count() as i32);
     ui.set_status_filter_label(SharedString::from(
         if state.library.status_filter_enabled(StatusFilter::All) {
@@ -3082,6 +3153,35 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_run_failed(state.run_failed as i32);
 }
 
+fn library_ui_rows(state: &ApplicationState) -> Vec<UiLibraryRow> {
+    state
+        .library
+        .rows()
+        .into_iter()
+        .map(|row| UiLibraryRow {
+            key: SharedString::from(row.key),
+            primary: SharedString::from(row.primary),
+            secondary: SharedString::from(row.secondary),
+            status: SharedString::from(row.status),
+            selected: row.selected,
+            eligible: row.eligible,
+        })
+        .collect()
+}
+
+fn file_size_label(path: &str) -> String {
+    let Ok(bytes) = std::fs::metadata(path).map(|metadata| metadata.len()) else {
+        return String::new();
+    };
+    if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 fn model<T: Clone + 'static>(values: Vec<T>) -> ModelRc<T> {
     Rc::new(VecModel::from(values)).into()
 }
@@ -3175,7 +3275,7 @@ fn load_image(path: &str) -> slint::Image {
 
 #[cfg(test)]
 mod tests {
-    use super::{restore_request_from_args, split_values};
+    use super::{is_valid_mbid, restore_request_from_args, split_values};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -3206,6 +3306,14 @@ mod tests {
             split_values(r#"["deezer", "itunes", "navidrome"]"#),
             vec!["deezer", "itunes", "navidrome"]
         );
+    }
+
+    #[test]
+    fn musicbrainz_page_links_require_release_uuid_shape() {
+        assert!(is_valid_mbid("4f725973-aaf1-4d0d-a775-0a90ed2a0757"));
+        assert!(is_valid_mbid("4F725973-AAF1-4D0D-A775-0A90ED2A0757"));
+        assert!(!is_valid_mbid("not-a-release-id"));
+        assert!(!is_valid_mbid("4f725973-aaf1-4d0d-a775-0a90ed2a075z"));
     }
 }
 

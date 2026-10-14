@@ -67,6 +67,15 @@ not a current build or runtime option.
 
 ## Workflow behavior retained
 
+- [x] The production Slint shell implements the native graphical Artwork
+      Workspace with graphical library navigation, mode tabs, Selected Artwork,
+      source cards, and a horizontal candidate tray.
+- [x] Find & Match, Edit Artwork, Upscale/Enhance, MusicBrainz Results, and the
+      separate Custom Upscale workspace project the existing Rust models and
+      callbacks rather than maintaining duplicate UI workflow authority.
+- [x] Source and candidate strips scroll horizontally; source-card reordering
+      writes through the existing Config v5 order, and candidate filters retain
+      include/neutral/disregard behavior.
 - [x] Artist, Album, and Folder views project the resident SQLite model.
 - [x] Selection, bypass/timeout protection, compilation eligibility, READ/LIVE
       WRITE queues, sequential recovery, and STOP are Rust-owned state.
@@ -83,6 +92,8 @@ not a current build or runtime option.
       presentation preferences independently of Config v5.
 - [x] Collapsed panes reclaim their space and restore their previous useful size
       when expanded, subject to the current window's minimum usable dimensions.
+- [x] The active artwork mode is a backward-compatible `data/ui.toml`
+      presentation preference; missing values default to Find & Match.
 
 The workflow-level comparison with the final mature WinForms behavior is in
 [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md).

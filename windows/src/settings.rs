@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct UiPreferences {
     pub appearance: String,
+    pub workspace_mode: u8,
     pub library_view: String,
     pub status_filter: String,
     pub status_filters: Vec<String>,
@@ -52,6 +53,7 @@ impl Default for UiPreferences {
     fn default() -> Self {
         Self {
             appearance: "System".to_string(),
+            workspace_mode: 0,
             library_view: "artists".to_string(),
             status_filter: "all".to_string(),
             status_filters: Vec::new(),
@@ -531,6 +533,7 @@ mod tests {
     fn mature_interface_preferences_round_trip_without_a_second_authority() {
         let preferences = UiPreferences {
             appearance: "Light".to_string(),
+            workspace_mode: 2,
             library_view: "folders".to_string(),
             status_filters: vec!["Unprocessed".to_string(), "Incomplete".to_string()],
             show_tracks: true,
@@ -587,6 +590,7 @@ window_height = 700
             defaults.candidate_filter_height
         );
         assert_eq!(restored.appearance, "System");
+        assert_eq!(restored.workspace_mode, 0);
         assert!(!restored.window_maximized);
     }
 

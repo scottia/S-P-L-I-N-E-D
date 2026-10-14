@@ -4,10 +4,11 @@ SPLINED for Windows is a native Rust application with a Slint presentation
 layer. One Cargo-built `splined.exe` contains the application, workflow, and UI;
 there is no managed frontend, application DLL bridge, or helper process.
 
-The current Slint interface is deliberately a functional migration surface.
-It restores the mature 1.0.88 Windows workflows in the native architecture;
-the separate graphical redesign has not been applied. The detailed comparison
-is maintained in the
+The Slint interface uses the native graphical artwork workspace: a branded app
+bar, graphical Media Library, switchable Find & Match, Edit, Upscale/Enhance,
+and Advanced modes, dominant Selected Artwork preview, and horizontally
+scrollable candidate/source strips. The presentation remains a projection of
+the same Rust-owned state restored by the
 [1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md).
 
 ## First run and state
@@ -63,8 +64,8 @@ records its secret.
 
 ## Media Library
 
-The left panel is projected from the resident Rust database model. It provides
-three views over the same album authority:
+The graphical left sidebar is projected from the resident Rust database model.
+It provides three views over the same album authority:
 
 - **Artists** shows aggregate artist status. Activating an artist scopes the
   album set and cascades selection to eligible albums.
@@ -79,12 +80,11 @@ an empty compilation-track section yields its space to the scrollable library.
 
 ### Resizable workspace
 
-The Workspace has native Slint drag dividers between the Media Library, central
-candidate/activity workspace, and Artwork Preview & Editing. Horizontal drag
-areas resize both side panes continuously while the center receives or releases
-the remaining width. Vertical drag areas adjust the candidate-filter/results
-boundary and the Run Controls/Activity region. Each divider has a visible hover
-state and a wider hit area than its rendered line.
+The Artwork Workspace has native Slint drag dividers between the Media Library,
+central mode workspace, and Selected Artwork preview. Horizontal drag areas
+resize both side panes continuously while the center receives or releases the
+remaining width. A vertical drag area adjusts the candidate-artwork tray. Each
+divider has a visible hover state and a wider hit area than its rendered line.
 
 Rust validates every requested size before Slint renders it. Media, center,
 artwork, candidate-result, and activity regions retain minimum usable sizes;
@@ -94,10 +94,29 @@ size, and restore returns to that normal geometry. Collapsing Media Library,
 Artwork Preview & Editing, or Artwork Filter reclaims its space while retaining
 the previous expanded width or height for the next expansion.
 
-Pane geometry, expanded dimensions, normal window size, maximized state, and
-the **System / Light / Dark** appearance choice are presentation preferences in
-`data\ui.toml`. They are not Config v5 fields. Older `ui.toml` files remain
-valid and acquire safe defaults for fields they do not contain.
+Pane geometry, expanded dimensions, the active artwork mode, normal window
+size, maximized state, and the **System / Light / Dark** appearance choice are
+presentation preferences in `data\ui.toml`. They are not Config v5 fields.
+Older `ui.toml` files remain valid and acquire safe defaults for fields they do
+not contain.
+
+### Artwork workspace modes
+
+- **Find & Match Artwork** combines the Config v5 source strip, tri-state
+  filters, adjustment preview, Selected Artwork, and the candidate tray.
+- **Edit Artwork** provides candidate source selection, a current-image canvas,
+  five primary adjustment controls, and the existing preview/apply actions.
+- **Upscale / Enhance** presents the real configured upscaler and opens the
+  dedicated Custom Upscale before/after window; no model names or capabilities
+  are invented by the interface.
+- **Advanced** keeps source-priority controls, launch/stop actions, and live
+  Scan Activity and Decisions accessible without displacing the main artwork
+  workflow.
+
+MusicBrainz Results temporarily occupies the central mode workspace while an
+authority decision is pending. The current album stays distinct from ordinary
+results, release pages can be opened directly, and refine/back/apply actions
+continue to use the Rust run controller.
 
 Text and status filters change only visibility. Artist and Album filters can
 be combined with general search and multiple independently enabled status
@@ -134,12 +153,14 @@ silently marked complete.
 
 ## Candidate artwork and sources
 
-The source row is derived from the Config v5 `cover_sources` order. Include,
+The horizontally scrollable source-card row is derived from the Config v5
+`cover_sources` order. Include,
 exclude, and priority actions save back to the same authoritative source list;
 there is no UI-only provider order. Local artwork retains its fixed review role.
 Provider status and candidate counts are projections of runtime events.
 
-Candidate rows contain real source provenance, native/projected dimensions,
+The bottom candidate strip scrolls horizontally. Its cards contain real source
+provenance, native/projected dimensions,
 image type, range class, policy status, cache path, recommendation, comparison,
 and selection state. Source, type, policy, and range controls filter the
 resident result set. Each control cycles among include, neutral, and disregard
@@ -188,11 +209,11 @@ profile and existing maximum-upscale enforcement. The real final-artwork code
 continues to preserve native artwork above Ideal resolution, apply square/crop
 policy, and enforce `upscale_max_percent`.
 
-**Custom Upscale** opens a separate resizable Current/Upscaled comparison and
-editing window. Resolution and ratio labels are display overlays only. All
-eight controls provide increment, decrement, and reset; exactly five may be
-promoted and reordered as primary controls. Adaptive defaults remain Config v5
-backed.
+**Custom Upscale** opens a separate resizable Original/Preview comparison and
+editing workspace with library and current-album context. Resolution and ratio
+labels are display overlays only. All eight controls provide increment,
+decrement, and reset; exactly five may be promoted and reordered as primary
+controls. Adaptive defaults remain Config v5 backed.
 
 Existing-cover editing requires LIVE WRITE and a current local cover. It uses
 the same validated final-artwork pipeline and safe replacement behavior.

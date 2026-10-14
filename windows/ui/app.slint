@@ -18,11 +18,224 @@ export global AppTheme {
     out property <color> foreground: root.light ? #10283a : #eef8ff;
     out property <color> secondary-foreground: root.light ? #3f647b : #9fc1d5;
     out property <color> border: root.light ? #6b9dbb : #28506f;
+    out property <color> card: root.light ? #edf6fc : #081b2e;
+    out property <color> card-hover: root.light ? #dceffc : #102f4d;
+    out property <color> cyan: #21d8ff;
+    out property <color> blue: #3478ff;
+    out property <color> violet: #7c4dff;
+    out property <color> magenta: #ef38c7;
+    out property <color> green: #32dda0;
+    out property <color> yellow: #f4cc4d;
+    out property <color> danger: #ff5268;
 }
 
 component Panel inherits Rectangle { background: AppTheme.panel-background; border-color: AppTheme.border; border-width: 1px; border-radius: 5px; }
 component Heading inherits Text { color: AppTheme.foreground; font-size: 17px; font-weight: 700; vertical-alignment: center; }
 component Label inherits Text { color: AppTheme.secondary-foreground; font-size: 11px; vertical-alignment: center; }
+component NeonPanel inherits Rectangle {
+    background: AppTheme.panel-background;
+    border-color: #225b8c;
+    border-width: 1px;
+    border-radius: 8px;
+}
+component NeonAction inherits Rectangle {
+    in property <string> label;
+    in property <bool> emphasized: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 36px;
+    border-radius: 6px;
+    border-width: root.emphasized ? 2px : 1px;
+    border-color: root.danger ? AppTheme.danger : (root.emphasized ? AppTheme.cyan : #315b84);
+    background: !root.enabled ? #132236 : (action.pressed ? #163c65 : (action.has-hover ? #14365a : (root.emphasized ? #173b91 : AppTheme.card)));
+    Text {
+        text: root.label;
+        color: root.enabled ? AppTheme.foreground : #61788b;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-weight: root.emphasized ? 700 : 500;
+        font-size: 12px;
+    }
+    action := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => root.clicked(); }
+}
+component BrandMark {
+    width: 255px;
+    HorizontalLayout { spacing: 7px;
+        Image { source: @image-url("../gui/splined-app-icon.png"); width: 48px; height: 42px; image-fit: contain; }
+        VerticalLayout { spacing: 0px;
+            HorizontalLayout { height: 26px; spacing: 0px;
+                Text { text: "S"; color: #23d7ff; font-size: 22px; font-weight: 900; }
+                Text { text: ":"; color: #6f6cff; font-size: 22px; font-weight: 900; }
+                Text { text: "P"; color: #7684ff; font-size: 22px; font-weight: 900; }
+                Text { text: ":"; color: #be4fed; font-size: 22px; font-weight: 900; }
+                Text { text: "L"; color: #ee43c7; font-size: 22px; font-weight: 900; }
+                Text { text: ":"; color: #ff5f9f; font-size: 22px; font-weight: 900; }
+                Text { text: "I"; color: #ff765f; font-size: 22px; font-weight: 900; }
+                Text { text: ":"; color: #ff9e43; font-size: 22px; font-weight: 900; }
+                Text { text: "N"; color: #f5c847; font-size: 22px; font-weight: 900; }
+                Text { text: ":"; color: #83df5c; font-size: 22px; font-weight: 900; }
+                Text { text: "E"; color: #39d79a; font-size: 22px; font-weight: 900; }
+                Text { text: ":"; color: #30d9d1; font-size: 22px; font-weight: 900; }
+                Text { text: "D"; color: #25d7ff; font-size: 22px; font-weight: 900; }
+            }
+            Text { text: "MUSIC LOOKS BETTER HERE"; color: #99afc2; font-size: 7px; letter-spacing: 1.8px; }
+        }
+    }
+}
+component ModeTab inherits Rectangle {
+    in property <string> icon-text;
+    in property <string> label;
+    in property <bool> selected: false;
+    callback activated();
+    border-radius: 6px;
+    border-width: root.selected ? 2px : 0px;
+    border-color: root.selected ? AppTheme.cyan : transparent;
+    background: root.selected ? #173b91 : (mode-touch.has-hover ? #102d4b : transparent);
+    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 9px;
+        Text { text: root.icon-text; color: root.selected ? AppTheme.cyan : #b7cad8; font-size: 19px; vertical-alignment: center; }
+        Text { text: root.label; color: AppTheme.foreground; font-size: 12px; font-weight: root.selected ? 700 : 500; vertical-alignment: center; }
+    }
+    mode-touch := TouchArea { mouse-cursor: pointer; clicked => root.activated(); }
+}
+component LibraryItem inherits Rectangle {
+    in property <UiLibraryRow> item;
+    callback activated(string);
+    height: 51px;
+    border-radius: 6px;
+    border-width: root.item.selected ? 2px : 0px;
+    border-color: root.item.selected ? AppTheme.cyan : transparent;
+    background: root.item.selected ? #173b91 : (row-touch.has-hover ? AppTheme.card-hover : transparent);
+    HorizontalLayout { padding-left: 6px; padding-right: 6px; spacing: 8px;
+        Rectangle { width: 33px; height: 33px; border-radius: 17px; background: root.item.eligible ? #254e70 : #392f45; border-color: root.item.selected ? AppTheme.magenta : #4d6d83; border-width: 1px;
+            Text { text: root.item.primary == "" ? "?" : "♪"; color: AppTheme.foreground; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        VerticalLayout { spacing: 1px;
+            Text { text: root.item.primary; color: AppTheme.foreground; font-size: 12px; font-weight: root.item.selected ? 700 : 500; overflow: elide; }
+            Text { text: root.item.secondary; color: AppTheme.secondary-foreground; font-size: 9px; overflow: elide; }
+            Text { text: root.item.status; color: root.item.eligible ? AppTheme.green : #e0a061; font-size: 8px; overflow: elide; }
+        }
+        Text { visible: root.item.selected; text: "›"; color: AppTheme.cyan; font-size: 20px; vertical-alignment: center; }
+    }
+    row-touch := TouchArea { mouse-cursor: pointer; clicked => root.activated(root.item.key); }
+}
+component SourceCard inherits Rectangle {
+    in property <UiSourceRow> source-row;
+    in property <bool> selected: false;
+    callback chosen(string);
+    callback reorder(string, string);
+    width: 104px;
+    border-radius: 7px;
+    border-width: root.selected ? 2px : 1px;
+    border-color: !root.source-row.enabled ? #734354 : (root.selected ? AppTheme.cyan : #285a83);
+    background: root.selected ? #133b67 : (source-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
+    VerticalLayout { padding: 5px; spacing: 2px;
+        HorizontalLayout { height: 21px; spacing: 2px;
+            Text { text: root.source-row.enabled ? "◆" : "×"; color: root.source-row.enabled ? AppTheme.magenta : AppTheme.danger; font-size: 15px; horizontal-stretch: 1; vertical-alignment: center; }
+            Rectangle { width: 18px; border-radius: 3px; background: #152b43;
+                Text { text: "‹"; color: #9cb7c9; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { mouse-cursor: pointer; clicked => root.reorder(root.source-row.name, "up"); }
+            }
+            Rectangle { width: 18px; border-radius: 3px; background: #152b43;
+                Text { text: "›"; color: #9cb7c9; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { mouse-cursor: pointer; clicked => root.reorder(root.source-row.name, "down"); }
+            }
+        }
+        Text { text: root.source-row.name; color: AppTheme.foreground; font-size: 11px; font-weight: 700; horizontal-alignment: center; overflow: elide; }
+        Text { text: root.source-row.enabled ? root.source-row.count + " found" : "Excluded"; color: root.source-row.enabled ? AppTheme.secondary-foreground : AppTheme.danger; font-size: 9px; horizontal-alignment: center; }
+        Text { text: root.source-row.status; color: root.source-row.enabled ? AppTheme.green : AppTheme.secondary-foreground; font-size: 8px; horizontal-alignment: center; overflow: elide; }
+    }
+    source-touch := TouchArea { mouse-cursor: pointer; clicked => root.chosen(root.source-row.name); }
+}
+component CandidateCard inherits Rectangle {
+    in property <UiCandidateRow> candidate;
+    callback chosen(int);
+    callback comparison(int);
+    callback hovered(int, bool);
+    width: 145px;
+    border-radius: 7px;
+    border-width: root.candidate.selected ? 2px : 1px;
+    border-color: root.candidate.selected ? AppTheme.cyan : (root.candidate.recommended ? AppTheme.green : #285a83);
+    background: candidate-touch.has-hover ? AppTheme.card-hover : AppTheme.card;
+    property <bool> candidate-hovered: candidate-touch.has-hover;
+    changed candidate-hovered => root.hovered(root.candidate.index, self.candidate-hovered);
+    VerticalLayout { padding: 5px; spacing: 3px;
+        Rectangle { vertical-stretch: 1; background: #030b12; border-radius: 4px; clip: true;
+            Image { source: root.candidate.preview; width: parent.width; height: parent.height; image-fit: contain; }
+            Rectangle { x: 4px; y: parent.height - 23px; width: min(parent.width - 8px, 112px); height: 19px; border-radius: 4px; background: #d9061322;
+                Text { text: root.candidate.source; color: #ffffff; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+            }
+            if root.candidate.selected: Rectangle { x: 5px; y: 5px; width: 23px; height: 23px; border-radius: 12px; background: AppTheme.green;
+                Text { text: "✓"; color: #00151c; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
+            }
+            candidate-touch := TouchArea { mouse-cursor: pointer; clicked => root.chosen(root.candidate.index); }
+        }
+        HorizontalLayout { height: 17px;
+            Text { text: root.candidate.recommended ? "Recommended" : root.candidate.range-class; color: root.candidate.recommended ? AppTheme.yellow : AppTheme.secondary-foreground; font-size: 8px; overflow: elide; }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+            Text { text: root.candidate.compared ? "Compare ✓" : "Compare +"; color: root.candidate.compared ? AppTheme.yellow : AppTheme.cyan; font-size: 8px; }
+            TouchArea { width: 48px; mouse-cursor: pointer; clicked => root.comparison(root.candidate.index); }
+        }
+        Text { text: root.candidate.dimensions; color: AppTheme.foreground; font-size: 9px; }
+    }
+}
+component AdjustmentLine inherits Rectangle {
+    in property <UiAdjustmentRow> adjustment;
+    in property <bool> compact: false;
+    callback step(string, int);
+    callback reset(string);
+    callback move-primary(string, int);
+    callback promote(string);
+    height: root.compact ? 39px : 48px;
+    border-radius: 5px;
+    background: #071a2c;
+    HorizontalLayout { padding-left: 6px; padding-right: 6px; spacing: 6px;
+        Rectangle { width: 27px; border-radius: 4px; background: root.adjustment.primary ? #173d78 : #14273a;
+            Text { text: root.adjustment.primary ? "◆" : "◇"; color: root.adjustment.primary ? AppTheme.cyan : #668096; horizontal-alignment: center; vertical-alignment: center; }
+            TouchArea { mouse-cursor: pointer; clicked => root.promote(root.adjustment.name); }
+        }
+        Text { text: root.adjustment.name; color: AppTheme.foreground; font-size: 10px; width: root.compact ? 64px : 82px; vertical-alignment: center; }
+        Rectangle { horizontal-stretch: 1; height: 6px; border-radius: 3px; background: #233a56;
+            Rectangle { width: max(4px, min(parent.width, parent.width * (root.adjustment.value + 100) / 200)); height: parent.height; border-radius: 3px; background: @linear-gradient(90deg, AppTheme.cyan, AppTheme.violet, AppTheme.magenta); }
+        }
+        NeonAction { label: "−"; width: 28px; height: 28px; clicked => root.step(root.adjustment.name, -1); }
+        Text { text: (root.adjustment.value >= 0 ? "+" : "") + root.adjustment.value + root.adjustment.unit; color: #ffffff; width: 50px; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+        NeonAction { label: "+"; width: 28px; height: 28px; clicked => root.step(root.adjustment.name, 1); }
+        NeonAction { label: "↻"; width: 28px; height: 28px; clicked => root.reset(root.adjustment.name); }
+        if root.adjustment.primary: HorizontalLayout { width: 58px; spacing: 2px;
+            NeonAction { label: "‹"; width: 28px; height: 28px; clicked => root.move-primary(root.adjustment.name, -1); }
+            NeonAction { label: "›"; width: 28px; height: 28px; clicked => root.move-primary(root.adjustment.name, 1); }
+        }
+    }
+}
+component AdjustmentTile inherits Rectangle {
+    in property <UiAdjustmentRow> adjustment;
+    callback step(string, int);
+    callback reset(string);
+    callback promote(string);
+    width: 190px;
+    height: 104px;
+    border-radius: 7px;
+    border-width: root.adjustment.primary ? 2px : 1px;
+    border-color: root.adjustment.primary ? AppTheme.cyan : #315878;
+    background: AppTheme.card;
+    VerticalLayout { padding: 7px; spacing: 5px;
+        HorizontalLayout { height: 24px; spacing: 5px;
+            Text { text: root.adjustment.primary ? "✓" : "◇"; color: root.adjustment.primary ? AppTheme.cyan : #668096; font-weight: 800; }
+            Text { text: root.adjustment.name; color: AppTheme.foreground; font-weight: 700; font-size: 11px; horizontal-stretch: 1; }
+            TouchArea { width: 24px; mouse-cursor: pointer; clicked => root.promote(root.adjustment.name); }
+        }
+        Rectangle { height: 7px; border-radius: 4px; background: #243a55;
+            Rectangle { width: max(4px, min(parent.width, parent.width * (root.adjustment.value + 100) / 200)); height: parent.height; border-radius: 4px; background: @linear-gradient(90deg, AppTheme.cyan, AppTheme.violet, AppTheme.magenta); }
+        }
+        HorizontalLayout { spacing: 5px;
+            NeonAction { label: "−"; width: 31px; height: 27px; clicked => root.step(root.adjustment.name, -1); }
+            Text { text: (root.adjustment.value >= 0 ? "+" : "") + root.adjustment.value + root.adjustment.unit; color: #ffffff; horizontal-stretch: 1; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
+            NeonAction { label: "+"; width: 31px; height: 27px; clicked => root.step(root.adjustment.name, 1); }
+            NeonAction { label: "↻"; width: 31px; height: 27px; clicked => root.reset(root.adjustment.name); }
+        }
+    }
+}
 component ColumnSplitter inherits Rectangle {
     in property <float> position;
     in property <float> minimum;
@@ -117,9 +330,13 @@ export component CandidateCompareWindow inherits Window {
 export component CustomUpscaleWindow inherits Window {
     title: "S:P:L:I:N:E:D — Upscale Comparison & Editing";
     icon: @image-url("../gui/splined-app-icon.png");
-    preferred-width: 1120px; preferred-height: 760px;
-    min-width: 820px; min-height: 600px;
+    preferred-width: 1480px; preferred-height: 850px;
+    min-width: 960px; min-height: 640px;
     background: AppTheme.window-background;
+    in property <[UiLibraryRow]> library-rows;
+    in property <int> selected-count;
+    in property <string> current-artist;
+    in property <string> current-album;
     in property <image> current-image;
     in property <image> upscaled-image;
     in property <string> current-reference;
@@ -135,54 +352,91 @@ export component CustomUpscaleWindow inherits Window {
     callback set-adaptive(bool);
     callback save();
     callback cancel();
-    VerticalLayout { padding: 10px; spacing: 8px;
-        Heading { text: "Custom Upscale · full comparison and editing"; height: 30px; }
-        HorizontalLayout { spacing: 8px; vertical-stretch: 1;
-            Panel { horizontal-stretch: 1;
-                VerticalLayout { padding: 8px; spacing: 5px;
-                    Heading { text: "[CURRENT]"; height: 25px; horizontal-alignment: center; }
-                    Rectangle { vertical-stretch: 1; background: #06111b; clip: true;
-                        Image { source: root.current-image; width: parent.width; height: parent.height; image-fit: contain; }
-                        Text { y: parent.height - 28px; width: parent.width; height: 24px; text: root.current-reference; color: #f4d264; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
-                    }
-                }
-            }
-            Panel { horizontal-stretch: 1;
-                VerticalLayout { padding: 8px; spacing: 5px;
-                    Heading { text: "[UPSCALED]"; height: 25px; horizontal-alignment: center; }
-                    Rectangle { vertical-stretch: 1; background: #06111b; clip: true;
-                        Image { source: root.upscaled-image; width: parent.width; height: parent.height; image-fit: contain; }
-                        Text { y: parent.height - 28px; width: parent.width; height: 24px; text: root.upscaled-reference; color: #f4d264; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
-                    }
-                }
+    VerticalLayout { spacing: 0px;
+        Rectangle { height: 58px; background: #061424; border-color: #174f7c; border-width: 1px;
+            HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 14px;
+                BrandMark {}
+                NeonAction { label: "‹  Back to Library"; width: 145px; clicked => root.cancel(); }
+                Text { text: root.current-artist + "  ›  " + root.current-album + "  ›  Custom Upscale"; color: AppTheme.secondary-foreground; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
+                Text { text: "SELECTED ARTWORK CONTEXT"; color: AppTheme.cyan; font-size: 9px; letter-spacing: 1.2px; vertical-alignment: center; }
             }
         }
-        Panel { height: 190px;
-            VerticalLayout { padding: 8px; spacing: 5px;
-                HorizontalLayout { spacing: 8px;
-                    CheckBox { text: "Upscale Preview"; checked: root.preview-only; toggled => { if self.checked { root.set-preview(true); } } }
-                    CheckBox { text: "Apply Upscale"; checked: !root.preview-only; toggled => { if self.checked { root.set-preview(false); } } }
-                    CheckBox { text: "Apply Upscale Default"; checked <=> root.adaptive-defaults; toggled => root.set-adaptive(self.checked); }
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                    Text { text: root.status-text; color: root.can-save ? #55d790 : #f1c458; vertical-alignment: center; }
+        HorizontalLayout { padding: 8px; spacing: 8px; vertical-stretch: 1;
+            NeonPanel { width: 240px;
+                VerticalLayout { padding: 9px; spacing: 7px;
+                    Heading { text: "▣  Media Library"; height: 30px; }
+                    Text { text: root.selected-count + " album(s) selected"; color: AppTheme.cyan; font-size: 10px; height: 22px; }
+                    ListView { vertical-stretch: 1;
+                        for row in root.library-rows: LibraryItem { item: row; }
+                    }
+                    Text { text: "Custom Upscale keeps the active library and artwork context."; color: AppTheme.secondary-foreground; font-size: 9px; wrap: word-wrap; height: 44px; }
                 }
-                ScrollView { height: 92px;
-                    HorizontalLayout { spacing: 5px;
-                        for adjustment in root.adjustment-rows: Rectangle { width: 112px; height: 84px; background: #0a1c2b; border-color: adjustment.primary ? #30c8ff : #28506f; border-width: 1px;
-                            VerticalLayout { padding: 2px; spacing: 1px;
-                                Text { text: adjustment.name; color: #d9edf8; horizontal-alignment: center; }
-                                Button { text: "▲"; height: 18px; clicked => root.adjustment-step(adjustment.name, 1); }
-                                Text { text: adjustment.value + adjustment.unit; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
-                                Button { text: "▼"; height: 18px; clicked => root.adjustment-step(adjustment.name, -1); }
-                                Button { text: "↻"; height: 18px; clicked => root.adjustment-reset(adjustment.name); }
+            }
+            VerticalLayout { spacing: 8px; horizontal-stretch: 1;
+                HorizontalLayout { height: 58px; spacing: 10px;
+                    Text { text: "⤢"; color: AppTheme.magenta; font-size: 38px; vertical-alignment: center; }
+                    VerticalLayout { spacing: 0px;
+                        Heading { text: "Custom Upscale"; font-size: 25px; }
+                        Text { text: "Enhance details, increase resolution, and preserve the selected artwork context."; color: AppTheme.secondary-foreground; font-size: 11px; }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Text { text: root.status-text; color: root.can-save ? AppTheme.green : AppTheme.yellow; font-size: 10px; vertical-alignment: center; }
+                }
+                HorizontalLayout { spacing: 8px; vertical-stretch: 1;
+                    NeonPanel { horizontal-stretch: 1;
+                        VerticalLayout { padding: 8px; spacing: 5px;
+                            Text { text: "ORIGINAL"; color: AppTheme.foreground; font-weight: 800; horizontal-alignment: center; height: 23px; }
+                            Rectangle { vertical-stretch: 1; background: #02070d; border-radius: 5px; clip: true;
+                                Image { source: root.current-image; width: parent.width; height: parent.height; image-fit: contain; }
+                                Rectangle { y: parent.height - 30px; width: parent.width; height: 30px; background: #ba020812;
+                                    Text { text: root.current-reference; color: AppTheme.yellow; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; font-size: 10px; }
+                                }
                             }
                         }
                     }
+                    NeonPanel { horizontal-stretch: 1; border-color: AppTheme.violet;
+                        VerticalLayout { padding: 8px; spacing: 5px;
+                            Text { text: root.preview-only ? "PREVIEW" : "UPSCALED"; color: AppTheme.foreground; font-weight: 800; horizontal-alignment: center; height: 23px; }
+                            Rectangle { vertical-stretch: 1; background: #02070d; border-radius: 5px; clip: true;
+                                Image { source: root.upscaled-image; width: parent.width; height: parent.height; image-fit: contain; }
+                                Rectangle { y: parent.height - 30px; width: parent.width; height: 30px; background: #ba020812;
+                                    Text { text: root.upscaled-reference; color: AppTheme.yellow; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; font-size: 10px; }
+                                }
+                            }
+                        }
+                    }
+                    NeonPanel { width: 285px;
+                        VerticalLayout { padding: 10px; spacing: 9px;
+                            Heading { text: "Upscale Settings"; height: 30px; }
+                            Text { text: "OUTPUT MODE"; color: AppTheme.cyan; font-size: 9px; font-weight: 700; }
+                            NeonAction { label: root.preview-only ? "●  Preview Only" : "○  Preview Only"; emphasized: root.preview-only; clicked => root.set-preview(true); }
+                            NeonAction { label: root.preview-only ? "○  Apply Upscale" : "●  Apply Upscale"; emphasized: !root.preview-only; clicked => root.set-preview(false); }
+                            Text { text: "ADAPTIVE DEFAULTS"; color: AppTheme.cyan; font-size: 9px; font-weight: 700; }
+                            CheckBox { text: "Use configured adaptive profile"; checked <=> root.adaptive-defaults; toggled => root.set-adaptive(self.checked); }
+                            Text { text: "SPLINED uses the configured output format, square policy, and maximum upscale percentage."; color: AppTheme.secondary-foreground; font-size: 9px; wrap: word-wrap; height: 62px; }
+                            Rectangle { vertical-stretch: 1; background: transparent; }
+                            NeonAction { label: "Preview Changes"; clicked => root.set-preview(true); }
+                            NeonAction { label: "Apply Upscale"; emphasized: true; enabled: root.can-save; clicked => root.save(); }
+                            NeonAction { label: "Cancel / Back"; danger: true; clicked => root.cancel(); }
+                        }
+                    }
                 }
-                HorizontalLayout { spacing: 8px;
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                    Button { text: "Save Existing / Apply Upscale"; enabled: root.can-save; clicked => root.save(); }
-                    Button { text: "Cancel Upscale"; clicked => root.cancel(); }
+                NeonPanel { height: 140px;
+                    VerticalLayout { padding: 8px; spacing: 6px;
+                        HorizontalLayout { height: 25px;
+                            Heading { text: "Primary Enhancement Sliders"; font-size: 14px; horizontal-stretch: 1; }
+                            Text { text: "Select up to five primary controls; additional controls remain available."; color: AppTheme.secondary-foreground; font-size: 9px; vertical-alignment: center; }
+                        }
+                        ScrollView { vertical-stretch: 1;
+                            HorizontalLayout { spacing: 7px;
+                                for adjustment in root.adjustment-rows: AdjustmentTile {
+                                    adjustment: adjustment;
+                                    step(name, delta) => root.adjustment-step(name, delta);
+                                    reset(name) => root.adjustment-reset(name);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -190,7 +444,7 @@ export component CustomUpscaleWindow inherits Window {
 }
 
 export component AppWindow inherits Window {
-    title: "S:P:L:I:N:E:D — Rust/Slint";
+    title: "S:P:L:I:N:E:D — Artwork Workspace";
     icon: @image-url("../gui/splined-app-icon.png");
     preferred-width: 1380px; preferred-height: 860px;
     min-width: 960px; min-height: 640px;
@@ -207,12 +461,18 @@ export component AppWindow inherits Window {
     in property <[string]> musicbrainz-release-type-options: ["All"];
     in property <[UiAdjustmentRow]> adjustment-rows;
     in property <int> selected-count;
+    in property <string> library-view-label: "Artists";
     in property <string> database-label;
     in property <string> current-artist;
     in property <string> current-album;
     in property <string> current-path;
     in property <string> current-status;
     in property <image> current-preview;
+    in property <string> selected-artwork-source;
+    in property <string> selected-artwork-type;
+    in property <string> selected-artwork-dimensions;
+    in property <string> selected-artwork-quality;
+    in property <string> selected-artwork-size;
     in property <string> log-text;
     in property <string> error-text;
     in property <bool> can-launch;
@@ -256,6 +516,7 @@ export component AppWindow inherits Window {
     in property <int> run-failed;
     in-out property <string> status-filter-label: "All";
     in-out property <int> page-index: 0;
+    in-out property <int> workspace-mode: 0;
     in-out property <string> selected-source-name: "All";
     in-out property <bool> setup-required: false;
     in property <string> setup-message;
@@ -348,7 +609,7 @@ export component AppWindow inherits Window {
     callback candidate-compare-toggle(int); callback open-candidate-compare(); callback candidate-hover(int, bool);
     callback set-hover-enabled(bool);
     callback fallback-retry(string, string);
-    callback musicbrainz-selected(int); callback musicbrainz-use-selected(); callback musicbrainz-apply-authority(string, string, string); callback musicbrainz-leave-unchanged(); callback musicbrainz-filter(string, string); callback adjustment-step(string, int); callback adjustment-reset(string);
+    callback musicbrainz-selected(int); callback musicbrainz-use-selected(); callback musicbrainz-apply-authority(string, string, string); callback musicbrainz-leave-unchanged(); callback musicbrainz-filter(string, string); callback open-musicbrainz-page(int); callback adjustment-step(string, int); callback adjustment-reset(string);
     callback primary-adjustment-move(string, int); callback primary-adjustment-promote(string); callback open-custom-upscale();
     callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
     callback load-settings(); callback save-settings(); callback save-setup();
@@ -363,16 +624,22 @@ export component AppWindow inherits Window {
     VerticalLayout {
         padding: 8px; spacing: 7px;
         Rectangle {
-            height: 54px; background: AppTheme.header-background; border-color: #1b83bd; border-width: 1px;
-            HorizontalLayout { padding-left: 14px; padding-right: 10px; spacing: 12px;
-                Text { text: "S:P:L:I:N:E:D"; color: #42d7ff; font-size: 24px; font-weight: 800; vertical-alignment: center; }
-                Text { text: "Rust application authority · Slint presentation"; color: #86a8bd; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                Button { text: "Workspace"; enabled: !root.setup-required; clicked => { root.page-index = 0; } }
-                Button { text: "Settings & Credentials"; enabled: !root.setup-required; clicked => { root.page-index = 1; root.load-settings(); root.load-credential(root.credential-provider); } }
-                Button { text: "Setup"; visible: root.setup-required; clicked => { root.page-index = 3; } }
-                Button { text: "Backup & Updates"; clicked => { root.page-index = 2; } }
-                ComboBox { width: 96px; model: ["System", "Light", "Dark"]; current-value <=> root.appearance-mode; selected(value) => root.set-appearance(value); }
-                Text { text: root.version-label; color: #8fb3c9; font-size: 11px; vertical-alignment: center; }
+            height: 58px; background: AppTheme.header-background; border-color: #193c64; border-width: 1px;
+            HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
+                BrandMark { width: 225px; }
+                Rectangle { width: 170px; height: 34px; border-radius: 7px; background: #10243b; border-color: #284d72; border-width: 1px;
+                    HorizontalLayout { padding-left: 10px; spacing: 7px;
+                        Text { text: "⌕"; color: AppTheme.cyan; font-size: 20px; vertical-alignment: center; }
+                        LineEdit { placeholder-text: "Search artists, albums, or folders…"; edited(text) => root.search-edited(text); }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                NeonAction { label: "⌂ Artwork"; width: 90px; emphasized: root.page-index == 0; enabled: !root.setup-required; clicked => { root.page-index = 0; } }
+                NeonAction { label: "▣ Scan"; width: 68px; enabled: !root.setup-required; clicked => { root.page-index = 0; root.workspace-mode = 3; } }
+                NeonAction { label: "⚙ Settings"; width: 88px; emphasized: root.page-index == 1; enabled: !root.setup-required; clicked => { root.page-index = 1; root.load-settings(); root.load-credential(root.credential-provider); } }
+                NeonAction { label: "? Help"; width: 62px; emphasized: root.page-index == 2; clicked => { root.page-index = 2; } }
+                if root.setup-required: NeonAction { label: "Setup"; width: 78px; clicked => { root.page-index = 3; } }
+                ComboBox { width: 80px; model: ["System", "Light", "Dark"]; current-value <=> root.appearance-mode; selected(value) => root.set-appearance(value); }
             }
         }
 
@@ -397,259 +664,348 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.setup-required && root.page-index == 0: HorizontalLayout {
+        if !root.setup-required && root.page-index == 0: VerticalLayout {
             spacing: 0px; vertical-stretch: 1;
-            Panel { width: root.media-pane-width * 1px;
-                VerticalLayout { padding: 10px; spacing: 7px;
-                    HorizontalLayout { height: 30px; spacing: 5px;
-                        Heading { visible: root.media-selector-expanded; text: "Media Library · " + root.library-rows.length + " rows"; horizontal-stretch: 1; }
-                        Button { text: root.media-selector-expanded ? "Select Media  ◀" : "▶"; width: root.media-selector-expanded ? 118px : 30px; clicked => { root.media-selector-expanded = !root.media-selector-expanded; root.set-region-expanded("media", root.media-selector-expanded); } }
-                    }
-                    HorizontalLayout { visible: root.media-selector-expanded; height: root.media-selector-expanded ? 30px : 0px; spacing: 5px;
-                        Button { text: "Artists"; clicked => root.change-library-view(0); }
-                        Button { text: "Albums"; clicked => root.change-library-view(1); }
-                        Button { text: "Folders"; clicked => root.change-library-view(2); }
-                    }
-                    if root.media-selector-expanded: VerticalLayout { spacing: 5px;
-                        LineEdit { text <=> root.artist-filter-text; placeholder-text: "Artist Filter"; edited(text) => root.artist-filter-edited(text); }
-                        LineEdit { text <=> root.album-filter-text; placeholder-text: "Album Filter"; edited(text) => root.album-filter-edited(text); }
-                        LineEdit { placeholder-text: "Search artists, albums, or folders"; edited(text) => root.search-edited(text); }
-                        ScrollView { height: 62px;
-                            HorizontalLayout { spacing: 4px;
-                                for status in root.status-filter-rows: Rectangle {
-                                    width: 156px; height: 30px; border-radius: 3px;
-                                    background: status.enabled ? #173e58 : #0a1c2c;
-                                    border-color: status.enabled ? status.semantic-color : #28506f;
-                                    border-width: 1px;
-                                    Text { text: (status.enabled ? "● " : "○ ") + status.label + " [" + status.count + "]"; color: status.semantic-color; horizontal-alignment: center; vertical-alignment: center; font-size: 10px; }
-                                    TouchArea { clicked => root.status-filter-toggled(status.key); }
+            HorizontalLayout { spacing: 0px; vertical-stretch: 1;
+                NeonPanel { width: root.media-selector-expanded ? root.media-pane-width * 1px : 48px; border-radius: 0px;
+                    VerticalLayout { padding: root.media-selector-expanded ? 9px : 6px; spacing: 7px;
+                        HorizontalLayout { height: 31px; spacing: 5px;
+                            Heading { visible: root.media-selector-expanded; text: "▣  Media Library"; horizontal-stretch: 1; font-size: 15px; }
+                            NeonAction { label: root.media-selector-expanded ? "‹" : "›"; width: 32px; height: 30px; clicked => { root.media-selector-expanded = !root.media-selector-expanded; root.set-region-expanded("media", root.media-selector-expanded); } }
+                        }
+                        if root.media-selector-expanded: VerticalLayout { spacing: 7px;
+                            ComboBox { height: 32px; model: ["Select Media Library", "Configured Music Library"]; current-value: "Select Media Library"; }
+                            HorizontalLayout { height: 31px; spacing: 3px;
+                                NeonAction { label: "Artists"; emphasized: root.library-view-label == "Artists"; clicked => root.change-library-view(0); }
+                                NeonAction { label: "Albums"; emphasized: root.library-view-label == "Albums"; clicked => root.change-library-view(1); }
+                                NeonAction { label: "Folders"; emphasized: root.library-view-label == "Folders"; clicked => root.change-library-view(2); }
+                            }
+                            Rectangle { height: 32px; border-radius: 6px; background: AppTheme.card; border-color: #284f73; border-width: 1px;
+                                HorizontalLayout { padding-left: 8px; spacing: 5px;
+                                    Text { text: "⌕"; color: AppTheme.cyan; vertical-alignment: center; }
+                                    LineEdit { placeholder-text: "Search " + root.library-view-label + "…"; edited(text) => root.search-edited(text); }
                                 }
                             }
-                        }
-                        HorizontalLayout { spacing: 5px;
-                            Button { text: "Select [ALL]"; clicked => root.select-all(); }
-                            Button { text: "Select [FILTERED]"; clicked => root.select-filtered(); }
-                            Button { text: "Select [NONE]"; clicked => root.select-none(); }
-                        }
-                        HorizontalLayout { spacing: 5px;
-                            CheckBox { text: "Auto Scan [All]"; checked: root.auto-scan-enabled && root.scan-scope-label == "ALL"; toggled => root.set-auto-scan(true, self.checked); }
-                            CheckBox { text: "Auto Scan [Selected]"; checked: root.auto-scan-enabled && root.scan-scope-label == "SELECTED"; toggled => root.set-auto-scan(false, self.checked); }
-                        }
-                        HorizontalLayout { spacing: 5px;
+                            HorizontalLayout { height: 27px; spacing: 3px;
+                                NeonAction { label: "All"; width: 52px; height: 27px; clicked => root.select-all(); }
+                                NeonAction { label: "Filtered"; height: 27px; clicked => root.select-filtered(); }
+                                NeonAction { label: "None"; width: 58px; height: 27px; danger: true; clicked => root.select-none(); }
+                            }
                             CheckBox { text: "Show Tracks / Embedded Art"; checked <=> root.show-tracks; toggled => root.set-show-tracks(self.checked); }
-                            Button { text: "All Artists"; clicked => root.clear-artist-scope(); }
-                        }
-                    }
-                    CheckBox { visible: root.media-selector-expanded; text: "Allow one-run bypass override"; checked <=> root.include-bypassed; }
-                    CheckBox { visible: root.media-selector-expanded; text: "Show Artwork Preview & Editing"; checked <=> root.show-artwork; toggled => root.set-region-expanded("show-artwork", self.checked); }
-                    Text { visible: root.media-selector-expanded; text: root.selected-count + " album(s) selected"; color: #65d6ff; font-weight: 700; height: root.media-selector-expanded ? 24px : 0px; }
-                    ListView { visible: root.media-selector-expanded; vertical-stretch: 1;
-                        for row in root.library-rows: Rectangle {
-                            height: 58px; background: row.selected ? #173e58 : (touch.has-hover ? #112f48 : #0a1c2c);
-                            border-color: row.selected ? #30c8ff : #183a55; border-width: 1px; border-radius: 3px;
-                            VerticalLayout { padding: 5px; spacing: 1px;
-                                Text { text: row.primary; color: #f0f8ff; font-size: 13px; overflow: elide; }
-                                Text { text: row.secondary; color: #87a9be; font-size: 10px; overflow: elide; }
-                                Text { text: row.status; color: row.eligible ? #55d790 : #d99b58; font-size: 10px; }
+                            ListView { vertical-stretch: 1;
+                                for row in root.library-rows: LibraryItem { item: row; activated(key) => root.library-row-activated(key, root.include-bypassed); }
                             }
-                            touch := TouchArea { clicked => root.library-row-activated(row.key, root.include-bypassed); }
-                        }
-                    }
-                    Text { text: root.show-tracks ? "Embedded Art Tracks · full cached projection" : "Compilation Tracks · explicit embedded-art reopen"; visible: root.media-selector-expanded && root.compilation-track-rows.length > 0; color: #6f73ff; font-size: 10px; height: root.media-selector-expanded && root.compilation-track-rows.length > 0 ? 18px : 0px; }
-                    ListView { visible: root.media-selector-expanded; height: root.media-selector-expanded && root.compilation-track-rows.length > 0 ? (root.show-tracks ? 210px : 112px) : 0px;
-                        for track in root.compilation-track-rows: Rectangle {
-                            height: 34px; background: track.selected ? #173e58 : #0a1c2c;
-                            border-color: track.selected ? #30c8ff : #183a55; border-width: 1px;
-                            HorizontalLayout { padding: 4px; spacing: 5px;
-                                Text { text: track.completed ? "●" : "○"; color: track.completed ? #55d790 : #9fc1d5; width: 16px; vertical-alignment: center; }
-                                Text { text: track.file-name; color: #eef8ff; font-size: 10px; overflow: elide; vertical-alignment: center; }
+                            if root.compilation-track-rows.length > 0: ListView { height: root.show-tracks ? 150px : 74px;
+                                for track in root.compilation-track-rows: Rectangle { height: 34px; background: track.selected ? #163a64 : transparent;
+                                    HorizontalLayout { padding-left: 6px; spacing: 5px;
+                                        Text { text: track.completed ? "●" : "○"; color: track.completed ? AppTheme.green : #829aaf; width: 18px; vertical-alignment: center; }
+                                        Text { text: track.file-name; color: AppTheme.foreground; font-size: 9px; overflow: elide; vertical-alignment: center; }
+                                    }
+                                    TouchArea { mouse-cursor: pointer; clicked => root.compilation-track-activated(track.album-key, track.path, root.include-bypassed); }
+                                }
                             }
-                            TouchArea { clicked => root.compilation-track-activated(track.album-key, track.path, root.include-bypassed); }
-                        }
-                    }
-                    HorizontalLayout { visible: root.media-selector-expanded; spacing: 5px;
-                        Button { text: "Reload DB"; clicked => root.refresh-library(false); }
-                        Button { text: "Rebuild Index"; clicked => root.refresh-library(true); }
-                    }
-                }
-            }
-            ColumnSplitter {
-                visible: root.media-selector-expanded;
-                width: root.media-selector-expanded ? 9px : 0px;
-                position: root.media-pane-width;
-                minimum: 230;
-                maximum: max(230, root.width / 1px - root.artwork-pane-width - 380);
-                resized(value) => { root.media-pane-width = value; root.pane-resized("media", value); }
-            }
-            VerticalLayout { spacing: 7px; horizontal-stretch: 1;
-                Panel { height: root.candidate-filter-height * 1px;
-                    VerticalLayout { padding: 10px; spacing: 4px;
-                        HorizontalLayout { height: 26px; spacing: 5px;
-                            Heading { text: "Current Album & Config v5 Sources"; horizontal-stretch: 1; }
-                            Button { text: root.candidate-filter-expanded ? "Artwork Filter  ↑" : "Artwork Filter  ↓"; clicked => { root.candidate-filter-expanded = !root.candidate-filter-expanded; root.set-region-expanded("candidate-filter", root.candidate-filter-expanded); } }
-                        }
-                        Text { text: root.current-artist + (root.current-album == "" ? "" : " — " + root.current-album); color: #f3f8fc; font-size: 15px; font-weight: 700; }
-                        Text { text: root.current-path; color: #8fb1c6; font-size: 11px; overflow: elide; }
-                        Text { text: root.current-status; color: #69dca1; font-size: 11px; }
-                        ScrollView { height: 44px;
-                            HorizontalLayout { spacing: 6px;
-                                for source in root.source-rows: Rectangle { width: 145px; height: 39px; background: source.enabled ? #112b42 : #241d2c; border-color: source.enabled ? #2b6389 : #814352; border-width: 1px; border-radius: 3px;
-                                    VerticalLayout { padding: 4px;
-                                        Text { text: source.name + "  [" + source.count + "]"; color: #d9f1ff; font-size: 11px; overflow: elide; }
-                                        Text { text: source.enabled ? source.status : "Excluded"; color: source.enabled ? #79a4bd : #ee7d86; font-size: 9px; overflow: elide; }
+                            Rectangle { height: 95px; border-radius: 7px; background: #081a2d; border-color: #294c6c; border-width: 1px;
+                                VerticalLayout { padding: 7px; spacing: 3px;
+                                    Text { text: "Library Status"; color: AppTheme.foreground; font-size: 11px; font-weight: 700; }
+                                    GridLayout { spacing: 2px;
+                                        for status[i] in root.status-filter-rows: Rectangle { row: i / 2; col: mod(i, 2); height: 19px; background: transparent;
+                                            HorizontalLayout { spacing: 4px;
+                                                Text { text: status.enabled ? "●" : "○"; color: status.semantic-color; width: 13px; font-size: 9px; vertical-alignment: center; }
+                                                Text { text: status.label + "  " + status.count; color: status.semantic-color; font-size: 8px; overflow: elide; vertical-alignment: center; }
+                                            }
+                                            TouchArea { mouse-cursor: pointer; clicked => root.status-filter-toggled(status.key); }
+                                        }
                                     }
                                 }
                             }
                         }
-                        HorizontalLayout { spacing: 5px;
-                            ComboBox { model: root.source-options; current-value <=> root.selected-source-name; selected(value) => root.candidate-source-filter(value); }
-                            Button { text: "Include"; clicked => root.source-action(root.selected-source-name, "include"); }
-                            Button { text: "Exclude"; clicked => root.source-action(root.selected-source-name, "exclude"); }
-                            Button { text: "Priority ←"; clicked => root.source-action(root.selected-source-name, "up"); }
-                            Button { text: "Priority →"; clicked => root.source-action(root.selected-source-name, "down"); }
-                            ComboBox { model: ["All", "ideal", "upper", "ladder", "above", "lower", "below"]; current-value: "All"; selected(value) => root.candidate-range-filter(value); }
+                    }
+                }
+                ColumnSplitter {
+                    visible: root.media-selector-expanded; width: root.media-selector-expanded ? 9px : 0px;
+                    position: root.media-pane-width; minimum: 230; maximum: max(230, root.width / 1px - root.artwork-pane-width - 430);
+                    resized(value) => { root.media-pane-width = value; root.pane-resized("media", value); }
+                }
+                VerticalLayout { spacing: 7px; horizontal-stretch: 1;
+                    NeonPanel { height: 45px;
+                        HorizontalLayout { padding: 4px; spacing: 3px;
+                            ModeTab { icon-text: "⌕"; label: "Find & Match Artwork"; selected: root.workspace-mode == 0; activated => { root.workspace-mode = 0; } }
+                            ModeTab { icon-text: "✎"; label: "Edit Artwork"; selected: root.workspace-mode == 1; activated => { root.workspace-mode = 1; } }
+                            ModeTab { icon-text: "◈"; label: "Upscale / Enhance"; selected: root.workspace-mode == 2; activated => { root.workspace-mode = 2; } }
+                            ModeTab { icon-text: "☷"; label: "Advanced"; selected: root.workspace-mode == 3; activated => { root.workspace-mode = 3; } }
                         }
-                        if root.candidate-filter-expanded: ScrollView { height: 72px;
-                            HorizontalLayout { spacing: 4px;
-                                Button { text: "Clear Filters"; clicked => root.clear-candidate-filters(); }
-                                for filter in root.candidate-filter-rows: Button {
-                                    text: (filter.state == "Included" ? "● " : (filter.state == "Disregarded" ? "✕ " : "○ ")) + filter.label + " [" + filter.count + "]";
-                                    clicked => root.candidate-filter-cycle(filter.dimension, filter.key);
+                    }
+                    if root.awaiting-musicbrainz: NeonPanel { vertical-stretch: 1;
+                        VerticalLayout { padding: 10px; spacing: 7px;
+                            HorizontalLayout { height: 34px; spacing: 7px;
+                                Heading { text: "MusicBrainz Results"; font-size: 18px; horizontal-stretch: 1; }
+                                Text { text: root.authority-artist + "  /  " + root.authority-album; color: AppTheme.secondary-foreground; vertical-alignment: center; }
+                                NeonAction { label: "Back to Candidate Artwork"; width: 178px; clicked => root.musicbrainz-leave-unchanged(); }
+                            }
+                            Rectangle { height: 145px; border-radius: 7px; background: #112a43; border-color: AppTheme.yellow; border-width: 1px;
+                                VerticalLayout { padding: 9px; spacing: 5px;
+                                    HorizontalLayout { height: 26px;
+                                        Text { text: "CURRENT ALBUM AUTHORITY"; color: AppTheme.yellow; font-weight: 800; horizontal-stretch: 1; }
+                                        NeonAction { label: "Open MusicBrainz Page"; width: 170px; height: 27px; clicked => root.open-musicbrainz-page(-1); }
+                                    }
+                                    Text { text: root.authority-artist + " — " + root.authority-album; color: AppTheme.foreground; font-size: 15px; font-weight: 700; }
+                                    HorizontalLayout { height: 29px; spacing: 5px;
+                                        LineEdit { text <=> root.authority-artist-ids; placeholder-text: "Artist ID(s)"; }
+                                        LineEdit { text <=> root.authority-release-id; placeholder-text: "Release ID"; }
+                                        LineEdit { text <=> root.authority-recording-id; placeholder-text: "Recording ID"; }
+                                    }
+                                    HorizontalLayout { height: 28px; spacing: 5px;
+                                        NeonAction { label: "Apply IDs / Keep Current Authority"; emphasized: true; clicked => root.musicbrainz-apply-authority(root.authority-recording-id, root.authority-artist-ids, root.authority-release-id); }
+                                        NeonAction { label: "Leave Album IDs Unchanged"; clicked => root.musicbrainz-leave-unchanged(); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout { height: 34px; spacing: 6px;
+                                Text { text: "Artist"; color: AppTheme.secondary-foreground; vertical-alignment: center; }
+                                ComboBox { model: root.musicbrainz-artist-options; current-value <=> root.selected-musicbrainz-artist; selected(value) => root.musicbrainz-filter(value, root.selected-musicbrainz-release-type); }
+                                Text { text: "Release Type"; color: AppTheme.secondary-foreground; vertical-alignment: center; }
+                                ComboBox { model: root.musicbrainz-release-type-options; current-value <=> root.selected-musicbrainz-release-type; selected(value) => root.musicbrainz-filter(root.selected-musicbrainz-artist, value); }
+                            }
+                            ListView { vertical-stretch: 1;
+                                for result in root.musicbrainz-rows: Rectangle { height: 82px; border-radius: 6px; background: result.selected ? #173b6e : AppTheme.card; border-color: result.current ? AppTheme.yellow : (result.selected ? AppTheme.cyan : #294f71); border-width: result.selected ? 2px : 1px;
+                                    HorizontalLayout { padding: 8px; spacing: 8px;
+                                        Rectangle { width: 48px; height: 48px; border-radius: 24px; background: result.current ? #735e21 : #173852;
+                                            Text { text: result.current ? "★" : "♫"; color: result.current ? AppTheme.yellow : AppTheme.cyan; horizontal-alignment: center; vertical-alignment: center; font-size: 20px; }
+                                        }
+                                        VerticalLayout { spacing: 2px;
+                                            Text { text: result.title; color: AppTheme.foreground; font-size: 13px; font-weight: 700; overflow: elide; }
+                                            Text { text: result.artist; color: AppTheme.secondary-foreground; font-size: 10px; overflow: elide; }
+                                            Text { text: result.detail; color: #7696ae; font-size: 9px; overflow: elide; }
+                                        }
+                                        NeonAction { label: "Open Page"; width: 92px; height: 31px; clicked => root.open-musicbrainz-page(result.index); }
+                                        NeonAction { label: result.current ? "Current" : "Select"; width: 86px; height: 31px; emphasized: result.selected; clicked => root.musicbrainz-selected(result.index); }
+                                    }
+                                }
+                            }
+                            HorizontalLayout { height: 34px; spacing: 6px;
+                                LineEdit { text <=> root.fallback-artist; placeholder-text: "Refine artist"; }
+                                LineEdit { text <=> root.fallback-album; placeholder-text: "Refine album"; }
+                                NeonAction { label: "Retry / Refine"; width: 114px; enabled: root.musicbrainz-retry-available; clicked => root.fallback-retry(root.fallback-artist, root.fallback-album); }
+                                NeonAction { label: "Use Selected"; width: 112px; emphasized: true; clicked => root.musicbrainz-use-selected(); }
+                            }
+                        }
+                    }
+                    if !root.awaiting-musicbrainz && root.workspace-mode == 0: VerticalLayout { spacing: 7px; vertical-stretch: 1;
+                        HorizontalLayout { height: 41px; spacing: 7px;
+                            VerticalLayout { spacing: 0px;
+                                Heading { text: "Candidate Findings"; font-size: 18px; }
+                                Text { text: "Choose a source and filter results to find the best artwork."; color: AppTheme.secondary-foreground; font-size: 9px; }
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            Text { text: root.current-artist + "  /  " + root.current-album; color: AppTheme.secondary-foreground; vertical-alignment: center; overflow: elide; }
+                            Text { text: root.candidate-rows.length + " candidates"; color: AppTheme.foreground; vertical-alignment: center; }
+                            NeonAction { label: "Search Again"; width: 105px; emphasized: true; enabled: root.awaiting-candidate; clicked => root.candidate-action("retry_musicbrainz"); }
+                        }
+                        ScrollView { height: 91px;
+                            HorizontalLayout { spacing: 7px;
+                                for source in root.source-rows: SourceCard { height: 82px; source-row: source; selected: root.selected-source-name == source.name; chosen(name) => { root.selected-source-name = name; root.candidate-source-filter(name); } reorder(name, direction) => root.source-action(name, direction); }
+                            }
+                        }
+                        HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+                            NeonPanel { width: 255px;
+                                VerticalLayout { padding: 9px; spacing: 5px;
+                                    HorizontalLayout { height: 27px;
+                                        Heading { text: "⚙  Filters"; font-size: 14px; horizontal-stretch: 1; }
+                                        NeonAction { label: root.candidate-filter-expanded ? "Collapse ↑" : "Expand ↓"; width: 83px; height: 27px; clicked => { root.candidate-filter-expanded = !root.candidate-filter-expanded; root.set-region-expanded("candidate-filter", root.candidate-filter-expanded); } }
+                                    }
+                                    if root.candidate-filter-expanded: ListView { vertical-stretch: 1;
+                                        for filter in root.candidate-filter-rows: Rectangle { height: 31px; background: transparent;
+                                            HorizontalLayout { padding-left: 3px; spacing: 7px;
+                                                Text { text: filter.state == "Included" ? "●" : (filter.state == "Disregarded" ? "✕" : "○"); color: filter.state == "Included" ? AppTheme.green : (filter.state == "Disregarded" ? AppTheme.danger : #708ca4); width: 18px; vertical-alignment: center; font-size: 14px; }
+                                                Text { text: filter.label; color: filter.state == "Disregarded" ? #8b6670 : AppTheme.foreground; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; }
+                                                Text { text: filter.count; color: AppTheme.secondary-foreground; font-size: 9px; vertical-alignment: center; }
+                                            }
+                                            TouchArea { mouse-cursor: pointer; clicked => root.candidate-filter-cycle(filter.dimension, filter.key); }
+                                        }
+                                    }
+                                    HorizontalLayout { height: 27px; spacing: 4px;
+                                        NeonAction { label: "Include Source"; height: 27px; enabled: root.selected-source-name != "All"; clicked => root.source-action(root.selected-source-name, "include"); }
+                                        NeonAction { label: "Exclude Source"; height: 27px; danger: true; enabled: root.selected-source-name != "All"; clicked => root.source-action(root.selected-source-name, "exclude"); }
+                                    }
+                                    NeonAction { label: "Reset Filters"; height: 29px; clicked => root.clear-candidate-filters(); }
+                                }
+                            }
+                            NeonPanel { horizontal-stretch: 1;
+                                VerticalLayout { padding: 9px; spacing: 6px;
+                                    HorizontalLayout { height: 27px;
+                                        Heading { text: "♢  Artwork Preview & Editing"; font-size: 14px; horizontal-stretch: 1; }
+                                        NeonAction { label: root.artwork-editing-expanded ? "Collapse ↑" : "Expand ↓"; width: 83px; height: 27px; clicked => { root.artwork-editing-expanded = !root.artwork-editing-expanded; root.set-region-expanded("artwork-editing", root.artwork-editing-expanded); } }
+                                    }
+                                    if root.artwork-editing-expanded: ScrollView { vertical-stretch: 1;
+                                        VerticalLayout { spacing: 5px;
+                                            for adjustment in root.adjustment-rows: AdjustmentLine { adjustment: adjustment; compact: true; step(name, delta) => root.adjustment-step(name, delta); reset(name) => root.adjustment-reset(name); move-primary(name, direction) => root.primary-adjustment-move(name, direction); promote(name) => root.primary-adjustment-promote(name); }
+                                        }
+                                    }
+                                    HorizontalLayout { height: 34px; spacing: 6px;
+                                        NeonAction { label: "Apply to Selected"; emphasized: true; enabled: root.awaiting-candidate; clicked => root.candidate-action("use"); }
+                                        NeonAction { label: "Use as Default"; clicked => root.save-adjustments(); }
+                                        NeonAction { label: "Compare"; enabled: root.candidate-rows.length > 0; clicked => root.open-candidate-compare(); }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                RowSplitter {
-                    visible: root.candidate-filter-expanded;
-                    height: root.candidate-filter-expanded ? 9px : 0px;
-                    position: root.candidate-filter-height;
-                    minimum: 230;
-                    maximum: max(230, root.height / 1px - root.activity-pane-height - 269);
-                    resized(value) => { root.candidate-filter-height = value; root.pane-resized("candidate-filter", value); }
-                }
-                Panel { vertical-stretch: 1;
-                    VerticalLayout { padding: 10px; spacing: 6px;
-                        Heading { text: root.awaiting-musicbrainz ? "MusicBrainz Release Authority" : "Artwork Candidates"; height: 26px; }
-                        if root.awaiting-musicbrainz: Rectangle { height: 164px; background: #102d43; border-color: #e7bd4c; border-width: 1px;
-                            VerticalLayout { padding: 7px;
-                                Text { text: "CURRENT ALBUM (authority)"; color: #f4d264; font-weight: 800; }
-                                Text { text: root.authority-artist + " — " + root.authority-album; color: #f2f7fa; }
-                                HorizontalLayout { height: 28px; spacing: 5px; Label { text: "Artist ID(s)"; width: 92px; } LineEdit { text <=> root.authority-artist-ids; } }
-                                HorizontalLayout { height: 28px; spacing: 5px; Label { text: "Release ID"; width: 92px; } LineEdit { text <=> root.authority-release-id; } }
-                                HorizontalLayout { height: 28px; spacing: 5px; Label { text: "Recording ID"; width: 92px; } LineEdit { text <=> root.authority-recording-id; } }
-                                Button { text: "Apply IDs / Keep Current Authority"; clicked => root.musicbrainz-apply-authority(root.authority-recording-id, root.authority-artist-ids, root.authority-release-id); }
-                                Button { text: "Return to Artwork Candidates"; clicked => root.musicbrainz-leave-unchanged(); }
+                    if !root.awaiting-musicbrainz && root.workspace-mode == 1: NeonPanel { vertical-stretch: 1;
+                        VerticalLayout { padding: 10px; spacing: 8px;
+                            HorizontalLayout { height: 37px;
+                                Heading { text: "Edit Artwork"; font-size: 18px; horizontal-stretch: 1; }
+                                Text { text: root.current-artist + "  /  " + root.current-album; color: AppTheme.secondary-foreground; vertical-alignment: center; }
                             }
-                        }
-                        if root.awaiting-musicbrainz: HorizontalLayout { height: 34px; spacing: 5px;
-                            Label { text: "Artist"; width: 42px; }
-                            ComboBox { model: root.musicbrainz-artist-options; current-value <=> root.selected-musicbrainz-artist; selected(value) => root.musicbrainz-filter(value, root.selected-musicbrainz-release-type); }
-                            Label { text: "Release Type"; width: 76px; }
-                            ComboBox { model: root.musicbrainz-release-type-options; current-value <=> root.selected-musicbrainz-release-type; selected(value) => root.musicbrainz-filter(root.selected-musicbrainz-artist, value); }
-                            Button { text: "Use Release"; clicked => root.musicbrainz-use-selected(); }
-                            Button { text: "Retry Search"; enabled: root.musicbrainz-retry-available; clicked => root.candidate-action("retry_musicbrainz"); }
-                        }
-                        if root.awaiting-musicbrainz: ListView { vertical-stretch: 1;
-                            for item in root.musicbrainz-rows: Rectangle { height: 58px; background: item.selected ? #173e58 : (item.current ? #173c55 : #0a1c2c); border-color: item.visited ? #7456a7 : (item.selected ? #30c8ff : #23516f); border-width: item.selected ? 2px : 1px;
-                                VerticalLayout { padding: 5px;
-                                    Text { text: item.title; color: #eef8ff; font-size: 12px; overflow: elide; }
-                                    Text { text: item.artist + " · " + item.detail; color: #8fb1c6; font-size: 10px; overflow: elide; }
-                                }
-                                TouchArea { clicked => root.musicbrainz-selected(item.index); }
-                            }
-                        }
-                        if root.fallback-active: Rectangle { height: 66px; background: #342815; border-color: #e7bd4c; border-width: 1px; border-radius: 3px;
-                            VerticalLayout { padding: 4px; spacing: 3px;
-                                Text { text: "Refine fallback: " + root.fallback-reason; color: #f4d264; font-size: 10px; overflow: elide; }
-                                HorizontalLayout { spacing: 5px;
-                                    LineEdit { text <=> root.fallback-artist; placeholder-text: "Artist"; }
-                                    LineEdit { text <=> root.fallback-album; placeholder-text: "Album"; }
-                                    Button { text: "Search Again"; clicked => root.fallback-retry(root.fallback-artist, root.fallback-album); }
+                            Text { text: "Source Artwork"; color: AppTheme.foreground; font-weight: 700; font-size: 12px; }
+                            ScrollView { height: 128px;
+                                HorizontalLayout { spacing: 7px;
+                                    for candidate in root.candidate-rows: CandidateCard { height: 119px; candidate: candidate; chosen(index) => root.candidate-selected(index); comparison(index) => root.candidate-compare-toggle(index); hovered(index, active) => root.candidate-hover(index, active); }
                                 }
                             }
-                        }
-                        if !root.awaiting-musicbrainz: ListView { vertical-stretch: 1;
-                            for item in root.candidate-rows: Rectangle { height: 86px; background: item.selected ? #173f59 : (hover-area.has-hover ? #112f48 : #0a1c2c); border-color: item.compared ? #e7bd4c : (item.selected ? #31d2ff : (item.recommended ? #59d98b : #24506c)); border-width: item.selected ? 2px : 1px; border-radius: 3px;
-                                property <bool> candidate-hovered: hover-area.has-hover;
-                                changed candidate-hovered => root.candidate-hover(item.index, candidate-hovered);
-                                HorizontalLayout { padding: 5px; spacing: 8px;
-                                    Rectangle { width: 74px; height: 74px; background: #06111b;
-                                        Image { source: item.preview; width: parent.width; height: parent.height; image-fit: contain; }
-                                        hover-area := TouchArea { clicked => root.candidate-selected(item.index); }
+                            HorizontalLayout { spacing: 9px; vertical-stretch: 1;
+                                Rectangle { width: 310px; background: #030c15; border-radius: 7px;
+                                    Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
+                                }
+                                VerticalLayout { spacing: 6px;
+                                    Heading { text: "Five Primary Adjustments"; height: 27px; font-size: 14px; }
+                                    ScrollView { vertical-stretch: 1;
+                                        VerticalLayout { spacing: 5px;
+                                            for adjustment in root.adjustment-rows: AdjustmentLine { visible: adjustment.primary; height: adjustment.primary ? 48px : 0px; adjustment: adjustment; step(name, delta) => root.adjustment-step(name, delta); reset(name) => root.adjustment-reset(name); move-primary(name, direction) => root.primary-adjustment-move(name, direction); promote(name) => root.primary-adjustment-promote(name); }
+                                        }
                                     }
-                                    VerticalLayout { spacing: 2px;
-                                        Text { text: "#" + item.index + "  " + item.source + " · " + item.image-type; color: #eef8ff; font-size: 13px; font-weight: 700; }
-                                        Text { text: item.dimensions + " · " + item.range-class; color: #8fb1c6; font-size: 11px; }
-                                        Text { text: item.policy + (item.recommended ? " · Recommended" : ""); color: item.recommended ? #59dc8e : #a4bed0; font-size: 10px; }
+                                    Text { text: "Select ◇ on any adjustment to replace a primary control. Arrow buttons change primary order."; color: AppTheme.secondary-foreground; font-size: 9px; wrap: word-wrap; height: 27px; }
+                                    ScrollView { height: 37px;
+                                        HorizontalLayout { spacing: 4px;
+                                            for adjustment in root.adjustment-rows: NeonAction { label: (adjustment.primary ? "✓ " : "◇ ") + adjustment.name; width: 96px; height: 30px; emphasized: adjustment.primary; clicked => root.primary-adjustment-promote(adjustment.name); }
+                                        }
                                     }
-                                    Button { text: item.compared ? "Compared ✓" : "Compare +"; width: 92px; clicked => root.candidate-compare-toggle(item.index); }
+                                    HorizontalLayout { height: 35px; spacing: 6px;
+                                        NeonAction { label: "Preview Existing Cover"; clicked => root.edit-existing-cover(false); }
+                                        NeonAction { label: "Apply Existing Cover"; emphasized: true; enabled: root.live-write && !root.running; clicked => root.edit-existing-cover(true); }
+                                    }
                                 }
                             }
                         }
-                        HorizontalLayout { spacing: 5px;
-                            Button { text: "Apply Selected"; enabled: root.awaiting-candidate; clicked => root.candidate-action("use"); }
-                            Button { text: "Keep Local"; enabled: root.awaiting-candidate; clicked => root.candidate-action("keep_local"); }
-                            Button { text: "Bypass"; enabled: root.awaiting-candidate; clicked => root.candidate-action("bypass"); }
-                            Button { text: "NO Bypass"; enabled: root.awaiting-candidate; clicked => root.candidate-action("clear_bypass"); }
-                            Button { text: "MusicBrainz"; enabled: root.awaiting-candidate; clicked => root.candidate-action("retry_musicbrainz"); }
-                            Button { text: "Back to MB"; enabled: root.musicbrainz-back-available; clicked => root.candidate-action("back_to_musicbrainz"); }
-                            Button { text: "Compare"; enabled: root.candidate-rows.length > 0; clicked => root.open-candidate-compare(); }
-                            CheckBox { text: "Hover Preview"; checked <=> root.hover-enabled; toggled => root.set-hover-enabled(self.checked); }
-                            Button { text: "Skip Album"; enabled: root.running; clicked => root.candidate-action("skip_album"); }
+                    }
+                    if !root.awaiting-musicbrainz && root.workspace-mode == 2: NeonPanel { vertical-stretch: 1;
+                        VerticalLayout { padding: 10px; spacing: 8px;
+                            HorizontalLayout { height: 37px;
+                                Heading { text: "Upscale / Enhance"; font-size: 18px; horizontal-stretch: 1; }
+                                Text { text: root.selected-artwork-dimensions; color: AppTheme.yellow; vertical-alignment: center; }
+                            }
+                            ScrollView { height: 128px;
+                                HorizontalLayout { spacing: 7px;
+                                    for candidate in root.candidate-rows: CandidateCard { height: 119px; candidate: candidate; chosen(index) => root.candidate-selected(index); comparison(index) => root.candidate-compare-toggle(index); hovered(index, active) => root.candidate-hover(index, active); }
+                                }
+                            }
+                            HorizontalLayout { spacing: 9px; vertical-stretch: 1;
+                                Rectangle { horizontal-stretch: 1; background: #030c15; border-radius: 7px;
+                                    Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
+                                    Rectangle { y: parent.height - 29px; height: 29px; width: parent.width; background: #d9040b13;
+                                        Text { text: root.selected-artwork-dimensions + "  •  " + root.selected-artwork-quality; color: AppTheme.yellow; horizontal-alignment: center; vertical-alignment: center; font-size: 10px; font-weight: 700; }
+                                    }
+                                }
+                                VerticalLayout { width: 350px; spacing: 7px;
+                                    Heading { text: "Upscale Settings"; height: 28px; font-size: 14px; }
+                                    CheckBox { text: "Upscale Preview"; checked: root.upscale-preview-only; toggled => root.set-upscale-preview(true); }
+                                    CheckBox { text: "Apply Upscale"; checked: !root.upscale-preview-only; toggled => root.set-upscale-preview(false); }
+                                    Text { text: "Uses the configured SPLINED upscaler, maximum percentage, adaptive defaults, square/crop policy, and output format."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: 56px; }
+                                    NeonAction { label: "Open Custom Upscale"; emphasized: true; clicked => root.open-custom-upscale(); }
+                                    NeonAction { label: "Save Defaults to Config v5"; clicked => root.save-adjustments(); }
+                                }
+                            }
+                            ScrollView { height: 111px;
+                                HorizontalLayout { spacing: 6px;
+                                    for adjustment in root.adjustment-rows: AdjustmentTile { adjustment: adjustment; step(name, delta) => root.adjustment-step(name, delta); reset(name) => root.adjustment-reset(name); promote(name) => root.primary-adjustment-promote(name); }
+                                }
+                            }
+                        }
+                    }
+                    if !root.awaiting-musicbrainz && root.workspace-mode == 3: HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+                        NeonPanel { width: 330px;
+                            VerticalLayout { padding: 10px; spacing: 7px;
+                                Heading { text: "Advanced Source Priority"; height: 30px; font-size: 16px; }
+                                Text { text: "Config v5 remains authoritative. Reorder live sources here; exclusions and status are preserved."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: 42px; }
+                                ListView { vertical-stretch: 1;
+                                    for source in root.source-rows: SourceCard { height: 78px; width: parent.width; source-row: source; selected: root.selected-source-name == source.name; chosen(name) => { root.selected-source-name = name; root.candidate-source-filter(name); } reorder(name, direction) => root.source-action(name, direction); }
+                                }
+                            }
+                        }
+                        NeonPanel { horizontal-stretch: 1;
+                            VerticalLayout { padding: 10px; spacing: 7px;
+                                Heading { text: "Scan Activity and Decisions"; height: 30px; font-size: 16px; }
+                                HorizontalLayout { height: 34px; spacing: 6px;
+                                    NeonAction { label: "Auto Scan: " + root.scan-scope-label; enabled: !root.running; clicked => root.set-scan-scope(root.scan-scope-label == "SELECTED"); }
+                                    NeonAction { label: "Mode: " + root.launch-mode-label; enabled: !root.running; clicked => root.set-launch-mode(root.launch-mode-label == "READ"); }
+                                    NeonAction { label: root.running ? "RUNNING" : "LAUNCH"; emphasized: true; enabled: root.can-launch; clicked => root.launch(); }
+                                    NeonAction { label: "STOP"; danger: true; enabled: root.running; clicked => root.stop(); }
+                                }
+                                Text { text: "Run " + root.run-completed + " / " + root.run-total + " completed  •  " + root.run-failed + " failed"; color: root.run-failed > 0 ? AppTheme.danger : AppTheme.green; height: 23px; }
+                                ScrollView { vertical-stretch: 1; Text { text: root.log-text; color: #9cb8ca; font-size: 10px; wrap: word-wrap; } }
+                            }
+                        }
+                    }
+                }
+                ColumnSplitter {
+                    visible: root.show-artwork; width: root.show-artwork ? 9px : 0px; reverse: true;
+                    position: root.artwork-pane-width; minimum: 280; maximum: max(280, root.width / 1px - root.media-pane-width - 430);
+                    resized(value) => { root.artwork-pane-width = value; root.pane-resized("artwork", value); }
+                }
+                NeonPanel { width: root.show-artwork ? root.artwork-pane-width * 1px : 0px; visible: root.show-artwork; border-color: AppTheme.violet;
+                    VerticalLayout { padding: 9px; spacing: 7px;
+                        HorizontalLayout { height: 31px;
+                            Heading { text: "✓  Selected Artwork"; font-size: 15px; horizontal-stretch: 1; }
+                            Text { text: root.selected-artwork-dimensions; color: AppTheme.secondary-foreground; font-size: 9px; vertical-alignment: center; }
+                            Rectangle { width: 73px; height: 22px; border-radius: 11px; background: #173e36;
+                                Text { text: root.selected-artwork-quality; color: AppTheme.green; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                            }
+                        }
+                        Rectangle { vertical-stretch: 1; background: #020a12; border-radius: 8px; border-color: #294e76; border-width: 1px; clip: true;
+                            Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
+                            Rectangle { x: 8px; y: parent.height - 37px; width: parent.width - 16px; height: 28px; border-radius: 5px; background: #cf06111d;
+                                Text { text: root.selected-artwork-source + "  •  " + root.selected-artwork-type + "  •  " + root.selected-artwork-size; color: AppTheme.foreground; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                            }
+                            Rectangle { x: parent.width - 138px; y: 10px; width: 126px; height: 31px; border-radius: 6px; background: #dc153756; border-color: AppTheme.cyan; border-width: 1px;
+                                Text { text: "Custom Upscale  ↗"; color: #ffffff; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            TouchArea { mouse-cursor: pointer; clicked => root.open-custom-upscale(); }
+                        }
+                        HorizontalLayout { height: 33px; spacing: 6px;
+                            NeonAction { label: "Keep Local"; enabled: root.awaiting-candidate; clicked => root.candidate-action("keep_local"); }
+                            NeonAction { label: "Use Selected"; emphasized: true; enabled: root.awaiting-candidate; clicked => root.candidate-action("use"); }
+                            NeonAction { label: "Bypass"; danger: true; enabled: root.awaiting-candidate; clicked => root.candidate-action("bypass"); }
                         }
                     }
                 }
             }
-            ColumnSplitter {
-                visible: root.show-artwork;
-                width: root.show-artwork ? 9px : 0px;
-                reverse: true;
-                position: root.artwork-pane-width;
-                minimum: 280;
-                maximum: max(280, root.width / 1px - root.media-pane-width - 380);
-                resized(value) => { root.artwork-pane-width = value; root.pane-resized("artwork", value); }
+            RowSplitter {
+                reverse: true; position: root.activity-pane-height; minimum: 120; maximum: max(120, root.height / 1px - 470);
+                resized(value) => { root.activity-pane-height = value; root.pane-resized("activity", value); }
             }
-            Panel { width: root.show-artwork ? root.artwork-pane-width * 1px : 0px; visible: root.show-artwork;
-                VerticalLayout { padding: 10px; spacing: 7px;
-                    HorizontalLayout { height: 28px; spacing: 5px;
-                        Heading { text: "Artwork Preview & Editing"; horizontal-stretch: 1; }
-                        Button { text: root.artwork-editing-expanded ? "↑" : "↓"; clicked => { root.artwork-editing-expanded = !root.artwork-editing-expanded; root.set-region-expanded("artwork-editing", root.artwork-editing-expanded); } }
+            NeonPanel { height: root.activity-pane-height * 1px; border-radius: 0px;
+                VerticalLayout { padding: 7px; spacing: 5px;
+                    HorizontalLayout { height: 25px;
+                        Heading { text: "Candidate Artwork  (" + root.candidate-rows.length + ")"; font-size: 13px; horizontal-stretch: 1; }
+                        CheckBox { text: "Hover Preview"; checked <=> root.hover-enabled; toggled => root.set-hover-enabled(self.checked); }
+                        NeonAction { label: "Compare"; width: 83px; height: 25px; enabled: root.candidate-rows.length > 0; clicked => root.open-candidate-compare(); }
+                        NeonAction { label: "MusicBrainz"; width: 103px; height: 25px; enabled: root.awaiting-candidate; clicked => root.candidate-action("retry_musicbrainz"); }
+                        NeonAction { label: "Back to MB"; visible: root.musicbrainz-back-available; width: root.musicbrainz-back-available ? 88px : 0px; height: 25px; clicked => root.candidate-action("back_to_musicbrainz"); }
+                        NeonAction { label: "Clear Bypass"; width: 92px; height: 25px; enabled: root.awaiting-candidate; clicked => root.candidate-action("clear_bypass"); }
+                        NeonAction { label: "Skip Album"; width: 82px; height: 25px; enabled: root.running; clicked => root.candidate-action("skip_album"); }
                     }
-                    Rectangle {
-                        height: 290px;
-                        background: #06111b;
-                        border-color: #274e6a;
-                        border-width: 1px;
-                        clip: true;
-                        Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
-                        TouchArea { clicked => root.open-custom-upscale(); }
-                    }
-                    HorizontalLayout { visible: root.artwork-editing-expanded; height: root.artwork-editing-expanded ? 34px : 0px; spacing: 5px;
-                        Button { text: "Upscale Preview"; enabled: root.awaiting-candidate; clicked => root.set-upscale-preview(true); }
-                        Button { text: "Apply Upscale"; enabled: root.awaiting-candidate; clicked => root.set-upscale-preview(false); }
-                        Button { text: "Custom Upscale"; clicked => root.open-custom-upscale(); }
-                    }
-                    HorizontalLayout { visible: root.artwork-editing-expanded; height: root.artwork-editing-expanded ? 34px : 0px; spacing: 5px;
-                        Button { text: "Preview Existing Cover Edit"; enabled: root.current-path != "" && !root.running; clicked => root.edit-existing-cover(false); }
-                        Button { text: "Apply Existing Cover Edit"; enabled: root.current-path != "" && !root.running && root.live-write; clicked => root.edit-existing-cover(true); }
-                    }
-                    Heading { text: "Upscale / Advanced · primary controls have cyan frames"; visible: root.artwork-editing-expanded; height: root.artwork-editing-expanded ? 24px : 0px; }
-                    ListView { visible: root.artwork-editing-expanded; vertical-stretch: 1;
-                        for adjustment in root.adjustment-rows: Rectangle { height: 38px; background: #0a1c2b;
-                            HorizontalLayout { padding: 3px;
-                                Button { text: "←"; width: 28px; enabled: adjustment.primary; clicked => root.primary-adjustment-move(adjustment.name, -1); }
-                                Button { text: adjustment.primary ? "◆" : "◇"; width: 28px; clicked => root.primary-adjustment-promote(adjustment.name); }
-                                Text { text: adjustment.name; color: #d9edf8; horizontal-stretch: 1; vertical-alignment: center; }
-                                Button { text: "−"; width: 34px; clicked => root.adjustment-step(adjustment.name, -1); }
-                                Text { text: adjustment.value + adjustment.unit; color: #ffffff; width: 60px; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
-                                Button { text: "+"; width: 34px; clicked => root.adjustment-step(adjustment.name, 1); }
-                                Button { text: "↻"; width: 30px; clicked => root.adjustment-reset(adjustment.name); }
-                                Button { text: "→"; width: 28px; enabled: adjustment.primary; clicked => root.primary-adjustment-move(adjustment.name, 1); }
-                            }
+                    ScrollView { vertical-stretch: 1;
+                        HorizontalLayout { spacing: 7px;
+                            for candidate in root.candidate-rows: CandidateCard { height: 104px; candidate: candidate; chosen(index) => root.candidate-selected(index); comparison(index) => root.candidate-compare-toggle(index); hovered(index, active) => root.candidate-hover(index, active); }
                         }
                     }
-                    Button { text: "Save adjustment defaults to Config v5"; visible: root.artwork-editing-expanded; clicked => root.save-adjustments(); }
+                    HorizontalLayout { height: 28px; spacing: 6px;
+                        Text { text: root.running ? "● Processing" : "● Ready"; color: root.running ? AppTheme.yellow : AppTheme.green; width: 105px; vertical-alignment: center; font-size: 9px; }
+                        Text { text: root.selected-count + " album(s) selected"; color: AppTheme.secondary-foreground; vertical-alignment: center; font-size: 9px; }
+                        Text { text: root.current-status; color: AppTheme.secondary-foreground; horizontal-stretch: 1; vertical-alignment: center; font-size: 9px; overflow: elide; }
+                        Text { text: root.version-label; color: #7893a8; width: 105px; font-size: 8px; overflow: elide; vertical-alignment: center; }
+                        NeonAction { label: root.running ? "RUNNING" : "LAUNCH"; width: 86px; height: 26px; emphasized: true; enabled: root.can-launch; clicked => root.launch(); }
+                        NeonAction { label: "STOP"; width: 68px; height: 26px; danger: true; enabled: root.running; clicked => root.stop(); }
+                    }
                 }
             }
         }
@@ -811,15 +1167,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        if !root.setup-required && root.page-index == 0: RowSplitter {
-            reverse: true;
-            position: root.activity-pane-height;
-            minimum: 110;
-            maximum: max(110, root.height / 1px - 499);
-            resized(value) => { root.activity-pane-height = value; root.pane-resized("activity", value); }
-        }
-
-        if !root.setup-required: Panel { height: root.page-index == 0 ? root.activity-pane-height * 1px : 150px;
+        if !root.setup-required && root.page-index != 0: Panel { height: 150px;
             HorizontalLayout { padding: 9px; spacing: 8px;
                 VerticalLayout { width: 530px; spacing: 5px;
                     Heading { text: "Run Controls"; height: 24px; }
