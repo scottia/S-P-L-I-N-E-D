@@ -1,7 +1,7 @@
 use crate::source::{
     ArtworkProvider, ArtworkQuery, ArtworkReference, ProviderContext, ProviderDiscoveryFuture,
 };
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -30,6 +30,22 @@ struct SearchAlbum {
     artwork_url_100: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ArtistSearchResponse {
+    #[serde(default)]
+    results: Vec<ArtistSearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistSearchResult {
+    #[serde(rename = "artistId")]
+    artist_id: u64,
+    #[serde(rename = "artistName")]
+    artist_name: String,
+    #[serde(rename = "artistLinkUrl", default)]
+    artist_link_url: String,
+}
+
 pub struct ITunes {
     client: Client,
 }
@@ -43,6 +59,71 @@ impl ITunes {
             .map_err(|error| format!("Unable to create iTunes HTTP client: {error}"))?;
 
         Ok(Self { client })
+    }
+
+    pub async fn discover_artist(&self, artist: &str) -> Result<Vec<ArtworkReference>, String> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The iTunes artist result has an identity and profile URL, but no
+        // artist artwork URL. The public artist page exposes its actual artist
+        // portrait as og:image; never substitute an album's artworkUrl100.
+        let response = self
+            .client
+            .get(SEARCH_URL)
+            .query(&[
+                ("term", artist),
+                ("media", "music"),
+                ("entity", "musicArtist"),
+                ("country", "us"),
+                ("limit", "10"),
+            ])
+            .send()
+            .await
+            .map_err(|error| format!("Unable to search iTunes artists for {artist}: {error}"))?;
+        if response.status() != StatusCode::OK {
+            return Err(format!(
+                "iTunes artist search for {artist} returned HTTP {}",
+                response.status()
+            ));
+        }
+        let found = response
+            .json::<ArtistSearchResponse>()
+            .await
+            .map_err(|error| format!("Invalid iTunes artist search response: {error}"))?;
+        let mut references = Vec::new();
+        for result in found
+            .results
+            .into_iter()
+            .filter(|result| result.artist_id != 0 && same_text(&result.artist_name, artist))
+            .take(3)
+        {
+            let Ok(profile) = Url::parse(&result.artist_link_url) else {
+                continue;
+            };
+            if profile.scheme() != "https" || profile.host_str() != Some("music.apple.com") {
+                continue;
+            }
+            let response = match self.client.get(profile).send().await {
+                Ok(response) if response.status() == StatusCode::OK => response,
+                _ => continue,
+            };
+            let Ok(html) = response.text().await else {
+                continue;
+            };
+            if let Some(url) = artist_profile_artwork_url(&html) {
+                references.push(ArtworkReference {
+                    source: "itunes".to_string(),
+                    id: result.artist_id.to_string(),
+                    url,
+                    front: true,
+                    approved: true,
+                    types: vec!["ArtistImage".to_string()],
+                });
+            }
+        }
+        Ok(references)
     }
 
     async fn search_query(
@@ -240,6 +321,28 @@ fn high_resolution_artwork_url(url: &str, size: u32) -> String {
     url.replacen("100x100bb", &replacement, 1)
 }
 
+fn artist_profile_artwork_url(html: &str) -> Option<String> {
+    let tag = html
+        .split("<meta")
+        .find(|tag| tag.contains("property=\"og:image\""))?;
+    let value = tag.split("content=\"").nth(1)?.split('"').next()?;
+    let mut url = Url::parse(value).ok()?;
+    if url.scheme() != "https"
+        || !url.host_str()?.ends_with(".mzstatic.com")
+        || !url.path().starts_with("/image/thumb/")
+    {
+        return None;
+    }
+    let path = url.path();
+    let (prefix, size) = path.rsplit_once('/')?;
+    let (_, extension) = size.rsplit_once('.')?;
+    if !["jpg", "jpeg", "png", "webp"].contains(&extension.to_ascii_lowercase().as_str()) {
+        return None;
+    }
+    url.set_path(&format!("{prefix}/1200x1200bb.{extension}"));
+    Some(url.to_string())
+}
+
 fn normalized(value: &str) -> String {
     value
         .chars()
@@ -326,6 +429,27 @@ mod tests {
         assert_eq!(response.results[0].collection_id, 573962245);
         assert_eq!(response.results[0].artist_name, "Bruno Mars");
         assert_eq!(response.results[0].collection_name, "Unorthodox Jukebox");
+    }
+
+    #[test]
+    fn artist_page_artwork_is_not_confused_with_album_art() {
+        let found: ArtistSearchResponse = serde_json::from_str(
+            r#"{"results":[{"artistId":405340,"artistName":"10cc","artistLinkUrl":"https://music.apple.com/us/artist/10cc/405340"}]}"#,
+        ).unwrap();
+        assert_eq!(found.results[0].artist_name, "10cc");
+        let html = r#"<meta property="og:image" content="https://is1-ssl.mzstatic.com/image/thumb/Features125/example/pr_source.png/1200x630cw.png">"#;
+        assert_eq!(
+            artist_profile_artwork_url(html).as_deref(),
+            Some(
+                "https://is1-ssl.mzstatic.com/image/thumb/Features125/example/pr_source.png/1200x1200bb.png"
+            )
+        );
+        assert!(
+            artist_profile_artwork_url(
+                r#"<meta property="og:image" content="https://evil.example/cover.jpg">"#
+            )
+            .is_none()
+        );
     }
 
     #[test]

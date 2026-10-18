@@ -155,6 +155,13 @@ pub struct Release {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistLookup {
+    pub id: String,
+    pub name: String,
+    pub disambiguation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingRelease {
     pub id: String,
     pub title: String,
@@ -175,6 +182,7 @@ pub struct RecordingLookup {
     pub title: String,
     pub artist_credit: String,
     pub artist_mbids: Vec<String>,
+    pub work_mbids: Vec<String>,
     pub video: bool,
     pub disambiguation: Option<String>,
     pub releases: Vec<RecordingRelease>,
@@ -190,6 +198,15 @@ pub struct RecordingSearchHit {
     pub video: bool,
     pub disambiguation: Option<String>,
     pub releases: Vec<RecordingRelease>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkRecording {
+    pub id: String,
+    pub title: String,
+    pub artist_credit: String,
+    pub artist_mbids: Vec<String>,
+    pub attributes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -236,6 +253,10 @@ struct ApiArtistCredit {
 struct ApiArtist {
     #[serde(default)]
     id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    disambiguation: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,6 +284,48 @@ struct ApiRecording {
     artist_credit: Vec<ApiArtistCredit>,
     #[serde(default)]
     releases: Vec<ApiRelease>,
+    #[serde(default)]
+    relations: Vec<ApiWorkRelation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiWorkRelation {
+    #[serde(rename = "target-type", default)]
+    target_type: String,
+    #[serde(default)]
+    work: Option<ApiWork>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiWork {
+    #[serde(default)]
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiWorkLookup {
+    #[serde(default)]
+    relations: Vec<ApiWorkRecordingRelation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiWorkRecordingRelation {
+    #[serde(rename = "target-type", default)]
+    target_type: String,
+    #[serde(default)]
+    attributes: Vec<String>,
+    #[serde(default)]
+    recording: Option<ApiRelatedRecording>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiRelatedRecording {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(rename = "artist-credit", default)]
+    artist_credit: Vec<ApiArtistCredit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -518,6 +581,73 @@ impl MusicBrainzClient {
         Ok(())
     }
 
+    pub async fn lookup_artist(&self, artist_mbid: &str) -> Result<ArtistLookup, String> {
+        self.ensure_enabled()?;
+        validate_mbid(artist_mbid)?;
+        let url = format!("{API_BASE_URL}/artist/{artist_mbid}");
+        let access_token = if self.config.oauth {
+            Some(self.valid_access_token().await?)
+        } else {
+            None
+        };
+        let attempts = self.config.retry_max.max(1);
+
+        for attempt in 0..attempts {
+            self.wait_for_rate_limit().await;
+            let mut request = self
+                .client
+                .get(&url)
+                .timeout(self.recording_timeout())
+                .query(&[("fmt", "json")]);
+            if let Some(token) = access_token.as_deref() {
+                request = request.bearer_auth(token);
+            }
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(_) if attempt + 1 < attempts => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "Unable to query MusicBrainz artist {artist_mbid} after {} attempt(s): {error}",
+                        attempt + 1
+                    ));
+                }
+            };
+            match response.status() {
+                StatusCode::OK => {}
+                StatusCode::NOT_FOUND => {
+                    return Err(format!("MusicBrainz artist not found: {artist_mbid}"));
+                }
+                StatusCode::UNAUTHORIZED => {
+                    return Err("MusicBrainz OAuth authentication was rejected.".to_string());
+                }
+                status if is_retryable_status(status) && attempt + 1 < attempts => continue,
+                status => {
+                    return Err(format!(
+                        "MusicBrainz artist {artist_mbid} returned HTTP {status} after {} attempt(s)",
+                        attempt + 1
+                    ));
+                }
+            }
+            let final_url = response.url().clone();
+            let body = response.text().await.map_err(|error| {
+                format!("Unable to read MusicBrainz artist {artist_mbid}: {error}")
+            })?;
+            let artist: ApiArtist = serde_json::from_str(&body).map_err(|error| {
+                let preview: String = body.chars().take(500).collect();
+                format!(
+                    "Invalid MusicBrainz JSON for artist {artist_mbid} from {final_url}: {error}\nResponse preview: {preview}"
+                )
+            })?;
+            return Ok(ArtistLookup {
+                id: artist.id.to_ascii_lowercase(),
+                name: artist.name,
+                disambiguation: nonempty(artist.disambiguation),
+            });
+        }
+
+        unreachable!("MusicBrainz retry loop always performs at least one attempt")
+    }
+
     pub async fn lookup_release(&self, release_mbid: &str) -> Result<Release, String> {
         self.ensure_enabled()?;
         validate_mbid(release_mbid)?;
@@ -625,7 +755,7 @@ impl MusicBrainzClient {
                 .timeout(self.recording_timeout())
                 .query(&[
                     ("fmt", "json"),
-                    ("inc", "artist-credits+releases+release-groups"),
+                    ("inc", "artist-credits+releases+release-groups+work-rels"),
                 ]);
             if let Some(token) = access_token.as_deref() {
                 request = request.bearer_auth(token);
@@ -679,6 +809,80 @@ impl MusicBrainzClient {
             })?;
 
             return Ok(recording_lookup_from_api(recording));
+        }
+
+        unreachable!("MusicBrainz retry loop always performs at least one attempt")
+    }
+
+    /// Resolve every Recording relationship exposed by one Work lookup. The
+    /// caller must still enforce the locally tagged Artist MBID before using a
+    /// Recording. Work identity alone describes a composition and is not
+    /// performer authority.
+    pub async fn lookup_work_recordings(
+        &self,
+        work_mbid: &str,
+    ) -> Result<Vec<WorkRecording>, String> {
+        self.ensure_enabled()?;
+        validate_mbid(work_mbid)?;
+        let url = format!("{API_BASE_URL}/work/{work_mbid}");
+        let access_token = if self.config.oauth {
+            Some(self.valid_access_token().await?)
+        } else {
+            None
+        };
+        let attempts = self.config.retry_max.max(1);
+
+        for attempt in 0..attempts {
+            self.wait_for_rate_limit().await;
+            let mut request = self
+                .client
+                .get(&url)
+                .timeout(self.recording_timeout())
+                .query(&[("fmt", "json"), ("inc", "recording-rels+artist-credits")]);
+            if let Some(token) = access_token.as_deref() {
+                request = request.bearer_auth(token);
+            }
+
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(_) if attempt + 1 < attempts => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "Unable to query MusicBrainz work {work_mbid} after {} attempt(s): {error}",
+                        attempt + 1
+                    ));
+                }
+            };
+            let status = response.status();
+            match status {
+                StatusCode::OK => {}
+                StatusCode::NOT_FOUND => {
+                    return Err(format!("MusicBrainz work not found: {work_mbid}"));
+                }
+                StatusCode::UNAUTHORIZED => {
+                    return Err("MusicBrainz OAuth authentication was rejected.".to_string());
+                }
+                status if is_retryable_status(status) && attempt + 1 < attempts => continue,
+                status => {
+                    return Err(format!(
+                        "MusicBrainz work {work_mbid} returned HTTP {status} after {} attempt(s)",
+                        attempt + 1
+                    ));
+                }
+            }
+
+            let final_url = response.url().clone();
+            let body = response
+                .text()
+                .await
+                .map_err(|error| format!("Unable to read MusicBrainz work {work_mbid}: {error}"))?;
+            let lookup: ApiWorkLookup = serde_json::from_str(&body).map_err(|error| {
+                let preview: String = body.chars().take(500).collect();
+                format!(
+                    "Invalid MusicBrainz JSON for work {work_mbid} from {final_url}: {error}\nResponse preview: {preview}"
+                )
+            })?;
+            return Ok(work_recordings_from_api(lookup));
         }
 
         unreachable!("MusicBrainz retry loop always performs at least one attempt")
@@ -981,6 +1185,7 @@ fn recording_lookup_from_api(recording: ApiRecording) -> RecordingLookup {
         title: recording.title,
         artist_credit: render_artist_credit(&recording.artist_credit),
         artist_mbids: render_artist_mbids(&recording.artist_credit),
+        work_mbids: render_work_mbids(&recording.relations),
         video: recording.video.unwrap_or(false),
         disambiguation: nonempty(recording.disambiguation),
         releases: recording
@@ -989,6 +1194,29 @@ fn recording_lookup_from_api(recording: ApiRecording) -> RecordingLookup {
             .map(recording_release_from_api)
             .collect(),
     }
+}
+
+fn work_recordings_from_api(lookup: ApiWorkLookup) -> Vec<WorkRecording> {
+    let mut seen = std::collections::HashSet::new();
+    lookup
+        .relations
+        .into_iter()
+        .filter(|relation| relation.target_type.eq_ignore_ascii_case("recording"))
+        .filter_map(|relation| {
+            let recording = relation.recording?;
+            let id = recording.id.trim().to_ascii_lowercase();
+            if id.is_empty() || !seen.insert(id.clone()) {
+                return None;
+            }
+            Some(WorkRecording {
+                id,
+                title: recording.title,
+                artist_credit: render_artist_credit(&recording.artist_credit),
+                artist_mbids: render_artist_mbids(&recording.artist_credit),
+                attributes: relation.attributes,
+            })
+        })
+        .collect()
 }
 
 fn recording_search_hit_from_api(recording: ApiRecording) -> RecordingSearchHit {
@@ -1051,6 +1279,19 @@ fn render_artist_mbids(credits: &[ApiArtistCredit]) -> Vec<String> {
         .iter()
         .filter_map(|credit| credit.artist.as_ref())
         .map(|artist| artist.id.trim().to_ascii_lowercase())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn render_work_mbids(relations: &[ApiWorkRelation]) -> Vec<String> {
+    let mut ids = relations
+        .iter()
+        .filter(|relation| relation.target_type.eq_ignore_ascii_case("work"))
+        .filter_map(|relation| relation.work.as_ref())
+        .map(|work| work.id.trim().to_ascii_lowercase())
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>();
     ids.sort();
@@ -1566,6 +1807,57 @@ mod tests {
         .expect("fixture should parse");
         let hit = recording_search_hit_from_api(search.recordings.into_iter().next().unwrap());
         assert!(!hit.video);
+    }
+
+    #[test]
+    fn recording_work_ids_and_work_recording_artists_are_projected_separately() {
+        let recording: ApiRecording = serde_json::from_str(
+            r#"{
+                "id":"55da552e-0eea-404f-915b-3a6a2e0e6e5b",
+                "title":"I'm Not in Love",
+                "relations":[
+                    {"target-type":"work","work":{"id":"6edaeeac-87ba-36c7-b9db-fd034d43433f"}},
+                    {"target-type":"url"}
+                ]
+            }"#,
+        )
+        .expect("recording fixture should parse");
+        assert_eq!(
+            recording_lookup_from_api(recording).work_mbids,
+            vec!["6edaeeac-87ba-36c7-b9db-fd034d43433f"]
+        );
+
+        let work: ApiWorkLookup = serde_json::from_str(
+            r#"{
+                "relations":[
+                    {
+                        "target-type":"recording",
+                        "attributes":[],
+                        "recording":{
+                            "id":"a2f645f1-c475-42b9-8702-becc3b5382ae",
+                            "title":"I'm Not in Love",
+                            "artist-credit":[{"name":"10cc","artist":{"id":"f37c537b-3557-4031-bfd6-ab63ced32854"}}]
+                        }
+                    },
+                    {
+                        "target-type":"recording",
+                        "recording":{
+                            "id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                            "title":"Cover",
+                            "artist-credit":[{"name":"Other","artist":{"id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}}]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .expect("work fixture should parse");
+        let recordings = work_recordings_from_api(work);
+        assert_eq!(recordings.len(), 2);
+        assert_eq!(
+            recordings[0].artist_mbids,
+            vec!["f37c537b-3557-4031-bfd6-ab63ced32854"]
+        );
+        assert_eq!(recordings[0].artist_credit, "10cc");
     }
 
     #[test]

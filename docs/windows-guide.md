@@ -38,11 +38,14 @@ preserved; relative Config v5 paths resolve against the selected state root.
 SPLINED does not generate a default Config v5 or create database, temporary
 cache, log, credential, or obsolete bootstrap directories merely because the
 executable launched. If Config v5 is absent, invalid, or operationally
-incomplete, the ordinary workspace stays unavailable and structured **Setup**
-opens with the actual error. Setup collects the music library, SQLite/database,
-temporary cache, log, and credential locations. Only **Save and Continue**
-validates them, creates the configured application-owned directories, writes
-Config v5 atomically, and loads the library. `ui.toml` is separate UI state.
+incomplete, the ordinary workspace stays unavailable and a short **Welcome to
+S.P.L.I.N.E.D.** Setup opens with the actual error. A new user browses to an
+existing Media Library; the SQLite/database, temporary cache, log, credential,
+sample, and backup locations are prefilled from the portable executable root
+and remain individually browsable. Only **Save & Open Settings** validates the
+paths, creates the configured application-owned directories, writes Config v5
+atomically, loads the library, and opens the complete Settings screen for
+review. `ui.toml` is separate UI state.
 
 With an existing Config v5, startup opens `<scan.cache_dir>\splined.db`
 automatically and reports the active state root, Config path, SQLite path, and
@@ -58,22 +61,34 @@ splined.exe --navidrome-diagnostics navidrome-diagnostics.txt
 ```
 
 The library reports include the active paths, complete resident counts, Slint
-model counts, and non-writing selection/navigation checks. The Navidrome report
-uses the configured credential file for a live capability request but never
-records its secret.
+model counts, and non-writing selection/navigation checks. The Slint report also
+collapses and re-expands Media Library, verifies that its width returns at or
+above the Rust minimum without losing the current model, and confirms that a
+Custom Upscale window receives the complete resident Artist model. The
+Navidrome report uses the configured credential file for a live capability
+request but never records its secret.
 
 ## Media Library
 
 The graphical left sidebar is projected from the resident Rust database model.
 It provides three views over the same album authority:
 
-- **Artists** shows aggregate artist status. Activating an artist scopes the
-  album set and cascades selection to eligible albums.
+- **Artists** shows aggregate artist status. Activating an artist expands its
+  Albums directly below the Artist without leaving the Artist view. Each child
+  Album has an explicit selected/deselected radio and a yellow Album name;
+  Library Status still controls filtering and selection eligibility.
 - **Albums** provides direct and additive album selection.
-- **Folders** displays physical album paths while retaining the same album keys
-  and selection set. Choosing any top-level Artists, Albums, or Folders tab
-  clears an earlier Artist drill-down scope before rebuilding that view; a
-  Folder list therefore cannot remain restricted to the last Artist click.
+- **Fallback** displays one row per Album whose MusicBrainz Album ID is empty.
+  MusicBrainz-identified Various Artists and other compilations stay out of this
+  view. Activating a fallback Album expands only its cached compilation tracks,
+  when present; tracks from every Album are never flattened into one repeated
+  list. The Album radio selects the full fallback run independently of the
+  expand/collapse control.
+
+Media Filter is clipped and internally scrollable, so its Artist/Album searches,
+three equal-width scalable Select Mode buttons, and Library Status radios cannot
+bleed into the library list. Application text has a 14-pixel explicit minimum,
+with 20–22-pixel radio glyphs and a 16-pixel native default.
 
 The main window is resizable and maximizable. Artwork is clipped to its preview
 card so a native-resolution cover cannot cover the library or intercept its
@@ -96,7 +111,11 @@ Rust validates every requested size before Slint renders it. Media, center,
 artwork, candidate-result, and activity regions retain minimum usable sizes;
 saved values are clamped when the window, display resolution, or DPI changes.
 Maximize uses the available space without replacing the last normal window
-size, and restore returns to that normal geometry. Collapsing Media Library,
+size, and restore returns to that normal geometry. A saved maximized main window
+is applied once the Slint event loop is running so Windows performs a native
+work-area maximize. Candidate Compare and Custom Upscale do not copy the main
+window's maximized state; each opens as an independently resizable native window
+and may be maximized or restored on its own monitor. Collapsing Media Library,
 Artwork Preview & Editing, or Artwork Filter reclaims its space while retaining
 the previous expanded width or height for the next expansion.
 
@@ -120,7 +139,8 @@ never treated as physical pixels.
 - **Find & Match Artwork** combines the Config v5 source strip, tri-state
   filters, adjustment preview, Selected Artwork, and the candidate tray.
 - **Edit Artwork** provides candidate source selection, a current-image canvas,
-  five primary adjustment controls, and the existing preview/apply actions.
+  all eight independently selectable adjustment controls, an **Activate All 8**
+  action, and the existing preview/apply actions.
 - **Upscale / Enhance** presents the real configured upscaler and opens the
   dedicated Custom Upscale before/after window; no model names or capabilities
   are invented by the interface.
@@ -129,9 +149,13 @@ never treated as physical pixels.
   workflow.
 
 MusicBrainz Results temporarily occupies the central mode workspace while an
-authority decision is pending. The current album stays distinct from ordinary
-results, release pages can be opened directly, and refine/back/apply actions
-continue to use the Rust run controller.
+authority decision is pending. Results are grouped by release family and Album
+Artist. Selecting a different release asynchronously loads its Cover Art
+Archive front image into Artwork Preview. The single bottom **Open MB Page**
+action is enabled only for a different selected release; every opened release
+retains its purple **VISITED** history while selection remains cyan and current
+authority remains yellow. The collapsible, yellow-outlined ID editor exposes
+Recording, Artist, and Release MBIDs in labeled rows with one Apply action.
 
 Text and status filters change only visibility. Artist and Album filters can
 be combined with general search and multiple independently enabled status
@@ -147,9 +171,12 @@ Bypassed albums require the explicit one-run override; active timeouts remain
 protected. Incomplete compilation work remains eligible according to the
 authoritative database snapshot.
 
-**Show Tracks / Embedded Art** projects cached compilation tracks for direct
-track-level reopen while retaining the parent album's queue and completion
-authority.
+**Fallback** projects Albums with no MusicBrainz Album ID first, regardless of
+Compilation tags. It then shows the selected Album's cached tracks, filling any
+missing rows with a read-only enumeration of that one folder, for direct
+track-level reopen while retaining the parent Album's queue and completion authority.
+Completed track-art ledger entries are green; tracks without a completed entry
+are blue. Folder-level `cover.*` files are not used or counted.
 
 ## Running work
 
@@ -174,7 +201,7 @@ exclude, and priority actions save back to the same authoritative source list;
 there is no UI-only provider order. Local artwork retains its fixed review role.
 Provider status and candidate counts are projections of runtime events.
 
-The bottom candidate strip scrolls horizontally. Its cards contain real source
+The Candidate Artwork strip scrolls horizontally. Its cards contain real source
 provenance, native/projected dimensions,
 image type, range class, policy status, cache path, recommendation, comparison,
 and selection state. Source, type, policy, and range controls filter the
@@ -187,12 +214,19 @@ opens a separate resizable horizontal comparison window. When no acceptable
 candidate survives, the fallback reason and editable artist/album refinement
 use the existing Rust retry decision.
 
+The single run button is at the start of the workspace-mode row. It reads
+**LAUNCH** while idle, **PROCESSING** while work is active, and **SKIP ALBUM**
+while the runtime is waiting for an album decision. Clicking PROCESSING
+requests the same controlled stop used by the Rust scan controller. Candidate
+controls sit directly below the Candidate Artwork heading.
+
 Available decisions include:
 
 - Apply Selected
 - Keep Local
-- Bypass
-- NO Bypass (clear persistent bypass authority)
+- Bypass (orange while available)
+- Bypassed (red only after SQLite records the bypass); clicking it asks for
+  confirmation before the persistent bypass is cleared
 - MusicBrainz retry/authority review
 - Skip Album
 
@@ -218,19 +252,18 @@ Brightness, Gamma, and Color/temperature. Values are application state, not
 widget-local state. Saving defaults writes the established Config v5 output
 fields atomically.
 
-**Upscale Preview** preserves source resolution and disables the output edit
-profile for the candidate decision. **Apply Upscale** enables the configured
-profile and existing maximum-upscale enforcement. The real final-artwork code
-continues to preserve native artwork above Ideal resolution, apply square/crop
-policy, and enforce `upscale_max_percent`.
+**Upscale Preview** renders the adjusted image without changing album files and
+then changes in place to **Apply Upscale**. Applying follows the same selected
+candidate path as **Apply to Selected**, so the user does not return to Find &
+Match Artwork or press a second save button. Any slider change returns the
+action to **Upscale Preview**. The real final-artwork code continues to preserve
+native artwork above Ideal resolution, apply square/crop policy, and enforce
+`upscale_max_percent`.
 
-**Custom Upscale** opens a separate resizable Original/Preview comparison and
-editing workspace with the same complete, collapsible, resizable Media Library
-used by the main modes, including Artists/Albums/Folders, search, selection,
-Show Tracks, and status filters. Resolution and ratio labels are display
-overlays only. All eight controls provide increment, decrement, and reset;
-exactly five may be promoted and reordered as primary controls. Adaptive
-defaults remain Config v5 backed.
+The resizable Original/Upscale comparison remains in the main Upscale / Enhance
+workspace. All eight controls provide increment, decrement, and reset, update
+the Upscale and Selected Artwork previews live, and never alter the Original
+preview. Adaptive defaults remain Config v5 backed.
 
 Existing-cover editing requires LIVE WRITE and a current local cover. It uses
 the same validated final-artwork pipeline and safe replacement behavior.
@@ -256,14 +289,34 @@ standard salted token contract, and API-key mode sends `apiKey` without sending
 username/password. A successful status is shown only after a real server
 response.
 
+The Media Library requests the Artist and Album thumbnails exposed by
+Navidrome/OpenSubsonic. Downloaded 192-pixel thumbnails are kept under the
+portable state root at `data/navidrome-thumbnails`; SPLINED does not write into
+the music library to render the list. Missing thumbnails refresh in the
+background at startup and the selected Artist is retried immediately. Album
+rows temporarily project a newly processed local cover until Navidrome's
+read-only thumbnail projection catches up.
+
 ## Backup and restore
 
-The maintenance page exports or restores selected Config v5 settings,
-credentials, SQLite, interface preferences, and diagnostics in the established
-`.spl` envelope. Protected backups use PBKDF2-HMAC-SHA1, AES-256-CBC, and an
-HMAC-SHA256 envelope compatible with existing Windows backups. Restore validates
-paths and content and uses atomic replacement. A successful restore reloads
-Config v5, SQLite, and the workspace immediately.
+The maintenance page has exclusive **Backup** and **Restore** modes with separate
+remembered, browsable paths. Windows backups are deliberately independent:
+
+- settings, credentials, and interface preferences use a timestamped `.spl`;
+- the authoritative library database uses a consistent SQLite online snapshot
+  written directly as timestamped `.sqlite`;
+- the secret-free diagnostic summary is a readable timestamped `.json` and is
+  reference material rather than a restorable settings payload.
+
+Each file type has its own exclusive Off, Daily, Weekly, and Monthly schedule,
+so the database can be protected more frequently than infrequently changing
+settings. Due jobs run only while SPLINED is open and idle and do not register an
+operating-system background task. Manual `.spl` settings archives may be
+password protected with the established PBKDF2-HMAC-SHA1, AES-256-CBC, and
+HMAC-SHA256 envelope. Restore auto-detects `.spl` and `.sqlite`, validates the
+selected file, uses atomic replacement, and immediately reloads the applicable
+configuration or Media Library. Older `.spl` archives with an embedded database
+remain restorable through the explicit legacy SQLite selection.
 
 Opening an associated unprotected `.spl` file, or launching
 `splined.exe --restore <file>`, automatically imports the archive's Config v5

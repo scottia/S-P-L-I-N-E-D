@@ -23,6 +23,8 @@ static DOWNLOAD_SESSIONS: OnceLock<Mutex<HashMap<u64, NavidromeCredential>>> = O
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct NavidromeCredential {
+    /// OpenSubsonic client name (`c`) shown in Navidrome request logs.
+    pub client_name: String,
     pub server_url: String,
     pub auth_method: String,
     pub username: String,
@@ -32,6 +34,11 @@ pub struct NavidromeCredential {
 }
 
 impl NavidromeCredential {
+    fn effective_client_name(&self) -> &str {
+        let value = self.client_name.trim();
+        if value.is_empty() { CLIENT_NAME } else { value }
+    }
+
     pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
         let path = Path::new(path);
@@ -48,6 +55,7 @@ impl NavidromeCredential {
             )
         })?;
         value.server_url = value.server_url.trim().trim_end_matches('/').to_string();
+        value.client_name = value.client_name.trim().to_string();
         value.auth_method = value.auth_method.trim().to_ascii_lowercase();
         value.username = value.username.trim().to_string();
         value.api_key = value.api_key.trim().to_string();
@@ -112,6 +120,17 @@ pub struct NavidromeArtist {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavidromeArtistInfo {
+    pub biography: String,
+    pub external_url: String,
+    pub musicbrainz_id: String,
+    pub small_image_url: String,
+    pub medium_image_url: String,
+    pub large_image_url: String,
+    pub similar_artists: Vec<NavidromeArtist>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NavidromeAlbum {
     pub id: String,
     pub artist_id: String,
@@ -121,11 +140,23 @@ pub struct NavidromeAlbum {
     pub musicbrainz_id: String,
     pub year: String,
     pub song_count: u32,
+    pub user_rating: u32,
 }
 
-/// Read-only OpenSubsonic-first companion projection. SPLINED's SQLite model
-/// remains authoritative; this client only supplies optional server metadata
-/// and artwork for matching local artists/albums.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavidromeArtistLibrary {
+    pub album_ids: Vec<String>,
+    /// Paths of songs actually credited to this artist, grouped by their
+    /// Navidrome Album ID. This is already present in the paged search3
+    /// response, so Artist Overview need not read every compilation file.
+    pub song_paths_by_album_id: std::collections::BTreeMap<String, Vec<String>>,
+    pub genres: Vec<String>,
+    pub roles: Vec<String>,
+}
+
+/// OpenSubsonic-first companion projection. SPLINED's SQLite model remains
+/// authoritative. Reads supply optional server metadata and artwork; the only
+/// native write is an explicit, user-confirmed artist-image upload.
 #[derive(Clone)]
 pub struct NavidromeCompanion {
     client: Client,
@@ -137,6 +168,140 @@ impl NavidromeCompanion {
         credential.validate()?;
         let client = navidrome_client(&credential.server_url)?;
         Ok(Self { client, credential })
+    }
+
+    /// Upload artist artwork through Navidrome's native artist-image API.
+    /// This operation deliberately does not modify album covers or the local
+    /// music library and is only called from the explicit Artist Overview
+    /// WRITE action.
+    pub async fn upload_artist_art(&self, artist_id: &str, path: &Path) -> Result<(), String> {
+        let artist_id = artist_id.trim();
+        if artist_id.is_empty() {
+            return Err("Navidrome artist identity is unavailable.".to_string());
+        }
+        let inspected = crate::inspect::inspect_image(path)?;
+        let size = std::fs::metadata(path)
+            .map_err(|error| {
+                format!(
+                    "Unable to inspect artist artwork {}: {error}",
+                    path.display()
+                )
+            })?
+            .len();
+        if size == 0 || size > MAX_DOWNLOAD_BYTES as u64 {
+            return Err(format!(
+                "Artist artwork must be between 1 byte and {} bytes.",
+                MAX_DOWNLOAD_BYTES
+            ));
+        }
+        let bytes = std::fs::read(path).map_err(|error| {
+            format!("Unable to read artist artwork {}: {error}", path.display())
+        })?;
+        let mime = match inspected.format {
+            crate::candidate::StaticFormat::Jpeg => "image/jpeg",
+            crate::candidate::StaticFormat::Png => "image/png",
+            crate::candidate::StaticFormat::Webp => "image/webp",
+        };
+        let filename = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("artist-artwork")
+            .to_string();
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename)
+            .mime_str(mime)
+            .map_err(|_| "Unable to prepare the selected artist artwork.".to_string())?;
+        let form = reqwest::multipart::Form::new().part("image", part);
+        let token = self.native_token().await?;
+        let url = self.native_artist_image_url(artist_id)?;
+        let response = self
+            .client
+            .post(url)
+            .header("X-ND-Authorization", format!("Bearer {token}"))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|error| safe_request_error("upload Navidrome artist artwork", error))?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err(
+                "Navidrome rejected the artist-artwork write credentials. Password authentication or a saved native bearer token is required."
+                    .to_string(),
+            );
+        }
+        response
+            .error_for_status()
+            .map_err(|_| "Navidrome could not save the selected artist artwork.".to_string())?;
+        Ok(())
+    }
+
+    async fn native_token(&self) -> Result<String, String> {
+        if !self.credential.bearer_token.trim().is_empty() {
+            return Ok(self.credential.bearer_token.trim().to_string());
+        }
+        if self.credential.username.trim().is_empty() || self.credential.password.is_empty() {
+            return Err(
+                "Navidrome artist-artwork writes require password authentication; API-key access remains read-only."
+                    .to_string(),
+            );
+        }
+        let url = self.native_url("auth/login")?;
+        let response = self
+            .client
+            .post(url)
+            .json(&serde_json::json!({
+                "username": self.credential.username,
+                "password": self.credential.password,
+            }))
+            .send()
+            .await
+            .map_err(|error| {
+                safe_request_error("authenticate a Navidrome artist-artwork write", error)
+            })?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ) {
+            return Err("Navidrome rejected the saved username or password.".to_string());
+        }
+        let document = response
+            .error_for_status()
+            .map_err(|_| "Navidrome native authentication failed.".to_string())?
+            .json::<Value>()
+            .await
+            .map_err(|_| {
+                "Navidrome returned an invalid native authentication response.".to_string()
+            })?;
+        document
+            .get("token")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| "Navidrome native authentication did not return a token.".to_string())
+    }
+
+    fn native_url(&self, relative: &str) -> Result<reqwest::Url, String> {
+        reqwest::Url::parse(&format!(
+            "{}/",
+            self.credential.server_url.trim_end_matches('/')
+        ))
+        .and_then(|base| base.join(relative.trim_start_matches('/')))
+        .map_err(|_| "Navidrome server URL is invalid.".to_string())
+    }
+
+    fn native_artist_image_url(&self, artist_id: &str) -> Result<reqwest::Url, String> {
+        let mut url = self.native_url("api/artist/")?;
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| "Navidrome server URL cannot address an artist image.".to_string())?;
+            segments.pop_if_empty();
+            segments.push(artist_id);
+            segments.push("image");
+        }
+        Ok(url)
     }
 
     pub async fn capabilities(&self) -> Result<NavidromeCapabilities, String> {
@@ -245,8 +410,287 @@ impl NavidromeCompanion {
                 musicbrainz_id: json_text(value, "musicBrainzId"),
                 year: json_text(value, "year"),
                 song_count: json_u32(value, "songCount"),
+                user_rating: json_u32(value, "userRating").min(5),
             })
             .collect())
+    }
+
+    /// Read the descriptive artist metadata already assembled by Navidrome's
+    /// configured metadata agents (including the Apple Music plugin). SPLINED
+    /// does not perform a second Apple or MusicBrainz metadata search here.
+    pub async fn artist_info(&self, artist_id: &str) -> Result<NavidromeArtistInfo, String> {
+        if artist_id.trim().is_empty() {
+            return Err("Navidrome artist identity is required.".to_string());
+        }
+        let response = self
+            .request_value("getArtistInfo2", &[("id", artist_id.to_string())])
+            .await?;
+        let info = response
+            .get("artistInfo2")
+            .ok_or_else(|| "Navidrome did not return artist information.".to_string())?;
+        Ok(NavidromeArtistInfo {
+            biography: plain_text_from_markup(&json_text(info, "biography")),
+            external_url: ["lastFmUrl", "externalUrl"]
+                .iter()
+                .map(|key| json_text(info, key))
+                .find(|value| !value.is_empty())
+                .unwrap_or_default(),
+            musicbrainz_id: json_text(info, "musicBrainzId"),
+            small_image_url: json_text(info, "smallImageUrl"),
+            medium_image_url: json_text(info, "mediumImageUrl"),
+            large_image_url: json_text(info, "largeImageUrl"),
+            similar_artists: info
+                .get("similarArtist")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|artist| NavidromeArtist {
+                    id: json_text(artist, "id"),
+                    name: json_text(artist, "name"),
+                    cover_art_id: json_text(artist, "coverArt"),
+                    artist_image_url: json_text(artist, "artistImageUrl"),
+                    musicbrainz_id: json_text(artist, "musicBrainzId"),
+                    album_count: json_u32(artist, "albumCount"),
+                })
+                .filter(|artist| !artist.name.trim().is_empty())
+                .collect(),
+        })
+    }
+
+    /// Resolve every album in which Navidrome tags the selected artist on at
+    /// least one song. Unlike `getArtist`, this includes Various Artists and
+    /// other compilations whose album artist is different from the performer.
+    /// The query is paged and filtered by stable artist ID/name so unrelated
+    /// fuzzy search results never enter the Artist Overview.
+    pub async fn artist_library(
+        &self,
+        artist_id: &str,
+        artist_name: &str,
+    ) -> Result<NavidromeArtistLibrary, String> {
+        const PAGE_SIZE: usize = 500;
+        const MAX_PAGES: usize = 20;
+        let mut album_ids = std::collections::BTreeSet::new();
+        let mut song_paths_by_album_id =
+            std::collections::BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+        let mut genres = std::collections::BTreeSet::new();
+        let mut roles = std::collections::BTreeSet::new();
+        for page in 0..MAX_PAGES {
+            let response = self
+                .request_value(
+                    "search3",
+                    &[
+                        ("query", artist_name.to_string()),
+                        ("artistCount", "0".to_string()),
+                        ("albumCount", "0".to_string()),
+                        ("songCount", PAGE_SIZE.to_string()),
+                        ("songOffset", (page * PAGE_SIZE).to_string()),
+                    ],
+                )
+                .await?;
+            let songs = nested_array(&response, "searchResult3", "song")
+                .cloned()
+                .unwrap_or_default();
+            let page_len = songs.len();
+            for song in songs {
+                if !song_has_artist(&song, artist_id, artist_name) {
+                    continue;
+                }
+                let album_id = json_text(&song, "albumId");
+                if !album_id.is_empty() {
+                    let path = json_text(&song, "path");
+                    if !path.is_empty() {
+                        song_paths_by_album_id
+                            .entry(album_id.to_ascii_lowercase())
+                            .or_default()
+                            .insert(path);
+                    }
+                    album_ids.insert(album_id);
+                }
+                collect_named_values(&song, "genres", "name", &mut genres);
+                let genre = json_text(&song, "genre");
+                if !genre.is_empty() {
+                    genres.insert(genre);
+                }
+                collect_artist_roles(&song, artist_id, artist_name, &mut roles);
+            }
+            if page_len < PAGE_SIZE {
+                break;
+            }
+        }
+        Ok(NavidromeArtistLibrary {
+            album_ids: album_ids.into_iter().collect(),
+            song_paths_by_album_id: song_paths_by_album_id
+                .into_iter()
+                .map(|(album_id, paths)| (album_id, paths.into_iter().collect()))
+                .collect(),
+            genres: genres.into_iter().collect(),
+            roles: roles.into_iter().collect(),
+        })
+    }
+
+    /// Top songs are intentionally a separate request so the Artist Overview
+    /// remains quick to open on large libraries.
+    pub async fn artist_top_songs(
+        &self,
+        artist_name: &str,
+        count: usize,
+    ) -> Result<Vec<String>, String> {
+        let response = self
+            .request_value(
+                "getTopSongs",
+                &[
+                    ("artist", artist_name.to_string()),
+                    ("count", count.clamp(1, 50).to_string()),
+                ],
+            )
+            .await?;
+        Ok(response
+            .get("topSongs")
+            .and_then(|value| value.get("song"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|song| json_text(song, "title"))
+            .filter(|title| !title.trim().is_empty())
+            .collect())
+    }
+
+    /// Return the full Navidrome album projection in bounded pages. This is
+    /// used by the native media-library thumbnail cache so one application
+    /// reload does not require a request per artist.
+    pub async fn albums(&self) -> Result<Vec<NavidromeAlbum>, String> {
+        const PAGE_SIZE: usize = 500;
+        let mut offset = 0usize;
+        let mut result = Vec::new();
+        loop {
+            let response = self
+                .request_value(
+                    "getAlbumList2",
+                    &[
+                        ("type", "alphabeticalByArtist".to_string()),
+                        ("size", PAGE_SIZE.to_string()),
+                        ("offset", offset.to_string()),
+                    ],
+                )
+                .await?;
+            let page = nested_array(&response, "albumList2", "album")
+                .cloned()
+                .unwrap_or_default();
+            let page_len = page.len();
+            result.extend(page.into_iter().map(|value| {
+                NavidromeAlbum {
+                    id: json_text(&value, "id"),
+                    artist_id: json_text(&value, "artistId"),
+                    artist: json_text(&value, "artist"),
+                    title: ["album", "title", "name"]
+                        .iter()
+                        .map(|key| json_text(&value, key))
+                        .find(|text| !text.is_empty())
+                        .unwrap_or_default(),
+                    cover_art_id: json_text(&value, "coverArt"),
+                    musicbrainz_id: json_text(&value, "musicBrainzId"),
+                    year: json_text(&value, "year"),
+                    song_count: json_u32(&value, "songCount"),
+                    user_rating: json_u32(&value, "userRating").min(5),
+                }
+            }));
+            if page_len < PAGE_SIZE {
+                break;
+            }
+            offset += page_len;
+        }
+        Ok(result)
+    }
+
+    pub async fn cache_artist_art(
+        &self,
+        artist: &NavidromeArtist,
+        cache_directory: &Path,
+        size: u32,
+    ) -> Result<Option<PathBuf>, String> {
+        if !artist.cover_art_id.trim().is_empty() {
+            return self
+                .cache_cover_art(&artist.cover_art_id, cache_directory, size)
+                .await;
+        }
+        let url = artist.artist_image_url.trim();
+        if url.is_empty() {
+            return Ok(None);
+        }
+        self.cache_remote_artist_art(url, cache_directory, size)
+            .await
+    }
+
+    pub async fn cache_artist_info_art(
+        &self,
+        info: &NavidromeArtistInfo,
+        cache_directory: &Path,
+        size: u32,
+    ) -> Result<Option<PathBuf>, String> {
+        let Some(url) = [
+            info.large_image_url.as_str(),
+            info.medium_image_url.as_str(),
+            info.small_image_url.as_str(),
+        ]
+        .into_iter()
+        .find(|value| !value.trim().is_empty()) else {
+            return Ok(None);
+        };
+        self.cache_remote_artist_art(url, cache_directory, size)
+            .await
+    }
+
+    async fn cache_remote_artist_art(
+        &self,
+        url: &str,
+        cache_directory: &Path,
+        size: u32,
+    ) -> Result<Option<PathBuf>, String> {
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|_| "Navidrome returned an invalid artist-image URL.".to_string())?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err("Navidrome returned an unsupported artist-image URL.".to_string());
+        }
+        std::fs::create_dir_all(cache_directory).map_err(|error| {
+            format!(
+                "Unable to create Navidrome artwork cache {}: {error}",
+                cache_directory.display()
+            )
+        })?;
+        let identity = Sha256::digest(format!("artist\n{url}\n{size}").as_bytes());
+        let filename = identity
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = cache_directory.join(format!("{filename}.img"));
+        if path.is_file() && crate::inspect::inspect_image(&path).is_ok() {
+            return Ok(Some(path));
+        }
+        let response = self
+            .client
+            .get(parsed)
+            .send()
+            .await
+            .map_err(|error| safe_request_error("download Navidrome artist art", error))?;
+        if response.content_length().unwrap_or(0) > MAX_DOWNLOAD_BYTES as u64 {
+            return Err("Navidrome artist art exceeded the download size limit.".to_string());
+        }
+        let bytes = response
+            .error_for_status()
+            .map_err(|_| "Navidrome artist-art download failed.".to_string())?
+            .bytes()
+            .await
+            .map_err(|error| format!("Unable to read Navidrome artist art: {error}"))?;
+        if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD_BYTES {
+            return Err("Navidrome returned invalid artist-art bytes.".to_string());
+        }
+        crate::safe_write::replace_binary_file(
+            &path,
+            &bytes,
+            "Navidrome artist artwork cache",
+            |staged| crate::inspect::inspect_image(staged).map(|_| ()),
+        )?;
+        Ok(Some(path))
     }
 
     pub async fn cache_cover_art(
@@ -548,6 +992,7 @@ pub fn save_credential(path: &Path, credential: &NavidromeCredential) -> Result<
         .trim()
         .trim_end_matches('/')
         .to_string();
+    credential.client_name = credential.client_name.trim().to_string();
     credential.auth_method = credential.auth_method.trim().to_ascii_lowercase();
     credential.username = credential.username.trim().to_string();
     credential.api_key = credential.api_key.trim().to_string();
@@ -651,7 +1096,10 @@ fn authenticated_request(
 ) -> RequestBuilder {
     let mut query = vec![
         ("v".to_string(), PROTOCOL_VERSION.to_string()),
-        ("c".to_string(), CLIENT_NAME.to_string()),
+        (
+            "c".to_string(),
+            credential.effective_client_name().to_string(),
+        ),
         ("f".to_string(), "json".to_string()),
     ];
     if credential.uses_api_key() {
@@ -737,6 +1185,50 @@ fn json_text(value: &Value, name: &str) -> String {
         .unwrap_or_default()
 }
 
+fn plain_text_from_markup(value: &str) -> String {
+    let mut text = String::with_capacity(value.len());
+    let mut tag = String::new();
+    let mut inside_tag = false;
+    for character in value.chars() {
+        match character {
+            '<' if !inside_tag => {
+                inside_tag = true;
+                tag.clear();
+            }
+            '>' if inside_tag => {
+                inside_tag = false;
+                let block_tag = tag
+                    .trim()
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|name| {
+                        matches!(name.to_ascii_lowercase().as_str(), "br" | "p" | "div")
+                    });
+                if block_tag && !text.ends_with(char::is_whitespace) {
+                    text.push(' ');
+                }
+            }
+            _ if inside_tag => tag.push(character),
+            _ => text.push(character),
+        }
+    }
+    if inside_tag {
+        text.push('<');
+        text.push_str(&tag);
+    }
+
+    let decoded = text
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn json_u32(value: &Value, name: &str) -> u32 {
     value
         .get(name)
@@ -757,6 +1249,82 @@ fn json_bool(value: &Value, name: &str) -> bool {
                 .is_some_and(|text| text.eq_ignore_ascii_case("true"))
         })
     })
+}
+
+fn song_has_artist(song: &Value, artist_id: &str, artist_name: &str) -> bool {
+    let id_matches = |value: &str| {
+        !artist_id.trim().is_empty() && value.trim().eq_ignore_ascii_case(artist_id.trim())
+    };
+    let name_matches = |value: &str| {
+        !artist_name.trim().is_empty() && value.trim().eq_ignore_ascii_case(artist_name.trim())
+    };
+    if id_matches(&json_text(song, "artistId")) || name_matches(&json_text(song, "artist")) {
+        return true;
+    }
+    song.get("artists")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|artist| {
+            id_matches(&json_text(artist, "id")) || name_matches(&json_text(artist, "name"))
+        })
+}
+
+fn collect_named_values(
+    value: &Value,
+    array_name: &str,
+    field_name: &str,
+    values: &mut std::collections::BTreeSet<String>,
+) {
+    for item in value
+        .get(array_name)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = json_text(item, field_name);
+        if !name.trim().is_empty() {
+            values.insert(name);
+        }
+    }
+}
+
+fn collect_artist_roles(
+    song: &Value,
+    artist_id: &str,
+    artist_name: &str,
+    roles: &mut std::collections::BTreeSet<String>,
+) {
+    for artist in song
+        .get("artists")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|artist| {
+            (!artist_id.trim().is_empty()
+                && json_text(artist, "id").eq_ignore_ascii_case(artist_id.trim()))
+                || json_text(artist, "name").eq_ignore_ascii_case(artist_name.trim())
+        })
+    {
+        for role in artist
+            .get("roles")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let role = role
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| json_text(role, "name"));
+            if !role.trim().is_empty() {
+                roles.insert(role);
+            }
+        }
+        let role = json_text(artist, "role");
+        if !role.trim().is_empty() {
+            roles.insert(role);
+        }
+    }
 }
 
 fn yes_no(value: bool) -> &'static str {
@@ -924,6 +1492,30 @@ mod tests {
             }
             bytes.extend_from_slice(&buffer[..read]);
         }
+        if let Some(header_end) = bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+        {
+            let headers = String::from_utf8_lossy(&bytes[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            while bytes.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buffer[..read]);
+            }
+        }
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
@@ -933,7 +1525,11 @@ mod tests {
             .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .unwrap_or_default();
-        let (content_type, body) = if target.contains("/rest/ping.view") {
+        let (content_type, body) = if target.contains("/auth/login") {
+            ("application/json", br#"{"token":"native-token"}"#.to_vec())
+        } else if target.contains("/api/artist/artist-1/image") {
+            ("application/json", b"{}".to_vec())
+        } else if target.contains("/rest/ping.view") {
             ("application/json", ping_response().into_bytes())
         } else if target.contains("/rest/getMusicFolders.view") {
             (
@@ -945,7 +1541,7 @@ mod tests {
             (
                 "application/json",
                 ok_response(
-                    r#""albumList2":{"album":[{"id":"album-1","artistId":"artist-1","coverArt":"cover-1"}]}"#,
+                    r#""albumList2":{"album":[{"id":"album-1","artistId":"artist-1","artist":"Beyoncé","album":"Renaissance","coverArt":"cover-1","musicBrainzId":"release-mbid","year":2022,"songCount":16,"userRating":4},{"id":"compilation-1","artistId":"various","artist":"Various Artists","album":"Festival","coverArt":"cover-2","year":2021,"songCount":12,"userRating":5}]}"#,
                 )
                 .into_bytes(),
             )
@@ -953,7 +1549,7 @@ mod tests {
             (
                 "application/json",
                 ok_response(
-                    r#""artistInfo2":{"mediumImageUrl":"https://example.invalid/artist.jpg"}"#,
+                    r#""artistInfo2":{"biography":"A &amp; B recorded <i>Renaissance</i>.<br>Still evolving.","lastFmUrl":"https://music.example/artist/artist-1","musicBrainzId":"artist-info-mbid","smallImageUrl":"https://example.invalid/small.jpg","mediumImageUrl":"https://example.invalid/artist.jpg","largeImageUrl":"https://example.invalid/banner.jpg","similarArtist":[{"id":"artist-2","name":"Solange"}]}"#,
                 )
                 .into_bytes(),
             )
@@ -977,6 +1573,20 @@ mod tests {
                     r#""artist":{"album":[{"id":"album-1","artistId":"artist-1","artist":"Beyoncé","album":"Renaissance","coverArt":"cover-1","musicBrainzId":"release-mbid","year":2022,"songCount":"16"}]}"#,
                 )
                 .into_bytes(),
+            )
+        } else if target.contains("/rest/search3.view") {
+            (
+                "application/json",
+                ok_response(
+                    r#""searchResult3":{"song":[{"id":"song-1","title":"Freedom","artist":"Beyoncé","artistId":"artist-1","album":"Renaissance","albumId":"album-1","path":"Beyoncé/Renaissance/Freedom.flac","genre":"Pop","artists":[{"id":"artist-1","name":"Beyoncé","roles":["performer"]}]},{"id":"song-2","title":"Compilation Song","artist":"Beyoncé","artistId":"artist-1","album":"Festival","albumId":"compilation-1","path":"Various Artists/Festival/Compilation Song.flac","genres":[{"name":"R&B"}],"artists":[{"id":"artist-1","name":"Beyoncé","role":"vocal"}]}]}"#,
+                )
+                .into_bytes(),
+            )
+        } else if target.contains("/rest/getTopSongs.view") {
+            (
+                "application/json",
+                ok_response(r#""topSongs":{"song":[{"title":"Freedom"},{"title":"Halo"}]}"#)
+                    .into_bytes(),
             )
         } else if target.contains("/rest/getCoverArt.view") {
             ("image/png", one_pixel_png())
@@ -1087,6 +1697,7 @@ mod tests {
     fn password_authentication_does_not_require_bearer() {
         let credential = NavidromeCredential {
             server_url: "https://music.example".to_string(),
+            client_name: "SPLINED Dev PC".to_string(),
             auth_method: "password".to_string(),
             username: "listener".to_string(),
             password: "secret".to_string(),
@@ -1100,6 +1711,7 @@ mod tests {
         assert!(request.url().as_str().contains("u=listener"));
         assert!(request.url().as_str().contains("s="));
         assert!(request.url().as_str().contains("t="));
+        assert!(request.url().as_str().contains("c=SPLINED+Dev+PC"));
         assert!(!request.url().as_str().contains("secret"));
         assert!(request.headers().get("X-ND-Authorization").is_none());
     }
@@ -1153,6 +1765,24 @@ mod tests {
         assert_eq!(artists[0].album_count, 2);
         assert_eq!(artists[0].musicbrainz_id, "artist-mbid");
 
+        let artist_info = companion.artist_info(&artists[0].id).await.unwrap();
+        assert_eq!(
+            artist_info.biography,
+            "A & B recorded Renaissance. Still evolving."
+        );
+        assert_eq!(
+            artist_info.external_url,
+            "https://music.example/artist/artist-1"
+        );
+        assert_eq!(artist_info.musicbrainz_id, "artist-info-mbid");
+        assert_eq!(
+            artist_info.large_image_url,
+            "https://example.invalid/banner.jpg"
+        );
+        assert_eq!(artist_info.similar_artists.len(), 1);
+        assert_eq!(artist_info.similar_artists[0].name, "Solange");
+        assert_eq!(artist_info.similar_artists[0].id, "artist-2");
+
         let albums = companion.artist_albums(&artists[0].id).await.unwrap();
         assert_eq!(albums.len(), 1);
         assert_eq!(albums[0].title, "Renaissance");
@@ -1163,6 +1793,29 @@ mod tests {
                 .cover_art_id,
             "cover-1"
         );
+
+        let library = companion
+            .artist_library(&artists[0].id, &artists[0].name)
+            .await
+            .unwrap();
+        assert_eq!(library.album_ids, vec!["album-1", "compilation-1"]);
+        assert_eq!(
+            library.song_paths_by_album_id["compilation-1"],
+            vec!["Various Artists/Festival/Compilation Song.flac"]
+        );
+        assert_eq!(library.genres, vec!["Pop", "R&B"]);
+        assert_eq!(library.roles, vec!["performer", "vocal"]);
+        assert_eq!(
+            companion
+                .artist_top_songs(&artists[0].name, 12)
+                .await
+                .unwrap(),
+            vec!["Freedom", "Halo"]
+        );
+
+        let catalog = companion.albums().await.unwrap();
+        assert_eq!(catalog[0].user_rating, 4);
+        assert_eq!(catalog[1].user_rating, 5);
     }
 
     #[tokio::test]
@@ -1188,6 +1841,35 @@ mod tests {
             .filter(|request| request.contains("/rest/getCoverArt.view"))
             .count();
         assert_eq!(cover_requests, 1);
+    }
+
+    #[tokio::test]
+    async fn artist_art_upload_uses_native_login_and_explicit_multipart_write() {
+        let server = MockNavidrome::start();
+        let companion = NavidromeCompanion::new(server.credential()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let artwork = directory.path().join("artist.png");
+        std::fs::write(&artwork, one_pixel_png()).unwrap();
+
+        companion
+            .upload_artist_art("artist-1", &artwork)
+            .await
+            .unwrap();
+
+        let requests = server.requests();
+        assert!(requests.iter().any(|request| {
+            request.starts_with("POST /auth/login ") && request.contains(r#""username":"listener""#)
+        }));
+        assert!(
+            requests.iter().any(|request| {
+                let normalized = request.to_ascii_lowercase();
+                request.starts_with("POST /api/artist/artist-1/image ")
+                    && normalized.contains("x-nd-authorization: bearer native-token")
+                    && normalized.contains("multipart/form-data")
+                    && request.contains("name=\"image\"")
+            }),
+            "requests: {requests:#?}"
+        );
     }
 
     #[tokio::test]

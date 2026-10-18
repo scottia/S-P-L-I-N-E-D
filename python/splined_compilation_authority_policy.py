@@ -37,6 +37,8 @@ _MBID_PATTERN = re.compile(
     r"[0-9a-f]{4}-[0-9a-f]{12}\b"
 )
 _EXCLUDED_SECONDARY = {"dj-mix", "live", "mixtape/street", "remix"}
+_MAX_WORK_RECORDING_LOOKUPS = 8
+_MUSICBRAINZ_EMBEDDED_RELEASE_LIMIT = 25
 _INSTALLED = False
 
 
@@ -111,17 +113,12 @@ def manual_album_eligible(tracks: list[Any]) -> bool:
     if not tracks:
         return False
     track = tracks[0]
-    return (
-        not str(getattr(track, "album_mbid", "") or "").strip()
-        and _truthy(getattr(track, "compilation", None))
-    )
+    return not str(getattr(track, "album_mbid", "") or "").strip()
 
 
 def manual_track_eligible(track: Any) -> tuple[bool, str]:
     if str(getattr(track, "album_mbid", "") or "").strip():
         return False, "Track has an Album MBID and belongs in normal scan mode"
-    if not _truthy(getattr(track, "compilation", None)):
-        return False, "Track is not tagged compilation=1"
     return True, ""
 
 
@@ -580,6 +577,181 @@ def _rank_releases(
     return tuple(selected)
 
 
+def _related_work_mbids(payload: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    for relation in payload.get("relations", []):
+        if not isinstance(relation, dict):
+            continue
+        work = relation.get("work")
+        if not isinstance(work, dict):
+            continue
+        for work_mbid in sorted(_mbids(work.get("id"))):
+            if work_mbid not in result:
+                result.append(work_mbid)
+    return result
+
+
+def _matching_work_recordings(
+    payload: dict[str, Any],
+    tagged_recording_mbid: str,
+    artist_mbids: set[str],
+) -> list[dict[str, Any]]:
+    result: list[tuple[bool, int, dict[str, Any]]] = []
+    for index, relation in enumerate(payload.get("relations", [])):
+        if not isinstance(relation, dict):
+            continue
+        recording = relation.get("recording")
+        if not isinstance(recording, dict):
+            continue
+        recording_ids = _mbids(recording.get("id"))
+        if len(recording_ids) != 1:
+            continue
+        recording_mbid = next(iter(recording_ids))
+        if recording_mbid == tagged_recording_mbid.casefold():
+            continue
+        if not artist_mbids.issubset(
+            _credit_mbids(recording.get("artist-credit"))
+        ):
+            continue
+        attributes = relation.get("attributes")
+        qualified = bool(attributes) if isinstance(attributes, list) else False
+        result.append((qualified, index, recording))
+    result.sort(key=lambda item: (item[0], item[1]))
+    return [recording for _qualified, _index, recording in result]
+
+
+def _request_musicbrainz_entity(
+    http: Any,
+    url: str,
+    params: dict[str, str],
+    headers: dict[str, str],
+    options: MusicBrainzOptions,
+    entity: str,
+) -> tuple[dict[str, Any] | None, str]:
+    last_error = ""
+    for attempt in range(options.retry_max):
+        last_request = getattr(http, "last_mb_request", None)
+        if last_request is not None:
+            wait = options.min_delay - (time.monotonic() - float(last_request))
+            if wait > 0:
+                time.sleep(wait)
+        try:
+            http.last_mb_request = time.monotonic()
+            response = http.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=options.recording_timeout,
+            )
+        except requests.RequestException as exc:
+            last_error = f"MusicBrainz transport failure: {type(exc).__name__}"
+            if attempt + 1 < options.retry_max:
+                continue
+            break
+        status = int(response.status_code)
+        if status == 404:
+            return None, f"MusicBrainz {entity} ID was not found"
+        if status in {401, 403}:
+            return None, "MusicBrainz authentication was rejected"
+        if status == 429 or 500 <= status <= 599:
+            last_error = f"MusicBrainz returned HTTP {status}"
+            if attempt + 1 < options.retry_max:
+                continue
+            break
+        if status != 200:
+            return None, f"MusicBrainz returned HTTP {status}"
+        try:
+            payload = response.json()
+        except ValueError:
+            return None, "MusicBrainz returned invalid JSON"
+        if not isinstance(payload, dict):
+            return None, f"MusicBrainz returned invalid {entity} data"
+        return payload, ""
+    return None, last_error or "MusicBrainz attempt budget exhausted"
+
+
+def _resolve_work_release_candidates(
+    core: Any,
+    http: Any,
+    headers: dict[str, str],
+    options: MusicBrainzOptions,
+    tagged_recording_mbid: str,
+    artist_mbids: set[str],
+    artist_mbids_key: str,
+    work_mbids: list[str],
+) -> ReleaseResolution:
+    last_error = ""
+    best: tuple[ReleaseCandidate, ...] = ()
+    best_title = ""
+    best_artist = ""
+    for work_mbid in work_mbids:
+        work_payload, error = _request_musicbrainz_entity(
+            http,
+            f"{core.MB_BASE}/work/{work_mbid}",
+            {"inc": "recording-rels+artist-credits", "fmt": "json"},
+            headers,
+            options,
+            "Work",
+        )
+        if work_payload is None:
+            last_error = error
+            continue
+        recordings = _matching_work_recordings(
+            work_payload, tagged_recording_mbid, artist_mbids
+        )
+        for recording in recordings[:_MAX_WORK_RECORDING_LOOKUPS]:
+            recording_mbid = next(iter(_mbids(recording.get("id"))))
+            payload, error = _request_musicbrainz_entity(
+                http,
+                f"{core.MB_BASE}/recording/{recording_mbid}",
+                {
+                    "inc": "artist-credits+releases+release-groups",
+                    "fmt": "json",
+                },
+                headers,
+                options,
+                "Recording",
+            )
+            if payload is None:
+                last_error = error
+                continue
+            if not artist_mbids.issubset(
+                _credit_mbids(payload.get("artist-credit"))
+            ):
+                continue
+            candidates = _rank_releases(
+                payload, recording_mbid, artist_mbids_key
+            )
+            if len(candidates) > len(best):
+                best = candidates
+                best_title = str(payload.get("title") or "").strip()
+                best_artist = _credit_text(payload.get("artist-credit"))
+            raw_releases = payload.get("releases")
+            if (
+                isinstance(raw_releases, list)
+                and len(raw_releases) >= _MUSICBRAINZ_EMBEDDED_RELEASE_LIMIT
+                and best
+            ):
+                return ReleaseResolution(
+                    best,
+                    "musicbrainz-work",
+                    recording_title=best_title,
+                    recording_artist=best_artist,
+                )
+        if best:
+            return ReleaseResolution(
+                best,
+                "musicbrainz-work",
+                recording_title=best_title,
+                recording_artist=best_artist,
+            )
+    return ReleaseResolution(
+        (),
+        "musicbrainz-work",
+        last_error or "The related Work has no Recording for the local Artist ID",
+    )
+
+
 def resolve_release_candidates(
     core: Any,
     http: Any,
@@ -616,73 +788,28 @@ def resolve_release_candidates(
             "MusicBrainz authentication/refresh failed: "
             f"{type(exc).__name__}",
         )
-    url = f"{core.MB_BASE}/recording/{recording_mbid}"
-    last_error = ""
-    for attempt in range(options.retry_max):
-        last_request = getattr(http, "last_mb_request", None)
-        if last_request is not None:
-            wait = options.min_delay - (time.monotonic() - float(last_request))
-            if wait > 0:
-                time.sleep(wait)
-        try:
-            http.last_mb_request = time.monotonic()
-            response = http.get(
-                url,
-                params={
-                    "inc": "artist-credits+releases+release-groups",
-                    "fmt": "json",
-                },
-                headers=headers,
-                timeout=options.recording_timeout,
-            )
-        except requests.RequestException as exc:
-            last_error = f"MusicBrainz transport failure: {type(exc).__name__}"
-            if attempt + 1 < options.retry_max:
-                continue
-            break
-        status = int(response.status_code)
-        if status == 404:
-            return ReleaseResolution(
-                (), "musicbrainz", "MusicBrainz Recording ID was not found"
-            )
-        if status in {401, 403}:
-            return ReleaseResolution(
-                (), "musicbrainz", "MusicBrainz authentication was rejected"
-            )
-        if status == 429 or 500 <= status <= 599:
-            last_error = f"MusicBrainz returned HTTP {status}"
-            if attempt + 1 < options.retry_max:
-                continue
-            break
-        if status != 200:
-            return ReleaseResolution(
-                (), "musicbrainz", f"MusicBrainz returned HTTP {status}"
-            )
-        try:
-            payload = response.json()
-        except ValueError:
-            return ReleaseResolution(
-                (), "musicbrainz", "MusicBrainz returned invalid JSON"
-            )
-        if not isinstance(payload, dict):
-            return ReleaseResolution(
-                (), "musicbrainz", "MusicBrainz returned invalid Recording data"
-            )
-        if not artists.issubset(_credit_mbids(payload.get("artist-credit"))):
-            return ReleaseResolution(
-                (),
-                "musicbrainz",
-                "Recording Artist ID does not match the local Artist ID",
-            )
-        candidates = _rank_releases(
-            payload, recording_mbid, artist_mbids_key
-        )
-        if not candidates:
-            return ReleaseResolution(
-                (),
-                "musicbrainz",
-                "No Album, Soundtrack, or Compilation release was found",
-            )
+    payload, error = _request_musicbrainz_entity(
+        http,
+        f"{core.MB_BASE}/recording/{recording_mbid}",
+        {
+            "inc": "artist-credits+releases+release-groups+work-rels",
+            "fmt": "json",
+        },
+        headers,
+        options,
+        "Recording",
+    )
+    if payload is None:
+        return ReleaseResolution((), "musicbrainz", error)
+    direct_artist_matches = artists.issubset(
+        _credit_mbids(payload.get("artist-credit"))
+    )
+    candidates = (
+        _rank_releases(payload, recording_mbid, artist_mbids_key)
+        if direct_artist_matches
+        else ()
+    )
+    if candidates:
         try:
             _cache_releases(core, config_file, cfg, candidates)
         except sqlite3.Error:
@@ -695,10 +822,35 @@ def resolve_release_candidates(
             recording_title=str(payload.get("title") or "").strip(),
             recording_artist=_credit_text(payload.get("artist-credit")),
         )
+    work_mbids = _related_work_mbids(payload)
+    if work_mbids:
+        fallback = _resolve_work_release_candidates(
+            core,
+            http,
+            headers,
+            options,
+            recording_mbid,
+            artists,
+            artist_mbids_key,
+            work_mbids,
+        )
+        if fallback.candidates:
+            try:
+                _cache_releases(core, config_file, cfg, fallback.candidates)
+            except sqlite3.Error:
+                pass
+            return fallback
+        return fallback
+    if not direct_artist_matches:
+        return ReleaseResolution(
+            (),
+            "musicbrainz",
+            "Recording Artist ID does not match the local Artist ID",
+        )
     return ReleaseResolution(
         (),
         "musicbrainz",
-        last_error or "MusicBrainz attempt budget exhausted",
+        "No Album, Soundtrack, or Compilation release was found",
     )
 
 

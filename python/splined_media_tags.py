@@ -492,6 +492,59 @@ def cover_statistics(album: Any, cover_name: str) -> dict[str, Any]:
     }
 
 
+def without_fallback_cover_statistics(
+    cover: Mapping[str, Any], cover_name: str
+) -> dict[str, Any]:
+    """Remove configured ``cover.*`` material from a missing-MBID Album."""
+    result = dict(cover)
+    prefix = cover_name.strip().casefold() or "cover"
+    cover_names = [str(value) for value in cover.get("cover_names", [])]
+    local_art_values = [str(value) for value in cover.get("local_art", [])]
+    excluded_names = {
+        Path(value).name.casefold(): Path(value).name
+        for value in (*cover_names, *local_art_values)
+        if Path(value).stem.casefold() == "cover"
+        or Path(value).stem.casefold().startswith(prefix)
+    }
+    artwork = dict(cover.get("artwork", {}))
+    for name in excluded_names.values():
+        suffix = Path(name).suffix.casefold()
+        category = (
+            "JPEG" if suffix in {".jpg", ".jpeg"}
+            else "PNG" if suffix == ".png"
+            else "WEBP" if suffix == ".webp"
+            else "OTHER"
+        )
+        artwork[category] = max(0, int(artwork.get(category, 0)) - 1)
+    local_art = [
+        str(value)
+        for value in local_art_values
+        if Path(value).name.casefold() not in excluded_names
+    ]
+    result.update(
+        artwork=artwork,
+        root_files=max(
+            0,
+            int(cover.get("root_files", 0))
+            - len(excluded_names),
+        ),
+        cover_files=0,
+        cover_names=[],
+        local_art=local_art,
+        cover_found=False,
+        cover_path="",
+        cover_name="",
+        cover_format="",
+        cover_width=None,
+        cover_height=None,
+        webp_found=False,
+        webp_size_mb=0.0,
+        webp_resolution="",
+        webp_conversion=False,
+    )
+    return result
+
+
 def inspect_album(
     album: Any,
     library_root: Path,
@@ -611,6 +664,8 @@ def inspect_album(
     used_keys[key] = path_text
 
     cover = cover_statistics(album, cover_name)
+    if not str(tags["album_mbid"]).strip():
+        cover = without_fallback_cover_statistics(cover, cover_name)
     previous = existing.get(key) or prior_at_path
     previous_status = (
         str(previous["status"])

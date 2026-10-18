@@ -101,23 +101,26 @@ underlying status color.
 | Red | Persistent bypass | No |
 | Purple | Timeout active | No |
 
-Blue Incomplete Albums may be selected to resume compilation work. A tagged
-compilation whose per-track ledger has not reached `embedded-compilation`
+Blue Incomplete Albums may be selected to resume fallback work. A missing-ID
+Album whose per-track ledger has not reached `embedded-compilation`
 completion is also launch-eligible even if its row still carries older
 Album-level Processed or Bypassed history; that history is retained and the
 separate folder cover is untouched. Orange Albums may be deliberately selected
 for reprocessing. Ordinary Red Albums require an intentional temporary bypass
 override. Purple Albums remain protected while timeout is active.
 
-Windows **● Embedded Art** is an indigo view mode, not another Folder Status. It
-retains the established compilation-track behavior and uses the cached
-compilation-track rows beneath the same physical library hierarchy. Green track
-markers mean SPLINED has a completed embedded-art ledger entry; unmarked tracks
-have no such completion record. Highlighting a track changes only embedded-art
-preview focus. Checking one track deliberately reopens only that embedded image
+Windows **Fallback** is a view of Albums without a MusicBrainz Album ID, not
+another Folder Status. Every fallback Album uses the established embedded-track
+behavior and loads its track rows beneath the Album. MusicBrainz-identified
+Various Artists compilations are not fallback
+Albums. Green track text means SPLINED has a completed embedded-art ledger entry;
+blue is the default for a track without one. Highlighting a track changes only
+embedded-art preview focus. Checking one track deliberately reopens only that embedded image
 for review or replacement, even when the Album is otherwise
 Processed or Bypassed. Checking the Album instead clears the track target and
 resumes from the first unfinished ledger entry.
+Folder-level `cover.*` files are ignored: they are never shown as candidates,
+included in Fallback artwork/file counts, or changed by this workflow.
 
 READ mode may evaluate a candidate, but a no-cover Album does not become
 durably processed merely because a possible image was found. LIVE WRITE updates

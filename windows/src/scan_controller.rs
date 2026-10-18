@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
+pub type ProcessingDebugSink = Arc<dyn Fn(String) + Send + Sync + 'static>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerNotice {
     StateChanged,
@@ -19,17 +21,89 @@ pub enum ControllerNotice {
 pub struct ScanController {
     state: Arc<Mutex<ApplicationState>>,
     running: Arc<AtomicBool>,
+    musicbrainz_requested: Arc<AtomicBool>,
+    musicbrainz_write_requested: Arc<AtomicBool>,
     notices: mpsc::Sender<ControllerNotice>,
+    debug: Option<ProcessingDebugSink>,
+}
+
+struct TargetRunRequest<'a> {
+    config: &'a crate::config::Config,
+    sources: &'a [String],
+    target: &'a ScanTarget,
+    auto_ideal: bool,
+}
+
+fn musicbrainz_review_target(state: &ApplicationState) -> Result<ScanTarget, String> {
+    let album_key = state
+        .library
+        .focused_album_key
+        .as_deref()
+        .ok_or_else(|| "Select an Artist or Album before opening MusicBrainz.".to_string())?;
+    let album = state
+        .library
+        .albums
+        .iter()
+        .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
+        .ok_or_else(|| "The selected album is no longer available.".to_string())?;
+    let compilation_track_path = if album.snapshot.album_mbid.trim().is_empty() {
+        // An explicitly selected fallback track is the user's authority. Do not
+        // silently replace it with the first incomplete track in the compilation;
+        // that can search and preview artwork for an entirely different artist.
+        album
+            .snapshot
+            .compilation_tracks
+            .iter()
+            .find(|track| {
+                state
+                    .library
+                    .selected_compilation_track_paths
+                    .contains(&track.path.to_ascii_lowercase())
+            })
+            .or_else(|| {
+                album
+                    .snapshot
+                    .compilation_tracks
+                    .iter()
+                    .find(|track| !track.embedded_artwork_recorded)
+            })
+            .or_else(|| album.snapshot.compilation_tracks.first())
+            .map(|track| track.path.clone())
+            .or_else(|| {
+                (!album.snapshot.representative_file.is_empty())
+                    .then(|| album.snapshot.representative_file.clone())
+            })
+    } else {
+        None
+    };
+    Ok(ScanTarget {
+        album_key: album.snapshot.album_key.clone(),
+        artist: album.snapshot.artist.clone(),
+        album: album.snapshot.title.clone(),
+        path: album.snapshot.path.clone(),
+        compilation_track_path,
+        bypass_override: album.bypass_override,
+    })
 }
 
 impl ScanController {
     pub fn new(state: Arc<Mutex<ApplicationState>>) -> (Self, mpsc::Receiver<ControllerNotice>) {
+        Self::new_with_debug(state, None)
+    }
+
+    pub fn new_with_debug(
+        state: Arc<Mutex<ApplicationState>>,
+        debug: Option<ProcessingDebugSink>,
+    ) -> (Self, mpsc::Receiver<ControllerNotice>) {
         let (notices, receiver) = mpsc::channel();
         (
             Self {
                 state,
                 running: Arc::new(AtomicBool::new(false)),
+                musicbrainz_requested: Arc::new(AtomicBool::new(false)),
+                musicbrainz_write_requested: Arc::new(AtomicBool::new(false)),
                 notices,
+                debug,
             },
             receiver,
         )
@@ -40,6 +114,45 @@ impl ScanController {
     }
 
     pub fn start(&self) -> Result<(), String> {
+        self.start_internal(false)
+    }
+
+    pub fn open_musicbrainz(&self) -> Result<(), String> {
+        if self.is_running() {
+            let (phase, back_available) = {
+                let state = self
+                    .state
+                    .lock()
+                    .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
+                (state.phase, state.musicbrainz_back_available)
+            };
+            return match phase {
+                RunPhase::AwaitingCandidate => self.submit_decision(serde_json::json!({
+                    "action": if back_available { "back_musicbrainz" } else { "retry_musicbrainz" }
+                })),
+                RunPhase::AwaitingMusicBrainz => Ok(()),
+                RunPhase::Running => {
+                    self.musicbrainz_requested.store(true, Ordering::SeqCst);
+                    gui_events::set_musicbrainz_requested(true);
+                    if let Ok(mut state) = self.state.lock() {
+                        state.operation_status =
+                            "MusicBrainz will open after the current search…".to_string();
+                        state.push_log(
+                            "MusicBrainz results requested for the current album.".to_string(),
+                        );
+                    }
+                    let _ = self.notices.send(ControllerNotice::StateChanged);
+                    Ok(())
+                }
+                _ => {
+                    Err("The active scan is stopping; wait before opening MusicBrainz.".to_string())
+                }
+            };
+        }
+        self.start_internal(true)
+    }
+
+    fn start_internal(&self, open_musicbrainz: bool) -> Result<(), String> {
         if self
             .running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -53,7 +166,17 @@ impl ScanController {
                 .state
                 .lock()
                 .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
-            let queue = state.library.queue(state.scan_scope);
+            let queue = if open_musicbrainz {
+                match musicbrainz_review_target(&state) {
+                    Ok(target) => vec![target],
+                    Err(error) => {
+                        self.running.store(false, Ordering::SeqCst);
+                        return Err(error);
+                    }
+                }
+            } else {
+                state.library.queue(state.scan_scope)
+            };
             if queue.is_empty() {
                 self.running.store(false, Ordering::SeqCst);
                 return Err("Select at least one eligible album before launching.".to_string());
@@ -63,6 +186,13 @@ impl ScanController {
             state.run_total = queue.len();
             state.run_completed = 0;
             state.run_failed = 0;
+            state.operation_busy = true;
+            state.operation_status = if open_musicbrainz {
+                "Preparing MusicBrainz results for the selected album…".to_string()
+            } else {
+                "Preparing selected library targets…".to_string()
+            };
+            state.operation_tone = "cyan".to_string();
             let launch_label = match state.launch_mode {
                 crate::application::LaunchMode::Read => "READ",
                 crate::application::LaunchMode::LiveWrite => "LIVE WRITE",
@@ -73,18 +203,40 @@ impl ScanController {
                 if queue.len() == 1 { "" } else { "s" },
                 launch_label
             ));
+            let mut config = state.config.clone();
+            if open_musicbrainz {
+                // An explicit MusicBrainz click is a one-run override, not a
+                // persisted change to the user's automatic source policy.
+                config.musicbrainz.enabled = true;
+            }
             (
-                state.config.clone(),
+                config,
                 queue,
                 state.launch_mode,
-                state.auto_scan_enabled,
+                !open_musicbrainz && state.auto_scan_enabled,
             )
         };
+        self.musicbrainz_requested
+            .store(open_musicbrainz, Ordering::SeqCst);
+        debug_record(
+            &self.debug,
+            format!(
+                "processing-start mode={} albums={}",
+                match launch_mode {
+                    crate::application::LaunchMode::Read => "read",
+                    crate::application::LaunchMode::LiveWrite => "live-write",
+                },
+                queue.len()
+            ),
+        );
         let _ = self.notices.send(ControllerNotice::StateChanged);
 
         let state = Arc::clone(&self.state);
         let running = Arc::clone(&self.running);
+        let musicbrainz_requested = Arc::clone(&self.musicbrainz_requested);
+        let musicbrainz_write_requested = Arc::clone(&self.musicbrainz_write_requested);
         let notices = self.notices.clone();
+        let debug = self.debug.clone();
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -96,6 +248,7 @@ impl ScanController {
                         &state,
                         &running,
                         &notices,
+                        &debug,
                         format!("Unable to start the SPLINED runtime: {error}"),
                     );
                     return;
@@ -106,6 +259,15 @@ impl ScanController {
                 if gui_events::cancelled() {
                     break;
                 }
+                debug_record(
+                    &debug,
+                    format!(
+                        "processing-target-start album_key={} path={} compilation_track={}",
+                        quoted(&target.album_key),
+                        quoted(&target.path),
+                        quoted(target.compilation_track_path.as_deref().unwrap_or(""))
+                    ),
+                );
                 let mut config = base_config.clone();
                 config.mode = launch_mode.config_mode();
                 config.scan.scan_library_dir = target.path.clone();
@@ -118,22 +280,50 @@ impl ScanController {
                 ) {
                     Ok(sources) => sources,
                     Err(error) => {
-                        finish_with_error(&state, &running, &notices, error);
+                        finish_with_error(&state, &running, &notices, &debug, error);
                         return;
                     }
                 };
 
                 if let Err(error) = run_target(
-                    &runtime, &state, &notices, &config, &sources, &target, auto_ideal,
+                    &runtime,
+                    &state,
+                    &notices,
+                    TargetRunRequest {
+                        config: &config,
+                        sources: &sources,
+                        target: &target,
+                        auto_ideal,
+                    },
+                    debug.clone(),
+                    Arc::clone(&musicbrainz_requested),
+                    Arc::clone(&musicbrainz_write_requested),
                 ) {
+                    debug_record(
+                        &debug,
+                        format!(
+                            "processing-target-error album_key={} error={}",
+                            quoted(&target.album_key),
+                            quoted(&error)
+                        ),
+                    );
                     if !gui_events::cancelled()
                         && let Ok(mut app) = state.lock()
                     {
+                        app.run_failed = app.run_failed.saturating_add(1);
                         app.last_error = Some(error.clone());
                         app.push_log(format!("ERROR: {error}"));
                     }
                     break;
                 }
+                debug_record(
+                    &debug,
+                    format!(
+                        "processing-target-finished album_key={} path={}",
+                        quoted(&target.album_key),
+                        quoted(&target.path)
+                    ),
+                );
 
                 if let Ok(mut app) = state.lock() {
                     app.library.mark_target_completed(&target);
@@ -170,8 +360,37 @@ impl ScanController {
                 } else {
                     format!("Run complete · {} completed", app.run_completed)
                 };
+                app.operation_busy = false;
+                app.operation_status = app.service_status.clone();
+                app.operation_tone = if cancelled || app.last_error.is_some() {
+                    "red".to_string()
+                } else {
+                    "green".to_string()
+                };
+                // A failed search is recoverable operator context, not a
+                // completed run. Keep the focused Artist/Album and current
+                // cover visible so the user can retry or choose another
+                // action instead of landing on an empty Artist Overview.
+                if app.last_error.is_none() && app.run_failed == 0 {
+                    app.clear_completed_workspace(cancelled);
+                } else {
+                    app.completion_message.clear();
+                    app.completion_dialog_visible = false;
+                }
             }
+            let (completed, failed) = state
+                .lock()
+                .map(|app| (app.run_completed, app.run_failed))
+                .unwrap_or_default();
+            debug_record(
+                &debug,
+                format!(
+                    "processing-finished cancelled={cancelled} completed={completed} failed={failed}"
+                ),
+            );
             running.store(false, Ordering::SeqCst);
+            musicbrainz_requested.store(false, Ordering::SeqCst);
+            musicbrainz_write_requested.store(false, Ordering::SeqCst);
             let _ = notices.send(ControllerNotice::RunFinished);
         });
 
@@ -180,9 +399,14 @@ impl ScanController {
 
     pub fn stop(&self) {
         if self.is_running() {
+            debug_record(&self.debug, "processing-stop-requested".to_string());
             gui_events::request_cancel();
             if let Ok(mut state) = self.state.lock() {
                 state.phase = RunPhase::Stopping;
+                state.operation_busy = true;
+                state.operation_status =
+                    "Stopping after the active operation releases…".to_string();
+                state.operation_tone = "orange".to_string();
                 state.push_log("Stopping after the active operation releases…".to_string());
             }
             let _ = self.notices.send(ControllerNotice::StateChanged);
@@ -190,12 +414,58 @@ impl ScanController {
     }
 
     pub fn submit_decision(&self, decision: Value) -> Result<(), String> {
+        let action = decision
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        debug_record(
+            &self.debug,
+            format!("processing-decision action={}", quoted(&action)),
+        );
         gui_events::submit_decision(decision)?;
         if let Ok(mut state) = self.state.lock() {
             state.phase = RunPhase::Running;
+            state.operation_busy = true;
+            state.operation_status = match action.as_str() {
+                "use" => "Saving selected artwork…".to_string(),
+                "bypass" => "Saving album bypass…".to_string(),
+                "skip_album" => "Skipping album and preparing the next target…".to_string(),
+                "retry" | "retry_musicbrainz" => "Searching MusicBrainz again…".to_string(),
+                _ => "Applying the selected artwork decision…".to_string(),
+            };
+            state.operation_tone = if action == "bypass" || action == "skip_album" {
+                "orange".to_string()
+            } else {
+                "magenta".to_string()
+            };
             state.push_log("Operator decision submitted.".to_string());
         }
         let _ = self.notices.send(ControllerNotice::StateChanged);
+        Ok(())
+    }
+
+    pub fn write_selected_musicbrainz(&self, decision: Value) -> Result<(), String> {
+        let ready = self
+            .state
+            .lock()
+            .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
+            .phase
+            == RunPhase::AwaitingMusicBrainz;
+        if !ready {
+            return Err("A MusicBrainz cover is not ready to write.".to_string());
+        }
+        self.musicbrainz_write_requested
+            .store(true, Ordering::SeqCst);
+        debug_record(
+            &self.debug,
+            "processing-musicbrainz-write-requested".to_string(),
+        );
+        if let Err(error) = self.submit_decision(decision) {
+            self.musicbrainz_write_requested
+                .store(false, Ordering::SeqCst);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -224,63 +494,256 @@ fn run_target(
     runtime: &tokio::runtime::Runtime,
     state: &Arc<Mutex<ApplicationState>>,
     notices: &mpsc::Sender<ControllerNotice>,
-    config: &crate::config::Config,
-    sources: &[String],
-    target: &ScanTarget,
-    auto_ideal: bool,
+    request: TargetRunRequest<'_>,
+    debug: Option<ProcessingDebugSink>,
+    musicbrainz_requested: Arc<AtomicBool>,
+    musicbrainz_write_requested: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let (event_sender, event_receiver) = mpsc::channel::<Value>();
-    gui_events::begin_in_process(event_sender, true, auto_ideal)?;
-    gui_events::set_bypass_overrides(target.bypass_override.then(|| PathBuf::from(&target.path)));
+    gui_events::begin_in_process(event_sender, true, request.auto_ideal)?;
+    gui_events::set_musicbrainz_requested(musicbrainz_requested.load(Ordering::SeqCst));
+    gui_events::set_bypass_overrides(
+        request
+            .target
+            .bypass_override
+            .then(|| PathBuf::from(&request.target.path)),
+    );
+    let focused_artist = state
+        .lock()
+        .ok()
+        .and_then(|app| app.library.focused_artist.clone());
     gui_events::set_scan_context(ScanContext {
-        compilation_track_path: target.compilation_track_path.as_ref().map(PathBuf::from),
+        compilation_track_path: request
+            .target
+            .compilation_track_path
+            .as_ref()
+            .map(PathBuf::from),
         fallback_album: None,
-        fallback_artist: None,
-        indexed_album_path: Some(PathBuf::from(&target.path)),
-        indexed_album_key: Some(target.album_key.clone()),
+        fallback_artist: focused_artist,
+        indexed_album_path: Some(PathBuf::from(&request.target.path)),
+        indexed_album_key: Some(request.target.album_key.clone()),
     });
 
     let relay_state = Arc::clone(state);
     let relay_notices = notices.clone();
+    let relay_debug = debug.clone();
     let relay = std::thread::spawn(move || {
         while let Ok(event) = event_receiver.recv() {
+            debug_record(&relay_debug, runtime_event_summary(&event));
             if let Ok(mut app) = relay_state.lock() {
                 app.apply_runtime_event(&event);
+            }
+            match event.get("event").and_then(Value::as_str) {
+                Some("musicbrainz_matches") => {
+                    musicbrainz_requested.store(false, Ordering::SeqCst);
+                    gui_events::set_musicbrainz_requested(false);
+                    // Reaching the browser again means the selected release did
+                    // not yield a writable candidate. Do not let an old direct
+                    // write request leak into a later release selection.
+                    musicbrainz_write_requested.store(false, Ordering::SeqCst);
+                }
+                Some("album_completed" | "album_skipped" | "album_postponed" | "album_error") => {
+                    musicbrainz_requested.store(false, Ordering::SeqCst);
+                    gui_events::set_musicbrainz_requested(false);
+                    musicbrainz_write_requested.store(false, Ordering::SeqCst);
+                }
+                Some("decision_required")
+                    if musicbrainz_write_requested.swap(false, Ordering::SeqCst) =>
+                {
+                    let decision = relay_state
+                        .lock()
+                        .map_err(|_| "The SPLINED application state is unavailable.".to_string())
+                        .and_then(|mut app| musicbrainz_direct_write_decision(&mut app));
+                    let selected = decision
+                        .as_ref()
+                        .ok()
+                        .and_then(|value| value.get("index"))
+                        .and_then(Value::as_u64)
+                        .unwrap_or_default();
+                    let result = decision.and_then(gui_events::submit_decision);
+                    if result.is_ok()
+                        && let Ok(mut app) = relay_state.lock()
+                    {
+                        app.phase = RunPhase::Running;
+                        app.operation_busy = true;
+                        app.operation_status = "Saving selected MusicBrainz artwork…".to_string();
+                        app.operation_tone = "magenta".to_string();
+                        app.push_log(
+                            "Selected MusicBrainz artwork queued for writing.".to_string(),
+                        );
+                    }
+                    debug_record(
+                        &relay_debug,
+                        format!(
+                            "processing-musicbrainz-write candidate={} result={}",
+                            selected,
+                            quoted(if result.is_ok() { "queued" } else { "failed" })
+                        ),
+                    );
+                }
+                Some("decision_required")
+                    if musicbrainz_requested.swap(false, Ordering::SeqCst) =>
+                {
+                    gui_events::set_musicbrainz_requested(false);
+                    let action = if event
+                        .get("musicbrainz_back_available")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        "back_musicbrainz"
+                    } else {
+                        "retry_musicbrainz"
+                    };
+                    let result = gui_events::submit_decision(serde_json::json!({"action": action}));
+                    debug_record(
+                        &relay_debug,
+                        format!(
+                            "processing-musicbrainz-request action={} result={}",
+                            quoted(action),
+                            quoted(if result.is_ok() { "queued" } else { "failed" })
+                        ),
+                    );
+                }
+                _ => {}
             }
             let _ = relay_notices.send(ControllerNotice::StateChanged);
         }
     });
 
-    let outcome = runtime.block_on(run_scan_library_read_report(config, sources));
+    let outcome = runtime.block_on(run_scan_library_read_report(
+        request.config,
+        request.sources,
+    ));
     gui_events::end_in_process();
     let _ = relay.join();
     match outcome {
-        Ok(summary) if summary.failed == 0 => Ok(()),
-        Ok(summary) => Err(format!(
-            "Processing failed for {} album operation{}.",
-            summary.failed,
-            if summary.failed == 1 { "" } else { "s" }
-        )),
-        Err(error) => Err(error),
+        Ok(summary) if summary.failed == 0 => {
+            debug_record(
+                &debug,
+                format!(
+                    "processing-runtime-finished albums={} resolved={} unresolved={} failed={} installed={} unchanged={} read_only={}",
+                    summary.albums,
+                    summary.resolved,
+                    summary.unresolved,
+                    summary.failed,
+                    summary.installed,
+                    summary.unchanged,
+                    summary.read_only
+                ),
+            );
+            Ok(())
+        }
+        Ok(summary) => {
+            debug_record(
+                &debug,
+                format!(
+                    "processing-runtime-finished albums={} resolved={} unresolved={} failed={} installed={} unchanged={} read_only={}",
+                    summary.albums,
+                    summary.resolved,
+                    summary.unresolved,
+                    summary.failed,
+                    summary.installed,
+                    summary.unchanged,
+                    summary.read_only
+                ),
+            );
+            Err(format!(
+                "Processing failed for {} album operation{}.",
+                summary.failed,
+                if summary.failed == 1 { "" } else { "s" }
+            ))
+        }
+        Err(error) => {
+            debug_record(
+                &debug,
+                format!("processing-runtime-error error={}", quoted(&error)),
+            );
+            Err(error)
+        }
     }
+}
+
+fn musicbrainz_direct_write_decision(state: &mut ApplicationState) -> Result<Value, String> {
+    // The MusicBrainz result preview is the Cover Art Archive front image.
+    // Prefer that same provider once the selected release's candidates have
+    // been resolved; fall back to the normal recommendation only if CAA did
+    // not return a usable candidate.
+    if let Some(index) = state
+        .candidates
+        .iter()
+        .find(|candidate| candidate.source.eq_ignore_ascii_case("coverartarchive"))
+        .map(|candidate| candidate.index)
+    {
+        state.select_candidate(index);
+    }
+    state.candidate_decision("write")
 }
 
 fn finish_with_error(
     state: &Arc<Mutex<ApplicationState>>,
     running: &Arc<AtomicBool>,
     notices: &mpsc::Sender<ControllerNotice>,
+    debug: &Option<ProcessingDebugSink>,
     error: String,
 ) {
+    debug_record(
+        debug,
+        format!("processing-controller-error error={}", quoted(&error)),
+    );
     gui_events::end_in_process();
     gui_events::reset_cancel();
     if let Ok(mut state) = state.lock() {
         state.phase = RunPhase::Idle;
         state.run_failed = state.run_failed.saturating_add(1);
         state.last_error = Some(error.clone());
+        state.operation_busy = false;
+        state.operation_status = format!("Processing error · {error}");
+        state.operation_tone = "red".to_string();
         state.push_log(format!("ERROR: {error}"));
     }
     running.store(false, Ordering::SeqCst);
     let _ = notices.send(ControllerNotice::RunFinished);
+}
+
+fn debug_record(debug: &Option<ProcessingDebugSink>, event: String) {
+    if let Some(debug) = debug {
+        debug(event);
+    }
+}
+
+fn quoted(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"<unavailable>\"".to_string())
+}
+
+fn runtime_event_summary(event: &Value) -> String {
+    let name = event
+        .get("event")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let mut fields = vec![format!("name={}", quoted(name))];
+    for key in [
+        "album_path",
+        "track_path",
+        "artist",
+        "title",
+        "album_artist",
+        "album",
+        "source",
+        "status",
+        "action",
+        "reason",
+        "message",
+    ] {
+        if let Some(value) = event.get(key).and_then(Value::as_str)
+            && !value.trim().is_empty()
+        {
+            fields.push(format!("{key}={}", quoted(value)));
+        }
+    }
+    if let Some(items) = event.get("items").and_then(Value::as_array) {
+        fields.push(format!("items={}", items.len()));
+    }
+    format!("processing-event {}", fields.join(" "))
 }
 
 impl Drop for ScanController {
@@ -294,7 +757,7 @@ mod tests {
     use super::*;
     use crate::application::{LaunchMode, ScanScope};
     use crate::config::Config;
-    use crate::media_database::{MediaAlbumSnapshot, MediaSnapshot};
+    use crate::media_database::{MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot};
 
     fn state_without_selection() -> ApplicationState {
         let snapshot = MediaSnapshot {
@@ -348,11 +811,128 @@ mod tests {
     }
 
     #[test]
+    fn musicbrainz_requires_album_context_without_claiming_a_run() {
+        let state = Arc::new(Mutex::new(state_without_selection()));
+        let (controller, _notices) = ScanController::new(state);
+        let error = controller.open_musicbrainz().unwrap_err();
+        assert!(error.contains("Select an Artist or Album"));
+        assert!(!controller.is_running());
+    }
+
+    #[test]
+    fn musicbrainz_uses_the_explicitly_selected_compilation_track() {
+        let mut app = state_without_selection();
+        let ace_of_base = r"C:\Music\Various Artists\Billboard 1994\01 - Ace of Base.mp3";
+        let ten_thousand_maniacs =
+            r"C:\Music\Various Artists\Billboard 1994\40 - 10,000 Maniacs.mp3";
+        app.library.albums[0].snapshot.compilation = true;
+        app.library.albums[0].snapshot.compilation_tracks = vec![
+            MediaTrackSnapshot {
+                path: ace_of_base.to_string(),
+                title: "The Sign".to_string(),
+                artist: "Ace of Base".to_string(),
+                embedded_artwork_recorded: false,
+            },
+            MediaTrackSnapshot {
+                path: ten_thousand_maniacs.to_string(),
+                title: "Because the Night".to_string(),
+                artist: "10,000 Maniacs".to_string(),
+                embedded_artwork_recorded: false,
+            },
+        ];
+        assert_eq!(
+            app.library
+                .toggle_compilation_track("album", ten_thousand_maniacs, false,),
+            crate::application::SelectionResult::Changed
+        );
+
+        let target = musicbrainz_review_target(&app).unwrap();
+
+        assert_eq!(
+            target.compilation_track_path.as_deref(),
+            Some(ten_thousand_maniacs)
+        );
+    }
+
+    #[test]
+    fn musicbrainz_can_review_a_focused_processed_album_without_selection() {
+        let state = Arc::new(Mutex::new(state_without_selection()));
+        {
+            let mut app = state.lock().unwrap();
+            assert!(app.library.focus_album("album"));
+            assert!(app.library.queue(ScanScope::Selected).is_empty());
+        }
+        let (controller, notices) = ScanController::new(Arc::clone(&state));
+        controller.open_musicbrainz().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while controller.is_running() && std::time::Instant::now() < deadline {
+            let _ = notices.recv_timeout(std::time::Duration::from_millis(100));
+        }
+        assert!(!controller.is_running());
+        let app = state.lock().unwrap();
+        assert_eq!(app.run_total, 1);
+        assert_eq!(app.library.focused_album_key.as_deref(), Some("album"));
+    }
+
+    #[test]
+    fn musicbrainz_request_during_search_is_queued() {
+        let state = Arc::new(Mutex::new(state_without_selection()));
+        let (controller, _notices) = ScanController::new(Arc::clone(&state));
+        controller.running.store(true, Ordering::SeqCst);
+        state.lock().unwrap().phase = RunPhase::Running;
+        controller.open_musicbrainz().unwrap();
+        assert!(controller.musicbrainz_requested.load(Ordering::SeqCst));
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .operation_status
+                .contains("MusicBrainz")
+        );
+        controller.running.store(false, Ordering::SeqCst);
+        gui_events::set_musicbrainz_requested(false);
+    }
+
+    #[test]
     fn stopping_an_idle_controller_is_safe() {
         let state = Arc::new(Mutex::new(state_without_selection()));
         let (controller, _notices) = ScanController::new(state);
         controller.stop();
         assert!(!controller.is_running());
+    }
+
+    #[test]
+    fn processing_debug_summary_keeps_actionable_runtime_fields() {
+        let summary = runtime_event_summary(&serde_json::json!({
+            "event": "album_error",
+            "album_path": r"N:\\media\\music\\Artist\\Album",
+            "source": "Discogs",
+            "status": "Failed",
+            "message": "provider timeout"
+        }));
+        assert!(summary.contains("name=\"album_error\""));
+        assert!(summary.contains("source=\"Discogs\""));
+        assert!(summary.contains("status=\"Failed\""));
+        assert!(summary.contains("message=\"provider timeout\""));
+    }
+
+    #[test]
+    fn musicbrainz_direct_write_prefers_the_preview_provider_and_is_explicit() {
+        let mut state = state_without_selection();
+        state.apply_runtime_event(&serde_json::json!({
+            "event": "candidates",
+            "recommended_index": 1,
+            "items": [
+                {"index": 1, "source": "amazon", "cache_path": "amazon.jpg"},
+                {"index": 2, "source": "coverartarchive", "cache_path": "caa.jpg"}
+            ]
+        }));
+
+        let decision = musicbrainz_direct_write_decision(&mut state).unwrap();
+
+        assert_eq!(decision["action"], "use");
+        assert_eq!(decision["index"], 2);
+        assert_eq!(decision["explicit_write"], true);
     }
 
     #[test]
@@ -377,6 +957,11 @@ mod tests {
                 app.library.toggle_album("album", false),
                 crate::application::SelectionResult::Changed
             );
+            app.library.focused_artist = Some("Artist".to_string());
+            app.library.focused_album_key = Some("album".to_string());
+            app.current_artist = "Artist".to_string();
+            app.current_album = "Album".to_string();
+            app.current_album_path = r"C:\missing\album".to_string();
         }
         let (controller, notices) = ScanController::new(Arc::clone(&state));
         controller.start().unwrap();
@@ -388,6 +973,12 @@ mod tests {
         let app = state.lock().unwrap();
         assert_eq!(app.phase, RunPhase::Idle);
         assert!(app.last_error.is_some());
+        assert_eq!(app.run_failed, 1);
         assert!(app.library.albums[0].selected);
+        assert_eq!(app.library.focused_artist.as_deref(), Some("Artist"));
+        assert_eq!(app.library.focused_album_key.as_deref(), Some("album"));
+        assert_eq!(app.current_artist, "Artist");
+        assert_eq!(app.current_album, "Album");
+        assert_eq!(app.current_album_path, r"C:\missing\album");
     }
 }

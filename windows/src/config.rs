@@ -183,8 +183,10 @@ pub struct LibraryConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SamplesConfig {
     pub sample_write: bool,
+    pub sample_dir: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,7 +362,10 @@ impl Default for LibraryConfig {
 
 impl Default for SamplesConfig {
     fn default() -> Self {
-        Self { sample_write: true }
+        Self {
+            sample_write: true,
+            sample_dir: String::new(),
+        }
     }
 }
 
@@ -384,13 +389,13 @@ impl Default for OutputConfig {
             upscale_below_ideal: false,
             upscale_max_percent: 200,
             upscale_adaptive_defaults: true,
-            upscale_picture_percent: 0,
-            upscale_sharpen_percent: 0,
+            upscale_picture_percent: 2,
+            upscale_sharpen_percent: 4,
             upscale_softness_percent: 0,
-            upscale_contrast_percent: 0,
-            upscale_exposure_percent: 0,
-            upscale_brightness_percent: 0,
-            upscale_gamma_percent: 0,
+            upscale_contrast_percent: 10,
+            upscale_exposure_percent: -5,
+            upscale_brightness_percent: -1,
+            upscale_gamma_percent: -6,
             upscale_color_temperature: 0,
             evaluate_final_image: true,
         }
@@ -753,6 +758,15 @@ pub fn samples_dir(cache_dir: &str) -> PathBuf {
     PathBuf::from(cache_dir).join("samples")
 }
 
+pub fn configured_samples_dir(config: &Config) -> PathBuf {
+    let configured = config.samples.sample_dir.trim();
+    if configured.is_empty() {
+        samples_dir(&config.scan.temporary_cache_dir)
+    } else {
+        PathBuf::from(configured)
+    }
+}
+
 fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.library.music_library = resolve_runtime_directory(root, &config.library.music_library);
     config.scan.scan_library_dir = resolve_runtime_directory(root, &config.scan.scan_library_dir);
@@ -762,6 +776,9 @@ fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.scan.log_dir = resolve_runtime_directory(root, &config.scan.log_dir);
     config.credentials.credential_dir =
         resolve_runtime_directory(root, &config.credentials.credential_dir);
+    if !config.samples.sample_dir.trim().is_empty() {
+        config.samples.sample_dir = resolve_runtime_directory(root, &config.samples.sample_dir);
+    }
     config.fanarttv.credential_file =
         resolve_runtime_directory(root, &config.fanarttv.credential_file);
     config.lastfm.credential_file = resolve_runtime_directory(root, &config.lastfm.credential_file);
@@ -911,6 +928,7 @@ mod tests {
         assert!(config.library.music_library.is_empty());
         assert!(config.library.ignored_subs.is_empty());
         assert!(config.samples.sample_write);
+        assert!(config.samples.sample_dir.is_empty());
         assert_eq!(config.credentials.credential_dir, "credentials");
         assert!(!config.aisplined.enabled);
         assert!(config.aisplined.endpoint.is_empty());
@@ -922,10 +940,13 @@ mod tests {
         );
         assert!(config.output.preserve_file);
         assert!(config.output.upscale_adaptive_defaults);
-        assert_eq!(config.output.upscale_sharpen_percent, 0);
-        assert_eq!(config.output.upscale_contrast_percent, 0);
-        assert_eq!(config.output.upscale_exposure_percent, 0);
-        assert_eq!(config.output.upscale_brightness_percent, 0);
+        assert_eq!(config.output.upscale_picture_percent, 2);
+        assert_eq!(config.output.upscale_sharpen_percent, 4);
+        assert_eq!(config.output.upscale_softness_percent, 0);
+        assert_eq!(config.output.upscale_contrast_percent, 10);
+        assert_eq!(config.output.upscale_exposure_percent, -5);
+        assert_eq!(config.output.upscale_brightness_percent, -1);
+        assert_eq!(config.output.upscale_gamma_percent, -6);
         assert_eq!(config.output.upscale_color_temperature, 0);
         assert!(config.sources.exclude_cover_sources.is_empty());
         assert_eq!(config.source_policies.len(), 1);

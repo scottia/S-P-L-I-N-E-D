@@ -314,7 +314,9 @@ An explicit refresh:
    modification time;
 3. reads Mutagen tags for new or changed Albums;
 4. identifies rows by tagged Artist/Album keys rather than paths;
-5. refreshes `cover.*`, resolution, format, file counts, and WebP information;
+5. refreshes `cover.*`, resolution, format, file counts, and WebP information
+   for identified Albums; missing-ID Fallback Albums exclude `cover.*` from
+   those projections;
 6. commits the replacement model in one SQLite transaction;
 7. swaps the resident TUI model only after the transaction completes.
 
@@ -325,9 +327,9 @@ External changes made by taggers, file managers, or another application become
 visible after this explicit Refresh. SPLINED's own LIVE WRITE and bypass/status
 actions update the affected database rows immediately.
 
-## Compilation track-art caches
+## Fallback track-art caches
 
-Compilation artwork recovery uses the following persistent surfaces without
+Missing-ID Album artwork recovery uses the following persistent surfaces without
 changing normal index cost:
 
 - `tracks` stores exact local Recording-ID/Artist-ID relationships discovered
@@ -344,12 +346,11 @@ changing normal index cost:
   of the track active during an interruptible normal Album run. It contains no
   image bytes or MusicBrainz/tag authority.
 
-The compilation branch first queries the exact `tracks` cache. On a miss it uses the
-already-indexed Album Artist ID to restrict local inspection to that Artist's
-Albums, stopping at the first exact Recording-ID/Artist-ID match. Only a local
-miss can proceed to MusicBrainz. Stale track rows cannot become artwork
-authority: file size and modification time are checked before reuse.
-The Windows warm snapshot projects cached compilation track paths from `tracks`
+The Fallback branch first queries the exact `tracks` cache, then Windows may
+enumerate only the selected Album folder to fill missing filenames without
+opening tags. Folder-level `cover.*` is never a candidate or count; release
+artwork comes from the current track's embedded image and remote providers.
+The Windows warm snapshot projects cached fallback track paths from `tracks`
 and joins the track-artwork ledger only to mark completed embedded-art writes in
 **● Embedded Art**. This is SQLite-only: it does not walk the music share or
 reopen audio tags. For an older compilation whose full filename list was not cached,

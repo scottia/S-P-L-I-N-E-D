@@ -4,10 +4,12 @@ use crate::source::{
 };
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
 const API_BASE_URL: &str = "https://webservice.fanart.tv/v3.2/music/albums";
+const ARTIST_API_BASE_URL: &str = "https://webservice.fanart.tv/v3.2/music";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +27,20 @@ struct Album {
 
 #[derive(Debug, Deserialize)]
 struct AlbumCover {
+    id: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistResponse {
+    #[serde(default)]
+    artistthumb: Vec<ArtistImage>,
+    #[serde(default)]
+    artistbackground: Vec<ArtistImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistImage {
     id: String,
     url: String,
 }
@@ -132,6 +148,67 @@ impl FanartTv {
             })
             .collect())
     }
+
+    pub async fn discover_artist(
+        &self,
+        artist_mbid: &str,
+    ) -> Result<Vec<ArtworkReference>, String> {
+        let artist_mbid = artist_mbid.trim();
+        if artist_mbid.is_empty() {
+            return Ok(Vec::new());
+        }
+        let credential = load_fanarttv_credential(&self.credential_path)?;
+        let url = format!("{ARTIST_API_BASE_URL}/{artist_mbid}");
+        let mut request = self.client.get(&url).header("api-key", credential.api_key);
+        if !credential.client_key.trim().is_empty() {
+            request = request.header("client-key", credential.client_key);
+        }
+        let response = request.send().await.map_err(|error| {
+            format!("Unable to query Fanart.tv Artist Art for {artist_mbid}: {error}")
+        })?;
+        let status = response.status();
+        let final_url = response.url().clone();
+        if status == StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return Err(format!(
+                "Fanart.tv {FANARTTV_API_VERSION} credentials were rejected."
+            ));
+        }
+        if status != StatusCode::OK {
+            return Err(format!(
+                "Fanart.tv Artist Art for {artist_mbid} returned HTTP {status} from {final_url}"
+            ));
+        }
+        let body = response.text().await.map_err(|error| {
+            format!("Unable to read Fanart.tv Artist Art from {final_url}: {error}")
+        })?;
+        let payload = serde_json::from_str::<ArtistResponse>(&body).map_err(|error| {
+            format!("Invalid Fanart.tv Artist Art JSON from {final_url}: {error}")
+        })?;
+        let mut seen = HashSet::new();
+        Ok(payload
+            .artistthumb
+            .into_iter()
+            .map(|image| ("Artist Thumb", image))
+            .chain(
+                payload
+                    .artistbackground
+                    .into_iter()
+                    .map(|image| ("Artist Background", image)),
+            )
+            .filter(|(_, image)| !image.url.trim().is_empty() && seen.insert(image.url.clone()))
+            .map(|(kind, image)| ArtworkReference {
+                source: "fanarttv".to_string(),
+                id: image.id,
+                url: image.url,
+                front: true,
+                approved: true,
+                types: vec![kind.to_string(), "ArtistImage".to_string()],
+            })
+            .collect())
+    }
 }
 
 impl ArtworkProvider for FanartTv {
@@ -202,6 +279,16 @@ mod tests {
     fn missing_albums_defaults_to_empty() {
         let response: AlbumResponse = serde_json::from_str("{}").expect("fixture should parse");
         assert!(response.albums.is_empty());
+    }
+
+    #[test]
+    fn artist_response_parses_thumbnails_and_backgrounds() {
+        let response: ArtistResponse = serde_json::from_str(
+            r#"{"artistthumb":[{"id":"1","url":"https://assets.fanart.tv/thumb.jpg"}],"artistbackground":[{"id":"2","url":"https://assets.fanart.tv/background.jpg"}]}"#,
+        )
+        .expect("fixture should parse");
+        assert_eq!(response.artistthumb.len(), 1);
+        assert_eq!(response.artistbackground.len(), 1);
     }
 
     #[test]

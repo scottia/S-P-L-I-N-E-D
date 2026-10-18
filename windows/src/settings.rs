@@ -23,11 +23,27 @@ pub struct UiPreferences {
     pub launch_mode: String,
     pub show_tracks: bool,
     pub media_selector_expanded: bool,
+    pub media_filter_expanded: bool,
     pub candidate_filter_expanded: bool,
     pub artwork_editing_expanded: bool,
     pub show_artwork: bool,
     pub hover_enabled: bool,
     pub upscale_preview_only: bool,
+    pub disable_intro_message: bool,
+    pub disable_confirmation_messages: bool,
+    pub backup_directory: String,
+    pub restore_path: String,
+    /// Settings/credentials/interface `.spl` schedule. The original field name
+    /// is retained so existing portable UI preferences migrate without loss.
+    pub backup_schedule: String,
+    pub database_backup_schedule: String,
+    pub diagnostics_backup_schedule: String,
+    pub backup_mode: String,
+    pub backup_settings: bool,
+    pub backup_credentials: bool,
+    pub backup_database: bool,
+    pub backup_interface: bool,
+    pub backup_diagnostics: bool,
     pub artist_filter: String,
     pub album_filter: String,
     pub candidate_included_sources: Vec<String>,
@@ -39,6 +55,8 @@ pub struct UiPreferences {
     pub candidate_excluded_policies: Vec<String>,
     pub candidate_excluded_ranges: Vec<String>,
     pub primary_adjustments: Vec<String>,
+    pub selected_source_name: String,
+    pub musicbrainz_id_editor_expanded: bool,
     pub media_pane_width: u32,
     pub media_pane_expanded_width: u32,
     pub artwork_pane_width: u32,
@@ -46,9 +64,17 @@ pub struct UiPreferences {
     pub candidate_filter_height: u32,
     pub candidate_filter_expanded_height: u32,
     pub activity_pane_height: u32,
+    pub enhancement_original_height: u32,
     pub window_width: u32,
     pub window_height: u32,
     pub window_maximized: bool,
+    pub custom_media_selector_expanded: bool,
+    pub custom_media_filter_expanded: bool,
+    pub custom_media_pane_width: u32,
+    pub custom_media_pane_expanded_width: u32,
+    pub custom_window_width: u32,
+    pub custom_window_height: u32,
+    pub custom_window_maximized: bool,
 }
 
 impl Default for UiPreferences {
@@ -66,11 +92,25 @@ impl Default for UiPreferences {
             launch_mode: "read".to_string(),
             show_tracks: false,
             media_selector_expanded: true,
+            media_filter_expanded: false,
             candidate_filter_expanded: true,
             artwork_editing_expanded: true,
             show_artwork: true,
             hover_enabled: false,
             upscale_preview_only: true,
+            disable_intro_message: false,
+            disable_confirmation_messages: false,
+            backup_directory: String::new(),
+            restore_path: String::new(),
+            backup_schedule: "Off".to_string(),
+            database_backup_schedule: "Off".to_string(),
+            diagnostics_backup_schedule: "Off".to_string(),
+            backup_mode: "Backup".to_string(),
+            backup_settings: true,
+            backup_credentials: true,
+            backup_database: false,
+            backup_interface: true,
+            backup_diagnostics: false,
             artist_filter: String::new(),
             album_filter: String::new(),
             candidate_included_sources: Vec::new(),
@@ -84,25 +124,38 @@ impl Default for UiPreferences {
             primary_adjustments: vec![
                 "Picture".to_string(),
                 "Sharpen".to_string(),
+                "Softness".to_string(),
                 "Contrast".to_string(),
+                "Exposure".to_string(),
                 "Brightness".to_string(),
+                "Gamma".to_string(),
                 "Color".to_string(),
             ],
-            media_pane_width: 270,
-            media_pane_expanded_width: 270,
+            selected_source_name: "All".to_string(),
+            musicbrainz_id_editor_expanded: false,
+            media_pane_width: 350,
+            media_pane_expanded_width: 350,
             artwork_pane_width: 450,
             artwork_pane_expanded_width: 450,
             candidate_filter_height: 370,
             candidate_filter_expanded_height: 370,
             activity_pane_height: 210,
+            enhancement_original_height: 420,
             window_width: 1680,
             window_height: 945,
             window_maximized: false,
+            custom_media_selector_expanded: true,
+            custom_media_filter_expanded: false,
+            custom_media_pane_width: 350,
+            custom_media_pane_expanded_width: 350,
+            custom_window_width: 1480,
+            custom_window_height: 850,
+            custom_window_maximized: false,
         }
     }
 }
 
-pub const CURRENT_WORKSPACE_LAYOUT_REVISION: u32 = 2;
+pub const CURRENT_WORKSPACE_LAYOUT_REVISION: u32 = 5;
 
 const fn legacy_workspace_layout_revision() -> u32 {
     0
@@ -124,6 +177,14 @@ impl UiPreferences {
         self.candidate_filter_height = defaults.candidate_filter_height;
         self.candidate_filter_expanded_height = defaults.candidate_filter_expanded_height;
         self.activity_pane_height = defaults.activity_pane_height;
+        self.enhancement_original_height = defaults.enhancement_original_height;
+        self.custom_media_pane_width = defaults.custom_media_pane_width;
+        self.custom_media_pane_expanded_width = defaults.custom_media_pane_expanded_width;
+        // A collapsed media rail made a maximized per-monitor-DPI restore look
+        // like a half-rendered launch. Each new UI revision starts with the
+        // library available, while the user can still collapse it afterward.
+        self.media_selector_expanded = true;
+        self.primary_adjustments = defaults.primary_adjustments;
         self.workspace_layout_revision = CURRENT_WORKSPACE_LAYOUT_REVISION;
         true
     }
@@ -131,17 +192,17 @@ impl UiPreferences {
 
 pub const MIN_WINDOW_WIDTH: u32 = 960;
 pub const MIN_WINDOW_HEIGHT: u32 = 640;
-pub const MEDIA_PANE_MIN: u32 = 230;
-pub const MEDIA_PANE_MAX: u32 = 620;
-pub const MEDIA_PANE_COLLAPSED: u32 = 52;
+pub const MEDIA_PANE_MIN: u32 = 270;
+pub const MEDIA_PANE_MAX: u32 = 900;
+pub const MEDIA_PANE_COLLAPSED: u32 = 88;
 pub const ARTWORK_PANE_MIN: u32 = 280;
-pub const ARTWORK_PANE_MAX: u32 = 720;
-pub const CENTER_PANE_MIN: u32 = 340;
+pub const ARTWORK_PANE_MAX: u32 = 1600;
+pub const CENTER_PANE_MIN: u32 = 300;
 pub const CANDIDATE_FILTER_MIN: u32 = 230;
 pub const CANDIDATE_FILTER_COLLAPSED: u32 = 185;
-pub const CANDIDATE_RESULTS_MIN: u32 = 160;
-pub const ACTIVITY_PANE_MIN: u32 = 110;
-pub const SPLITTER_HIT_AREA: u32 = 9;
+pub const CANDIDATE_RESULTS_MIN: u32 = 140;
+pub const ACTIVITY_PANE_MIN: u32 = 150;
+pub const SPLITTER_HIT_AREA: u32 = 12;
 pub const MAIN_WORKSPACE_MIN_HEIGHT: u32 =
     CANDIDATE_FILTER_MIN + SPLITTER_HIT_AREA + CANDIDATE_RESULTS_MIN;
 
@@ -262,22 +323,72 @@ impl WorkspaceLayout {
     }
 
     pub fn resize_region(&mut self, region: &str, requested: u32, bounds: WorkspaceBounds) {
+        let window_width = bounds.window_width.max(MIN_WINDOW_WIDTH);
+        let window_height = bounds.window_height.max(MIN_WINDOW_HEIGHT);
+        let available_width = window_width.saturating_sub(38);
+        let media_min = if bounds.media_expanded {
+            MEDIA_PANE_MIN
+        } else {
+            MEDIA_PANE_COLLAPSED
+        };
+        let artwork_min = if bounds.artwork_visible {
+            ARTWORK_PANE_MIN
+        } else {
+            0
+        };
+        let maximum_side_total = available_width
+            .saturating_sub(CENTER_PANE_MIN)
+            .max(media_min.saturating_add(artwork_min));
+        let available_height = window_height.saturating_sub(91);
+
         match region {
-            "media" if bounds.media_expanded => self.media_pane_expanded_width = requested,
-            "artwork" if bounds.artwork_visible => self.artwork_pane_expanded_width = requested,
-            "candidate-filter" if bounds.candidate_filter_expanded => {
-                self.candidate_filter_expanded_height = requested;
+            "media" if bounds.media_expanded => {
+                let maximum = maximum_side_total
+                    .saturating_sub(self.artwork_pane_width)
+                    .clamp(MEDIA_PANE_MIN, MEDIA_PANE_MAX);
+                let value = requested.clamp(MEDIA_PANE_MIN, maximum);
+                self.media_pane_width = value;
+                self.media_pane_expanded_width = value;
             }
-            "activity" => self.activity_pane_height = requested,
+            "media" => self.media_pane_width = MEDIA_PANE_COLLAPSED,
+            "artwork" if bounds.artwork_visible => {
+                let maximum = maximum_side_total
+                    .saturating_sub(self.media_pane_width)
+                    .clamp(ARTWORK_PANE_MIN, ARTWORK_PANE_MAX);
+                let value = requested.clamp(ARTWORK_PANE_MIN, maximum);
+                self.artwork_pane_width = value;
+                self.artwork_pane_expanded_width = value;
+            }
+            "artwork" => self.artwork_pane_width = 0,
+            "candidate-filter" if bounds.candidate_filter_expanded => {
+                let main_height =
+                    available_height.saturating_sub(self.activity_pane_height + SPLITTER_HIT_AREA);
+                let maximum = main_height
+                    .saturating_sub(CANDIDATE_RESULTS_MIN + SPLITTER_HIT_AREA)
+                    .max(CANDIDATE_FILTER_MIN);
+                let value = requested.clamp(CANDIDATE_FILTER_MIN, maximum);
+                self.candidate_filter_height = value;
+                self.candidate_filter_expanded_height = value;
+            }
+            "candidate-filter" => {
+                self.candidate_filter_height = CANDIDATE_FILTER_COLLAPSED;
+            }
+            "activity" => {
+                let candidate_height = if bounds.candidate_filter_expanded {
+                    self.candidate_filter_height
+                } else {
+                    CANDIDATE_FILTER_COLLAPSED
+                };
+                let required_main_height = candidate_height
+                    .saturating_add(SPLITTER_HIT_AREA)
+                    .saturating_add(CANDIDATE_RESULTS_MIN);
+                let maximum = available_height
+                    .saturating_sub(required_main_height + SPLITTER_HIT_AREA)
+                    .max(ACTIVITY_PANE_MIN);
+                self.activity_pane_height = requested.clamp(ACTIVITY_PANE_MIN, maximum);
+            }
             _ => {}
         }
-        self.clamp_for_window(
-            bounds.window_width,
-            bounds.window_height,
-            bounds.media_expanded,
-            bounds.artwork_visible,
-            bounds.candidate_filter_expanded,
-        );
     }
 
     /// Clamp the shared Media Library pane for a secondary workspace that does
@@ -450,12 +561,19 @@ pub fn validate_operational_config(config: &Config) -> Result<(), String> {
 
 fn create_configured_runtime_directories(config: &Config) -> Result<(), String> {
     let mut created = HashSet::new();
-    for (label, value) in [
+    let sample_directory = crate::config::configured_samples_dir(config)
+        .to_string_lossy()
+        .into_owned();
+    let mut directories = vec![
         ("SQLite/database", config.scan.cache_dir.as_str()),
         ("temporary cache", config.scan.temporary_cache_dir.as_str()),
         ("log", config.scan.log_dir.as_str()),
         ("credential", config.credentials.credential_dir.as_str()),
-    ] {
+    ];
+    if config.samples.sample_write {
+        directories.push(("sample artwork", sample_directory.as_str()));
+    }
+    for (label, value) in directories {
         let path = Path::new(value);
         let key = path.to_string_lossy().to_ascii_lowercase();
         if !created.insert(key) {
@@ -666,6 +784,8 @@ window_height = 700
             restored.workspace_layout_revision,
             CURRENT_WORKSPACE_LAYOUT_REVISION
         );
+        assert!(restored.media_selector_expanded);
+        assert_eq!(restored.primary_adjustments.len(), 8);
         assert!(!restored.migrate_workspace_layout());
     }
 
@@ -725,6 +845,72 @@ window_height = 1977
             main_height - layout.candidate_filter_height - SPLITTER_HIT_AREA
                 >= CANDIDATE_RESULTS_MIN
         );
+    }
+
+    #[test]
+    fn reference_display_sizes_keep_main_and_upscale_workspaces_usable() {
+        let reference_viewports = [
+            (2732, 2048),
+            (2208, 1242),
+            (2048, 1536),
+            (1920, 1080),
+            (1440, 900),
+            (1334, 750),
+            (1280, 1024),
+            (1280, 800),
+            (1136, 640),
+            (1024, 768),
+        ];
+
+        for (width, height) in reference_viewports {
+            let preferences = UiPreferences {
+                media_pane_width: 900,
+                media_pane_expanded_width: 900,
+                artwork_pane_width: 1600,
+                artwork_pane_expanded_width: 1600,
+                candidate_filter_height: 900,
+                candidate_filter_expanded_height: 900,
+                activity_pane_height: 900,
+                ..UiPreferences::default()
+            };
+            let mut main = WorkspaceLayout::from_preferences(&preferences);
+            main.clamp_for_window(width, height, true, true, true);
+
+            let available_width = width.saturating_sub(38);
+            assert!(main.media_pane_width >= MEDIA_PANE_MIN, "{width}x{height}");
+            assert!(
+                main.artwork_pane_width >= ARTWORK_PANE_MIN,
+                "{width}x{height}"
+            );
+            assert!(
+                main.media_pane_width + main.artwork_pane_width
+                    <= available_width.saturating_sub(CENTER_PANE_MIN),
+                "{width}x{height}"
+            );
+
+            let available_height = height.saturating_sub(91);
+            let main_height =
+                available_height.saturating_sub(main.activity_pane_height + SPLITTER_HIT_AREA);
+            assert!(
+                main_height.saturating_sub(main.candidate_filter_height + SPLITTER_HIT_AREA)
+                    >= CANDIDATE_RESULTS_MIN,
+                "{width}x{height}"
+            );
+
+            let mut upscale = WorkspaceLayout::from_preferences(&preferences);
+            upscale.clamp_media_for_content(width, true, 650);
+            assert!(
+                upscale.media_pane_width >= MEDIA_PANE_MIN,
+                "{width}x{height}"
+            );
+            assert!(
+                width
+                    .saturating_sub(38)
+                    .saturating_sub(upscale.media_pane_width)
+                    >= 650,
+                "{width}x{height}"
+            );
+        }
     }
 
     #[test]
@@ -810,12 +996,12 @@ window_height = 1977
 
         layout.resize_region("artwork", 470, bounds);
         layout.resize_region("candidate-filter", 305, bounds);
-        layout.resize_region("activity", 125, bounds);
+        layout.resize_region("activity", 165, bounds);
         assert_eq!(layout.artwork_pane_width, 470);
         assert_eq!(layout.artwork_pane_expanded_width, 470);
         assert_eq!(layout.candidate_filter_height, 305);
         assert_eq!(layout.candidate_filter_expanded_height, 305);
-        assert_eq!(layout.activity_pane_height, 125);
+        assert_eq!(layout.activity_pane_height, 165);
 
         let media_before_collapse = layout.media_pane_expanded_width;
         layout.resize_region(
@@ -828,6 +1014,41 @@ window_height = 1977
         );
         assert_eq!(layout.media_pane_width, MEDIA_PANE_COLLAPSED);
         assert_eq!(layout.media_pane_expanded_width, media_before_collapse);
+    }
+
+    #[test]
+    fn splitter_drag_does_not_resize_a_different_pane() {
+        let mut layout = WorkspaceLayout::from_preferences(&UiPreferences::default());
+        let bounds = WorkspaceBounds {
+            window_width: 1920,
+            window_height: 1009,
+            media_expanded: true,
+            artwork_visible: true,
+            candidate_filter_expanded: true,
+        };
+        layout.clamp_for_window(
+            bounds.window_width,
+            bounds.window_height,
+            bounds.media_expanded,
+            bounds.artwork_visible,
+            bounds.candidate_filter_expanded,
+        );
+
+        let candidate_before = layout.candidate_filter_height;
+        layout.resize_region("activity", 420, bounds);
+        assert_eq!(layout.candidate_filter_height, candidate_before);
+
+        let activity_before = layout.activity_pane_height;
+        layout.resize_region("candidate-filter", 280, bounds);
+        assert_eq!(layout.activity_pane_height, activity_before);
+
+        let artwork_before = layout.artwork_pane_width;
+        layout.resize_region("media", 500, bounds);
+        assert_eq!(layout.artwork_pane_width, artwork_before);
+
+        let media_before = layout.media_pane_width;
+        layout.resize_region("artwork", 600, bounds);
+        assert_eq!(layout.media_pane_width, media_before);
     }
 
     #[test]

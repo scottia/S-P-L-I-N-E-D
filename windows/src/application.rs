@@ -4,10 +4,14 @@
 //! selection set, scan queue, review state, and editing values never live only
 //! in Slint controls.
 
-use crate::config::{Config, Mode, resolve_sources};
-use crate::media_database::{MediaAlbumSnapshot, MediaSnapshot};
+use crate::config::{Config, Mode, configured_samples_dir, resolve_sources};
+use crate::inspect::inspect_image;
+use crate::media_database::{MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot};
+use crate::range::Range;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryView {
@@ -158,8 +162,7 @@ impl AlbumEntry {
     }
 
     pub fn compilation_track_artwork_pending(&self) -> bool {
-        self.snapshot.compilation
-            && self.snapshot.compilation_track_art_eligible
+        self.snapshot.compilation_track_art_eligible
             && !self
                 .snapshot
                 .selected_source
@@ -187,6 +190,10 @@ pub struct LibraryRow {
     pub primary: String,
     pub secondary: String,
     pub status: String,
+    pub artwork_path: String,
+    pub kind: String,
+    pub depth: usize,
+    pub expanded: bool,
     pub selected: bool,
     pub eligible: bool,
     pub album_count: usize,
@@ -197,6 +204,7 @@ pub struct CompilationTrackRow {
     pub album_key: String,
     pub path: String,
     pub file_name: String,
+    pub status: String,
     pub embedded_artwork_recorded: bool,
     pub selected: bool,
 }
@@ -207,6 +215,16 @@ pub enum SelectionResult {
     NeedsBypassOverride(String),
     BlockedByTimeout(String),
     NotFound,
+}
+
+fn release_year_number(value: &str) -> i32 {
+    value
+        .trim()
+        .chars()
+        .take(4)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +254,15 @@ pub struct LibraryState {
     pub focused_artist: Option<String>,
     pub focused_album_key: Option<String>,
     pub selected_compilation_track_paths: BTreeSet<String>,
+    /// Read-only artwork projected from Navidrome into the Windows UI. These
+    /// paths always point at SPLINED's local thumbnail cache; the music
+    /// library and Navidrome storage are never modified.
+    pub artist_artwork_paths: HashMap<String, String>,
+    pub album_artwork_paths: HashMap<String, String>,
+    /// Navidrome's stable artist IDs, keyed by the normalized local artist
+    /// name. These IDs authorize the explicit Artist Overview write action;
+    /// SPLINED never guesses an artist endpoint from display text alone.
+    pub artist_navidrome_ids: HashMap<String, String>,
 }
 
 impl LibraryState {
@@ -269,6 +296,21 @@ impl LibraryState {
                         .cmp(&right.snapshot.path.to_ascii_lowercase())
                 })
         });
+        // The SQLite snapshot already records the chosen local cover. Publish
+        // that path immediately so a restart does not depend on Navidrome
+        // returning a thumbnail before the user's own cover can be shown.
+        // Missing-MBID fallback albums deliberately have no folder cover.
+        let album_artwork_paths = albums
+            .iter()
+            .filter(|album| !album.snapshot.album_mbid.trim().is_empty())
+            .filter(|album| !album.snapshot.cover_path.trim().is_empty())
+            .map(|album| {
+                (
+                    album.snapshot.album_key.to_ascii_lowercase(),
+                    album.snapshot.cover_path.clone(),
+                )
+            })
+            .collect();
         Ok(Self {
             schema_version: snapshot.schema_version,
             database_path: snapshot.database_path,
@@ -285,6 +327,9 @@ impl LibraryState {
             focused_artist: None,
             focused_album_key: None,
             selected_compilation_track_paths: BTreeSet::new(),
+            artist_artwork_paths: HashMap::new(),
+            album_artwork_paths,
+            artist_navidrome_ids: HashMap::new(),
         })
     }
 
@@ -305,6 +350,9 @@ impl LibraryState {
             focused_artist: None,
             focused_album_key: None,
             selected_compilation_track_paths: BTreeSet::new(),
+            artist_artwork_paths: HashMap::new(),
+            album_artwork_paths: HashMap::new(),
+            artist_navidrome_ids: HashMap::new(),
         }
     }
 
@@ -314,38 +362,39 @@ impl LibraryState {
 
     pub fn compilation_track_rows(&self) -> Vec<CompilationTrackRow> {
         let focused = self.focused_album_key.as_deref();
+        let focused_artist = self.focused_artist.as_deref();
+        let filter_to_artist =
+            !self.show_tracks && self.view == LibraryView::Artists && focused_artist.is_some();
         self.albums
             .iter()
             .filter(|album| {
-                self.show_tracks
-                    || focused.is_some_and(|album_key| {
-                        album.snapshot.album_key.eq_ignore_ascii_case(album_key)
-                    })
+                focused.is_some_and(|album_key| {
+                    album.snapshot.album_key.eq_ignore_ascii_case(album_key)
+                })
             })
             .flat_map(|album| {
                 album
                     .snapshot
                     .compilation_tracks
                     .iter()
+                    .filter(move |track| {
+                        !filter_to_artist
+                            || focused_artist.is_some_and(|artist| {
+                                Self::track_matches_artist(&track.artist, artist)
+                            })
+                    })
                     .map(move |track| CompilationTrackRow {
                         album_key: album.snapshot.album_key.clone(),
                         path: track.path.clone(),
-                        file_name: if self.show_tracks {
-                            format!(
-                                "{} — {} — {}",
-                                album.snapshot.artist,
-                                album.snapshot.title,
-                                std::path::Path::new(&track.path)
-                                    .file_name()
-                                    .and_then(|value| value.to_str())
-                                    .unwrap_or(&track.path)
-                            )
+                        file_name: std::path::Path::new(&track.path)
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or(&track.path)
+                            .to_string(),
+                        status: if track.embedded_artwork_recorded {
+                            "Processed".to_string()
                         } else {
-                            std::path::Path::new(&track.path)
-                                .file_name()
-                                .and_then(|value| value.to_str())
-                                .unwrap_or(&track.path)
-                                .to_string()
+                            "Incomplete".to_string()
                         },
                         embedded_artwork_recorded: track.embedded_artwork_recorded,
                         selected: self
@@ -388,6 +437,56 @@ impl LibraryState {
         values
     }
 
+    /// Returns the next or previous Artist that still has work eligible for
+    /// processing. Artist Overview navigation deliberately ignores Library
+    /// Status so a completed current Artist cannot strand the operator when
+    /// the active filter removes it from the ordinary row model.
+    pub fn adjacent_pending_artist(&self, direction: i32) -> Option<String> {
+        let artists = self.artists();
+        let pending = artists
+            .iter()
+            .filter(|(_, indices)| {
+                indices.iter().any(|index| {
+                    let album = &self.albums[*index];
+                    album.eligible_by_default() && self.text_matches(album)
+                })
+            })
+            .map(|(artist, _)| artist.clone())
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
+            return None;
+        }
+
+        let current = self
+            .focused_artist
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let current_index = pending
+            .iter()
+            .position(|artist| artist.eq_ignore_ascii_case(&current));
+        let index = if direction < 0 {
+            current_index
+                .map(|index| (index + pending.len() - 1) % pending.len())
+                .unwrap_or_else(|| {
+                    pending
+                        .iter()
+                        .rposition(|artist| artist.to_ascii_lowercase() < current)
+                        .unwrap_or(pending.len() - 1)
+                })
+        } else {
+            current_index
+                .map(|index| (index + 1) % pending.len())
+                .unwrap_or_else(|| {
+                    pending
+                        .iter()
+                        .position(|artist| artist.to_ascii_lowercase() > current)
+                        .unwrap_or(0)
+                })
+        };
+        pending.get(index).cloned()
+    }
+
     fn text_matches(&self, album: &AlbumEntry) -> bool {
         let needle = self.text_filter.trim().to_ascii_lowercase();
         let global_matches = needle.is_empty()
@@ -406,23 +505,80 @@ impl LibraryState {
                     .contains(&album_title))
     }
 
-    fn status_matches(&self, album: &AlbumEntry, artist_state: ArtistState) -> bool {
-        let matches = |filter| match filter {
+    fn album_matches_filter(album: &AlbumEntry, filter: StatusFilter) -> bool {
+        match filter {
             StatusFilter::All => true,
             StatusFilter::Unprocessed => album.state == AlbumState::New,
             StatusFilter::Incomplete => album.state == AlbumState::Incomplete,
-            StatusFilter::Processed => album.state == AlbumState::Processed,
-            StatusFilter::Bypassed => album.state == AlbumState::Bypassed,
-            StatusFilter::PartialTimeout => {
-                album.state == AlbumState::TimeoutActive || artist_state == ArtistState::Partial
+            StatusFilter::Processed | StatusFilter::ArtistComplete => {
+                album.state == AlbumState::Processed
             }
-            StatusFilter::ArtistComplete => artist_state == ArtistState::Complete,
-            StatusFilter::ArtistContainsBypass => artist_state == ArtistState::ContainsBypass,
-        };
-        self.status_filters.iter().copied().any(matches)
+            StatusFilter::Bypassed | StatusFilter::ArtistContainsBypass => {
+                album.state == AlbumState::Bypassed
+            }
+            StatusFilter::PartialTimeout => album.state == AlbumState::TimeoutActive,
+        }
     }
 
-    fn album_visible(&self, index: usize, artists: &BTreeMap<String, Vec<usize>>) -> bool {
+    fn artist_matches_filter(&self, indices: &[usize], filter: StatusFilter) -> bool {
+        let state = Self::artist_state(indices.iter().map(|index| &self.albums[*index]));
+        match filter {
+            StatusFilter::All => true,
+            StatusFilter::Unprocessed => indices
+                .iter()
+                .any(|index| self.albums[*index].state == AlbumState::New),
+            StatusFilter::Incomplete => indices
+                .iter()
+                .any(|index| self.albums[*index].state == AlbumState::Incomplete),
+            StatusFilter::Processed => indices
+                .iter()
+                .any(|index| self.albums[*index].state == AlbumState::Processed),
+            StatusFilter::Bypassed => indices
+                .iter()
+                .any(|index| self.albums[*index].state == AlbumState::Bypassed),
+            StatusFilter::PartialTimeout => {
+                state == ArtistState::Partial
+                    || indices
+                        .iter()
+                        .any(|index| self.albums[*index].state == AlbumState::TimeoutActive)
+            }
+            StatusFilter::ArtistComplete => state == ArtistState::Complete,
+            StatusFilter::ArtistContainsBypass => state == ArtistState::ContainsBypass,
+        }
+    }
+
+    fn artist_matches_active_status(&self, indices: &[usize]) -> bool {
+        self.status_filters
+            .iter()
+            .copied()
+            .any(|filter| self.artist_matches_filter(indices, filter))
+    }
+
+    fn album_matches_artist_active_status(
+        &self,
+        album: &AlbumEntry,
+        artist_indices: &[usize],
+    ) -> bool {
+        self.status_filters.iter().copied().any(|filter| {
+            if filter == StatusFilter::PartialTimeout
+                && Self::artist_state(artist_indices.iter().map(|index| &self.albums[*index]))
+                    == ArtistState::Partial
+            {
+                album.state != AlbumState::Processed
+            } else {
+                Self::album_matches_filter(album, filter)
+            }
+        })
+    }
+
+    fn album_matches_active_filter(&self, album: &AlbumEntry) -> bool {
+        self.status_filters
+            .iter()
+            .copied()
+            .any(|filter| Self::album_matches_filter(album, filter))
+    }
+
+    fn album_visible(&self, index: usize, _artists: &BTreeMap<String, Vec<usize>>) -> bool {
         let album = &self.albums[index];
         if !self.text_matches(album) {
             return false;
@@ -435,70 +591,288 @@ impl LibraryState {
         {
             return false;
         }
-        let state = artists
-            .get(&album.snapshot.artist)
-            .map(|indices| Self::artist_state(indices.iter().map(|value| &self.albums[*value])))
-            .unwrap_or(ArtistState::Unprocessed);
-        self.status_matches(album, state)
+        self.album_matches_active_filter(album)
+    }
+
+    fn album_matches_active_status(
+        &self,
+        index: usize,
+        artists: &BTreeMap<String, Vec<usize>>,
+    ) -> bool {
+        let album = &self.albums[index];
+        if matches!(self.view, LibraryView::Albums | LibraryView::Folders)
+            && self
+                .focused_artist
+                .as_ref()
+                .is_some_and(|artist| !artist.eq_ignore_ascii_case(&album.snapshot.artist))
+        {
+            return false;
+        }
+        if !self.show_tracks && self.view == LibraryView::Artists {
+            artists
+                .get(&album.snapshot.artist)
+                .is_some_and(|indices| self.artist_matches_active_status(indices))
+        } else {
+            self.album_matches_active_filter(album)
+        }
+    }
+
+    fn album_is_in_active_review_view(&self, album: &AlbumEntry) -> bool {
+        !self.show_tracks || Self::is_fallback_album(album)
+    }
+
+    fn is_fallback_album(album: &AlbumEntry) -> bool {
+        album.snapshot.album_mbid.trim().is_empty()
+    }
+
+    fn track_matches_artist(track_artist: &str, artist: &str) -> bool {
+        track_artist
+            .split(['\0', ';'])
+            .any(|value| value.trim().eq_ignore_ascii_case(artist.trim()))
+    }
+
+    /// Completion of a fallback appearance is scoped to this artist's tracks,
+    /// not the compilation folder's Album status or the other performers.
+    pub fn artist_fallback_track_progress(
+        album: &AlbumEntry,
+        artist: &str,
+    ) -> Option<(usize, usize)> {
+        if !Self::is_fallback_album(album) {
+            return None;
+        }
+        let matching = album
+            .snapshot
+            .compilation_tracks
+            .iter()
+            .filter(|track| Self::track_matches_artist(&track.artist, artist))
+            .collect::<Vec<_>>();
+        (!matching.is_empty()).then(|| {
+            (
+                matching
+                    .iter()
+                    .filter(|track| track.embedded_artwork_recorded)
+                    .count(),
+                matching.len(),
+            )
+        })
+    }
+
+    /// A featured credit appears after the primary performer in the track's
+    /// multi-artist tag. Do not mark a primary credit as FEAT on mixed albums.
+    pub fn artist_fallback_is_featured(album: &AlbumEntry, artist: &str) -> bool {
+        let mut featured = false;
+        for track in &album.snapshot.compilation_tracks {
+            let position = track
+                .artist
+                .split(['\0', ';'])
+                .position(|credit| credit.trim().eq_ignore_ascii_case(artist.trim()));
+            match position {
+                Some(0) => return false,
+                Some(_) => featured = true,
+                None => {}
+            }
+        }
+        featured
     }
 
     pub fn rows(&self) -> Vec<LibraryRow> {
         let artists = self.artists();
         match self.view {
-            LibraryView::Artists => artists
-                .iter()
-                .filter_map(|(artist, indices)| {
+            LibraryView::Artists => {
+                let mut rows = Vec::new();
+                for (artist, indices) in &artists {
                     let visible = indices
                         .iter()
                         .copied()
-                        .filter(|index| self.album_visible(*index, &artists))
+                        .filter(|index| {
+                            self.text_matches(&self.albums[*index])
+                                && self.album_matches_artist_active_status(
+                                    &self.albums[*index],
+                                    indices,
+                                )
+                        })
                         .collect::<Vec<_>>();
                     if visible.is_empty() {
-                        return None;
+                        continue;
                     }
                     let state =
                         Self::artist_state(indices.iter().map(|index| &self.albums[*index]));
-                    Some(LibraryRow {
+                    let expanded = self
+                        .focused_artist
+                        .as_ref()
+                        .is_some_and(|focused| focused.eq_ignore_ascii_case(artist));
+                    rows.push(LibraryRow {
                         key: artist.clone(),
                         primary: artist.clone(),
-                        secondary: format!(
-                            "{} album{}",
-                            indices.len(),
-                            if indices.len() == 1 { "" } else { "s" }
-                        ),
+                        secondary: format!("( {} Albums )", visible.len()),
                         status: state.label().to_string(),
+                        artwork_path: self
+                            .artist_artwork_paths
+                            .get(&artist.to_ascii_lowercase())
+                            .cloned()
+                            .unwrap_or_default(),
+                        kind: "artist".to_string(),
+                        depth: 0,
+                        expanded,
                         selected: indices.iter().any(|index| self.albums[*index].selected),
                         eligible: indices
                             .iter()
                             .any(|index| self.albums[*index].eligible_by_default()),
-                        album_count: indices.len(),
-                    })
-                })
-                .collect(),
+                        album_count: visible.len(),
+                    });
+                    if expanded {
+                        rows.extend(visible.into_iter().map(|index| {
+                            self.album_row(&self.albums[index], "album-child", 1, false)
+                        }));
+                    }
+                }
+                rows
+            }
             LibraryView::Albums | LibraryView::Folders => self
                 .albums
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| self.album_visible(*index, &artists))
-                .map(|(_, album)| LibraryRow {
-                    key: album.snapshot.album_key.clone(),
-                    primary: if self.view == LibraryView::Albums {
-                        album.snapshot.title.clone()
+                .map(|(_, album)| {
+                    if self.view == LibraryView::Albums {
+                        self.album_row(album, "album", 0, false)
                     } else {
-                        album.snapshot.path.clone()
-                    },
-                    secondary: if self.view == LibraryView::Albums {
-                        format!("{} · {}", album.snapshot.artist, album.snapshot.path)
-                    } else {
-                        format!("{} · {}", album.snapshot.artist, album.snapshot.title)
-                    },
-                    status: album.state.label().to_string(),
-                    selected: album.selected,
-                    eligible: album.eligible_by_default() || album.state == AlbumState::Processed,
-                    album_count: 1,
+                        LibraryRow {
+                            key: album.snapshot.album_key.clone(),
+                            primary: album.snapshot.path.clone(),
+                            secondary: format!(
+                                "{} · {}",
+                                album.snapshot.artist, album.snapshot.title
+                            ),
+                            status: album.state.label().to_string(),
+                            artwork_path: self
+                                .album_artwork_paths
+                                .get(&album.snapshot.album_key.to_ascii_lowercase())
+                                .cloned()
+                                .unwrap_or_default(),
+                            kind: "folder".to_string(),
+                            depth: 0,
+                            expanded: false,
+                            selected: album.selected,
+                            eligible: album.eligible_by_default()
+                                || album.state == AlbumState::Processed,
+                            album_count: 1,
+                        }
+                    }
                 })
                 .collect(),
         }
+    }
+
+    /// Albums presented inside Artist Overview. `appearance_keys` adds albums
+    /// in which Navidrome tags the focused artist on a song even when the
+    /// album artist is Various Artists. A fallback album (no Release/Album
+    /// MBID) with a matching artist track is always visible here, regardless
+    /// of Library Status. Show All bypasses Library Status for the remaining
+    /// albums, never the selected artist scope.
+    pub fn artist_overview_album_indices(
+        &self,
+        appearance_keys: &BTreeSet<String>,
+        show_all: bool,
+    ) -> Vec<usize> {
+        let Some(artist) = self.focused_artist.as_deref() else {
+            return Vec::new();
+        };
+        let mut result = self
+            .albums
+            .iter()
+            .enumerate()
+            .filter(|(_, album)| {
+                let appearance =
+                    appearance_keys.contains(&album.snapshot.album_key.to_ascii_lowercase());
+                let matching_fallback_track = album.snapshot.album_mbid.trim().is_empty()
+                    && album
+                        .snapshot
+                        .compilation_tracks
+                        .iter()
+                        .any(|track| Self::track_matches_artist(&track.artist, artist));
+                let fallback_appearance = album.snapshot.album_mbid.trim().is_empty()
+                    && (appearance || matching_fallback_track);
+                let in_artist_scope = album.snapshot.artist.trim().eq_ignore_ascii_case(artist)
+                    || appearance
+                    || matching_fallback_track;
+
+                in_artist_scope
+                    && (fallback_appearance || show_all || self.album_matches_active_filter(album))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        result.sort_by(|left, right| {
+            let left_album = &self.albums[*left].snapshot;
+            let right_album = &self.albums[*right].snapshot;
+            release_year_number(&right_album.release_year)
+                .cmp(&release_year_number(&left_album.release_year))
+                .then_with(|| {
+                    left_album
+                        .title
+                        .to_ascii_lowercase()
+                        .cmp(&right_album.title.to_ascii_lowercase())
+                })
+        });
+        result
+    }
+
+    fn album_row(
+        &self,
+        album: &AlbumEntry,
+        kind: &str,
+        depth: usize,
+        expanded: bool,
+    ) -> LibraryRow {
+        LibraryRow {
+            key: album.snapshot.album_key.clone(),
+            primary: album.snapshot.title.clone(),
+            secondary: if kind == "album-child" {
+                String::new()
+            } else {
+                album.snapshot.artist.clone()
+            },
+            status: album.state.label().to_string(),
+            artwork_path: self
+                .album_artwork_paths
+                .get(&album.snapshot.album_key.to_ascii_lowercase())
+                .cloned()
+                .unwrap_or_default(),
+            kind: kind.to_string(),
+            depth,
+            expanded,
+            selected: album.selected,
+            eligible: album.eligible_by_default() || album.state == AlbumState::Processed,
+            album_count: 1,
+        }
+    }
+
+    /// One row per Album without MusicBrainz Album authority for the Fallback
+    /// tab. Compilation remains relevant only to the optional embedded-art
+    /// track list. Tracks stay hidden until their owning Album is focused.
+    pub fn fallback_album_rows(&self) -> Vec<LibraryRow> {
+        let artists = self.artists();
+        let mut seen = BTreeSet::new();
+        self.albums
+            .iter()
+            .enumerate()
+            .filter(|(index, album)| {
+                let focused = self
+                    .focused_album_key
+                    .as_ref()
+                    .is_some_and(|focused| focused.eq_ignore_ascii_case(&album.snapshot.album_key));
+                Self::is_fallback_album(album)
+                    && (focused || self.album_visible(*index, &artists))
+                    && seen.insert(album.snapshot.album_key.to_ascii_lowercase())
+            })
+            .map(|(_, album)| {
+                let expanded = self
+                    .focused_album_key
+                    .as_ref()
+                    .is_some_and(|focused| focused.eq_ignore_ascii_case(&album.snapshot.album_key));
+                self.album_row(album, "fallback-album", 0, expanded)
+            })
+            .collect()
     }
 
     pub fn set_view(&mut self, view: LibraryView) {
@@ -567,43 +941,50 @@ impl LibraryState {
     }
 
     pub fn status_count(&self, value: StatusFilter) -> usize {
-        if value == StatusFilter::All {
-            return self.albums.len();
+        if !self.show_tracks && self.view == LibraryView::Artists {
+            let artists = self.artists();
+            return if value == StatusFilter::All {
+                artists.len()
+            } else {
+                artists
+                    .values()
+                    .filter(|indices| self.artist_matches_filter(indices, value))
+                    .count()
+            };
         }
-        if matches!(
-            value,
-            StatusFilter::ArtistComplete | StatusFilter::ArtistContainsBypass
-        ) {
-            return self
-                .artists()
-                .values()
-                .filter(|indices| {
-                    let state =
-                        Self::artist_state(indices.iter().map(|index| &self.albums[*index]));
-                    matches!(
-                        (value, state),
-                        (StatusFilter::ArtistComplete, ArtistState::Complete)
-                            | (
-                                StatusFilter::ArtistContainsBypass,
-                                ArtistState::ContainsBypass
-                            )
-                    )
-                })
-                .count();
-        }
+
         self.albums
             .iter()
-            .filter(|album| match value {
-                StatusFilter::Unprocessed => album.state == AlbumState::New,
-                StatusFilter::Incomplete => album.state == AlbumState::Incomplete,
-                StatusFilter::Processed => album.state == AlbumState::Processed,
-                StatusFilter::Bypassed => album.state == AlbumState::Bypassed,
-                StatusFilter::PartialTimeout => album.state == AlbumState::TimeoutActive,
-                StatusFilter::All
-                | StatusFilter::ArtistComplete
-                | StatusFilter::ArtistContainsBypass => false,
-            })
+            .filter(|album| !self.show_tracks || Self::is_fallback_album(album))
+            .filter(|album| value == StatusFilter::All || Self::album_matches_filter(album, value))
             .count()
+    }
+
+    pub fn state_scope_label(&self) -> &'static str {
+        if self.show_tracks {
+            "Fallback"
+        } else {
+            match self.view {
+                LibraryView::Artists => "Artists",
+                LibraryView::Albums => "Albums",
+                LibraryView::Folders => "Folders",
+            }
+        }
+    }
+
+    pub fn status_label(&self, value: StatusFilter) -> String {
+        match value {
+            StatusFilter::ArtistComplete => {
+                format!(
+                    "{} Complete",
+                    self.state_scope_label().trim_end_matches('s')
+                )
+            }
+            StatusFilter::ArtistContainsBypass => {
+                format!("{} Bypass", self.state_scope_label().trim_end_matches('s'))
+            }
+            _ => value.label().to_string(),
+        }
     }
 
     pub fn embedded_art_track_count(&self) -> usize {
@@ -618,8 +999,160 @@ impl LibraryState {
         self.show_tracks = enabled;
     }
 
+    pub fn set_artist_artwork_path(&mut self, artist: &str, path: &Path) {
+        // Navidrome's cache writer validates the file before publishing this
+        // path. Avoid thousands of synchronous metadata calls on the UI
+        // thread when a full thumbnail refresh completes.
+        if !artist.trim().is_empty() && !path.as_os_str().is_empty() {
+            self.artist_artwork_paths.insert(
+                artist.trim().to_ascii_lowercase(),
+                path.to_string_lossy().into_owned(),
+            );
+        }
+    }
+
+    pub fn set_album_artwork_path(&mut self, album_key: &str, path: &Path) {
+        if !album_key.trim().is_empty() && !path.as_os_str().is_empty() {
+            self.album_artwork_paths.insert(
+                album_key.trim().to_ascii_lowercase(),
+                path.to_string_lossy().into_owned(),
+            );
+        }
+    }
+
+    pub fn set_artist_navidrome_id(&mut self, artist: &str, id: &str) {
+        if !artist.trim().is_empty() && !id.trim().is_empty() {
+            self.artist_navidrome_ids
+                .insert(artist.trim().to_ascii_lowercase(), id.trim().to_string());
+        }
+    }
+
+    pub fn focused_album_is_bypassed(&self) -> bool {
+        self.focused_album_key.as_ref().is_some_and(|focused| {
+            self.albums.iter().any(|album| {
+                album.snapshot.album_key.eq_ignore_ascii_case(focused)
+                    && album.state == AlbumState::Bypassed
+            })
+        })
+    }
+
     pub fn clear_artist_scope(&mut self) {
         self.focused_artist = None;
+    }
+
+    pub fn toggle_artist_scope(&mut self, artist: &str) -> bool {
+        if !self
+            .albums
+            .iter()
+            .any(|album| album.snapshot.artist.eq_ignore_ascii_case(artist))
+        {
+            return false;
+        }
+        if self
+            .focused_artist
+            .as_ref()
+            .is_some_and(|focused| focused.eq_ignore_ascii_case(artist))
+        {
+            self.focused_artist = None;
+        } else {
+            self.focused_artist = Some(artist.to_string());
+        }
+        true
+    }
+
+    pub fn focus_album(&mut self, key: &str) -> bool {
+        let Some(album) = self
+            .albums
+            .iter()
+            .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+        else {
+            return false;
+        };
+        self.focused_album_key = Some(album.snapshot.album_key.clone());
+        true
+    }
+
+    pub fn focus_artist(&mut self, artist: &str) -> bool {
+        let Some(album) = self
+            .albums
+            .iter()
+            .find(|album| album.snapshot.artist.eq_ignore_ascii_case(artist))
+        else {
+            return false;
+        };
+        self.focused_artist = Some(album.snapshot.artist.clone());
+        true
+    }
+
+    pub fn toggle_fallback_album_focus(&mut self, key: &str) -> bool {
+        let Some(album) = self
+            .albums
+            .iter()
+            .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+        else {
+            return false;
+        };
+        if !Self::is_fallback_album(album) {
+            return false;
+        }
+        if self
+            .focused_album_key
+            .as_ref()
+            .is_some_and(|focused| focused.eq_ignore_ascii_case(&album.snapshot.album_key))
+        {
+            self.focused_album_key = None;
+        } else {
+            self.focused_album_key = Some(album.snapshot.album_key.clone());
+        }
+        true
+    }
+
+    pub fn fallback_track_hydration_request(
+        &self,
+        key: &str,
+    ) -> Option<(String, String, Vec<MediaTrackSnapshot>)> {
+        let album = self.albums.iter().find(|album| {
+            album.snapshot.album_key.eq_ignore_ascii_case(key)
+                && Self::is_fallback_album(album)
+                && self
+                    .focused_album_key
+                    .as_ref()
+                    .is_some_and(|focused| focused.eq_ignore_ascii_case(&album.snapshot.album_key))
+        })?;
+        // Re-read a focused fallback folder every time it is expanded. Some
+        // older snapshots have a zero/stale track_count or only the tracks
+        // already present in the completion ledger; treating that cache as a
+        // complete list leaves the album visibly expanded with no rows.
+        Some((
+            album.snapshot.album_key.clone(),
+            album.snapshot.path.clone(),
+            album.snapshot.compilation_tracks.clone(),
+        ))
+    }
+
+    pub fn replace_fallback_tracks(&mut self, key: &str, tracks: Vec<MediaTrackSnapshot>) -> bool {
+        let Some(album) = self.albums.iter_mut().find(|album| {
+            album.snapshot.album_key.eq_ignore_ascii_case(key)
+                && album.snapshot.album_mbid.trim().is_empty()
+        }) else {
+            return false;
+        };
+        let completed = album
+            .snapshot
+            .compilation_tracks
+            .iter()
+            .filter(|track| track.embedded_artwork_recorded)
+            .map(|track| track.path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
+        album.snapshot.compilation_tracks = tracks
+            .into_iter()
+            .map(|mut track| {
+                track.embedded_artwork_recorded |=
+                    completed.contains(&track.path.to_ascii_lowercase());
+                track
+            })
+            .collect();
+        true
     }
 
     pub fn toggle_row(&mut self, key: &str, include_bypassed: bool) -> SelectionResult {
@@ -681,18 +1214,27 @@ impl LibraryState {
             return SelectionResult::NotFound;
         };
         self.focused_album_key = Some(album.snapshot.album_key.clone());
-        if album.selected {
+        let track_paths = album
+            .snapshot
+            .compilation_tracks
+            .iter()
+            .map(|track| track.path.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        let had_selected_tracks = track_paths
+            .iter()
+            .any(|path| self.selected_compilation_track_paths.contains(path));
+        if album.selected && !had_selected_tracks {
             album.selected = false;
             album.bypass_override = false;
-            let track_paths = album
-                .snapshot
-                .compilation_tracks
-                .iter()
-                .map(|track| track.path.to_ascii_lowercase())
-                .collect::<Vec<_>>();
             self.selected_compilation_track_paths
                 .retain(|path| !track_paths.contains(path));
             return SelectionResult::Changed;
+        }
+        if had_selected_tracks {
+            self.selected_compilation_track_paths
+                .retain(|path| !track_paths.contains(path));
+            album.selected = false;
+            album.bypass_override = false;
         }
         match album.state {
             AlbumState::TimeoutActive => {
@@ -713,6 +1255,80 @@ impl LibraryState {
         }
     }
 
+    /// Replaces the current selection with one Album. Ordinary row clicks use
+    /// this path; direct radio clicks continue to use `toggle_album` so they
+    /// can deliberately build a multi-selection.
+    pub fn select_album_exclusive(&mut self, key: &str, include_bypassed: bool) -> SelectionResult {
+        let Some(index) = self
+            .albums
+            .iter()
+            .position(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+        else {
+            return SelectionResult::NotFound;
+        };
+        match self.albums[index].state {
+            AlbumState::TimeoutActive => {
+                return SelectionResult::BlockedByTimeout(
+                    self.albums[index].snapshot.title.clone(),
+                );
+            }
+            AlbumState::Bypassed if !include_bypassed => {
+                return SelectionResult::NeedsBypassOverride(
+                    self.albums[index].snapshot.title.clone(),
+                );
+            }
+            _ => {}
+        }
+        self.select_none();
+        let album = &mut self.albums[index];
+        self.focused_album_key = Some(album.snapshot.album_key.clone());
+        album.selected = true;
+        album.bypass_override = album.state == AlbumState::Bypassed;
+        SelectionResult::Changed
+    }
+
+    /// Replaces the current selection with every manually selectable Album for
+    /// one Artist. Row activation is an explicit manual reprocessing action,
+    /// so processed Albums remain selectable just as they are in Album view.
+    /// Direct artist-radio clicks remain additive and default-eligible through
+    /// `toggle_artist`.
+    pub fn select_artist_exclusive(
+        &mut self,
+        artist: &str,
+        include_bypassed: bool,
+    ) -> SelectionResult {
+        if !self
+            .albums
+            .iter()
+            .any(|album| album.snapshot.artist.eq_ignore_ascii_case(artist))
+        {
+            return SelectionResult::NotFound;
+        }
+        let indices = self
+            .albums
+            .iter()
+            .enumerate()
+            .filter(|(_, album)| album.snapshot.artist.eq_ignore_ascii_case(artist))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        self.select_none();
+        self.focused_artist = Some(self.albums[indices[0]].snapshot.artist.clone());
+        for index in indices {
+            let album = &mut self.albums[index];
+            match album.state {
+                AlbumState::TimeoutActive => {}
+                AlbumState::Bypassed if !include_bypassed => {}
+                AlbumState::Bypassed => {
+                    album.selected = true;
+                    album.bypass_override = true;
+                }
+                _ => album.selected = true,
+            }
+        }
+        self.focused_album_key = None;
+        SelectionResult::Changed
+    }
+
     pub fn select_none(&mut self) {
         for album in &mut self.albums {
             album.selected = false;
@@ -727,13 +1343,14 @@ impl LibraryState {
         track_path: &str,
         include_bypassed: bool,
     ) -> SelectionResult {
-        let Some(album) = self
+        let Some(index) = self
             .albums
-            .iter_mut()
-            .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
+            .iter()
+            .position(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
         else {
             return SelectionResult::NotFound;
         };
+        let album = &self.albums[index];
         if !album
             .snapshot
             .compilation_tracks
@@ -742,17 +1359,44 @@ impl LibraryState {
         {
             return SelectionResult::NotFound;
         }
+        if !self.show_tracks
+            && self.view == LibraryView::Artists
+            && self.focused_artist.as_ref().is_some_and(|artist| {
+                !album.snapshot.compilation_tracks.iter().any(|track| {
+                    track.path.eq_ignore_ascii_case(track_path)
+                        && Self::track_matches_artist(&track.artist, artist)
+                })
+            })
+        {
+            // Artist Overview is intentionally track-scoped for fallback
+            // albums. Reject stale UI callbacks or cached rows belonging to a
+            // different performer instead of searching MusicBrainz for the
+            // wrong track.
+            return SelectionResult::NotFound;
+        }
         if album.state == AlbumState::TimeoutActive {
             return SelectionResult::BlockedByTimeout(album.snapshot.title.clone());
         }
         if album.state == AlbumState::Bypassed && !include_bypassed {
             return SelectionResult::NeedsBypassOverride(album.snapshot.title.clone());
         }
-        self.focused_album_key = Some(album.snapshot.album_key.clone());
         let normalized = track_path.to_ascii_lowercase();
-        if !self.selected_compilation_track_paths.remove(&normalized) {
+        let was_selected = self.selected_compilation_track_paths.contains(&normalized);
+        let focused_album_key = album.snapshot.album_key.clone();
+
+        if was_selected {
+            self.selected_compilation_track_paths.remove(&normalized);
+        } else {
+            // A fallback track is a complete, track-scoped processing target.
+            // Replace any Artist/Album selection that led the operator here so
+            // a normal Artist-folder album cannot run first and overwrite the
+            // compilation preview.
+            self.select_none();
             self.selected_compilation_track_paths.insert(normalized);
         }
+        self.focused_album_key = Some(focused_album_key);
+
+        let album = &mut self.albums[index];
         let selected = album.snapshot.compilation_tracks.iter().any(|track| {
             self.selected_compilation_track_paths
                 .contains(&track.path.to_ascii_lowercase())
@@ -789,13 +1433,43 @@ impl LibraryState {
         Ok(self.selected_count())
     }
 
+    pub fn select_all_for_review(&mut self) -> usize {
+        let artists = self.artists();
+        let visible = self
+            .albums
+            .iter()
+            .enumerate()
+            .filter(|(index, album)| {
+                self.album_is_in_active_review_view(album)
+                    && self.album_matches_active_status(*index, &artists)
+                    && (self.show_tracks
+                        || self.focused_artist.as_ref().is_none_or(|artist| {
+                            album.snapshot.artist.eq_ignore_ascii_case(artist)
+                        }))
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        self.select_none();
+        for index in visible {
+            let album = &mut self.albums[index];
+            if album.eligible_by_default() {
+                album.selected = true;
+                album.bypass_override = album.state == AlbumState::Bypassed
+                    && album.compilation_track_artwork_pending();
+            }
+        }
+        self.selected_count()
+    }
+
     pub fn select_filtered(&mut self) {
         let artists = self.artists();
         let visible = self
             .albums
             .iter()
             .enumerate()
-            .filter(|(index, _)| self.album_visible(*index, &artists))
+            .filter(|(index, album)| {
+                self.album_is_in_active_review_view(album) && self.album_visible(*index, &artists)
+            })
             .map(|(index, _)| index)
             .collect::<BTreeSet<_>>();
         self.select_none();
@@ -817,9 +1491,12 @@ impl LibraryState {
         if self.text_filter.trim().is_empty()
             && self.artist_filter.trim().is_empty()
             && self.album_filter.trim().is_empty()
+            && self.status_filters == all_status_filters()
+            && !self.show_tracks
         {
             return Err(
-                "Select [FILTERED] requires Artist, Album, or library search text.".to_string(),
+                "Select [FILTERED] requires Artist, Album, Library Status, or Fallback scope."
+                    .to_string(),
             );
         }
         self.select_filtered();
@@ -887,6 +1564,23 @@ impl LibraryState {
     }
 
     pub fn replace_snapshot(&mut self, snapshot: MediaSnapshot) -> Result<(), String> {
+        let prior_cover_paths = self
+            .albums
+            .iter()
+            .map(|album| {
+                (
+                    album.snapshot.album_key.to_ascii_lowercase(),
+                    album.snapshot.cover_path.clone(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let recorded_compilation_tracks = self
+            .albums
+            .iter()
+            .flat_map(|album| album.snapshot.compilation_tracks.iter())
+            .filter(|track| track.embedded_artwork_recorded)
+            .map(|track| track.path.to_ascii_lowercase())
+            .collect::<BTreeSet<_>>();
         let selected = self
             .albums
             .iter()
@@ -908,6 +1602,9 @@ impl LibraryState {
         let focused_artist = self.focused_artist.clone();
         let focused_album_key = self.focused_album_key.clone();
         let selected_compilation_track_paths = self.selected_compilation_track_paths.clone();
+        let artist_artwork_paths = self.artist_artwork_paths.clone();
+        let album_artwork_paths = self.album_artwork_paths.clone();
+        let artist_navidrome_ids = self.artist_navidrome_ids.clone();
         let mut refreshed = Self::from_snapshot(snapshot)?;
         refreshed.view = view;
         refreshed.status_filter = status_filter;
@@ -919,7 +1616,26 @@ impl LibraryState {
         refreshed.focused_artist = focused_artist;
         refreshed.focused_album_key = focused_album_key;
         refreshed.selected_compilation_track_paths = selected_compilation_track_paths;
+        refreshed.artist_artwork_paths = artist_artwork_paths;
+        refreshed.album_artwork_paths = album_artwork_paths;
+        refreshed.artist_navidrome_ids = artist_navidrome_ids;
+        for album in &refreshed.albums {
+            let key = album.snapshot.album_key.to_ascii_lowercase();
+            let cover_changed = prior_cover_paths
+                .get(&key)
+                .is_none_or(|previous| previous != &album.snapshot.cover_path);
+            if cover_changed && Path::new(&album.snapshot.cover_path).is_file() {
+                refreshed
+                    .album_artwork_paths
+                    .insert(key, album.snapshot.cover_path.clone());
+            }
+        }
         for album in &mut refreshed.albums {
+            for track in &mut album.snapshot.compilation_tracks {
+                if recorded_compilation_tracks.contains(&track.path.to_ascii_lowercase()) {
+                    track.embedded_artwork_recorded = true;
+                }
+            }
             if let Some(override_value) =
                 selected.get(&album.snapshot.album_key.to_ascii_lowercase())
             {
@@ -967,7 +1683,9 @@ pub struct CandidateState {
 
 impl CandidateState {
     pub fn is_local(&self) -> bool {
-        self.source.eq_ignore_ascii_case("local") || !self.local_origin.trim().is_empty()
+        self.source.eq_ignore_ascii_case("local")
+            || self.source.eq_ignore_ascii_case("webpstill")
+            || !self.local_origin.trim().is_empty()
     }
 
     pub fn is_rejected(&self) -> bool {
@@ -991,6 +1709,9 @@ impl CandidateState {
             "type" if key.eq_ignore_ascii_case("Upscalable") => self.is_upscalable(),
             "type" if key.eq_ignore_ascii_case("Rejected") => self.is_rejected(),
             "type" if key.eq_ignore_ascii_case("Local") => self.is_local(),
+            "type" if key.eq_ignore_ascii_case("Samples") => {
+                self.source.eq_ignore_ascii_case("samples")
+            }
             "type" => self.image_type.eq_ignore_ascii_case(key),
             _ => false,
         }
@@ -1028,6 +1749,10 @@ pub struct MusicBrainzAuthority {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MusicBrainzResult {
     pub index: usize,
+    pub recording_mbid: String,
+    pub recording_title: String,
+    pub recording_artist: String,
+    pub score: u16,
     pub release_title: String,
     pub release_artist: String,
     pub release_date: String,
@@ -1035,6 +1760,8 @@ pub struct MusicBrainzResult {
     pub country: String,
     pub resolution: String,
     pub release_mbid: String,
+    pub release_group_mbid: String,
+    pub release_group_title: String,
     pub url: String,
     pub current: bool,
     pub visited: bool,
@@ -1102,6 +1829,22 @@ impl AdjustmentState {
 }
 
 #[derive(Debug, Clone)]
+pub struct ArtistOverviewCacheEntry {
+    pub biography: String,
+    pub external_url: String,
+    pub musicbrainz_id: String,
+    pub banner_path: String,
+    pub similar_artists: Vec<(String, String)>,
+    pub genres: Vec<String>,
+    pub roles: Vec<String>,
+    pub album_keys: BTreeSet<String>,
+    pub track_paths_by_album: HashMap<String, Vec<String>>,
+    pub album_ratings: HashMap<String, u32>,
+    pub artwork_candidates: Vec<(String, String)>,
+    pub top_songs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ApplicationState {
     pub config: Config,
     pub library: LibraryState,
@@ -1114,7 +1857,66 @@ pub struct ApplicationState {
     pub current_artist: String,
     pub current_album: String,
     pub current_cover_path: String,
+    /// Track currently owned by the running fallback review. Unlike the
+    /// library selection set, this authority must survive harmless browsing
+    /// while the controller is waiting for a decision.
+    pub current_compilation_track_path: String,
     pub edit_preview_path: String,
+    /// Embedded artwork extracted from the explicitly selected compilation
+    /// track. It remains authoritative while that track is selected, even
+    /// when the fallback scan clears the generic edit preview at album start.
+    pub compilation_track_preview_path: String,
+    pub compilation_track_preview_owner: String,
+    /// Stable cached source for the selected MusicBrainz release cover. The
+    /// rendered adjustment preview may replace `edit_preview_path`, so this
+    /// path remains separate for subsequent preview renders.
+    pub musicbrainz_cover_preview_path: String,
+    pub musicbrainz_hover_preview_path: String,
+    /// Result index owning `musicbrainz_hover_preview_path`. Keeping this
+    /// separate prevents a cached hover image from being shown for the next
+    /// row while its cover is still loading.
+    pub musicbrainz_hover_preview_index: Option<usize>,
+    /// At most one hover cover request may be active. A full UI sync rebuilds
+    /// result rows, which can briefly repeat hover notifications.
+    pub musicbrainz_hover_preview_loading: Option<usize>,
+    /// Covers already resolved for the current MusicBrainz result page. The
+    /// visible hover slot above remains singular, while this map prevents
+    /// revisiting a row from starting another Cover Art Archive request.
+    pub musicbrainz_preview_cache: HashMap<usize, String>,
+    /// MusicBrainz result indexes with a cover request currently in flight.
+    /// This is a set because moving across rows must not forget older work.
+    pub musicbrainz_preview_inflight: HashSet<usize>,
+    /// User-selected artist image waiting for an explicit Navidrome WRITE.
+    /// This is transient UI state and is never treated as an album candidate.
+    pub artist_artwork_draft_path: String,
+    /// Descriptive metadata projected from the currently focused Navidrome
+    /// artist. These fields are transient and never become library authority.
+    pub artist_overview_biography: String,
+    pub artist_overview_external_url: String,
+    pub artist_overview_musicbrainz_id: String,
+    pub artist_overview_banner_path: String,
+    pub artist_overview_similar_artists: Vec<(String, String)>,
+    pub artist_overview_genres: Vec<String>,
+    pub artist_overview_roles: Vec<String>,
+    pub artist_overview_album_keys: BTreeSet<String>,
+    /// Validated Navidrome song paths for the focused artist, kept separate
+    /// from the sparse SQLite compilation inventory and never used to scan.
+    pub artist_overview_track_paths: HashMap<String, Vec<String>>,
+    pub artist_overview_album_ratings: HashMap<String, u32>,
+    pub artist_overview_artwork_candidates: Vec<(String, String)>,
+    pub artist_overview_top_songs: Vec<String>,
+    pub artist_overview_top_songs_loading: bool,
+    pub artist_overview_loading: bool,
+    pub artist_overview_show_all: bool,
+    pub artist_artwork_mode: bool,
+    /// Per-session projection of Navidrome's authoritative artist metadata.
+    /// Downloaded images live in the disposable runtime cache; no duplicate
+    /// persistent metadata database is created by the Windows UI.
+    pub artist_overview_cache: HashMap<String, ArtistOverviewCacheEntry>,
+    /// Rows already offered to the lazy Navidrome thumbnail loader during
+    /// this run. Missing remote images are remembered too, preventing scroll
+    /// recycling from repeatedly requesting the same absent artwork.
+    pub thumbnail_hydration_attempts: HashSet<String>,
     pub candidates: Vec<CandidateState>,
     pub selected_candidate: Option<usize>,
     pub candidate_source_filter: Option<String>,
@@ -1135,12 +1937,22 @@ pub struct ApplicationState {
     pub fallback_artist: String,
     pub fallback_album: String,
     pub musicbrainz_retry_available: bool,
+    pub musicbrainz_matches_available: bool,
     pub musicbrainz_back_available: bool,
     pub musicbrainz_artist_filter: Option<String>,
     pub musicbrainz_release_type_filter: Option<String>,
     pub musicbrainz_authority: MusicBrainzAuthority,
     pub musicbrainz_results: Vec<MusicBrainzResult>,
     pub selected_musicbrainz_result: Option<usize>,
+    pub hovered_musicbrainz_result: Option<usize>,
+    pub musicbrainz_identity_status: String,
+    pub musicbrainz_identity_message: String,
+    pub musicbrainz_recording_status: String,
+    pub musicbrainz_artist_status: String,
+    pub musicbrainz_focused_artist_mbid: String,
+    pub musicbrainz_friendly_artist: String,
+    pub musicbrainz_friendly_title: String,
+    pub musicbrainz_used_fuzzy_search: bool,
     pub adjustments: AdjustmentState,
     pub primary_adjustments: Vec<String>,
     pub media_selector_expanded: bool,
@@ -1148,12 +1960,36 @@ pub struct ApplicationState {
     pub artwork_editing_expanded: bool,
     pub show_artwork: bool,
     pub upscale_preview_only: bool,
+    pub disable_intro_message: bool,
+    pub disable_confirmation_messages: bool,
+    pub intro_dismissed: bool,
+    pub completion_dialog_visible: bool,
+    pub completion_message: String,
     pub log: Vec<String>,
     pub last_error: Option<String>,
     pub service_status: String,
+    pub operation_busy: bool,
+    pub operation_status: String,
+    pub operation_tone: String,
     pub run_total: usize,
     pub run_completed: usize,
     pub run_failed: usize,
+}
+
+fn candidate_source_card_names(config: &Config) -> Vec<String> {
+    let mut names = vec!["samples".to_string(), "local".to_string()];
+    for source in &config.sources.cover_sources {
+        if !names.iter().any(|name| name.eq_ignore_ascii_case(source)) {
+            names.push(source.clone());
+        }
+    }
+    if !names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case("navidrome"))
+    {
+        names.push("navidrome".to_string());
+    }
+    names
 }
 
 impl ApplicationState {
@@ -1165,16 +2001,29 @@ impl ApplicationState {
             Mode::Read => LaunchMode::Read,
             Mode::Write => LaunchMode::LiveWrite,
         };
-        let sources = std::iter::once("local".to_string())
-            .chain(config.sources.cover_sources.iter().cloned())
-            .map(|name| SourceState {
-                enabled: name == "local"
-                    || enabled_source_names
-                        .iter()
-                        .any(|enabled| enabled.eq_ignore_ascii_case(&name)),
-                name,
-                candidate_count: 0,
-                status: "Ready".to_string(),
+        let sources = candidate_source_card_names(&config)
+            .into_iter()
+            .map(|name| {
+                let is_samples = name.eq_ignore_ascii_case("samples");
+                let enabled = !is_samples
+                    && (name.eq_ignore_ascii_case("local")
+                        || enabled_source_names
+                            .iter()
+                            .any(|enabled| enabled.eq_ignore_ascii_case(&name)));
+                SourceState {
+                    enabled,
+                    candidate_count: 0,
+                    status: if is_samples && !config.samples.sample_write {
+                        "Excluded".to_string()
+                    } else if is_samples {
+                        "No images".to_string()
+                    } else if !enabled {
+                        "Excluded".to_string()
+                    } else {
+                        "Ready".to_string()
+                    },
+                    name,
+                }
             })
             .collect();
         Ok(Self {
@@ -1189,7 +2038,35 @@ impl ApplicationState {
             current_artist: String::new(),
             current_album: String::new(),
             current_cover_path: String::new(),
+            current_compilation_track_path: String::new(),
             edit_preview_path: String::new(),
+            compilation_track_preview_path: String::new(),
+            compilation_track_preview_owner: String::new(),
+            musicbrainz_cover_preview_path: String::new(),
+            musicbrainz_hover_preview_path: String::new(),
+            musicbrainz_hover_preview_index: None,
+            musicbrainz_hover_preview_loading: None,
+            musicbrainz_preview_cache: HashMap::new(),
+            musicbrainz_preview_inflight: HashSet::new(),
+            artist_artwork_draft_path: String::new(),
+            artist_overview_biography: String::new(),
+            artist_overview_external_url: String::new(),
+            artist_overview_musicbrainz_id: String::new(),
+            artist_overview_banner_path: String::new(),
+            artist_overview_similar_artists: Vec::new(),
+            artist_overview_genres: Vec::new(),
+            artist_overview_roles: Vec::new(),
+            artist_overview_album_keys: BTreeSet::new(),
+            artist_overview_track_paths: HashMap::new(),
+            artist_overview_album_ratings: HashMap::new(),
+            artist_overview_artwork_candidates: Vec::new(),
+            artist_overview_top_songs: Vec::new(),
+            artist_overview_top_songs_loading: false,
+            artist_overview_loading: false,
+            artist_overview_show_all: false,
+            artist_artwork_mode: false,
+            artist_overview_cache: HashMap::new(),
+            thumbnail_hydration_attempts: HashSet::new(),
             candidates: Vec::new(),
             selected_candidate: None,
             candidate_source_filter: None,
@@ -1210,12 +2087,22 @@ impl ApplicationState {
             fallback_artist: String::new(),
             fallback_album: String::new(),
             musicbrainz_retry_available: false,
+            musicbrainz_matches_available: false,
             musicbrainz_back_available: false,
             musicbrainz_artist_filter: None,
             musicbrainz_release_type_filter: None,
             musicbrainz_authority: MusicBrainzAuthority::default(),
             musicbrainz_results: Vec::new(),
             selected_musicbrainz_result: None,
+            hovered_musicbrainz_result: None,
+            musicbrainz_identity_status: "pending".to_string(),
+            musicbrainz_identity_message: String::new(),
+            musicbrainz_recording_status: "pending".to_string(),
+            musicbrainz_artist_status: "pending".to_string(),
+            musicbrainz_focused_artist_mbid: String::new(),
+            musicbrainz_friendly_artist: String::new(),
+            musicbrainz_friendly_title: String::new(),
+            musicbrainz_used_fuzzy_search: false,
             adjustments,
             primary_adjustments: default_primary_adjustments(),
             media_selector_expanded: true,
@@ -1223,9 +2110,17 @@ impl ApplicationState {
             artwork_editing_expanded: true,
             show_artwork: true,
             upscale_preview_only: true,
+            disable_intro_message: false,
+            disable_confirmation_messages: false,
+            intro_dismissed: false,
+            completion_dialog_visible: false,
+            completion_message: String::new(),
             log: vec!["SPLINED Rust application initialized.".to_string()],
             last_error: None,
             service_status: "Ready".to_string(),
+            operation_busy: false,
+            operation_status: "Ready".to_string(),
+            operation_tone: "cyan".to_string(),
             run_total: 0,
             run_completed: 0,
             run_failed: 0,
@@ -1242,19 +2137,33 @@ impl ApplicationState {
             .iter()
             .map(|source| (source.name.to_ascii_lowercase(), source.clone()))
             .collect::<HashMap<_, _>>();
-        self.sources = std::iter::once("local".to_string())
-            .chain(config.sources.cover_sources.iter().cloned())
+        self.sources = candidate_source_card_names(&config)
+            .into_iter()
             .map(|name| {
                 let previous = existing.get(&name.to_ascii_lowercase());
-                SourceState {
-                    enabled: name.eq_ignore_ascii_case("local")
+                let is_samples = name.eq_ignore_ascii_case("samples");
+                let enabled = !is_samples
+                    && (name.eq_ignore_ascii_case("local")
                         || enabled
                             .iter()
-                            .any(|candidate| candidate.eq_ignore_ascii_case(&name)),
+                            .any(|candidate| candidate.eq_ignore_ascii_case(&name)));
+                SourceState {
+                    enabled,
                     candidate_count: previous.map_or(0, |source| source.candidate_count),
-                    status: previous
-                        .map(|source| source.status.clone())
-                        .unwrap_or_else(|| "Ready".to_string()),
+                    status: if is_samples && !config.samples.sample_write {
+                        "Excluded".to_string()
+                    } else if is_samples {
+                        previous
+                            .filter(|source| source.candidate_count > 0)
+                            .map(|source| source.status.clone())
+                            .unwrap_or_else(|| "No images".to_string())
+                    } else if !enabled {
+                        "Excluded".to_string()
+                    } else {
+                        previous
+                            .map(|source| source.status.clone())
+                            .unwrap_or_else(|| "Ready".to_string())
+                    },
                     name,
                 }
             })
@@ -1284,6 +2193,12 @@ impl ApplicationState {
         else {
             return false;
         };
+        // `current_*` is the review transaction authority while a controller
+        // is active. Library focus is intentionally independent so operators
+        // may inspect the library without redirecting preview/write actions.
+        if self.phase != RunPhase::Idle {
+            return true;
+        }
         let changed = !self
             .current_album_path
             .eq_ignore_ascii_case(&album.snapshot.path);
@@ -1293,8 +2208,272 @@ impl ApplicationState {
         self.current_cover_path = album.snapshot.cover_path.clone();
         if changed {
             self.edit_preview_path.clear();
+            self.compilation_track_preview_path.clear();
+            self.compilation_track_preview_owner.clear();
+            self.musicbrainz_cover_preview_path.clear();
+            if self.phase == RunPhase::Idle {
+                self.candidates.clear();
+                self.selected_candidate = None;
+                self.comparison_candidates.clear();
+                self.hovered_candidate = None;
+            }
+        }
+        if self.phase == RunPhase::Idle {
+            self.load_focused_album_samples();
         }
         true
+    }
+
+    pub fn synchronize_focused_artist(&mut self) {
+        if self.phase != RunPhase::Idle {
+            return;
+        }
+        self.current_artist = self.library.focused_artist.clone().unwrap_or_default();
+        self.current_album_path.clear();
+        self.current_album.clear();
+        self.current_cover_path.clear();
+        self.edit_preview_path.clear();
+        self.compilation_track_preview_path.clear();
+        self.compilation_track_preview_owner.clear();
+        self.musicbrainz_cover_preview_path.clear();
+        self.candidates.clear();
+        self.selected_candidate = None;
+        self.comparison_candidates.clear();
+        self.hovered_candidate = None;
+        self.load_focused_album_samples();
+    }
+
+    pub fn set_compilation_track_preview(&mut self, track_path: &str, preview_path: &Path) {
+        self.compilation_track_preview_owner = track_path.to_ascii_lowercase();
+        self.compilation_track_preview_path = preview_path.to_string_lossy().into_owned();
+    }
+
+    pub fn clear_compilation_track_preview(&mut self, track_path: &str) {
+        if self
+            .compilation_track_preview_owner
+            .eq_ignore_ascii_case(track_path)
+        {
+            self.compilation_track_preview_owner.clear();
+            self.compilation_track_preview_path.clear();
+        }
+    }
+
+    pub fn active_compilation_track_preview(&self) -> Option<&str> {
+        (!self.compilation_track_preview_path.trim().is_empty()
+            && (self
+                .library
+                .selected_compilation_track_paths
+                .contains(&self.compilation_track_preview_owner)
+                || (!self.current_compilation_track_path.trim().is_empty()
+                    && self
+                        .current_compilation_track_path
+                        .eq_ignore_ascii_case(&self.compilation_track_preview_owner))))
+        .then_some(self.compilation_track_preview_path.as_str())
+    }
+
+    pub fn load_focused_album_samples(&mut self) {
+        self.candidates
+            .retain(|candidate| !candidate.source.eq_ignore_ascii_case("samples"));
+        let Some(source) = self
+            .sources
+            .iter_mut()
+            .find(|source| source.name.eq_ignore_ascii_case("samples"))
+        else {
+            return;
+        };
+        source.enabled = false;
+        source.candidate_count = 0;
+        if !self.config.samples.sample_write {
+            source.status = "Excluded".to_string();
+            self.activate_available_candidate_filters();
+            return;
+        }
+
+        let sample_artist_dir = configured_samples_dir(&self.config)
+            .join(sanitize_sample_component(&self.current_artist));
+        if self.current_album.trim().is_empty() {
+            source.candidate_count = count_artist_sample_images(&sample_artist_dir);
+            source.status = if source.candidate_count == 0 {
+                "No images".to_string()
+            } else {
+                source.enabled = true;
+                format!("{} saved", source.candidate_count)
+            };
+            self.activate_available_candidate_filters();
+            return;
+        }
+
+        let sample_album_dir =
+            sample_artist_dir.join(sanitize_sample_component(&self.current_album));
+        let Ok(entries) = std::fs::read_dir(&sample_album_dir) else {
+            source.status = "No images".to_string();
+            self.activate_available_candidate_filters();
+            return;
+        };
+        let range = Range {
+            min: self.config.range.min,
+            ideal: self.config.range.ideal,
+            max: self.config.range.max,
+            ladder: self.config.range.ladder,
+        };
+        let mut paths = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|extension| {
+                        matches!(
+                            extension.to_ascii_lowercase().as_str(),
+                            "jpg" | "jpeg" | "png" | "webp"
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        for (offset, path) in paths.into_iter().enumerate() {
+            let Ok(info) = inspect_image(&path) else {
+                continue;
+            };
+            let provider = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .and_then(|value| value.split(".sample").next())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("saved source")
+                .replace('_', " ");
+            let range_class = format!("{:?}", range.classify(info.width.min(info.height)));
+            self.candidates.push(CandidateState {
+                index: 900_000 + offset,
+                source: "samples".to_string(),
+                dimensions: format!("{} × {}", info.width, info.height),
+                width: info.width,
+                height: info.height,
+                projected_width: info.width,
+                projected_height: info.height,
+                source_range_class: range_class.clone(),
+                range_class,
+                policy_status: "accept".to_string(),
+                policy_reason: format!("Saved from {provider}"),
+                image_type: format!("Sample · {provider}"),
+                cache_path: path.to_string_lossy().into_owned(),
+                url: String::new(),
+                local_origin: String::new(),
+                acceptable: true,
+                strict_override_active: false,
+                upscaled: false,
+                approved: true,
+                recommended: false,
+                selected: false,
+            });
+        }
+        source.candidate_count = self
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.source.eq_ignore_ascii_case("samples"))
+            .count();
+        source.status = if source.candidate_count == 0 {
+            "No images".to_string()
+        } else {
+            source.enabled = true;
+            "Ready".to_string()
+        };
+        self.activate_available_candidate_filters();
+    }
+
+    pub fn dismiss_intro(&mut self) {
+        self.intro_dismissed = true;
+    }
+
+    pub fn artist_fallback_track_progress(&self, album: &AlbumEntry) -> Option<(usize, usize)> {
+        if !album.snapshot.album_mbid.trim().is_empty() {
+            return None;
+        }
+        let album_key = album.snapshot.album_key.to_ascii_lowercase();
+        if let Some(paths) = self.artist_overview_track_paths.get(&album_key)
+            && !paths.is_empty()
+        {
+            let completed = paths
+                .iter()
+                .filter(|path| {
+                    album.snapshot.compilation_tracks.iter().any(|track| {
+                        track.path.eq_ignore_ascii_case(path) && track.embedded_artwork_recorded
+                    })
+                })
+                .count();
+            return Some((completed, paths.len()));
+        }
+        self.library
+            .focused_artist
+            .as_deref()
+            .and_then(|artist| LibraryState::artist_fallback_track_progress(album, artist))
+    }
+
+    pub fn artist_overview_has_pending_work(&self) -> bool {
+        if self.library.focused_artist.is_none() {
+            return false;
+        }
+        self.library
+            .artist_overview_album_indices(&self.artist_overview_album_keys, true)
+            .into_iter()
+            .any(|index| {
+                let album = &self.library.albums[index];
+                self.artist_fallback_track_progress(album)
+                    .map(|(completed, total)| completed < total)
+                    .unwrap_or_else(|| album.eligible_by_default())
+            })
+    }
+
+    pub fn clear_completed_workspace(&mut self, cancelled: bool) {
+        // Finishing an Album launched from Artist Overview should return to
+        // that Artist, including compilation appearances discovered through
+        // Navidrome. Only explicit top-level navigation should close the
+        // Artist Overview. Album and Fallback views still return to the Media
+        // Library exactly as before.
+        let focused_artist = (!self.library.show_tracks
+            && self.library.view == LibraryView::Artists)
+            .then(|| self.library.focused_artist.clone())
+            .flatten();
+        let artist_overview_has_pending_albums =
+            focused_artist.is_some() && self.artist_overview_has_pending_work();
+        self.candidates.clear();
+        self.selected_candidate = None;
+        self.comparison_candidates.clear();
+        self.hovered_candidate = None;
+        self.clear_candidate_filters();
+        self.current_album_path.clear();
+        self.current_artist = focused_artist.clone().unwrap_or_default();
+        self.current_album.clear();
+        self.current_cover_path.clear();
+        self.current_compilation_track_path.clear();
+        self.edit_preview_path.clear();
+        self.compilation_track_preview_path.clear();
+        self.compilation_track_preview_owner.clear();
+        self.musicbrainz_cover_preview_path.clear();
+        self.library.focused_album_key = None;
+        self.library.focused_artist = focused_artist.clone();
+        self.upscale_preview_only = true;
+        self.adjustments.preserve_source_resolution = false;
+        self.adjustments.apply_edit_profile = true;
+        if !cancelled
+            && self.last_error.is_none()
+            && !self.disable_confirmation_messages
+            && !artist_overview_has_pending_albums
+        {
+            let destination = focused_artist
+                .as_deref()
+                .map(|artist| format!("the {artist} Artist Overview"))
+                .unwrap_or_else(|| "the Media Library".to_string());
+            self.completion_message = format!(
+                "S.P.L.I.N.E.D. completed {} album{} and returned to {destination}.",
+                self.run_completed,
+                if self.run_completed == 1 { "" } else { "s" }
+            );
+            self.completion_dialog_visible = true;
+        } else {
+            self.completion_message.clear();
+            self.completion_dialog_visible = false;
+        }
     }
 
     pub fn selected_candidate(&self) -> Option<&CandidateState> {
@@ -1312,6 +2491,8 @@ impl ApplicationState {
         self.selected_candidate = found.then_some(index);
         if changed && found {
             self.edit_preview_path.clear();
+            self.musicbrainz_cover_preview_path.clear();
+            self.upscale_preview_only = true;
         }
         found
     }
@@ -1320,9 +2501,13 @@ impl ApplicationState {
         self.candidates
             .iter()
             .filter(|candidate| {
-                self.candidate_source_filter
-                    .as_ref()
-                    .is_none_or(|source| candidate.source.eq_ignore_ascii_case(source))
+                self.candidate_source_filter.as_ref().is_none_or(|source| {
+                    if source.eq_ignore_ascii_case("local") {
+                        candidate.is_local()
+                    } else {
+                        candidate.source.eq_ignore_ascii_case(source)
+                    }
+                })
             })
             .filter(|candidate| {
                 self.candidate_range_filter
@@ -1387,7 +2572,7 @@ impl ApplicationState {
     }
 
     fn candidate_passes_dimension(&self, candidate: &CandidateState, dimension: &str) -> bool {
-        let Some((included, excluded)) = self.candidate_filter_sets(dimension) else {
+        let Some((_included, excluded)) = self.candidate_filter_sets(dimension) else {
             return true;
         };
         if excluded
@@ -1396,10 +2581,11 @@ impl ApplicationState {
         {
             return false;
         }
-        included.is_empty()
-            || included
-                .iter()
-                .any(|key| candidate.matches_filter(dimension, key))
+        // Green means the category is visible for this run. Neutral categories
+        // remain visible too; only an explicit red/disregarded category hides
+        // matching candidates. This keeps a fresh run complete while allowing
+        // the operator to progressively hide result classes during review.
+        true
     }
 
     pub fn candidate_filter_disposition(
@@ -1466,11 +2652,59 @@ impl ApplicationState {
         self.candidate_excluded_ranges.clear();
     }
 
+    pub fn activate_available_candidate_filters(&mut self) {
+        self.clear_candidate_filters();
+        for key in [
+            "Recommended",
+            "Upscalable",
+            "Rejected",
+            "Local",
+            "Samples",
+            "FrontCover",
+            "BackCover",
+            "ArtistImage",
+            "MediaBooklet",
+            "Other",
+        ] {
+            if self.candidate_filter_count("type", key) > 0 {
+                self.candidate_included_types.insert(key.to_string());
+            }
+        }
+        for key in ["Acceptable", "Strict"] {
+            if self.candidate_filter_count("policy", key) > 0 {
+                self.candidate_included_policies.insert(key.to_string());
+            }
+        }
+        for key in [
+            "Ideal",
+            "UpperRange",
+            "Ladder",
+            "AboveLadder",
+            "LowerRange",
+            "BelowMinimum",
+        ] {
+            if self.candidate_filter_count("range", key) > 0 {
+                self.candidate_included_ranges.insert(key.to_string());
+            }
+        }
+    }
+
     pub fn candidate_filter_count(&self, dimension: &str, key: &str) -> usize {
-        self.candidates
+        let candidate_count = self
+            .candidates
             .iter()
             .filter(|candidate| candidate.matches_filter(dimension, key))
-            .count()
+            .count();
+        if dimension == "type" && key.eq_ignore_ascii_case("Samples") {
+            return self
+                .sources
+                .iter()
+                .find(|source| source.name.eq_ignore_ascii_case("samples"))
+                .map_or(candidate_count, |source| {
+                    source.candidate_count.max(candidate_count)
+                });
+        }
+        candidate_count
     }
 
     pub fn toggle_candidate_comparison(&mut self, index: usize) -> bool {
@@ -1574,14 +2808,21 @@ impl ApplicationState {
         if source.eq_ignore_ascii_case("local") {
             return Err("Local artwork is always available for review.".to_string());
         }
-        let configured = self
+        let mut configured = self
             .config
             .sources
             .cover_sources
             .iter()
             .find(|item| item.eq_ignore_ascii_case(source))
-            .cloned()
-            .ok_or_else(|| format!("Unknown artwork source: {source}"))?;
+            .cloned();
+        if configured.is_none() && enabled && source.eq_ignore_ascii_case("navidrome") {
+            configured = Some("navidrome".to_string());
+            self.config
+                .sources
+                .cover_sources
+                .push("navidrome".to_string());
+        }
+        let configured = configured.ok_or_else(|| format!("Unknown artwork source: {source}"))?;
         self.config
             .sources
             .exclude_cover_sources
@@ -1595,6 +2836,11 @@ impl ApplicationState {
             .find(|item| item.name.eq_ignore_ascii_case(source))
         {
             item.enabled = enabled;
+            item.status = if enabled {
+                "Ready".to_string()
+            } else {
+                "Excluded".to_string()
+            };
         }
         Ok(())
     }
@@ -1615,27 +2861,15 @@ impl ApplicationState {
             .min(self.config.sources.cover_sources.len().saturating_sub(1));
         if index != target {
             self.config.sources.cover_sources.swap(index, target);
-            let local = self
-                .sources
-                .iter()
-                .find(|item| item.name == "local")
-                .cloned();
             let by_name = self
                 .sources
                 .iter()
                 .map(|item| (item.name.to_ascii_lowercase(), item.clone()))
                 .collect::<HashMap<_, _>>();
-            self.sources.clear();
-            if let Some(local) = local {
-                self.sources.push(local);
-            }
-            self.sources.extend(
-                self.config
-                    .sources
-                    .cover_sources
-                    .iter()
-                    .filter_map(|name| by_name.get(&name.to_ascii_lowercase()).cloned()),
-            );
+            self.sources = candidate_source_card_names(&self.config)
+                .into_iter()
+                .filter_map(|name| by_name.get(&name.to_ascii_lowercase()).cloned())
+                .collect();
         }
         Ok(())
     }
@@ -1675,19 +2909,14 @@ impl ApplicationState {
                 normalized.push((*canonical).to_string());
             }
         }
-        for fallback in catalog {
-            if normalized.len() >= 5 {
-                break;
-            }
-            if !normalized
-                .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(fallback))
-            {
-                normalized.push(fallback.to_string());
-            }
+        if normalized.is_empty() {
+            normalized.extend(catalog.into_iter().map(str::to_string));
         }
-        normalized.truncate(5);
         self.primary_adjustments = normalized;
+    }
+
+    pub fn activate_all_adjustments(&mut self) {
+        self.primary_adjustments = default_primary_adjustments();
     }
 
     pub fn move_primary_adjustment(&mut self, name: &str, direction: isize) -> bool {
@@ -1725,48 +2954,60 @@ impl ApplicationState {
         else {
             return false;
         };
-        if self
+        if let Some(index) = self
             .primary_adjustments
             .iter()
-            .any(|value| value.eq_ignore_ascii_case(canonical))
+            .position(|value| value.eq_ignore_ascii_case(canonical))
         {
-            return false;
+            self.primary_adjustments.remove(index);
+        } else {
+            self.primary_adjustments.push((*canonical).to_string());
         }
-        if self.primary_adjustments.len() >= 5 {
-            self.primary_adjustments.pop();
-        }
-        self.primary_adjustments.insert(0, (*canonical).to_string());
-        self.set_primary_adjustments(&self.primary_adjustments.clone());
         true
     }
 
     pub fn candidate_decision(&self, action: &str) -> Result<Value, String> {
         match action {
-            "use" => {
+            "use" | "write" => {
                 let candidate = self
                     .selected_candidate()
                     .ok_or_else(|| "Select an artwork candidate before applying it.".to_string())?;
                 let mut decision = self.adjustments.as_decision_fields();
-                let object = decision
-                    .as_object_mut()
-                    .expect("adjustment decision is an object");
+                let object = decision.as_object_mut().ok_or_else(|| {
+                    "Unable to create the artwork adjustment decision.".to_string()
+                })?;
                 object.insert("action".to_string(), json!("use"));
                 object.insert("index".to_string(), json!(candidate.index));
+                if action == "write" {
+                    object.insert("explicit_write".to_string(), json!(true));
+                }
                 Ok(decision)
             }
             "keep_local" => {
                 let candidate = self
                     .candidates
                     .iter()
-                    .find(|candidate| candidate.source.eq_ignore_ascii_case("local"))
+                    .find(|candidate| candidate.is_local())
                     .ok_or_else(|| "No Local artwork candidate is available.".to_string())?;
                 Ok(json!({"action": "use", "index": candidate.index}))
             }
             "bypass" => Ok(json!({"action": "bypass"})),
             "clear_bypass" => Ok(json!({"action": "clear_bypass"})),
             "skip_album" => Ok(json!({"action": "skip_album"})),
-            "retry_musicbrainz" => Ok(json!({"action": "retry_musicbrainz"})),
-            "back_to_musicbrainz" => Ok(json!({"action": "back_musicbrainz"})),
+            "retry_musicbrainz"
+                if self.musicbrainz_retry_available || self.musicbrainz_matches_available =>
+            {
+                Ok(json!({"action": "retry_musicbrainz"}))
+            }
+            "retry_musicbrainz" => {
+                Err("MusicBrainz browsing is not available for this artwork decision.".to_string())
+            }
+            "back_to_musicbrainz" if self.musicbrainz_back_available => {
+                Ok(json!({"action": "back_musicbrainz"}))
+            }
+            "back_to_musicbrainz" => {
+                Err("No MusicBrainz results are available to return to.".to_string())
+            }
             _ => Err(format!("Unsupported candidate action: {action}")),
         }
     }
@@ -1794,14 +3035,28 @@ impl ApplicationState {
     }
 
     pub fn select_musicbrainz_result(&mut self, index: usize) -> bool {
-        if !self
+        let Some(item) = self
             .musicbrainz_results
             .iter()
-            .any(|item| item.index == index)
-        {
+            .find(|item| item.index == index)
+        else {
             return false;
-        }
+        };
+        let release_title = item.release_title.clone();
+        let release_artist = item.release_artist.clone();
+        let current = item.current;
         self.selected_musicbrainz_result = Some(index);
+        self.operation_status = if current {
+            format!("Current MusicBrainz authority selected · {release_artist} — {release_title}")
+        } else {
+            format!(
+                "Selected MusicBrainz release · {release_artist} — {release_title} · loading cover…"
+            )
+        };
+        self.operation_tone = "magenta".to_string();
+        self.push_log(format!(
+            "MusicBrainz release selected: index={index} artist={release_artist} title={release_title}"
+        ));
         true
     }
 
@@ -1823,7 +3078,7 @@ impl ApplicationState {
         self.musicbrainz_authority_decision_with_ids(
             &self.musicbrainz_authority.recording_mbid,
             &self.musicbrainz_authority.artist_mbids,
-            &self.musicbrainz_authority.release_mbid,
+            "",
         )
     }
 
@@ -1834,26 +3089,26 @@ impl ApplicationState {
         release_mbid: &str,
     ) -> Result<Value, String> {
         let recording_mbid = recording_mbid.trim();
-        let release_mbid = release_mbid.trim();
-        let artist_mbids = artist_mbids
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+        let _ = release_mbid;
+        let artist_mbids = artist_mbids.trim();
+        let artist_parts = artist_mbids
+            .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '/' | '\\' | '|'))
+            .filter(|part| !part.is_empty())
             .collect::<Vec<_>>();
-        if !valid_optional_mbid(recording_mbid)
-            || !valid_mbid(release_mbid)
-            || artist_mbids.iter().any(|value| !valid_mbid(value))
+        if !valid_mbid(recording_mbid)
+            || artist_parts.is_empty()
+            || !artist_parts.iter().all(|part| valid_mbid(part))
         {
             return Err(
-                "Release requires one MusicBrainz UUID. Recording accepts one UUID, and Artist accepts one or more comma-separated UUIDs."
+                "Enter one canonical MusicBrainz Recording UUID and valid Artist UUIDs."
                     .to_string(),
             );
         }
         Ok(json!({
             "action": "use_musicbrainz_authority",
             "recording_mbid": recording_mbid,
-            "artist_mbids": artist_mbids.join(","),
-            "release_mbid": release_mbid,
+            "artist_mbids": artist_mbids,
+            "release_mbid": "",
         }))
     }
 
@@ -1869,8 +3124,12 @@ impl ApplicationState {
         match name {
             "album_started" => {
                 self.phase = RunPhase::Running;
+                self.operation_busy = true;
+                self.operation_tone = "cyan".to_string();
                 self.current_album_path = string_field(event, "album_path");
+                self.current_compilation_track_path.clear();
                 self.edit_preview_path.clear();
+                self.musicbrainz_cover_preview_path.clear();
                 if let Some(album) = self.library.albums.iter().find(|album| {
                     album
                         .snapshot
@@ -1881,6 +3140,10 @@ impl ApplicationState {
                     self.current_album = album.snapshot.title.clone();
                     self.current_cover_path = album.snapshot.cover_path.clone();
                 }
+                self.operation_status = format!(
+                    "Processing {} — {}",
+                    self.current_artist, self.current_album
+                );
                 self.push_log(format!("Processing {}", self.current_album_path));
             }
             "release_resolved" => {
@@ -1891,21 +3154,127 @@ impl ApplicationState {
                 self.fallback_reason = string_field(event, "reason");
                 self.fallback_artist = self.musicbrainz_authority.artist.clone();
                 self.fallback_album = self.musicbrainz_authority.album.clone();
+                self.operation_status =
+                    "Authority resolved · searching artwork sources…".to_string();
+                self.operation_tone = "violet".to_string();
                 self.push_log(format!(
                     "MusicBrainz authority: {} — {}",
                     self.musicbrainz_authority.artist, self.musicbrainz_authority.album
                 ));
             }
-            "candidates" => self.apply_candidates(event),
+            "compilation_track_started" => {
+                let track_path = string_field(event, "track_path");
+                self.current_compilation_track_path = track_path.to_ascii_lowercase();
+                let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let total = event.get("total").and_then(Value::as_u64).unwrap_or(0);
+                self.operation_status = format!(
+                    "Processing fallback track {index} of {total} · {}",
+                    Path::new(&track_path)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(&track_path)
+                );
+                self.operation_tone = "cyan".to_string();
+                self.push_log(format!(
+                    "Fallback track {index} of {total}: {}",
+                    Path::new(&track_path)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(&track_path)
+                ));
+            }
+            "compilation_track_completed" => {
+                let track_path = string_field(event, "track_path");
+                let action = string_field(event, "action");
+                let written = action.eq_ignore_ascii_case("EmbeddedReplaced")
+                    || action.eq_ignore_ascii_case("EmbeddedExisting");
+                if written {
+                    for album in &mut self.library.albums {
+                        for track in &mut album.snapshot.compilation_tracks {
+                            if track.path.eq_ignore_ascii_case(&track_path) {
+                                track.embedded_artwork_recorded = true;
+                            }
+                        }
+                    }
+                }
+                self.push_log(format!(
+                    "{} fallback track {}",
+                    if written { "Saved" } else { "Reviewed" },
+                    Path::new(&track_path)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(&track_path)
+                ));
+            }
+            "compilation_track_skipped" => self.push_log(format!(
+                "Skipped fallback track {} ({})",
+                Path::new(&string_field(event, "track_path"))
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown track"),
+                string_field(event, "reason")
+            )),
+            "compilation_existing_artwork" => self.push_log(format!(
+                "Existing embedded artwork verified for the same recording: {}",
+                string_field(event, "source_track_path")
+            )),
+            "candidates" => {
+                self.apply_candidates(event);
+                if self
+                    .selected_candidate()
+                    .is_some_and(|candidate| candidate.source == "existing")
+                {
+                    self.operation_status = "Existing embedded cover verified for this Recording and Artist · choose Existing to copy it".to_string();
+                    self.operation_tone = "green".to_string();
+                } else {
+                    self.operation_status = format!(
+                        "Evaluating {} candidate image{}…",
+                        self.candidates.len(),
+                        if self.candidates.len() == 1 { "" } else { "s" }
+                    );
+                    self.operation_tone = "violet".to_string();
+                }
+            }
             "decision_required" => {
                 self.phase = RunPhase::AwaitingCandidate;
+                // The runtime is paused on user input here. Keep the status visible, but do
+                // not treat the pause as an active operation: candidate comparison, editing,
+                // Upscale Preview, and the final decision must remain interactive.
+                self.operation_busy = false;
+                self.musicbrainz_matches_available =
+                    bool_field(event, "musicbrainz_matches_available");
+                let existing = self
+                    .selected_candidate()
+                    .is_some_and(|candidate| candidate.source == "existing");
+                self.operation_status = if existing {
+                    "Existing embedded cover verified · choose Existing to copy it or MusicBrainz for other art".to_string()
+                } else if self.musicbrainz_matches_available {
+                    "Choose artwork or open MusicBrainz results".to_string()
+                } else {
+                    "Waiting for an artwork decision".to_string()
+                };
+                self.operation_tone = if existing { "green" } else { "orange" }.to_string();
                 self.musicbrainz_back_available = bool_field(event, "musicbrainz_back_available");
                 self.push_log("Artwork decision required.".to_string());
             }
             "musicbrainz_matches" => self.apply_musicbrainz_matches(event),
+            "musicbrainz_authority_error" => {
+                let message = string_field(event, "message");
+                self.last_error = Some(message.clone());
+                self.musicbrainz_identity_status = "invalid".to_string();
+                self.musicbrainz_identity_message = message.clone();
+                self.operation_status = format!("MusicBrainz ID validation failed · {message}");
+                self.operation_tone = "red".to_string();
+                self.push_log(format!("MusicBrainz authority rejected: {message}"));
+            }
             "album_completed" => {
                 self.phase = RunPhase::Running;
                 self.run_completed = self.run_completed.saturating_add(1);
+                self.operation_status = format!(
+                    "Completed {} of {} · preparing the next album…",
+                    self.run_completed, self.run_total
+                );
+                self.operation_tone = "green".to_string();
                 self.push_log(format!(
                     "Completed {} ({})",
                     string_field(event, "album_path"),
@@ -1925,15 +3294,33 @@ impl ApplicationState {
                 let message = string_field(event, "message");
                 self.run_failed = self.run_failed.saturating_add(1);
                 self.last_error = Some(message.clone());
+                self.operation_status = format!("Processing error · {message}");
+                self.operation_tone = "red".to_string();
                 self.push_log(format!("ERROR: {message}"));
             }
-            "activity" => self.push_log(string_field(event, "message")),
+            "activity" => {
+                let message = string_field(event, "message");
+                self.operation_status = message.clone();
+                self.push_log(message);
+            }
+            "post_cover_timing" => {
+                self.operation_status = "Saving library status and artwork history…".to_string();
+                self.operation_tone = "magenta".to_string();
+                self.push_log("Saved library status and artwork history.".to_string());
+            }
             "source_results_restored" => {
                 self.phase = RunPhase::AwaitingCandidate;
+                self.operation_busy = false;
+                self.operation_status =
+                    "Artwork candidates restored · waiting for a decision".to_string();
+                self.operation_tone = "orange".to_string();
                 self.push_log("Returned to the cached artwork source results.".to_string());
             }
             "provider_timing" => {
                 let source = string_field(event, "source");
+                self.operation_status =
+                    format!("Searching {} · {}", source, string_field(event, "status"));
+                self.operation_tone = "violet".to_string();
                 if let Some(item) = self
                     .sources
                     .iter_mut()
@@ -2010,14 +3397,28 @@ impl ApplicationState {
         self.fallback_active = bool_field(event, "fallback");
         self.fallback_reason = string_field(event, "fallback_reason");
         self.musicbrainz_retry_available = bool_field(event, "musicbrainz_retry_available");
+        self.musicbrainz_matches_available = bool_field(event, "musicbrainz_matches_available");
         self.musicbrainz_back_available = bool_field(event, "musicbrainz_back_available");
         for source in &mut self.sources {
-            source.candidate_count = self
-                .candidates
-                .iter()
-                .filter(|item| item.source.eq_ignore_ascii_case(&source.name))
-                .count();
+            source.candidate_count = if source.name.eq_ignore_ascii_case("local") {
+                self.candidates
+                    .iter()
+                    .filter(|item| item.is_local())
+                    .count()
+            } else {
+                self.candidates
+                    .iter()
+                    .filter(|item| item.source.eq_ignore_ascii_case(&source.name))
+                    .count()
+            };
         }
+        // A running scan emits Samples as real runtime candidates so the visible
+        // indexes and the decision queue share one authority. Idle browsing still
+        // discovers Samples directly from disk without launching a provider run.
+        if self.phase == RunPhase::Idle {
+            self.load_focused_album_samples();
+        }
+        self.activate_available_candidate_filters();
         self.push_log(format!(
             "Found {} artwork candidates.",
             self.candidates.len()
@@ -2026,7 +3427,22 @@ impl ApplicationState {
 
     fn apply_musicbrainz_matches(&mut self, event: &Value) {
         self.phase = RunPhase::AwaitingMusicBrainz;
+        // As with artwork review, this is a user-decision pause rather than background work.
+        self.operation_busy = false;
         self.selected_musicbrainz_result = None;
+        self.hovered_musicbrainz_result = None;
+        // A filter chosen for the previous track or authority must never hide a
+        // newly delivered result set. Each lookup opens as a complete All / All
+        // page; the operator can then narrow that page deliberately.
+        self.musicbrainz_artist_filter = None;
+        self.musicbrainz_release_type_filter = None;
+        self.edit_preview_path.clear();
+        self.musicbrainz_cover_preview_path.clear();
+        self.musicbrainz_hover_preview_path.clear();
+        self.musicbrainz_hover_preview_index = None;
+        self.musicbrainz_hover_preview_loading = None;
+        self.musicbrainz_preview_cache.clear();
+        self.musicbrainz_preview_inflight.clear();
         self.musicbrainz_authority = MusicBrainzAuthority {
             artist: string_field(event, "album_artist"),
             album: string_field(event, "album"),
@@ -2036,6 +3452,38 @@ impl ApplicationState {
             release_title: string_field(event, "authority_release_title"),
             release_artist: string_field(event, "authority_release_artist"),
         };
+        self.musicbrainz_identity_status = string_field(event, "identity_status");
+        if self.musicbrainz_identity_status.is_empty() {
+            self.musicbrainz_identity_status = "pending".to_string();
+        }
+        self.musicbrainz_identity_message = string_field(event, "identity_message");
+        self.musicbrainz_recording_status = string_field(event, "recording_status");
+        self.musicbrainz_artist_status = string_field(event, "artist_status");
+        self.musicbrainz_focused_artist_mbid = string_field(event, "focused_artist_mbid");
+        self.musicbrainz_friendly_artist = string_field(event, "friendly_artist");
+        self.musicbrainz_friendly_title = string_field(event, "friendly_title");
+        self.musicbrainz_used_fuzzy_search = bool_field(event, "used_fuzzy_search");
+        if bool_field(event, "compilation_track") {
+            self.fallback_active = true;
+            // The editable search identity must describe the track that produced
+            // these results. Leaving values from the previously processed album
+            // makes a selected compilation track appear to belong to that album.
+            let track_artist = string_field(event, "artist");
+            let focused_track_artist = string_field(event, "focused_artist");
+            let track_title = string_field(event, "title");
+            self.fallback_artist = if !focused_track_artist.trim().is_empty() {
+                focused_track_artist
+            } else if track_artist.trim().is_empty() {
+                self.musicbrainz_authority.artist.clone()
+            } else {
+                track_artist
+            };
+            self.fallback_album = if track_title.trim().is_empty() {
+                self.musicbrainz_authority.album.clone()
+            } else {
+                track_title
+            };
+        }
         self.musicbrainz_results = event
             .get("items")
             .and_then(Value::as_array)
@@ -2044,6 +3492,14 @@ impl ApplicationState {
             .filter_map(|item| {
                 Some(MusicBrainzResult {
                     index: item.get("index")?.as_u64()? as usize,
+                    recording_mbid: string_field(item, "recording_mbid"),
+                    recording_title: string_field(item, "recording_title"),
+                    recording_artist: string_field(item, "recording_artist"),
+                    score: item
+                        .get("score")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(100)
+                        .min(100) as u16,
                     release_title: string_field(item, "release_title"),
                     release_artist: string_field(item, "release_artist"),
                     release_date: string_field(item, "release_date"),
@@ -2051,6 +3507,8 @@ impl ApplicationState {
                     country: string_field(item, "country"),
                     resolution: string_field(item, "resolution"),
                     release_mbid: string_field(item, "release_mbid"),
+                    release_group_mbid: string_field(item, "release_group_mbid"),
+                    release_group_title: string_field(item, "release_group_title"),
                     url: string_field(item, "url"),
                     current: item
                         .get("current")
@@ -2063,30 +3521,88 @@ impl ApplicationState {
                 })
             })
             .collect();
+        let fuzzy_results = self.musicbrainz_used_fuzzy_search;
         self.musicbrainz_results.sort_by(|left, right| {
-            musicbrainz_family_rank(left)
-                .cmp(&musicbrainz_family_rank(right))
-                .then_with(|| {
-                    if musicbrainz_family_rank(left) == 0 {
-                        left.release_artist
-                            .to_ascii_lowercase()
-                            .cmp(&right.release_artist.to_ascii_lowercase())
-                    } else {
-                        std::cmp::Ordering::Equal
-                    }
-                })
-                .then_with(|| right.release_date.cmp(&left.release_date))
-                .then_with(|| country_rank(&left.country).cmp(&country_rank(&right.country)))
-                .then_with(|| {
-                    left.release_title
-                        .to_ascii_lowercase()
-                        .cmp(&right.release_title.to_ascii_lowercase())
-                })
+            (if fuzzy_results {
+                right.score.cmp(&left.score)
+            } else {
+                std::cmp::Ordering::Equal
+            })
+            .then_with(|| {
+                musicbrainz_release_class_rank(left).cmp(&musicbrainz_release_class_rank(right))
+            })
+            .then_with(|| {
+                musicbrainz_release_family_title(left).cmp(&musicbrainz_release_family_title(right))
+            })
+            .then_with(|| {
+                musicbrainz_release_family_id(left).cmp(&musicbrainz_release_family_id(right))
+            })
+            .then_with(|| country_rank(&left.country).cmp(&country_rank(&right.country)))
+            .then_with(|| left.release_date.cmp(&right.release_date))
+            .then_with(|| left.release_mbid.cmp(&right.release_mbid))
         });
+        let release_family_count = self
+            .musicbrainz_results
+            .iter()
+            .map(musicbrainz_release_family_id)
+            .collect::<HashSet<_>>()
+            .len();
+        let notice = string_field(event, "notice");
+        self.operation_status = if self.musicbrainz_identity_status == "failed" {
+            format!(
+                "MB Failed · {}",
+                if self.musicbrainz_identity_message.trim().is_empty() {
+                    "No validated MusicBrainz identity or recovery result"
+                } else {
+                    self.musicbrainz_identity_message.as_str()
+                }
+            )
+        } else if self.musicbrainz_used_fuzzy_search {
+            format!(
+                "MusicBrainz ID mismatch · Artist-restricted title recovery ready · {release_family_count} release {}",
+                if release_family_count == 1 {
+                    "family"
+                } else {
+                    "families"
+                }
+            )
+        } else if !notice.is_empty() {
+            notice.clone()
+        } else if self.musicbrainz_results.is_empty() {
+            if self.musicbrainz_identity_status == "valid" {
+                "MusicBrainz IDs verified · no eligible official releases; MB INFO opens the artist page".to_string()
+            } else {
+                "MusicBrainz Recording-ID lookup complete · no matching releases found".to_string()
+            }
+        } else {
+            format!(
+                "MusicBrainz Recording-ID results ready · {release_family_count} release {} · {} edition{}",
+                if release_family_count == 1 {
+                    "family"
+                } else {
+                    "families"
+                },
+                self.musicbrainz_results.len(),
+                if self.musicbrainz_results.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            )
+        };
+        self.operation_tone = match self.musicbrainz_identity_status.as_str() {
+            "valid" => "green",
+            "invalid" | "failed" => "red",
+            _ => "orange",
+        }
+        .to_string();
         self.push_log(format!(
-            "MusicBrainz returned {} release results.",
-            self.musicbrainz_results.len()
+            "MusicBrainz Recording-ID lookup returned {release_family_count} release families and {} editions.",
+            self.musicbrainz_results.len(),
         ));
+        if !notice.is_empty() {
+            self.push_log(notice);
+        }
     }
 
     pub fn push_log(&mut self, message: String) {
@@ -2101,6 +3617,54 @@ impl ApplicationState {
     }
 }
 
+fn sanitize_sample_component(value: &str) -> String {
+    let mut sanitized = String::with_capacity(value.len());
+    for character in value.trim().chars() {
+        if character.is_control()
+            || matches!(
+                character,
+                '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+            )
+        {
+            sanitized.push('_');
+        } else {
+            sanitized.push(character);
+        }
+    }
+    let sanitized = sanitized.trim().trim_end_matches([' ', '.']).to_string();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn count_artist_sample_images(artist_dir: &Path) -> usize {
+    let Ok(albums) = fs::read_dir(artist_dir) else {
+        return 0;
+    };
+    albums
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|album| fs::read_dir(album).ok())
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|extension| {
+                        matches!(
+                            extension.to_ascii_lowercase().as_str(),
+                            "jpg" | "jpeg" | "png" | "webp"
+                        )
+                    })
+        })
+        .count()
+}
+
 fn string_field(value: &Value, name: &str) -> String {
     value
         .get(name)
@@ -2110,14 +3674,19 @@ fn string_field(value: &Value, name: &str) -> String {
 }
 
 fn default_primary_adjustments() -> Vec<String> {
-    ["Picture", "Sharpen", "Contrast", "Brightness", "Color"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
-}
-
-fn valid_optional_mbid(value: &str) -> bool {
-    value.is_empty() || valid_mbid(value)
+    [
+        "Picture",
+        "Sharpen",
+        "Softness",
+        "Contrast",
+        "Exposure",
+        "Brightness",
+        "Gamma",
+        "Color",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 fn valid_mbid(value: &str) -> bool {
@@ -2153,17 +3722,31 @@ fn bool_field(value: &Value, name: &str) -> bool {
     value.get(name).and_then(Value::as_bool).unwrap_or(false)
 }
 
-fn musicbrainz_family_rank(item: &MusicBrainzResult) -> u8 {
-    if item.release_class.eq_ignore_ascii_case("soundtrack") {
-        1
-    } else if item.release_class.eq_ignore_ascii_case("compilation") {
-        2
-    } else if item.release_artist.eq_ignore_ascii_case("Various Artists") {
-        3
-    } else if item.release_artist.trim().is_empty() {
-        4
+fn musicbrainz_release_family_title(item: &MusicBrainzResult) -> String {
+    if item.release_group_title.trim().is_empty() {
+        item.release_title.trim().to_ascii_lowercase()
     } else {
-        0
+        item.release_group_title.trim().to_ascii_lowercase()
+    }
+}
+
+fn musicbrainz_release_class_rank(item: &MusicBrainzResult) -> u8 {
+    match item.release_class.trim().to_ascii_lowercase().as_str() {
+        "album" => 0,
+        "single" => 1,
+        "ep" => 2,
+        "soundtrack" => 3,
+        "compilation" => 4,
+        "broadcast" => 5,
+        _ => 6,
+    }
+}
+
+fn musicbrainz_release_family_id(item: &MusicBrainzResult) -> String {
+    if item.release_group_mbid.trim().is_empty() {
+        item.release_mbid.to_ascii_lowercase()
+    } else {
+        item.release_group_mbid.to_ascii_lowercase()
     }
 }
 
@@ -2181,6 +3764,7 @@ fn country_rank(country: &str) -> u8 {
 mod tests {
     use super::*;
     use crate::media_database::MediaTrackSnapshot;
+    use tempfile::TempDir;
 
     fn album(key: &str, artist: &str, title: &str, status: &str) -> MediaAlbumSnapshot {
         MediaAlbumSnapshot {
@@ -2232,6 +3816,42 @@ mod tests {
     }
 
     #[test]
+    fn startup_uses_indexed_local_cover_without_projecting_fallback_folder_art() {
+        let mut release = album("release", "Alpha", "Release", "processed");
+        release.album_mbid = "release-id".to_string();
+        release.cover_path = r"C:\Music\Alpha\Release\cover.png".to_string();
+        let mut fallback = album("fallback", "Alpha", "Compilation", "processed");
+        fallback.cover_path = r"C:\Music\Alpha\Compilation\cover.jpg".to_string();
+        let state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![release, fallback],
+        })
+        .unwrap();
+        assert_eq!(
+            state.album_artwork_paths.get("release").map(String::as_str),
+            Some(r"C:\Music\Alpha\Release\cover.png")
+        );
+        assert!(!state.album_artwork_paths.contains_key("fallback"));
+    }
+
+    fn application_state() -> ApplicationState {
+        ApplicationState::new(
+            Config::default(),
+            MediaSnapshot {
+                schema_version: crate::media_database::SCHEMA_VERSION,
+                database_path: "splined.db".to_string(),
+                canonical_root: "/music".to_string(),
+                local_root: r"C:\Music".to_string(),
+                albums: vec![album("a", "Alpha", "Fresh", "unprocessed")],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
     fn artist_aggregate_states_match_the_existing_contract() {
         let state = library();
         let artists = state.artists();
@@ -2263,6 +3883,753 @@ mod tests {
         assert_eq!(state.rows()[0].primary, "Done");
         state.set_view(LibraryView::Folders);
         assert!(state.rows()[0].primary.contains("Done"));
+    }
+
+    #[test]
+    fn artist_overview_navigation_skips_artists_without_pending_work() {
+        let mut state = library();
+        state.focused_artist = Some("Alpha".to_string());
+        assert_eq!(state.adjacent_pending_artist(1).as_deref(), Some("Delta"));
+        assert_eq!(state.adjacent_pending_artist(-1).as_deref(), Some("Delta"));
+        state.focused_artist = Some("Delta".to_string());
+        assert_eq!(state.adjacent_pending_artist(1).as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn focused_fallback_album_stays_open_after_status_filter_changes() {
+        let mut state = library();
+        state.set_show_tracks(true);
+        state.set_status_filters([StatusFilter::Unprocessed]);
+        state.focused_album_key = Some("b".to_string());
+        let rows = state.fallback_album_rows();
+        assert!(rows.iter().any(|row| row.key == "b" && row.expanded));
+    }
+
+    #[test]
+    fn refreshed_snapshot_preserves_completed_embedded_track_state_and_focus() {
+        let mut state = library();
+        state.focused_album_key = Some("a".to_string());
+        state.albums[0].snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Alpha\Fresh\01.flac".to_string(),
+            title: "One".to_string(),
+            artist: String::new(),
+            embedded_artwork_recorded: true,
+        }];
+        let mut albums = state
+            .albums
+            .iter()
+            .map(|album| album.snapshot.clone())
+            .collect::<Vec<_>>();
+        albums[0].compilation_tracks[0].embedded_artwork_recorded = false;
+        state
+            .replace_snapshot(MediaSnapshot {
+                schema_version: crate::media_database::SCHEMA_VERSION,
+                database_path: "splined.db".to_string(),
+                canonical_root: "/music".to_string(),
+                local_root: r"C:\Music".to_string(),
+                albums,
+            })
+            .unwrap();
+        assert_eq!(state.focused_album_key.as_deref(), Some("a"));
+        assert!(state.albums[0].snapshot.compilation_tracks[0].embedded_artwork_recorded);
+    }
+
+    #[test]
+    fn artist_overview_adds_compilation_appearances_and_show_all_only_overrides_status() {
+        let mut state = library();
+        state.focused_artist = Some("Alpha".to_string());
+        state.albums.iter_mut().for_each(|album| {
+            album.snapshot.release_year = match album.snapshot.album_key.as_str() {
+                "a" => "2020",
+                "b" => "2024",
+                "e" => "2023",
+                _ => "2019",
+            }
+            .to_string();
+        });
+        state.set_status_filters([StatusFilter::Incomplete]);
+        let appearances = ["e".to_string()].into_iter().collect();
+        let keys = |indices: Vec<usize>| {
+            indices
+                .into_iter()
+                .map(|index| state.albums[index].snapshot.album_key.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(state.artist_overview_album_indices(&appearances, false)),
+            vec!["e"]
+        );
+        assert_eq!(
+            keys(state.artist_overview_album_indices(&appearances, true)),
+            vec!["b", "e", "a"]
+        );
+    }
+
+    #[test]
+    fn artist_overview_always_shows_matching_fallback_tracks_despite_status_filter() {
+        let mut state = library();
+        state.focused_artist = Some("Alpha".to_string());
+        state.set_status_filters([StatusFilter::Processed]);
+
+        let fallback = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "e")
+            .unwrap();
+        fallback.snapshot.artist = "Various Artists".to_string();
+        fallback.snapshot.album_mbid.clear();
+        fallback.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Various Artists\Resume\01.flac".to_string(),
+            title: "Alpha Appearance".to_string(),
+            artist: "Alpha".to_string(),
+            embedded_artwork_recorded: false,
+        }];
+
+        let release_id_album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "d")
+            .unwrap();
+        release_id_album.snapshot.artist = "Various Artists".to_string();
+        release_id_album.snapshot.album_mbid = "release-id-present".to_string();
+        release_id_album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Various Artists\No\01.flac".to_string(),
+            title: "Not Fallback".to_string(),
+            artist: "Alpha".to_string(),
+            embedded_artwork_recorded: false,
+        }];
+
+        let appearances = ["d".to_string()].into_iter().collect();
+        let visible = state
+            .artist_overview_album_indices(&appearances, false)
+            .into_iter()
+            .map(|index| state.albums[index].snapshot.album_key.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible, vec!["b", "e"]);
+    }
+
+    #[test]
+    fn media_rows_project_names_status_and_artwork_without_library_paths() {
+        let mut state = library();
+        let artist = state
+            .rows()
+            .into_iter()
+            .find(|row| row.primary == "Alpha")
+            .unwrap();
+        assert_eq!(artist.secondary, "( 2 Albums )");
+        assert!(!artist.secondary.contains(r"C:\Music"));
+
+        state.set_status_filter(StatusFilter::Processed);
+        let artist = state
+            .rows()
+            .into_iter()
+            .find(|row| row.primary == "Alpha")
+            .unwrap();
+        assert_eq!(artist.secondary, "( 1 Albums )");
+
+        state.set_status_filter(StatusFilter::All);
+        state.set_view(LibraryView::Albums);
+        state
+            .album_artwork_paths
+            .insert("b".to_string(), r"C:\SPLINED\thumbs\done.img".to_string());
+        let album = state
+            .rows()
+            .into_iter()
+            .find(|row| row.primary == "Done")
+            .unwrap();
+        assert_eq!(album.secondary, "Alpha");
+        assert_eq!(album.status, "Processed");
+        assert_eq!(album.artwork_path, r"C:\SPLINED\thumbs\done.img");
+        assert!(!album.secondary.contains(r"C:\Music"));
+    }
+
+    #[test]
+    fn artist_rows_expand_albums_inline_without_changing_view_or_selecting_them() {
+        let mut state = library();
+        assert!(state.toggle_artist_scope("Alpha"));
+        assert_eq!(state.view, LibraryView::Artists);
+        assert_eq!(state.selected_count(), 0);
+
+        let rows = state.rows();
+        let alpha = rows
+            .iter()
+            .position(|row| row.kind == "artist" && row.primary == "Alpha")
+            .unwrap();
+        assert!(rows[alpha].expanded);
+        assert_eq!(rows[alpha + 1].kind, "album-child");
+        assert_eq!(rows[alpha + 1].depth, 1);
+        assert_eq!(rows[alpha + 1].secondary, "");
+        assert_eq!(
+            rows.iter().filter(|row| row.kind == "album-child").count(),
+            2
+        );
+
+        assert!(state.toggle_artist_scope("Alpha"));
+        assert_eq!(state.rows().len(), 4);
+    }
+
+    #[test]
+    fn expanded_artist_children_honor_album_states_not_the_artist_aggregate() {
+        let mut state = library();
+        state.albums.extend([
+            AlbumEntry {
+                snapshot: album("f", "Alpha", "Paused", "timeout"),
+                state: AlbumState::TimeoutActive,
+                selected: false,
+                bypass_override: false,
+            },
+            AlbumEntry {
+                snapshot: album("g", "Alpha", "No", "bypassed"),
+                state: AlbumState::Bypassed,
+                selected: false,
+                bypass_override: false,
+            },
+            AlbumEntry {
+                snapshot: album("h", "Alpha", "Resume", "incomplete"),
+                state: AlbumState::Incomplete,
+                selected: false,
+                bypass_override: false,
+            },
+        ]);
+        state.set_status_filters([
+            StatusFilter::Incomplete,
+            StatusFilter::Bypassed,
+            StatusFilter::PartialTimeout,
+            StatusFilter::ArtistContainsBypass,
+        ]);
+        assert!(state.toggle_artist_scope("Alpha"));
+
+        let rows = state.rows();
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == "artist" && row.primary == "Alpha")
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.kind == "album-child" && row.primary == "Done")
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.kind == "album-child" && row.primary == "Fresh")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == "album-child" && row.primary == "Paused")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == "album-child" && row.primary == "No")
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.kind == "album-child" && row.primary == "Resume")
+        );
+    }
+
+    #[test]
+    fn state_counts_and_labels_follow_the_active_library_tab() {
+        let mut state = library();
+        assert_eq!(state.state_scope_label(), "Artists");
+        assert_eq!(state.status_count(StatusFilter::All), 4);
+        assert_eq!(state.status_count(StatusFilter::Unprocessed), 1);
+        assert_eq!(state.status_count(StatusFilter::Processed), 1);
+        assert_eq!(state.status_count(StatusFilter::ArtistComplete), 1);
+        assert_eq!(
+            state.status_label(StatusFilter::ArtistComplete),
+            "Artist Complete"
+        );
+
+        state.set_top_level_view(LibraryView::Albums);
+        assert_eq!(state.state_scope_label(), "Albums");
+        assert_eq!(state.status_count(StatusFilter::All), 5);
+        assert_eq!(state.status_count(StatusFilter::Unprocessed), 1);
+        assert_eq!(
+            state.status_label(StatusFilter::ArtistComplete),
+            "Album Complete"
+        );
+
+        state.set_show_tracks(true);
+        for album in &mut state.albums {
+            album.snapshot.album_mbid = format!("release-{}", album.snapshot.album_key);
+        }
+        state.albums[0].snapshot.album_mbid.clear();
+        assert_eq!(state.state_scope_label(), "Fallback");
+        assert_eq!(state.status_count(StatusFilter::All), 1);
+        assert_eq!(
+            state.status_label(StatusFilter::ArtistComplete),
+            "Fallback Complete"
+        );
+    }
+
+    #[test]
+    fn ordinary_album_selection_is_exclusive_but_radio_selection_stays_additive() {
+        let mut state = library();
+        state.set_view(LibraryView::Albums);
+        assert_eq!(
+            state.select_album_exclusive("a", false),
+            SelectionResult::Changed
+        );
+        assert_eq!(state.selected_count(), 1);
+        assert_eq!(
+            state.select_album_exclusive("e", false),
+            SelectionResult::Changed
+        );
+        assert_eq!(state.selected_count(), 1);
+        assert!(
+            !state
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key == "a")
+                .unwrap()
+                .selected
+        );
+        assert!(
+            state
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key == "e")
+                .unwrap()
+                .selected
+        );
+
+        assert_eq!(state.toggle_album("a", false), SelectionResult::Changed);
+        assert_eq!(state.selected_count(), 2);
+    }
+
+    #[test]
+    fn fallback_is_album_first_and_projects_tracks_only_for_the_focused_album() {
+        let mut state = library();
+        for album in &mut state.albums {
+            album.snapshot.album_mbid = format!("release-{}", album.snapshot.album_key);
+        }
+        for (key, file) in [("a", "01.flac"), ("b", "02.flac")] {
+            let album = state
+                .albums
+                .iter_mut()
+                .find(|album| album.snapshot.album_key == key)
+                .unwrap();
+            album.snapshot.compilation = true;
+            album.snapshot.album_mbid.clear();
+            album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+                path: format!(r"C:\Music\Alpha\{}\{file}", album.snapshot.title),
+                title: file.to_string(),
+                artist: String::new(),
+                embedded_artwork_recorded: key == "b",
+            }];
+        }
+
+        state.set_show_tracks(true);
+        assert_eq!(state.fallback_album_rows().len(), 2);
+        assert!(state.compilation_track_rows().is_empty());
+        assert!(state.focus_album("a"));
+        let tracks = state.compilation_track_rows();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].album_key, "a");
+        assert_eq!(tracks[0].file_name, "01.flac");
+        assert!(!tracks[0].file_name.contains("Alpha"));
+        assert_eq!(tracks[0].status, "Incomplete");
+        assert!(state.focus_album("b"));
+        assert_eq!(state.compilation_track_rows()[0].status, "Processed");
+    }
+
+    #[test]
+    fn artist_overview_fallback_projects_only_tracks_tagged_for_that_artist() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation = true;
+        album.snapshot.compilation_tracks = vec![
+            MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Compilation\01.flac".to_string(),
+                title: "Alpha Song".to_string(),
+                artist: "Alpha".to_string(),
+                embedded_artwork_recorded: false,
+            },
+            MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Compilation\02.flac".to_string(),
+                title: "Other Song".to_string(),
+                artist: "Other Artist".to_string(),
+                embedded_artwork_recorded: false,
+            },
+        ];
+        state.set_view(LibraryView::Artists);
+        assert!(state.focus_artist("Alpha"));
+        assert!(state.focus_album("a"));
+
+        let tracks = state.compilation_track_rows();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].file_name, "01.flac");
+
+        state.set_view(LibraryView::Folders);
+        assert_eq!(state.compilation_track_rows().len(), 2);
+    }
+
+    #[test]
+    fn featured_compilation_credit_completes_for_each_artist_without_duplicate_write() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Various Artists\Compilation\Talk Dirty.mp3".to_string(),
+            title: "Talk Dirty".to_string(),
+            artist: "Jason Derulo\x002 Chainz".to_string(),
+            embedded_artwork_recorded: true,
+        }];
+        assert_eq!(
+            LibraryState::artist_fallback_track_progress(album, "Jason Derulo"),
+            Some((1, 1))
+        );
+        assert_eq!(
+            LibraryState::artist_fallback_track_progress(album, "2 Chainz"),
+            Some((1, 1))
+        );
+        assert!(!LibraryState::artist_fallback_is_featured(
+            album,
+            "Jason Derulo"
+        ));
+        assert!(LibraryState::artist_fallback_is_featured(album, "2 Chainz"));
+    }
+
+    #[test]
+    fn valid_ids_remain_green_when_musicbrainz_has_no_eligible_official_release() {
+        let mut state = application_state();
+        state.apply_runtime_event(&json!({
+            "event": "musicbrainz_matches",
+            "compilation_track": true,
+            "artist": "Jason Derulo\x002 Chainz",
+            "focused_artist": "2 Chainz",
+            "title": "Talk Dirty",
+            "identity_status": "valid",
+            "recording_status": "valid",
+            "artist_status": "valid",
+            "focused_artist_mbid": "dff0d392-4cd5-4052-9fbb-f485df3891e5",
+            "authority_recording_mbid": "b944591d-88d4-4c91-81e0-0a247f26511a",
+            "authority_artist_mbids": "6de0f914-3e60-4418-be3b-42e0feb6eb4d, dff0d392-4cd5-4052-9fbb-f485df3891e5",
+            "items": []
+        }));
+        assert_eq!(state.musicbrainz_identity_status, "valid");
+        assert_eq!(
+            state.musicbrainz_focused_artist_mbid,
+            "dff0d392-4cd5-4052-9fbb-f485df3891e5"
+        );
+        assert_eq!(state.fallback_artist, "2 Chainz");
+        assert_eq!(state.operation_tone, "green");
+        assert!(state.operation_status.contains("IDs verified"));
+    }
+
+    #[test]
+    fn artist_overview_accepts_only_the_focused_artist_fallback_track() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation = true;
+        album.snapshot.compilation_tracks = vec![
+            MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Compilation\01.flac".to_string(),
+                title: "Alpha duet".to_string(),
+                artist: "Alpha\0Guest".to_string(),
+                embedded_artwork_recorded: false,
+            },
+            MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Compilation\02.flac".to_string(),
+                title: "Wrong performer".to_string(),
+                artist: "Other Artist".to_string(),
+                embedded_artwork_recorded: false,
+            },
+        ];
+        state.set_view(LibraryView::Artists);
+        assert!(state.focus_artist("Alpha"));
+        assert!(state.focus_album("a"));
+
+        assert_eq!(state.compilation_track_rows().len(), 1);
+        assert_eq!(
+            state.toggle_compilation_track(
+                "a",
+                r"C:\Music\Various Artists\Compilation\02.flac",
+                false,
+            ),
+            SelectionResult::NotFound
+        );
+        assert!(state.selected_compilation_track_paths.is_empty());
+        assert_eq!(
+            state.toggle_compilation_track(
+                "a",
+                r"C:\Music\Various Artists\Compilation\01.flac",
+                false,
+            ),
+            SelectionResult::Changed
+        );
+    }
+
+    #[test]
+    fn fallback_rehydration_preserves_completed_track_status() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Various Artists\Compilation\01.flac".to_string(),
+            title: String::new(),
+            artist: String::new(),
+            embedded_artwork_recorded: true,
+        }];
+
+        assert!(state.replace_fallback_tracks(
+            "a",
+            vec![MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Compilation\01.flac".to_string(),
+                title: "Hydrated".to_string(),
+                artist: "Alpha".to_string(),
+                embedded_artwork_recorded: false,
+            }],
+        ));
+        let hydrated = state
+            .albums
+            .iter()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        assert!(hydrated.snapshot.compilation_tracks[0].embedded_artwork_recorded);
+        assert_eq!(hydrated.snapshot.compilation_tracks[0].artist, "Alpha");
+    }
+
+    #[test]
+    fn fallback_tab_track_rows_ignore_stale_artist_overview_focus() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation = true;
+        album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Various Artists\Compilation\01.flac".to_string(),
+            title: "Other Artist Song".to_string(),
+            artist: "Other Artist".to_string(),
+            embedded_artwork_recorded: false,
+        }];
+        state.set_view(LibraryView::Artists);
+        assert!(state.focus_artist("Alpha"));
+        state.set_show_tracks(true);
+        assert!(state.focus_album("a"));
+
+        let tracks = state.compilation_track_rows();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].file_name, "01.flac");
+    }
+
+    #[test]
+    fn fallback_uses_missing_album_id_authority_and_honors_status_filters() {
+        let mut state = library();
+        for album in &mut state.albums {
+            album.snapshot.compilation = true;
+            album.snapshot.album_mbid = format!("release-{}", album.snapshot.album_key);
+            album.snapshot.compilation_tracks.clear();
+        }
+
+        for key in ["a", "b", "e"] {
+            state
+                .albums
+                .iter_mut()
+                .find(|album| album.snapshot.album_key == key)
+                .unwrap()
+                .snapshot
+                .album_mbid
+                .clear();
+        }
+
+        assert_eq!(state.fallback_album_rows().len(), 3);
+        state.set_status_filter(StatusFilter::Processed);
+        let processed = state.fallback_album_rows();
+        assert_eq!(processed.len(), 1);
+        assert_eq!(processed[0].primary, "Done");
+        state.set_status_filter(StatusFilter::Incomplete);
+        let incomplete = state.fallback_album_rows();
+        assert_eq!(incomplete.len(), 1);
+        assert_eq!(incomplete[0].primary, "Resume");
+    }
+
+    #[test]
+    fn fallback_album_focus_and_selected_scan_queue_are_independent() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.compilation = true;
+        album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Alpha\Fresh\01.flac".to_string(),
+            title: "One".to_string(),
+            artist: "Alpha".to_string(),
+            embedded_artwork_recorded: false,
+        }];
+        state.set_show_tracks(true);
+
+        assert!(state.toggle_fallback_album_focus("a"));
+        assert_eq!(state.compilation_track_rows().len(), 1);
+        assert!(state.queue(ScanScope::Selected).is_empty());
+
+        assert_eq!(state.toggle_album("a", false), SelectionResult::Changed);
+        let queue = state.queue(ScanScope::Selected);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].album_key, "a");
+        assert!(queue[0].compilation_track_path.is_none());
+
+        assert!(state.toggle_fallback_album_focus("a"));
+        assert!(state.compilation_track_rows().is_empty());
+        assert_eq!(state.queue(ScanScope::Selected).len(), 1);
+    }
+
+    #[test]
+    fn saved_fallback_track_turns_green_immediately_but_read_only_does_not() {
+        let mut snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![album("a", "Alpha", "Fresh", "unprocessed")],
+        };
+        snapshot.albums[0].compilation = true;
+        snapshot.albums[0].compilation_track_art_eligible = true;
+        snapshot.albums[0].compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Alpha\Fresh\01.flac".to_string(),
+            title: "One".to_string(),
+            artist: String::new(),
+            embedded_artwork_recorded: false,
+        }];
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.library.set_show_tracks(true);
+        assert!(state.library.focus_album("a"));
+
+        state.apply_runtime_event(&json!({
+            "event": "compilation_track_completed",
+            "track_path": r"C:\Music\Alpha\Fresh\01.flac",
+            "action": "ReadOnly"
+        }));
+        assert!(!state.library.compilation_track_rows()[0].embedded_artwork_recorded);
+
+        state.apply_runtime_event(&json!({
+            "event": "compilation_track_completed",
+            "track_path": r"C:\Music\Alpha\Fresh\01.flac",
+            "action": "EmbeddedReplaced"
+        }));
+        assert!(state.library.compilation_track_rows()[0].embedded_artwork_recorded);
+
+        state.library.albums[0]
+            .snapshot
+            .compilation_tracks
+            .push(MediaTrackSnapshot {
+                path: r"C:\Music\Alpha\Fresh\02.flac".to_string(),
+                title: "Two".to_string(),
+                artist: String::new(),
+                embedded_artwork_recorded: false,
+            });
+        state.apply_runtime_event(&json!({
+            "event": "compilation_track_completed",
+            "track_path": r"C:\Music\Alpha\Fresh\02.flac",
+            "action": "EmbeddedExisting"
+        }));
+        assert!(
+            state.library.compilation_track_rows().iter().any(|track| {
+                track.path.ends_with("02.flac") && track.embedded_artwork_recorded
+            })
+        );
+    }
+
+    #[test]
+    fn existing_embedded_candidate_is_a_green_explicit_write_choice() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.apply_runtime_event(&json!({
+            "event": "candidates", "recommended_index": 1,
+            "items": [{"index": 1, "source": "existing", "cache_path": "C:/cache/match.jpg",
+                "local_origin": "existing-track", "width": 1000, "height": 1000}]
+        }));
+        state.apply_runtime_event(
+            &json!({"event": "decision_required", "musicbrainz_back_available": true}),
+        );
+        assert_eq!(state.operation_tone, "green");
+        assert!(state.operation_status.contains("Existing embedded cover"));
+        assert_eq!(
+            state.candidate_decision("write").unwrap()["explicit_write"],
+            true
+        );
+        assert!(state.musicbrainz_back_available);
+    }
+
+    #[test]
+    fn fallback_status_only_selection_targets_visible_missing_id_albums() {
+        let mut state = library();
+        for album in &mut state.albums {
+            album.snapshot.album_mbid = format!("release-{}", album.snapshot.album_key);
+        }
+        state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "b")
+            .unwrap()
+            .snapshot
+            .compilation = true;
+        state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap()
+            .snapshot
+            .album_mbid
+            .clear();
+        state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "e")
+            .unwrap()
+            .snapshot
+            .compilation = true;
+        state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "e")
+            .unwrap()
+            .snapshot
+            .album_mbid
+            .clear();
+        state.set_show_tracks(true);
+        state.set_status_filters([StatusFilter::Unprocessed]);
+
+        assert_eq!(state.select_filtered_for_review().unwrap(), 1);
+        let queue = state.queue(ScanScope::Selected);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].album_key, "a");
+
+        state.select_none();
+        state.set_status_filters([StatusFilter::Unprocessed, StatusFilter::Incomplete]);
+        assert_eq!(state.select_all_for_review(), 2);
+        assert_eq!(state.queue(ScanScope::Selected).len(), 2);
     }
 
     #[test]
@@ -2320,6 +4687,203 @@ mod tests {
         assert_eq!(state.current_album, "Renaissance");
         assert!(state.current_cover_path.ends_with("cover.jpg"));
         assert_eq!(state.phase, RunPhase::Idle);
+    }
+
+    #[test]
+    fn fallback_album_start_preserves_the_selected_tracks_embedded_preview() {
+        let mut state = application_state();
+        let track = r"C:\Music\Alpha\Fresh\01.flac";
+        state
+            .library
+            .selected_compilation_track_paths
+            .insert(track.to_ascii_lowercase());
+        state.set_compilation_track_preview(track, Path::new(r"C:\Cache\embedded.png"));
+        state.edit_preview_path = r"C:\Cache\rendered.png".to_string();
+
+        state.apply_runtime_event(&json!({
+            "event": "album_started",
+            "album_path": r"C:\Music\Alpha\Fresh"
+        }));
+
+        assert!(state.edit_preview_path.is_empty());
+        assert_eq!(
+            state.active_compilation_track_preview(),
+            Some(r"C:\Cache\embedded.png")
+        );
+    }
+
+    #[test]
+    fn active_fallback_transaction_survives_unrelated_library_browsing() {
+        let mut state = ApplicationState::new(
+            Config::default(),
+            MediaSnapshot {
+                schema_version: crate::media_database::SCHEMA_VERSION,
+                database_path: "splined.db".to_string(),
+                canonical_root: "/music".to_string(),
+                local_root: r"C:\Music".to_string(),
+                albums: vec![
+                    album("a", "10,000 Maniacs", "Compilation", "unprocessed"),
+                    album("b", "10cc", "Sheet Music", "unprocessed"),
+                ],
+            },
+        )
+        .unwrap();
+        let track = r"C:\Music\Various Artists\Compilation\01.flac";
+        state.current_artist = "10,000 Maniacs".to_string();
+        state.current_album = "Compilation".to_string();
+        state.current_album_path = r"C:\Music\Various Artists\Compilation".to_string();
+        state.current_cover_path = r"C:\Cache\candidate.jpg".to_string();
+        state.current_compilation_track_path = track.to_ascii_lowercase();
+        state.set_compilation_track_preview(track, Path::new(r"C:\Cache\embedded.png"));
+        state.phase = RunPhase::AwaitingCandidate;
+
+        assert_eq!(
+            state.library.select_artist_exclusive("10cc", false),
+            SelectionResult::Changed
+        );
+        state.synchronize_focused_artist();
+
+        assert_eq!(state.current_artist, "10,000 Maniacs");
+        assert_eq!(state.current_album, "Compilation");
+        assert_eq!(
+            state.current_album_path,
+            r"C:\Music\Various Artists\Compilation"
+        );
+        assert_eq!(state.current_cover_path, r"C:\Cache\candidate.jpg");
+        assert_eq!(
+            state.active_compilation_track_preview(),
+            Some(r"C:\Cache\embedded.png")
+        );
+    }
+
+    #[test]
+    fn successful_completion_returns_to_the_active_artist_overview() {
+        let mut state = application_state();
+        state.library.focused_artist = Some("Alpha".to_string());
+        state.library.focused_album_key = Some("a".to_string());
+        state.current_artist = "Alpha".to_string();
+        state.current_album = "Fresh".to_string();
+        state.current_album_path = r"C:\Music\Alpha\Fresh".to_string();
+        state.run_completed = 1;
+
+        state.clear_completed_workspace(false);
+
+        assert_eq!(state.library.focused_artist.as_deref(), Some("Alpha"));
+        assert!(state.library.focused_album_key.is_none());
+        assert_eq!(state.current_artist, "Alpha");
+        assert!(state.current_album.is_empty());
+        assert!(state.current_album_path.is_empty());
+        assert!(!state.completion_dialog_visible);
+        assert!(state.completion_message.is_empty());
+    }
+
+    #[test]
+    fn artist_overview_completion_dialog_waits_for_the_last_actionable_album() {
+        let mut state = application_state();
+        state.library.focused_artist = Some("Alpha".to_string());
+        state.library.albums[0].state = AlbumState::Processed;
+        state.run_completed = 1;
+
+        state.clear_completed_workspace(false);
+
+        assert_eq!(state.library.focused_artist.as_deref(), Some("Alpha"));
+        assert!(state.completion_dialog_visible);
+        assert!(
+            state
+                .completion_message
+                .contains("the Alpha Artist Overview")
+        );
+    }
+
+    #[test]
+    fn compilation_completion_waits_for_every_matching_artist_track_only() {
+        let mut state = application_state();
+        state.library.focused_artist = Some("Alpha".to_string());
+        state.library.albums[0].state = AlbumState::Processed;
+        let mut compilation = AlbumEntry::new(album(
+            "comp",
+            "Various Artists",
+            "Jaar Radio Top 2000",
+            "processed",
+        ));
+        compilation.snapshot.compilation_track_art_eligible = true;
+        compilation.snapshot.selected_source = Some("embedded-compilation".to_string());
+        compilation.snapshot.compilation_tracks =
+            [("Wallstreet Shuffle", true), ("Another Performer", false)]
+                .into_iter()
+                .map(|(title, completed)| MediaTrackSnapshot {
+                    path: format!(r"C:\Music\Various Artists\Jaar Radio Top 2000\{title}.mp3"),
+                    title: String::new(),
+                    artist: String::new(),
+                    embedded_artwork_recorded: completed,
+                })
+                .collect();
+        state.library.albums.push(compilation);
+        state.artist_overview_album_keys.insert("comp".to_string());
+        state.artist_overview_track_paths.insert(
+            "comp".to_string(),
+            ["Wallstreet Shuffle", "Dreadlock Holiday", "Donna"]
+                .into_iter()
+                .map(|title| format!(r"C:\Music\Various Artists\Jaar Radio Top 2000\{title}.mp3"))
+                .collect(),
+        );
+        state.run_completed = 1;
+
+        assert_eq!(
+            state.artist_fallback_track_progress(&state.library.albums[1]),
+            Some((1, 3))
+        );
+        assert!(state.artist_overview_has_pending_work());
+        state.clear_completed_workspace(false);
+        assert!(!state.completion_dialog_visible);
+
+        state.library.albums[1]
+            .snapshot
+            .compilation_tracks
+            .push(MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Jaar Radio Top 2000\Dreadlock Holiday.mp3"
+                    .to_string(),
+                title: String::new(),
+                artist: String::new(),
+                embedded_artwork_recorded: true,
+            });
+        state.clear_completed_workspace(false);
+        assert!(!state.completion_dialog_visible);
+
+        state.library.albums[1]
+            .snapshot
+            .compilation_tracks
+            .push(MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Jaar Radio Top 2000\Donna.mp3".to_string(),
+                title: String::new(),
+                artist: String::new(),
+                embedded_artwork_recorded: true,
+            });
+        assert_eq!(
+            state.artist_fallback_track_progress(&state.library.albums[1]),
+            Some((3, 3))
+        );
+        assert!(!state.artist_overview_has_pending_work());
+        state.clear_completed_workspace(false);
+        assert!(state.completion_dialog_visible);
+    }
+
+    #[test]
+    fn successful_completion_from_album_view_returns_to_the_media_library() {
+        let mut state = application_state();
+        state.library.set_top_level_view(LibraryView::Albums);
+        assert!(state.library.focus_album("a"));
+        state.current_artist = "Alpha".to_string();
+        state.current_album = "Fresh".to_string();
+        state.run_completed = 1;
+
+        state.clear_completed_workspace(false);
+
+        assert!(state.library.focused_artist.is_none());
+        assert!(state.library.focused_album_key.is_none());
+        assert!(state.current_artist.is_empty());
+        assert!(state.current_album.is_empty());
+        assert!(state.completion_message.contains("the Media Library"));
     }
 
     #[test]
@@ -2384,6 +4948,70 @@ mod tests {
     }
 
     #[test]
+    fn artist_row_activation_selects_processed_albums_for_manual_reprocessing() {
+        let mut state = library();
+
+        assert_eq!(
+            state.select_artist_exclusive("Alpha", false),
+            SelectionResult::Changed
+        );
+
+        let mut selected = state
+            .albums
+            .iter()
+            .filter(|album| album.selected)
+            .map(|album| album.snapshot.album_key.as_str())
+            .collect::<Vec<_>>();
+        selected.sort_unstable();
+        assert_eq!(selected, vec!["a", "b"]);
+        assert_eq!(state.focused_artist.as_deref(), Some("Alpha"));
+        assert!(state.focused_album_key.is_none());
+    }
+
+    #[test]
+    fn artist_overview_compilation_track_replaces_selected_artist_albums() {
+        let mut state = library();
+        let track_path = r"C:\Music\Various Artists\Billboard 1975\42 - Alpha.mp3";
+        let fallback = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "e")
+            .unwrap();
+        fallback.snapshot.artist = "Various Artists".to_string();
+        fallback.snapshot.compilation = true;
+        fallback.snapshot.compilation_track_art_eligible = true;
+        fallback.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: track_path.to_string(),
+            title: "Fallback Hit".to_string(),
+            artist: "Alpha".to_string(),
+            embedded_artwork_recorded: false,
+        }];
+        state.set_view(LibraryView::Artists);
+
+        assert_eq!(
+            state.select_artist_exclusive("Alpha", false),
+            SelectionResult::Changed
+        );
+        assert_eq!(state.queue(ScanScope::Selected).len(), 2);
+        assert_eq!(
+            state.toggle_compilation_track("e", track_path, false),
+            SelectionResult::Changed
+        );
+
+        let queue = state.queue(ScanScope::Selected);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].album_key, "e");
+        assert_eq!(queue[0].compilation_track_path.as_deref(), Some(track_path));
+        assert!(
+            state
+                .albums
+                .iter()
+                .filter(|album| album.snapshot.artist == "Alpha")
+                .all(|album| !album.selected)
+        );
+    }
+
+    #[test]
     fn scan_queues_honor_scope_manual_reprocessing_and_bypass_override() {
         let mut state = library();
         state.toggle_album("b", false);
@@ -2431,11 +5059,13 @@ mod tests {
             MediaTrackSnapshot {
                 path: r"C:\Music\Alpha\Done\01.flac".to_string(),
                 title: "One".to_string(),
+                artist: String::new(),
                 embedded_artwork_recorded: true,
             },
             MediaTrackSnapshot {
                 path: r"C:\Music\Alpha\Done\02.flac".to_string(),
                 title: "Two".to_string(),
+                artist: String::new(),
                 embedded_artwork_recorded: false,
             },
         ];
@@ -2457,6 +5087,39 @@ mod tests {
     }
 
     #[test]
+    fn selecting_compilation_album_replaces_explicit_track_target() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.compilation = true;
+        album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: r"C:\Music\Alpha\Fresh\01.flac".to_string(),
+            title: "One".to_string(),
+            artist: String::new(),
+            embedded_artwork_recorded: false,
+        }];
+
+        assert_eq!(
+            state.toggle_compilation_track("a", r"C:\Music\Alpha\Fresh\01.flac", false,),
+            SelectionResult::Changed
+        );
+        assert!(
+            state.queue(ScanScope::Selected)[0]
+                .compilation_track_path
+                .is_some()
+        );
+
+        assert_eq!(state.toggle_album("a", false), SelectionResult::Changed);
+        let queue = state.queue(ScanScope::Selected);
+        assert_eq!(queue.len(), 1);
+        assert!(queue[0].compilation_track_path.is_none());
+        assert!(state.selected_compilation_track_paths.is_empty());
+    }
+
+    #[test]
     fn deselecting_an_artist_clears_its_explicit_compilation_tracks() {
         let mut state = library();
         let album = state
@@ -2469,6 +5132,7 @@ mod tests {
         album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
             path: r"C:\Music\Alpha\Fresh\01.flac".to_string(),
             title: "One".to_string(),
+            artist: "Alpha".to_string(),
             embedded_artwork_recorded: false,
         }];
         assert_eq!(
@@ -2510,6 +5174,10 @@ mod tests {
         }));
         assert_eq!(state.selected_candidate, Some(2));
         assert_eq!(state.candidate_decision("use").unwrap()["index"], 2);
+        let explicit_write = state.candidate_decision("write").unwrap();
+        assert_eq!(explicit_write["action"], "use");
+        assert_eq!(explicit_write["index"], 2);
+        assert_eq!(explicit_write["explicit_write"], true);
         state.apply_runtime_event(&json!({
             "event":"musicbrainz_matches",
             "album_artist":"Alpha",
@@ -2522,8 +5190,161 @@ mod tests {
         assert_eq!(state.phase, RunPhase::AwaitingMusicBrainz);
         assert_eq!(state.musicbrainz_results.len(), 1);
         assert_eq!(
+            state.operation_status,
+            "MusicBrainz Recording-ID results ready · 1 release family · 1 edition"
+        );
+        assert_eq!(
             state.musicbrainz_authority_decision().unwrap()["action"],
             "use_musicbrainz_authority"
+        );
+    }
+
+    #[test]
+    fn compilation_musicbrainz_event_replaces_stale_album_search_identity() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![album(
+                "a",
+                "10,000 Maniacs",
+                "Love Among the Ruins",
+                "processed",
+            )],
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.fallback_artist = "10,000 Maniacs".to_string();
+        state.fallback_album = "Love Among the Ruins".to_string();
+
+        state.apply_runtime_event(&json!({
+            "event":"musicbrainz_matches",
+            "compilation_track":true,
+            "artist":"10,000 Maniacs",
+            "title":"Because the Night",
+            "album_artist":"Various Artists",
+            "album":"Billboard Hot 100 Singles of 1994",
+            "items":[]
+        }));
+
+        assert_eq!(state.fallback_artist, "10,000 Maniacs");
+        assert_eq!(state.fallback_album, "Because the Night");
+        assert!(state.fallback_active);
+        assert_eq!(state.musicbrainz_authority.artist, "Various Artists");
+        assert_eq!(
+            state.musicbrainz_authority.album,
+            "Billboard Hot 100 Singles of 1994"
+        );
+    }
+
+    #[test]
+    fn decision_pauses_keep_preview_and_review_controls_interactive() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![album("a", "Alpha", "Fresh", "unprocessed")],
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.phase = RunPhase::Running;
+        state.operation_busy = true;
+
+        state.apply_runtime_event(&json!({"event":"decision_required"}));
+        assert_eq!(state.phase, RunPhase::AwaitingCandidate);
+        assert!(!state.operation_busy);
+        assert_eq!(state.operation_status, "Waiting for an artwork decision");
+
+        state.operation_busy = true;
+        state.apply_runtime_event(&json!({
+            "event":"musicbrainz_matches",
+            "album_artist":"Alpha",
+            "album":"Fresh",
+            "items":[]
+        }));
+        assert_eq!(state.phase, RunPhase::AwaitingMusicBrainz);
+        assert!(!state.operation_busy);
+        assert_eq!(
+            state.operation_status,
+            "MusicBrainz Recording-ID lookup complete · no matching releases found"
+        );
+
+        state.operation_busy = true;
+        state.apply_runtime_event(&json!({"event":"source_results_restored"}));
+        assert_eq!(state.phase, RunPhase::AwaitingCandidate);
+        assert!(!state.operation_busy);
+        assert_eq!(
+            state.operation_status,
+            "Artwork candidates restored · waiting for a decision"
+        );
+    }
+
+    #[test]
+    fn musicbrainz_candidate_action_follows_the_available_browser_direction() {
+        let mut state = application_state();
+        assert!(state.candidate_decision("retry_musicbrainz").is_err());
+        assert!(state.candidate_decision("back_to_musicbrainz").is_err());
+
+        state.apply_runtime_event(&json!({
+            "event": "candidates",
+            "items": [],
+            "musicbrainz_matches_available": true
+        }));
+        state.apply_runtime_event(&json!({
+            "event": "decision_required",
+            "reason": "review",
+            "musicbrainz_matches_available": true
+        }));
+        assert_eq!(state.phase, RunPhase::AwaitingCandidate);
+        assert!(state.musicbrainz_matches_available);
+        assert_eq!(
+            state.candidate_decision("retry_musicbrainz").unwrap()["action"],
+            "retry_musicbrainz"
+        );
+
+        state.musicbrainz_matches_available = false;
+        state.musicbrainz_retry_available = true;
+        assert_eq!(
+            state.candidate_decision("retry_musicbrainz").unwrap()["action"],
+            "retry_musicbrainz"
+        );
+
+        state.musicbrainz_retry_available = false;
+        state.musicbrainz_back_available = true;
+        assert_eq!(
+            state.candidate_decision("back_to_musicbrainz").unwrap()["action"],
+            "back_musicbrainz"
+        );
+    }
+
+    #[test]
+    fn musicbrainz_release_without_art_returns_a_visible_warning() {
+        let mut state = application_state();
+        state.apply_runtime_event(&json!({
+            "event":"musicbrainz_matches",
+            "album_artist":"Various Artists",
+            "album":"Rock Star: Music From the Motion Picture",
+            "notice":"No usable artwork is available for Rock Star · choose another MusicBrainz release",
+            "items":[{
+                "index":1,
+                "release_title":"Rock Star",
+                "release_artist":"Various Artists",
+                "release_mbid":"33333333-3333-3333-3333-333333333333",
+                "visited":true
+            }]
+        }));
+
+        assert_eq!(state.phase, RunPhase::AwaitingMusicBrainz);
+        assert_eq!(
+            state.operation_status,
+            "No usable artwork is available for Rock Star · choose another MusicBrainz release"
+        );
+        assert!(state.musicbrainz_results[0].visited);
+        assert!(
+            state
+                .log
+                .iter()
+                .any(|line| line.contains("No usable artwork"))
         );
     }
 
@@ -2545,8 +5366,15 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["local", "itunes", "discogs"]
+            vec!["samples", "local", "itunes", "discogs", "navidrome"]
         );
+        let navidrome = state
+            .sources
+            .iter()
+            .find(|source| source.name == "navidrome")
+            .unwrap();
+        assert!(!navidrome.enabled);
+        assert_eq!(navidrome.status, "Excluded");
         state.move_source("discogs", -1).unwrap();
         assert_eq!(
             state.config.sources.cover_sources,
@@ -2565,6 +5393,59 @@ mod tests {
         state.set_candidate_range_filter("lower");
         assert_eq!(state.visible_candidates().len(), 1);
         assert_eq!(state.visible_candidates()[0].index, 2);
+        state.set_source_enabled("navidrome", true).unwrap();
+        assert_eq!(
+            state.config.sources.cover_sources,
+            vec!["discogs", "itunes", "navidrome"]
+        );
+        assert!(
+            state
+                .sources
+                .iter()
+                .find(|source| source.name == "navidrome")
+                .unwrap()
+                .enabled
+        );
+    }
+
+    #[test]
+    fn runtime_samples_and_webp_stills_share_selectable_source_authority() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![album("a", "Alpha", "Fresh", "unprocessed")],
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.phase = RunPhase::Running;
+        state.apply_runtime_event(&json!({
+            "event":"candidates",
+            "recommended_index":1,
+            "items":[
+                {"index":1,"source":"webpstill","width":1800,"height":1800,"source_range_class":"Ideal","range_class":"Ideal","policy_status":"accept","acceptable":true,"image_type":"FrontCover","local_origin":"cover-file","cache_path":"cover.jpg"},
+                {"index":2,"source":"samples","width":1800,"height":1800,"source_range_class":"Ideal","range_class":"Ideal","policy_status":"accept","acceptable":true,"image_type":"Sample · itunes","cache_path":"sample.jpg"}
+            ]
+        }));
+
+        let local = state
+            .sources
+            .iter()
+            .find(|source| source.name.eq_ignore_ascii_case("local"))
+            .unwrap();
+        let samples = state
+            .sources
+            .iter()
+            .find(|source| source.name.eq_ignore_ascii_case("samples"))
+            .unwrap();
+        assert_eq!(local.candidate_count, 1);
+        assert_eq!(samples.candidate_count, 1);
+        state.set_candidate_source_filter("local");
+        assert_eq!(state.visible_candidates()[0].source, "webpstill");
+        state.upscale_preview_only = false;
+        assert!(state.select_candidate(2));
+        assert!(state.upscale_preview_only);
+        assert_eq!(state.candidate_decision("use").unwrap()["index"], 2);
     }
 
     #[test]
@@ -2589,7 +5470,7 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["local", "itunes"]
+            vec!["samples", "local", "itunes", "navidrome"]
         );
 
         let mut replacement = state.config.clone();
@@ -2603,7 +5484,7 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["local", "discogs"]
+            vec!["samples", "local", "discogs", "navidrome"]
         );
     }
 
@@ -2654,6 +5535,9 @@ mod tests {
         state.select_none();
         state.set_artist_filter("");
         state.set_album_filter("");
+        assert_eq!(state.select_filtered_for_review().unwrap(), 2);
+        state.select_none();
+        state.set_status_filter(StatusFilter::All);
         assert!(state.select_filtered_for_review().is_err());
         state.toggle_artist("Alpha", false);
         state.select_none();
@@ -2691,16 +5575,20 @@ mod tests {
             ]
         }));
         assert_eq!(
-            state.cycle_candidate_filter("type", "FrontCover").unwrap(),
+            state.candidate_filter_disposition("type", "FrontCover"),
             CandidateFilterDisposition::Included
         );
-        assert_eq!(state.visible_candidates().len(), 1);
         assert_eq!(
             state.cycle_candidate_filter("type", "FrontCover").unwrap(),
             CandidateFilterDisposition::Disregarded
         );
         assert_eq!(state.visible_candidates().len(), 1);
         assert_eq!(state.visible_candidates()[0].index, 2);
+        assert_eq!(
+            state.cycle_candidate_filter("type", "FrontCover").unwrap(),
+            CandidateFilterDisposition::Neutral
+        );
+        assert_eq!(state.visible_candidates().len(), 2);
         state.clear_candidate_filters();
         assert!(state.toggle_candidate_comparison(2));
         assert_eq!(state.comparison_candidates().len(), 2);
@@ -2713,6 +5601,45 @@ mod tests {
         state.fallback_album = "Fresh".to_string();
         let retry = state.fallback_retry_decision("Alpha", "Fresh").unwrap();
         assert_eq!(retry["action"], "retry");
+    }
+
+    #[test]
+    fn artist_and_album_samples_are_discovered_and_enabled_for_each_review() {
+        let directory = TempDir::new().unwrap();
+        let samples = directory.path().join("samples");
+        let blonde = samples.join("Bob Dylan").join("Blonde on Blonde");
+        let blood = samples.join("Bob Dylan").join("Blood on the Tracks");
+        fs::create_dir_all(&blonde).unwrap();
+        fs::create_dir_all(&blood).unwrap();
+        fs::write(blonde.join("itunes.sample.jpg"), b"artist-count").unwrap();
+        fs::write(blood.join("discogs.sample.png"), b"artist-count").unwrap();
+
+        let mut config = Config::default();
+        config.samples.sample_write = true;
+        config.samples.sample_dir = samples.to_string_lossy().into_owned();
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![album("a", "Bob Dylan", "Blonde on Blonde", "unprocessed")],
+        };
+        let mut state = ApplicationState::new(config, snapshot).unwrap();
+        state.library.focused_artist = Some("Bob Dylan".to_string());
+        state.synchronize_focused_artist();
+
+        let source = state
+            .sources
+            .iter()
+            .find(|source| source.name == "samples")
+            .unwrap();
+        assert!(source.enabled);
+        assert_eq!(source.candidate_count, 2);
+        assert_eq!(state.candidate_filter_count("type", "Samples"), 2);
+        assert_eq!(
+            state.candidate_filter_disposition("type", "Samples"),
+            CandidateFilterDisposition::Included
+        );
     }
 
     #[test]
@@ -2731,12 +5658,26 @@ mod tests {
             "album":"Fresh",
             "authority_release_mbid":"33333333-3333-3333-3333-333333333333",
             "items":[
-                {"index":2,"release_title":"Compilation","release_artist":"Various Artists","release_date":"2020","release_class":"compilation","release_mbid":"44444444-4444-4444-4444-444444444444","country":"GB"},
-                {"index":1,"release_title":"Fresh","release_artist":"Alpha","release_date":"2024","release_class":"album","release_mbid":"33333333-3333-3333-3333-333333333333","country":"US","current":true}
+                {"index":2,"release_title":"Compilation","release_artist":"Various Artists","release_date":"2020","release_class":"compilation","release_mbid":"44444444-4444-4444-4444-444444444444","release_group_mbid":"dddddddd-dddd-dddd-dddd-dddddddddddd","release_group_title":"Compilation","country":"GB"},
+                {"index":3,"release_title":"Fresh","release_artist":"Alpha","release_date":"2023","release_class":"album","release_mbid":"55555555-5555-5555-5555-555555555555","release_group_mbid":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","release_group_title":"Fresh","country":"GB"},
+                {"index":1,"release_title":"Fresh","release_artist":"Alpha","release_date":"2024","release_class":"album","release_mbid":"33333333-3333-3333-3333-333333333333","release_group_mbid":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","release_group_title":"Fresh","country":"US","current":true}
             ]
         }));
         assert_eq!(state.musicbrainz_results[0].index, 1);
+        assert_eq!(state.musicbrainz_results[1].index, 3);
+        assert!(
+            state
+                .operation_status
+                .contains("2 release families · 3 editions")
+        );
         assert!(state.select_musicbrainz_result(1));
+        assert_eq!(state.selected_musicbrainz_result, Some(1));
+        assert!(
+            state
+                .operation_status
+                .contains("Current MusicBrainz authority selected · Alpha — Fresh")
+        );
+        assert_eq!(state.operation_tone, "magenta");
         assert_eq!(
             state.selected_musicbrainz_result_decision().unwrap()["index"],
             1
@@ -2752,6 +5693,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(edited["action"], "use_musicbrainz_authority");
+        let recording_only = state
+            .musicbrainz_authority_decision_with_ids(
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+                "",
+            )
+            .unwrap();
+        assert_eq!(recording_only["release_mbid"], "");
+        let multi_artist = state
+            .musicbrainz_authority_decision_with_ids(
+                "11111111-1111-1111-1111-111111111111",
+                "6de0f914-3e60-4418-be3b-42e0feb6eb4d, dff0d392-4cd5-4052-9fbb-f485df3891e5",
+                "",
+            )
+            .unwrap();
+        assert_eq!(multi_artist["action"], "use_musicbrainz_authority");
+        assert!(
+            state
+                .musicbrainz_authority_decision_with_ids(
+                    "11111111-1111-1111-1111-111111111111",
+                    "6de0f914-3e60-4418-be3b-42e0feb6eb4d, invalid",
+                    "",
+                )
+                .is_err()
+        );
+        assert!(
+            state
+                .musicbrainz_authority_decision_with_ids("", "", "")
+                .is_err()
+        );
         assert!(
             state
                 .musicbrainz_authority_decision_with_ids("bad", "", "bad")
@@ -2760,7 +5731,35 @@ mod tests {
     }
 
     #[test]
-    fn primary_adjustments_are_exactly_five_and_reorderable() {
+    fn a_new_musicbrainz_result_set_clears_filters_that_would_hide_its_rows() {
+        let snapshot = MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![album("a", "Alpha", "Fresh", "unprocessed")],
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        state.set_musicbrainz_artist_filter("10cc");
+        state.set_musicbrainz_release_type_filter("album");
+
+        state.apply_runtime_event(&json!({
+            "event":"musicbrainz_matches",
+            "album_artist":"Various Artists",
+            "album":"Compilation",
+            "items":[
+                {"index":1,"release_title":"Pop Classics","release_artist":"Various Artists","release_class":"compilation","release_mbid":"80598939-6881-4c6f-8a93-2a490d5cffa3"},
+                {"index":2,"release_title":"Avro Arbeidsvitaminen, volume 8","release_artist":"Various Artists","release_class":"compilation","release_mbid":"e41a52f1-98d9-4614-a05c-e687cdba8b40"}
+            ]
+        }));
+
+        assert!(state.musicbrainz_artist_filter.is_none());
+        assert!(state.musicbrainz_release_type_filter.is_none());
+        assert_eq!(state.visible_musicbrainz_results().len(), 2);
+    }
+
+    #[test]
+    fn all_eight_adjustments_can_be_activated_toggled_and_reordered() {
         let snapshot = MediaSnapshot {
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
@@ -2774,12 +5773,27 @@ mod tests {
             "Gamma".to_string(),
             "Softness".to_string(),
         ]);
-        assert_eq!(state.primary_adjustments.len(), 5);
+        assert_eq!(state.primary_adjustments.len(), 2);
         assert_eq!(state.primary_adjustments[0], "Gamma");
         assert!(state.move_primary_adjustment("Gamma", 1));
         assert_eq!(state.primary_adjustments[1], "Gamma");
         assert!(state.promote_primary_adjustment("Brightness"));
-        assert_eq!(state.primary_adjustments[0], "Brightness");
-        assert_eq!(state.primary_adjustments.len(), 5);
+        assert_eq!(state.primary_adjustments.len(), 3);
+        assert!(state.promote_primary_adjustment("Brightness"));
+        assert_eq!(state.primary_adjustments.len(), 2);
+        state.activate_all_adjustments();
+        assert_eq!(state.primary_adjustments.len(), 8);
+        assert!(
+            state
+                .primary_adjustments
+                .iter()
+                .any(|name| name == "Exposure")
+        );
+        assert!(
+            state
+                .primary_adjustments
+                .iter()
+                .any(|name| name == "Softness")
+        );
     }
 }

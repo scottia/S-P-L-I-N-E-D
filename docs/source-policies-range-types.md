@@ -315,10 +315,10 @@ and MusicBrainz Album/Release IDs. Track-level featured performers do not create
 extra Artist Picker copies; picker ownership remains the physical top-level
 library folder.
 
-A deliberately curated compilation may have `compilation=1`, per-track
-MusicBrainz Recording and Artist IDs, and no Album/Release ID. When the selected
-Album's representative track has no Album/Release ID and has `compilation=1`,
-the unified scan automatically selects the embedded per-track artwork target.
+A deliberately curated Album may have per-track MusicBrainz Recording and
+Artist IDs but no Album/Release ID. Whenever the selected Album's representative
+track has no Album/Release ID, the unified scan automatically selects the
+embedded per-track artwork target, regardless of its Compilation tag.
 Select Media keeps the yellow warning; there is no separate scan mode.
 
 The compilation branch is explicit and per track:
@@ -329,10 +329,10 @@ The compilation branch is explicit and per track:
    discovery pane, which searches only its local Artist and Title. The curated
    compilation Album name is never sent as search identity.
 3. SPLINED checks its persistent exact Recording-ID/Artist-ID cache.
-4. On a cache miss, SPLINED uses the indexed Artist ID to narrow local Albums,
-   lazily reads only those tracks, and caches the exact relationships. A
-   matching existing Album `cover.*` becomes a `[LOCAL]` candidate.
-5. Only after the bounded local lookup misses does SPLINED combine the tagged
+4. SPLINED never offers or counts a folder-level `cover.*` in this branch.
+   Candidate artwork comes only from the current track's embedded image and
+   remote providers.
+5. SPLINED combines the tagged
    MusicBrainz Recording lookup with a release-first Artist/Track search. It
    resolves every discovered release back to its actual Recording and track
    Artist IDs, merges and de-duplicates both branches, and considers suitable
@@ -406,7 +406,7 @@ The compilation branch is explicit and per track:
    matching performs shared Artist/Title discovery even when a tagged
    Recording ID exists, then de-duplicates it with the exact-ID results.
 
-The curated Album name is never used as MusicBrainz identity. SPLINED does not
+The local Album name is never used as MusicBrainz identity. SPLINED does not
 invent or write an Album/Release ID, write an operator-edited MBID, change the compilation's Album/Artist
 tags, or create, alter, or remove folder-level `cover.*`. Different tracks in
 one curated compilation may therefore receive different approved artwork.

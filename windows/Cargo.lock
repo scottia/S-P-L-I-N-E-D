@@ -1209,26 +1209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "femtovg"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31eebf3ab1b76359ccd5f850c07a7c6b2722c64d9127c40e02358e83f3ff9b1a"
-dependencies = [
- "bitflags 2.13.2",
- "bytemuck",
- "fnv",
- "glow",
- "imgref",
- "itertools 0.15.0",
- "log",
- "rgb",
- "slotmap",
- "swash",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "field-offset"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1489,28 +1469,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "gbm"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce852e998d3ca5e4a97014fb31c940dc5ef344ec7d364984525fd11e8a547e6a"
-dependencies = [
- "bitflags 2.13.2",
- "drm",
- "drm-fourcc",
- "gbm-sys",
- "libc",
-]
-
-[[package]]
-name = "gbm-sys"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c13a5f2acc785d8fb6bf6b7ab6bfb0ef5dad4f4d97e8e70bb8e470722312f76f"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -1939,18 +1897,17 @@ version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f519a8611a4982921e46e391015e5e40ceac5cc63813333ef91ada77df180d8"
 dependencies = [
+ "bytemuck",
  "calloop 0.14.5",
  "cfg_aliases",
  "drm",
- "gbm",
- "glutin",
  "i-slint-common",
  "i-slint-core",
- "i-slint-renderer-femtovg",
+ "i-slint-renderer-software",
  "input",
  "libseat",
+ "memmap2",
  "nix",
- "raw-window-handle",
  "xkbcommon",
 ]
 
@@ -1963,11 +1920,24 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "i-slint-backend-linuxkms",
+ "i-slint-backend-testing",
  "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
- "i-slint-renderer-femtovg",
+]
+
+[[package]]
+name = "i-slint-backend-testing"
+version = "1.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01943d6c5ea5bc913d497bdaa423c309e7627afff47a6794bfd13be5c564209f"
+dependencies = [
+ "cfg_aliases",
+ "i-slint-common",
+ "i-slint-core",
+ "i-slint-renderer-software",
+ "vtable",
 ]
 
 [[package]]
@@ -1978,6 +1948,7 @@ checksum = "dae4fcf1b19e9cb109984d2af87d2b9485388c619265bff71dd523133888bee2"
 dependencies = [
  "arboard",
  "block2 0.6.2",
+ "bytemuck",
  "cfg-if",
  "cfg_aliases",
  "futures",
@@ -1986,8 +1957,9 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
- "i-slint-renderer-femtovg",
  "i-slint-renderer-skia",
+ "i-slint-renderer-software",
+ "imgref",
  "lyon_path",
  "muda",
  "objc2 0.6.5",
@@ -1997,6 +1969,7 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "pin-weak",
  "raw-window-handle",
+ "rgb",
  "scoped-tls-hkt",
  "scopeguard",
  "softbuffer",
@@ -2117,27 +2090,6 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 3.0.6",
-]
-
-[[package]]
-name = "i-slint-renderer-femtovg"
-version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb0de504d57cdadf80c2abf7bcb8b7135a3716aee1f41b6ebb90ea93e3649d7c"
-dependencies = [
- "cfg-if",
- "const-field-offset",
- "femtovg",
- "glow",
- "i-slint-common",
- "i-slint-core",
- "i-slint-core-macros",
- "imgref",
- "lyon_path",
- "pin-weak",
- "rgb",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -2873,6 +2825,16 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
 
 [[package]]
 name = "minimal-lexical"
@@ -3670,12 +3632,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pollster"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
-
-[[package]]
 name = "polycool"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3996,6 +3952,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",
@@ -4006,6 +3963,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -4584,7 +4542,6 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
- "i-slint-renderer-femtovg",
  "i-slint-renderer-software",
  "num-traits",
  "once_cell",
@@ -4763,7 +4720,6 @@ version = "1.0.96"
 dependencies = [
  "aes",
  "base64",
- "bytemuck",
  "cbc",
  "crossterm",
  "futures-util",
@@ -4771,7 +4727,6 @@ dependencies = [
  "image",
  "lofty",
  "pbkdf2",
- "pollster",
  "rand",
  "reqwest",
  "rusqlite",
@@ -4787,7 +4742,6 @@ dependencies = [
  "toml",
  "unicode-casefold",
  "unicode-normalization",
- "wgpu",
  "windows 0.61.3",
  "windows-registry",
  "windows-sys 0.61.2",
@@ -5789,16 +5743,12 @@ dependencies = [
  "cfg_aliases",
  "document-features",
  "hashbrown 0.17.1",
- "js-sys",
  "log",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
  "smallvec",
  "static_assertions",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
  "wgpu-core",
  "wgpu-hal",
  "wgpu-types",
@@ -5920,12 +5870,10 @@ checksum = "99dad6f1fbdbbdb4c278a6508b059d44688f5cebddf78d005a46a31340269286"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
- "js-sys",
  "log",
  "naga-types",
  "raw-window-handle",
  "static_assertions",
- "web-sys",
 ]
 
 [[package]]

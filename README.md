@@ -37,7 +37,7 @@ the selected artwork into the Album folder.
 - 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and fast warm startup in Python/Docker
 - ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
 - 🪟 **Portable Windows settings** — `data/config.toml` and `data/ui.toml` move with the application folder
-- 💾 **Selective `.spl` backup** — export/import settings, interface state, credentials, SQLite, or diagnostics; Windows can optionally password-protect its archives and Python supports unprotected cross-platform archives
+- 💾 **Purpose-specific backup files** — Windows separates settings (`.spl`), consistent database snapshots (`.sqlite`), and secret-free diagnostics (`.json`) with independent schedules; Python retains selective unprotected cross-platform `.spl` archives
 - 🐳 **Docker image** provides a Linux/server deployment path
 - 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, structured settings, candidate filtering/comparison, full-size preview, MusicBrainz authority filters, explicit compilation-track reopen, runtime diagnostics, and mouse/touch operation
 - 📦 **Portable releases** separate replaceable program files from explicitly selected persistent data
@@ -96,7 +96,7 @@ and from the Help button in its About dialog.
 
 The Windows application includes a single Launch surface, resizable panel
 presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
-portable settings, and selective `.spl` backup/restore.
+portable settings, and separate settings/SQLite/diagnostic backup schedules.
 
 The x64 Windows portable application is one native Cargo-built Rust executable
 with a Slint presentation layer. `splined.exe` links directly to the
@@ -191,9 +191,9 @@ are reconciled after the explicit Refresh action.
 
 See [SPLINED media database](docs/splined-media-database.md).
 
-When a selected curated compilation is tagged `compilation=1` but its
-representative track has no MusicBrainz Album/Release ID, the ordinary scan
-automatically routes that Album to per-track embedded-artwork decisions. The
+When a selected Album has no MusicBrainz Album/Release ID, the ordinary scan
+automatically routes that Album to per-track embedded-artwork decisions,
+regardless of its Compilation tag. The
 yellow warning remains visible before launch. SPLINED searches the local SQL
 cache first, then combines the tagged Recording lookup with bounded
 release-first Artist/Track discovery after a local miss. Every discovered
@@ -215,11 +215,12 @@ track keeps its embedded image as a local comparison while still loading
 MusicBrainz releases and provider results for higher-resolution choices. See
 [Source policies and range types](docs/source-policies-range-types.md).
 
-Windows **● Embedded Art** supports an additive checked-track queue within the
-focused fallback compilation. Track clicks remain preview-only; checked tracks
-are processed explicitly, completed indicators turn green immediately, and
-the Album stays focused so more tracks can be selected without returning to the
-library root.
+Windows **Fallback** lists only Albums without a MusicBrainz Album ID. A fallback
+Album supports an additive checked-track queue.
+Checked tracks are processed explicitly, completed track text turns green
+immediately while unfinished tracks remain blue, and the Album stays focused so
+more tracks can be selected without returning to the library root. Folder-level
+`cover.*` files are neither candidates nor inventory counts for a Fallback Album.
 
 The MusicBrainz list uses release-group artwork only as a quick visual preview;
 its Resolution field is separate, Release-MBID-specific evidence from the best
@@ -406,9 +407,11 @@ are implemented.
 Write mode changes files in Album directories. Test against a copy, staging
 library, backup, or snapshot first.
 
-On Windows, use **File > Backup > Export Backup...** to select portable settings,
-interface state, credentials, SQLite, and diagnostics independently. On
-Python/file-backed runtimes, use the selective unprotected `.spl` CLI above or
+On Windows, open **Settings > Backup / Restore** to create separate timestamped
+settings (`.spl`), SQLite (`.sqlite`), and diagnostics (`.json`) files. Each type
+has its own Off/Daily/Weekly/Monthly schedule, and `.spl` or `.sqlite` files can
+be restored independently. On Python/file-backed runtimes, use the selective
+unprotected `.spl` CLI above or
 preserve Config v5, the credential directory, and
 `<scan.cache_dir>/splined.db`. The database contains durable completion,
 bypass, timeout, source-selection, and compilation-progress state. Diagnostic

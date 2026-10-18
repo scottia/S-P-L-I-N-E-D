@@ -66,7 +66,7 @@ terminal-native workflow:
 - `C` compares the highlighted visible candidate with local artwork (or the
   next stable alternative), and `V` opens the highlighted cached artwork in a
   full-size terminal preview. Neither action selects or writes an image.
-- `T` expands an eligible fallback compilation into tracks. Merely focusing a
+- `T` expands an eligible missing-ID Fallback Album into tracks. Merely focusing a
   track previews it; `Space` explicitly checks a track for one-track reopen,
   including a completed track. A normal Album launch clears explicit track
   targeting and resumes from authoritative SQLite progress.
@@ -298,11 +298,11 @@ accuracy matters more than unattended processing.
 Without Auto Scan, every acceptable source result waits for an explicit
 candidate choice before READ continues or LIVE WRITE changes artwork.
 
-For a selected Album whose representative track has no Album/Release ID and
-has `compilation=1`, the panel keeps a yellow warning that the unified scan will
+For a selected Album whose representative track has no Album/Release ID, the
+panel keeps a yellow warning that the unified scan will
 use per-track embedded artwork. There is no separate Manual Scan selector.
 
-Press `T` on a checked eligible compilation to expand its tracks. Moving focus
+Press `T` on a checked eligible Fallback Album to expand its tracks. Moving focus
 previews the current embedded front image only. `Space` explicitly checks a
 track for one-track reopen, including a track already completed in the durable
 ledger. Launching the Album normally clears explicit track targeting and

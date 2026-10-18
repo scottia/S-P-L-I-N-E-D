@@ -37,6 +37,20 @@ struct AlbumImage {
 }
 
 #[derive(Debug, Deserialize)]
+struct ArtistResponse {
+    artist: Option<Artist>,
+    error: Option<i64>,
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Artist {
+    name: String,
+    #[serde(default)]
+    image: Vec<AlbumImage>,
+}
+
+#[derive(Debug, Deserialize)]
 struct TokenResponse {
     token: Option<String>,
     error: Option<i64>,
@@ -331,6 +345,73 @@ impl LastFm {
         }
 
         references
+    }
+
+    pub async fn discover_artist(&self, artist: &str) -> Result<Vec<ArtworkReference>, String> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return Ok(Vec::new());
+        }
+        let api_key = self.api_key()?;
+        let response = self
+            .client
+            .get(API_URL)
+            .query(&[
+                ("method", "artist.getinfo"),
+                ("api_key", api_key.as_str()),
+                ("format", "json"),
+                ("autocorrect", "1"),
+                ("artist", artist),
+            ])
+            .send()
+            .await
+            .map_err(|error| format!("Unable to query Last.fm Artist Art for {artist}: {error}"))?;
+        let status = response.status();
+        let final_url = response.url().clone();
+        let body = response.text().await.map_err(|error| {
+            format!("Unable to read Last.fm Artist Art from {final_url}: {error}")
+        })?;
+        let payload = serde_json::from_str::<ArtistResponse>(&body).map_err(|error| {
+            format!("Invalid Last.fm Artist Art JSON from {final_url}: {error}")
+        })?;
+        if let Some(code) = payload.error {
+            if code == 6 || code == 7 {
+                return Ok(Vec::new());
+            }
+            return Err(format!(
+                "Last.fm Artist Art lookup failed with API error {code}: {}",
+                payload
+                    .message
+                    .unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
+        if status != StatusCode::OK {
+            return Err(format!(
+                "Last.fm Artist Art lookup returned HTTP {status} from {final_url}"
+            ));
+        }
+        let Some(found) = payload.artist else {
+            return Ok(Vec::new());
+        };
+        let mut seen = HashSet::new();
+        Ok(found
+            .image
+            .into_iter()
+            .filter(|image| {
+                let url = image.url.trim();
+                !url.is_empty()
+                    && !url.contains("2a96cbd8b46e442fc41c2b86b821562f")
+                    && seen.insert(url.to_string())
+            })
+            .map(|image| ArtworkReference {
+                source: "lastfm".to_string(),
+                id: format!("{}:{}", found.name, image.size),
+                url: image.url,
+                front: true,
+                approved: true,
+                types: vec!["ArtistImage".to_string()],
+            })
+            .collect())
     }
 
     async fn discover_release(

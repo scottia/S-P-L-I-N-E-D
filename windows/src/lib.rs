@@ -11,8 +11,6 @@ pub mod embedded_artwork;
 pub mod evaluate;
 pub mod file_association;
 pub mod final_artwork;
-#[cfg(windows)]
-mod gpu_upscale;
 pub mod gui_events;
 pub mod history;
 pub mod inspect;

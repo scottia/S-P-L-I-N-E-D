@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 const SEARCH_URL: &str = "https://api.deezer.com/search/album";
+const ARTIST_SEARCH_URL: &str = "https://api.deezer.com/search/artist";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const SEARCH_LIMIT: usize = 25;
 
@@ -28,6 +29,20 @@ struct SearchArtist {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ArtistSearchResponse {
+    #[serde(default)]
+    data: Vec<ArtistSearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistSearchResult {
+    id: u64,
+    name: String,
+    #[serde(default)]
+    picture_xl: String,
+}
+
 pub struct Deezer {
     client: Client,
 }
@@ -41,6 +56,31 @@ impl Deezer {
             .map_err(|error| format!("Unable to create Deezer HTTP client: {error}"))?;
 
         Ok(Self { client })
+    }
+
+    pub async fn discover_artist(&self, artist: &str) -> Result<Vec<ArtworkReference>, String> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return Ok(Vec::new());
+        }
+        let response = self
+            .client
+            .get(ARTIST_SEARCH_URL)
+            .query(&[("q", artist), ("limit", "15")])
+            .send()
+            .await
+            .map_err(|error| format!("Unable to search Deezer artists for {artist}: {error}"))?;
+        if response.status() != StatusCode::OK {
+            return Err(format!(
+                "Deezer artist search for {artist} returned HTTP {}",
+                response.status()
+            ));
+        }
+        let found = response
+            .json::<ArtistSearchResponse>()
+            .await
+            .map_err(|error| format!("Invalid Deezer artist search response: {error}"))?;
+        Ok(artist_image_references(artist, found.data))
     }
 
     async fn search_query(
@@ -164,6 +204,31 @@ impl Deezer {
     }
 }
 
+fn artist_image_references(
+    artist: &str,
+    results: Vec<ArtistSearchResult>,
+) -> Vec<ArtworkReference> {
+    let mut seen = HashSet::new();
+    results
+        .into_iter()
+        .filter(|result| {
+            result.id != 0
+                && same_text(&result.name, artist)
+                && result.picture_xl.starts_with("https://")
+                && seen.insert(result.id)
+        })
+        .take(5)
+        .map(|result| ArtworkReference {
+            source: "deezer".to_string(),
+            id: result.id.to_string(),
+            url: result.picture_xl,
+            front: true,
+            approved: true,
+            types: vec!["ArtistImage".to_string()],
+        })
+        .collect()
+}
+
 impl ArtworkProvider for Deezer {
     fn name(&self) -> &'static str {
         "deezer"
@@ -227,6 +292,18 @@ mod tests {
         assert_eq!(response.data.len(), 1);
         assert_eq!(response.data[0].id, 6157080);
         assert_eq!(response.data[0].artist.name, "Bruno Mars");
+    }
+
+    #[test]
+    fn artist_search_only_uses_exact_artist_images() {
+        let payload: ArtistSearchResponse = serde_json::from_str(
+            r#"{"data":[{"id":1,"name":"10cc","picture_xl":"https://example.test/10cc.jpg"},{"id":2,"name":"10cc Tribute","picture_xl":"https://example.test/tribute.jpg"},{"id":3,"name":"10cc","picture_xl":""}]}"#,
+        )
+        .unwrap();
+        let images = artist_image_references("10cc", payload.data);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].source, "deezer");
+        assert_eq!(images[0].url, "https://example.test/10cc.jpg");
     }
 
     #[test]

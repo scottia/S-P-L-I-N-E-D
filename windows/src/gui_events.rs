@@ -16,6 +16,7 @@ static CANCELLED: AtomicBool = AtomicBool::new(false);
 static IN_PROCESS: AtomicBool = AtomicBool::new(false);
 static REVIEW_REQUIRED: AtomicBool = AtomicBool::new(false);
 static AUTO_IDEAL: AtomicBool = AtomicBool::new(false);
+static MUSICBRAINZ_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SCAN_CONTEXT: OnceLock<Mutex<ScanContext>> = OnceLock::new();
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -62,6 +63,7 @@ pub fn end_in_process() {
     IN_PROCESS.store(false, Ordering::SeqCst);
     REVIEW_REQUIRED.store(false, Ordering::SeqCst);
     AUTO_IDEAL.store(false, Ordering::SeqCst);
+    MUSICBRAINZ_REQUESTED.store(false, Ordering::SeqCst);
     set_sender(None);
     if let Some(slot) = DECISION_SENDER.get()
         && let Ok(mut current) = slot.lock()
@@ -168,7 +170,15 @@ pub fn review_required() -> bool {
 }
 
 pub fn auto_ideal_enabled() -> bool {
-    review_required() && AUTO_IDEAL.load(Ordering::SeqCst)
+    review_required() && AUTO_IDEAL.load(Ordering::SeqCst) && !musicbrainz_requested()
+}
+
+pub fn set_musicbrainz_requested(requested: bool) {
+    MUSICBRAINZ_REQUESTED.store(requested, Ordering::SeqCst);
+}
+
+pub fn musicbrainz_requested() -> bool {
+    enabled() && MUSICBRAINZ_REQUESTED.load(Ordering::SeqCst)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +202,7 @@ pub enum CandidateDecision {
     Use {
         index: usize,
         upscale: Option<UpscaleOverrides>,
+        explicit_write: bool,
     },
     Skip,
     Bypass,
@@ -232,28 +243,32 @@ fn parse_musicbrainz_match_decision(
             Ok(Some(MusicBrainzMatchDecision::Use(index as usize - 1)))
         }
         "use_musicbrainz_authority" => {
+            let recording_mbid = value
+                .get("recording_mbid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let release_mbid = value
                 .get("release_mbid")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if release_mbid.is_empty() {
-                return Err("Edited MusicBrainz authority requires a Release ID.".to_string());
+            let artist_mbids = value
+                .get("artist_mbids")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if recording_mbid.is_empty() || artist_mbids.is_empty() {
+                return Err(
+                    "Edited MusicBrainz authority requires Recording and Artist IDs.".to_string(),
+                );
             }
             Ok(Some(MusicBrainzMatchDecision::UseAuthority {
-                recording_mbid: value
-                    .get("recording_mbid")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string(),
-                artist_mbids: value
-                    .get("artist_mbids")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string(),
+                recording_mbid,
+                artist_mbids,
                 release_mbid,
             }))
         }
@@ -336,6 +351,10 @@ fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, 
             Ok(Some(CandidateDecision::Use {
                 index: index as usize - 1,
                 upscale,
+                explicit_write: value
+                    .get("explicit_write")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             }))
         }
         "skip_album" => Ok(Some(CandidateDecision::Skip)),
@@ -440,6 +459,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_recording_only_authority_for_result_repopulation() {
+        let decision = parse_musicbrainz_match_decision(&json!({
+            "action": "use_musicbrainz_authority",
+            "recording_mbid": "7b0e3436-afe7-4da7-8d41-b793b8d84b51",
+            "artist_mbids": "5f9ee42f-84b1-42bb-a318-09a05b3fcde1",
+            "release_mbid": ""
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            decision,
+            MusicBrainzMatchDecision::UseAuthority {
+                recording_mbid: "7b0e3436-afe7-4da7-8d41-b793b8d84b51".to_string(),
+                artist_mbids: "5f9ee42f-84b1-42bb-a318-09a05b3fcde1".to_string(),
+                release_mbid: String::new(),
+            }
+        );
+        assert!(
+            parse_musicbrainz_match_decision(&json!({
+                "action": "use_musicbrainz_authority",
+                "recording_mbid": "",
+                "release_mbid": ""
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn distinguishes_skip_album_from_persistent_bypass() {
         assert_eq!(
             parse_candidate_decision(&json!({"action": "skip_album"}))
@@ -495,8 +542,10 @@ mod tests {
             CandidateDecision::Use {
                 index,
                 upscale: Some(overrides),
+                explicit_write,
             } => {
                 assert_eq!(index, 1);
+                assert!(!explicit_write);
                 assert!(overrides.preserve_source_resolution);
                 assert!(!overrides.adaptive_defaults);
                 assert!(!overrides.apply_edit_profile);
@@ -504,5 +553,24 @@ mod tests {
             }
             other => panic!("unexpected decision: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_explicit_write_independently_from_upscale_options() {
+        let decision = parse_candidate_decision(&json!({
+            "action": "use",
+            "index": 1,
+            "explicit_write": true
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            decision,
+            CandidateDecision::Use {
+                index: 0,
+                upscale: None,
+                explicit_write: true,
+            }
+        );
     }
 }

@@ -24,6 +24,7 @@ pub const PROVIDERS: [&str; 5] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CredentialEditor {
     pub provider: String,
+    pub server_name: String,
     pub server_url: String,
     pub auth_method: String,
     pub username: String,
@@ -41,6 +42,7 @@ impl CredentialEditor {
         };
         if value.provider == "Navidrome" {
             value.auth_method = "password".to_string();
+            value.server_name = "SPLINED".to_string();
         }
         value
     }
@@ -72,6 +74,11 @@ pub fn load_editor(config: &Config, provider: &str) -> Result<CredentialEditor, 
             let credential: NavidromeCredential = serde_json::from_value(Value::Object(object))
                 .map_err(|error| format!("Invalid Navidrome credential: {error}"))?;
             let uses_api_key = credential.uses_api_key();
+            editor.server_name = if credential.client_name.trim().is_empty() {
+                "SPLINED".to_string()
+            } else {
+                credential.client_name
+            };
             editor.server_url = credential.server_url;
             editor.auth_method = if uses_api_key {
                 "api_key".to_string()
@@ -119,6 +126,7 @@ pub fn save_editor(config: &Config, editor: &CredentialEditor) -> Result<(), Str
     };
     match provider {
         "Navidrome" => {
+            object.insert("client_name".into(), json!(editor.server_name.trim()));
             object.insert("server_url".into(), json!(editor.server_url.trim()));
             object.insert(
                 "auth_method".into(),
@@ -189,6 +197,7 @@ pub async fn test_editor(editor: &CredentialEditor) -> Result<String, String> {
     match canonical_provider(&editor.provider) {
         "Navidrome" => {
             let credential = NavidromeCredential {
+                client_name: editor.server_name.clone(),
                 server_url: editor.server_url.clone(),
                 auth_method: editor.auth_method.clone(),
                 username: editor.username.clone(),
@@ -228,6 +237,7 @@ pub fn validate_editor_locally(editor: &CredentialEditor) -> Result<(), String> 
         }
         "Navidrome" => {
             let credential = NavidromeCredential {
+                client_name: editor.server_name.clone(),
                 server_url: editor.server_url.clone(),
                 auth_method: editor.auth_method.clone(),
                 username: editor.username.clone(),
@@ -312,6 +322,7 @@ mod tests {
         let config = config(dir.path());
         let editor = CredentialEditor {
             provider: "Navidrome".into(),
+            server_name: "SPLINED Dev PC".into(),
             server_url: "https://music.example.test/".into(),
             auth_method: "password".into(),
             username: "listener".into(),
@@ -321,6 +332,7 @@ mod tests {
         save_editor(&config, &editor).unwrap();
         let loaded = load_editor(&config, "navidrome").unwrap();
         assert_eq!(loaded.server_url, "https://music.example.test");
+        assert_eq!(loaded.server_name, "SPLINED Dev PC");
         assert_eq!(loaded.username, "listener");
         assert_eq!(loaded.secret, "secret");
         assert!(!serde_json::to_string(&config).unwrap().contains("secret"));

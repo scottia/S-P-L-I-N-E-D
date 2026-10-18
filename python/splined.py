@@ -6109,12 +6109,10 @@ def fallback_reason_from_error(exc: Exception) -> str:
 
 
 
-def prepare_samples(cache: Path) -> Path:
-    sample = cache / "samples"
-    if sample.name != "samples": raise SplinedError(f"Refusing to clean unexpected SPLINED samples path: {sample}")
+def prepare_samples(cache: Path, configured: Path | None = None) -> Path:
+    sample = configured if configured is not None else cache / "samples"
     if sample.exists():
         if sample.is_symlink() or not sample.is_dir(): raise SplinedError(f"Refusing to clean unsafe SPLINED samples directory: {sample}")
-        shutil.rmtree(sample)
     sample.mkdir(parents=True, exist_ok=True); return sample
 
 
@@ -6172,7 +6170,9 @@ def remove_numbered_cover_variants(album_dir: Path, file_name: str) -> list[Path
 
 
 def write_sample(sample_dir: Path, rel: Release, c: Candidate, preserve: bool) -> tuple[Path,bool]:
-    content = c.path.read_bytes(); canonical = sample_dir / f"{sanitize(rel.artist_credit)}.{sanitize(rel.title)}.sample.{EXTENSIONS[c.format]}"; dest, unchanged = choose_destination(canonical, content, preserve)
+    album_dir = sample_dir / sanitize(rel.artist_credit) / sanitize(rel.title)
+    album_dir.mkdir(parents=True, exist_ok=True)
+    content = c.path.read_bytes(); canonical = album_dir / f"{sanitize(c.source)}.sample.{EXTENSIONS[c.format]}"; dest, unchanged = choose_destination(canonical, content, preserve)
     if not unchanged: atomic_write(dest,content)
     return dest, unchanged
 
@@ -6582,7 +6582,11 @@ def _run_scan_dir_batch(
     output_settings(cfg)
     ensure_runtime_directories(config_file, cfg, cache)
     prepare_run_cache(cache)
-    sample_dir = prepare_samples(cache)
+    configured_sample_dir = str(samples_cfg.get("sample_dir", "")).strip()
+    sample_dir = prepare_samples(
+        cache,
+        resolve_path(config_file, configured_sample_dir) if configured_sample_dir else None,
+    )
     timeout_hours = scan_timeout_hours(cfg)
     completion_path = scan_completion_history_path(cache)
     completion_history = load_scan_completion_history(completion_path, cfg)
@@ -8024,6 +8028,7 @@ def print_help(path: Path, cfg: dict[str, Any]) -> None:
     config_row("scan.sqlite_shared", bool(scan.get("sqlite_shared", False)))
     config_row("scan.log_dir", logs)
     config_row("samples.sample_write", bool(section(cfg, "samples").get("sample_write", True)))
+    config_row("samples.sample_dir", section(cfg, "samples").get("sample_dir", ""))
     config_row("credentials.credential_dir", cdir)
     config_row("output.preserve_file", bool(output.get("preserve_file", True)))
     config_row("output.file_formats", fmts)

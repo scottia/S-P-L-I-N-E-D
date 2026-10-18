@@ -1,5 +1,5 @@
 use crate::candidate::{Candidate, StaticFormat};
-use crate::config::{Config, Mode, OutputConfig, samples_dir};
+use crate::config::{Config, Mode, OutputConfig, configured_samples_dir};
 use crate::final_artwork::{
     FinalArtworkAction, FinalArtworkResult, PreparedArtwork, destination_matches_prepared,
     install_prepared_artwork, prepare_configured_artwork, project_configured_artwork,
@@ -77,10 +77,12 @@ pub async fn run_scan_library_read_report(
 
     let root = Path::new(&config.scan.scan_library_dir);
     let cache_dir = Path::new(&config.scan.cache_dir);
-    let sample_dir = samples_dir(&config.scan.cache_dir);
+    let sample_dir = configured_samples_dir(config);
 
     prepare_persistent_cache_dir(cache_dir)?;
-    prepare_samples_dir(&sample_dir)?;
+    if config.samples.sample_write {
+        prepare_samples_dir(&sample_dir)?;
+    }
 
     let inventory = inventory_album_directories(root, &config.library.ignored_subs)?;
     let musicbrainz = MusicBrainzClient::new(&config.musicbrainz)?;
@@ -1276,13 +1278,6 @@ pub async fn run_scan_library_read_report(
 }
 
 fn prepare_samples_dir(sample_dir: &Path) -> Result<(), String> {
-    if sample_dir.file_name().and_then(|value| value.to_str()) != Some("samples") {
-        return Err(format!(
-            "Refusing to clean unexpected SPLINED samples path: {}",
-            sample_dir.display()
-        ));
-    }
-
     if sample_dir.exists() {
         let metadata = fs::symlink_metadata(sample_dir).map_err(|error| {
             format!(
@@ -1304,13 +1299,6 @@ fn prepare_samples_dir(sample_dir: &Path) -> Result<(), String> {
                 sample_dir.display()
             ));
         }
-
-        fs::remove_dir_all(sample_dir).map_err(|error| {
-            format!(
-                "Unable to clear SPLINED samples directory {}: {error}",
-                sample_dir.display()
-            )
-        })?;
     }
 
     fs::create_dir_all(sample_dir).map_err(|error| {
@@ -1335,13 +1323,21 @@ fn write_selected_sample(
             source_path.display()
         )
     })?;
+    let album_dir = sample_dir
+        .join(sanitize_sample_component(artist))
+        .join(sanitize_sample_component(album));
+    fs::create_dir_all(&album_dir).map_err(|error| {
+        format!(
+            "Unable to create album sample directory {}: {error}",
+            album_dir.display()
+        )
+    })?;
     let file_name = format!(
-        "{}.{}.sample.{}",
-        sanitize_sample_component(artist),
-        sanitize_sample_component(album),
+        "{}.sample.{}",
+        sanitize_sample_component(&candidate.source),
         output_extension(candidate.format)
     );
-    let canonical = sample_dir.join(file_name);
+    let canonical = album_dir.join(file_name);
     let (destination, unchanged) = resolve_bytes_destination(&canonical, &bytes, preserve_file)?;
 
     if unchanged {
@@ -2023,7 +2019,7 @@ mod tests {
     }
 
     #[test]
-    fn samples_directory_is_cleared_without_touching_cache_parent() {
+    fn samples_directory_is_preserved_between_runs() {
         let dir = TempDir::new().unwrap();
         let samples = dir.path().join("samples");
         fs::create_dir_all(&samples).unwrap();
@@ -2031,7 +2027,8 @@ mod tests {
         fs::write(dir.path().join("unrelated.cache"), b"keep").unwrap();
 
         prepare_samples_dir(&samples).unwrap();
-        assert_eq!(fs::read_dir(&samples).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&samples).unwrap().count(), 1);
+        assert!(samples.join("old.sample.jpg").exists());
         assert!(dir.path().join("unrelated.cache").exists());
     }
 

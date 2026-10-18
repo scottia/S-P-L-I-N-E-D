@@ -8,6 +8,28 @@ fn source(path: &str) -> String {
         .replace("\r\n", "\n")
 }
 
+#[test]
+fn machine_readable_windows_slint_check_contract_matches_the_surface() {
+    let contract: serde_json::Value =
+        serde_json::from_str(&source("tests/windows_slint_check_contract.json"))
+            .expect("Windows Slint check contract must remain valid JSON");
+    assert_eq!(contract["schema"], 1);
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+    for label in contract["required_ui_labels"].as_array().unwrap() {
+        let label = label.as_str().unwrap();
+        assert!(ui.contains(label), "Slint surface is missing {label}");
+    }
+    for token in contract["forbidden_ui_tokens"].as_array().unwrap() {
+        let token = token.as_str().unwrap();
+        assert!(!ui.contains(token), "Slint surface still contains {token}");
+    }
+    for proof in contract["required_diagnostic_proofs"].as_array().unwrap() {
+        let proof = proof.as_str().unwrap();
+        assert!(main.contains(proof), "Slint diagnostic is missing {proof}");
+    }
+}
+
 fn repository_files(root: &Path, files: &mut Vec<PathBuf>) {
     if !root.is_dir() {
         return;
@@ -91,6 +113,53 @@ fn no_active_csharp_or_winforms_implementation_remains() {
 }
 
 #[test]
+fn slint_windows_restore_natively_and_share_live_media_models() {
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+    let manifest = source("windows/gui/app.manifest");
+    let media_pane = ui
+        .split("component MediaLibraryPane")
+        .nth(1)
+        .unwrap()
+        .split("component SourceCard")
+        .next()
+        .unwrap();
+
+    assert!(main.contains("let restore_maximized_timer = Timer::default()"));
+    assert!(main.contains("let startup_reflow_timer = Timer::default()"));
+    assert!(main.contains("Duration::from_millis(420)"));
+    assert!(main.contains("app.media_selector_expanded = true"));
+    assert!(main.contains("TimerMode::SingleShot"));
+    assert!(!main.contains("ui.window().set_maximized(preferences.window_maximized)"));
+    assert!(!main.contains("set_maximized(workspace_layout.borrow().maximized)"));
+    assert!(!main.contains("window.window().set_maximized(layout.maximized)"));
+    assert!(main.contains("repair_main_maximized_rect(&ui, &geometry_maximize_guard)"));
+    assert!(!ui.contains("CustomUpscaleWindow"));
+    assert!(!main.contains("repair_custom_maximized_rect"));
+    assert!(!main.contains("sync_custom_upscale"));
+    assert!(!main.contains("SLINT_SCALE_FACTOR"));
+    assert!(manifest.contains("PerMonitorV2"));
+    assert!(media_pane.contains(
+        "if root.expanded: VerticalLayout {\n            spacing: 7px;\n            vertical-stretch: 1;"
+    ));
+    assert!(media_pane.contains("min-height: 180px;"));
+    for proof in [
+        "artist_click_kept_view",
+        "artist_inline_album_rows",
+        "fallback_album_enables_launch",
+        "fallback_album_expands_inline",
+        "fallback_album_queues_whole_album",
+        "restored_media_width_at_least_min",
+        "media_model_restored",
+    ] {
+        assert!(
+            main.contains(proof),
+            "missing Slint diagnostic proof {proof}"
+        );
+    }
+}
+
+#[test]
 fn slint_surface_exposes_real_migrated_workflows() {
     let ui = source("windows/ui/app.slint");
     let main = source("windows/src/main.rs");
@@ -100,14 +169,15 @@ fn slint_surface_exposes_real_migrated_workflows() {
     for label in [
         "Artists",
         "Albums",
-        "Folders",
-        "Artwork Candidates",
-        "Keep Local",
-        "NO Bypass",
-        "MusicBrainz Release Authority",
-        "Upscale / Advanced",
+        "Fallback",
+        "Candidate Artwork",
+        "Bypass",
+        "MusicBrainz Results",
+        "Upscale / Enhance",
         "Provider Credentials",
-        "Selective .spl Backup / Restore",
+        "Separate Backup / Restore Files",
+        "SQLite database snapshot (.sqlite)",
+        "Diagnostic summary (.json)",
     ] {
         assert!(ui.contains(label), "Slint surface is missing {label}");
     }
@@ -120,14 +190,16 @@ fn slint_surface_exposes_real_migrated_workflows() {
         "first-run Setup does not expose the optional shared SQLite authority"
     );
     assert!(
-        ui.contains("preferred-width: 1380px")
+        ui.contains("preferred-width: 1680px")
             && ui.contains("min-width: 960px")
             && !ui.contains("width: 1380px; height: 860px"),
         "the Slint application window is fixed-size instead of resizable"
     );
     assert!(
         ui.contains("clip: true")
-            && ui.contains("source: root.current-preview; width: parent.width; height: parent.height"),
+            && ui.contains(
+                "source: root.current-preview; width: parent.width; height: parent.height"
+            ),
         "the artwork preview can overflow and intercept the workspace"
     );
     assert!(
@@ -150,6 +222,174 @@ fn slint_surface_exposes_real_migrated_workflows() {
     assert!(application.contains("pub struct LibraryState"));
     assert!(controller.contains("run_scan_library_read_report"));
     assert!(controller.contains("std::thread::spawn"));
+    assert!(!ui.contains("CheckBox"));
+    assert!(!ui.contains("Select up to five"));
+    assert!(!ui.contains("Select up to 5"));
+    assert!(ui.contains("Activate All 8"));
+    assert_eq!(
+        ui.matches("for candidate in root.candidate-rows: CandidateCard")
+            .count(),
+        1,
+        "candidate cards are duplicated outside the Candidate Artwork panel"
+    );
+    assert!(!ui.contains("Upscale Settings"));
+    assert!(!ui.contains("Select a candidate below to preview and apply."));
+    assert!(!ui.contains("All eight controls update both previews live."));
+    assert!(
+        ui.contains(
+            "label: \"Upscale Preview\"; width: 144px; height: 34px; label-font-size: 14px"
+        )
+    );
+    assert!(
+        ui.contains("label: root.artist-artwork-mode ? \"WRITE Artist\" : (root.selected-artwork-existing ? \"Existing\" : \"WRITE Cover\"); width: 128px; height: 34px; label-font-size: 14px")
+    );
+    assert!(ui.contains("source: root.original-preview"));
+    assert!(ui.contains("source: root.current-preview"));
+    assert_eq!(main.matches("set_original_preview").count(), 1);
+    let activate_all_handler = main
+        .split("ui.on_activate_all_adjustments")
+        .nth(1)
+        .unwrap()
+        .split("ui.on_edit_existing_cover")
+        .next()
+        .unwrap();
+    assert!(activate_all_handler.contains("schedule_adjustment_preview"));
+    assert!(!activate_all_handler.contains("set_original_preview"));
+    assert!(!ui.contains("label: \"Up\""));
+    assert!(!ui.contains("label: \"Down\""));
+    assert!(!ui.contains("\"Expand\""));
+    assert!(!ui.contains("\"Collapse\""));
+    assert!(ui.contains("callback set-value(string, float)"));
+    let expansion_glyph = ui
+        .split("component ExpansionGlyph")
+        .nth(1)
+        .unwrap()
+        .split("component RadioToggle")
+        .next()
+        .unwrap();
+    assert!(expansion_glyph.contains("background: transparent"));
+    assert!(expansion_glyph.contains("border-width: 0px"));
+    assert!(expansion_glyph.contains("root.expanded ? AppTheme.magenta : AppTheme.cyan"));
+    assert_eq!(ui.matches("Open MB Page").count(), 2);
+    assert!(ui.contains("MusicBrainz Results · grouped by release family"));
+    assert!(ui.contains("musicbrainz-page-scroll := ScrollView"));
+    assert!(ui.contains("content-height: max(self.visible-height, musicbrainz-page-panel.height)"));
+    assert!(ui.contains("VISITED"));
+    assert!(main.contains("item.visited = true"));
+    assert!(main.contains("coverartarchive.org/release/{release_mbid}/front-500"));
+    assert!(main.contains("musicbrainz-cover-previews"));
+    assert!(!ui.contains("Show Tracks / Embedded Art"));
+    assert!(!ui.contains("MUSIC LOOKS BETTER HERE"));
+    assert!(!ui.contains("MANAGE · ENHANCE · PRESERVE · MUSIC FOREVER"));
+    assert_eq!(ui.matches("\"LAUNCH\"").count(), 1);
+    assert!(ui.contains("Media Filter"));
+    assert!(ui.contains("Fallback Albums"));
+    assert!(ui.contains("for row in root.library-rows: VerticalLayout"));
+    assert!(ui.contains("if row.expanded: VerticalLayout"));
+    assert!(!ui.contains("Select an album to show its tracks."));
+    assert!(ui.contains("horizontal-stretch: 1; NeonAction { label: \"All\""));
+    assert!(ui.contains("height: 430px; clip: true"));
+    assert!(ui.contains("callback library-row-expansion-activated(string)"));
+    assert!(application.contains("select_album_exclusive"));
+    assert!(ui.contains("private property <float> drag-origin: root.position"));
+    assert!(!ui.contains("root.position + (root.reverse"));
+    assert!(ui.contains("component WorkspaceButton inherits Rectangle"));
+    assert_eq!(ui.matches("WorkspaceButton { label: \"").count(), 5);
+    assert!(ui.contains("border-color: AppTheme.light ? #6b9dbb : #285a91"));
+    assert!(ui.contains("width: 6px;\n    background: drag-area.pressed ? #205b7c"));
+    assert!(ui.contains("height: 6px;\n    background: drag-area.pressed ? #205b7c"));
+    assert!(ui.contains("x: (parent.width - self.width) / 2; source: @image-url(\"../gui/source-icons/musicbrainz.svg\")"));
+    assert!(ui.contains("padding-left: 6px; padding-right: 6px; spacing: 7px"));
+    assert!(ui.contains("in-out property <bool> artist-biography-expanded: false"));
+    assert!(
+        ui.contains("text: \"(…more)\"; color: AppTheme.yellow; font-size: 17px; font-weight: 800")
+    );
+    assert!(
+        ui.contains("text: \"(less…)\"; color: AppTheme.yellow; font-size: 17px; font-weight: 800")
+    );
+    assert!(ui.contains("font-size: 18px; wrap: word-wrap; overflow: elide"));
+    assert!(ui.contains("if root.artist-biography-expanded: VerticalLayout"));
+    assert!(ui.contains("height: self.preferred-height;"));
+    assert!(ui.contains("Rectangle { horizontal-stretch: 1; background: transparent; }"));
+    assert!(ui.contains("callback artist-overview-navigate(int)"));
+    assert!(ui.contains("clicked => root.artist-overview-navigate(-1)"));
+    assert!(ui.contains("clicked => root.artist-overview-navigate(1)"));
+    assert!(main.contains("adjacent_pending_artist"));
+    assert!(!ui.contains("Select an artist for Artist Overview"));
+    assert!(!ui.contains("root.current-artist + \"  >  \" + root.current-album; color:"));
+    assert!(ui.contains("visible: root.current-artist != \"\" || root.current-album != \"\""));
+    assert!(ui.contains("Text { text: root.selected-artwork-dimensions; color: #ffffff; font-size: 16px; font-weight: 700"));
+    for undersized in ["font-size: 10px", "font-size: 11px", "font-size: 12px"] {
+        assert!(
+            !ui.contains(undersized),
+            "Slint surface regressed to undersized typography: {undersized}"
+        );
+    }
+    assert_eq!(ui.matches("font-size: 13px").count(), 1);
+    assert!(ui.contains("On keeps existing art and uses a numbered filename. Off replaces the matching cover or Artist Art.\"; color: AppTheme.secondary-foreground; font-size: 13px"));
+    assert!(application.contains("fallback_album_rows"));
+    assert!(application.contains("toggle_artist_scope"));
+    assert!(ui.contains("SKIP ALBUM"));
+    assert!(ui.contains("splined-watermark.png"));
+    assert!(Path::new("windows/gui/set-your-imagination-tv.jpg").is_file());
+    assert_eq!(ui.matches("set-your-imagination-tv.jpg").count(), 1);
+    assert!(ui.contains(
+        "private property <bool> artwork-placeholder-visible: root.intro-active || (root.current-album == \"\" && !root.selected-artwork-artist-overview && !root.artist-artwork-mode)"
+    ));
+    assert!(
+        ui.contains("width: min(max(0px, parent.width - 40px), max(0px, parent.height - 40px))")
+    );
+    assert!(ui.contains("visible: !root.artwork-placeholder-visible"));
+    assert!(ui.contains("component MissingArtistArt inherits Rectangle"));
+    assert!(ui.contains("source: @image-url(\"../gui/source-icons/navidrome.svg\")"));
+    assert!(ui.contains("Text { text: \"ARTIST\"; color: AppTheme.violet"));
+    assert!(ui.contains("selected-artwork-artist-overview"));
+    assert!(ui.contains("selected-artwork-write-ready"));
+    assert!(main.contains("Saving artist.*…"));
+    assert!(main.contains("Saved {file_name}"));
+    assert!(main.contains("discover_remote_artist_artwork"));
+    assert!(main.contains("synchronize_fallback_album"));
+    assert!(main.contains(
+        "let current_cover_path = if state.library.show_tracks || artist_overview_fallback_album"
+    ));
+    assert!(application.contains("focused || self.album_visible"));
+    assert!(ui.contains("window-background: root.light ? #eaf1f7 : #030d20"));
+    assert!(ui.contains("panel-background: root.light ? #f7fbfe : #030d20"));
+    assert!(!ui.contains("imagination-message.svg"));
+    assert!(!ui.contains("Welcome to S.P.L.I.N.E.D."));
+    assert!(ui.contains(
+        "HorizontalLayout { height: 62px; alignment: center;\n                    BrandMark { width: 360px; height: 54px; }"
+    ));
+    let neon_panel = ui
+        .split("component NeonPanel")
+        .nth(1)
+        .unwrap()
+        .split("component NeonAction")
+        .next()
+        .unwrap();
+    assert!(neon_panel.contains("border-width: 0px"));
+    assert!(!neon_panel.contains("border-color:"));
+    for colored_panel in [
+        "NeonPanel { vertical-stretch: 1; border-color:",
+        "NeonPanel { horizontal-stretch: 1; max-width: 10000px; border-color:",
+        "visible: root.show-artwork; border-color:",
+        "NeonPanel { height: root.activity-pane-height * 1px; border-color:",
+        "NeonPanel { horizontal-stretch: 1; border-color:",
+    ] {
+        assert!(
+            !ui.contains(colored_panel),
+            "workspace panel still carries a colored border: {colored_panel}"
+        );
+    }
+    let candidate_hover_handler = main
+        .split("ui.on_candidate_hover")
+        .nth(1)
+        .unwrap()
+        .split("ui.on_set_hover_enabled")
+        .next()
+        .unwrap();
+    assert!(candidate_hover_handler.contains("state.try_lock()"));
+    assert!(!candidate_hover_handler.contains("state.lock()"));
     assert!(!ui.contains("fixture"));
 }
 

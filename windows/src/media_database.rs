@@ -81,7 +81,76 @@ pub struct MediaAlbumSnapshot {
 pub struct MediaTrackSnapshot {
     pub path: String,
     pub title: String,
+    #[serde(default)]
+    pub artist: String,
     pub embedded_artwork_recorded: bool,
+}
+
+/// Enumerate one missing-MBID Album for the Fallback tree without opening
+/// audio tags or mutating the library. The SQLite index intentionally keeps
+/// Album-level representatives, so this narrow, read-only pass fills in any
+/// track rows that have not yet entered the embedded-artwork ledger.
+pub fn fallback_tracks_from_folder(
+    album_path: &Path,
+    cached: &[MediaTrackSnapshot],
+) -> Result<Vec<MediaTrackSnapshot>, String> {
+    let completed = cached
+        .iter()
+        .filter(|track| track.embedded_artwork_recorded)
+        .map(|track| track.path.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let mut tracks = fs::read_dir(album_path)
+        .map_err(|error| {
+            format!(
+                "Unable to read fallback Album tracks {}: {error}",
+                album_path.display()
+            )
+        })?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            let path = entry.path();
+            (file_type.is_file() && is_supported_audio_path(&path)).then_some(path)
+        })
+        .map(|path| {
+            let path_text = path.to_string_lossy().into_owned();
+            let evidence = read_local_track_evidence(&path).ok();
+            let title = evidence
+                .as_ref()
+                .map(|value| value.title.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("")
+                        .to_string()
+                });
+            let artist = evidence
+                .as_ref()
+                .map(|value| value.artist.trim().to_string())
+                .unwrap_or_default();
+            MediaTrackSnapshot {
+                embedded_artwork_recorded: completed.contains(&path_text.to_ascii_lowercase()),
+                path: path_text,
+                title,
+                artist,
+            }
+        })
+        .collect::<Vec<_>>();
+    tracks.sort_by_key(|track| casefold(&track.path));
+    Ok(tracks)
+}
+
+fn is_supported_audio_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "mp3" | "flac" | "m4a" | "mp4" | "ogg" | "opus" | "wav" | "aiff" | "aif"
+            )
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +165,12 @@ pub struct CompilationLocalArtwork {
     pub cover_format: String,
     pub cover_width: u32,
     pub cover_height: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingCompilationArtwork {
+    pub track_path: PathBuf,
+    pub artwork_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -706,6 +781,30 @@ fn record_album_outcome_inner(
             .unwrap_or(local_album_path)
             .to_string_lossy(),
     )?;
+    let indexed_album_mbid = if let Some(album_key) = indexed_album_key {
+        connection
+            .query_row(
+                "SELECT COALESCE(musicbrainz_albumid,'') FROM albums WHERE album_key=? COLLATE NOCASE",
+                [album_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(db_error("read Album MBID authority"))?
+    } else {
+        connection
+            .query_row(
+                "SELECT COALESCE(musicbrainz_albumid,'') FROM albums WHERE lower(path)=lower(?)",
+                [&canonical_album],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(db_error("read Album MBID authority"))?
+    };
+    let fallback_album = indexed_album_mbid
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty();
     let bypassed = outcome.to_ascii_lowercase().contains("bypass");
     let database_ms = elapsed_ms(database_started);
     let filesystem_started = Instant::now();
@@ -714,7 +813,7 @@ fn record_album_outcome_inner(
             .albums
             .into_iter()
             .find(|album| album.path == local_album_path)
-            .map(|album| inspect_cover(&album, &config.output.file_name, &mapper))
+            .map(|album| inspect_cover(&album, &config.output.file_name, &mapper, fallback_album))
             .transpose()?,
         OutcomeMaterial::Runtime(_) => None,
     };
@@ -783,6 +882,25 @@ fn record_album_outcome_inner(
                 cover.webp_size_mb,
                 cover.webp_resolution,
                 i64::from(cover.webp_conversion),
+                now,
+                now,
+                album_key
+            ],
+        ),
+        (OutcomeMaterial::Runtime(Some(_)), None) if fallback_album => transaction.execute(
+            "UPDATE albums SET status=?, processed_at=?, bypassed=?, timeout_until=?, \
+             selected_source=COALESCE(?, selected_source), cover_found=0, cover_path=NULL, \
+             cover_name=NULL, cover_format=NULL, cover_width=NULL, cover_height=NULL, \
+             artwork_jpeg=0, artwork_png=0, artwork_webp=0, artwork_other=0, root_files=0, \
+             cover_files=0, cover_names_json='[]', local_art_json='[]', webp_found=0, \
+             webp_size_mb=0, webp_resolution=NULL, webp_conversion=0, updated_at=?, \
+             last_seen_at=? WHERE album_key=? COLLATE NOCASE",
+            params![
+                status,
+                now,
+                i64::from(bypassed),
+                timeout_until,
+                selected_source,
                 now,
                 now,
                 album_key
@@ -1192,6 +1310,194 @@ pub fn find_local_compilation_artwork(
     Ok(None)
 }
 
+/// Reuse only a previously completed track with the same tagged Recording
+/// MBID and Artist MBID set. The database stores a digest, not image bytes;
+/// the source track must still contain that exact front-cover image.
+pub fn find_existing_compilation_artwork(
+    config: &Config,
+    recording_mbid: &str,
+    artist_mbids: &[String],
+    current_track_path: &Path,
+) -> Result<Option<ExistingCompilationArtwork>, String> {
+    if recording_mbid.trim().is_empty() || artist_mbids.is_empty() {
+        return Ok(None);
+    }
+    let (connection, mapper) = runtime_connection_and_mapper(config)?;
+    find_existing_compilation_artwork_with(
+        &connection,
+        &mapper,
+        recording_mbid,
+        artist_mbids,
+        current_track_path,
+        |track_path, expected_hash| {
+            embedded_front_sha256s(track_path).is_ok_and(|hashes| {
+                hashes
+                    .iter()
+                    .any(|hash| hash.eq_ignore_ascii_case(expected_hash))
+            })
+        },
+    )
+}
+
+fn find_existing_compilation_artwork_with(
+    connection: &Connection,
+    mapper: &PathMapper,
+    recording_mbid: &str,
+    artist_mbids: &[String],
+    current_track_path: &Path,
+    mut front_matches: impl FnMut(&Path, &str) -> bool,
+) -> Result<Option<ExistingCompilationArtwork>, String> {
+    let artist_key = normalized_artist_key(artist_mbids);
+    let canonical_current = mapper.to_canonical(&current_track_path.to_string_lossy())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT track_path, artist_mbid, artwork_sha256 FROM compilation_track_artwork \
+             WHERE lower(recording_mbid)=lower(?) AND outcome IN ('embedded-replaced','embedded-existing') \
+             ORDER BY applied_at DESC",
+        )
+        .map_err(db_error("prepare existing embedded compilation artwork lookup"))?;
+    let rows = statement
+        .query_map([recording_mbid], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(db_error("query existing embedded compilation artwork"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("read existing embedded compilation artwork"))?;
+    for (canonical_track, saved_artists, artwork_sha256) in rows {
+        if canonical_track.eq_ignore_ascii_case(&canonical_current)
+            || normalized_artist_key(&extract_mbids(&saved_artists)) != artist_key
+            || artwork_sha256.len() != 64
+        {
+            continue;
+        }
+        let Ok(local_track) = mapper.to_local(&canonical_track) else {
+            continue;
+        };
+        let track_path = PathBuf::from(local_track);
+        if !track_path.is_file() {
+            continue;
+        }
+        if front_matches(&track_path, &artwork_sha256) {
+            return Ok(Some(ExistingCompilationArtwork {
+                track_path,
+                artwork_sha256,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// Return a previously indexed per-track MusicBrainz identity. This is used
+/// only to repair a missing/invalid tag candidate before MusicBrainz performs
+/// final validation; SQLite never overrides a valid tag silently.
+pub fn cached_track_musicbrainz_identity(
+    config: &Config,
+    track_path: &Path,
+) -> Result<Option<(String, String)>, String> {
+    let (connection, mapper) = runtime_connection_and_mapper(config)?;
+    let canonical = mapper.to_canonical(&track_path.to_string_lossy())?;
+    connection
+        .query_row(
+            "SELECT COALESCE(musicbrainz_recordingid,''), COALESCE(musicbrainz_artistid,'') \
+             FROM tracks WHERE lower(path)=lower(?) LIMIT 1",
+            [canonical],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(db_error("query cached track MusicBrainz identity"))
+}
+
+pub fn cached_artist_musicbrainz_identity(
+    config: &Config,
+    artist_name: &str,
+) -> Result<Option<String>, String> {
+    let (connection, _) = runtime_connection_and_mapper(config)?;
+    connection
+        .query_row(
+            "SELECT COALESCE(musicbrainz_artistid,'') FROM artists \
+             WHERE lower(artist_name)=lower(?) AND trim(musicbrainz_artistid)<>'' \
+             ORDER BY updated_at DESC LIMIT 1",
+            [artist_name.trim()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(db_error("query cached Artist MusicBrainz identity"))
+}
+
+/// Update the already-indexed track row after the same IDs have been safely
+/// written and verified in the media file. Release identity intentionally is
+/// not changed: fallback Albums remain Albums without a Release ID.
+pub fn persist_track_musicbrainz_identity(
+    config: &Config,
+    track_path: &Path,
+    recording_mbid: &str,
+    artist_mbid: &str,
+) -> Result<(), String> {
+    let (connection, mapper) = runtime_connection_and_mapper(config)?;
+    let canonical = mapper.to_canonical(&track_path.to_string_lossy())?;
+    let now = sqlite_now(&connection)?;
+    let changed = connection
+        .execute(
+            "UPDATE tracks SET musicbrainz_recordingid=?, musicbrainz_artistid=?, updated_at=?, splined_version=? \
+             WHERE lower(path)=lower(?)",
+            params![
+                recording_mbid.trim().to_ascii_lowercase(),
+                artist_mbid.trim().to_ascii_lowercase(),
+                now,
+                env!("CARGO_PKG_VERSION"),
+                canonical
+            ],
+        )
+        .map_err(db_error("persist track MusicBrainz identity"))?;
+    if changed == 0 {
+        let parent = track_path.parent().ok_or_else(|| {
+            format!(
+                "Validated track has no Album directory: {}",
+                track_path.display()
+            )
+        })?;
+        let canonical_album = mapper.to_canonical(&parent.to_string_lossy())?;
+        let album_key = connection
+            .query_row(
+                "SELECT album_key FROM albums WHERE lower(path)=lower(?) LIMIT 1",
+                [canonical_album],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(db_error("locate Album for validated track identity"))?
+            .ok_or_else(|| {
+                format!(
+                    "The validated track Album is not present in splined.db: {}",
+                    parent.display()
+                )
+            })?;
+        let evidence = read_local_track_evidence(track_path)?;
+        let metadata = fs::metadata(track_path).map_err(|error| {
+            format!(
+                "Unable to inspect validated track {}: {error}",
+                track_path.display()
+            )
+        })?;
+        connection
+            .execute(
+                "INSERT INTO tracks(track_key, album_key, path, title, artist_name, musicbrainz_recordingid, musicbrainz_artistid, file_size, file_mtime_ns, updated_at, splined_version) \
+                 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    short_hash(&canonical), album_key, canonical, evidence.title, evidence.artist,
+                    recording_mbid.trim().to_ascii_lowercase(),
+                    artist_mbid.trim().to_ascii_lowercase(), metadata.len() as i64,
+                    modified_ns(&metadata), now, env!("CARGO_PKG_VERSION")
+                ],
+            )
+            .map_err(db_error("insert validated track MusicBrainz identity"))?;
+    }
+    Ok(())
+}
+
 pub fn completed_compilation_track_paths(
     config: &Config,
     album_path: &Path,
@@ -1199,7 +1505,7 @@ pub fn completed_compilation_track_paths(
 ) -> Result<HashSet<PathBuf>, String> {
     let (connection, mapper) = runtime_connection_and_mapper(config)?;
     let mut statement = connection.prepare(
-        "SELECT track_path, recording_mbid, artist_mbid, artwork_sha256 FROM compilation_track_artwork WHERE outcome='embedded-replaced'"
+        "SELECT track_path, recording_mbid, artist_mbid, artwork_sha256 FROM compilation_track_artwork WHERE outcome IN ('embedded-replaced','embedded-existing')"
     ).map_err(db_error("prepare compilation resume ledger"))?;
     let saved = statement
         .query_map([], |row| {
@@ -1835,7 +2141,12 @@ fn rebuild_index(
                 .find(|value| value.album_key.eq_ignore_ascii_case(&logical_key))
                 .cloned()
         });
-        let cover = inspect_cover(album, &config.output.file_name, mapper)?;
+        let cover = inspect_cover(
+            album,
+            &config.output.file_name,
+            mapper,
+            tags.musicbrainz_album_id.trim().is_empty(),
+        )?;
         let history =
             album_history_status(&completion_history, album, config, &sources, unix_now());
         let (status, processed_at, bypassed, timeout_until) = match history.state {
@@ -2077,18 +2388,18 @@ fn load_snapshot(
     // walk a network library or open audio tags merely to populate the tree.
     let mut track_statement = connection
         .prepare(
-            "SELECT tracks.album_key, tracks.path, tracks.title, \
+            "SELECT tracks.album_key, tracks.path, tracks.title, tracks.artist_name, \
              CASE WHEN compilation_track_artwork.track_path IS NULL THEN 0 ELSE 1 END \
              FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
              LEFT JOIN compilation_track_artwork ON lower(compilation_track_artwork.track_path)=lower(tracks.path) \
-             AND compilation_track_artwork.outcome='embedded-replaced' \
-             WHERE albums.compilation=1 \
+             AND compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing') \
+             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))='' \
              UNION \
-             SELECT albums.album_key, compilation_track_artwork.track_path, '', 1 \
+             SELECT albums.album_key, compilation_track_artwork.track_path, '', '', 1 \
              FROM albums JOIN compilation_track_artwork \
              ON lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '/%') \
              OR lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '\\%') \
-             WHERE albums.compilation=1 AND compilation_track_artwork.outcome='embedded-replaced' \
+             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))='' AND compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing') \
              ORDER BY 2 COLLATE NOCASE",
         )
         .map_err(db_error("prepare cached compilation tracks"))?;
@@ -2103,7 +2414,8 @@ fn load_snapshot(
                         .to_local(&canonical_path)
                         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?,
                     title: row.get(2)?,
-                    embedded_artwork_recorded: row.get::<_, i64>(3)? != 0,
+                    artist: row.get(3)?,
+                    embedded_artwork_recorded: row.get::<_, i64>(4)? != 0,
                 },
             ))
         })
@@ -2120,6 +2432,9 @@ fn load_snapshot(
             existing.embedded_artwork_recorded |= track.embedded_artwork_recorded;
             if existing.title.trim().is_empty() {
                 existing.title = track.title;
+            }
+            if existing.artist.trim().is_empty() {
+                existing.artist = track.artist;
             }
         } else {
             values.push(track);
@@ -2145,6 +2460,9 @@ fn load_snapshot(
             let stored_status: String = row.get(5)?;
             let compilation = row.get::<_, i64>(6)? != 0;
             let album_mbid: String = row.get(21)?;
+            let fallback_album = album_mbid.trim().is_empty();
+            let indexed_root_files = row.get::<_, i64>(16)?;
+            let indexed_cover_files = row.get::<_, i64>(17)?;
             let status = if stored_status.eq_ignore_ascii_case("processed")
                 && !has_processed_evidence(processed_at.as_deref(), selected_source.as_deref())
             {
@@ -2162,7 +2480,7 @@ fn load_snapshot(
                 representative_file: mapper.to_local(&representative).unwrap_or_default(),
                 status,
                 compilation,
-                compilation_track_art_eligible: compilation && album_mbid.trim().is_empty(),
+                compilation_track_art_eligible: album_mbid.trim().is_empty(),
                 compilation_tracks: compilation_tracks
                     .get(&album_key.to_ascii_lowercase())
                     .cloned()
@@ -2172,17 +2490,41 @@ fn load_snapshot(
                 artist_mbid: row.get(23)?,
                 album_mbid: album_mbid.clone(),
                 release_group_mbid: row.get(22)?,
-                has_local_artwork: row.get::<_, i64>(9)? != 0,
-                local_artwork_files: mapper.json_paths_to_local(&local_art_json),
-                cover_path: mapper
-                    .to_local(&row.get::<_, String>(11)?)
-                    .unwrap_or_default(),
-                cover_name: row.get(12)?,
-                cover_format: row.get(13)?,
-                cover_width: row.get(14)?,
-                cover_height: row.get(15)?,
-                root_files: row.get(16)?,
-                cover_files: row.get(17)?,
+                has_local_artwork: !fallback_album && row.get::<_, i64>(9)? != 0,
+                local_artwork_files: if fallback_album {
+                    Vec::new()
+                } else {
+                    mapper.json_paths_to_local(&local_art_json)
+                },
+                cover_path: if fallback_album {
+                    String::new()
+                } else {
+                    mapper
+                        .to_local(&row.get::<_, String>(11)?)
+                        .unwrap_or_default()
+                },
+                cover_name: if fallback_album {
+                    String::new()
+                } else {
+                    row.get(12)?
+                },
+                cover_format: if fallback_album {
+                    String::new()
+                } else {
+                    row.get(13)?
+                },
+                cover_width: if fallback_album { 0 } else { row.get(14)? },
+                cover_height: if fallback_album { 0 } else { row.get(15)? },
+                root_files: if fallback_album {
+                    indexed_root_files.saturating_sub(indexed_cover_files)
+                } else {
+                    indexed_root_files
+                },
+                cover_files: if fallback_album {
+                    0
+                } else {
+                    indexed_cover_files
+                },
                 processed_at,
                 timeout_until: row.get(19)?,
                 selected_source,
@@ -2244,6 +2586,7 @@ fn inspect_cover(
     album: &AlbumDirectory,
     cover_name: &str,
     mapper: &PathMapper,
+    ignore_configured_cover: bool,
 ) -> Result<CoverFacts, String> {
     let mut facts = CoverFacts::default();
     let prefix = casefold(if cover_name.trim().is_empty() {
@@ -2267,6 +2610,19 @@ fn inspect_cover(
     let mut canonical: Option<PathBuf> = None;
     let mut largest_webp: Option<(PathBuf, u64)> = None;
     for path in files {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .to_string();
+        let stem = casefold(
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or(""),
+        );
+        if ignore_configured_cover && (stem == "cover" || stem.starts_with(&prefix)) {
+            continue;
+        }
         facts.root_files += 1;
         let extension = casefold(
             path.extension()
@@ -2280,16 +2636,6 @@ fn inspect_cover(
             "webp" => facts.webp += 1,
             _ => facts.other += 1,
         }
-        let name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_string();
-        let stem = casefold(
-            path.file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or(""),
-        );
         if is_image {
             facts
                 .local_art
@@ -3024,6 +3370,78 @@ mod tests {
     }
 
     #[test]
+    fn existing_compilation_art_requires_same_recording_artist_and_verified_front() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("music");
+        fs::create_dir_all(&root).unwrap();
+        let current = root.join("current.mp3");
+        let matching = root.join("matching.mp3");
+        let wrong_artist = root.join("wrong-artist.mp3");
+        let wrong_recording = root.join("wrong-recording.mp3");
+        let stale = root.join("stale.mp3");
+        for track in [&current, &matching, &wrong_artist, &wrong_recording, &stale] {
+            File::create(track).unwrap();
+        }
+        let db = temp.path().join("existing.db");
+        let connection = open_database(&db, false).unwrap();
+        let root_text = root.to_string_lossy().into_owned();
+        let mapper = PathMapper::new(&root_text, &root_text).unwrap();
+        let recording = "11111111-1111-4111-8111-111111111111";
+        let other_recording = "22222222-2222-4222-8222-222222222222";
+        let artist = "33333333-3333-4333-8333-333333333333";
+        let other_artist = "44444444-4444-4444-8444-444444444444";
+        let verified_hash = "a".repeat(64);
+        let stale_hash = "b".repeat(64);
+        for (track, row_recording, row_artist, hash) in [
+            (&current, recording, artist, verified_hash.as_str()),
+            (
+                &wrong_artist,
+                recording,
+                other_artist,
+                verified_hash.as_str(),
+            ),
+            (
+                &wrong_recording,
+                other_recording,
+                artist,
+                verified_hash.as_str(),
+            ),
+            (&stale, recording, artist, stale_hash.as_str()),
+            (&matching, recording, artist, verified_hash.as_str()),
+        ] {
+            connection.execute(
+                "INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,artwork_sha256,outcome,applied_at,splined_version) VALUES(?, ?, ?, 'local', 'fixture', ?, 'embedded-replaced', '2026-10-18', 'test')",
+                params![track.to_string_lossy(), row_recording, row_artist, hash],
+            ).unwrap();
+        }
+        let artists = vec![artist.to_string()];
+        let selected = find_existing_compilation_artwork_with(
+            &connection,
+            &mapper,
+            recording,
+            &artists,
+            &current,
+            |_, hash| hash == verified_hash,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selected.track_path, matching);
+        assert_eq!(selected.artwork_sha256, verified_hash);
+        assert!(
+            find_existing_compilation_artwork_with(
+                &connection,
+                &mapper,
+                recording,
+                &artists,
+                &current,
+                |_, _| false,
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
     fn snapshot_projects_cached_compilation_tracks_and_embedded_artwork_state() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
@@ -3042,7 +3460,7 @@ mod tests {
         let legacy_track_path = legacy_track.to_string_lossy().into_owned();
         connection.execute("INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Various Artists',?,?,?,?,'test')",
             params![library.join("Various Artists").to_string_lossy(), now, now, now]).unwrap();
-        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,compilation,path,representative_file,tag_signature,track_count,status,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Compilation',1,?,?, 'tags',1,'processed',?,?,?,'test')",
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,compilation,path,representative_file,tag_signature,track_count,status,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Compilation',0,?,?, 'tags',1,'processed',?,?,?,'test')",
             params![album_path, track_path, now, now, now]).unwrap();
         connection.execute("INSERT INTO tracks(track_key,album_key,path,title,artist_name,musicbrainz_recordingid,musicbrainz_artistid,file_size,file_mtime_ns,updated_at,splined_version) VALUES('track','album',?,'Fixture','Artist','recording','artist-mbid',0,0,?,'test')",
             params![track_path, now]).unwrap();
@@ -3065,25 +3483,56 @@ mod tests {
     }
 
     #[test]
-    fn local_cover_inventory_does_not_mark_album_processed() {
+    fn fallback_track_hydration_is_read_only_and_preserves_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let album = temp.path().join("Album");
+        fs::create_dir_all(&album).unwrap();
+        let first = album.join("01 - Finished.mp3");
+        let second = album.join("02 - Pending.flac");
+        File::create(&first).unwrap();
+        File::create(&second).unwrap();
+        File::create(album.join("cover.jpg")).unwrap();
+        let cached = vec![MediaTrackSnapshot {
+            path: first.to_string_lossy().into_owned(),
+            title: "Cached title".to_string(),
+            artist: String::new(),
+            embedded_artwork_recorded: true,
+        }];
+
+        let tracks = fallback_tracks_from_folder(&album, &cached).unwrap();
+
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks[0].embedded_artwork_recorded);
+        assert!(!tracks[1].embedded_artwork_recorded);
+        assert!(
+            tracks
+                .iter()
+                .all(|track| !track.path.ends_with("cover.jpg"))
+        );
+    }
+
+    #[test]
+    fn fallback_inventory_ignores_cover_files_and_stays_unprocessed() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
         let album = library.join("Artist").join("Album");
         fs::create_dir_all(&album).unwrap();
         File::create(album.join("01.mp3")).unwrap();
         File::create(album.join("cover.jpg")).unwrap();
+        File::create(album.join("front.png")).unwrap();
         let mut config = Config::default();
+        config.output.file_name = "front".to_string();
         config.library.music_library = library.to_string_lossy().into_owned();
         config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
 
         let snapshot = media_snapshot(&config, false).unwrap();
         assert_eq!(snapshot.albums.len(), 1);
-        assert!(snapshot.albums[0].has_local_artwork);
+        assert!(!snapshot.albums[0].has_local_artwork);
         assert_eq!(snapshot.albums[0].status, "unprocessed");
         assert_eq!(snapshot.albums[0].track_count, 1);
-        assert_eq!(snapshot.albums[0].cover_name, "cover.jpg");
-        assert_eq!(snapshot.albums[0].cover_files, 1);
-        assert_eq!(snapshot.albums[0].root_files, 1);
+        assert!(snapshot.albums[0].cover_name.is_empty());
+        assert_eq!(snapshot.albums[0].cover_files, 0);
+        assert_eq!(snapshot.albums[0].root_files, 0);
 
         let db = database_path(&config.scan.cache_dir);
         let connection = Connection::open(&db).unwrap();
@@ -3099,14 +3548,14 @@ mod tests {
         let snapshot = media_snapshot(&config, false).unwrap();
         assert_eq!(snapshot.albums[0].status, "unprocessed");
 
-        // A writable open repairs the legacy cover-derived row in SQLite.
+        // The stored index also excludes fallback cover files.
         let repaired = open_database(&db, false).unwrap();
         let values: (String, i64) = repaired
             .query_row("SELECT status, cover_found FROM albums", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .unwrap();
-        assert_eq!(values, ("unprocessed".to_string(), 1));
+        assert_eq!(values, ("unprocessed".to_string(), 0));
     }
 
     #[test]
@@ -3208,7 +3657,7 @@ mod tests {
         let connection = open_database(&db, false).unwrap();
         let now = sqlite_now(&connection).unwrap();
         connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:artist','Artist',?,?,?,?,'test')", params![library.join("Artist").to_string_lossy(), now, now, now]).unwrap();
-        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:album','tag:artist','Album',?,'tags',?,?,?,'test')", params![album.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:album','tag:artist','Album','identified-release',?,'tags',?,?,?,'test')", params![album.to_string_lossy(), now, now, now]).unwrap();
         connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, status, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:other','Other',?,'complete',?,?,?,'test')", params![library.join("Other").to_string_lossy(), now, now, now]).unwrap();
         connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,status,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:other-album','tag:other','Other Album',?,'tags','unprocessed',?,?,?,'test')", params![library.join("Other").join("Other Album").to_string_lossy(), now, now, now]).unwrap();
         connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
@@ -3254,6 +3703,52 @@ mod tests {
             "complete"
         );
         assert!(timing.total_ms >= timing.commit_ms);
+    }
+
+    #[test]
+    fn fallback_runtime_outcome_never_records_folder_cover_material() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Artist").join("Fallback Album");
+        fs::create_dir_all(&album).unwrap();
+        let mut config = Config::default();
+        config.mode = crate::config::Mode::Write;
+        config.scan.scan_mode_timeout = crate::config::ScanTimeout(0.0);
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let db = database_path(&config.scan.cache_dir);
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute("INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Artist',?,?,?,?,'test')", params![library.join("Artist").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Fallback Album',?,'tags',?,?,?,'test')", params![album.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
+        drop(connection);
+
+        record_album_outcome_from_runtime(
+            &config,
+            &album,
+            None,
+            Some("album"),
+            "installed",
+            Some("itunes"),
+            Some(&RuntimeArtworkMaterial {
+                path: album.join("cover.jpg"),
+                format: "JPEG".to_string(),
+                width: 1800,
+                height: 1800,
+            }),
+        )
+        .unwrap();
+
+        let connection = Connection::open(db).unwrap();
+        let values: (i64, Option<String>, i64, i64) = connection
+            .query_row(
+                "SELECT cover_found, cover_path, cover_files, root_files FROM albums WHERE album_key='album'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(values, (0, None, 0, 0));
     }
 
     #[test]
@@ -3337,7 +3832,7 @@ mod tests {
         let connection = open_database(&db, false).unwrap();
         let now = sqlite_now(&connection).unwrap();
         connection.execute("INSERT INTO artists(artist_key, artist_name, primary_path, created_at, updated_at, last_seen_at, splined_version) VALUES('tag:cheech','Cheech & Chong',?,?,?,?,'test')", params![library.join("Cheech & Chong").to_string_lossy(), now, now, now]).unwrap();
-        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:bambu','tag:cheech','Big Bambú',?,'tags',?,?,?,'test')", params![indexed.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('tag:bambu','tag:cheech','Big Bambú','identified-release',?,'tags',?,?,?,'test')", params![indexed.to_string_lossy(), now, now, now]).unwrap();
         connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
         drop(connection);
 

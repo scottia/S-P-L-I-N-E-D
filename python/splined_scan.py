@@ -587,9 +587,11 @@ def _write_sample_if_enabled(
     summary: core.Summary,
 ) -> Path:
     if not samples_enabled:
-        return sample_dir / (
-            f"{core.sanitize(sample_release.artist_credit)}."
-            f"{core.sanitize(sample_release.title)}.sample.{core.EXTENSIONS[candidate.format]}"
+        return (
+            sample_dir
+            / core.sanitize(sample_release.artist_credit)
+            / core.sanitize(sample_release.title)
+            / f"{core.sanitize(candidate.source)}.sample.{core.EXTENSIONS[candidate.format]}"
         )
     sample_path, unchanged = core.write_sample(sample_dir, sample_release, candidate, preserve)
     summary.samples_unchanged += int(unchanged)
@@ -1261,8 +1263,8 @@ def run_manual_compilation_album(
     if not core.compilation_manual_album_eligible(tracks):
         summary.unresolved += 1
         reason = (
-            "Embedded compilation artwork requires a representative track "
-            "with no Album MBID and compilation=1"
+            "Fallback embedded artwork requires a representative track "
+            "with no Album MBID"
         )
         for track in tracks[:1]:
             _manual_unresolved(track, reason, unresolved_items)
@@ -1271,7 +1273,7 @@ def run_manual_compilation_album(
     print()
     print(
         f"  {core.cyan('Track Artwork:'):13} "
-        f"{core.orange('VA/OST compilation embedded artwork')}"
+        f"{core.orange('fallback embedded artwork')}"
     )
     print(
         f"  {core.cyan('Folder Art:'):13} "
@@ -2181,7 +2183,11 @@ def _run_scan_dir_batch(
             print_help(config_file, cfg)
             return 2
 
-    sample_dir = core.prepare_samples(cache)
+    configured_sample_dir = str(samples_cfg.get("sample_dir", "")).strip()
+    sample_dir = core.prepare_samples(
+        cache,
+        core.resolve_path(config_file, configured_sample_dir) if configured_sample_dir else None,
+    )
 
     bypass_path = bypass_history_path(cache)
     bypass_history = load_bypass_history(bypass_path)
@@ -2382,7 +2388,7 @@ def _run_scan_dir_batch(
             if core.compilation_manual_album_eligible(tracks):
                 record["embedded_compilation"] = True
                 record["fallback_reason"] = (
-                    "COMPILATION · EMBEDDED TRACK ARTWORK"
+                    "NO ALBUM MBID · EMBEDDED TRACK ARTWORK"
                 )
             elif len(valid) != 1:
                 if len(valid) > 1:

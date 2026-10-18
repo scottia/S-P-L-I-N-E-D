@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "cargo_commands": [
+    "cargo fmt --all -- --check",
+    "cargo check --manifest-path windows/Cargo.toml --locked --all-targets",
+    "cargo clippy --manifest-path windows/Cargo.toml --locked --all-targets -- -D warnings",
+    "cargo test --locked --test windows_executable_architecture"
+  ],
+  "required_ui_labels": [
+    "Artists",
+    "Albums",
+    "Fallback",
+    "Media Filter",
+    "LAUNCH",
+    "PROCESSING",
+    "SKIP ALBUM",
+    "Bypass",
+    "Bypassed",
+    "Candidate Artwork",
+    "Activate All 8",
+    "MusicBrainz Results",
+    "VISITED"
+  ],
+  "forbidden_ui_tokens": [
+    "CheckBox",
+    "Show Tracks / Embedded Art",
+    "MUSIC LOOKS BETTER HERE",
+    "MANAGE · ENHANCE · PRESERVE · MUSIC FOREVER"
+  ],
+  "required_diagnostic_proofs": [
+    "artist_click_kept_view",
+    "artist_inline_album_rows",
+    "fallback_album_enables_launch",
+    "fallback_album_expands_inline",
+    "fallback_album_queues_whole_album",
+    "slider_reaches_configured_maximum",
+    "main_maximized_after_collapse",
+    "main_maximized_after_expand",
+    "restored_media_width_at_least_min",
+    "media_model_restored"
+  ]
+}

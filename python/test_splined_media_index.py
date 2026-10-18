@@ -18,7 +18,7 @@ from splined_media_tags import inspect_album
 
 
 class SplinedMediaIndexTests(unittest.TestCase):
-    def test_fresh_album_with_existing_cover_is_unprocessed(self) -> None:
+    def test_fallback_album_ignores_existing_cover(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "music"
             album_path = root / "Artist" / "Album"
@@ -27,25 +27,28 @@ class SplinedMediaIndexTests(unittest.TestCase):
             track.write_bytes(b"")
             cover = album_path / "cover.jpg"
             cover.write_bytes(b"operator artwork")
+            configured_cover = album_path / "front.png"
+            configured_cover.write_bytes(b"configured artwork")
             album = SimpleNamespace(
                 path=album_path,
                 audio_files=[track],
-                local_art_files=[cover],
+                local_art_files=[cover, configured_cover],
                 inventory_fingerprint=None,
             )
 
             _artist, row, _review, _reused = inspect_album(
                 album,
                 root,
-                "cover",
+                "front",
                 {},
                 {},
                 {},
             )
 
             self.assertEqual(row["status"], "unprocessed")
-            self.assertEqual(row["cover_found"], 1)
-            self.assertEqual(row["cover_path"], str(cover))
+            self.assertEqual(row["cover_found"], 0)
+            self.assertEqual(row["cover_path"], "")
+            self.assertEqual(row["cover_files"], 0)
 
     def test_manual_material_result_updates_progress_status_without_folder_scan(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -392,7 +395,7 @@ class SplinedMediaIndexTests(unittest.TestCase):
             "artist_name": "Aaliyah",
             "release_year": "1996",
             "musicbrainz_albumid": "",
-            "compilation": 1,
+            "compilation": 0,
             "track_count": 17,
             "artwork_jpeg": 1,
             "artwork_png": 0,
@@ -401,6 +404,7 @@ class SplinedMediaIndexTests(unittest.TestCase):
             "root_files": 2,
             "cover_files": 1,
             "cover_names_json": json.dumps(["Cover.jpeg"]),
+            "cover_name": "Cover.jpeg",
             "cover_width": 1800,
             "cover_height": 1800,
             "cover_path": "/music/Aaliyah/One in a Million/Cover.jpeg",
@@ -412,10 +416,13 @@ class SplinedMediaIndexTests(unittest.TestCase):
         }
         stats = stats_from_row(row)
         self.assertEqual(stats["artist"], "Aaliyah")
-        self.assertEqual(stats["cover_resolution"], "1800x1800")
-        self.assertEqual(stats["cover_names"], ["Cover.jpeg"])
+        self.assertEqual(stats["cover_resolution"], "")
+        self.assertEqual(stats["cover_names"], [])
+        self.assertEqual(stats["cover_files"], 0)
+        self.assertEqual(stats["root_files"], 1)
+        self.assertEqual(stats["artwork"]["JPEG"], 0)
         self.assertTrue(stats["album_mbid_missing"])
-        self.assertTrue(stats["compilation"])
+        self.assertFalse(stats["compilation"])
         self.assertTrue(stats["manual_compilation_eligible"])
 
 

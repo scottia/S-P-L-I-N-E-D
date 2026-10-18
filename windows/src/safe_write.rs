@@ -308,6 +308,66 @@ where
     install_staged_file(path, staged, label)
 }
 
+/// Copy an existing file through a same-directory staging file, validate it,
+/// then atomically replace the destination. This avoids loading large SQLite
+/// backups into memory during restore.
+pub fn replace_file_from<F>(
+    path: &Path,
+    source: &Path,
+    label: &str,
+    validate: F,
+) -> Result<(), String>
+where
+    F: Fn(&Path) -> Result<(), String>,
+{
+    if !source.is_file() {
+        return Err(format!(
+            "Unable to restore {label}; source file does not exist: {}",
+            source.display()
+        ));
+    }
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Unable to create {label} directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    recover_backup_if_needed(path, label)?;
+    let parent = path.parent().ok_or_else(|| {
+        format!(
+            "Unable to determine parent directory for {label}: {}",
+            path.display()
+        )
+    })?;
+    let mut staged = NamedTempFile::new_in(parent).map_err(|error| {
+        format!(
+            "Unable to create staged {label} file in {}: {error}",
+            parent.display()
+        )
+    })?;
+    let mut input = fs::File::open(source).map_err(|error| {
+        format!(
+            "Unable to open {label} source {}: {error}",
+            source.display()
+        )
+    })?;
+    std::io::copy(&mut input, &mut staged)
+        .map_err(|error| format!("Unable to copy staged {label} file: {error}"))?;
+    staged
+        .flush()
+        .map_err(|error| format!("Unable to flush staged {label} file: {error}"))?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("Unable to sync staged {label} file: {error}"))?;
+    validate(staged.path())?;
+    install_staged_file(path, staged, label)
+}
+
 /// Copy an existing file to a same-directory staging file, mutate and
 /// validate the staged copy, then atomically replace the original. This keeps
 /// audio-tag updates recoverable without reading an entire media file into
@@ -472,6 +532,31 @@ mod tests {
         .expect("binary replacement should succeed");
         assert_eq!(fs::read(&path).unwrap(), b"second");
         assert!(!backup_path(&path).exists());
+    }
+
+    #[test]
+    fn replace_file_from_streams_and_validates_large_artifacts() {
+        let dir = TempDir::new().expect("temp directory should create");
+        let source = dir.path().join("source.sqlite");
+        let destination = dir.path().join("destination.sqlite");
+        fs::write(&source, b"SQLite format 3\0snapshot").unwrap();
+        fs::write(&destination, b"old").unwrap();
+
+        replace_file_from(&destination, &source, "fixture database", |path| {
+            let bytes = fs::read(path).map_err(|error| error.to_string())?;
+            if bytes.starts_with(b"SQLite format 3\0") {
+                Ok(())
+            } else {
+                Err("not SQLite".to_string())
+            }
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"SQLite format 3\0snapshot"
+        );
+        assert!(!backup_path(&destination).exists());
     }
 
     #[test]

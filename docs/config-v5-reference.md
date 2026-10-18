@@ -264,11 +264,13 @@ See [Source policies and Range Types](source-policies-range-types.md).
 ```toml
 [samples]
 sample_write = true
+sample_dir = "samples"
 ```
 
-When enabled, review samples are written beneath the configured temporary run
-cache. Samples are disposable and are not part of the persistent SQL database
-directory.
+When enabled, review samples are retained in `sample_dir`, grouped by Artist
+and Album. An empty `sample_dir` keeps the portable default beneath the
+configured temporary cache. Samples remain available for later review without
+launching another provider search.
 
 ## `[credentials]`
 
@@ -382,9 +384,11 @@ restore. Password-protected Windows `.spl` archives remain a Windows-only
 encryption boundary; Python reports them as unsupported instead of guessing a
 password format. Back up Python/Docker Config v5, credentials, and the
 authoritative database.
-On Windows use **File > Backup > Export Backup...** to choose portable settings,
-interface state, credential JSON, SQLite, and diagnostic metadata separately.
-The `.spl` export may be password protected. On Windows, opening an associated
+On Windows use **Settings > Backup / Restore**. Settings, interface state, and
+credential JSON are stored in `.spl`; SQLite uses a consistent standalone
+`.sqlite` snapshot; and secret-free diagnostic metadata uses a readable `.json`.
+Each file type has an independent schedule. The `.spl` export may be password
+protected. On Windows, opening an associated
 unprotected `.spl` automatically imports only its Config v5 settings before
 startup. Password-protected archives and settings-import failures open the
 guided restore surface with the archive preselected; remaining categories are

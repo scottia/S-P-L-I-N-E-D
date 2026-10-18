@@ -179,8 +179,10 @@ pub struct LibraryConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SamplesConfig {
     pub sample_write: bool,
+    pub sample_dir: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,7 +347,10 @@ impl Default for LibraryConfig {
 
 impl Default for SamplesConfig {
     fn default() -> Self {
-        Self { sample_write: true }
+        Self {
+            sample_write: true,
+            sample_dir: String::new(),
+        }
     }
 }
 
@@ -641,6 +646,15 @@ pub fn samples_dir(cache_dir: &str) -> PathBuf {
     PathBuf::from(cache_dir).join("samples")
 }
 
+pub fn configured_samples_dir(config: &Config) -> PathBuf {
+    let configured = config.samples.sample_dir.trim();
+    if configured.is_empty() {
+        samples_dir(&config.scan.cache_dir)
+    } else {
+        PathBuf::from(configured)
+    }
+}
+
 fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.library.music_library = resolve_runtime_directory(root, &config.library.music_library);
     config.scan.scan_library_dir = resolve_runtime_directory(root, &config.scan.scan_library_dir);
@@ -648,6 +662,9 @@ fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.scan.log_dir = resolve_runtime_directory(root, &config.scan.log_dir);
     config.credentials.credential_dir =
         resolve_runtime_directory(root, &config.credentials.credential_dir);
+    if !config.samples.sample_dir.trim().is_empty() {
+        config.samples.sample_dir = resolve_runtime_directory(root, &config.samples.sample_dir);
+    }
     config.fanarttv.credential_file =
         resolve_runtime_directory(root, &config.fanarttv.credential_file);
     config.lastfm.credential_file = resolve_runtime_directory(root, &config.lastfm.credential_file);

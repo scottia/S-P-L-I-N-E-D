@@ -136,6 +136,7 @@ primary_image_only = true
 
 [samples]
 sample_write = true
+sample_dir = "samples"
 
 [credentials]
 credential_dir = "credentials"

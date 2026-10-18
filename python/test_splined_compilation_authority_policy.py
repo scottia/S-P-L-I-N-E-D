@@ -19,6 +19,9 @@ RECORDING_ID = "59a0c68f-ec68-418d-a29a-fa54a7d9aea9"
 ARTIST_ID = "291dcfb8-b31c-496a-905b-9955509d75b6"
 OTHER_ARTIST_ID = "11111111-1111-4111-8111-111111111111"
 RELEASE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+WORK_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+WORK_RECORDING_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+OTHER_RECORDING_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 
 
 class FakeResponse:
@@ -49,6 +52,10 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         )
         self.assertTrue(policy.manual_album_eligible([missing_album]))
         self.assertFalse(policy.manual_album_eligible([normal]))
+        self.assertEqual(policy.manual_track_eligible(missing_album), (True, ""))
+
+        missing_album.compilation = "0"
+        self.assertTrue(policy.manual_album_eligible([missing_album]))
         self.assertEqual(policy.manual_track_eligible(missing_album), (True, ""))
 
         missing_album.artist_mbid = f"{ARTIST_ID}; {OTHER_ARTIST_ID}"
@@ -346,6 +353,105 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertTrue(
             all(call.kwargs["timeout"] == 7.0 for call in http.get.call_args_list)
         )
+
+    def test_work_fallback_only_looks_up_recordings_for_local_artist_id(self) -> None:
+        artist_credit = [
+            {"artist": {"id": ARTIST_ID, "name": "10cc"}}
+        ]
+        tagged_recording = {
+            "id": RECORDING_ID,
+            "title": "I'm Not in Love",
+            "artist-credit": artist_credit,
+            "releases": [],
+            "relations": [{"work": {"id": WORK_ID}}],
+        }
+        work = {
+            "id": WORK_ID,
+            "relations": [
+                {
+                    "recording": {
+                        "id": OTHER_RECORDING_ID,
+                        "title": "I'm Not in Love",
+                        "artist-credit": [
+                            {
+                                "artist": {
+                                    "id": OTHER_ARTIST_ID,
+                                    "name": "Other Artist",
+                                }
+                            }
+                        ],
+                    }
+                },
+                {
+                    "recording": {
+                        "id": WORK_RECORDING_ID,
+                        "title": "I'm Not in Love",
+                        "artist-credit": artist_credit,
+                    }
+                },
+            ],
+        }
+        matching_recording = {
+            "id": WORK_RECORDING_ID,
+            "title": "I'm Not in Love",
+            "artist-credit": artist_credit,
+            "releases": [
+                {
+                    "id": RELEASE_ID,
+                    "title": "The Original Soundtrack",
+                    "status": "Official",
+                    "date": "1975",
+                    "country": "US",
+                    "artist-credit": artist_credit,
+                    "release-group": {
+                        "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                        "primary-type": "Album",
+                        "secondary-types": [],
+                    },
+                }
+            ],
+        }
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(
+                side_effect=[
+                    FakeResponse(200, tagged_recording),
+                    FakeResponse(200, work),
+                    FakeResponse(200, matching_recording),
+                ]
+            ),
+        )
+        core = SimpleNamespace(
+            MB_BASE="https://musicbrainz.invalid/ws/2",
+            mb_headers=lambda *_args: (
+                {"Authorization": "Bearer secret"},
+                "OAuthBearer",
+            ),
+        )
+        track = SimpleNamespace(
+            recording_mbid=RECORDING_ID,
+            artist_mbid=ARTIST_ID,
+        )
+        with (
+            patch.object(policy, "_cached_releases", return_value=()),
+            patch.object(policy, "_cache_releases"),
+        ):
+            result = policy.resolve_release_candidates(
+                core,
+                http,
+                Path("config.toml"),
+                {},
+                track,
+                policy.MusicBrainzOptions(1, 0.001, 7.0),
+            )
+
+        self.assertEqual(result.source, "musicbrainz-work")
+        self.assertEqual(result.candidates[0].recording_mbid, WORK_RECORDING_ID)
+        urls = [call.args[0] for call in http.get.call_args_list]
+        self.assertEqual(len(urls), 3)
+        self.assertIn(f"/work/{WORK_ID}", urls[1])
+        self.assertIn(f"/recording/{WORK_RECORDING_ID}", urls[2])
+        self.assertTrue(all(OTHER_RECORDING_ID not in url for url in urls))
 
     def test_oauth_setup_failure_is_reported_without_http(self) -> None:
         http = SimpleNamespace(

@@ -18,8 +18,8 @@
       "name": "untagged ordinary album",
       "album_mbid": "",
       "compilation": "0",
-      "manual_compilation": false,
-      "output_target": "folder"
+      "manual_compilation": true,
+      "output_target": "embedded-track"
     }
   ],
   "automatic_release_classes": [

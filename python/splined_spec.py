@@ -173,7 +173,7 @@ CONFIG_EXPECTED_KEYS: dict[str, tuple[str, ...]] = {
         "cache_dir",
         "log_dir",
     ),
-    "samples": ("sample_write",),
+    "samples": ("sample_write", "sample_dir"),
     "credentials": ("credential_dir",),
     "output": (
         "preserve_file",
@@ -211,6 +211,7 @@ HELP_EXPECTED_TOKENS: dict[str, str] = {
     "scan.cache_dir": "Cache Directory",
     "scan.log_dir": "Log Directory",
     "samples.sample_write": "sample_write",
+    "samples.sample_dir": "sample_dir",
     "credentials.credential_dir": "Credential Directory",
     "output.preserve_file": "preserve_file",
     "output.file_formats": "file_formats",

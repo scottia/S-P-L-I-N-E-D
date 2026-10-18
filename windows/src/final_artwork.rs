@@ -358,15 +358,10 @@ fn resize_output_image(
     target_height: u32,
 ) -> (DynamicImage, UpscaleBackend) {
     let is_upscale = target_width > image.width() || target_height > image.height();
-    #[cfg(windows)]
-    if is_upscale {
-        let rgba = image.to_rgba8();
-        if let Ok((resized, _adapter_name)) =
-            crate::gpu_upscale::resize_lanczos3(&rgba, target_width, target_height)
-        {
-            return (DynamicImage::ImageRgba8(resized), UpscaleBackend::Gpu);
-        }
-    }
+    // Keep the interactive and final artwork paths process-safe. A native GPU
+    // device loss can terminate the Windows process before wgpu can return an
+    // error, which made Apply to Selected appear to crash at random. Lanczos3
+    // on the CPU is deterministic and remains available on every supported PC.
     let backend = if is_upscale {
         UpscaleBackend::Cpu
     } else {
@@ -730,18 +725,25 @@ fn projected_dimensions(
     let short_side = width.min(height);
     // Ideal is the preferred quality target for smaller sources, not a ceiling.
     // Preserve accepted high-resolution artwork at its native dimensions.
-    let resize = short_side < range.ideal
-        && output.upscale_below_ideal
-        && upscale_within_limit(short_side, range.ideal, output.upscale_max_percent);
-    if resize && short_side > 0 {
-        (width, height) = dimensions_for_short_side(width, height, range.ideal);
+    // `upscale_max_percent` is a ceiling on the enlargement, not an
+    // all-or-nothing eligibility check. A 600 px source with an 1800 px Ideal
+    // and a 200% maximum should therefore become 1200 px instead of remaining
+    // at 600 px simply because Ideal cannot be reached in one step.
+    let upscale_target =
+        upscale_target_short_side(short_side, range.ideal, output.upscale_max_percent);
+    let resize = output.upscale_below_ideal && upscale_target > short_side;
+    if resize {
+        (width, height) = dimensions_for_short_side(width, height, upscale_target);
     }
     (width, height, crop_square, resize)
 }
 
-fn upscale_within_limit(source_short_side: u32, ideal: u32, max_percent: u32) -> bool {
-    source_short_side > 0
-        && u64::from(ideal) * 100 <= u64::from(source_short_side) * u64::from(max_percent)
+fn upscale_target_short_side(source_short_side: u32, ideal: u32, max_percent: u32) -> u32 {
+    if source_short_side == 0 || source_short_side >= ideal || max_percent <= 100 {
+        return source_short_side;
+    }
+    let capped = u64::from(source_short_side).saturating_mul(u64::from(max_percent)) / 100;
+    ideal.min(capped.min(u64::from(u32::MAX)) as u32)
 }
 
 fn prepare_final_artwork_inner(
@@ -1153,7 +1155,7 @@ mod tests {
             format: StaticFormat::Jpeg,
             source_priority: 0,
         };
-        let over_limit = Candidate {
+        let capped_below_ideal = Candidate {
             width: 11,
             height: 11,
             ..at_limit.clone()
@@ -1162,12 +1164,14 @@ mod tests {
         let projected = project_configured_artwork(&at_limit, &range, &output);
         assert_eq!((projected.width, projected.height), (18, 18));
         assert!(projected.upscaled);
-        let projected = project_configured_artwork(&over_limit, &range, &output);
-        assert_eq!((projected.width, projected.height), (11, 11));
-        assert!(!projected.upscaled);
+        let projected = project_configured_artwork(&capped_below_ideal, &range, &output);
+        assert_eq!((projected.width, projected.height), (16, 16));
+        assert!(projected.upscaled);
 
         output.upscale_max_percent = 200;
-        assert!(project_configured_artwork(&over_limit, &range, &output).upscaled);
+        let projected = project_configured_artwork(&capped_below_ideal, &range, &output);
+        assert_eq!((projected.width, projected.height), (18, 18));
+        assert!(projected.upscaled);
     }
 
     #[test]

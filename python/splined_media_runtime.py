@@ -60,6 +60,29 @@ def stats_from_row(row: Any) -> dict[str, Any]:
     album_mbid_missing = not bool(
         str(row["musicbrainz_albumid"] or "").strip()
     )
+    cover_files = int(row["cover_files"] or 0)
+    indexed_cover_names = json_list(row["cover_names_json"])
+    indexed_cover_name = str(row["cover_name"] or "").strip()
+    if indexed_cover_name and indexed_cover_name.casefold() not in {
+        str(value).casefold() for value in indexed_cover_names
+    }:
+        indexed_cover_names.append(indexed_cover_name)
+    artwork = {
+        "JPEG": int(row["artwork_jpeg"] or 0),
+        "PNG": int(row["artwork_png"] or 0),
+        "WEBP": int(row["artwork_webp"] or 0),
+        "OTHER": int(row["artwork_other"] or 0),
+    }
+    if album_mbid_missing:
+        for name in indexed_cover_names:
+            suffix = Path(str(name)).suffix.casefold()
+            category = (
+                "JPEG" if suffix in {".jpg", ".jpeg"}
+                else "PNG" if suffix == ".png"
+                else "WEBP" if suffix == ".webp"
+                else "OTHER"
+            )
+            artwork[category] = max(0, artwork[category] - 1)
     return {
         "path": str(row["path"]),
         "album": str(row["album_name"]),
@@ -68,29 +91,38 @@ def stats_from_row(row: Any) -> dict[str, Any]:
         "tracks": int(row["track_count"] or 0),
         "compilation": compilation,
         "album_mbid_missing": album_mbid_missing,
-        "manual_compilation_eligible": (
-            compilation and album_mbid_missing
+        "manual_compilation_eligible": album_mbid_missing,
+        "artwork": artwork,
+        "root_files": (
+            max(
+                0,
+                int(row["root_files"] or 0)
+                - max(cover_files, len(indexed_cover_names)),
+            )
+            if album_mbid_missing
+            else int(row["root_files"] or 0)
         ),
-        "artwork": {
-            "JPEG": int(row["artwork_jpeg"] or 0),
-            "PNG": int(row["artwork_png"] or 0),
-            "WEBP": int(row["artwork_webp"] or 0),
-            "OTHER": int(row["artwork_other"] or 0),
-        },
-        "root_files": int(row["root_files"] or 0),
-        "cover_files": int(row["cover_files"] or 0),
-        "cover_names": json_list(row["cover_names_json"]),
+        "cover_files": 0 if album_mbid_missing else cover_files,
+        "cover_names": (
+            [] if album_mbid_missing else indexed_cover_names
+        ),
         "cover_resolution": (
             f"{int(cover_width)}x{int(cover_height)}"
-            if cover_width and cover_height
+            if not album_mbid_missing and cover_width and cover_height
             else ""
         ),
-        "cover_path": str(row["cover_path"] or ""),
+        "cover_path": "" if album_mbid_missing else str(row["cover_path"] or ""),
         "other_filenames": json_list(row["other_filenames_json"]),
-        "webp_found": bool(row["webp_found"]),
-        "webp_size_mb": float(row["webp_size_mb"] or 0.0),
-        "webp_resolution": str(row["webp_resolution"] or ""),
-        "webp_conversion": bool(row["webp_conversion"]),
+        "webp_found": False if album_mbid_missing else bool(row["webp_found"]),
+        "webp_size_mb": (
+            0.0 if album_mbid_missing else float(row["webp_size_mb"] or 0.0)
+        ),
+        "webp_resolution": (
+            "" if album_mbid_missing else str(row["webp_resolution"] or "")
+        ),
+        "webp_conversion": (
+            False if album_mbid_missing else bool(row["webp_conversion"])
+        ),
     }
 
 

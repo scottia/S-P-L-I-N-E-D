@@ -14,8 +14,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::safe_write::{replace_binary_file, replace_text_file};
+use crate::safe_write::{replace_binary_file, replace_file_from, replace_text_file};
 use crate::settings::{config_text, save_config_text, ui_preferences_path};
+use rusqlite::{Connection, MAIN_DB, OpenFlags};
+use serde_json::json;
 
 const FORMAT: &str = "SPLINED-BACKUP";
 const FORMAT_VERSION: u32 = 1;
@@ -152,6 +154,120 @@ pub fn export_backup(
         serde_json::from_str::<BackupEnvelope>(candidate)
             .map(|_| ())
             .map_err(|error| format!("Invalid staged SPLINED backup: {error}"))
+    })?;
+    Ok(path)
+}
+
+/// Create a consistent, standalone SQLite snapshot. SQLite's online backup API
+/// is used instead of copying the live database bytes while another runtime may
+/// be updating them.
+pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<PathBuf, String> {
+    let path = with_extension(requested_path, "sqlite");
+    let source_path = Path::new(&config.scan.cache_dir).join("splined.db");
+    if !source_path.is_file() {
+        return Err(format!(
+            "The configured SPLINED database does not exist: {}",
+            source_path.display()
+        ));
+    }
+    let temporary = tempfile::TempDir::new()
+        .map_err(|error| format!("Unable to create SQLite backup staging directory: {error}"))?;
+    let snapshot_path = temporary.path().join("splined.sqlite");
+    let source = Connection::open_with_flags(&source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| {
+            format!(
+                "Unable to open SPLINED database {} for backup: {error}",
+                source_path.display()
+            )
+        })?;
+    source
+        .backup(MAIN_DB, &snapshot_path, None)
+        .map_err(|error| format!("Unable to create the SQLite snapshot: {error}"))?;
+    validate_sqlite_backup(&snapshot_path)?;
+    replace_file_from(
+        &path,
+        &snapshot_path,
+        "SQLite backup",
+        validate_sqlite_backup,
+    )?;
+    Ok(path)
+}
+
+/// Restore a standalone SQLite snapshot to the configured database location.
+pub fn restore_database_backup(path: &Path, config: &Config) -> Result<PathBuf, String> {
+    validate_sqlite_backup(path)?;
+    let destination = Path::new(&config.scan.cache_dir).join("splined.db");
+    replace_file_from(
+        &destination,
+        path,
+        "SPLINED SQLite database",
+        validate_sqlite_backup,
+    )?;
+    Ok(destination)
+}
+
+/// Write a human-readable, secret-free diagnostic summary as its own JSON
+/// artifact. It is reference material, not a restorable settings archive.
+pub fn export_diagnostic_summary(
+    requested_path: &Path,
+    config: &Config,
+) -> Result<PathBuf, String> {
+    let path = with_extension(requested_path, "json");
+    let database = Path::new(&config.scan.cache_dir).join("splined.db");
+    let database_metadata = std::fs::metadata(&database).ok();
+    let database_check = if database.is_file() {
+        validate_sqlite_backup(&database)
+            .map(|_| "ok".to_string())
+            .unwrap_or_else(|error| error)
+    } else {
+        "missing".to_string()
+    };
+    let summary = json!({
+        "format": "SPLINED-DIAGNOSTIC-SUMMARY",
+        "version": 1,
+        "created_utc": unix_timestamp().to_string(),
+        "splined_version": env!("CARGO_PKG_VERSION"),
+        "config_version": config.config_version,
+        "runtime": {
+            "mode": format!("{:?}", config.mode),
+            "verbosity": format!("{:?}", config.verbosity),
+            "scan_mode": config.scan.scan_mode,
+            "library_scan": config.scan.library_scan,
+            "sqlite_shared": config.scan.sqlite_shared,
+        },
+        "paths": {
+            "music_library": config.library.music_library,
+            "scan_library": config.scan.scan_library_dir,
+            "database": database,
+            "temporary_cache": config.scan.temporary_cache_dir,
+            "log_directory": config.scan.log_dir,
+        },
+        "database": {
+            "exists": database.is_file(),
+            "size_bytes": database_metadata.as_ref().map(std::fs::Metadata::len),
+            "quick_check": database_check,
+        },
+        "retention": {
+            "log_days": config.logging.retention_days,
+            "history_enabled": config.history.enabled,
+            "history_days": config.history.retention_days,
+        },
+        "sources": {
+            "priority": config.sources.cover_sources,
+            "excluded": config.sources.exclude_cover_sources,
+        },
+    });
+    let body = serde_json::to_string_pretty(&summary)
+        .map_err(|error| format!("Unable to serialize diagnostic summary: {error}"))?;
+    replace_text_file(&path, &body, "diagnostic summary", |candidate| {
+        let parsed: serde_json::Value = serde_json::from_str(candidate)
+            .map_err(|error| format!("Invalid diagnostic summary JSON: {error}"))?;
+        if parsed.get("format").and_then(serde_json::Value::as_str)
+            != Some("SPLINED-DIAGNOSTIC-SUMMARY")
+        {
+            return Err("Diagnostic summary format marker is missing.".to_string());
+        }
+        Ok(())
     })?;
     Ok(path)
 }
@@ -346,6 +462,33 @@ fn with_spl_extension(path: &Path) -> PathBuf {
     }
 }
 
+fn with_extension(path: &Path, extension: &str) -> PathBuf {
+    if path
+        .extension()
+        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
+    {
+        path.to_path_buf()
+    } else {
+        path.with_extension(extension)
+    }
+}
+
+fn validate_sqlite_backup(path: &Path) -> Result<(), String> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Unable to open SQLite backup {}: {error}", path.display()))?;
+    let result = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Unable to verify SQLite backup {}: {error}", path.display()))?;
+    if result.eq_ignore_ascii_case("ok") {
+        Ok(())
+    } else {
+        Err(format!(
+            "SQLite backup {} failed quick_check: {result}",
+            path.display()
+        ))
+    }
+}
+
 fn validate_credential_filename(name: &str) -> Result<(), String> {
     let path = Path::new(name);
     if path.file_name().and_then(|value| value.to_str()) != Some(name)
@@ -370,6 +513,7 @@ use serde_json::Value;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn protected_and_plain_envelopes_round_trip() {
@@ -394,5 +538,65 @@ mod tests {
         assert!(validate_credential_filename("navidrome.json").is_ok());
         assert!(validate_credential_filename("../navidrome.json").is_err());
         assert!(validate_credential_filename("config.toml").is_err());
+    }
+
+    #[test]
+    fn separate_backup_extensions_are_stable() {
+        assert_eq!(
+            with_extension(Path::new("splined-database"), "sqlite"),
+            PathBuf::from("splined-database.sqlite")
+        );
+        assert_eq!(
+            with_extension(Path::new("splined-diagnostics.json"), "json"),
+            PathBuf::from("splined-diagnostics.json")
+        );
+    }
+
+    #[test]
+    fn sqlite_snapshot_and_diagnostic_summary_are_independent_files() {
+        let root = TempDir::new().unwrap();
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let database = cache.join("splined.db");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('before');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut config = Config::default();
+        config.scan.cache_dir = cache.to_string_lossy().into_owned();
+        let backup = export_database_backup(&root.path().join("library"), &config).unwrap();
+        assert_eq!(
+            backup.extension().and_then(|value| value.to_str()),
+            Some("sqlite")
+        );
+
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute("UPDATE fixture SET value = 'after'", [])
+            .unwrap();
+        drop(connection);
+        restore_database_backup(&backup, &config).unwrap();
+        let restored = Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT value FROM fixture", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(restored, "before");
+
+        let diagnostics =
+            export_diagnostic_summary(&root.path().join("diagnostics"), &config).unwrap();
+        assert_eq!(
+            diagnostics.extension().and_then(|value| value.to_str()),
+            Some("json")
+        );
+        let summary: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(diagnostics).unwrap()).unwrap();
+        assert_eq!(summary["format"], "SPLINED-DIAGNOSTIC-SUMMARY");
+        assert_eq!(summary["database"]["quick_check"], "ok");
     }
 }
