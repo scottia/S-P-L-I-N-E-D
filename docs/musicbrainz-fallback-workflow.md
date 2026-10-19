@@ -1,6 +1,6 @@
 # MusicBrainz Fallback Workflow
 
-Approved project clipboard for the SPLINED compilation/fallback workflow.
+Current Windows compilation/fallback workflow and its identity rules.
 
 ## UI contract
 
@@ -8,7 +8,7 @@ Approved project clipboard for the SPLINED compilation/fallback workflow.
 - **Advanced IDs** contains only Recording ID and Artist ID. The Release ID is obtained from the selected MusicBrainz album.
 - Keep the existing release-family headings and edition detail. United States editions are primary within a family.
 - A fallback album without a Release/Album ID is marked by a muted magenta diagonal **COMP** banner.
-- While MusicBrainz is open, Selected Artwork is blank until a result is hovered or selected; Artist Art must never be substituted there.
+- While MusicBrainz is open, Selected Artwork shows the current track's embedded image, a hovered or selected result, or a selected Existing source. Artist Art and compilation-folder `cover.*` must never be substituted there.
 
 ## User workflow
 
@@ -19,9 +19,9 @@ Approved project clipboard for the SPLINED compilation/fallback workflow.
 5. SPLINED resolves the identity automatically using `splined.db`, Navidrome, and MusicBrainz validation. A successful identity turns green.
 6. SPLINED queries the exact Recording ID and, when necessary, expands through the related Work while retaining only recordings with the validated Artist ID.
 7. If the identity is invalid, SPLINED performs an Artist-restricted fuzzy title search. Results are grouped by percentage and colored red, orange, yellow, or green.
-8. If automatic recovery still fails, the red **MB Failed** button appears. It opens the exact MusicBrainz Artist page, or an artist search when no valid Artist ID exists, and leaves SPLINED waiting on the same track.
+8. If automatic recovery still fails, **MB INFO** opens the exact MusicBrainz Artist page, or an artist search when no valid Artist ID exists, and leaves SPLINED waiting on the same track.
 9. After researching on MusicBrainz, return to SPLINED, expand **Advanced IDs**, correct the Recording and/or Artist ID, and press **Apply IDs**. SPLINED validates them, preserves rejected values for correction, and reruns the lookup. Accepted IDs turn green and are saved to the track and `splined.db`.
-10. Hover to preview album artwork, click to lock it, and double-click or use **Use Selected Album**. Then click **WRITE Cover** immediately or optionally use **Upscale Preview** first. SPLINED returns to the expanded COMP album and marks the track green.
+10. Review the separate **Existing** choices at the top of the results and the grouped MusicBrainz releases. Hover to preview, click to lock, then write the preview directly or optionally use **Upscale Preview** first. **EMBED Thumbs** can prepare a preference-sized copy before **EMBED Comp**. SPLINED returns to the expanded COMP album and marks the written track green.
 
 ## Authority and recovery rules
 

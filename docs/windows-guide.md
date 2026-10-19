@@ -150,12 +150,11 @@ never treated as physical pixels.
 
 MusicBrainz Results temporarily occupies the central mode workspace while an
 authority decision is pending. Results are grouped by release family and Album
-Artist. Selecting a different release asynchronously loads its Cover Art
-Archive front image into Artwork Preview. The single bottom **Open MB Page**
-action is enabled only for a different selected release; every opened release
-retains its purple **VISITED** history while selection remains cyan and current
-authority remains yellow. The collapsible, yellow-outlined ID editor exposes
-Recording, Artist, and Release MBIDs in labeled rows with one Apply action.
+Artist. Hovering a release previews its Cover Art Archive front image; clicking
+locks the preview. The selected preview can be written directly from **Selected
+Artwork**, with or without an **Upscale Preview**, without first returning to
+the Candidate Artwork strip. The collapsible **Advanced IDs** editor exposes
+Recording and Artist MBIDs; the selected release supplies its Release ID.
 
 Text and status filters change only visibility. Artist and Album filters can
 be combined with general search and multiple independently enabled status
@@ -177,6 +176,24 @@ missing rows with a read-only enumeration of that one folder, for direct
 track-level reopen while retaining the parent Album's queue and completion authority.
 Completed track-art ledger entries are green; tracks without a completed entry
 are blue. Folder-level `cover.*` files are not used or counted.
+
+In Artist Overview, a fallback compilation has a diagonal **COMP** ribbon. Its
+matching tracks appear directly beneath the selected card. **LAUNCH** can
+process that artist's pending compilation tracks in sequence; changing the
+selection stops that list without discarding blue/green progress. Selecting one
+track opens MusicBrainz for that track. The Selected Artwork preview for a
+compilation track uses only its embedded image, a hovered/selected MusicBrainz
+cover, or an explicitly selected **Existing** source—never the compilation
+folder's `cover.*` or Artist Art.
+
+Matching local artwork appears at the top of MusicBrainz Results as separate
+green/cyan **Existing** choices, so different Artist Album covers can be
+previewed and chosen independently. Exact Recording and Artist ID matches are
+preferred; title-based reuse is restricted to the matching artist and excludes
+Live, Remix, and parenthesized variants. An exact Recording ID match is not
+excluded merely because its title has one of those variants. Choosing
+**Existing** leaves the artwork available in Selected Artwork for optional
+upscaling; **Embed Existing** remains available without upscaling.
 
 ## Running work
 
@@ -238,12 +255,36 @@ Rust pipeline is permitted to install validated output.
 **CURRENT ALBUM** is rendered separately from ordinary search results and is
 the authority row. It carries the current recording, artist, and release IDs.
 Applying IDs submits an authority decision to the Rust runtime. Ordinary result
-selection retains its release-row identity and visited state; **Use Release**
-is a separate action. Artist and release-type filters use the mature release
-ordering without decade groups. Retry and Back to MB retain the active result
-history. Editable recording, artist, and release identifiers are normalized
-and UUID-validated before **Apply IDs**. After an authority choice the existing
-artwork workflow resumes in the same run.
+selection retains its release-row identity and visited state; **Use Selected
+Album** is a separate action. Artist and release-type filters use the mature
+release ordering without decade groups. Retry and Back to Candidate Artwork
+retain the active result history. Editable Recording and Artist IDs are
+normalized and UUID-validated before **Apply IDs**; the selected result
+provides the Release ID. After an authority choice, the existing artwork
+workflow resumes in the same run.
+
+## Selected Artwork and embedded thumbnails
+
+The three actions above the image information occupy one row: **Upscale
+Preview**, the context-sensitive write/embed action, and **EMBED Thumbs**.
+The buttons and labels shrink with the Selected Artwork pane. **EMBED Thumbs**
+prepares a square thumbnail in memory from the chosen full-quality artwork or
+its optional Upscale Preview; it does not write a file on its own. The square
+policy uses a conservative centered crop and fits wider images rather than
+cutting away too much of the sides. The preview and dimension/file-size fields
+show the prepared thumbnail. While **EMBED Thumbs** is active, a yellow line at
+the bottom of the image reports the existing embedded image's resolution and
+size. For an Artist Album with unequal embedded images, it reports the largest
+and adds **Varying Size**.
+
+For a COMP fallback track the write action becomes purple **EMBED Comp** and
+embeds only that selected track; it does not save a compilation `cover.*`.
+For an Artist Album it becomes purple **EMBED w/Cover**: the normal full-
+resolution `cover.*` is saved, while a preference-sized copy is embedded in
+all supported tracks of the album. Without **EMBED Thumbs**, the ordinary
+**WRITE Cover** or **Embed Existing** action is still available; Upscale
+Preview is optional in either case. Set **Embedded Thumbnail Preference** in
+Settings above Enhancement defaults (1200 pixels by default, 300–4000 allowed).
 
 ## Artwork editing and upscale
 

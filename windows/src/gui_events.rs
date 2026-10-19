@@ -195,6 +195,7 @@ pub struct UpscaleOverrides {
     pub color_temperature: i32,
     pub apply_edit_profile: bool,
     pub edit_existing_cover: bool,
+    pub embed_thumbnails: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +219,15 @@ pub enum CandidateDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MusicBrainzMatchDecision {
     Use(usize),
+    UseExisting {
+        index: usize,
+        upscale: Option<UpscaleOverrides>,
+    },
+    WritePreview {
+        index: usize,
+        cover_path: String,
+        upscale: Option<UpscaleOverrides>,
+    },
     UseAuthority {
         recording_mbid: String,
         artist_mbids: String,
@@ -233,6 +243,31 @@ fn parse_musicbrainz_match_decision(
     value: &Value,
 ) -> Result<Option<MusicBrainzMatchDecision>, String> {
     match value.get("action").and_then(Value::as_str).unwrap_or("") {
+        "use_existing_compilation_artwork" => Ok(Some(MusicBrainzMatchDecision::UseExisting {
+            index: value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+            upscale: value
+                .get("upscale_adaptive_defaults")
+                .map(|_| parse_upscale_overrides(value)),
+        })),
+        "write_musicbrainz_preview" => {
+            let index = value.get("index").and_then(Value::as_u64).ok_or_else(|| {
+                "MusicBrainz preview write did not include a release index.".to_string()
+            })?;
+            let cover_path = decision_text(value, "cover_path");
+            if index == 0 || cover_path.is_empty() {
+                return Err(
+                    "Select a MusicBrainz release and wait for its cover preview before writing."
+                        .to_string(),
+                );
+            }
+            Ok(Some(MusicBrainzMatchDecision::WritePreview {
+                index: index as usize - 1,
+                cover_path,
+                upscale: value
+                    .get("upscale_adaptive_defaults")
+                    .map(|_| parse_upscale_overrides(value)),
+            }))
+        }
         "use_musicbrainz_match" => {
             let index = value.get("index").and_then(Value::as_u64).ok_or_else(|| {
                 "MusicBrainz match decision did not include an index.".to_string()
@@ -322,32 +357,7 @@ fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, 
             }
             let upscale = value
                 .get("upscale_adaptive_defaults")
-                .map(|_| UpscaleOverrides {
-                    preserve_source_resolution: value
-                        .get("preserve_source_resolution")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    adaptive_defaults: value
-                        .get("upscale_adaptive_defaults")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(true),
-                    picture_percent: decision_i32(value, "upscale_picture_percent"),
-                    sharpen_percent: decision_i32(value, "upscale_sharpen_percent"),
-                    softness_percent: decision_i32(value, "upscale_softness_percent"),
-                    contrast_percent: decision_i32(value, "upscale_contrast_percent"),
-                    exposure_percent: decision_i32(value, "upscale_exposure_percent"),
-                    brightness_percent: decision_i32(value, "upscale_brightness_percent"),
-                    gamma_percent: decision_i32(value, "upscale_gamma_percent"),
-                    color_temperature: decision_i32(value, "upscale_color_temperature"),
-                    apply_edit_profile: value
-                        .get("apply_edit_profile")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    edit_existing_cover: value
-                        .get("edit_existing_cover")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                });
+                .map(|_| parse_upscale_overrides(value));
             Ok(Some(CandidateDecision::Use {
                 index: index as usize - 1,
                 upscale,
@@ -371,6 +381,39 @@ fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, 
             Ok(Some(CandidateDecision::Retry { artist, album }))
         }
         _ => Ok(None),
+    }
+}
+
+fn parse_upscale_overrides(value: &Value) -> UpscaleOverrides {
+    UpscaleOverrides {
+        preserve_source_resolution: value
+            .get("preserve_source_resolution")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        adaptive_defaults: value
+            .get("upscale_adaptive_defaults")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        picture_percent: decision_i32(value, "upscale_picture_percent"),
+        sharpen_percent: decision_i32(value, "upscale_sharpen_percent"),
+        softness_percent: decision_i32(value, "upscale_softness_percent"),
+        contrast_percent: decision_i32(value, "upscale_contrast_percent"),
+        exposure_percent: decision_i32(value, "upscale_exposure_percent"),
+        brightness_percent: decision_i32(value, "upscale_brightness_percent"),
+        gamma_percent: decision_i32(value, "upscale_gamma_percent"),
+        color_temperature: decision_i32(value, "upscale_color_temperature"),
+        apply_edit_profile: value
+            .get("apply_edit_profile")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        edit_existing_cover: value
+            .get("edit_existing_cover")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        embed_thumbnails: value
+            .get("embed_thumbnails")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }
 }
 
@@ -456,6 +499,96 @@ mod tests {
                 release_mbid: "4f725973-aaf1-4d0d-a775-0a90ed2a0757".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn direct_musicbrainz_write_keeps_the_preview_path_and_profile() {
+        let decision = parse_musicbrainz_match_decision(&json!({
+            "action": "write_musicbrainz_preview", "index": 3,
+            "cover_path": "C:/cache/selected.png",
+            "upscale_adaptive_defaults": true,
+            "upscale_picture_percent": 12,
+            "preserve_source_resolution": false
+        }))
+        .unwrap()
+        .unwrap();
+        match decision {
+            MusicBrainzMatchDecision::WritePreview {
+                index,
+                cover_path,
+                upscale,
+            } => {
+                assert_eq!(index, 2);
+                assert_eq!(cover_path, "C:/cache/selected.png");
+                assert_eq!(upscale.unwrap().picture_percent, 12);
+            }
+            _ => panic!("The MB preview write must not become a normal release selection"),
+        }
+        assert_eq!(
+            parse_musicbrainz_match_decision(
+                &json!({"action": "use_existing_compilation_artwork"})
+            )
+            .unwrap(),
+            Some(MusicBrainzMatchDecision::UseExisting {
+                index: 0,
+                upscale: None
+            })
+        );
+        match parse_musicbrainz_match_decision(&json!({
+            "action": "use_existing_compilation_artwork",
+            "upscale_adaptive_defaults": true,
+            "upscale_picture_percent": 8,
+            "preserve_source_resolution": false
+        }))
+        .unwrap()
+        .unwrap()
+        {
+            MusicBrainzMatchDecision::UseExisting {
+                index: 0,
+                upscale: Some(profile),
+            } => {
+                assert_eq!(profile.picture_percent, 8);
+                assert!(!profile.preserve_source_resolution);
+            }
+            _ => panic!("Existing artwork must carry the optional Upscale profile"),
+        }
+    }
+
+    #[test]
+    fn embedded_thumbnail_request_is_optional_for_existing_and_candidate_writes() {
+        let existing = parse_musicbrainz_match_decision(&json!({
+            "action": "use_existing_compilation_artwork",
+            "upscale_adaptive_defaults": true,
+            "embed_thumbnails": true
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            existing,
+            MusicBrainzMatchDecision::UseExisting {
+                upscale: Some(UpscaleOverrides {
+                    embed_thumbnails: true,
+                    ..
+                }),
+                ..
+            }
+        ));
+        let ordinary = parse_candidate_decision(&json!({
+            "action": "use", "index": 1,
+            "upscale_adaptive_defaults": true
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            ordinary,
+            CandidateDecision::Use {
+                upscale: Some(UpscaleOverrides {
+                    embed_thumbnails: false,
+                    ..
+                }),
+                ..
+            }
+        ));
     }
 
     #[test]

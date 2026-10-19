@@ -93,6 +93,59 @@ pub struct PreparedArtwork {
     pub info: PreparedArtworkInfo,
 }
 
+/// Derive an embedded-only square from the fully prepared cover. Very small
+/// aspect-ratio differences use the same conservative centered crop as
+/// cover.*, while wider artwork is fitted on a square canvas instead of
+/// losing a substantial part of the composition.
+pub fn prepare_embedded_thumbnail(
+    full_resolution: &[u8],
+    side: u32,
+    format: StaticFormat,
+) -> Result<Vec<u8>, String> {
+    if !(300..=4000).contains(&side) {
+        return Err(
+            "Embedded Thumbnail Preference must be between 300 and 4000 pixels.".to_string(),
+        );
+    }
+    let mut image = image::load_from_memory(full_resolution)
+        .map_err(|error| format!("Unable to decode selected artwork for embedding: {error}"))?;
+    let width = image.width();
+    let height = image.height();
+    if width == 0 || height == 0 {
+        return Err("The selected artwork has no image pixels.".to_string());
+    }
+    let deviation = f64::from(width.abs_diff(height)) / f64::from(width.max(height));
+    if deviation <= MAX_AUTO_CROP_DEVIATION {
+        let crop_side = width.min(height);
+        image = image.crop_imm(
+            (width - crop_side) / 2,
+            (height - crop_side) / 2,
+            crop_side,
+            crop_side,
+        );
+        image = image.resize_exact(side, side, FilterType::Lanczos3);
+    } else {
+        let fitted = image.resize(side, side, FilterType::Lanczos3);
+        let mut canvas = DynamicImage::new_rgb8(side, side);
+        image::imageops::overlay(
+            &mut canvas,
+            &fitted,
+            i64::from((side - fitted.width()) / 2),
+            i64::from((side - fitted.height()) / 2),
+        );
+        image = canvas;
+    }
+    let bytes = encode_image(&image, format)?;
+    let decoded = image::load_from_memory(&bytes)
+        .map_err(|error| format!("Unable to verify embedded thumbnail: {error}"))?;
+    if decoded.width() != side || decoded.height() != side {
+        return Err(
+            "The prepared embedded thumbnail is not square at the requested size.".to_string(),
+        );
+    }
+    Ok(bytes)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinalArtworkAction {
     NoSelection,
@@ -1048,6 +1101,42 @@ mod tests {
 
     fn candidate(path: &Path) -> Candidate {
         Candidate::from_file("fixture", path, 0).unwrap()
+    }
+
+    #[test]
+    fn embedded_thumbnail_is_square_without_changing_the_full_resolution_source() {
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(ImageBuffer::from_pixel(2000, 2000, Rgb([7, 8, 9])))
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        let original = cursor.into_inner();
+        let unchanged = original.clone();
+        let thumb = prepare_embedded_thumbnail(&original, 1200, StaticFormat::Jpeg).unwrap();
+        let decoded = image::load_from_memory(&thumb).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (1200, 1200));
+        assert_eq!(original, unchanged);
+    }
+
+    #[test]
+    fn wide_embedded_thumbnail_fits_instead_of_cropping_away_its_sides() {
+        let source = ImageBuffer::from_fn(1600, 800, |x, _| {
+            if !(200..1400).contains(&x) {
+                Rgb([240, 20, 20])
+            } else {
+                Rgb([20, 20, 240])
+            }
+        });
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(source)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        let thumb =
+            prepare_embedded_thumbnail(&cursor.into_inner(), 1200, StaticFormat::Png).unwrap();
+        let decoded = image::load_from_memory(&thumb).unwrap().to_rgb8();
+        assert_eq!((decoded.width(), decoded.height()), (1200, 1200));
+        assert_eq!(decoded.get_pixel(0, 600)[0], 240);
+        assert_eq!(decoded.get_pixel(1199, 600)[0], 240);
+        assert_eq!(decoded.get_pixel(600, 0)[0], 0);
     }
 
     #[test]

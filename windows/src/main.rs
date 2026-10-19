@@ -16,8 +16,12 @@ use splined_core::candidate::{Candidate, StaticFormat};
 use splined_core::config::{Config, Mode, ScanTimeout, Verbosity, configured_samples_dir};
 use splined_core::credential_store::{CredentialEditor, load_editor, save_editor, test_editor};
 use splined_core::download::DownloadCache;
+use splined_core::embedded_artwork::{
+    embedded_front_matches, embedded_front_metadata, replace_embedded_front,
+};
 use splined_core::final_artwork::{
-    install_prepared_artwork, prepare_existing_cover_edit, prepare_selected_artwork_edit,
+    install_prepared_artwork, prepare_configured_artwork, prepare_embedded_thumbnail,
+    prepare_existing_cover_edit, prepare_selected_artwork_edit,
 };
 use splined_core::inspect::inspect_image;
 use splined_core::local_artwork::embedded_candidate;
@@ -55,6 +59,8 @@ slint::include_modules!();
 static FULL_THUMBNAIL_REFRESH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FOCUSED_THUMBNAIL_REFRESH_REVISION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_RENDER_REVISION: AtomicU64 = AtomicU64::new(0);
+type EmbeddedMetadataCache = HashMap<String, (u64, u128, Option<(u32, u32, u64)>)>;
+static EMBEDDED_METADATA_CACHE: OnceLock<Mutex<EmbeddedMetadataCache>> = OnceLock::new();
 type NavidromeArtistCatalogCell = Arc<tokio::sync::OnceCell<Arc<Vec<NavidromeArtist>>>>;
 type NavidromeAlbumCatalogCell = Arc<tokio::sync::OnceCell<Arc<Vec<NavidromeAlbum>>>>;
 
@@ -75,6 +81,7 @@ struct PreviewContext {
     candidate: Option<(usize, String)>,
     musicbrainz_result: Option<usize>,
     musicbrainz_cover_path: String,
+    musicbrainz_existing_path: String,
     compilation_track_preview: Option<(String, String)>,
 }
 
@@ -88,12 +95,34 @@ fn preview_context(app: &ApplicationState) -> PreviewContext {
             .map(|candidate| (candidate.index, candidate.cache_path.clone())),
         musicbrainz_result: app.selected_musicbrainz_result,
         musicbrainz_cover_path: app.musicbrainz_cover_preview_path.clone(),
+        musicbrainz_existing_path: app.musicbrainz_existing_artwork_path.clone(),
         compilation_track_preview: app.active_compilation_track_preview().map(|path| {
             (
                 app.compilation_track_preview_owner.clone(),
                 path.to_string(),
             )
         }),
+    }
+}
+
+fn embedded_thumbnail_owner_key(app: &ApplicationState) -> String {
+    format!(
+        "{:?}|{:?}|{}|{}",
+        app.phase,
+        preview_context(app),
+        app.current_compilation_track_path,
+        app.edit_preview_path
+    )
+}
+
+fn embedded_thumbnail_ready(app: &ApplicationState) -> bool {
+    !app.embedded_thumbnail_preview_path.is_empty()
+        && app.embedded_thumbnail_owner_key == embedded_thumbnail_owner_key(app)
+}
+
+fn add_embedded_thumbnail_decision(app: &ApplicationState, decision: &mut serde_json::Value) {
+    if embedded_thumbnail_ready(app) {
+        decision["embed_thumbnails"] = serde_json::json!(true);
     }
 }
 
@@ -3900,6 +3929,46 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let controller = Arc::clone(&controller);
+        ui.on_compilation_album_launch(move |album_key, include_bypassed| {
+            let result = if let Ok(mut app) = state.lock() {
+                match app
+                    .library
+                    .select_pending_compilation_tracks(album_key.as_str(), include_bypassed)
+                {
+                    Ok(0) => {
+                        app.operation_status =
+                            "This artist's COMP tracks are already complete.".to_string();
+                        app.operation_tone = "green".to_string();
+                        false
+                    }
+                    Ok(count) => {
+                        app.artist_artwork_mode = false;
+                        app.operation_status =
+                            format!("COMP queued · {count} pending artist tracks");
+                        app.operation_tone = "cyan".to_string();
+                        true
+                    }
+                    Err(reason) => {
+                        app.push_log(format!("Unable to launch COMP tracks: {reason:?}"));
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            if result
+                && !controller.is_running()
+                && let Err(error) = controller.start()
+            {
+                record_action_result(&state, Err(error));
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
         ui.on_candidate_source_filter(move |source| {
             if let Ok(mut app) = state.lock() {
                 app.set_candidate_source_filter(source.as_str());
@@ -4017,6 +4086,42 @@ fn bind_callbacks(
                 Arc::clone(&revision),
                 Arc::clone(&gate),
             );
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_prepare_embedded_thumbnail(move || {
+            if let Ok(mut app) = state.lock() {
+                if app.operation_busy {
+                    return;
+                }
+                app.operation_busy = true;
+                app.operation_status = "Preparing embedded thumbnail in memory…".to_string();
+                app.operation_tone = "violet".to_string();
+            }
+            refresh_weak(&weak, &state);
+            let state = Arc::clone(&state);
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let result = prepare_embedded_thumbnail_preview(&state);
+                let succeeded = result.is_ok();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Ok(mut app) = state.lock() {
+                        app.operation_busy = false;
+                        if succeeded {
+                            app.operation_status = format!(
+                                "Embedded thumbnail ready · {} × {} · no files changed",
+                                app.config.output.embedded_thumbnail_size,
+                                app.config.output.embedded_thumbnail_size
+                            );
+                            app.operation_tone = "violet".to_string();
+                        }
+                    }
+                    record_action_result(&state, result);
+                    refresh_weak(&weak, &state);
+                });
+            });
         });
     }
     {
@@ -5137,13 +5242,31 @@ fn bind_callbacks(
                 let decision = state
                     .lock()
                     .map_err(|_| "The SPLINED application state is unavailable.".to_string())
-                    .and_then(|mut app| app.selected_musicbrainz_result_decision());
+                    .and_then(|app| {
+                        let mut decision = app.write_musicbrainz_preview_decision()?;
+                        add_embedded_thumbnail_decision(&app, &mut decision);
+                        Ok(decision)
+                    });
+                decision.and_then(|decision| controller.write_selected_musicbrainz(decision))
+            } else if action.as_str() == "write_existing_musicbrainz" {
+                let decision = state
+                    .lock()
+                    .map_err(|_| "The SPLINED application state is unavailable.".to_string())
+                    .and_then(|app| {
+                        let mut decision = app.musicbrainz_existing_decision()?;
+                        add_embedded_thumbnail_decision(&app, &mut decision);
+                        Ok(decision)
+                    });
                 decision.and_then(|decision| controller.write_selected_musicbrainz(decision))
             } else {
                 let decision = state
                     .lock()
                     .map_err(|_| "The SPLINED application state is unavailable.".to_string())
-                    .and_then(|app| app.candidate_decision(action.as_str()));
+                    .and_then(|app| {
+                        let mut decision = app.candidate_decision(action.as_str())?;
+                        add_embedded_thumbnail_decision(&app, &mut decision);
+                        Ok(decision)
+                    });
                 decision.and_then(|decision| controller.submit_decision(decision))
             };
             record_action_result(&state, result);
@@ -5439,6 +5562,41 @@ fn bind_callbacks(
                     true,
                 );
             }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_musicbrainz_use_existing(move || {
+            if let Ok(mut app) = state.lock() {
+                let index = app.selected_musicbrainz_existing.unwrap_or(0);
+                app.select_musicbrainz_existing(index);
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_musicbrainz_existing_selected(move |index| {
+            if let Ok(mut app) = state.lock() {
+                app.select_musicbrainz_existing(index as usize);
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_musicbrainz_existing_hovered(move |index, hovered| {
+            if let Ok(mut app) = state.lock() {
+                if hovered {
+                    app.hovered_musicbrainz_existing = Some(index as usize);
+                } else if app.hovered_musicbrainz_existing == Some(index as usize) {
+                    app.hovered_musicbrainz_existing = None;
+                }
+            }
+            refresh_weak(&weak, &state);
         });
     }
     {
@@ -5837,7 +5995,11 @@ fn bind_callbacks(
                 }
                 app.operation_busy = true;
                 app.operation_status = if apply {
-                    "Saving Upscale to cover.*…".to_string()
+                    if embedded_thumbnail_ready(&app) {
+                        "Saving full-resolution cover.* and embedding album thumbnails…".to_string()
+                    } else {
+                        "Saving Upscale to cover.*…".to_string()
+                    }
                 } else {
                     "Rendering Upscale Preview in memory…".to_string()
                 };
@@ -6556,6 +6718,9 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_square(config.output.square);
     ui.set_settings_square_mode(config.output.square_mode.clone().into());
     ui.set_settings_square_round_to(config.output.square_round_to.to_string().into());
+    ui.set_settings_embedded_thumbnail_size(
+        config.output.embedded_thumbnail_size.to_string().into(),
+    );
     ui.set_settings_upscale_below_ideal(config.output.upscale_below_ideal);
     ui.set_settings_upscale_max_percent(config.output.upscale_max_percent.to_string().into());
     ui.set_settings_upscale_adaptive(config.output.upscale_adaptive_defaults);
@@ -6659,6 +6824,10 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
     config.output.square_mode = ui.get_settings_square_mode().trim().to_string();
     config.output.square_round_to =
         parse_setting(&ui.get_settings_square_round_to(), "Square round-to")?;
+    config.output.embedded_thumbnail_size = parse_setting(
+        &ui.get_settings_embedded_thumbnail_size(),
+        "Embedded Thumbnail Preference",
+    )?;
     config.output.upscale_below_ideal = ui.get_settings_upscale_below_ideal();
     config.output.upscale_max_percent = parse_setting(
         &ui.get_settings_upscale_max_percent(),
@@ -6973,12 +7142,141 @@ fn clear_rendered_preview_for_adjustment(app: &mut ApplicationState) {
     }
 }
 
+fn prepare_embedded_thumbnail_preview(state: &Arc<Mutex<ApplicationState>>) -> Result<(), String> {
+    let (source, use_upscale, phase, compilation_track, config, owner) = {
+        let app = state
+            .lock()
+            .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
+        if app.artist_artwork_mode {
+            return Err("Embedded thumbnails are for album artwork, not Artist Art.".to_string());
+        }
+        let source = if app.phase == RunPhase::AwaitingMusicBrainz {
+            if app.selected_musicbrainz_result.is_some() {
+                app.musicbrainz_cover_preview_path.as_str()
+            } else {
+                app.musicbrainz_existing_artwork_path.as_str()
+            }
+        } else if let Some(candidate) = app.selected_candidate() {
+            candidate.cache_path.as_str()
+        } else {
+            app.current_cover_path.as_str()
+        };
+        if source.is_empty() || !Path::new(source).is_file() {
+            return Err(
+                "Select artwork with a loaded preview before preparing EMBED Thumbs.".to_string(),
+            );
+        }
+        let mut config = app.config.clone();
+        project_adjustments(&app, &mut config);
+        (
+            source.to_string(),
+            app.edit_preview_path.starts_with("memory-preview://"),
+            app.phase,
+            !app.current_compilation_track_path.trim().is_empty(),
+            config,
+            embedded_thumbnail_owner_key(&app),
+        )
+    };
+    let path = Path::new(&source);
+    let candidate = Candidate::from_file("thumbnail", path, 0)?;
+    let full_resolution = if use_upscale || phase == RunPhase::AwaitingCandidate {
+        let range = Range {
+            min: config.range.min,
+            ideal: config.range.ideal,
+            max: config.range.max,
+            ladder: config.range.ladder,
+        };
+        let mut output = config.output.clone();
+        if compilation_track {
+            output.upscale_below_ideal = false;
+        }
+        if use_upscale {
+            prepare_selected_artwork_edit(
+                &candidate,
+                path,
+                &range,
+                candidate.format,
+                &output,
+                true,
+            )?
+            .bytes
+        } else {
+            prepare_configured_artwork(&candidate, path, &range, candidate.format, &output, true)?
+                .bytes
+        }
+    } else {
+        fs::read(path).map_err(|error| format!("Unable to read selected artwork: {error}"))?
+    };
+    let format = match candidate.format {
+        StaticFormat::Png => StaticFormat::Png,
+        _ => StaticFormat::Jpeg,
+    };
+    let prepared = prepare_embedded_thumbnail(
+        &full_resolution,
+        config.output.embedded_thumbnail_size,
+        format,
+    )?;
+    let render = PREVIEW_RENDER_REVISION.fetch_add(1, Ordering::SeqCst) + 1;
+    let key = format!("memory-preview://embedded-thumbnail/{render}");
+    if !preload_scaled_image_bytes(&key, &prepared, PREVIEW_CACHE_DIMENSION) {
+        return Err("Unable to load the prepared embedded thumbnail preview.".to_string());
+    }
+    if let Ok(mut app) = state.lock() {
+        if embedded_thumbnail_owner_key(&app) != owner {
+            return Ok(());
+        }
+        app.embedded_thumbnail_preview_path = key;
+        app.embedded_thumbnail_owner_key = owner;
+        app.push_log(format!(
+            "Prepared an embedded-only {} × {} thumbnail in memory from {}.",
+            config.output.embedded_thumbnail_size, config.output.embedded_thumbnail_size, source
+        ));
+    }
+    Ok(())
+}
+
+fn embed_album_thumbnails_from_cover(
+    album_path: &Path,
+    full_resolution: &[u8],
+    config: &Config,
+) -> Result<usize, String> {
+    let inventory = splined_core::scan::inventory_album_directories(album_path, &[])?;
+    let album = inventory
+        .albums
+        .iter()
+        .find(|album| album.path == album_path)
+        .ok_or_else(|| "The selected Artist Album has no supported audio tracks.".to_string())?;
+    let thumbnail = prepare_embedded_thumbnail(
+        full_resolution,
+        config.output.embedded_thumbnail_size,
+        StaticFormat::Jpeg,
+    )?;
+    let mut written = 0;
+    for track in &album.audio_files {
+        if !embedded_front_matches(track, &thumbnail).unwrap_or(false) {
+            replace_embedded_front(track, &thumbnail)?;
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
 fn edit_existing_cover(
     state: &Arc<Mutex<ApplicationState>>,
     apply: bool,
     guard: Option<(&AtomicU64, u64)>,
 ) -> Result<(), String> {
-    let (path, config, context, artist, album, album_path, album_key) = {
+    let (
+        path,
+        config,
+        context,
+        artist,
+        album,
+        album_path,
+        album_key,
+        embed_thumbnails,
+        use_upscale,
+    ) = {
         let app = state
             .lock()
             .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
@@ -6996,6 +7294,8 @@ fn edit_existing_cover(
             app.current_album.clone(),
             app.current_album_path.clone(),
             app.library.focused_album_key.clone(),
+            apply && embedded_thumbnail_ready(&app),
+            app.edit_preview_path.starts_with("memory-preview://"),
         )
     };
     if !preview_request_is_current(guard) {
@@ -7009,16 +7309,27 @@ fn edit_existing_cover(
         max: config.range.max,
         ladder: config.range.ladder,
     };
-    let prepared = prepare_existing_cover_edit(
-        &candidate,
-        path,
-        &range,
-        candidate.format,
-        &config.output,
-        true,
-    )?;
+    let prepared = if apply && embed_thumbnails && !use_upscale {
+        let mut output = config.output.clone();
+        output.evaluate_final_image = false;
+        prepare_configured_artwork(&candidate, path, &range, candidate.format, &output, true)?
+    } else {
+        prepare_existing_cover_edit(
+            &candidate,
+            path,
+            &range,
+            candidate.format,
+            &config.output,
+            true,
+        )?
+    };
     let preview_key = if apply {
-        install_prepared_artwork(path, &prepared)?;
+        if fs::read(path).ok().as_deref() != Some(prepared.bytes.as_slice()) {
+            install_prepared_artwork(path, &prepared)?;
+        }
+        if embed_thumbnails {
+            embed_album_thumbnails_from_cover(Path::new(&album_path), &prepared.bytes, &config)?;
+        }
         remove_saved_sample_album(&config, &artist, &album)?;
         let album_path = Path::new(&album_path);
         if !album_path.is_dir() {
@@ -7072,6 +7383,10 @@ fn edit_existing_cover(
             app.service_status = "Cover written; Album marked Processed.".to_string();
         }
         app.edit_preview_path = preview_key;
+        if apply {
+            app.embedded_thumbnail_preview_path.clear();
+            app.embedded_thumbnail_owner_key.clear();
+        }
         app.push_log(if apply {
             format!(
                 "Edited existing cover and marked the Album Processed: {}",
@@ -7109,13 +7424,18 @@ fn schedule_adjustment_preview(
             return;
         }
         let preview_source = state.lock().ok().map(|app| {
-            if app.selected_candidate().is_some() {
-                "candidate"
-            } else if app.phase == RunPhase::AwaitingMusicBrainz
+            if app.phase == RunPhase::AwaitingMusicBrainz
                 && app.selected_musicbrainz_result.is_some()
                 && !app.musicbrainz_cover_preview_path.trim().is_empty()
             {
                 "musicbrainz"
+            } else if app.phase == RunPhase::AwaitingMusicBrainz
+                && app.selected_musicbrainz_result.is_none()
+                && !app.musicbrainz_existing_artwork_path.trim().is_empty()
+            {
+                "musicbrainz-existing"
+            } else if app.selected_candidate().is_some() {
+                "candidate"
             } else if app.active_compilation_track_preview().is_some() {
                 "compilation-track"
             } else {
@@ -7125,6 +7445,9 @@ fn schedule_adjustment_preview(
         let result = match preview_source {
             Some("candidate") => preview_selected_candidate(&state, Some((&revision, ticket))),
             Some("musicbrainz") => preview_musicbrainz_cover(&state, Some((&revision, ticket))),
+            Some("musicbrainz-existing") => {
+                preview_musicbrainz_existing(&state, Some((&revision, ticket)))
+            }
             Some("compilation-track") => {
                 preview_compilation_track(&state, Some((&revision, ticket)))
             }
@@ -7382,6 +7705,71 @@ fn preview_musicbrainz_cover(
         app.edit_preview_path = preview_key;
         app.push_log(format!(
             "Rendered MusicBrainz release {index} preview in memory at {} × {} without changing album files.",
+            prepared.info.width, prepared.info.height
+        ));
+    }
+    Ok(())
+}
+
+fn preview_musicbrainz_existing(
+    state: &Arc<Mutex<ApplicationState>>,
+    guard: Option<(&AtomicU64, u64)>,
+) -> Result<(), String> {
+    let (source_path, config, context) = {
+        let app = state
+            .lock()
+            .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
+        if app.phase != RunPhase::AwaitingMusicBrainz
+            || app.selected_musicbrainz_result.is_some()
+            || app.musicbrainz_existing_artwork_path.trim().is_empty()
+        {
+            return Err(
+                "Select Existing artwork before requesting an Upscale Preview.".to_string(),
+            );
+        }
+        let mut config = app.config.clone();
+        config.mode = Mode::Read;
+        project_adjustments(&app, &mut config);
+        (
+            app.musicbrainz_existing_artwork_path.clone(),
+            config,
+            preview_context(&app),
+        )
+    };
+    if !preview_request_is_current(guard) {
+        return Ok(());
+    }
+    let source_path = Path::new(&source_path);
+    let candidate = Candidate::from_file("existing", source_path, 0)?;
+    let range = Range {
+        min: config.range.min,
+        ideal: config.range.ideal,
+        max: config.range.max,
+        ladder: config.range.ladder,
+    };
+    let prepared = prepare_selected_artwork_edit(
+        &candidate,
+        source_path,
+        &range,
+        candidate.format,
+        &config.output,
+        true,
+    )?;
+    let render = PREVIEW_RENDER_REVISION.fetch_add(1, Ordering::SeqCst) + 1;
+    let preview_key = format!("memory-preview://musicbrainz-existing/{render}");
+    if !preload_scaled_image_bytes(&preview_key, &prepared.bytes, PREVIEW_CACHE_DIMENSION) {
+        return Err("Unable to decode the Existing Upscale Preview in memory.".to_string());
+    }
+    if !preview_request_is_current(guard) {
+        return Ok(());
+    }
+    if let Ok(mut app) = state.lock() {
+        if preview_context(&app) != context || !preview_request_is_current(guard) {
+            return Ok(());
+        }
+        app.edit_preview_path = preview_key;
+        app.push_log(format!(
+            "Rendered Existing artwork preview in memory at {} × {} without changing album files.",
             prepared.info.width, prepared.info.height
         ));
     }
@@ -7954,6 +8342,7 @@ fn preview_image_source_paths(app: &ApplicationState) -> BTreeSet<String> {
         app.current_cover_path.as_str(),
         app.edit_preview_path.as_str(),
         app.musicbrainz_cover_preview_path.as_str(),
+        app.musicbrainz_existing_artwork_path.as_str(),
         hovered_musicbrainz.unwrap_or_default(),
         candidate.unwrap_or_default(),
         compilation.unwrap_or_default(),
@@ -7961,7 +8350,35 @@ fn preview_image_source_paths(app: &ApplicationState) -> BTreeSet<String> {
     .into_iter()
     .filter(|path| !path.trim().is_empty())
     .map(str::to_string)
+    .chain(
+        app.musicbrainz_existing_artworks
+            .iter()
+            .map(|item| item.artwork_path.clone()),
+    )
     .collect()
+}
+
+fn fallback_compilation_cover_suppressed(app: &ApplicationState, fallback_album: bool) -> bool {
+    app.library.show_tracks
+        || fallback_album
+        || !app.current_compilation_track_path.trim().is_empty()
+        || !app.library.selected_compilation_track_paths.is_empty()
+}
+
+fn musicbrainz_existing_preview_path(
+    app: &ApplicationState,
+    active_musicbrainz_hover_preview: bool,
+) -> Option<&str> {
+    (app.phase == RunPhase::AwaitingMusicBrainz
+        && !active_musicbrainz_hover_preview
+        && app.selected_musicbrainz_result.is_none())
+    .then(|| {
+        app.hovered_musicbrainz_existing
+            .and_then(|index| app.musicbrainz_existing_artworks.get(index))
+            .map(|item| item.artwork_path.as_str())
+            .unwrap_or(app.musicbrainz_existing_artwork_path.as_str())
+    })
+    .filter(|path| !path.trim().is_empty())
 }
 
 fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
@@ -8237,6 +8654,50 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
                             .eq_ignore_ascii_case(&state.musicbrainz_authority.release_mbid)
                 }),
     );
+    ui.set_musicbrainz_existing_available(
+        state.phase == RunPhase::AwaitingMusicBrainz
+            && !state.musicbrainz_existing_artwork_path.is_empty(),
+    );
+    ui.set_musicbrainz_existing_preview(load_cached_preview_image(
+        &state.musicbrainz_existing_artwork_path,
+        "",
+    ));
+    ui.set_musicbrainz_existing_detail(SharedString::from(
+        if state.musicbrainz_existing_artwork_kind == "artist-album-cover" {
+            format!(
+                "{} · Artist Album cover · Recording + Artist IDs",
+                state.musicbrainz_existing_artwork_title
+            )
+        } else {
+            format!(
+                "{} · Verified embedded cover · Recording + Artist IDs",
+                state.musicbrainz_existing_artwork_title
+            )
+        },
+    ));
+    let existing_rows = state
+        .musicbrainz_existing_artworks
+        .iter()
+        .enumerate()
+        .map(|(index, item)| UiExistingArtworkRow {
+            index: index as i32,
+            title: SharedString::from(item.title.clone()),
+            detail: SharedString::from(if item.kind == "artist-album-cover-title" {
+                "Artist Album cover · Artist ID + exact title (different Recording ID)"
+            } else if item.kind == "artist-album-cover" {
+                "Artist Album cover · Recording + Artist IDs"
+            } else {
+                "Verified embedded cover · Recording + Artist IDs"
+            }),
+            source_path: SharedString::from(item.artwork_path.clone()),
+            preview: load_cached_preview_image(&item.artwork_path, ""),
+            loaded: cached_preview_metadata(&item.artwork_path).is_some(),
+            selected: state.selected_musicbrainz_existing == Some(index),
+        })
+        .collect::<Vec<_>>();
+    if !existing_ui_rows_equal(&ui.get_musicbrainz_existing_rows(), &existing_rows) {
+        ui.set_musicbrainz_existing_rows(model(existing_rows));
+    }
     ui.set_musicbrainz_artist_options(model(
         std::iter::once(SharedString::from("All"))
             .chain(
@@ -8279,6 +8740,9 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
 
     let preview_candidate = state.preview_candidate();
     let has_edit_preview = !state.edit_preview_path.is_empty();
+    let thumbnail_ready = embedded_thumbnail_ready(&state);
+    let thumbnail_preview =
+        thumbnail_ready.then_some(state.embedded_thumbnail_preview_path.as_str());
     let compilation_track_preview = state.active_compilation_track_preview();
     let has_compilation_track_preview = compilation_track_preview.is_some();
     let active_musicbrainz_hover_preview = state
@@ -8315,7 +8779,9 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         && preview_candidate.is_none();
     ui.set_selected_artwork_artist_overview(selected_artwork_artist_overview);
     ui.set_selected_artwork_artist_has_art(!artist_artwork_path.trim().is_empty());
-    let current_cover_path = if state.library.show_tracks || artist_overview_fallback_album {
+    let suppress_fallback_cover =
+        fallback_compilation_cover_suppressed(&state, artist_overview_fallback_album);
+    let current_cover_path = if suppress_fallback_cover {
         ""
     } else {
         state.current_cover_path.as_str()
@@ -8330,15 +8796,26 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             .then_some(state.musicbrainz_cover_preview_path.as_str())
             .filter(|path| !path.trim().is_empty())
         });
+    let existing_preview_source =
+        musicbrainz_existing_preview_path(&state, active_musicbrainz_hover_preview);
+    let awaiting_musicbrainz_result_preview = state.phase == RunPhase::AwaitingMusicBrainz
+        && (state.hovered_musicbrainz_result.is_some()
+            || state.selected_musicbrainz_result.is_some())
+        && musicbrainz_preview_source.is_none();
     let original_preview_path = musicbrainz_preview_source
+        .or(existing_preview_source)
         .or_else(|| {
             preview_candidate
                 .map(|candidate| candidate.cache_path.as_str())
                 .filter(|path| !path.is_empty())
         })
-        .or(compilation_track_preview)
+        .or_else(|| {
+            (!awaiting_musicbrainz_result_preview)
+                .then_some(compilation_track_preview)
+                .flatten()
+        })
         .unwrap_or(current_cover_path);
-    let focused_album_thumbnail = if state.library.show_tracks || artist_overview_fallback_album {
+    let focused_album_thumbnail = if suppress_fallback_cover {
         ""
     } else {
         state
@@ -8358,14 +8835,30 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         original_preview_path,
         focused_album_thumbnail,
     ));
-    let preview_path = musicbrainz_preview_source
+    let preview_path = thumbnail_preview
+        .or((has_edit_preview
+            && (state
+                .edit_preview_path
+                .starts_with("memory-preview://musicbrainz/")
+                || (existing_preview_source.is_some()
+                    && state
+                        .edit_preview_path
+                        .starts_with("memory-preview://musicbrainz-existing/")))
+            && !active_musicbrainz_hover_preview)
+            .then_some(state.edit_preview_path.as_str()))
+        .or(musicbrainz_preview_source)
+        .or(existing_preview_source)
         .or_else(|| has_edit_preview.then_some(state.edit_preview_path.as_str()))
         .or_else(|| {
             preview_candidate
                 .map(|candidate| candidate.cache_path.as_str())
                 .filter(|path| !path.is_empty())
         })
-        .or(compilation_track_preview)
+        .or_else(|| {
+            (!awaiting_musicbrainz_result_preview)
+                .then_some(compilation_track_preview)
+                .flatten()
+        })
         .unwrap_or(current_cover_path);
     ui.set_current_preview(load_cached_preview_image(
         preview_path,
@@ -8375,6 +8868,8 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         "Navidrome".to_string()
     } else if musicbrainz_cover_preview {
         "MusicBrainz".to_string()
+    } else if existing_preview_source.is_some() {
+        "Existing".to_string()
     } else if has_edit_preview {
         "Enhancement".to_string()
     } else if preview_candidate.is_none() && has_compilation_track_preview {
@@ -8384,9 +8879,11 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             .map(|candidate| source_display_name(&candidate.source))
             .unwrap_or_else(|| "Local".to_string())
     }));
-    ui.set_selected_artwork_type(SharedString::from(if selected_artwork_artist_overview {
+    ui.set_selected_artwork_type(SharedString::from(if thumbnail_ready {
+        "Embedded Thumb"
+    } else if selected_artwork_artist_overview {
         "Artist Image"
-    } else if musicbrainz_cover_preview {
+    } else if musicbrainz_cover_preview || existing_preview_source.is_some() {
         "Front Cover"
     } else if has_edit_preview {
         if state.upscale_preview_only {
@@ -8407,18 +8904,21 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         preview_path
     };
     let cached_preview = cached_preview_metadata(metadata_path);
-    let preview_dimensions = if selected_artwork_artist_overview || has_edit_preview {
-        cached_preview.map(|(width, height, _)| format!("{width} × {height}"))
-    } else {
-        preview_candidate
-            .map(|candidate| candidate.dimensions.clone())
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| cached_preview.map(|(width, height, _)| format!("{width} × {height}")))
-    }
-    .unwrap_or_else(|| "Resolution unavailable".to_string());
+    let preview_dimensions =
+        if thumbnail_ready || selected_artwork_artist_overview || has_edit_preview {
+            cached_preview.map(|(width, height, _)| format!("{width} × {height}"))
+        } else {
+            preview_candidate
+                .map(|candidate| candidate.dimensions.clone())
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| cached_preview.map(|(width, height, _)| format!("{width} × {height}")))
+        }
+        .unwrap_or_else(|| "Resolution unavailable".to_string());
     ui.set_selected_artwork_dimensions(SharedString::from(preview_dimensions));
     ui.set_selected_artwork_quality(SharedString::from(if selected_artwork_artist_overview {
         "Artist"
+    } else if existing_preview_source.is_some() {
+        "Existing"
     } else if has_edit_preview {
         "Preview"
     } else {
@@ -8439,8 +8939,13 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     let selected_artwork_write_ready = if state.artist_artwork_mode {
         !state.artist_artwork_draft_path.trim().is_empty()
     } else if state.phase == RunPhase::AwaitingMusicBrainz {
-        state.selected_musicbrainz_result.is_some()
-            && !state.musicbrainz_cover_preview_path.trim().is_empty()
+        if let Some(path) = existing_preview_source {
+            std::path::Path::new(path).is_file()
+        } else {
+            state.selected_musicbrainz_result.is_some()
+                && !state.musicbrainz_cover_preview_path.trim().is_empty()
+                && std::path::Path::new(&state.musicbrainz_cover_preview_path).is_file()
+        }
     } else if state.phase == RunPhase::AwaitingCandidate {
         state.selected_candidate().is_some()
     } else {
@@ -8450,12 +8955,27 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
                 .is_some_and(|candidate| candidate.source.eq_ignore_ascii_case("samples"))
     };
     ui.set_selected_artwork_write_ready(selected_artwork_write_ready);
+    ui.set_selected_artwork_thumbnail_ready(thumbnail_ready && selected_artwork_write_ready);
+    ui.set_selected_artwork_comp(!state.current_compilation_track_path.trim().is_empty());
+    let embed_available = selected_artwork_write_ready
+        && !state.artist_artwork_mode
+        && !state.operation_busy
+        && !state
+            .selected_candidate()
+            .is_some_and(|candidate| candidate.source.eq_ignore_ascii_case("samples"));
+    ui.set_selected_artwork_embed_available(embed_available);
+    ui.set_selected_artwork_embedded_info(if embed_available {
+        current_embedded_thumbnail_label(&state).into()
+    } else {
+        SharedString::default()
+    });
     ui.set_selected_artwork_existing(
         !state.artist_artwork_mode
-            && state.phase == RunPhase::AwaitingCandidate
-            && state
-                .selected_candidate()
-                .is_some_and(|candidate| candidate.source.eq_ignore_ascii_case("existing")),
+            && (existing_preview_source.is_some()
+                || (state.phase == RunPhase::AwaitingCandidate
+                    && state.selected_candidate().is_some_and(|candidate| {
+                        candidate.source.eq_ignore_ascii_case("existing")
+                    }))),
     );
     ui.set_selected_count(state.library.selected_count() as i32);
     ui.set_status_filter_label(SharedString::from(
@@ -8797,6 +9317,83 @@ fn byte_size_label(bytes: u64) -> String {
     }
 }
 
+fn current_embedded_thumbnail_label(app: &ApplicationState) -> String {
+    let tracks = if !app.current_compilation_track_path.trim().is_empty() {
+        vec![PathBuf::from(&app.current_compilation_track_path)]
+    } else if !app.current_album_path.trim().is_empty() {
+        fs::read_dir(&app.current_album_path)
+            .ok()
+            .map(|entries| {
+                let mut tracks = entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.is_file() && splined_core::scan::is_supported_audio_file(path)
+                    })
+                    .collect::<Vec<_>>();
+                tracks.sort();
+                tracks
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if tracks.is_empty() {
+        return "No embedded thumb".to_string();
+    }
+    let infos = tracks
+        .iter()
+        .map(|track| cached_embedded_front_metadata(track))
+        .collect::<Vec<_>>();
+    format_existing_embedded_info(&infos)
+}
+
+fn format_existing_embedded_info(infos: &[Option<(u32, u32, u64)>]) -> String {
+    let largest = infos
+        .iter()
+        .flatten()
+        .max_by_key(|(width, height, bytes)| (u64::from(*width) * u64::from(*height), *bytes));
+    let Some((width, height, bytes)) = largest else {
+        return "No embedded thumb".to_string();
+    };
+    let varying = infos
+        .iter()
+        .any(|info| info.as_ref() != Some(&(*width, *height, *bytes)));
+    format!(
+        "Existing: {width} × {height} · {}{}",
+        byte_size_label(*bytes),
+        if varying { " · Varying Size" } else { "" }
+    )
+}
+
+fn cached_embedded_front_metadata(track: &Path) -> Option<(u32, u32, u64)> {
+    let Ok(metadata) = fs::metadata(track) else {
+        return None;
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    let key = track.to_string_lossy().into_owned();
+    let cache = EMBEDDED_METADATA_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cached = cache.lock().ok().and_then(|cache| {
+        cache.get(&key).and_then(|(size, time, info)| {
+            (*size == metadata.len() && *time == modified).then_some(*info)
+        })
+    });
+    if let Some(info) = cached {
+        info
+    } else {
+        let info = embedded_front_metadata(track).ok().flatten();
+        if let Ok(mut cache) = cache.lock() {
+            cache.insert(key, (metadata.len(), modified, info));
+        }
+        info
+    }
+}
+
 #[cfg(windows)]
 fn browse_for_folder(initial: &str, description: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;
@@ -8921,6 +9518,23 @@ fn musicbrainz_ui_rows_equal(
                     && actual.visited == expected.visited
                     && actual.selected == expected.selected
                     && actual.score == expected.score
+            })
+        })
+}
+
+fn existing_ui_rows_equal(
+    current: &ModelRc<UiExistingArtworkRow>,
+    next: &[UiExistingArtworkRow],
+) -> bool {
+    current.row_count() == next.len()
+        && next.iter().enumerate().all(|(index, expected)| {
+            current.row_data(index).is_some_and(|actual| {
+                actual.index == expected.index
+                    && actual.title == expected.title
+                    && actual.detail == expected.detail
+                    && actual.source_path == expected.source_path
+                    && actual.loaded == expected.loaded
+                    && actual.selected == expected.selected
             })
         })
 }
@@ -9260,17 +9874,20 @@ fn trim_large_raw_image_cache(
 mod tests {
     use super::{
         CachedPixels, MaximizeGuard, PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget,
-        UiMusicBrainzRow, apply_ui_preferences, artist_art_candidate_source,
-        artist_art_query_sources, artist_overview_ui_model, automatic_backup_is_due,
-        backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
-        cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail,
-        circular_artist_art_png, edit_existing_cover, is_sqlite_backup_path, is_valid_mbid,
-        local_album_art_file, local_artist_art_file, logical_dimension,
-        match_artist_overview_album, model, musicbrainz_failed_url, musicbrainz_ui_rows_equal,
+        UiMusicBrainzRow, add_embedded_thumbnail_decision, apply_ui_preferences,
+        artist_art_candidate_source, artist_art_query_sources, artist_overview_ui_model,
+        automatic_backup_is_due, backup_file_in_directory, backup_schedule_interval,
+        begin_musicbrainz_preview_request, cached_artist_banner_with_bottom_blur,
+        cached_circular_artist_thumbnail, circular_artist_art_png, edit_existing_cover,
+        embedded_thumbnail_ready, fallback_compilation_cover_suppressed,
+        format_existing_embedded_info, is_sqlite_backup_path, is_valid_mbid, local_album_art_file,
+        local_artist_art_file, logical_dimension, match_artist_overview_album, model,
+        musicbrainz_existing_preview_path, musicbrainz_failed_url, musicbrainz_ui_rows_equal,
         normalize_backup_schedule, preload_scaled_image, preload_scaled_image_bytes,
-        preview_compilation_track, preview_image_source_paths, preview_musicbrainz_cover,
-        preview_request_is_current, raw_image_cache, restore_request_from_args, split_values,
-        synchronize_fallback_album, trim_large_raw_image_cache, write_artist_art_file,
+        prepare_embedded_thumbnail_preview, preview_compilation_track, preview_image_source_paths,
+        preview_musicbrainz_cover, preview_musicbrainz_existing, preview_request_is_current,
+        raw_image_cache, restore_request_from_args, split_values, synchronize_fallback_album,
+        trim_large_raw_image_cache, write_artist_art_file,
     };
     use serde_json::json;
     use slint::Model;
@@ -9288,6 +9905,24 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn album_embedded_info_uses_largest_image_and_marks_varying_sizes() {
+        let line = format_existing_embedded_info(&[
+            Some((600, 600, 90_000)),
+            Some((1400, 1400, 210_000)),
+            None,
+        ]);
+        assert!(line.contains("1400 × 1400"));
+        assert!(line.contains("Varying Size"));
+        assert!(
+            !format_existing_embedded_info(&[
+                Some((1200, 1200, 90_000)),
+                Some((1200, 1200, 90_000)),
+            ])
+            .contains("Varying Size")
+        );
+    }
 
     #[test]
     fn artist_art_queries_only_artist_image_providers() {
@@ -9651,6 +10286,75 @@ mod tests {
     }
 
     #[test]
+    fn embedded_thumbnail_preview_is_in_memory_and_invalidates_on_selection_change() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let cover = directory.path().join("existing.png");
+        image::RgbaImage::from_pixel(96, 96, image::Rgba([90, 40, 170, 255]))
+            .save_with_format(&cover, image::ImageFormat::Png)
+            .unwrap();
+        let original = fs::read(&cover).unwrap();
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut config = Config::default();
+        config.output.embedded_thumbnail_size = 300;
+        let mut app = ApplicationState::new(config, snapshot).unwrap();
+        app.phase = RunPhase::AwaitingMusicBrainz;
+        app.musicbrainz_existing_artwork_path = cover.to_string_lossy().into_owned();
+        let state = Arc::new(Mutex::new(app));
+        prepare_embedded_thumbnail_preview(&state).unwrap();
+        let mut app = state.lock().unwrap();
+        assert!(embedded_thumbnail_ready(&app));
+        let mut decision = json!({"action": "use_existing_compilation_artwork"});
+        add_embedded_thumbnail_decision(&app, &mut decision);
+        assert_eq!(decision["embed_thumbnails"], true);
+        assert_eq!(fs::read(&cover).unwrap(), original);
+        app.selected_musicbrainz_result = Some(4);
+        assert!(!embedded_thumbnail_ready(&app));
+    }
+
+    #[test]
+    fn existing_musicbrainz_upscale_preview_uses_existing_art_without_requiring_it() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let cover = directory.path().join("existing.png");
+        image::RgbaImage::from_pixel(96, 96, image::Rgba([90, 40, 170, 255]))
+            .save_with_format(&cover, image::ImageFormat::Png)
+            .unwrap();
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.phase = RunPhase::AwaitingMusicBrainz;
+        app.musicbrainz_existing_artwork_path = cover.to_string_lossy().into_owned();
+        app.current_cover_path = directory
+            .path()
+            .join("wrong-comp-cover.png")
+            .to_string_lossy()
+            .into_owned();
+        let state = Arc::new(Mutex::new(app));
+
+        preview_musicbrainz_existing(&state, None).unwrap();
+
+        let app = state.lock().unwrap();
+        assert!(
+            app.edit_preview_path
+                .starts_with("memory-preview://musicbrainz-existing/")
+        );
+        assert_eq!(
+            app.musicbrainz_existing_artwork_path,
+            cover.to_string_lossy()
+        );
+    }
+
+    #[test]
     fn compilation_track_upscale_uses_its_embedded_preview_not_folder_cover() {
         let directory = tempfile::TempDir::new().unwrap();
         let embedded = directory.path().join("embedded.png");
@@ -9690,6 +10394,50 @@ mod tests {
             Some(embedded.to_string_lossy().as_ref())
         );
         assert!(app.current_cover_path.is_empty());
+    }
+
+    #[test]
+    fn compilation_track_never_falls_back_to_album_folder_cover() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.current_cover_path = "C:/music/Various Artists/Compilation/cover.jpg".to_string();
+        assert!(!fallback_compilation_cover_suppressed(&app, false));
+
+        app.current_compilation_track_path =
+            "c:/music/various artists/compilation/01.mp3".to_string();
+        assert!(fallback_compilation_cover_suppressed(&app, false));
+        app.current_compilation_track_path.clear();
+        app.library
+            .selected_compilation_track_paths
+            .insert("c:/music/various artists/compilation/01.mp3".to_string());
+        assert!(fallback_compilation_cover_suppressed(&app, false));
+    }
+
+    #[test]
+    fn musicbrainz_existing_art_is_default_preview_until_a_release_is_selected() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.phase = RunPhase::AwaitingMusicBrainz;
+        app.musicbrainz_existing_artwork_path = "C:/cache/music-box.jpg".to_string();
+        assert_eq!(
+            musicbrainz_existing_preview_path(&app, false),
+            Some("C:/cache/music-box.jpg")
+        );
+        assert_eq!(musicbrainz_existing_preview_path(&app, true), None);
+        app.selected_musicbrainz_result = Some(3);
+        assert_eq!(musicbrainz_existing_preview_path(&app, false), None);
     }
 
     #[test]

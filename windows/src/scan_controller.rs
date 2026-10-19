@@ -22,7 +22,6 @@ pub struct ScanController {
     state: Arc<Mutex<ApplicationState>>,
     running: Arc<AtomicBool>,
     musicbrainz_requested: Arc<AtomicBool>,
-    musicbrainz_write_requested: Arc<AtomicBool>,
     notices: mpsc::Sender<ControllerNotice>,
     debug: Option<ProcessingDebugSink>,
 }
@@ -101,7 +100,6 @@ impl ScanController {
                 state,
                 running: Arc::new(AtomicBool::new(false)),
                 musicbrainz_requested: Arc::new(AtomicBool::new(false)),
-                musicbrainz_write_requested: Arc::new(AtomicBool::new(false)),
                 notices,
                 debug,
             },
@@ -161,7 +159,7 @@ impl ScanController {
             return Err("A SPLINED run is already active.".to_string());
         }
 
-        let (base_config, queue, launch_mode, auto_ideal) = {
+        let (base_config, queue, launch_mode, auto_ideal, selection_epoch) = {
             let mut state = self
                 .state
                 .lock()
@@ -214,6 +212,7 @@ impl ScanController {
                 queue,
                 state.launch_mode,
                 !open_musicbrainz && state.auto_scan_enabled,
+                state.library.selection_epoch,
             )
         };
         self.musicbrainz_requested
@@ -234,7 +233,6 @@ impl ScanController {
         let state = Arc::clone(&self.state);
         let running = Arc::clone(&self.running);
         let musicbrainz_requested = Arc::clone(&self.musicbrainz_requested);
-        let musicbrainz_write_requested = Arc::clone(&self.musicbrainz_write_requested);
         let notices = self.notices.clone();
         let debug = self.debug.clone();
         std::thread::spawn(move || {
@@ -258,6 +256,33 @@ impl ScanController {
             for target in queue {
                 if gui_events::cancelled() {
                     break;
+                }
+                if let Some(track_path) = target.compilation_track_path.as_deref() {
+                    let still_selected = state.lock().is_ok_and(|app| {
+                        app.library
+                            .selected_compilation_track_paths
+                            .contains(&track_path.to_ascii_lowercase())
+                            && app.library.selection_epoch == selection_epoch
+                            && app
+                                .library
+                                .focused_album_key
+                                .as_deref()
+                                .is_some_and(|key| key.eq_ignore_ascii_case(&target.album_key))
+                    });
+                    if !still_selected {
+                        debug_record(
+                            &debug,
+                            format!(
+                                "processing-comp-queue-aborted selection-changed album_key={} next_track={}",
+                                quoted(&target.album_key),
+                                quoted(track_path)
+                            ),
+                        );
+                        if let Ok(mut app) = state.lock() {
+                            app.push_log("COMP track list stopped because the selection changed; completed tracks remain green.".to_string());
+                        }
+                        break;
+                    }
                 }
                 debug_record(
                     &debug,
@@ -297,7 +322,6 @@ impl ScanController {
                     },
                     debug.clone(),
                     Arc::clone(&musicbrainz_requested),
-                    Arc::clone(&musicbrainz_write_requested),
                 ) {
                     debug_record(
                         &debug,
@@ -390,7 +414,6 @@ impl ScanController {
             );
             running.store(false, Ordering::SeqCst);
             musicbrainz_requested.store(false, Ordering::SeqCst);
-            musicbrainz_write_requested.store(false, Ordering::SeqCst);
             let _ = notices.send(ControllerNotice::RunFinished);
         });
 
@@ -455,18 +478,11 @@ impl ScanController {
         if !ready {
             return Err("A MusicBrainz cover is not ready to write.".to_string());
         }
-        self.musicbrainz_write_requested
-            .store(true, Ordering::SeqCst);
         debug_record(
             &self.debug,
             "processing-musicbrainz-write-requested".to_string(),
         );
-        if let Err(error) = self.submit_decision(decision) {
-            self.musicbrainz_write_requested
-                .store(false, Ordering::SeqCst);
-            return Err(error);
-        }
-        Ok(())
+        self.submit_decision(decision)
     }
 
     pub fn refresh_library(&self, refresh: bool) -> Result<(), String> {
@@ -497,7 +513,6 @@ fn run_target(
     request: TargetRunRequest<'_>,
     debug: Option<ProcessingDebugSink>,
     musicbrainz_requested: Arc<AtomicBool>,
-    musicbrainz_write_requested: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let (event_sender, event_receiver) = mpsc::channel::<Value>();
     gui_events::begin_in_process(event_sender, true, request.auto_ideal)?;
@@ -537,49 +552,10 @@ fn run_target(
                 Some("musicbrainz_matches") => {
                     musicbrainz_requested.store(false, Ordering::SeqCst);
                     gui_events::set_musicbrainz_requested(false);
-                    // Reaching the browser again means the selected release did
-                    // not yield a writable candidate. Do not let an old direct
-                    // write request leak into a later release selection.
-                    musicbrainz_write_requested.store(false, Ordering::SeqCst);
                 }
                 Some("album_completed" | "album_skipped" | "album_postponed" | "album_error") => {
                     musicbrainz_requested.store(false, Ordering::SeqCst);
                     gui_events::set_musicbrainz_requested(false);
-                    musicbrainz_write_requested.store(false, Ordering::SeqCst);
-                }
-                Some("decision_required")
-                    if musicbrainz_write_requested.swap(false, Ordering::SeqCst) =>
-                {
-                    let decision = relay_state
-                        .lock()
-                        .map_err(|_| "The SPLINED application state is unavailable.".to_string())
-                        .and_then(|mut app| musicbrainz_direct_write_decision(&mut app));
-                    let selected = decision
-                        .as_ref()
-                        .ok()
-                        .and_then(|value| value.get("index"))
-                        .and_then(Value::as_u64)
-                        .unwrap_or_default();
-                    let result = decision.and_then(gui_events::submit_decision);
-                    if result.is_ok()
-                        && let Ok(mut app) = relay_state.lock()
-                    {
-                        app.phase = RunPhase::Running;
-                        app.operation_busy = true;
-                        app.operation_status = "Saving selected MusicBrainz artwork…".to_string();
-                        app.operation_tone = "magenta".to_string();
-                        app.push_log(
-                            "Selected MusicBrainz artwork queued for writing.".to_string(),
-                        );
-                    }
-                    debug_record(
-                        &relay_debug,
-                        format!(
-                            "processing-musicbrainz-write candidate={} result={}",
-                            selected,
-                            quoted(if result.is_ok() { "queued" } else { "failed" })
-                        ),
-                    );
                 }
                 Some("decision_required")
                     if musicbrainz_requested.swap(false, Ordering::SeqCst) =>
@@ -661,22 +637,6 @@ fn run_target(
             Err(error)
         }
     }
-}
-
-fn musicbrainz_direct_write_decision(state: &mut ApplicationState) -> Result<Value, String> {
-    // The MusicBrainz result preview is the Cover Art Archive front image.
-    // Prefer that same provider once the selected release's candidates have
-    // been resolved; fall back to the normal recommendation only if CAA did
-    // not return a usable candidate.
-    if let Some(index) = state
-        .candidates
-        .iter()
-        .find(|candidate| candidate.source.eq_ignore_ascii_case("coverartarchive"))
-        .map(|candidate| candidate.index)
-    {
-        state.select_candidate(index);
-    }
-    state.candidate_decision("write")
 }
 
 fn finish_with_error(
@@ -917,22 +877,22 @@ mod tests {
     }
 
     #[test]
-    fn musicbrainz_direct_write_prefers_the_preview_provider_and_is_explicit() {
+    fn musicbrainz_direct_write_uses_the_previewed_cover_and_is_explicit() {
+        let directory = tempfile::tempdir().unwrap();
+        let cover = directory.path().join("caa.jpg");
+        std::fs::write(&cover, b"preview").unwrap();
         let mut state = state_without_selection();
         state.apply_runtime_event(&serde_json::json!({
-            "event": "candidates",
-            "recommended_index": 1,
-            "items": [
-                {"index": 1, "source": "amazon", "cache_path": "amazon.jpg"},
-                {"index": 2, "source": "coverartarchive", "cache_path": "caa.jpg"}
-            ]
+            "event": "musicbrainz_matches",
+            "items": [{"index": 2, "release_mbid": "release", "release_title": "Album"}]
         }));
-
-        let decision = musicbrainz_direct_write_decision(&mut state).unwrap();
-
-        assert_eq!(decision["action"], "use");
+        state.selected_musicbrainz_result = Some(2);
+        state.musicbrainz_cover_preview_path = cover.to_string_lossy().into_owned();
+        state.phase = RunPhase::AwaitingMusicBrainz;
+        let decision = state.write_musicbrainz_preview_decision().unwrap();
+        assert_eq!(decision["action"], "write_musicbrainz_preview");
         assert_eq!(decision["index"], 2);
-        assert_eq!(decision["explicit_write"], true);
+        assert_eq!(decision["cover_path"], cover.to_string_lossy().as_ref());
     }
 
     #[test]

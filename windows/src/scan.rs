@@ -150,7 +150,7 @@ fn wildcard_match_ascii_case_insensitive(pattern: &str, value: &str) -> bool {
     }
 }
 
-fn is_supported_audio_file(path: &Path) -> bool {
+pub fn is_supported_audio_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.to_ascii_lowercase())

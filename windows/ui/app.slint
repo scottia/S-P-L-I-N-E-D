@@ -7,6 +7,7 @@ export struct UiCompilationTrackRow { album-key: string, path: string, file-name
 export struct UiSourceRow { name: string, label: string, icon: string, count: int, status: string, enabled: bool }
 export struct UiCandidateRow { index: int, source: string, dimensions: string, range-class: string, policy: string, image-type: string, selected: bool, recommended: bool, compared: bool, preview: image }
 export struct UiMusicBrainzRow { index: int, title: string, artist: string, detail: string, group: string, group-start: bool, current: bool, visited: bool, selected: bool, score: int }
+export struct UiExistingArtworkRow { index: int, title: string, detail: string, source-path: string, preview: image, loaded: bool, selected: bool }
 export struct UiAdjustmentRow { name: string, value: int, minimum: int, maximum: int, unit: string, primary: bool }
 export struct UiCandidateFilterRow { dimension: string, key: string, label: string, count: int, state: string }
 export struct UiStatusFilterRow { key: string, label: string, count: int, enabled: bool, semantic-color: color }
@@ -53,11 +54,11 @@ component NeonAction inherits Rectangle {
     height: 38px;
     border-radius: 6px;
     border-width: 1px;
-    border-color: root.tone == "purple" ? AppTheme.violet : (root.danger || root.tone == "red" ? AppTheme.danger : (root.tone == "orange" ? #ff9738 : (root.tone == "yellow" ? AppTheme.yellow : (root.tone == "cyan" || root.emphasized ? #493575 : (root.tone == "magenta" ? AppTheme.magenta : #3c315f)))));
-    background: !root.enabled ? (AppTheme.light ? #d8e2e9 : #0b192a) : (action.pressed ? (AppTheme.light ? #b7d9ea : #142f58) : (action.has-hover ? (AppTheme.light ? #d2eaf6 : #183a68) : (root.tone == "purple" ? (AppTheme.light ? #e6dcff : #211444) : (root.danger || root.tone == "red" ? @linear-gradient(90deg, #a40d2b, #e32937) : (root.tone == "orange" ? @linear-gradient(90deg, #8d3b08, #d96b13) : (root.tone == "yellow" ? @linear-gradient(90deg, #7b5e05, #b98b0b) : (root.tone == "cyan" ? (AppTheme.light ? #d8f5fb : #082b46) : (root.tone == "magenta" ? (AppTheme.light ? #f5dcf1 : #28174f) : (root.emphasized ? @linear-gradient(90deg, #163d72, #2a245d) : (AppTheme.light ? #e5f0f7 : #091c35))))))))));
+    border-color: root.tone == "purple" || root.tone == "embed" ? AppTheme.violet : (root.danger || root.tone == "red" ? AppTheme.danger : (root.tone == "orange" ? #ff9738 : (root.tone == "yellow" ? AppTheme.yellow : (root.tone == "cyan" || root.emphasized ? #493575 : (root.tone == "magenta" ? AppTheme.magenta : #3c315f)))));
+    background: !root.enabled ? (AppTheme.light ? #d8e2e9 : #0b192a) : (action.pressed ? (AppTheme.light ? #b7d9ea : #142f58) : (action.has-hover ? (AppTheme.light ? #d2eaf6 : #183a68) : (root.tone == "embed" ? #6730a4 : (root.tone == "purple" ? (AppTheme.light ? #e6dcff : #211444) : (root.danger || root.tone == "red" ? @linear-gradient(90deg, #a40d2b, #e32937) : (root.tone == "orange" ? @linear-gradient(90deg, #8d3b08, #d96b13) : (root.tone == "yellow" ? @linear-gradient(90deg, #7b5e05, #b98b0b) : (root.tone == "cyan" ? (AppTheme.light ? #d8f5fb : #082b46) : (root.tone == "magenta" ? (AppTheme.light ? #f5dcf1 : #28174f) : (root.emphasized ? @linear-gradient(90deg, #163d72, #2a245d) : (AppTheme.light ? #e5f0f7 : #091c35)))))))))));
     Text {
         text: root.label;
-        color: !root.enabled ? #61788b : (root.tone == "purple" ? AppTheme.violet : ((root.danger || root.tone == "red" || root.tone == "orange" || root.tone == "yellow" || root.emphasized) ? #ffffff : (root.tone == "active" ? AppTheme.green : (root.tone == "inactive" ? AppTheme.danger : (root.tone == "cyan" ? AppTheme.cyan : (root.tone == "magenta" ? AppTheme.magenta : AppTheme.foreground))))));
+        color: !root.enabled ? #61788b : (root.tone == "embed" ? #ffffff : (root.tone == "purple" ? AppTheme.violet : ((root.danger || root.tone == "red" || root.tone == "orange" || root.tone == "yellow" || root.emphasized) ? #ffffff : (root.tone == "active" ? AppTheme.green : (root.tone == "inactive" ? AppTheme.danger : (root.tone == "cyan" ? AppTheme.cyan : (root.tone == "magenta" ? AppTheme.magenta : AppTheme.foreground)))))));
         horizontal-alignment: center;
         vertical-alignment: center;
         font-weight: root.emphasized ? 700 : 500;
@@ -823,6 +824,10 @@ export component AppWindow inherits Window {
     in property <[UiCandidateFilterRow]> candidate-range-filter-rows;
     in property <[UiStatusFilterRow]> status-filter-rows;
     in property <[UiMusicBrainzRow]> musicbrainz-rows;
+    in property <[UiExistingArtworkRow]> musicbrainz-existing-rows;
+    in property <bool> musicbrainz-existing-available: false;
+    in property <image> musicbrainz-existing-preview;
+    in property <string> musicbrainz-existing-detail;
     in property <[string]> musicbrainz-artist-options: ["All"];
     in property <[string]> musicbrainz-release-type-options: ["All"];
     in property <[UiAdjustmentRow]> adjustment-rows;
@@ -863,6 +868,10 @@ export component AppWindow inherits Window {
     in property <bool> selected-artwork-is-sample: false;
     in property <bool> selected-artwork-write-ready: false;
     in property <bool> selected-artwork-existing: false;
+    in property <bool> selected-artwork-thumbnail-ready: false;
+    in property <bool> selected-artwork-comp: false;
+    in property <string> selected-artwork-embedded-info;
+    in property <bool> selected-artwork-embed-available: false;
     in property <bool> artist-artwork-mode: false;
     in property <bool> selected-artwork-artist-overview: false;
     in property <bool> selected-artwork-artist-has-art: false;
@@ -967,6 +976,7 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-square: true;
     in-out property <string> settings-square-mode: "crop";
     in-out property <string> settings-square-round-to: "16";
+    in-out property <string> settings-embedded-thumbnail-size: "1200";
     in-out property <bool> settings-upscale-below-ideal: false;
     in-out property <string> settings-upscale-max-percent: "200";
     in-out property <bool> settings-upscale-adaptive: true;
@@ -1049,6 +1059,7 @@ export component AppWindow inherits Window {
     callback browse-artist-artwork(); callback write-artist-artwork();
     callback load-artist-top-songs(); callback set-artist-overview-show-all(bool);
     callback compilation-track-activated(string, string, bool);
+    callback compilation-album-launch(string, bool);
     callback select-filtered(); callback select-none(); callback refresh-library(bool);
     callback set-scan-scope(bool); callback set-launch-mode(bool); callback launch(); callback stop();
     callback candidate-selected(int); callback candidate-action(string); callback candidate-source-filter(string);
@@ -1058,9 +1069,10 @@ export component AppWindow inherits Window {
     callback candidate-compare-toggle(int); callback open-candidate-compare(); callback candidate-hover(int, bool);
     callback set-hover-enabled(bool);
     callback fallback-retry(string, string);
-    callback musicbrainz-selected(int); callback musicbrainz-hovered(int, bool); callback musicbrainz-use-selected(); callback musicbrainz-apply-authority(string, string); callback musicbrainz-leave-unchanged(); callback musicbrainz-filter(string, string); callback open-musicbrainz-page(int); callback open-musicbrainz-info(); callback adjustment-step(string, int); callback adjustment-set(string, float); callback adjustment-reset(string);
+    callback musicbrainz-selected(int); callback musicbrainz-hovered(int, bool); callback musicbrainz-use-selected(); callback musicbrainz-use-existing(); callback musicbrainz-existing-selected(int); callback musicbrainz-existing-hovered(int, bool); callback musicbrainz-apply-authority(string, string); callback musicbrainz-leave-unchanged(); callback musicbrainz-filter(string, string); callback open-musicbrainz-page(int); callback open-musicbrainz-info(); callback adjustment-step(string, int); callback adjustment-set(string, float); callback adjustment-reset(string);
     callback primary-adjustment-move(string, int); callback primary-adjustment-promote(string); callback activate-all-adjustments();
     callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
+    callback prepare-embedded-thumbnail();
     callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory();
     callback browse-backup-directory(); callback browse-restore-file();
     callback completion-acknowledged(); callback apply-selected-sample();
@@ -1311,6 +1323,21 @@ export component AppWindow inherits Window {
                                             Text { text: "Release Type"; color: AppTheme.secondary-foreground; vertical-alignment: center; }
                                             ComboBox { width: 130px; model: root.musicbrainz-release-type-options; current-value <=> root.selected-musicbrainz-release-type; selected(value) => root.musicbrainz-filter(root.selected-musicbrainz-artist, value); }
                                         }
+                                        for existing in root.musicbrainz-existing-rows: Rectangle {
+                                            height: 76px; border-radius: 7px; border-width: 1px; border-color: existing.selected ? AppTheme.cyan : AppTheme.green;
+                                            background: existing.selected ? (AppTheme.light ? #c9e5f7 : #11384b) : (AppTheme.light ? #e1f5f1 : #092a31);
+                                            HorizontalLayout { padding: 7px; spacing: 10px;
+                                                Image { source: existing.preview; width: 60px; height: 60px; image-fit: contain; }
+                                                VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                                                    Text { text: "Existing · " + existing.title; color: AppTheme.green; font-size: 18px; font-weight: 900; overflow: elide; }
+                                                    Text { text: existing.detail; color: AppTheme.cyan; font-size: 14px; overflow: elide; }
+                                                }
+                                                NeonAction { label: existing.selected ? "Selected" : "Select Existing"; width: 132px; height: 34px; tone: "green"; clicked => root.musicbrainz-existing-selected(existing.index); }
+                                            }
+                                            existing-touch := TouchArea { mouse-cursor: pointer; clicked => root.musicbrainz-existing-selected(existing.index); }
+                                            property <bool> existing-hovered: existing-touch.has-hover;
+                                            changed existing-hovered => root.musicbrainz-existing-hovered(existing.index, self.existing-hovered);
+                                        }
                                         VerticalLayout { spacing: 4px;
                                             for result in root.musicbrainz-rows: Rectangle {
                                                 height: (result.group-start ? 91px : 65px) + (result.selected && root.musicbrainz-selected-different ? 80px : 0px);
@@ -1523,7 +1550,10 @@ export component AppWindow inherits Window {
                                                             width: parent.width; height: album-gallery.expanded-height - 8px;
                                                             background: #dd09273b; border-radius: 6px; border-color: AppTheme.cyan; border-width: 2px;
                                                             VerticalLayout { padding: 7px; spacing: 4px;
-                                                                Text { text: "COMP  ·  " + root.artist-overview-name + "  ·  Choose a track below  (blue: pending, green: done)"; color: AppTheme.cyan; font-size: 17px; font-weight: 800; height: 28px; overflow: elide; }
+                                                                HorizontalLayout { height: 28px; spacing: 7px;
+                                                                    Text { text: "COMP  ·  " + root.artist-overview-name + "  ·  blue: pending, green: done"; color: AppTheme.cyan; font-size: 17px; font-weight: 800; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                                                                    NeonAction { label: "LAUNCH COMP"; width: 130px; height: 28px; tone: "cyan"; clicked => root.compilation-album-launch(root.compilation-track-rows[0].album-key, root.include-bypassed); }
+                                                                }
                                                                 VerticalLayout { spacing: 4px;
                                                                     for track in root.compilation-track-rows: Rectangle {
                                                                         height: 34px; border-radius: 5px; background: track.selected ? #173e78 : #07182d; border-color: track.status-color; border-width: 1px;
@@ -1715,18 +1745,23 @@ export component AppWindow inherits Window {
                                     if root.selected-artwork-is-sample && !root.artwork-placeholder-visible && !root.selected-artwork-artist-overview: Rectangle { x: (parent.width - 150px) / 2; y: 12px; width: 150px; height: 38px; border-radius: 6px; background: #d51d21;
                                         Text { text: "SAMPLE"; color: #ffffff; font-size: 21px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
                                     }
+                                    if root.selected-artwork-embed-available: Rectangle {
+                                        x: 8px; y: parent.height - 63px; width: parent.width - 16px; height: 27px;
+                                        border-radius: 5px; background: #d2081221;
+                                        Text { text: root.selected-artwork-embedded-info; color: AppTheme.yellow; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                    }
                                     Rectangle { visible: !root.artwork-placeholder-visible; x: 8px; y: parent.height - 33px; width: parent.width - 16px; height: 25px; border-radius: 5px; background: #cf06111d;
                                         Text { text: root.selected-artwork-source + "  ·  " + root.selected-artwork-type + "  ·  " + root.selected-artwork-size; color: AppTheme.foreground; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                     }
                                 }
                                 HorizontalLayout { height: 38px; spacing: 6px;
                                     NeonAction {
-                                        label: "Upscale Preview"; width: 144px; height: 34px; label-font-size: 14px; tone: "active"; emphasized: true;
+                                        label: "Upscale Preview"; width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: "active"; emphasized: true;
                                         enabled: !root.operation-busy && !root.intro-active && root.current-path != "";
                                         clicked => root.set-upscale-preview(true);
                                     }
                                     NeonAction {
-                                        label: root.artist-artwork-mode ? "WRITE Artist" : (root.selected-artwork-existing ? "Existing" : "WRITE Cover"); width: 128px; height: 34px; label-font-size: 14px; tone: root.selected-artwork-existing ? "green" : "orange";
+                                        label: root.artist-artwork-mode ? "WRITE Artist" : (root.selected-artwork-thumbnail-ready ? (root.selected-artwork-comp ? "EMBED Comp" : "EMBED w/Cover") : (root.selected-artwork-existing ? "Embed Existing" : "WRITE Cover")); width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: root.selected-artwork-thumbnail-ready ? "embed" : (root.selected-artwork-existing ? "green" : "orange");
                                         enabled: !root.operation-busy && !root.intro-active && root.selected-artwork-write-ready;
                                         clicked => {
                                             if (root.artist-artwork-mode) {
@@ -1740,12 +1775,17 @@ export component AppWindow inherits Window {
                                                 }
                                                 else { root.confirm-sample-apply = true; }
                                             }
+                                            else if (root.awaiting-musicbrainz && root.selected-artwork-existing) { root.candidate-action("write_existing_musicbrainz"); }
                                             else if (root.awaiting-musicbrainz) { root.candidate-action("write_musicbrainz"); }
                                             else if (root.awaiting-candidate) { root.candidate-action("write"); }
                                             else { root.edit-existing-cover(true); }
                                         }
                                     }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                                    NeonAction {
+                                        label: "EMBED Thumbs"; width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: "embed";
+                                        enabled: !root.operation-busy && !root.intro-active && !root.artist-artwork-mode && !root.selected-artwork-is-sample && root.selected-artwork-write-ready;
+                                        clicked => root.prepare-embedded-thumbnail();
+                                    }
                                 }
                                 GridLayout { height: 59px; spacing: 5px;
                                     Text { row: 0; col: 0; text: "Source"; color: AppTheme.secondary-foreground; font-size: 14px; }
@@ -1911,6 +1951,7 @@ export component AppWindow inherits Window {
                                     ComboBox { model: ["crop", "off"]; current-value <=> root.settings-square-mode; }
                                 }
                                 SettingField { label: "Square round-to"; value <=> root.settings-square-round-to; hint: "16"; }
+                                SettingField { label: "Embedded Thumbnail Preference"; value <=> root.settings-embedded-thumbnail-size; hint: "1200 px (300–4000)"; }
                                 Heading { text: "Resolution range"; height: 27px; }
                                 SettingField { label: "Minimum"; value <=> root.settings-range-min; hint: "1200"; }
                                 SettingField { label: "Ideal"; value <=> root.settings-range-ideal; hint: "1800"; }

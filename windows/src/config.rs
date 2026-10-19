@@ -203,6 +203,7 @@ pub struct OutputConfig {
     pub square: bool,
     pub square_mode: String,
     pub square_round_to: u32,
+    pub embedded_thumbnail_size: u32,
     pub upscale_below_ideal: bool,
     pub upscale_max_percent: u32,
     pub upscale_adaptive_defaults: bool,
@@ -386,6 +387,7 @@ impl Default for OutputConfig {
             square: true,
             square_mode: "crop".to_string(),
             square_round_to: 16,
+            embedded_thumbnail_size: 1200,
             upscale_below_ideal: false,
             upscale_max_percent: 200,
             upscale_adaptive_defaults: true,
@@ -552,6 +554,12 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
 
     if config.output.square_mode != "off" && config.output.square_mode != "crop" {
         return Err("SPLINED output square_mode must be 'off' or 'crop'.".to_string());
+    }
+
+    if !(300..=4000).contains(&config.output.embedded_thumbnail_size) {
+        return Err(
+            "Embedded Thumbnail Preference must be between 300 and 4000 pixels.".to_string(),
+        );
     }
 
     if !(100..=800).contains(&config.output.upscale_max_percent) {
@@ -939,6 +947,7 @@ mod tests {
             vec!["jpeg".to_string(), "png".to_string(), "webp".to_string()]
         );
         assert!(config.output.preserve_file);
+        assert_eq!(config.output.embedded_thumbnail_size, 1200);
         assert!(config.output.upscale_adaptive_defaults);
         assert_eq!(config.output.upscale_picture_percent, 2);
         assert_eq!(config.output.upscale_sharpen_percent, 4);
@@ -955,6 +964,17 @@ mod tests {
             config.sources.cover_sources.len(),
             SUPPORTED_COVER_SOURCES.len()
         );
+    }
+
+    #[test]
+    fn embedded_thumbnail_preference_has_bounded_persisted_size() {
+        let mut config = Config::default();
+        config.output.embedded_thumbnail_size = 1600;
+        let text = toml::to_string(&config).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.output.embedded_thumbnail_size, 1600);
+        config.output.embedded_thumbnail_size = 299;
+        assert!(parse_config(&toml::to_string(&config).unwrap()).is_err());
     }
 
     #[test]

@@ -165,6 +165,7 @@ pub struct CompilationLocalArtwork {
     pub cover_format: String,
     pub cover_width: u32,
     pub cover_height: u32,
+    pub recording_match: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1157,48 +1158,110 @@ pub fn find_local_compilation_artwork(
     recording_mbid: &str,
     artist_mbids: &[String],
     current_album_path: &Path,
+    target_artist: &str,
+    target_title: &str,
     release_mbid: Option<&str>,
 ) -> Result<Option<CompilationLocalArtwork>, String> {
+    Ok(find_local_compilation_artworks(
+        config,
+        recording_mbid,
+        artist_mbids,
+        current_album_path,
+        target_artist,
+        target_title,
+        release_mbid,
+    )?
+    .into_iter()
+    .next())
+}
+
+pub fn find_local_compilation_artworks(
+    config: &Config,
+    recording_mbid: &str,
+    artist_mbids: &[String],
+    current_album_path: &Path,
+    target_artist: &str,
+    target_title: &str,
+    release_mbid: Option<&str>,
+) -> Result<Vec<CompilationLocalArtwork>, String> {
     if recording_mbid.trim().is_empty() || artist_mbids.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let (connection, mapper) = runtime_connection_and_mapper(config)?;
     let canonical_current = mapper.to_canonical(&current_album_path.to_string_lossy())?;
-    let artist_key = normalized_artist_key(artist_mbids);
+    let artist_set = artist_mbids
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let mut exact = Vec::new();
+    let mut related_title = Vec::new();
+    let mut seen_albums = HashSet::new();
 
-    let cached = connection
-        .query_row(
+    let mut cached_statement = connection.prepare(
             "SELECT t.path, al.path, al.album_name, ar.artist_name, COALESCE(al.musicbrainz_albumid,''), \
              COALESCE(al.musicbrainz_releasegroupid,''), COALESCE(al.cover_path,''), COALESCE(al.cover_format,''), \
-             COALESCE(al.cover_width,0), COALESCE(al.cover_height,0) \
+             COALESCE(al.cover_width,0), COALESCE(al.cover_height,0), COALESCE(ar.musicbrainz_artistid,'') \
              FROM tracks t JOIN albums al ON al.album_key=t.album_key JOIN artists ar ON ar.artist_key=al.artist_key \
-             WHERE lower(t.musicbrainz_recordingid)=lower(?) AND lower(t.musicbrainz_artistid)=lower(?) \
+             WHERE lower(t.musicbrainz_recordingid)=lower(?) \
              AND lower(al.path)<>lower(?) AND al.cover_found=1 AND trim(al.cover_path)<>'' \
+             AND trim(al.musicbrainz_albumid)<>'' AND lower(ar.artist_name)<>'various artists' \
              AND (?='' OR lower(al.musicbrainz_albumid)=lower(?)) \
-             ORDER BY al.compilation ASC, al.release_year ASC, al.album_name COLLATE NOCASE LIMIT 1",
-            params![recording_mbid, artist_key, canonical_current, release_mbid.unwrap_or(""), release_mbid.unwrap_or("")],
-            |row| local_artwork_from_row(row, &mapper),
+             ORDER BY al.release_year ASC, al.album_name COLLATE NOCASE",
+        ).map_err(db_error("prepare cached Artist Album cover lookup"))?;
+    let cached = cached_statement
+        .query_map(
+            params![
+                recording_mbid,
+                canonical_current,
+                release_mbid.unwrap_or(""),
+                release_mbid.unwrap_or("")
+            ],
+            |row| {
+                Ok((
+                    local_artwork_from_row(row, &mapper)?,
+                    row.get::<_, String>(10)?,
+                ))
+            },
         )
-        .optional()
-        .map_err(db_error("query cached compilation track artwork"))?;
-    if let Some(item) = cached.filter(local_compilation_files_exist) {
-        return Ok(Some(item));
+        .map_err(db_error("query cached Artist Album cover lookup"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("read cached Artist Album cover lookup"))?;
+    drop(cached_statement);
+    for (item, album_artist_mbid) in cached {
+        if !local_compilation_files_exist(&item)
+            || !is_cover_file(&item.cover_path)
+            || (!album_artist_mbid.trim().is_empty()
+                && !artist_ids_overlap(&artist_set, &album_artist_mbid))
+        {
+            continue;
+        }
+        let Ok(evidence) = read_local_track_evidence(&item.track_path) else {
+            continue;
+        };
+        if evidence
+            .musicbrainz_track_id
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(recording_mbid))
+            && evidence
+                .musicbrainz_artist_id
+                .as_deref()
+                .is_some_and(|ids| artist_ids_overlap(&artist_set, ids))
+            && seen_albums.insert(item.album_path.to_string_lossy().to_ascii_lowercase())
+        {
+            exact.push(item);
+        }
     }
 
     // Keep the Album index fast. Only a compilation lookup enters this lazy
     // path, and only albums already indexed under one of the authoritative
     // Artist MBIDs are opened track-by-track.
-    let artist_set = artist_mbids
-        .iter()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .collect::<HashSet<_>>();
     let mut statement = connection
         .prepare(
             "SELECT al.album_key, al.path, al.album_name, ar.artist_name, COALESCE(ar.musicbrainz_artistid,''), \
              COALESCE(al.musicbrainz_albumid,''), COALESCE(al.musicbrainz_releasegroupid,''), \
              COALESCE(al.cover_path,''), COALESCE(al.cover_format,''), COALESCE(al.cover_width,0), COALESCE(al.cover_height,0), al.compilation \
              FROM albums al JOIN artists ar ON ar.artist_key=al.artist_key \
-             WHERE al.cover_found=1 AND trim(al.cover_path)<>'' AND trim(al.musicbrainz_albumid)<>'' \
+             WHERE al.cover_found=1 AND trim(al.cover_path)<>'' AND trim(al.musicbrainz_albumid)<>'' AND lower(ar.artist_name)<>'various artists' \
              AND lower(al.path)<>lower(?) ORDER BY al.compilation ASC, al.release_year ASC, al.album_name COLLATE NOCASE",
         )
         .map_err(db_error("prepare lazy compilation local lookup"))?;
@@ -1239,7 +1302,11 @@ pub fn find_local_compilation_artwork(
         _compilation,
     ) in rows
     {
-        if !artist_set.contains(&indexed_artist_mbid.trim().to_ascii_lowercase()) {
+        if !artist_set.contains(&indexed_artist_mbid.trim().to_ascii_lowercase())
+            && !album_artist
+                .trim()
+                .eq_ignore_ascii_case(target_artist.trim())
+        {
             continue;
         }
         if release_mbid.is_some_and(|wanted| !album_mbid.eq_ignore_ascii_case(wanted)) {
@@ -1247,7 +1314,7 @@ pub fn find_local_compilation_artwork(
         }
         let album_path = PathBuf::from(mapper.to_local(&canonical_album)?);
         let cover_path = PathBuf::from(mapper.to_local(&canonical_cover)?);
-        if !album_path.is_dir() || !cover_path.is_file() {
+        if !album_path.is_dir() || !cover_path.is_file() || !is_cover_file(&cover_path) {
             continue;
         }
         let mut audio_files = fs::read_dir(&album_path)
@@ -1272,10 +1339,25 @@ pub fn find_local_compilation_artwork(
                 .unwrap_or("")
                 .trim();
             let cached_artists = evidence.musicbrainz_artist_id.as_deref().unwrap_or("");
-            if !cached_recording.eq_ignore_ascii_case(recording_mbid)
-                || normalized_artist_key(&extract_mbids(cached_artists)) != artist_key
+            if !artist_ids_overlap(&artist_set, cached_artists) {
+                continue;
+            }
+            let recording_match = cached_recording.eq_ignore_ascii_case(recording_mbid);
+            // Different recordings of the same song can share an artist and
+            // a Work ID. Offer them as separate, explicitly labelled choices;
+            // never treat a live/remix/parenthesized variant as equivalent.
+            if !recording_match
+                && (!compilation_reuse_title_allowed(target_title)
+                    || !compilation_reuse_title_allowed(&evidence.title)
+                    || !evidence
+                        .title
+                        .trim()
+                        .eq_ignore_ascii_case(target_title.trim()))
             {
                 continue;
+            }
+            if !seen_albums.insert(album_path.to_string_lossy().to_ascii_lowercase()) {
+                break;
             }
             let metadata = fs::metadata(&track_path).map_err(|error| {
                 format!(
@@ -1291,9 +1373,9 @@ pub fn find_local_compilation_artwork(
                  musicbrainz_recordingid=excluded.musicbrainz_recordingid, musicbrainz_artistid=excluded.musicbrainz_artistid, \
                  file_size=excluded.file_size, file_mtime_ns=excluded.file_mtime_ns, updated_at=excluded.updated_at, splined_version=excluded.splined_version",
                 params![short_hash(&canonical_track), album_key, canonical_track, evidence.title, evidence.artist,
-                    recording_mbid, artist_key, metadata.len() as i64, modified_ns(&metadata), now, env!("CARGO_PKG_VERSION")],
+                    recording_mbid, normalized_artist_key(&extract_mbids(cached_artists)), metadata.len() as i64, modified_ns(&metadata), now, env!("CARGO_PKG_VERSION")],
             ).map_err(db_error("cache lazy compilation track identity"))?;
-            return Ok(Some(CompilationLocalArtwork {
+            let item = CompilationLocalArtwork {
                 track_path,
                 album_path,
                 album_title,
@@ -1304,26 +1386,55 @@ pub fn find_local_compilation_artwork(
                 cover_format,
                 cover_width: u32::try_from(cover_width).unwrap_or(0),
                 cover_height: u32::try_from(cover_height).unwrap_or(0),
-            }));
+                recording_match,
+            };
+            if recording_match {
+                exact.push(item);
+            } else {
+                related_title.push(item);
+            }
+            break;
         }
     }
-    Ok(None)
+    exact.extend(related_title);
+    Ok(exact)
+}
+
+fn artist_ids_overlap(artist_set: &HashSet<String>, ids: &str) -> bool {
+    extract_mbids(ids)
+        .iter()
+        .any(|id| artist_set.contains(&id.to_ascii_lowercase()))
+}
+
+pub fn compilation_reuse_title_allowed(title: &str) -> bool {
+    !title.contains(['(', ')'])
+        && !title
+            .to_ascii_lowercase()
+            .split(|ch: char| !ch.is_alphanumeric())
+            .any(|word| matches!(word, "live" | "remix"))
+}
+
+fn is_cover_file(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("cover"))
 }
 
 /// Reuse only a previously completed track with the same tagged Recording
-/// MBID and Artist MBID set. The database stores a digest, not image bytes;
+/// MBID and at least one shared Artist MBID. The database stores a digest, not image bytes;
 /// the source track must still contain that exact front-cover image.
 pub fn find_existing_compilation_artwork(
     config: &Config,
     recording_mbid: &str,
     artist_mbids: &[String],
     current_track_path: &Path,
+    _target_title: &str,
 ) -> Result<Option<ExistingCompilationArtwork>, String> {
     if recording_mbid.trim().is_empty() || artist_mbids.is_empty() {
         return Ok(None);
     }
     let (connection, mapper) = runtime_connection_and_mapper(config)?;
-    find_existing_compilation_artwork_with(
+    let found = find_existing_compilation_artwork_with(
         &connection,
         &mapper,
         recording_mbid,
@@ -1336,7 +1447,8 @@ pub fn find_existing_compilation_artwork(
                     .any(|hash| hash.eq_ignore_ascii_case(expected_hash))
             })
         },
-    )
+    )?;
+    Ok(found)
 }
 
 fn find_existing_compilation_artwork_with(
@@ -1347,7 +1459,10 @@ fn find_existing_compilation_artwork_with(
     current_track_path: &Path,
     mut front_matches: impl FnMut(&Path, &str) -> bool,
 ) -> Result<Option<ExistingCompilationArtwork>, String> {
-    let artist_key = normalized_artist_key(artist_mbids);
+    let artist_set = artist_mbids
+        .iter()
+        .map(|id| id.trim().to_ascii_lowercase())
+        .collect::<HashSet<_>>();
     let canonical_current = mapper.to_canonical(&current_track_path.to_string_lossy())?;
     let mut statement = connection
         .prepare(
@@ -1369,7 +1484,7 @@ fn find_existing_compilation_artwork_with(
         .map_err(db_error("read existing embedded compilation artwork"))?;
     for (canonical_track, saved_artists, artwork_sha256) in rows {
         if canonical_track.eq_ignore_ascii_case(&canonical_current)
-            || normalized_artist_key(&extract_mbids(&saved_artists)) != artist_key
+            || !artist_ids_overlap(&artist_set, &saved_artists)
             || artwork_sha256.len() != 64
         {
             continue;
@@ -1753,6 +1868,7 @@ fn local_artwork_from_row(
         cover_format: row.get(7)?,
         cover_width: u32::try_from(row.get::<_, i64>(8)?).unwrap_or(0),
         cover_height: u32::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
+        recording_match: true,
     })
 }
 
@@ -3439,6 +3555,149 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn compilation_reuse_rejects_live_remix_and_parenthesized_variants() {
+        assert!(compilation_reuse_title_allowed(
+            "All I Want for Christmas Is You"
+        ));
+        assert!(!compilation_reuse_title_allowed(
+            "All I Want for Christmas Is You (Live)"
+        ));
+        assert!(!compilation_reuse_title_allowed("Song - Live"));
+        assert!(!compilation_reuse_title_allowed("Song Remix"));
+        assert!(compilation_reuse_title_allowed("Olive Tree"));
+        let artist_a = "11111111-1111-4111-8111-111111111111";
+        let artist_b = "22222222-2222-4222-8222-222222222222";
+        let artist_set = HashSet::from([artist_a.to_string()]);
+        assert!(artist_ids_overlap(
+            &artist_set,
+            &format!("{artist_a}, {artist_b}")
+        ));
+        assert!(!artist_ids_overlap(&artist_set, artist_b));
+    }
+
+    #[test]
+    fn compilation_finds_matching_artist_album_cover_without_prior_comp_write() {
+        fn frame(id: &str, text: &str) -> Vec<u8> {
+            let mut payload = vec![3];
+            payload.extend_from_slice(text.as_bytes());
+            let size = payload.len() as u32;
+            let mut bytes = id.as_bytes().to_vec();
+            bytes.extend_from_slice(&[
+                ((size >> 21) & 0x7f) as u8,
+                ((size >> 14) & 0x7f) as u8,
+                ((size >> 7) & 0x7f) as u8,
+                (size & 0x7f) as u8,
+                0,
+                0,
+            ]);
+            bytes.extend_from_slice(&payload);
+            bytes
+        }
+        let root = tempfile::tempdir().unwrap();
+        let library = root.path().join("music");
+        let artist_album = library.join("Artist").join("Studio Album");
+        let comp_album = library.join("Various Artists").join("Compilation");
+        fs::create_dir_all(&artist_album).unwrap();
+        fs::create_dir_all(&comp_album).unwrap();
+        let cover = artist_album.join("cover.jpg");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([30, 120, 180]))
+            .save_with_format(&cover, image::ImageFormat::Jpeg)
+            .unwrap();
+        let recording = "11111111-1111-4111-8111-111111111111";
+        let artist = "22222222-2222-4222-8222-222222222222";
+        let track = artist_album.join("01 - Song.mp3");
+        let body = [
+            frame("TIT2", "Song"),
+            frame("TPE1", "Artist"),
+            frame("TXXX", &format!("MUSICBRAINZ_TRACKID\0{recording}")),
+            frame("TXXX", &format!("MUSICBRAINZ_ARTISTID\0{artist}")),
+        ]
+        .concat();
+        let size = body.len() as u32;
+        let mut bytes = b"ID3\x04\x00\x00".to_vec();
+        bytes.extend_from_slice(&[
+            ((size >> 21) & 0x7f) as u8,
+            ((size >> 14) & 0x7f) as u8,
+            ((size >> 7) & 0x7f) as u8,
+            (size & 0x7f) as u8,
+        ]);
+        bytes.extend_from_slice(&body);
+        bytes.extend_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        fs::write(&track, &bytes).unwrap();
+        let related_album = library.join("Artist").join("The Rarities");
+        fs::create_dir_all(&related_album).unwrap();
+        let related_cover = related_album.join("cover.jpg");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([180, 60, 90]))
+            .save_with_format(&related_cover, image::ImageFormat::Jpeg)
+            .unwrap();
+        let related_track = related_album.join("02 - Song.mp3");
+        let mut related_bytes = bytes.clone();
+        let position = related_bytes
+            .windows(recording.len())
+            .position(|window| window == recording.as_bytes())
+            .unwrap();
+        related_bytes[position..position + recording.len()]
+            .copy_from_slice(b"44444444-4444-4444-8444-444444444444");
+        fs::write(&related_track, related_bytes).unwrap();
+
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = root.path().join("cache").to_string_lossy().into_owned();
+        let connection = open_database(&database_path(&config.scan.cache_dir), false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute("INSERT INTO artists(artist_key,artist_name,primary_path,musicbrainz_artistid,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Artist',?,?,?, ?,?,'test')",
+            params![artist_album.parent().unwrap().to_string_lossy(), artist, now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,status,cover_found,cover_path,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Studio Album','33333333-3333-4333-8333-333333333333',?,?,'tags','processed',1,?,?,?,?,'test')",
+            params![artist_album.to_string_lossy(), track.to_string_lossy(), cover.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO tracks(track_key,album_key,path,title,artist_name,musicbrainz_recordingid,musicbrainz_artistid,file_size,file_mtime_ns,updated_at,splined_version) VALUES('track','album',?,'Song','Artist',?,?,0,0,?,'test')",
+            params![track.to_string_lossy(), recording, artist, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,status,cover_found,cover_path,created_at,updated_at,last_seen_at,splined_version) VALUES('related','artist','The Rarities','55555555-5555-4555-8555-555555555555',?,?,'tags','processed',1,?,?,?,?,'test')",
+            params![related_album.to_string_lossy(), related_track.to_string_lossy(), related_cover.to_string_lossy(), now, now, now]).unwrap();
+        drop(connection);
+
+        let artists = vec![artist.to_string()];
+        let found = find_local_compilation_artwork(
+            &config,
+            recording,
+            &artists,
+            &comp_album,
+            "Artist",
+            "Song",
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.cover_path, cover);
+        let choices = find_local_compilation_artworks(
+            &config,
+            recording,
+            &artists,
+            &comp_album,
+            "Artist",
+            "Song",
+            None,
+        )
+        .unwrap();
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].cover_path, cover);
+        assert!(choices[0].recording_match);
+        assert_eq!(choices[1].cover_path, related_cover);
+        assert!(!choices[1].recording_match);
+        let live_exact = find_local_compilation_artworks(
+            &config,
+            recording,
+            &artists,
+            &comp_album,
+            "Artist",
+            "Song (Live)",
+            None,
+        )
+        .unwrap();
+        assert_eq!(live_exact.len(), 1);
+        assert!(live_exact[0].recording_match);
     }
 
     #[test]

@@ -36,6 +36,35 @@ pub fn embedded_front_matches(track_path: &Path, artwork: &[u8]) -> Result<bool,
         .any(|hash| hash == &expected))
 }
 
+/// Read-only dimensions and encoded byte count of the track's current front
+/// picture. This never consults a folder-level cover.* file.
+pub fn embedded_front_metadata(track_path: &Path) -> Result<Option<(u32, u32, u64)>, String> {
+    let tagged = lofty::read_from_path(track_path).map_err(|error| {
+        format!(
+            "Unable to read embedded artwork tags from {}: {error}",
+            track_path.display()
+        )
+    })?;
+    let picture = tagged
+        .tags()
+        .iter()
+        .flat_map(|tag| tag.pictures())
+        .find(|picture| picture.pic_type() == PictureType::CoverFront);
+    let Some(picture) = picture else {
+        return Ok(None);
+    };
+    let dimensions = image::ImageReader::new(Cursor::new(picture.data()))
+        .with_guessed_format()
+        .map_err(|error| format!("Unable to identify embedded artwork: {error}"))?
+        .into_dimensions()
+        .map_err(|error| format!("Unable to inspect embedded artwork dimensions: {error}"))?;
+    Ok(Some((
+        dimensions.0,
+        dimensions.1,
+        picture.data().len() as u64,
+    )))
+}
+
 fn sha256_hex(value: &[u8]) -> String {
     use std::fmt::Write as _;
     let digest = Sha256::digest(value);
