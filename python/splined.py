@@ -50,7 +50,7 @@ from tui.picker_index import (
 )
 from tui.result_filters import order_musicbrainz_results
 
-USER_AGENT = "SPLINED/1.0.96 (https://github.com/scottia/S-P-L-I-N-E-D)"
+USER_AGENT = "SPLINED/1.0.97 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
 MB_AUTHORIZE_URL = "https://musicbrainz.org/oauth2/authorize"
 MB_OAUTH_ENDPOINT = "https://musicbrainz.org/oauth2/token"
@@ -7536,7 +7536,7 @@ def run_scan_preview(
 
 
 APP_NAME = "SPLINED"
-VERSION = "1.0.96"
+VERSION = "1.0.97"
 CONFIG_VERSION = 5
 
 
