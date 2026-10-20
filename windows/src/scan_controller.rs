@@ -703,6 +703,19 @@ fn runtime_event_summary(event: &Value) -> String {
     if let Some(items) = event.get("items").and_then(Value::as_array) {
         fields.push(format!("items={}", items.len()));
     }
+    if name == "compilation_track_completed" {
+        for key in ["width", "height"] {
+            if let Some(value) = event.get(key).and_then(Value::as_u64) {
+                fields.push(format!("{key}={value}"));
+            }
+        }
+        if let Some(value) = event.get("embed_thumbnails").and_then(Value::as_bool) {
+            fields.push(format!("embed_thumbnails={value}"));
+        }
+        if let Some(value) = event.get("upscale_backend").and_then(Value::as_str) {
+            fields.push(format!("upscale_backend={}", quoted(value)));
+        }
+    }
     format!("processing-event {}", fields.join(" "))
 }
 
@@ -737,6 +750,7 @@ mod tests {
                 compilation_track_art_eligible: false,
                 compilation_tracks: Vec::new(),
                 track_count: 0,
+                compilation_completed_tracks: 0,
                 release_year: String::new(),
                 artist_mbid: String::new(),
                 album_mbid: String::new(),
@@ -874,6 +888,16 @@ mod tests {
         assert!(summary.contains("source=\"Discogs\""));
         assert!(summary.contains("status=\"Failed\""));
         assert!(summary.contains("message=\"provider timeout\""));
+        let track = runtime_event_summary(&serde_json::json!({
+            "event": "compilation_track_completed",
+            "track_path": "N:/music/comp/one.mp3",
+            "width": 1200,
+            "height": 1200,
+            "embed_thumbnails": true,
+            "upscale_backend": "lanczos"
+        }));
+        assert!(track.contains("width=1200 height=1200 embed_thumbnails=true"));
+        assert!(track.contains("upscale_backend=\"lanczos\""));
     }
 
     #[test]

@@ -59,6 +59,8 @@ pub struct MediaAlbumSnapshot {
     pub compilation_track_art_eligible: bool,
     pub compilation_tracks: Vec<MediaTrackSnapshot>,
     pub track_count: i64,
+    #[serde(default)]
+    pub compilation_completed_tracks: i64,
     pub release_year: String,
     pub artist_mbid: String,
     pub album_mbid: String,
@@ -1531,7 +1533,7 @@ pub fn cached_artist_musicbrainz_identity(
     artist_name: &str,
 ) -> Result<Option<String>, String> {
     let (connection, _) = runtime_connection_and_mapper(config)?;
-    connection
+    let artist_identity: Option<String> = connection
         .query_row(
             "SELECT COALESCE(musicbrainz_artistid,'') FROM artists \
              WHERE lower(artist_name)=lower(?) AND trim(musicbrainz_artistid)<>'' \
@@ -1540,7 +1542,25 @@ pub fn cached_artist_musicbrainz_identity(
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(db_error("query cached Artist MusicBrainz identity"))
+        .map_err(db_error("query cached Artist MusicBrainz identity"))?;
+    if let Some(identity) = artist_identity.filter(|value| extract_mbids(value).len() == 1) {
+        return Ok(Some(identity));
+    }
+    // Various Artists folders are indexed under their album artist. A tagged
+    // fallback performer may therefore be absent from `artists` even though
+    // other indexed tracks establish one unambiguous Artist MBID.
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT lower(trim(musicbrainz_artistid)) FROM tracks \
+             WHERE lower(trim(artist_name))=lower(?) AND trim(musicbrainz_artistid)<>'' LIMIT 2",
+        )
+        .map_err(db_error("prepare cached track Artist identity lookup"))?;
+    let ids = statement
+        .query_map([artist_name.trim()], |row| row.get::<_, String>(0))
+        .map_err(db_error("query cached track Artist identity"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("read cached track Artist identity"))?;
+    Ok((ids.len() == 1 && extract_mbids(&ids[0]).len() == 1).then(|| ids[0].clone()))
 }
 
 /// Update the already-indexed track row after the same IDs have been safely
@@ -1816,8 +1836,40 @@ fn record_compilation_progress_with_connection(
         return Ok(());
     }
     let canonical_album = mapper.to_canonical(&album_path.to_string_lossy())?;
-    let completed = completed_tracks.min(total_tracks);
-    let status = if completed == total_tracks {
+    let indexed_total: usize = connection
+        .query_row(
+            "SELECT track_count FROM albums WHERE lower(path)=lower(?)",
+            [canonical_album.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_error("read compilation album track count"))?
+        .unwrap_or(0)
+        .max(0) as usize;
+    let total = total_tracks.max(indexed_total);
+    // Targeted reviews pass just the selected track. Rebuild album-wide
+    // progress from the completion ledger rather than replacing 100/100 with
+    // 1/0 (or 1/1). A full-album verification retains its validated count.
+    let completed = if total_tracks < indexed_total {
+        let album = canonical_album.trim_end_matches(['/', '\\']);
+        let slash_prefix = format!("{album}/");
+        let backslash_prefix = format!("{album}\\");
+        connection
+            .query_row(
+                "SELECT COUNT(DISTINCT lower(track_path)) FROM compilation_track_artwork \
+                 WHERE outcome IN ('embedded-replaced','embedded-existing') \
+                 AND (lower(substr(track_path,1,length(?1)))=lower(?1) \
+                 OR lower(substr(track_path,1,length(?2)))=lower(?2))",
+                params![slash_prefix, backslash_prefix],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(db_error("count completed compilation tracks"))?
+            .max(0) as usize
+    } else {
+        completed_tracks
+    }
+    .min(total);
+    let status = if completed == total {
         "complete"
     } else {
         "incomplete"
@@ -1827,7 +1879,7 @@ fn record_compilation_progress_with_connection(
         "INSERT INTO compilation_album_progress(album_path, total_tracks, completed_tracks, status, updated_at, splined_version) \
          VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(album_path) DO UPDATE SET total_tracks=excluded.total_tracks, \
          completed_tracks=excluded.completed_tracks, status=excluded.status, updated_at=excluded.updated_at, splined_version=excluded.splined_version",
-        params![canonical_album, total_tracks as i64, completed as i64, status, now, env!("CARGO_PKG_VERSION")],
+        params![canonical_album, total as i64, completed as i64, status, now, env!("CARGO_PKG_VERSION")],
     ).map_err(db_error("record compilation album progress"))?;
     let artist_key = connection
         .query_row(
@@ -2579,7 +2631,7 @@ fn load_snapshot(
             let fallback_album = album_mbid.trim().is_empty();
             let indexed_root_files = row.get::<_, i64>(16)?;
             let indexed_cover_files = row.get::<_, i64>(17)?;
-            let status = if stored_status.eq_ignore_ascii_case("processed")
+            let mut status = if stored_status.eq_ignore_ascii_case("processed")
                 && !has_processed_evidence(processed_at.as_deref(), selected_source.as_deref())
             {
                 "unprocessed".to_string()
@@ -2587,6 +2639,29 @@ fn load_snapshot(
                 stored_status
             };
             let album_key: String = row.get(0)?;
+            let cached_tracks = compilation_tracks
+                .get(&album_key.to_ascii_lowercase())
+                .cloned()
+                .unwrap_or_default();
+            let track_count: i64 = row.get(7)?;
+            let completed_tracks = cached_tracks
+                .iter()
+                .filter(|track| track.embedded_artwork_recorded)
+                .count() as i64;
+            // A targeted review may have left a stale one-track progress row.
+            // Project fallback status from the album-wide ledger on load so
+            // existing libraries recover without rewriting their audio files.
+            if fallback_album
+                && track_count > 0
+                && completed_tracks > 0
+                && !matches!(status.as_str(), "bypassed" | "timeout")
+            {
+                status = if completed_tracks >= track_count {
+                    "processed".to_string()
+                } else {
+                    "incomplete".to_string()
+                };
+            }
             Ok(MediaAlbumSnapshot {
                 album_key: album_key.clone(),
                 artist: physical_artist,
@@ -2597,11 +2672,9 @@ fn load_snapshot(
                 status,
                 compilation,
                 compilation_track_art_eligible: album_mbid.trim().is_empty(),
-                compilation_tracks: compilation_tracks
-                    .get(&album_key.to_ascii_lowercase())
-                    .cloned()
-                    .unwrap_or_default(),
-                track_count: row.get(7)?,
+                compilation_tracks: cached_tracks,
+                track_count,
+                compilation_completed_tracks: completed_tracks.min(track_count.max(0)),
                 release_year: row.get(8)?,
                 artist_mbid: row.get(23)?,
                 album_mbid: album_mbid.clone(),
@@ -3186,6 +3259,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fallback_artist_identity_can_be_recovered_from_indexed_track_tags() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.library.music_library = root.path().join("music").to_string_lossy().into_owned();
+        fs::create_dir_all(&config.library.music_library).unwrap();
+        config.scan.cache_dir = root.path().join("cache").to_string_lossy().into_owned();
+        fs::create_dir_all(&config.scan.cache_dir).unwrap();
+        let connection = open_database(&database_path(&config.scan.cache_dir), false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let artist = "291dcfb8-b31c-496a-905b-9955509d75b6";
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,musicbrainz_artistid,file_size,file_mtime_ns,updated_at,splined_version) \
+             VALUES('percy','fallback','/music/comp/track.mp3','Theme','Percy Faith',?,0,0,?,'test')",
+            params![artist, now],
+        ).unwrap();
+        drop(connection);
+        assert_eq!(
+            cached_artist_musicbrainz_identity(&config, "Percy Faith")
+                .unwrap()
+                .as_deref(),
+            Some(artist)
+        );
+    }
+
+    #[test]
     fn compilation_resume_accepts_legacy_session_authority_only_with_matching_artwork() {
         assert!(compilation_completion_matches(true, false));
         assert!(compilation_completion_matches(false, true));
@@ -3739,6 +3837,71 @@ mod tests {
             legacy_track_path
         );
         assert!(snapshot.albums[0].compilation_tracks[1].embedded_artwork_recorded);
+    }
+
+    #[test]
+    fn targeted_compilation_review_preserves_album_wide_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("music");
+        let album = root.join("Various Artists").join("Compilation");
+        fs::create_dir_all(&album).unwrap();
+        let connection = open_database(&temp.path().join("progress.db"), false).unwrap();
+        let root_text = root.to_string_lossy().into_owned();
+        let mapper = PathMapper::new(&root_text, &root_text).unwrap();
+        let album_path = mapper.to_canonical(&album.to_string_lossy()).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Various Artists',?,?,?,?,'test')",
+            params![root_text, now, now, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,compilation,path,representative_file,tag_signature,track_count,status,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Compilation',1,?,?,'tags',100,'incomplete',?,?,?,'test')",
+            params![album_path, album_path, now, now, now],
+        ).unwrap();
+        for index in 0..100 {
+            let track = album.join(format!("{index:03}.mp3"));
+            let track_path = mapper.to_canonical(&track.to_string_lossy()).unwrap();
+            connection.execute(
+                "INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,artwork_sha256,outcome,applied_at,splined_version) VALUES(?,'recording','artist','local','fixture','hash','embedded-replaced',?,'test')",
+                params![track_path, now],
+            ).unwrap();
+        }
+        let snapshot =
+            load_snapshot(&connection, &temp.path().join("progress.db"), &mapper).unwrap();
+        assert_eq!(snapshot.albums[0].status, "processed");
+        assert_eq!(snapshot.albums[0].compilation_completed_tracks, 100);
+        record_compilation_progress_with_connection(&connection, &mapper, &album, 1, 0).unwrap();
+        let progress: (i64, i64, String) = connection.query_row(
+            "SELECT total_tracks,completed_tracks,status FROM compilation_album_progress WHERE album_path=?",
+            [album_path.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(progress, (100, 100, "complete".into()));
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM albums WHERE album_key='album'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "processed");
+
+        let missing = mapper
+            .to_canonical(&album.join("099.mp3").to_string_lossy())
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM compilation_track_artwork WHERE track_path=?",
+                [missing],
+            )
+            .unwrap();
+        record_compilation_progress_with_connection(&connection, &mapper, &album, 1, 0).unwrap();
+        let progress: (i64, i64) = connection.query_row(
+            "SELECT total_tracks,completed_tracks FROM compilation_album_progress WHERE album_path=?",
+            [album_path.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(progress, (100, 99));
     }
 
     #[test]

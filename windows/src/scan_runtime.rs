@@ -5,7 +5,8 @@ use crate::compilation::{
 use crate::config::{Config, Mode, OutputConfig, configured_samples_dir};
 use crate::download::DownloadedCandidate;
 use crate::embedded_artwork::{
-    embedded_front_matches, replace_embedded_front, replace_musicbrainz_identity,
+    embedded_front_matches, embedded_front_metadata, replace_embedded_front,
+    replace_musicbrainz_identity,
 };
 use crate::final_artwork::{
     FinalArtworkAction, FinalArtworkResult, PreparedArtwork, PreparedArtworkInfo,
@@ -1438,10 +1439,24 @@ pub async fn run_scan_library_read_report(
                 ) {
                     Ok((final_result, destination)) => {
                         if embed_thumbnails && effective_mode == Mode::Write {
+                            let saved_cover = inspect_image(&destination)?;
+                            if let Some(expected) = final_result.info.as_ref()
+                                && (saved_cover.width != expected.width
+                                    || saved_cover.height != expected.height)
+                            {
+                                return Err(format!(
+                                    "Saved cover.* does not match the prepared full-resolution preview: expected {} × {}, found {} × {} at {}.",
+                                    expected.width,
+                                    expected.height,
+                                    saved_cover.width,
+                                    saved_cover.height,
+                                    destination.display()
+                                ));
+                            }
                             let full_resolution = fs::read(&destination).map_err(|error| {
                                 format!("Unable to read saved full-resolution cover for embedding: {error}")
                             })?;
-                            let thumbnail_format = match inspect_image(&destination)?.format {
+                            let thumbnail_format = match saved_cover.format {
                                 StaticFormat::Png => StaticFormat::Png,
                                 _ => StaticFormat::Jpeg,
                             };
@@ -1455,10 +1470,23 @@ pub async fn run_scan_library_read_report(
                                 {
                                     replace_embedded_front(&track.path, &thumbnail)?;
                                 }
+                                let verified = embedded_front_metadata(&track.path)?;
+                                if !verified.is_some_and(|(width, height, _)| {
+                                    width == selected_output.embedded_thumbnail_size
+                                        && height == selected_output.embedded_thumbnail_size
+                                }) {
+                                    return Err(format!(
+                                        "Embedded thumbnail verification failed for {}.",
+                                        track.path.display()
+                                    ));
+                                }
                             }
                             gui_events::emit(json!({
                                 "event": "album_thumbnails_embedded",
                                 "album_path": album.path,
+                                "cover_path": destination,
+                                "cover_width": saved_cover.width,
+                                "cover_height": saved_cover.height,
                                 "track_count": tracks.len(),
                                 "size": selected_output.embedded_thumbnail_size,
                             }));
@@ -3129,7 +3157,7 @@ async fn run_compilation_album(
                     "candidates": cached.candidates.len() }));
                     cached.restore()?
                 } else {
-                    let discovered = run_registry_pipeline_with_cache_dir(
+                    let mut discovered = run_registry_pipeline_with_cache_dir(
                         registry,
                         &ArtworkQuery::release(&selected.release_mbid),
                         &ProviderContext {
@@ -3148,6 +3176,48 @@ async fn run_compilation_album(
                         cache_dir,
                     )
                     .await?;
+                    // A Various Artists MusicBrainz release can have no CAA
+                    // cover and third-party catalogues may index that same
+                    // album under the focused performer instead. Retry only
+                    // when the release-credit search found no artwork. The
+                    // selected release MBID remains the authority throughout.
+                    if discovered.candidates.is_empty()
+                        && selected
+                            .release_artist
+                            .eq_ignore_ascii_case("Various Artists")
+                        && !search_artist.trim().is_empty()
+                    {
+                        let alternate = run_registry_pipeline_with_cache_dir(
+                            registry,
+                            &ArtworkQuery::release(&selected.release_mbid),
+                            &ProviderContext {
+                                artist_credit: search_artist.clone(),
+                                release_title: selected.release_title.clone(),
+                                release_group_mbid: selected.release_group_mbid.clone(),
+                                release_group_title: Some(selected.release_title.clone()),
+                                apple_collection_ids: Vec::new(),
+                            },
+                            RegistryPipelineOptions {
+                                source_order: resolved_sources,
+                                range,
+                                format_order,
+                                source_policies: &config.source_policies,
+                            },
+                            cache_dir,
+                        )
+                        .await?;
+                        gui_events::emit(json!({
+                            "event": "compilation_candidate_title_retry",
+                            "track_path": track.path,
+                            "release_mbid": selected.release_mbid,
+                            "artist": search_artist,
+                            "album": selected.release_title,
+                            "candidates": alternate.candidates.len()
+                        }));
+                        if !alternate.candidates.is_empty() {
+                            discovered = alternate;
+                        }
+                    }
                     source_results_cache.insert(
                         selected.release_mbid.clone(),
                         CachedPipelineResult::capture(&discovered),
@@ -3310,43 +3380,30 @@ async fn run_compilation_album(
                 StaticFormat::Png => StaticFormat::Png,
                 _ => StaticFormat::Jpeg,
             };
-            let embedding_range = Range {
-                min: config.range.min.min(config.range.ladder),
-                ideal: config.range.ladder,
-                max: config.range.ladder,
-                ladder: config.range.ladder,
-            };
-            let mut embedding_output = config.output.clone();
-            embedding_output.upscale_below_ideal = false;
-            if let Some(overrides) = upscale_overrides.as_ref() {
-                apply_upscale_overrides(&mut embedding_output, overrides)?;
-                if (writing_mb_preview || use_existing)
-                    && !overrides.preserve_source_resolution
-                    && overrides.apply_edit_profile
-                {
-                    embedding_output.upscale_below_ideal = true;
-                }
-            }
-            let prepared = prepare_configured_artwork(
+            let (embedding_range, embedding_output) = compilation_embedding_profile(
+                config,
+                upscale_overrides.as_ref(),
+                writing_mb_preview || use_existing,
+            )?;
+            let prepared = prepare_compilation_full_resolution(
                 &chosen.downloaded.candidate,
                 chosen.downloaded.path(),
                 &embedding_range,
                 target_format,
                 &embedding_output,
-                true,
+                upscale_overrides
+                    .as_ref()
+                    .is_some_and(|profile| profile.use_upscaled_preview),
             )?;
-            let embedded_bytes = if upscale_overrides
-                .as_ref()
-                .is_some_and(|overrides| overrides.embed_thumbnails)
-            {
-                prepare_embedded_thumbnail(
-                    &prepared.bytes,
-                    embedding_output.embedded_thumbnail_size,
-                    target_format,
-                )?
-            } else {
-                prepared.bytes.clone()
-            };
+            // A compilation has no album-local cover.* authority. Every write
+            // here is to one track's embedded artwork, including Existing and
+            // direct MusicBrainz previews. Never let a lost UI thumbnail flag
+            // replace a preference-sized embed with full-resolution pixels.
+            let embedded_bytes = prepare_compilation_embedded_artwork(
+                &prepared.bytes,
+                embedding_output.embedded_thumbnail_size,
+                target_format,
+            )?;
             let selected_release = selected_match
                 .as_ref()
                 .map(|item| item.release_mbid.as_str());
@@ -3359,6 +3416,21 @@ async fn run_compilation_album(
             if effective_mode == Mode::Write {
                 if !already_has_artwork {
                     replace_embedded_front(&track.path, &embedded_bytes)?;
+                }
+                let embedded_dimensions =
+                    embedded_front_metadata(&track.path)?.map(|(width, height, _)| (width, height));
+                if embedded_dimensions
+                    != Some((
+                        embedding_output.embedded_thumbnail_size,
+                        embedding_output.embedded_thumbnail_size,
+                    ))
+                {
+                    return Err(format!(
+                        "The embedded artwork for {} did not verify at the preferred {} × {} size.",
+                        track.path.display(),
+                        embedding_output.embedded_thumbnail_size,
+                        embedding_output.embedded_thumbnail_size
+                    ));
                 }
                 completed += 1;
                 record_compilation_artwork_application(
@@ -3393,8 +3465,9 @@ async fn run_compilation_album(
                 } else { "ReadOnly" },
                 "mode": format!("{:?}", effective_mode).to_ascii_lowercase(),
                 "source": chosen.downloaded.candidate.source, "release_mbid": selected_release,
-                "width": if upscale_overrides.as_ref().is_some_and(|overrides| overrides.embed_thumbnails) { embedding_output.embedded_thumbnail_size } else { prepared.info.width },
-                "height": if upscale_overrides.as_ref().is_some_and(|overrides| overrides.embed_thumbnails) { embedding_output.embedded_thumbnail_size } else { prepared.info.height },
+                "width": embedding_output.embedded_thumbnail_size,
+                "height": embedding_output.embedded_thumbnail_size,
+                "embed_thumbnails": true,
                 "upscale_backend": prepared.info.upscale_backend.as_str() }),
             );
             break 'match_selection;
@@ -3414,6 +3487,68 @@ async fn run_compilation_album(
         "unresolved_tracks": tracks.len().saturating_sub(completed) }),
     );
     Ok(result)
+}
+
+fn prepare_compilation_embedded_artwork(
+    full_resolution: &[u8],
+    preferred_size: u32,
+    format: StaticFormat,
+) -> Result<Vec<u8>, String> {
+    prepare_embedded_thumbnail(full_resolution, preferred_size, format)
+}
+
+fn prepare_compilation_full_resolution(
+    candidate: &Candidate,
+    source_path: &Path,
+    range: &Range,
+    target_format: StaticFormat,
+    output: &OutputConfig,
+    use_upscaled_preview: bool,
+) -> Result<PreparedArtwork, String> {
+    if use_upscaled_preview {
+        prepare_selected_artwork_edit(candidate, source_path, range, target_format, output, true)
+    } else {
+        prepare_configured_artwork(candidate, source_path, range, target_format, output, true)
+    }
+}
+
+fn compilation_embedding_profile(
+    config: &Config,
+    overrides: Option<&gui_events::UpscaleOverrides>,
+    musicbrainz_or_existing: bool,
+) -> Result<(Range, OutputConfig), String> {
+    let preview_upscaled = overrides.is_some_and(|profile| profile.use_upscaled_preview);
+    let range = Range {
+        min: config.range.min.min(config.range.ladder),
+        // An explicit Upscale Preview uses the normal Ideal target. The
+        // compilation Ladder target would otherwise make the write differ
+        // from the preview before it is reduced to the embedded size.
+        ideal: if preview_upscaled {
+            config.range.ideal
+        } else {
+            config.range.ladder
+        },
+        max: if preview_upscaled {
+            config.range.max
+        } else {
+            config.range.ladder
+        },
+        ladder: config.range.ladder,
+    };
+    let mut output = config.output.clone();
+    output.upscale_below_ideal = false;
+    if let Some(profile) = overrides {
+        apply_upscale_overrides(&mut output, profile)?;
+        if preview_upscaled {
+            output.upscale_below_ideal = config.output.upscale_below_ideal;
+        } else if musicbrainz_or_existing
+            && !profile.preserve_source_resolution
+            && profile.apply_edit_profile
+        {
+            output.upscale_below_ideal = true;
+        }
+    }
+    Ok((range, output))
 }
 
 fn candidate_image_category(types: &[String]) -> &'static str {
@@ -4493,6 +4628,21 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn compilation_embed_always_uses_preferred_dimensions_without_altering_source() {
+        let directory = TempDir::new().unwrap();
+        let image_path = directory.path().join("full-resolution.png");
+        image::RgbImage::from_pixel(1500, 1500, image::Rgb([20, 80, 140]))
+            .save_with_format(&image_path, image::ImageFormat::Png)
+            .unwrap();
+        let original = fs::read(&image_path).unwrap();
+        let embedded =
+            prepare_compilation_embedded_artwork(&original, 1200, StaticFormat::Png).unwrap();
+        assert_eq!(image::load_from_memory(&embedded).unwrap().width(), 1200);
+        assert_eq!(image::load_from_memory(&embedded).unwrap().height(), 1200);
+        assert_eq!(fs::read(&image_path).unwrap(), original);
+    }
+
+    #[test]
     fn matching_embedded_recording_is_offered_as_existing_candidate() {
         let directory = TempDir::new().unwrap();
         let image_path = directory.path().join("art.png");
@@ -4931,6 +5081,7 @@ mod tests {
             apply_edit_profile: true,
             edit_existing_cover: true,
             embed_thumbnails: false,
+            use_upscaled_preview: false,
         };
         apply_upscale_overrides(&mut output, &overrides).unwrap();
         assert!(!output.upscale_adaptive_defaults);
@@ -4948,6 +5099,132 @@ mod tests {
             ..overrides
         };
         assert!(apply_upscale_overrides(&mut output, &invalid).is_err());
+    }
+
+    #[test]
+    fn compilation_embed_uses_preview_ideal_before_thumbnail_downscale() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let source = directory.path().join("candidate.png");
+        image::RgbaImage::from_fn(320, 320, |x, y| {
+            image::Rgba([x as u8, y as u8, (x ^ y) as u8, 255])
+        })
+        .save_with_format(&source, image::ImageFormat::Png)
+        .unwrap();
+        let candidate = Candidate::from_file("test", &source, 1).unwrap();
+        let mut config = Config::default();
+        config.range.min = 300;
+        config.range.ideal = 640;
+        config.range.max = 1280;
+        config.range.ladder = 1800;
+        config.output.upscale_below_ideal = true;
+        config.output.upscale_max_percent = 200;
+        config.output.embedded_thumbnail_size = 300;
+        let plain = compilation_embedding_profile(&config, None, false).unwrap();
+        let plain_full = prepare_compilation_full_resolution(
+            &candidate,
+            &source,
+            &plain.0,
+            StaticFormat::Png,
+            &plain.1,
+            false,
+        )
+        .unwrap();
+        assert_eq!(plain_full.info.width, 320);
+
+        let previewed = gui_events::UpscaleOverrides {
+            preserve_source_resolution: false,
+            adaptive_defaults: true,
+            picture_percent: 0,
+            sharpen_percent: 0,
+            softness_percent: 0,
+            contrast_percent: 0,
+            exposure_percent: 0,
+            brightness_percent: 0,
+            gamma_percent: 0,
+            color_temperature: 0,
+            apply_edit_profile: true,
+            edit_existing_cover: false,
+            embed_thumbnails: true,
+            use_upscaled_preview: true,
+        };
+        let (range, output) =
+            compilation_embedding_profile(&config, Some(&previewed), false).unwrap();
+        assert_eq!(range.ideal, config.range.ideal);
+        assert_eq!(range.max, config.range.max);
+        assert!(output.upscale_below_ideal);
+        let upscaled_full = prepare_compilation_full_resolution(
+            &candidate,
+            &source,
+            &range,
+            StaticFormat::Png,
+            &output,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            (upscaled_full.info.width, upscaled_full.info.height),
+            (640, 640)
+        );
+        let thumbnail = prepare_compilation_embedded_artwork(
+            &upscaled_full.bytes,
+            config.output.embedded_thumbnail_size,
+            StaticFormat::Png,
+        )
+        .unwrap();
+        let thumbnail_image = image::load_from_memory(&thumbnail).unwrap();
+        assert_eq!(
+            (thumbnail_image.width(), thumbnail_image.height()),
+            (300, 300)
+        );
+        assert_ne!(
+            thumbnail,
+            prepare_compilation_embedded_artwork(
+                &plain_full.bytes,
+                config.output.embedded_thumbnail_size,
+                StaticFormat::Png,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn compilation_embed_preserves_preview_adjustments_on_large_source() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let source = directory.path().join("large.png");
+        image::RgbaImage::from_fn(320, 320, |x, y| image::Rgba([x as u8, y as u8, 80, 255]))
+            .save_with_format(&source, image::ImageFormat::Png)
+            .unwrap();
+        let candidate = Candidate::from_file("test", &source, 1).unwrap();
+        let range = Range {
+            min: 300,
+            ideal: 300,
+            max: 640,
+            ladder: 640,
+        };
+        let output = OutputConfig {
+            upscale_picture_percent: 10,
+            ..OutputConfig::default()
+        };
+        let plain = prepare_compilation_full_resolution(
+            &candidate,
+            &source,
+            &range,
+            StaticFormat::Png,
+            &output,
+            false,
+        )
+        .unwrap();
+        let edited = prepare_compilation_full_resolution(
+            &candidate,
+            &source,
+            &range,
+            StaticFormat::Png,
+            &output,
+            true,
+        )
+        .unwrap();
+        assert_eq!((plain.info.width, edited.info.width), (320, 320));
+        assert_ne!(plain.bytes, edited.bytes);
     }
 
     #[test]
@@ -4973,6 +5250,7 @@ mod tests {
             apply_edit_profile: false,
             edit_existing_cover: false,
             embed_thumbnails: false,
+            use_upscaled_preview: false,
         };
         apply_upscale_overrides(&mut output, &overrides).unwrap();
         assert!(!output.evaluate_final_image);

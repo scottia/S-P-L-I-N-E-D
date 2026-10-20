@@ -115,7 +115,21 @@ pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, Stri
     if is_mpeg_path(path)
         && let Some(fields) = read_id3v2_fields(path)?
     {
-        return evidence_from_id3(path, fields);
+        let mut evidence = evidence_from_id3(path, fields)?;
+        // Some taggers store MusicBrainz IDs in another tag layer. The fast
+        // leading-ID3 parser is authoritative when populated, but a missing
+        // ID should not mask a valid value that the full reader can see.
+        if (evidence.musicbrainz_track_id.is_none() || evidence.musicbrainz_artist_id.is_none())
+            && let Ok(tagged_file) = read_tags_only(path)
+        {
+            evidence.musicbrainz_track_id = evidence
+                .musicbrainz_track_id
+                .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzRecordingId));
+            evidence.musicbrainz_artist_id = evidence
+                .musicbrainz_artist_id
+                .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzArtistId));
+        }
+        return Ok(evidence);
     }
 
     let tagged_file = read_tags_only(path).map_err(|error| {

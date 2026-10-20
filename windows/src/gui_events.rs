@@ -196,6 +196,7 @@ pub struct UpscaleOverrides {
     pub apply_edit_profile: bool,
     pub edit_existing_cover: bool,
     pub embed_thumbnails: bool,
+    pub use_upscaled_preview: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +248,7 @@ fn parse_musicbrainz_match_decision(
             index: value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
             upscale: value
                 .get("upscale_adaptive_defaults")
+                .or_else(|| value.get("use_upscaled_preview"))
                 .map(|_| parse_upscale_overrides(value)),
         })),
         "write_musicbrainz_preview" => {
@@ -265,6 +267,7 @@ fn parse_musicbrainz_match_decision(
                 cover_path,
                 upscale: value
                     .get("upscale_adaptive_defaults")
+                    .or_else(|| value.get("use_upscaled_preview"))
                     .map(|_| parse_upscale_overrides(value)),
             }))
         }
@@ -357,6 +360,7 @@ fn parse_candidate_decision(value: &Value) -> Result<Option<CandidateDecision>, 
             }
             let upscale = value
                 .get("upscale_adaptive_defaults")
+                .or_else(|| value.get("use_upscaled_preview"))
                 .map(|_| parse_upscale_overrides(value));
             Ok(Some(CandidateDecision::Use {
                 index: index as usize - 1,
@@ -412,6 +416,10 @@ fn parse_upscale_overrides(value: &Value) -> UpscaleOverrides {
             .unwrap_or(false),
         embed_thumbnails: value
             .get("embed_thumbnails")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        use_upscaled_preview: value
+            .get("use_upscaled_preview")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }
@@ -584,6 +592,23 @@ mod tests {
             CandidateDecision::Use {
                 upscale: Some(UpscaleOverrides {
                     embed_thumbnails: false,
+                    ..
+                }),
+                ..
+            }
+        ));
+        let previewed = parse_candidate_decision(&json!({
+            "action": "use", "index": 1,
+            "embed_thumbnails": true,
+            "use_upscaled_preview": true
+        }))
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            previewed,
+            CandidateDecision::Use {
+                upscale: Some(UpscaleOverrides {
+                    use_upscaled_preview: true,
                     ..
                 }),
                 ..

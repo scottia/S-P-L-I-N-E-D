@@ -104,7 +104,7 @@ pub async fn check_store_updates(window_handle: usize) -> Result<u32, String> {
         .GetAppAndOptionalStorePackageUpdatesAsync()
         .map_err(|error| format!("Microsoft Store update query could not start: {error}"))?;
     let updates = operation
-        .get()
+        .await
         .map_err(|error| format!("Microsoft Store update query failed: {error}"))?;
     updates
         .Size()
@@ -124,7 +124,7 @@ pub async fn install_store_updates(window_handle: usize) -> Result<String, Strin
     let updates = context
         .GetAppAndOptionalStorePackageUpdatesAsync()
         .map_err(|error| format!("Microsoft Store update query could not start: {error}"))?
-        .get()
+        .await
         .map_err(|error| format!("Microsoft Store update query failed: {error}"))?;
     let count = updates
         .Size()
@@ -135,7 +135,7 @@ pub async fn install_store_updates(window_handle: usize) -> Result<String, Strin
     let result = context
         .RequestDownloadAndInstallStorePackageUpdatesAsync(&updates)
         .map_err(|error| format!("Microsoft Store installation could not start: {error}"))?
-        .get()
+        .await
         .map_err(|error| format!("Microsoft Store installation failed: {error}"))?;
     let state = result
         .OverallState()

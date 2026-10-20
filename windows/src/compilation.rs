@@ -16,6 +16,7 @@ const MAX_WORK_RECORDING_LOOKUPS: usize = 8;
 const MUSICBRAINZ_EMBEDDED_RELEASE_LIMIT: usize = 25;
 const MAX_FUZZY_DETAIL_LOOKUPS: usize = 8;
 const MIN_FUZZY_SCORE: u16 = 55;
+const MAX_INTERACTIVE_RECORDING_RELEASES: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -192,7 +193,61 @@ impl CompilationMatchCache {
             };
             match exact {
                 Ok(mut matches) if !matches.is_empty() => {
+                    // A tagged Recording can have only one eligible release even
+                    // though MusicBrainz knows other recordings of the same song
+                    // by this artist. Keep the exact result authoritative, but
+                    // offer those title matches as visibly lower-score choices.
+                    // This never broadens the Artist MBID constraint.
+                    let mut supplemental_warning = None;
+                    let needs_artist_album = !has_focused_artist_album(&matches, &friendly_artist);
+                    if release_family_count(&matches) <= 1 || needs_artist_album {
+                        match fuzzy_artist_title_matches(
+                            client,
+                            &focused_artist_mbid,
+                            &friendly_artist,
+                            title,
+                        )
+                        .await
+                        {
+                            Ok(mut alternatives) => {
+                                // 100 denotes the exact tagged Recording; a
+                                // different Recording must not look identical.
+                                for alternative in &mut alternatives {
+                                    if !alternative
+                                        .recording_mbid
+                                        .eq_ignore_ascii_case(recording_mbid)
+                                    {
+                                        alternative.score = alternative.score.min(94);
+                                    }
+                                }
+                                matches.extend(alternatives);
+                            }
+                            Err(error) => {
+                                supplemental_warning = Some(format!(
+                                    "Additional artist/title suggestions were unavailable: {error}"
+                                ))
+                            }
+                        }
+                    }
+                    if needs_artist_album {
+                        match same_title_artist_album_matches(
+                            client,
+                            &focused_artist_mbid,
+                            &friendly_artist,
+                            title,
+                        )
+                        .await
+                        {
+                            Ok(alternatives) => matches.extend(alternatives),
+                            Err(error) => {
+                                supplemental_warning = Some(format!(
+                                    "Additional artist-album suggestions were unavailable: {error}"
+                                ))
+                            }
+                        }
+                    }
                     finalize_interactive_matches(&mut matches);
+                    let has_alternatives = matches.iter().any(|item| item.score < 95);
                     let friendly_title = matches
                         .first()
                         .map(|item| item.recording_title.clone())
@@ -200,16 +255,22 @@ impl CompilationMatchCache {
                         .unwrap_or_else(|| title.to_string());
                     return MusicBrainzResolution {
                         matches,
-                        warnings: Vec::new(),
+                        warnings: supplemental_warning.into_iter().collect(),
                         identity_status: "valid".to_string(),
-                        identity_message: format!(
-                            "Validated Recording and Artist identity: {friendly_artist} — {friendly_title}"
-                        ),
+                        identity_message: if has_alternatives {
+                            format!(
+                                "Validated Recording and Artist identity: {friendly_artist} — {friendly_title}. Lower-percentage results are same-artist title suggestions, not the tagged Recording ID."
+                            )
+                        } else {
+                            format!(
+                                "Validated Recording and Artist identity: {friendly_artist} — {friendly_title}"
+                            )
+                        },
                         recording_status: "valid".to_string(),
                         artist_status: "valid".to_string(),
                         friendly_artist,
                         friendly_title,
-                        used_fuzzy_search: false,
+                        used_fuzzy_search: has_alternatives,
                         focused_artist_mbid: Some(focused_artist_mbid),
                     };
                 }
@@ -421,13 +482,29 @@ impl CompilationMatchCache {
         let canonical_recording_mbid = lookup.id.clone();
         let work_mbids = lookup.work_mbids.clone();
         let direct_artist_matches = ids_subset(local_artist_mbids, &lookup.artist_mbids);
+        let releases = if direct_artist_matches
+            && lookup.releases.len() >= MUSICBRAINZ_EMBEDDED_RELEASE_LIMIT
+            && !lookup.releases.iter().any(|release| {
+                classify_release(release) == Some(ReleaseClass::Album)
+                    && ids_subset(local_artist_mbids, &release.artist_mbids)
+            }) {
+            client
+                .browse_recording_releases(
+                    &canonical_recording_mbid,
+                    MAX_INTERACTIVE_RECORDING_RELEASES,
+                )
+                .await
+                .unwrap_or(lookup.releases)
+        } else {
+            lookup.releases
+        };
         let mut matches = if direct_artist_matches {
             project_releases(
                 &lookup.id,
                 &lookup.title,
                 &lookup.artist_credit,
                 &lookup.artist_mbids,
-                lookup.releases,
+                releases,
                 100,
                 true,
             )
@@ -629,6 +706,76 @@ async fn fuzzy_artist_title_matches(
     }
     finalize_interactive_matches(&mut matches);
     Ok(matches)
+}
+
+async fn same_title_artist_album_matches(
+    client: &MusicBrainzClient,
+    artist_mbid: &str,
+    artist_name: &str,
+    title: &str,
+) -> Result<Vec<MusicBrainzMatch>, String> {
+    let query = format!(
+        "recording:\"{}\" AND arid:{} AND release:\"{}\"",
+        escape_lucene_phrase(title),
+        artist_mbid,
+        escape_lucene_phrase(title)
+    );
+    let hits = client.search_recordings(&query, 25).await?;
+    let mut matches = Vec::new();
+    for hit in hits
+        .into_iter()
+        .filter(|hit| hit.score >= MIN_FUZZY_SCORE)
+        .filter(|hit| ids_subset(&[artist_mbid.to_string()], &hit.artist_mbids))
+        .take(4)
+    {
+        let releases = client
+            .browse_recording_releases(&hit.id, MAX_INTERACTIVE_RECORDING_RELEASES)
+            .await?;
+        let releases = releases
+            .into_iter()
+            .filter(|release| {
+                release
+                    .release_group_primary_type
+                    .as_deref()
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("album"))
+                    && ids_subset(&[artist_mbid.to_string()], &release.artist_mbids)
+            })
+            .collect();
+        matches.extend(
+            project_releases(
+                &hit.id,
+                &hit.title,
+                &hit.artist_credit,
+                &hit.artist_mbids,
+                releases,
+                hit.score.min(94),
+                true,
+            )
+            .into_iter()
+            .filter(|item| {
+                matches!(
+                    item.release_class,
+                    ReleaseClass::Album | ReleaseClass::Compilation
+                ) && artist_names_compatible(artist_name, &item.release_artist)
+            }),
+        );
+    }
+    finalize_interactive_matches(&mut matches);
+    Ok(matches)
+}
+
+fn has_focused_artist_album(matches: &[MusicBrainzMatch], artist_name: &str) -> bool {
+    matches.iter().any(|item| {
+        item.release_class == ReleaseClass::Album
+            && artist_names_compatible(artist_name, &item.release_artist)
+    })
+}
+
+fn preferred_artist_release(item: &MusicBrainzMatch) -> bool {
+    matches!(
+        item.release_class,
+        ReleaseClass::Album | ReleaseClass::Compilation
+    ) && artist_names_compatible(&item.release_artist, &item.recording_artist)
 }
 
 fn escape_lucene_phrase(value: &str) -> String {
@@ -855,22 +1002,29 @@ fn finalize_interactive_matches(matches: &mut Vec<MusicBrainzMatch>) {
     sort_and_deduplicate(matches);
     let fuzzy = matches.iter().any(|item| item.score < 95);
     matches.sort_by(|left, right| {
-        (if fuzzy {
-            right.score.cmp(&left.score)
-        } else {
-            std::cmp::Ordering::Equal
-        })
-        .then_with(|| left.release_class.rank().cmp(&right.release_class.rank()))
-        .then_with(|| release_family_title(left).cmp(&release_family_title(right)))
-        .then_with(|| release_family_id(left).cmp(&release_family_id(right)))
-        .then_with(|| release_country_rank(left).cmp(&release_country_rank(right)))
-        .then_with(|| {
-            left.release_date
-                .as_deref()
-                .unwrap_or("9999-99-99")
-                .cmp(right.release_date.as_deref().unwrap_or("9999-99-99"))
-        })
-        .then_with(|| left.release_mbid.cmp(&right.release_mbid))
+        // A same-artist album is the preferred artwork choice even when its
+        // Recording differs from the tagged compilation Recording. Scores
+        // still disclose that distinction within each release tier.
+        (!preferred_artist_release(left))
+            .cmp(&(!preferred_artist_release(right)))
+            .then_with(|| {
+                if fuzzy {
+                    right.score.cmp(&left.score)
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| left.release_class.rank().cmp(&right.release_class.rank()))
+            .then_with(|| release_family_title(left).cmp(&release_family_title(right)))
+            .then_with(|| release_family_id(left).cmp(&release_family_id(right)))
+            .then_with(|| release_country_rank(left).cmp(&release_country_rank(right)))
+            .then_with(|| {
+                left.release_date
+                    .as_deref()
+                    .unwrap_or("9999-99-99")
+                    .cmp(right.release_date.as_deref().unwrap_or("9999-99-99"))
+            })
+            .then_with(|| left.release_mbid.cmp(&right.release_mbid))
     });
 }
 
@@ -1279,6 +1433,44 @@ mod tests {
             matches.iter().map(|item| item.score).collect::<Vec<_>>(),
             vec![94, 78, 61]
         );
+    }
+
+    #[test]
+    fn same_artist_album_is_visible_ahead_of_exact_compilation_editions() {
+        let candidate = |release: &str, artist: &str, class, score| MusicBrainzMatch {
+            recording_mbid: format!("recording-{score}"),
+            recording_title: "The Loco-Motion".to_string(),
+            recording_artist: "Little Eva".to_string(),
+            artist_mbids: vec!["531643e6-b3ba-4c7f-9d0d-f2831dc42317".to_string()],
+            release_mbid: release.to_string(),
+            release_group_mbid: Some(format!("family-{release}")),
+            release_group_title: Some(release.to_string()),
+            release_class: class,
+            release_title: release.to_string(),
+            release_artist: artist.to_string(),
+            release_date: Some("1962".to_string()),
+            country: Some("US".to_string()),
+            score,
+            url: String::new(),
+        };
+        let mut matches = vec![
+            candidate("comp-a", "Various Artists", ReleaseClass::Compilation, 100),
+            candidate("comp-b", "Various Artists", ReleaseClass::Compilation, 100),
+            candidate(
+                "db5caf84-8053-4ab8-a7f5-eb1cd8c954d6",
+                "Little Eva",
+                ReleaseClass::Compilation,
+                94,
+            ),
+        ];
+        assert!(!has_focused_artist_album(&matches[..2], "Little Eva"));
+        finalize_interactive_matches(&mut matches);
+        assert!(preferred_artist_release(&matches[0]));
+        assert_eq!(
+            matches[0].release_mbid,
+            "db5caf84-8053-4ab8-a7f5-eb1cd8c954d6"
+        );
+        assert_eq!(matches[0].score, 94);
     }
 
     #[test]

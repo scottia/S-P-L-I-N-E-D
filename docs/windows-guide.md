@@ -195,6 +195,33 @@ excluded merely because its title has one of those variants. Choosing
 **Existing** leaves the artwork available in Selected Artwork for optional
 upscaling; **Embed Existing** remains available without upscaling.
 
+## Artist Overview status key
+
+Click the circled **?** beside **Albums** to open an opaque, four-column key.
+Each left-aligned entry has a colored label and its explanation directly below
+it; the columns distinguish album conditions from track-level progress:
+
+- **Status dots:** Red means missing Release ID or artwork, or an incomplete
+  album; yellow means Artist Art is missing or the album is bypassed; orange
+  means the album was processed; green means the selected artist's artwork is
+  complete; purple means embedded art is missing or does not match **Embedded
+  Thumbnail Preference**.
+- **Album card frames:** Green means completion with embedded art at the
+  preferred size. Orange/purple means a processed album still needs an
+  embedded-thumbnail check. Green/purple means the selected artist's COMP
+  tracks are complete but their embedded thumbnails still need attention.
+- **Banners:** Red **COMP** identifies a track-by-track fallback album; it
+  becomes green when that artist's matching tracks are complete. Cyan **FEAT**
+  identifies the selected artist as a featured credit. Hot-pink **OST** marks
+  a soundtrack, and dark-pink **V/A** marks a Various Artists release.
+- **COMP track rows:** Blue means pending artwork, green means completed
+  artwork, and purple means a completed track whose embedded image needs
+  attention.
+
+These colors are independent conditions, not one exclusive album state. A
+completed COMP card can retain a red missing-Release-ID dot because the
+missing Release ID is what makes it a fallback album.
+
 ## Running work
 
 Choose an auto-scan scope and launch mode:
@@ -272,19 +299,29 @@ prepares a square thumbnail in memory from the chosen full-quality artwork or
 its optional Upscale Preview; it does not write a file on its own. The square
 policy uses a conservative centered crop and fits wider images rather than
 cutting away too much of the sides. The preview and dimension/file-size fields
-show the prepared thumbnail. While **EMBED Thumbs** is active, a yellow line at
-the bottom of the image reports the existing embedded image's resolution and
-size. For an Artist Album with unequal embedded images, it reports the largest
-and adds **Varying Size**.
+show the prepared thumbnail. While **EMBED Thumbs** is active, the information
+table compares the same track scope in chronological order: **Before** shows
+the current embedded-art resolution and total bytes across the selected tracks;
+**After** shows the preference-sized prepared thumbnail and its projected total
+bytes across those tracks. The `~` on the After size denotes an estimate before
+writing. For a COMP fallback review, the scope is its selected track; for an
+Artist Album, it is all supported tracks in that album. The track count remains
+visible. A yellow line at the bottom of the image separately reports the
+largest existing embedded image's resolution and size, adding **Varying Size**
+when applicable.
 
-For a COMP fallback track the write action becomes purple **EMBED Comp** and
-embeds only that selected track; it does not save a compilation `cover.*`.
-For an Artist Album it becomes purple **EMBED w/Cover**: the normal full-
-resolution `cover.*` is saved, while a preference-sized copy is embedded in
-all supported tracks of the album. Without **EMBED Thumbs**, the ordinary
-**WRITE Cover** or **Embed Existing** action is still available; Upscale
-Preview is optional in either case. Set **Embedded Thumbnail Preference** in
-Settings above Enhancement defaults (1200 pixels by default, 300–4000 allowed).
+For a COMP fallback track, **EMBED Comp** can write the selected artwork
+directly; **EMBED Thumbs** is an optional in-memory preview of the preferred
+size. **Embed Existing** is also available immediately for an Existing source.
+Both actions embed at the configured preference size, including after an
+optional Upscale Preview; neither saves a compilation `cover.*`. An album
+without an active fallback track cannot use the write action. For an Artist
+Album, pressing **EMBED Thumbs** changes the action to purple **EMBED w/Cover**
+(or **EMBED** when using an Existing cover): the full-resolution `cover.*` is
+saved while a preference-sized copy is embedded in all supported album tracks.
+Without **EMBED Thumbs**, Artist Albums retain **WRITE Cover** or **Embed
+Existing**. Set **Embedded Thumbnail Preference** in Settings above Enhancement
+defaults (1200 pixels by default, 300–4000 allowed).
 
 ## Artwork editing and upscale
 

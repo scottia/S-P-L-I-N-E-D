@@ -338,6 +338,8 @@ struct ApiRecordingSearch {
 struct ApiReleaseSearch {
     #[serde(default)]
     releases: Vec<ApiRelease>,
+    #[serde(rename = "release-count", default)]
+    release_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -812,6 +814,79 @@ impl MusicBrainzClient {
         }
 
         unreachable!("MusicBrainz retry loop always performs at least one attempt")
+    }
+
+    /// A recording lookup embeds at most 25 releases. Browse its release
+    /// relation when the interactive picker needs the remaining editions.
+    pub async fn browse_recording_releases(
+        &self,
+        recording_mbid: &str,
+        max_releases: usize,
+    ) -> Result<Vec<RecordingRelease>, String> {
+        self.ensure_enabled()?;
+        validate_mbid(recording_mbid)?;
+        let url = format!("{API_BASE_URL}/release");
+        let access_token = if self.config.oauth {
+            Some(self.valid_access_token().await?)
+        } else {
+            None
+        };
+        let mut releases = Vec::new();
+        while releases.len() < max_releases {
+            let offset = releases.len();
+            let limit = (max_releases - offset).min(100).to_string();
+            let offset_text = offset.to_string();
+            let mut page = None;
+            for attempt in 0..self.config.retry_max.max(1) {
+                self.wait_for_rate_limit().await;
+                let mut request = self
+                    .client
+                    .get(&url)
+                    .timeout(self.recording_timeout())
+                    .query(&[
+                        ("fmt", "json"),
+                        ("recording", recording_mbid),
+                        ("inc", "artist-credits+release-groups"),
+                        ("limit", limit.as_str()),
+                        ("offset", offset_text.as_str()),
+                    ]);
+                if let Some(token) = access_token.as_deref() {
+                    request = request.bearer_auth(token);
+                }
+                let response = match request.send().await {
+                    Ok(response) => response,
+                    Err(_) if attempt + 1 < self.config.retry_max.max(1) => continue,
+                    Err(error) => {
+                        return Err(format!(
+                            "Unable to browse MusicBrainz recording releases: {error}"
+                        ));
+                    }
+                };
+                let status = response.status();
+                if is_retryable_status(status) && attempt + 1 < self.config.retry_max.max(1) {
+                    continue;
+                }
+                if !status.is_success() {
+                    return Err(format!(
+                        "MusicBrainz recording-release browse returned HTTP {status}"
+                    ));
+                }
+                page = Some(response.json::<ApiReleaseSearch>().await.map_err(|error| {
+                    format!("Invalid MusicBrainz recording-release browse response: {error}")
+                })?);
+                break;
+            }
+            let page = page.ok_or_else(|| {
+                "MusicBrainz recording-release browse exhausted retries".to_string()
+            })?;
+            let total = page.release_count;
+            let page_len = page.releases.len();
+            releases.extend(page.releases.into_iter().map(recording_release_from_api));
+            if page_len == 0 || releases.len() >= total {
+                break;
+            }
+        }
+        Ok(releases)
     }
 
     /// Resolve every Recording relationship exposed by one Work lookup. The

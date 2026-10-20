@@ -1,7 +1,8 @@
 import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView } from "std-widgets.slint";
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool }
-export struct UiArtistAlbumRow { key: string, title: string, year: string, artwork: image, status-color: color, selected: bool, rating-stars: string, yellow-active: bool, red-active: bool, green-active: bool, yellow-tip: string, red-tip: string, green-tip: string, fallback: bool, fallback-complete: bool, featured: bool }
+export struct UiAlbumStatusBullet { color: color, tip: string }
+export struct UiArtistAlbumRow { key: string, title: string, year: string, artwork: image, status-color: color, selected: bool, rating-stars: string, bullets: [UiAlbumStatusBullet], check-embedded: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool }
 export struct UiSimilarArtistRow { name: string, artwork: image, available: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
 export struct UiSourceRow { name: string, label: string, icon: string, count: int, status: string, enabled: bool }
@@ -62,7 +63,7 @@ component NeonAction inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
         font-weight: root.emphasized ? 700 : 500;
-        font-size: root.label-font-size;
+        font-size: root.label-font-size; overflow: elide;
     }
     action := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => root.clicked(); }
 }
@@ -219,6 +220,7 @@ component WorkspaceButton inherits Rectangle {
 }
 component LibraryItem inherits Rectangle {
     in property <UiLibraryRow> item;
+    in property <bool> status-only-album-selection: false;
     callback activated(string);
     callback selection-activated(string);
     callback expansion-activated(string);
@@ -228,9 +230,9 @@ component LibraryItem inherits Rectangle {
     changed item => { root.thumbnail-needed(root.item.key, root.item.kind); }
     height: root.item.kind == "artist" ? 74px : 68px;
     border-radius: 6px;
-    border-width: root.item.expanded || (root.item.kind != "artist" && root.item.selected) ? 1px : 0px;
-    border-color: root.item.expanded ? #493575 : (root.item.selected ? AppTheme.magenta : transparent);
-    background: root.item.expanded || (root.item.kind != "artist" && root.item.selected) ? @linear-gradient(90deg, #142e55, #1d3565) : (row-touch.has-hover ? AppTheme.card-hover : transparent);
+    border-width: !root.status-only-album-selection && (root.item.expanded || (root.item.kind != "artist" && root.item.selected)) ? 1px : 0px;
+    border-color: root.status-only-album-selection ? transparent : (root.item.expanded ? #493575 : (root.item.selected ? AppTheme.magenta : transparent));
+    background: !root.status-only-album-selection && (root.item.expanded || (root.item.kind != "artist" && root.item.selected)) ? @linear-gradient(90deg, #142e55, #1d3565) : (row-touch.has-hover ? AppTheme.card-hover : transparent);
     row-touch := TouchArea {
         mouse-cursor: pointer;
         clicked => root.activated(root.item.key);
@@ -250,12 +252,12 @@ component LibraryItem inherits Rectangle {
                 clicked => root.selection-activated(root.item.key);
             }
         }
-        Rectangle { width: root.item.kind == "artist" ? 48px : 42px; height: root.item.kind == "artist" ? 48px : 42px; clip: true; border-radius: root.item.kind == "artist" ? 24px : 8px; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.selected ? AppTheme.magenta : #4d6d83; border-width: 1px;
+        Rectangle { width: root.item.kind == "artist" ? 48px : 42px; height: root.item.kind == "artist" ? 48px : 42px; clip: true; border-radius: root.item.kind == "artist" ? 24px : 8px; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: 1px;
             Text { text: root.item.primary == "" ? "?" : root.item.icon; color: AppTheme.foreground; font-size: 19px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
             Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; }
         }
         VerticalLayout { spacing: 2px; alignment: center;
-            Text { text: root.item.primary; color: root.item.status-color; font-size: 16px; font-weight: root.item.selected || root.item.expanded ? 700 : 600; overflow: elide; }
+            Text { text: root.item.primary; color: root.item.status-color; font-size: 16px; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
             if root.item.secondary != "": Text { text: root.item.secondary; color: root.item.kind == "artist" ? AppTheme.magenta : AppTheme.secondary-foreground; font-size: 15px; overflow: elide; }
         }
         if root.item.kind == "artist" || root.item.kind == "fallback-album": Rectangle {
@@ -282,41 +284,33 @@ component ArtistAlbumCard inherits Rectangle {
     }
     VerticalLayout {
         Rectangle {
+            property <bool> mixed-embedded-outline: !root.item.fully-complete && root.item.check-embedded && (root.item.processed || (root.item.fallback && root.item.fallback-complete));
+            property <bool> green-purple-outline: root.item.fallback && root.item.fallback-complete && self.mixed-embedded-outline;
             border-radius: 7px;
-            border-width: 2px;
-            border-color: root.item.status-color;
-            background: root.item.selected ? #173e78 : (album-touch.has-hover ? #16466a : AppTheme.card);
+            border-width: self.mixed-embedded-outline ? 0px : 2px;
+            border-color: root.item.fully-complete ? AppTheme.green : (root.item.check-embedded ? AppTheme.violet : root.item.status-color);
+            background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, #32dda0, #7c4dff, #32dda0) : @linear-gradient(135deg, #a64ee8, #efa54e, #a64ee8)) : root.item.selected ? #173e78 : (album-touch.has-hover ? #16466a : AppTheme.card);
+            if self.mixed-embedded-outline: Rectangle {
+                x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
+                border-radius: 5px; background: root.item.selected ? #173e78 : (album-touch.has-hover ? #16466a : AppTheme.card);
+            }
             VerticalLayout { padding: 5px; spacing: 2px;
                 Rectangle { height: 104px; background: #020913; border-radius: 5px; clip: true;
                     Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: contain; }
-                    if root.item.fallback: Rectangle {
+                    if root.item.fallback || root.item.featured || root.item.soundtrack || root.item.various-artists: Rectangle {
                         width: parent.width; height: parent.height; background: transparent;
-                        Path { width: parent.width; height: parent.height; commands: "M 0 78 L 0 104 L 144 26 L 144 0 Z"; fill: root.item.featured ? #b4083446 : (root.item.fallback-complete ? #b4266840 : #b44f267a); stroke: root.item.featured ? AppTheme.cyan : (root.item.fallback-complete ? AppTheme.green : AppTheme.danger); stroke-width: 1px; }
-                        Text { x: 25px; y: 32px; width: 94px; height: 36px; text: root.item.featured ? "FEAT" : "COMP"; color: root.item.featured ? AppTheme.cyan : (root.item.fallback-complete ? AppTheme.green : AppTheme.danger); font-size: 18px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; letter-spacing: 2px; }
-                    }
-                    VerticalLayout { x: parent.width - 27px; y: 7px; width: 20px; height: 74px; spacing: 4px;
-                        Rectangle { height: 20px; background: #b8000000; border-radius: 10px;
-                            Text { text: "●"; color: root.item.yellow-active ? AppTheme.yellow : #665a4b28; font-size: 21px; horizontal-alignment: center; vertical-alignment: center; }
-                            yellow-tip := TouchArea { mouse-cursor: help; }
-                        }
-                        Rectangle { height: 20px; background: #b8000000; border-radius: 10px;
-                            Text { text: "●"; color: root.item.red-active ? AppTheme.danger : #664c1822; font-size: 21px; horizontal-alignment: center; vertical-alignment: center; }
-                            red-tip := TouchArea { mouse-cursor: help; }
-                        }
-                        Rectangle { height: 20px; background: #b8000000; border-radius: 10px;
-                            Text { text: "●"; color: root.item.green-active ? AppTheme.green : #66204b3b; font-size: 21px; horizontal-alignment: center; vertical-alignment: center; }
-                            green-tip := TouchArea { mouse-cursor: help; }
-                        }
-                    }
-                    if yellow-tip.has-hover || red-tip.has-hover || green-tip.has-hover: Rectangle {
-                        x: 5px; y: parent.height - 50px; width: parent.width - 10px; height: 45px;
-                        background: #ed020913; border-color: yellow-tip.has-hover ? AppTheme.yellow : (red-tip.has-hover ? AppTheme.danger : AppTheme.green); border-width: 1px; border-radius: 4px;
-                        Text { text: yellow-tip.has-hover ? root.item.yellow-tip : (red-tip.has-hover ? root.item.red-tip : root.item.green-tip); color: AppTheme.foreground; font-size: 14px; wrap: word-wrap; horizontal-alignment: center; vertical-alignment: center; }
+                        Path { width: parent.width; height: parent.height; commands: "M 0 78 L 0 104 L 144 26 L 144 0 Z"; fill: root.item.featured ? #b4083446 : (root.item.fallback ? (root.item.fallback-complete ? #b4266840 : #b44f267a) : (root.item.soundtrack ? #c04b1745 : #c03b1530)); stroke: root.item.featured ? AppTheme.cyan : (root.item.fallback ? (root.item.fallback-complete ? AppTheme.green : AppTheme.danger) : (root.item.soundtrack ? #ff4db8 : #c63385)); stroke-width: 1px; }
+                        Text { x: 25px; y: 32px; width: 94px; height: 36px; text: root.item.featured ? "FEAT" : (root.item.fallback ? "COMP" : (root.item.soundtrack ? "OST" : "V/A")); color: root.item.featured ? AppTheme.cyan : (root.item.fallback ? (root.item.fallback-complete ? AppTheme.green : AppTheme.danger) : (root.item.soundtrack ? #ff4db8 : #c63385)); font-size: 18px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; letter-spacing: 2px; }
                     }
                 }
                 Text { text: root.item.title; color: AppTheme.foreground; font-size: 15px; font-weight: 800; horizontal-alignment: center; overflow: elide; }
                 Text { text: root.item.year == "" ? "Year unavailable" : root.item.year; color: AppTheme.yellow; font-size: 14px; horizontal-alignment: center; overflow: elide; }
                 Text { text: root.item.rating-stars; color: AppTheme.yellow; font-size: 14px; height: 18px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+            }
+            for bullet[index] in root.item.bullets: Rectangle {
+                x: parent.width - 25px; y: 5px + index * 19px; width: 19px; height: 19px;
+                border-radius: 10px; background: #000000;
+                Text { text: "●"; color: bullet.color; font-size: 19px; horizontal-alignment: center; vertical-alignment: center; }
             }
         }
     }
@@ -516,6 +510,7 @@ component MediaLibraryPane inherits NeonPanel {
                 vertical-stretch: 1;
                 for row in root.library-rows: LibraryItem {
                     item: row;
+                    status-only-album-selection: row.kind == "album-child";
                     thumbnail-needed(key, kind) => root.thumbnail-needed(key, kind);
                     activated(key) => root.library-row-activated(key, root.include-bypassed);
                     selection-activated(key) => root.library-row-selection-activated(key, root.include-bypassed);
@@ -839,11 +834,15 @@ export component AppWindow inherits Window {
     in property <string> current-path;
     in property <string> current-status;
     in property <bool> artist-overview-active: false;
+    in-out property <bool> artist-status-help-visible: false;
     in property <string> artist-overview-name;
     in property <image> artist-overview-artwork;
     in property <bool> artist-overview-has-artwork: false;
     in property <image> artist-overview-draft-artwork;
     in property <bool> artist-overview-draft-selected: false;
+    in property <bool> artist-overview-embed-ready: false;
+    in property <string> artist-embed-summary;
+    in property <string> compilation-repair-summary;
     in property <bool> artist-overview-navidrome-linked: false;
     in property <string> artist-overview-biography;
     in-out property <bool> artist-biography-expanded: false;
@@ -865,11 +864,18 @@ export component AppWindow inherits Window {
     in property <string> selected-artwork-dimensions;
     in property <string> selected-artwork-quality;
     in property <string> selected-artwork-size;
+    in property <string> selected-artwork-embedded-source;
+    in property <string> selected-artwork-embedded-type;
+    in property <string> selected-artwork-embedded-dimensions;
+    in property <string> selected-artwork-embedded-size;
+    in property <color> selected-artwork-embedded-dimensions-color: AppTheme.secondary-foreground;
+    in property <bool> selected-artwork-size-comparison: false;
     in property <bool> selected-artwork-is-sample: false;
     in property <bool> selected-artwork-write-ready: false;
     in property <bool> selected-artwork-existing: false;
     in property <bool> selected-artwork-thumbnail-ready: false;
     in property <bool> selected-artwork-comp: false;
+    in property <string> selected-artwork-write-label: "WRITE Cover";
     in property <string> selected-artwork-embedded-info;
     in property <bool> selected-artwork-embed-available: false;
     in property <bool> artist-artwork-mode: false;
@@ -893,6 +899,8 @@ export component AppWindow inherits Window {
     in-out property <bool> confirm-clear-bypass: false;
     in-out property <bool> confirm-sample-apply: false;
     in-out property <bool> confirm-artist-art-write: false;
+    in-out property <bool> confirm-artist-embed: false;
+    in-out property <bool> confirm-compilation-repair: false;
     in property <bool> intro-active: false;
     in property <bool> confirmation-messages-disabled: false;
     in property <bool> completion-dialog-visible: false;
@@ -941,6 +949,7 @@ export component AppWindow inherits Window {
     in property <bool> musicbrainz-matches-available: false;
     in property <bool> musicbrainz-back-available: false;
     in property <bool> musicbrainz-selected-different: false;
+    in property <bool> musicbrainz-selected-cover-missing: false;
     in-out property <bool> musicbrainz-id-editor-expanded: false;
     in-out property <string> selected-musicbrainz-artist: "All";
     in-out property <string> selected-musicbrainz-release-type: "All";
@@ -1057,6 +1066,8 @@ export component AppWindow inherits Window {
     callback artist-overview-navigate(int);
     callback open-artist-external(); callback open-artist-musicbrainz();
     callback browse-artist-artwork(); callback write-artist-artwork();
+    callback prepare-artist-embed(); callback confirm-artist-embed-action(bool);
+    callback prepare-compilation-repair(string); callback confirm-compilation-repair-action(bool);
     callback load-artist-top-songs(); callback set-artist-overview-show-all(bool);
     callback compilation-track-activated(string, string, bool);
     callback compilation-album-launch(string, bool);
@@ -1340,7 +1351,7 @@ export component AppWindow inherits Window {
                                         }
                                         VerticalLayout { spacing: 4px;
                                             for result in root.musicbrainz-rows: Rectangle {
-                                                height: (result.group-start ? 91px : 65px) + (result.selected && root.musicbrainz-selected-different ? 80px : 0px);
+                                                height: (result.group-start ? 91px : 65px) + (result.selected && root.musicbrainz-selected-different ? 80px : 0px) + (result.selected && root.musicbrainz-selected-cover-missing ? 22px : 0px);
                                                 background: transparent;
                                                 VerticalLayout { spacing: 4px;
                                                     if result.group-start: Text { text: (root.musicbrainz-used-fuzzy-search ? result.score + "% match  ·  " : "") + result.group; color: root.musicbrainz-used-fuzzy-search ? (result.score >= 90 ? AppTheme.green : (result.score >= 75 ? AppTheme.yellow : (result.score >= 60 ? #ff9738 : AppTheme.danger))) : AppTheme.cyan; font-size: 14px; font-weight: 800; height: 22px; vertical-alignment: center; }
@@ -1362,10 +1373,14 @@ export component AppWindow inherits Window {
                                                     }
                                                     if result.selected && root.musicbrainz-selected-different: GridLayout {
                                                         height: 74px; spacing: 5px;
-                                                        NeonAction { row: 0; col: 0; label: "Use Selected Album"; height: 34px; emphasized: true; clicked => root.musicbrainz-use-selected(); }
+                                                        NeonAction { row: 0; col: 0; label: root.musicbrainz-selected-cover-missing ? "Generate Candidate Artwork" : "Use Selected Album"; height: 34px; emphasized: true; clicked => root.musicbrainz-use-selected(); }
                                                         NeonAction { row: 0; col: 1; label: "Open MB Page"; height: 34px; clicked => root.open-musicbrainz-page(-1); }
                                                         NeonAction { row: 1; col: 0; label: "Back to Candidates"; height: 34px; clicked => root.musicbrainz-leave-unchanged(); }
                                                         NeonAction { row: 1; col: 1; label: "Keep Current"; height: 34px; tone: "yellow"; clicked => root.musicbrainz-leave-unchanged(); }
+                                                    }
+                                                    if result.selected && root.musicbrainz-selected-cover-missing: Text {
+                                                        text: "No MusicBrainz cover · search candidate sources for this selected album";
+                                                        color: AppTheme.yellow; font-size: 14px; height: 22px;
                                                     }
                                                 }
                                             }
@@ -1523,9 +1538,79 @@ export component AppWindow inherits Window {
                                                                 Text { text: root.artist-overview-top-songs-loading ? "Loading from Navidrome…" : (root.artist-overview-top-songs == "" ? "Use Load Top Songs below" : root.artist-overview-top-songs); color: AppTheme.foreground; font-size: 14px; wrap: word-wrap; overflow: elide; }
                                                             }
                                                     }
-                                                    HorizontalLayout { height: 22px; spacing: 8px;
-                                                        Text { text: "Albums"; color: AppTheme.foreground; font-size: 16px; font-weight: 800; vertical-alignment: center; }
-                                                        Text { text: root.artist-overview-albums.length + (root.artist-overview-show-all ? " shown · Library Status overridden" : " shown · Library Status applied"); color: root.artist-overview-show-all ? AppTheme.yellow : AppTheme.cyan; font-size: 14px; vertical-alignment: center; }
+                                                    HorizontalLayout { height: 30px; spacing: 8px;
+                                                        Text { text: "Albums"; width: 70px; horizontal-stretch: 0; color: AppTheme.foreground; font-size: 16px; font-weight: 800; vertical-alignment: center; }
+                                                        Rectangle { width: 27px; height: 27px; border-radius: 14px; background: root.artist-status-help-visible ? #173e78 : #07182d; border-color: AppTheme.cyan; border-width: 2px;
+                                                            Text { text: "?"; color: AppTheme.cyan; font-size: 18px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
+                                                            TouchArea { mouse-cursor: pointer; clicked => { root.artist-status-help-visible = !root.artist-status-help-visible; } }
+                                                        }
+                                                        Text { text: root.artist-overview-albums.length + (root.artist-overview-show-all ? " shown · Library Status overridden" : " shown · Library Status applied"); width: 290px; horizontal-stretch: 0; color: root.artist-overview-show-all ? AppTheme.yellow : AppTheme.cyan; font-size: 14px; vertical-alignment: center; }
+                                                        if root.compilation-track-rows.length > 0: NeonAction {
+                                                            label: "Repair purple COMP"; width: 160px; height: 28px; tone: "purple";
+                                                            clicked => root.prepare-compilation-repair(root.compilation-track-rows[0].album-key);
+                                                        }
+                                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                                    }
+                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 240px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
+                                                        VerticalLayout { padding: 9px; spacing: 0px;
+                                                            Text { text: "Album status key"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; height: 21px; }
+                                                            HorizontalLayout { spacing: 18px; horizontal-stretch: 1;
+                                                                VerticalLayout { spacing: 0px; horizontal-stretch: 1;
+                                                                    Text { text: "STATUS DOTS"; color: AppTheme.cyan; font-size: 13px; font-weight: 800; height: 20px; }
+                                                                    Text { text: "●  Red"; color: AppTheme.danger; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Missing ID/art or incomplete"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    Text { text: "●  Yellow"; color: AppTheme.yellow; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Artist art missing or bypassed"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    Text { text: "●  Orange"; color: #efa54e; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Album processed"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    Text { text: "●  Green"; color: AppTheme.green; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Artist's tracks complete"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    Text { text: "●  Purple"; color: AppTheme.violet; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Embedded art needs attention"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                }
+                                                                VerticalLayout { spacing: 0px; horizontal-stretch: 1;
+                                                                    Text { text: "ALBUM CARD FRAMES"; color: AppTheme.cyan; font-size: 13px; font-weight: 800; height: 20px; }
+                                                                    Text { text: "Green frame"; color: AppTheme.green; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Complete at preferred thumb size"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    HorizontalLayout { height: 18px; spacing: 0px;
+                                                                        Text { text: "Orange"; color: #efa54e; font-size: 14px; font-weight: 800; width: 59px; }
+                                                                        Text { text: "/"; color: AppTheme.foreground; font-size: 14px; width: 10px; }
+                                                                        Text { text: "Purple"; color: AppTheme.violet; font-size: 14px; font-weight: 800; width: 57px; }
+                                                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                                                    }
+                                                                    Text { text: "Processed album; thumbnail check"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    HorizontalLayout { height: 18px; spacing: 0px;
+                                                                        Text { text: "Green"; color: AppTheme.green; font-size: 14px; font-weight: 800; width: 52px; }
+                                                                        Text { text: "/"; color: AppTheme.foreground; font-size: 14px; width: 10px; }
+                                                                        Text { text: "Purple"; color: AppTheme.violet; font-size: 14px; font-weight: 800; width: 57px; }
+                                                                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                                                                    }
+                                                                    Text { text: "COMP tracks done; thumbnail check"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                }
+                                                                VerticalLayout { spacing: 0px; horizontal-stretch: 1;
+                                                                    Text { text: "BANNERS"; color: AppTheme.cyan; font-size: 13px; font-weight: 800; height: 20px; }
+                                                                    Text { text: "COMP"; color: AppTheme.danger; font-size: 14px; height: 18px; }
+                                                                    Text { text: "Fallback album, track by track"; color: AppTheme.foreground; font-size: 13px; font-weight: 800; height: 17px; }
+                                                                    Text { text: "COMP"; color: AppTheme.green; font-size: 14px; height: 18px; }
+                                                                    Text { text: "Artist's tracks complete"; color: AppTheme.foreground; font-size: 13px; font-weight: 800; height: 17px; }
+                                                                    Text { text: "FEAT"; color: AppTheme.cyan; font-size: 14px; height: 18px; }
+                                                                    Text { text: "Selected artist is featured"; color: AppTheme.foreground; font-size: 13px; font-weight: 800; height: 17px; }
+                                                                    Text { text: "OST"; color: #ff4db8; font-size: 14px; height: 18px; }
+                                                                    Text { text: "Soundtrack release"; color: AppTheme.foreground; font-size: 13px; font-weight: 800; height: 17px; }
+                                                                    Text { text: "V/A"; color: #c63385; font-size: 14px; height: 18px; }
+                                                                    Text { text: "Various Artists release"; color: AppTheme.foreground; font-size: 13px; font-weight: 800; height: 17px; }
+                                                                }
+                                                                VerticalLayout { spacing: 0px; horizontal-stretch: 1;
+                                                                    Text { text: "COMP TRACK ROWS"; color: AppTheme.cyan; font-size: 13px; font-weight: 800; height: 20px; }
+                                                                    Text { text: "Blue track"; color: #50b9ff; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Pending artwork"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    Text { text: "Green track"; color: #4cd989; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Artwork complete"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    Text { text: "Purple track"; color: AppTheme.violet; font-size: 14px; font-weight: 800; height: 18px; }
+                                                                    Text { text: "Complete; thumb needs attention"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                     album-gallery := Rectangle {
                                                         property <int> column-count: max(1, floor(self.width / 165px));
@@ -1551,7 +1636,7 @@ export component AppWindow inherits Window {
                                                             background: #dd09273b; border-radius: 6px; border-color: AppTheme.cyan; border-width: 2px;
                                                             VerticalLayout { padding: 7px; spacing: 4px;
                                                                 HorizontalLayout { height: 28px; spacing: 7px;
-                                                                    Text { text: "COMP  ·  " + root.artist-overview-name + "  ·  blue: pending, green: done"; color: AppTheme.cyan; font-size: 17px; font-weight: 800; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                                                                    Text { text: "COMP  ·  " + root.artist-overview-name + "  ·  blue: pending, green: done, purple: thumb check"; color: AppTheme.cyan; font-size: 17px; font-weight: 800; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                                                                     NeonAction { label: "LAUNCH COMP"; width: 130px; height: 28px; tone: "cyan"; clicked => root.compilation-album-launch(root.compilation-track-rows[0].album-key, root.include-bypassed); }
                                                                 }
                                                                 VerticalLayout { spacing: 4px;
@@ -1584,13 +1669,32 @@ export component AppWindow inherits Window {
                                                             NeonAction { label: "Cancel"; width: 76px; height: 32px; clicked => { root.confirm-artist-art-write = false; } }
                                                         }
                                                     }
-                                                    if !root.confirm-artist-art-write: GridLayout { height: 36px; spacing: 7px;
-                                                            NeonAction { row: 0; col: 0; label: root.artist-overview-show-all ? "Use Library Status" : "Show All"; height: 34px; tone: root.artist-overview-show-all ? "yellow" : "cyan"; clicked => root.set-artist-overview-show-all(!root.artist-overview-show-all); }
-                                                            NeonAction { row: 0; col: 1; label: root.artist-overview-top-songs-loading ? "Loading Top Songs…" : "Load Top Songs"; height: 34px; enabled: !root.artist-overview-top-songs-loading; clicked => root.load-artist-top-songs(); }
-                                                            NeonAction { row: 0; col: 2; label: "Navidrome / Apple Info"; height: 34px; enabled: root.artist-overview-external-url != ""; clicked => root.open-artist-external(); }
-                                                            NeonAction { row: 0; col: 3; label: "MusicBrainz Artist"; height: 34px; enabled: root.artist-overview-musicbrainz-id != ""; clicked => root.open-artist-musicbrainz(); }
-                                                            NeonAction { row: 0; col: 4; label: "Find Artist Art"; height: 34px; enabled: !root.operation-busy; clicked => root.browse-artist-artwork(); }
-                                                            NeonAction { row: 0; col: 5;
+                                                    if root.confirm-artist-embed: Rectangle { height: 54px; border-radius: 6px; background: #211444; border-color: AppTheme.violet; border-width: 1px;
+                                                        HorizontalLayout { padding-left: 9px; padding-right: 6px; spacing: 7px;
+                                                            Text { text: root.artist-embed-summary; color: AppTheme.foreground; font-size: 13px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                                                            NeonAction { label: "Yes, EMBED"; width: 104px; height: 32px; tone: "embed"; clicked => { root.confirm-artist-embed-action(true); root.confirm-artist-embed = false; } }
+                                                            NeonAction { label: "No"; width: 55px; height: 32px; clicked => { root.confirm-artist-embed-action(false); root.confirm-artist-embed = false; } }
+                                                        }
+                                                    }
+                                                    if root.confirm-compilation-repair: Rectangle { height: 54px; border-radius: 6px; background: #150d2a; border-color: AppTheme.violet; border-width: 1px;
+                                                        HorizontalLayout { padding-left: 9px; padding-right: 6px; spacing: 7px;
+                                                            Text { text: root.compilation-repair-summary; color: AppTheme.foreground; font-size: 13px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                                                            NeonAction { label: "Yes, Repair"; width: 110px; height: 32px; tone: "purple"; clicked => { root.confirm-compilation-repair-action(true); root.confirm-compilation-repair = false; } }
+                                                            NeonAction { label: "No"; width: 55px; height: 32px; clicked => { root.confirm-compilation-repair-action(false); root.confirm-compilation-repair = false; } }
+                                                        }
+                                                    }
+                                                    if !root.confirm-artist-art-write && !root.confirm-artist-embed && !root.confirm-compilation-repair: GridLayout { height: 36px; spacing: 7px;
+                                                            NeonAction { row: 0; col: 0; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 11px : 13px; label: root.artist-overview-show-all ? "Use Library Status" : "Show All"; height: 34px; tone: root.artist-overview-show-all ? "yellow" : "cyan"; clicked => root.set-artist-overview-show-all(!root.artist-overview-show-all); }
+                                                            NeonAction { row: 0; col: 1; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 11px : 13px; label: root.artist-overview-top-songs-loading ? "Loading Top Songs…" : "Load Top Songs"; height: 34px; enabled: !root.artist-overview-top-songs-loading; clicked => root.load-artist-top-songs(); }
+                                                            NeonAction { row: 0; col: 2; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 11px : 13px; label: "Navidrome / Apple Info"; height: 34px; enabled: root.artist-overview-external-url != ""; clicked => root.open-artist-external(); }
+                                                            NeonAction { row: 0; col: 3; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 11px : 13px; label: "MusicBrainz Artist"; height: 34px; enabled: root.artist-overview-musicbrainz-id != ""; clicked => root.open-artist-musicbrainz(); }
+                                                            NeonAction { row: 0; col: 4; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 11px : 13px; label: "Find Artist Art"; height: 34px; enabled: !root.operation-busy; clicked => root.browse-artist-artwork(); }
+                                                            NeonAction { row: 0; col: 5; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 11px : 13px;
+                                                                label: "EMBED Artist Art"; height: 34px; tone: "purple";
+                                                                enabled: root.artist-overview-embed-ready && !root.operation-busy;
+                                                                clicked => root.prepare-artist-embed();
+                                                            }
+                                                            NeonAction { row: 0; col: 6; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 11px : 13px;
                                                                 label: "WRITE Artist Art"; height: 34px; tone: "orange";
                                                                 enabled: root.artist-overview-draft-selected && !root.operation-busy;
                                                                 clicked => {
@@ -1746,12 +1850,9 @@ export component AppWindow inherits Window {
                                         Text { text: "SAMPLE"; color: #ffffff; font-size: 21px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
                                     }
                                     if root.selected-artwork-embed-available: Rectangle {
-                                        x: 8px; y: parent.height - 63px; width: parent.width - 16px; height: 27px;
-                                        border-radius: 5px; background: #d2081221;
+                                        x: 8px; y: parent.height - 33px; width: parent.width - 16px; height: 25px;
+                                        border-radius: 5px; background: #ed081221;
                                         Text { text: root.selected-artwork-embedded-info; color: AppTheme.yellow; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
-                                    }
-                                    Rectangle { visible: !root.artwork-placeholder-visible; x: 8px; y: parent.height - 33px; width: parent.width - 16px; height: 25px; border-radius: 5px; background: #cf06111d;
-                                        Text { text: root.selected-artwork-source + "  ·  " + root.selected-artwork-type + "  ·  " + root.selected-artwork-size; color: AppTheme.foreground; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                     }
                                 }
                                 HorizontalLayout { height: 38px; spacing: 6px;
@@ -1761,7 +1862,7 @@ export component AppWindow inherits Window {
                                         clicked => root.set-upscale-preview(true);
                                     }
                                     NeonAction {
-                                        label: root.artist-artwork-mode ? "WRITE Artist" : (root.selected-artwork-thumbnail-ready ? (root.selected-artwork-comp ? "EMBED Comp" : "EMBED w/Cover") : (root.selected-artwork-existing ? "Embed Existing" : "WRITE Cover")); width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: root.selected-artwork-thumbnail-ready ? "embed" : (root.selected-artwork-existing ? "green" : "orange");
+                                        label: root.selected-artwork-write-label; width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: root.selected-artwork-thumbnail-ready || (root.selected-artwork-comp && !root.selected-artwork-existing) ? "embed" : (root.selected-artwork-existing ? "green" : "orange");
                                         enabled: !root.operation-busy && !root.intro-active && root.selected-artwork-write-ready;
                                         clicked => {
                                             if (root.artist-artwork-mode) {
@@ -1787,15 +1888,19 @@ export component AppWindow inherits Window {
                                         clicked => root.prepare-embedded-thumbnail();
                                     }
                                 }
-                                GridLayout { height: 59px; spacing: 5px;
+                                GridLayout { height: 87px; spacing: 5px;
                                     Text { row: 0; col: 0; text: "Source"; color: AppTheme.secondary-foreground; font-size: 14px; }
                                     Text { row: 0; col: 1; text: "Type"; color: AppTheme.secondary-foreground; font-size: 14px; }
                                     Text { row: 0; col: 2; text: "Dimensions"; color: AppTheme.secondary-foreground; font-size: 14px; }
                                     Text { row: 0; col: 3; text: "File Size"; color: AppTheme.secondary-foreground; font-size: 14px; }
-                                    Text { row: 1; col: 0; text: root.selected-artwork-source; color: AppTheme.foreground; font-size: 14px; overflow: elide; }
-                                    Text { row: 1; col: 1; text: root.selected-artwork-type; color: AppTheme.foreground; font-size: 14px; overflow: elide; }
-                                    Text { row: 1; col: 2; text: root.selected-artwork-dimensions; color: AppTheme.foreground; font-size: 14px; overflow: elide; }
-                                    Text { row: 1; col: 3; text: root.selected-artwork-size; color: AppTheme.foreground; font-size: 14px; overflow: elide; }
+                                    Text { row: 1; col: 0; text: root.selected-artwork-size-comparison ? root.selected-artwork-embedded-source : root.selected-artwork-source; color: AppTheme.foreground; font-size: 14px; overflow: elide; }
+                                    Text { row: 1; col: 1; text: root.selected-artwork-size-comparison ? root.selected-artwork-embedded-type : root.selected-artwork-type; color: AppTheme.foreground; font-size: 14px; overflow: elide; }
+                                    Text { row: 1; col: 2; text: root.selected-artwork-size-comparison ? root.selected-artwork-embedded-dimensions : root.selected-artwork-dimensions; color: root.selected-artwork-size-comparison ? root.selected-artwork-embedded-dimensions-color : AppTheme.foreground; font-size: 14px; overflow: elide; }
+                                    Text { row: 1; col: 3; text: root.selected-artwork-size-comparison ? root.selected-artwork-embedded-size : root.selected-artwork-size; color: AppTheme.foreground; font-size: 14px; overflow: elide; }
+                                    Text { row: 2; col: 0; text: root.selected-artwork-size-comparison ? root.selected-artwork-source : root.selected-artwork-embedded-source; color: AppTheme.foreground; font-size: 13px; overflow: elide; }
+                                    Text { row: 2; col: 1; text: root.selected-artwork-size-comparison ? root.selected-artwork-type : root.selected-artwork-embedded-type; color: AppTheme.foreground; font-size: 13px; overflow: elide; }
+                                    Text { row: 2; col: 2; text: root.selected-artwork-size-comparison ? root.selected-artwork-dimensions : root.selected-artwork-embedded-dimensions; color: root.selected-artwork-size-comparison ? AppTheme.foreground : root.selected-artwork-embedded-dimensions-color; font-size: 13px; overflow: elide; }
+                                    Text { row: 2; col: 3; text: root.selected-artwork-size-comparison ? root.selected-artwork-size : root.selected-artwork-embedded-size; color: AppTheme.foreground; font-size: 13px; overflow: elide; }
                                 }
                             }
                         }
