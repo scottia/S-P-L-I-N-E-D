@@ -95,8 +95,8 @@ component LaunchAction inherits Rectangle {
     clip: true;
     background: root.enabled ? @linear-gradient(90deg, #1bb8e0, #d335b5, #e7ad32, #37ce82) : AppTheme.border;
     Rectangle {
-        x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
-        border-radius: 4px;
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        border-radius: 5px;
         background: root.enabled ? (AppTheme.chalk ? #294039 : (AppTheme.light ? #c8e3d0 : #10392e)) : AppTheme.card;
         Text {
             x: 4px; width: parent.width - 8px; height: parent.height;
@@ -2177,40 +2177,37 @@ export component AppWindow inherits Window {
                     NeonPanel { visible: !root.awaiting-musicbrainz; height: root.awaiting-musicbrainz ? 0px : root.activity-pane-height * 1px; clip: true;
                         Image { source: @image-url("../gui/splined-watermark.png"); width: min(420px, parent.width * 0.34); height: parent.height - 12px; x: max(0px, parent.width - self.width - 18px); y: 6px; image-fit: contain; opacity: 0.10; }
                         VerticalLayout { padding: 8px; spacing: 6px;
-                            VerticalLayout { height: 62px; spacing: 4px; horizontal-stretch: 1;
-                                HorizontalLayout { height: 29px; spacing: 4px;
-                                    Text { text: "⌘"; color: AppTheme.magenta; font-size: 22px; vertical-alignment: center; }
-                                    Heading { text: "Candidate Artwork"; width: 150px; font-size: 16px; }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    LaunchAction {
-                                        width: 126px;
-                                        label: root.awaiting-candidate || root.awaiting-musicbrainz ? "SKIP ALBUM" : (root.running ? "PROCESSING" : "LAUNCH");
-                                        enabled: !root.intro-active && (root.running || root.can-launch);
-                                        clicked => {
-                                            if (root.awaiting-candidate || root.awaiting-musicbrainz) { root.candidate-action("skip_album"); }
-                                            else if (root.running) { root.stop(); }
-                                            else { root.launch(); }
-                                        }
-                                    }
-                                    Rectangle { width: 94px; height: 27px; border-radius: 6px; background: AppTheme.chalk ? #403343 : (AppTheme.light ? #c9b9cf : #28174f); border-color: AppTheme.magenta; border-width: 1px;
-                                        Text { x: 3px; width: parent.width - 6px; height: parent.height; text: root.candidate-rows.length + " candidates"; color: AppTheme.magenta; horizontal-alignment: center; vertical-alignment: center; font-size: 11px; font-weight: 800; overflow: elide; }
+                            HorizontalLayout { height: 29px; spacing: 4px;
+                                Text { text: "⌘"; width: 22px; color: AppTheme.magenta; font-size: 22px; vertical-alignment: center; }
+                                Heading { text: "Candidate Artwork"; width: 150px; font-size: 16px; }
+                                Text { text: "⌘"; width: 22px; color: AppTheme.magenta; font-size: 22px; vertical-alignment: center; }
+                                LaunchAction {
+                                    width: 126px;
+                                    label: root.awaiting-candidate || root.awaiting-musicbrainz ? "SKIP ALBUM" : (root.running ? "PROCESSING" : "LAUNCH");
+                                    enabled: !root.intro-active && (root.running || root.can-launch);
+                                    clicked => {
+                                        if (root.awaiting-candidate || root.awaiting-musicbrainz) { root.candidate-action("skip_album"); }
+                                        else if (root.running) { root.stop(); }
+                                        else { root.launch(); }
                                     }
                                 }
-                                HorizontalLayout { height: 29px; spacing: 4px;
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    NeonAction { label: "MusicBrainz"; width: 92px; height: 27px; label-font-size: 12px; enabled: !root.intro-active; clicked => root.candidate-action(root.musicbrainz-back-available ? "back_to_musicbrainz" : "retry_musicbrainz"); }
-                                    NeonAction { label: "Compare"; width: 75px; height: 27px; label-font-size: 12px; enabled: root.candidate-rows.length > 0 && !root.operation-busy; clicked => root.open-candidate-compare(); }
-                                    NeonAction {
-                                        label: root.current-album-bypassed ? "Bypassed" : "Bypass";
-                                        width: 75px; height: 27px; label-font-size: 12px;
-                                        tone: root.current-album-bypassed ? "red" : "orange";
-                                        enabled: !root.operation-busy && (root.current-album-bypassed || root.awaiting-candidate);
-                                        clicked => {
-                                            if (root.current-album-bypassed) { root.confirm-clear-bypass = true; }
-                                            else { root.candidate-action("bypass"); }
-                                        }
+                                Rectangle { width: 94px; height: 27px; border-radius: 6px; background: AppTheme.chalk ? #403343 : (AppTheme.light ? #c9b9cf : #28174f); border-color: AppTheme.magenta; border-width: 1px;
+                                    Text { x: 3px; width: parent.width - 6px; height: parent.height; text: root.candidate-rows.length + " candidates"; color: AppTheme.magenta; horizontal-alignment: center; vertical-alignment: center; font-size: 11px; font-weight: 800; overflow: elide; }
+                                }
+                                Rectangle { width: 24px; background: transparent; }
+                                NeonAction { label: "MusicBrainz"; width: 92px; height: 27px; label-font-size: 12px; enabled: !root.intro-active; clicked => root.candidate-action(root.musicbrainz-back-available ? "back_to_musicbrainz" : "retry_musicbrainz"); }
+                                NeonAction { label: "Compare"; width: 75px; height: 27px; label-font-size: 12px; enabled: root.candidate-rows.length > 0 && !root.operation-busy; clicked => root.open-candidate-compare(); }
+                                NeonAction {
+                                    label: root.current-album-bypassed ? "Bypassed" : "Bypass";
+                                    width: 75px; height: 27px; label-font-size: 12px;
+                                    tone: root.current-album-bypassed ? "red" : "orange";
+                                    enabled: !root.operation-busy && (root.current-album-bypassed || root.awaiting-candidate);
+                                    clicked => {
+                                        if (root.current-album-bypassed) { root.confirm-clear-bypass = true; }
+                                        else { root.candidate-action("bypass"); }
                                     }
                                 }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
                             if root.confirm-clear-bypass: Rectangle { height: 38px; border-radius: 6px; background: #3d1520; border-color: AppTheme.danger; border-width: 1px;
                                 HorizontalLayout { padding-left: 9px; padding-right: 6px; spacing: 7px;
