@@ -49,6 +49,12 @@ impl Default for BackupSelection {
     }
 }
 
+#[derive(Debug)]
+pub struct RestoredBackup {
+    pub config: Config,
+    pub interface_restored: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BackupPayload {
     version: u32,
@@ -98,15 +104,15 @@ pub fn export_backup(
     };
     if selection.interface {
         let ui_path = ui_preferences_path()?;
-        if ui_path.is_file() {
-            payload.interface_settings =
-                Some(std::fs::read_to_string(&ui_path).map_err(|error| {
-                    format!(
-                        "Unable to read interface settings {}: {error}",
-                        ui_path.display()
-                    )
-                })?);
-        }
+        let interface = std::fs::read_to_string(&ui_path).map_err(|error| {
+            format!(
+                "Interface Settings was selected, but {} could not be read: {error}",
+                ui_path.display()
+            )
+        })?;
+        toml::from_str::<crate::settings::UiPreferences>(&interface)
+            .map_err(|error| format!("Interface Settings is invalid: {error}"))?;
+        payload.interface_settings = Some(interface);
     }
     if selection.credentials {
         let directory = Path::new(&config.credentials.credential_dir);
@@ -315,7 +321,7 @@ pub fn restore_backup(
     current: &Config,
     selection: BackupSelection,
     password: &str,
-) -> Result<Config, String> {
+) -> Result<RestoredBackup, String> {
     let body = std::fs::read_to_string(path)
         .map_err(|error| format!("Unable to read SPLINED backup {}: {error}", path.display()))?;
     let envelope: BackupEnvelope = serde_json::from_str(&body)
@@ -330,26 +336,23 @@ pub fn restore_backup(
         return Err("The SPLINED backup payload version is unsupported.".to_string());
     }
 
+    if selection.interface && payload.interface_settings.is_none() {
+        return Err("This archive does not contain Interface Settings. Deselect that restore option or choose a newer archive.".to_string());
+    }
+    if selection.settings && payload.settings.is_none() {
+        return Err("This archive does not contain Config V5 Settings. Deselect that restore option or choose another archive.".to_string());
+    }
+    if selection.interface
+        && let Some(interface) = payload.interface_settings.as_deref()
+    {
+        toml::from_str::<crate::settings::UiPreferences>(interface)
+            .map_err(|error| format!("Invalid interface settings in backup: {error}"))?;
+    }
     let mut destination = current.clone();
     if selection.settings
         && let Some(settings) = payload.settings.as_deref()
     {
         destination = save_config_text(settings)?;
-    }
-    if selection.interface
-        && let Some(interface) = payload.interface_settings.as_deref()
-    {
-        let ui_path = ui_preferences_path()?;
-        replace_text_file(
-            &ui_path,
-            interface,
-            "SPLINED interface settings",
-            |candidate| {
-                toml::from_str::<crate::settings::UiPreferences>(candidate)
-                    .map(|_| ())
-                    .map_err(|error| format!("Invalid interface settings in backup: {error}"))
-            },
-        )?;
     }
     if selection.credentials {
         let directory = Path::new(&destination.credentials.credential_dir);
@@ -388,7 +391,27 @@ pub fn restore_backup(
             .map_err(|error| format!("Unable to stage the database restore: {error}"))?;
         restore_sqlite_snapshot(&staged, &database)?;
     }
-    Ok(destination)
+    // Install interface preferences last so a failed restore cannot leave the
+    // running UI racing to overwrite newly restored preferences.
+    if selection.interface
+        && let Some(interface) = payload.interface_settings.as_deref()
+    {
+        let ui_path = ui_preferences_path()?;
+        replace_text_file(
+            &ui_path,
+            interface,
+            "SPLINED interface settings",
+            |candidate| {
+                toml::from_str::<crate::settings::UiPreferences>(candidate)
+                    .map(|_| ())
+                    .map_err(|error| format!("Invalid interface settings in backup: {error}"))
+            },
+        )?;
+    }
+    Ok(RestoredBackup {
+        config: destination,
+        interface_restored: selection.interface && payload.interface_settings.is_some(),
+    })
 }
 
 fn protect(plain: &[u8], password: &str) -> Result<BackupEnvelope, String> {
@@ -563,6 +586,47 @@ mod tests {
             let envelope = protect(b"SPLINED fixture", password).unwrap();
             assert_eq!(unprotect(&envelope, password).unwrap(), b"SPLINED fixture");
         }
+    }
+
+    #[test]
+    fn settings_archive_payload_preserves_custom_interface_values() {
+        let mut preferences = crate::settings::UiPreferences {
+            appearance: "Chalk".to_string(),
+            media_filter_locked: true,
+            candidate_filter_locked: true,
+            candidate_excluded_types: vec!["BackCover".to_string()],
+            media_pane_width: 392,
+            artwork_pane_width: 528,
+            ..crate::settings::UiPreferences::default()
+        };
+        preferences.adjustment_presets[1].name = "Warm".to_string();
+        preferences.adjustment_presets[1].values = [3, 2, 1, -1, 4, 5, 0, 8];
+        preferences.adjustment_presets[1].saved = true;
+        preferences.banner_theme_baseline_styles = preferences.banner_theme_styles.clone();
+        preferences.album_frame_theme_baseline_styles =
+            preferences.album_frame_theme_styles.clone();
+        preferences.banner_theme_styles[0].background = "#123ABC".to_string();
+        preferences.banner_sync_frame_letters = true;
+        preferences.banner_random_harmony = true;
+        preferences.wheel_hue_shift_degrees = 72;
+        preferences.wheel_brightness_percent = 125;
+        preferences.album_frame_theme_styles[0].color = "#20BFA0".to_string();
+        let payload = BackupPayload {
+            version: FORMAT_VERSION,
+            created_utc: "fixture".to_string(),
+            splined_version: "fixture".to_string(),
+            settings: Some("config_version = 5".to_string()),
+            interface_settings: Some(toml::to_string(&preferences).unwrap()),
+            credentials: BTreeMap::new(),
+            database: None,
+            diagnostics: None,
+        };
+        let archive = protect(&serde_json::to_vec(&payload).unwrap(), "").unwrap();
+        let decoded: BackupPayload =
+            serde_json::from_slice(&unprotect(&archive, "").unwrap()).unwrap();
+        let restored: crate::settings::UiPreferences =
+            toml::from_str(decoded.interface_settings.as_deref().unwrap()).unwrap();
+        assert_eq!(restored, preferences);
     }
 
     #[test]

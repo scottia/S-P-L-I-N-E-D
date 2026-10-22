@@ -88,8 +88,9 @@ It provides three views over the same album authority:
 Media Filter is clipped and internally scrollable, so its Artist/Album searches,
 three equal-width scalable Select Mode buttons, and Library Status radios cannot
 bleed into the library list. The Media Filter and Candidate Filter locks retain
-their locked/unlocked state across restarts; an unlocked filter keeps its normal
-behavior. Candidate Filter's Include, Disregard, and Reset buttons share the
+their locked state and choices across Settings saves, restarts, and Interface
+Settings backups; an unlocked filter keeps its normal behavior. Candidate
+Filter's Include, Disregard, and Reset buttons share the
 available width evenly. Application text has a 14-pixel explicit minimum,
 with 20–22-pixel radio glyphs and a 16-pixel native default.
 
@@ -364,6 +365,16 @@ visible. A yellow line at the bottom of the image separately reports the
 largest existing embedded image's resolution and size, adding **Varying Size**
 when applicable.
 
+An Album containing `cover.webp` also has a blue status dot, independent of
+its processing and embedded-art dots. When no matching `cover.jpg` or
+`cover.png` exists, the Selected Artwork embedded-art line turns blue as a
+reminder to create a still. **WRITE Cover** works directly from a selected
+Album before LAUNCH: it preserves `cover.webp`, creates `cover.jpg` from its
+image (including a selected Upscale treatment), and embeds a static image
+when EMBED Thumbs was chosen. **Play Animated cover.webp Preview** in Artwork
+& Embedding is off by default. When on, an animated WebP plays in Selected
+Artwork while the Album is selected; it never embeds animation in audio tags.
+
 For a COMP fallback track, **EMBED Comp** can write the selected artwork
 directly; **EMBED Thumbs** is an optional in-memory preview of the preferred
 size. **Embed Existing** is also available immediately for an Existing source.
@@ -463,8 +474,10 @@ single-row search priority; < / > remains available for precise steps. Samples a
 Files have fixed positions. Reordering updates the draft Source priority field;
 the section Save applies it to the main workspace and Config v5.
 
-In **Enhancement**, the existing **Enhancement Defaults** area defines the
-renameable Default quick filter. **Artwork Slider Filtering** holds Custom A–D.
+In **Enhancement**, **Theme Enhancements** comes first, followed by
+**Enhancement Defaults** and **Artwork Slider Filtering**, with **Resolution
+Range** last. Enhancement Defaults defines the renameable Default quick
+filter. Artwork Slider Filtering holds Custom A–D.
 Each saved slot records all eight sliders; select its radio circle to load its
 values into the shared current/adjusted comparison, then choose Save Current
 to replace that slot or Apply to preview it again. Selecting a Custom slot for
@@ -473,11 +486,29 @@ saved. The Upscale / Enhance workspace has five built-in starting filters and
 five saved-slot buttons; a saved-slot button asks whether to Apply or
 Overwrite. These preview actions never write artwork.
 
-**Theme Enhancements** offers a clickable, scroll-adjustable OLED chroma wheel.
-Choose a banner background, frame, or letters swatch, or an album card frame
-swatch, before choosing a color. Banner labels can be renamed to at most ten
-characters. Banner backgrounds remain 50% transparent, and selected colors
-are adjusted with the active Light, Dark, or Chalk theme.
+**Theme Enhancements** shows all banner and album-frame rows without a nested
+scroll pane. Its larger, clickable OLED chroma wheel includes a broad yellow
+and gold range. A ring marks the most recently clicked color, and the selected
+swatch's hex value appears below the wheel. Drag across the wheel to preview
+nearby colors. The **Hue Range** bar rotates its visible spectrum, while the
+**Brightness** bar changes both the wheel and the selected color's light/dark
+range. Scroll over the wheel for a smaller brightness step. Choose a banner
+background, frame, or letters swatch, or an album card frame
+swatch, before choosing a color. **Synchronize Banner Frame & Lettering** makes
+both of those colors follow any new color selected for the active banner;
+the banner background changes only when its own swatch is selected. Turn the
+option off to edit frame and lettering separately. Its state is saved with
+Interface Settings. **Random Harmony** uses a wheel click or drag to generate
+a related background, frame, and lettering palette for the selected Banner
+only. Each click can produce a different variation; the frame and letters
+remain identical when synchronization is also on. Random Harmony and both
+wheel ranges are saved with Interface Settings. Banner labels can be renamed
+to at most ten characters. Banner backgrounds remain 50% transparent, and selected colors
+are adjusted with the active Light, Dark, or Chalk theme. The first saved
+banner and frame styles are retained separately as the user's baseline; the
+round Baseline control on each row restores only that row's original name and
+colors. Both current styles and baselines are saved in Interface Settings and
+included in a Settings Archive when that category is selected.
 
 Provider credentials remain separate JSON files. The credential surface
 supports Navidrome/OpenSubsonic, Fanart.tv, Last.fm, Discogs, and MusicBrainz.
@@ -535,9 +566,17 @@ password protected with the established PBKDF2-HMAC-SHA1, AES-256-CBC, and
 HMAC-SHA256 envelope. Restore auto-detects `.spl` and `.sqlite`, validates the
 selected file, uses atomic replacement for settings and credentials and SQLite's
 online backup API for database restores, then immediately reloads the applicable
-configuration or Media Library. Older `.spl` archives with an embedded database
-remain restorable through the **SQLite Database Backup** selection. Password
-entry is requested only when a selected archive requires it.
+configuration or Media Library. Restored Interface Settings are protected from
+the running window's autosave; close and reopen SPLINED before making more
+changes so restored theme, pane sizes, filter locks, presets, banner styles,
+and baseline colors are loaded from the archive. A Settings Archive needs both
+**Config V5 Settings** and **Interface Settings** selected to cover enhancement
+defaults and custom appearance. Save the Enhancement section before backing up;
+an unsaved Enhancement draft defers automatic Settings Archives and blocks a
+manual one. Locked Candidate Filter choices survive restart and backup; unlocked
+filters retain their fresh-run reset behavior. Older `.spl` archives with an
+embedded database remain restorable through the **SQLite Database Backup**
+selection. Password entry is requested only when a selected archive requires it.
 
 Opening an associated unprotected `.spl` file, or launching
 `splined.exe --restore <file>`, automatically imports the archive's Config v5

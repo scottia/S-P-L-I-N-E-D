@@ -103,6 +103,8 @@ pub struct UiPreferences {
     pub candidate_filter_expanded: bool,
     pub media_filter_locked: bool,
     pub candidate_filter_locked: bool,
+    /// Play an animated cover.webp in the selected-artwork preview only.
+    pub animate_webp_preview: bool,
     pub artwork_editing_expanded: bool,
     pub show_artwork: bool,
     pub hover_enabled: bool,
@@ -143,6 +145,13 @@ pub struct UiPreferences {
     pub adjustment_presets: Vec<AdjustmentPreset>,
     pub banner_theme_styles: Vec<BannerThemeStyle>,
     pub album_frame_theme_styles: Vec<AlbumFrameThemeStyle>,
+    pub banner_sync_frame_letters: bool,
+    pub banner_random_harmony: bool,
+    pub wheel_hue_shift_degrees: u16,
+    pub wheel_brightness_percent: u8,
+    /// The first saved palette remains the operator's reset point when colors change.
+    pub banner_theme_baseline_styles: Vec<BannerThemeStyle>,
+    pub album_frame_theme_baseline_styles: Vec<AlbumFrameThemeStyle>,
     pub selected_source_name: String,
     pub musicbrainz_id_editor_expanded: bool,
     pub media_pane_width: u32,
@@ -187,6 +196,7 @@ impl Default for UiPreferences {
             candidate_filter_expanded: true,
             media_filter_locked: false,
             candidate_filter_locked: false,
+            animate_webp_preview: false,
             artwork_editing_expanded: true,
             show_artwork: true,
             hover_enabled: false,
@@ -232,6 +242,12 @@ impl Default for UiPreferences {
             adjustment_presets: default_adjustment_presets(),
             banner_theme_styles: default_banner_theme_styles(),
             album_frame_theme_styles: default_album_frame_theme_styles(),
+            banner_sync_frame_letters: false,
+            banner_random_harmony: false,
+            wheel_hue_shift_degrees: 0,
+            wheel_brightness_percent: 100,
+            banner_theme_baseline_styles: Vec::new(),
+            album_frame_theme_baseline_styles: Vec::new(),
             selected_source_name: "All".to_string(),
             musicbrainz_id_editor_expanded: false,
             media_pane_width: 350,
@@ -819,7 +835,7 @@ mod tests {
 
     #[test]
     fn mature_interface_preferences_round_trip_without_a_second_authority() {
-        let preferences = UiPreferences {
+        let mut preferences = UiPreferences {
             appearance: "Light".to_string(),
             status_bar_intensity: "Mild".to_string(),
             status_bar_position: "Bottom".to_string(),
@@ -832,6 +848,7 @@ mod tests {
             candidate_filter_expanded: false,
             media_filter_locked: true,
             candidate_filter_locked: true,
+            animate_webp_preview: true,
             artwork_editing_expanded: true,
             show_artwork: true,
             hover_enabled: true,
@@ -857,6 +874,19 @@ mod tests {
             window_maximized: true,
             ..UiPreferences::default()
         };
+        preferences.adjustment_presets[2].name = "Warm Artwork".to_string();
+        preferences.adjustment_presets[2].values = [6, 2, 1, -3, 4, 5, -2, 16];
+        preferences.adjustment_presets[2].saved = true;
+        preferences.banner_theme_baseline_styles = preferences.banner_theme_styles.clone();
+        preferences.album_frame_theme_baseline_styles =
+            preferences.album_frame_theme_styles.clone();
+        preferences.banner_theme_styles[0].background = "#123ABC".to_string();
+        preferences.banner_theme_styles[0].name = "COMPILED".to_string();
+        preferences.banner_sync_frame_letters = true;
+        preferences.banner_random_harmony = true;
+        preferences.wheel_hue_shift_degrees = 72;
+        preferences.wheel_brightness_percent = 125;
+        preferences.album_frame_theme_styles[0].color = "#24AABB".to_string();
         let text = toml::to_string(&preferences).unwrap();
         let restored: UiPreferences = toml::from_str(&text).unwrap();
         assert_eq!(restored, preferences);
@@ -886,6 +916,7 @@ window_height = 700
         assert_eq!(restored.appearance, "System");
         assert!(!restored.media_filter_locked);
         assert!(!restored.candidate_filter_locked);
+        assert!(!restored.animate_webp_preview);
         assert_eq!(restored.workspace_mode, 0);
         assert!(!restored.window_maximized);
         assert!(restored.migrate_workspace_layout());

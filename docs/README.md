@@ -92,6 +92,11 @@ differ by platform; the linked interface guides describe those differences.
 - GitHub Releases owns version history. Files in `/docs` describe only the
   currently supported behavior.
 
+## Future concepts
+
+The separate [project notes](../project-notes/artwork-composition.md) capture
+ideas for later design work. They are not descriptions of supported behavior.
+
 ## Safety baseline
 
 - Never commit credential JSON, API keys, OAuth tokens, or private values.

@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use futures_util::{StreamExt, stream};
+use image::AnimationDecoder;
 use slint::{
     Color, ComponentHandle, Model, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel,
 };
@@ -26,17 +27,17 @@ use splined_core::final_artwork::{
 use splined_core::inspect::inspect_image;
 use splined_core::local_artwork::embedded_candidate;
 use splined_core::media_database::{
-    MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial, clear_album_bypass_from_runtime,
-    fallback_tracks_from_folder, find_unindexed_audio_folders, media_snapshot,
-    record_album_outcome_from_runtime,
+    MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial,
+    clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_unindexed_audio_folders,
+    media_snapshot, record_album_outcome, record_album_outcome_from_runtime,
 };
 use splined_core::range::Range;
 use splined_core::safe_write::{replace_binary_file, take_credential_protection_warning};
 use splined_core::scan_controller::{ControllerNotice, ProcessingDebugSink, ScanController};
 use splined_core::scan_tags::read_local_track_evidence;
 use splined_core::settings::{
-    MEDIA_PANE_MIN, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, UiPreferences, WorkspaceBounds,
-    WorkspaceLayout, normalize_appearance,
+    BannerThemeStyle, MEDIA_PANE_MIN, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, UiPreferences,
+    WorkspaceBounds, WorkspaceLayout, normalize_appearance,
 };
 use splined_core::source::navidrome::{
     NavidromeAlbum, NavidromeArtist, NavidromeCompanion, NavidromeCredential, match_companion_album,
@@ -49,7 +50,7 @@ use splined_core::source_policy::{MinimumRangeType, SourcePolicyConfig};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -62,6 +63,63 @@ static FULL_THUMBNAIL_REFRESH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FOCUSED_THUMBNAIL_REFRESH_REVISION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_RENDER_REVISION: AtomicU64 = AtomicU64::new(0);
 static NEW_MEDIA_CHECK_REVISION: AtomicU64 = AtomicU64::new(0);
+
+struct DecodedWebpFrame {
+    pixels: image::RgbaImage,
+    delay: Duration,
+}
+
+struct WebpPlayback {
+    frames: Vec<(slint::Image, Duration)>,
+    next_frame: usize,
+    next_at: Instant,
+}
+
+fn decode_webp_animation(path: &Path) -> Result<Vec<DecodedWebpFrame>, String> {
+    let size = fs::metadata(path)
+        .map_err(|error| format!("Unable to inspect animated WebP: {error}"))?
+        .len();
+    if size > 100_000_000 {
+        return Err("Animated WebP exceeds the 100 MB preview limit.".to_string());
+    }
+    let file =
+        fs::File::open(path).map_err(|error| format!("Unable to open animated WebP: {error}"))?;
+    let decoder = image::codecs::webp::WebPDecoder::new(BufReader::new(file))
+        .map_err(|error| format!("Unable to decode animated WebP: {error}"))?;
+    if !decoder.has_animation() {
+        return Ok(Vec::new());
+    }
+    let mut total_pixels = 0_u64;
+    let mut frames = Vec::new();
+    for frame in decoder.into_frames() {
+        let frame = frame.map_err(|error| format!("Invalid animated WebP frame: {error}"))?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let milliseconds = (u64::from(numerator) / u64::from(denominator.max(1))).clamp(40, 5000);
+        let pixels = frame.into_buffer();
+        let long_side = pixels.width().max(pixels.height());
+        let pixels = if long_side > 800 {
+            let width = (u64::from(pixels.width()) * 800 / u64::from(long_side)).max(1) as u32;
+            let height = (u64::from(pixels.height()) * 800 / u64::from(long_side)).max(1) as u32;
+            image::imageops::resize(
+                &pixels,
+                width,
+                height,
+                image::imageops::FilterType::Triangle,
+            )
+        } else {
+            pixels
+        };
+        total_pixels += u64::from(pixels.width()) * u64::from(pixels.height());
+        if total_pixels > 32_000_000 || frames.len() >= 240 {
+            return Err("Animated WebP exceeds the preview memory/frame limit.".to_string());
+        }
+        frames.push(DecodedWebpFrame {
+            pixels,
+            delay: Duration::from_millis(milliseconds),
+        });
+    }
+    Ok(frames)
+}
 type EmbeddedMetadataCache = HashMap<String, (u64, u128, Option<(u32, u32, u64)>)>;
 static EMBEDDED_METADATA_CACHE: OnceLock<Mutex<EmbeddedMetadataCache>> = OnceLock::new();
 static VISIBLE_COMPILATION_CHECKS_PENDING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -806,6 +864,13 @@ fn capture_ui_preferences(
     let state = state.lock().ok()?;
     let layout = *workspace_layout.borrow();
     let custom_layout = *custom_window.layout.borrow();
+    let locked_filter_values = |values: &std::collections::BTreeSet<String>| {
+        if state.candidate_filter_locked {
+            values.iter().cloned().collect()
+        } else {
+            Vec::new()
+        }
+    };
     Some(UiPreferences {
         workspace_layout_revision: splined_core::settings::CURRENT_WORKSPACE_LAYOUT_REVISION,
         appearance: appearance.borrow().clone(),
@@ -837,6 +902,7 @@ fn capture_ui_preferences(
         candidate_filter_expanded: state.candidate_filter_expanded,
         media_filter_locked: state.media_filter_locked,
         candidate_filter_locked: state.candidate_filter_locked,
+        animate_webp_preview: state.animate_webp_preview,
         artwork_editing_expanded: state.artwork_editing_expanded,
         show_artwork: state.show_artwork,
         hover_enabled: state.hover_enabled,
@@ -872,21 +938,26 @@ fn capture_ui_preferences(
         backup_diagnostics: ui.get_backup_diagnostics(),
         artist_filter: state.library.artist_filter.clone(),
         album_filter: state.library.album_filter.clone(),
-        // Candidate filters are per-run review controls. A fresh candidate set
-        // re-enables every available category, so stale exclusions must never
-        // survive an application restart.
-        candidate_included_sources: Vec::new(),
-        candidate_included_types: Vec::new(),
-        candidate_included_policies: Vec::new(),
-        candidate_included_ranges: Vec::new(),
-        candidate_excluded_sources: Vec::new(),
-        candidate_excluded_types: Vec::new(),
-        candidate_excluded_policies: Vec::new(),
-        candidate_excluded_ranges: Vec::new(),
+        // Unlocked filters keep their fresh-run behavior. A locked filter is
+        // an explicit user preference and must survive backup and restart.
+        candidate_included_sources: locked_filter_values(&state.candidate_included_sources),
+        candidate_included_types: locked_filter_values(&state.candidate_included_types),
+        candidate_included_policies: locked_filter_values(&state.candidate_included_policies),
+        candidate_included_ranges: locked_filter_values(&state.candidate_included_ranges),
+        candidate_excluded_sources: locked_filter_values(&state.candidate_excluded_sources),
+        candidate_excluded_types: locked_filter_values(&state.candidate_excluded_types),
+        candidate_excluded_policies: locked_filter_values(&state.candidate_excluded_policies),
+        candidate_excluded_ranges: locked_filter_values(&state.candidate_excluded_ranges),
         primary_adjustments: state.primary_adjustments.clone(),
         adjustment_presets: state.adjustment_presets.clone(),
         banner_theme_styles: state.banner_theme_styles.clone(),
         album_frame_theme_styles: state.album_frame_theme_styles.clone(),
+        banner_sync_frame_letters: state.banner_sync_frame_letters,
+        banner_random_harmony: state.banner_random_harmony,
+        wheel_hue_shift_degrees: state.wheel_hue_shift_degrees,
+        wheel_brightness_percent: state.wheel_brightness_percent,
+        banner_theme_baseline_styles: state.banner_theme_baseline_styles.clone(),
+        album_frame_theme_baseline_styles: state.album_frame_theme_baseline_styles.clone(),
         selected_source_name: ui.get_selected_source_name().to_string(),
         musicbrainz_id_editor_expanded: ui.get_musicbrainz_id_editor_expanded(),
         media_pane_width: layout.media_pane_width,
@@ -2312,6 +2383,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     ui.set_include_bypassed(preferences.include_bypassed);
     ui.set_media_filter_expanded(preferences.media_filter_expanded);
+    ui.set_settings_animate_webp_preview(preferences.animate_webp_preview);
     ui.set_musicbrainz_id_editor_expanded(preferences.musicbrainz_id_editor_expanded);
     ui.set_selected_source_name(SharedString::from(preferences.selected_source_name.clone()));
     let default_backup_directory = splined_core::portable::app_layout()
@@ -2420,16 +2492,19 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     sync_ui(&ui, &state);
+    let interface_restore_pending_restart = Arc::new(AtomicBool::new(false));
     bind_callbacks(
         &ui,
         Arc::clone(&state),
         Arc::clone(&controller),
         Rc::clone(&workspace_layout),
         Rc::clone(&appearance),
+        custom_window_state.clone(),
         UiWindowDiagnostics {
             maximize_guard: main_window_guard.clone(),
             ui_debug_log: ui_debug_log.clone(),
         },
+        Arc::clone(&interface_restore_pending_restart),
     );
     if !setup_required {
         let check_config = state.lock().ok().map(|app| app.config.clone());
@@ -2663,6 +2738,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let preference_custom_window = custom_window_state.clone();
     let last_preferences = Rc::new(RefCell::new(preferences.clone()));
     let timer_last_preferences = Rc::clone(&last_preferences);
+    let timer_restore_pending = Arc::clone(&interface_restore_pending_restart);
     let diagnostic_last_poll = Rc::new(RefCell::new(Instant::now() - Duration::from_secs(3)));
     let diagnostic_last_level = Rc::new(RefCell::new(String::new()));
     preference_timer.start(TimerMode::Repeated, Duration::from_millis(600), move || {
@@ -2670,6 +2746,11 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         };
         if ui.get_setup_required() {
+            return;
+        }
+        // A restored ui.toml becomes authoritative on the next launch. The
+        // current window must never save its pre-restore controls over it.
+        if timer_restore_pending.load(Ordering::SeqCst) {
             return;
         }
         let section = ui.get_settings_section().to_string();
@@ -2722,6 +2803,13 @@ fn main() -> Result<(), slint::PlatformError> {
             current.adjustment_presets = saved.adjustment_presets.clone();
             current.banner_theme_styles = saved.banner_theme_styles.clone();
             current.album_frame_theme_styles = saved.album_frame_theme_styles.clone();
+            current.banner_sync_frame_letters = saved.banner_sync_frame_letters;
+            current.banner_random_harmony = saved.banner_random_harmony;
+            current.wheel_hue_shift_degrees = saved.wheel_hue_shift_degrees;
+            current.wheel_brightness_percent = saved.wheel_brightness_percent;
+            current.banner_theme_baseline_styles = saved.banner_theme_baseline_styles.clone();
+            current.album_frame_theme_baseline_styles =
+                saved.album_frame_theme_baseline_styles.clone();
         }
         if current != *timer_last_preferences.borrow()
             && splined_core::settings::save_ui_preferences(&current).is_ok()
@@ -2730,12 +2818,109 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    // Decode only the selected album's animation, off the UI thread. Slint's
+    // normal image path remains the static fallback and all writes stay still.
+    let webp_timer = Timer::default();
+    let webp_weak = ui.as_weak();
+    let webp_state = Arc::clone(&state);
+    let webp_pending = Arc::new(Mutex::new(
+        None::<(u64, Result<Vec<DecodedWebpFrame>, String>)>,
+    ));
+    let webp_revision = Arc::new(AtomicU64::new(0));
+    let webp_current_path = Rc::new(RefCell::new(String::new()));
+    let webp_playback = Rc::new(RefCell::new(None::<WebpPlayback>));
+    let webp_log = ui_debug_log.clone();
+    webp_timer.start(TimerMode::Repeated, Duration::from_millis(100), move || {
+        let Some(ui) = webp_weak.upgrade() else {
+            return;
+        };
+        let desired = webp_state.lock().ok().and_then(|app| {
+            (app.animate_webp_preview
+                && app.phase == RunPhase::Idle
+                && !app.current_album_path.is_empty()
+                && !app.artist_artwork_mode
+                && app.edit_preview_path.is_empty()
+                && app.embedded_thumbnail_preview_path.is_empty()
+                && ui.get_page_index() == 0)
+                .then(|| Path::new(&app.current_album_path).join("cover.webp"))
+        });
+        let path_text = desired
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if *webp_current_path.borrow() != path_text {
+            *webp_current_path.borrow_mut() = path_text;
+            *webp_playback.borrow_mut() = None;
+            ui.set_animated_webp_active(false);
+            let ticket = webp_revision.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(path) = desired.filter(|path| path.is_file()) {
+                let pending = Arc::clone(&webp_pending);
+                std::thread::spawn(move || {
+                    let result = decode_webp_animation(&path);
+                    if let Ok(mut slot) = pending.lock() {
+                        *slot = Some((ticket, result));
+                    }
+                });
+            }
+        }
+        let completed = webp_pending.lock().ok().and_then(|mut slot| slot.take());
+        if let Some((ticket, result)) = completed
+            && ticket == webp_revision.load(Ordering::SeqCst)
+        {
+            match result {
+                Ok(decoded) if !decoded.is_empty() => {
+                    let frames = decoded
+                        .into_iter()
+                        .map(|frame| {
+                            let buffer =
+                                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                    frame.pixels.as_raw(),
+                                    frame.pixels.width(),
+                                    frame.pixels.height(),
+                                );
+                            (slint::Image::from_rgba8(buffer), frame.delay)
+                        })
+                        .collect::<Vec<_>>();
+                    ui.set_animated_webp_frame(frames[0].0.clone());
+                    ui.set_animated_webp_active(true);
+                    let next_at = Instant::now() + frames[0].1;
+                    *webp_playback.borrow_mut() = Some(WebpPlayback {
+                        frames,
+                        next_frame: 1,
+                        next_at,
+                    });
+                }
+                Err(error) => {
+                    if let Some(log) = webp_log.as_ref() {
+                        log.record(format!("animated-webp-preview unavailable: {error}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(playback) = webp_playback.borrow_mut().as_mut()
+            && Instant::now() >= playback.next_at
+        {
+            let index = playback.next_frame % playback.frames.len();
+            ui.set_animated_webp_frame(playback.frames[index].0.clone());
+            playback.next_at = Instant::now() + playback.frames[index].1;
+            playback.next_frame = index + 1;
+        }
+    });
+
     let scheduled_backup_timer = Timer::default();
     let scheduled_backup_weak = ui.as_weak();
     let scheduled_backup_state = Arc::clone(&state);
     let scheduled_backup_active = Arc::new(AtomicBool::new(false));
     let scheduled_backup_guard = Arc::clone(&scheduled_backup_active);
+    let scheduled_restore_pending = Arc::clone(&interface_restore_pending_restart);
+    let scheduled_layout = Rc::clone(&workspace_layout);
+    let scheduled_appearance = Rc::clone(&appearance);
+    let scheduled_custom_window = custom_window_state.clone();
     scheduled_backup_timer.start(TimerMode::Repeated, Duration::from_secs(60), move || {
+        if scheduled_restore_pending.load(Ordering::SeqCst) {
+            return;
+        }
         let Some(ui) = scheduled_backup_weak.upgrade() else {
             return;
         };
@@ -2748,12 +2933,15 @@ fn main() -> Result<(), slint::PlatformError> {
             normalize_backup_schedule(ui.get_database_backup_schedule().as_str());
         let diagnostics_schedule =
             normalize_backup_schedule(ui.get_diagnostics_backup_schedule().as_str());
-        let settings_due = automatic_backup_is_due(
-            &directory,
-            settings_schedule,
-            "splined-settings-auto",
-            "spl",
-        );
+        let mut settings_due = scheduled_backup_state
+            .lock()
+            .is_ok_and(|app| !app.enhancement_settings_dirty && !unsaved_adjustment_defaults(&app))
+            && automatic_backup_is_due(
+                &directory,
+                settings_schedule,
+                "splined-settings-auto",
+                "spl",
+            );
         let database_due = automatic_backup_is_due(
             &directory,
             database_schedule,
@@ -2766,6 +2954,27 @@ fn main() -> Result<(), slint::PlatformError> {
             "splined-diagnostics-auto",
             "json",
         );
+        if settings_due {
+            let snapshot = capture_ui_preferences(
+                &ui,
+                &scheduled_backup_state,
+                &scheduled_layout,
+                &scheduled_appearance,
+                &scheduled_custom_window,
+            )
+            .ok_or_else(|| {
+                "Unable to snapshot Interface Settings for automatic backup.".to_string()
+            })
+            .and_then(|preferences| splined_core::settings::save_ui_preferences(&preferences));
+            if let Err(error) = snapshot {
+                settings_due = false;
+                if let Ok(mut app) = scheduled_backup_state.lock() {
+                    app.push_log(format!(
+                        "WARNING: Automatic Settings Archive deferred: {error}"
+                    ));
+                }
+            }
+        }
         if (!settings_due && !database_due && !diagnostics_due)
             || scheduled_backup_guard.swap(true, Ordering::SeqCst)
         {
@@ -2848,6 +3057,7 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.window().is_maximized(),
     );
     if !ui.get_setup_required()
+        && !interface_restore_pending_restart.load(Ordering::SeqCst)
         && let Some(preferences) = capture_ui_preferences(
             &ui,
             &state,
@@ -2884,6 +3094,36 @@ fn normalize_status_bar_size(value: &str) -> &'static str {
         "Medium" => "Medium",
         "Large" => "Large",
         _ => "Small",
+    }
+}
+
+fn preserve_filter_state(replacement: &mut ApplicationState, previous: &ApplicationState) {
+    replacement.media_filter_locked = previous.media_filter_locked;
+    replacement.candidate_filter_locked = previous.candidate_filter_locked;
+    replacement.library.set_view(previous.library.view);
+    if previous.media_filter_locked {
+        replacement
+            .library
+            .set_artist_filter(previous.library.artist_filter.clone());
+        replacement
+            .library
+            .set_album_filter(previous.library.album_filter.clone());
+        replacement
+            .library
+            .set_status_filters(previous.library.status_filters.iter().copied());
+        replacement
+            .library
+            .set_show_tracks(previous.library.show_tracks);
+    }
+    if previous.candidate_filter_locked {
+        replacement.candidate_included_sources = previous.candidate_included_sources.clone();
+        replacement.candidate_included_types = previous.candidate_included_types.clone();
+        replacement.candidate_included_policies = previous.candidate_included_policies.clone();
+        replacement.candidate_included_ranges = previous.candidate_included_ranges.clone();
+        replacement.candidate_excluded_sources = previous.candidate_excluded_sources.clone();
+        replacement.candidate_excluded_types = previous.candidate_excluded_types.clone();
+        replacement.candidate_excluded_policies = previous.candidate_excluded_policies.clone();
+        replacement.candidate_excluded_ranges = previous.candidate_excluded_ranges.clone();
     }
 }
 
@@ -2937,6 +3177,49 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     state.clear_candidate_filters();
     state.media_filter_locked = preferences.media_filter_locked;
     state.candidate_filter_locked = preferences.candidate_filter_locked;
+    state.animate_webp_preview = preferences.animate_webp_preview;
+    if state.candidate_filter_locked {
+        state.candidate_included_sources = preferences
+            .candidate_included_sources
+            .iter()
+            .cloned()
+            .collect();
+        state.candidate_included_types = preferences
+            .candidate_included_types
+            .iter()
+            .cloned()
+            .collect();
+        state.candidate_included_policies = preferences
+            .candidate_included_policies
+            .iter()
+            .cloned()
+            .collect();
+        state.candidate_included_ranges = preferences
+            .candidate_included_ranges
+            .iter()
+            .cloned()
+            .collect();
+        state.candidate_excluded_sources = preferences
+            .candidate_excluded_sources
+            .iter()
+            .cloned()
+            .collect();
+        state.candidate_excluded_types = preferences
+            .candidate_excluded_types
+            .iter()
+            .cloned()
+            .collect();
+        state.candidate_excluded_policies = preferences
+            .candidate_excluded_policies
+            .iter()
+            .cloned()
+            .collect();
+        state.candidate_excluded_ranges = preferences
+            .candidate_excluded_ranges
+            .iter()
+            .cloned()
+            .collect();
+    }
     state.set_primary_adjustments(&preferences.primary_adjustments);
     state.adjustment_presets = if preferences.adjustment_presets.len() == 5 {
         preferences.adjustment_presets.clone()
@@ -2953,6 +3236,21 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     } else {
         splined_core::settings::default_album_frame_theme_styles()
     };
+    state.banner_sync_frame_letters = preferences.banner_sync_frame_letters;
+    state.banner_random_harmony = preferences.banner_random_harmony;
+    state.wheel_hue_shift_degrees = preferences.wheel_hue_shift_degrees.min(359);
+    state.wheel_brightness_percent = preferences.wheel_brightness_percent.clamp(30, 170);
+    state.banner_theme_baseline_styles = if preferences.banner_theme_baseline_styles.len() == 5 {
+        preferences.banner_theme_baseline_styles.clone()
+    } else {
+        state.banner_theme_styles.clone()
+    };
+    state.album_frame_theme_baseline_styles =
+        if preferences.album_frame_theme_baseline_styles.len() == 3 {
+            preferences.album_frame_theme_baseline_styles.clone()
+        } else {
+            state.album_frame_theme_styles.clone()
+        };
     state.appearance_mode = preferences.appearance.clone();
 }
 
@@ -3926,10 +4224,12 @@ fn run_slint_library_diagnostics() -> Result<String, String> {
         Arc::new(controller),
         Rc::clone(&workspace_layout),
         appearance,
+        CustomWindowState::from_preferences(&preferences),
         UiWindowDiagnostics {
             maximize_guard: main_window_guard.clone(),
             ui_debug_log: None,
         },
+        Arc::new(AtomicBool::new(false)),
     );
 
     ui.invoke_adjustment_set(SharedString::from("Picture"), 1.0);
@@ -4631,7 +4931,9 @@ fn bind_callbacks(
     controller: Arc<ScanController>,
     workspace_layout: Rc<RefCell<WorkspaceLayout>>,
     appearance: Rc<RefCell<String>>,
+    custom_window_state: CustomWindowState,
     diagnostics: UiWindowDiagnostics,
+    interface_restore_pending_restart: Arc<AtomicBool>,
 ) {
     let UiWindowDiagnostics {
         maximize_guard,
@@ -4774,8 +5076,12 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let restore_pending = Arc::clone(&interface_restore_pending_restart);
         ui.on_save_interface_settings(move || {
             let result = (|| {
+                if restore_pending.load(Ordering::SeqCst) {
+                    return Err("Restart SPLINED to finish restoring Interface Settings before saving new changes.".to_string());
+                }
                 let ui = weak
                     .upgrade()
                     .ok_or_else(|| "The SPLINED Settings window is unavailable.".to_string())?;
@@ -4793,6 +5099,14 @@ fn bind_callbacks(
                     preferences.adjustment_presets = app.adjustment_presets.clone();
                     preferences.banner_theme_styles = app.banner_theme_styles.clone();
                     preferences.album_frame_theme_styles = app.album_frame_theme_styles.clone();
+                    preferences.banner_sync_frame_letters = app.banner_sync_frame_letters;
+                    preferences.banner_random_harmony = app.banner_random_harmony;
+                    preferences.wheel_hue_shift_degrees = app.wheel_hue_shift_degrees;
+                    preferences.wheel_brightness_percent = app.wheel_brightness_percent;
+                    preferences.banner_theme_baseline_styles =
+                        app.banner_theme_baseline_styles.clone();
+                    preferences.album_frame_theme_baseline_styles =
+                        app.album_frame_theme_baseline_styles.clone();
                 }
                 splined_core::settings::save_ui_preferences(&preferences)?;
                 ui.set_status_bar_intensity(intensity.into());
@@ -4824,28 +5138,47 @@ fn bind_callbacks(
             refresh_weak(&weak, &state);
         });
     }
+    let media_search_debounce = Rc::new(Timer::default());
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let debounce = Rc::clone(&media_search_debounce);
         ui.on_artist_filter_edited(move |value| {
             if let Ok(mut app) = state.lock()
                 && !app.media_filter_locked
             {
                 app.library.set_artist_filter(value.as_str());
             }
-            refresh_weak(&weak, &state);
+            let weak = weak.clone();
+            let state = Arc::clone(&state);
+            debounce.start(
+                TimerMode::SingleShot,
+                Duration::from_millis(180),
+                move || {
+                    refresh_weak(&weak, &state);
+                },
+            );
         });
     }
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let debounce = Rc::clone(&media_search_debounce);
         ui.on_album_filter_edited(move |value| {
             if let Ok(mut app) = state.lock()
                 && !app.media_filter_locked
             {
                 app.library.set_album_filter(value.as_str());
             }
-            refresh_weak(&weak, &state);
+            let weak = weak.clone();
+            let state = Arc::clone(&state);
+            debounce.start(
+                TimerMode::SingleShot,
+                Duration::from_millis(180),
+                move || {
+                    refresh_weak(&weak, &state);
+                },
+            );
         });
     }
     {
@@ -7814,9 +8147,12 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
-        ui.on_theme_color_target_changed(move |target| {
-            if let Some(ui) = weak.upgrade() {
-                ui.set_theme_color_target(target);
+        ui.on_banner_theme_sync_changed(move |enabled| {
+            if let Ok(mut app) = state.lock()
+                && app.banner_sync_frame_letters != enabled
+            {
+                app.banner_sync_frame_letters = enabled;
+                app.enhancement_settings_dirty = true;
             }
             refresh_weak(&weak, &state);
         });
@@ -7824,39 +8160,110 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
-        ui.on_theme_color_picked(move |x, y, scroll| {
+        ui.on_banner_theme_random_changed(move |enabled| {
+            if let Ok(mut app) = state.lock()
+                && app.banner_random_harmony != enabled
+            {
+                app.banner_random_harmony = enabled;
+                app.enhancement_settings_dirty = true;
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_theme_color_target_changed(move |target| {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_theme_color_target(target);
+                ui.set_theme_wheel_marker_visible(false);
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let last_drag = Rc::new(Cell::new(Instant::now() - Duration::from_millis(50)));
+        ui.on_theme_color_picked(move |x, y, scroll, dragging| {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
+            if dragging && last_drag.get().elapsed() < Duration::from_millis(35) {
+                return;
+            }
+            if dragging {
+                last_drag.set(Instant::now());
+            }
+            if scroll.abs() <= f32::EPSILON {
+                if !wheel_contains(x, y) {
+                    return;
+                }
+                ui.set_theme_wheel_marker_x(x);
+                ui.set_theme_wheel_marker_y(y);
+                ui.set_theme_wheel_marker_visible(true);
+            }
             let target = ui.get_theme_color_target().to_string();
             if let Ok(mut app) = state.lock() {
                 let current = theme_target_hex(&app, &target)
                     .unwrap_or("#3478FF")
                     .to_string();
-                let selected = wheel_rgb(x, y, scroll, &current);
-                if let Some(key) = target.strip_prefix("frame.") {
-                    if let Some(style) = app
-                        .album_frame_theme_styles
-                        .iter_mut()
-                        .find(|style| style.key == key)
-                    {
-                        style.color = selected;
-                        app.enhancement_settings_dirty = true;
+                let selected = wheel_rgb(
+                    x,
+                    y,
+                    scroll,
+                    &current,
+                    app.wheel_hue_shift_degrees,
+                    app.wheel_brightness_percent,
+                );
+                let seed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_nanos() as u64)
+                    .unwrap_or(1);
+                apply_theme_selected_color(&mut app, &target, selected, seed);
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let last_drag = Rc::new(Cell::new(Instant::now() - Duration::from_millis(80)));
+        ui.on_theme_wheel_range_changed(move |range, position, dragging| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if dragging && last_drag.get().elapsed() < Duration::from_millis(55) {
+                return;
+            }
+            if dragging {
+                last_drag.set(Instant::now());
+            }
+            let position = position.clamp(0.0, 1.0);
+            let target = ui.get_theme_color_target().to_string();
+            if let Ok(mut app) = state.lock() {
+                match range.as_str() {
+                    "hue" => app.wheel_hue_shift_degrees = (position * 359.0).round() as u16,
+                    "brightness" => {
+                        app.wheel_brightness_percent = (30.0 + position * 140.0).round() as u8
                     }
-                } else if let Some((key, part)) = target.split_once('.') {
-                    if let Some(style) = app
-                        .banner_theme_styles
-                        .iter_mut()
-                        .find(|style| style.key == key)
-                    {
-                        match part {
-                            "background" => style.background = selected,
-                            "frame" => style.frame = selected,
-                            "letters" => style.letters = selected,
-                            _ => {}
-                        }
-                        app.enhancement_settings_dirty = true;
-                    }
+                    _ => return,
+                }
+                app.enhancement_settings_dirty = true;
+                if ui.get_theme_wheel_marker_visible() {
+                    let x = ui.get_theme_wheel_marker_x();
+                    let y = ui.get_theme_wheel_marker_y();
+                    let current = theme_target_hex(&app, &target).unwrap_or("#3478FF");
+                    let selected = wheel_rgb(
+                        x,
+                        y,
+                        0.0,
+                        current,
+                        app.wheel_hue_shift_degrees,
+                        app.wheel_brightness_percent,
+                    );
+                    let seed = u64::from(x.to_bits()) << 32 | u64::from(y.to_bits());
+                    apply_theme_selected_color(&mut app, &target, selected, seed);
                 }
             }
             refresh_weak(&weak, &state);
@@ -7878,6 +8285,47 @@ fn bind_callbacks(
                 {
                     style.name = trimmed;
                     app.enhancement_settings_dirty = true;
+                }
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_theme_style_reset(move |target| {
+            if let Ok(mut app) = state.lock() {
+                let target = target.as_str();
+                let restored = if let Some(key) = target.strip_prefix("frame.") {
+                    app.album_frame_theme_baseline_styles
+                        .iter()
+                        .find(|style| style.key == key)
+                        .cloned()
+                        .and_then(|baseline| {
+                            app.album_frame_theme_styles
+                                .iter_mut()
+                                .find(|style| style.key == key)
+                                .map(|current| *current = baseline)
+                        })
+                        .is_some()
+                } else {
+                    app.banner_theme_baseline_styles
+                        .iter()
+                        .find(|style| style.key == target)
+                        .cloned()
+                        .and_then(|baseline| {
+                            app.banner_theme_styles
+                                .iter_mut()
+                                .find(|style| style.key == target)
+                                .map(|current| *current = baseline)
+                        })
+                        .is_some()
+                };
+                if restored {
+                    app.enhancement_settings_dirty = true;
+                    app.service_status =
+                        "Baseline restored for this row. Save Enhancement Settings to keep it."
+                            .to_string();
                 }
             }
             refresh_weak(&weak, &state);
@@ -8098,10 +8546,24 @@ fn bind_callbacks(
             });
         });
     }
-    bind_service_callbacks(ui, state);
+    bind_service_callbacks(
+        ui,
+        state,
+        workspace_layout,
+        appearance,
+        custom_window_state,
+        interface_restore_pending_restart,
+    );
 }
 
-fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
+fn bind_service_callbacks(
+    ui: &AppWindow,
+    state: Arc<Mutex<ApplicationState>>,
+    workspace_layout: Rc<RefCell<WorkspaceLayout>>,
+    appearance: Rc<RefCell<String>>,
+    custom_window_state: CustomWindowState,
+    interface_restore_pending_restart: Arc<AtomicBool>,
+) {
     let settings_draft = Arc::new(Mutex::new(
         state
             .lock()
@@ -8120,6 +8582,7 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                             *draft = app.config.clone();
                         }
                         set_settings_ui(&ui, &app.config);
+                        ui.set_settings_animate_webp_preview(app.animate_webp_preview);
                         ui.set_settings_source_rows(ui.get_source_rows());
                         ui.set_settings_status_bar_intensity(ui.get_status_bar_intensity());
                         ui.set_settings_status_bar_position(ui.get_status_bar_position());
@@ -8191,8 +8654,12 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
         let settings_draft = Arc::clone(&settings_draft);
+        let restore_pending = Arc::clone(&interface_restore_pending_restart);
         ui.on_save_settings(move || {
             let result = (|| {
+                if restore_pending.load(Ordering::SeqCst) {
+                    return Err("Restart SPLINED to finish restoring Interface Settings before saving new changes.".to_string());
+                }
                 let ui = weak
                     .upgrade()
                     .ok_or_else(|| "The SPLINED Settings window is unavailable.".to_string())?;
@@ -8252,13 +8719,49 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                 replacement.banner_theme_styles = prior_preferences.banner_theme_styles.clone();
                 replacement.album_frame_theme_styles =
                     prior_preferences.album_frame_theme_styles.clone();
+                replacement.banner_sync_frame_letters = prior_preferences.banner_sync_frame_letters;
+                replacement.banner_random_harmony = prior_preferences.banner_random_harmony;
+                replacement.wheel_hue_shift_degrees = prior_preferences.wheel_hue_shift_degrees;
+                replacement.wheel_brightness_percent = prior_preferences.wheel_brightness_percent;
+                replacement.banner_theme_baseline_styles =
+                    prior_preferences.banner_theme_baseline_styles.clone();
+                replacement.album_frame_theme_baseline_styles =
+                    prior_preferences.album_frame_theme_baseline_styles.clone();
                 replacement.appearance_mode = prior_preferences.appearance_mode.clone();
+                preserve_filter_state(&mut replacement, &prior_preferences);
+                replacement.animate_webp_preview = if section == "Artwork" {
+                    ui.get_settings_animate_webp_preview()
+                } else {
+                    prior_preferences.animate_webp_preview
+                };
                 replacement.enhancement_settings_dirty =
                     prior_preferences.enhancement_settings_dirty;
                 if section == "Enhancement" && ui.get_settings_preview_preset_index() != 0 {
                     replacement.adjustments = prior_preferences.adjustments.clone();
                 }
                 drop(prior_preferences);
+                if section == "Enhancement" {
+                    let mut preferences = splined_core::settings::load_ui_preferences()?;
+                    preferences.adjustment_presets = replacement.adjustment_presets.clone();
+                    preferences.banner_theme_styles = replacement.banner_theme_styles.clone();
+                    preferences.album_frame_theme_styles =
+                        replacement.album_frame_theme_styles.clone();
+                    preferences.banner_sync_frame_letters = replacement.banner_sync_frame_letters;
+                    preferences.banner_random_harmony = replacement.banner_random_harmony;
+                    preferences.wheel_hue_shift_degrees = replacement.wheel_hue_shift_degrees;
+                    preferences.wheel_brightness_percent = replacement.wheel_brightness_percent;
+                    preferences.banner_theme_baseline_styles =
+                        replacement.banner_theme_baseline_styles.clone();
+                    preferences.album_frame_theme_baseline_styles =
+                        replacement.album_frame_theme_baseline_styles.clone();
+                    splined_core::settings::save_ui_preferences(&preferences)?;
+                    replacement.enhancement_settings_dirty = false;
+                }
+                if section == "Artwork" {
+                    let mut preferences = splined_core::settings::load_ui_preferences()?;
+                    preferences.animate_webp_preview = replacement.animate_webp_preview;
+                    splined_core::settings::save_ui_preferences(&preferences)?;
+                }
                 replacement.intro_dismissed = intro_dismissed || replacement.disable_intro_message;
                 replacement.push_log(format!("Validated and saved {section} settings."));
                 for diagnostic in diagnostics {
@@ -8294,8 +8797,12 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
         let settings_draft = Arc::clone(&settings_draft);
+        let restore_pending = Arc::clone(&interface_restore_pending_restart);
         ui.on_reset_advanced_settings(move || {
             let result = (|| {
+                if restore_pending.load(Ordering::SeqCst) {
+                    return Err("Restart SPLINED before resetting settings after an Interface Settings restore.".to_string());
+                }
                 let ui = weak
                     .upgrade()
                     .ok_or_else(|| "The SPLINED Settings window is unavailable.".to_string())?;
@@ -8510,6 +9017,10 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
         let settings_draft = Arc::clone(&settings_draft);
+        let restore_pending = Arc::clone(&interface_restore_pending_restart);
+        let backup_layout = Rc::clone(&workspace_layout);
+        let backup_appearance = Rc::clone(&appearance);
+        let backup_custom_window = custom_window_state.clone();
         ui.on_backup_action(
             move |action,
                   path,
@@ -8519,6 +9030,12 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                   database,
                   interface,
                   diagnostics| {
+                if restore_pending.load(Ordering::SeqCst) {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_service_status("Restart SPLINED to finish restoring Interface Settings before another backup or restore.".into());
+                    }
+                    return;
+                }
                 if let Some(ui) = weak.upgrade()
                     && ui.get_media_refresh_running()
                 {
@@ -8526,6 +9043,35 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                         "Wait for Refresh DB to finish before backing up or restoring.".into(),
                     );
                     return;
+                }
+                if action.as_str() == "backup-settings"
+                    && (weak.upgrade().is_some_and(|ui| ui.get_settings_section_dirty())
+                        || state.lock().is_ok_and(|app| {
+                            app.enhancement_settings_dirty || unsaved_adjustment_defaults(&app)
+                        }))
+                {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_service_status("Save Enhancement slider defaults and the changed Settings section before creating a Settings Archive.".into());
+                    }
+                    return;
+                }
+                if action.as_str() == "backup-settings" {
+                    let Some(ui) = weak.upgrade() else {
+                        return;
+                    };
+                    let result = capture_ui_preferences(
+                        &ui,
+                        &state,
+                        &backup_layout,
+                        &backup_appearance,
+                        &backup_custom_window,
+                    )
+                    .ok_or_else(|| "Unable to snapshot the current Interface Settings.".to_string())
+                    .and_then(|preferences| splined_core::settings::save_ui_preferences(&preferences));
+                    if let Err(error) = result {
+                        ui.set_service_status(format!("Settings Archive not created: {error}").into());
+                        return;
+                    }
                 }
                 let selection = BackupSelection {
                     settings,
@@ -8538,9 +9084,23 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                 let password = password.to_string();
                 let config = state.lock().ok().map(|app| app.config.clone());
                 let setup_required = weak.upgrade().is_some_and(|ui| ui.get_setup_required());
+                // Arm the guard on the UI thread, before the worker starts. The
+                // preference timer also runs here and must not race the restore.
+                if action.as_str() == "restore"
+                    && selection.interface
+                    && config.is_some()
+                    && (!setup_required || selection.settings)
+                    && path
+                        .extension()
+                        .and_then(std::ffi::OsStr::to_str)
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("spl"))
+                {
+                    restore_pending.store(true, Ordering::SeqCst);
+                }
                 let weak = weak.clone();
                 let state = Arc::clone(&state);
                 let settings_draft = Arc::clone(&settings_draft);
+                let restore_pending = Arc::clone(&restore_pending);
                 std::thread::spawn(move || {
                     let result: Result<(String, Option<(Config, ApplicationState)>), String> =
                         match (action.as_str(), config) {
@@ -8622,12 +9182,17 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                                 .and_then(std::ffi::OsStr::to_str)
                                 .is_some_and(|extension| extension.eq_ignore_ascii_case("spl"))
                             {
-                                restore_backup(&path, &config, selection, &password).and_then(
+                                let restored = restore_backup(&path, &config, selection, &password);
+                                if restored.is_err() {
+                                    restore_pending.store(false, Ordering::SeqCst);
+                                }
+                                restored.and_then(
                                     |restored| {
-                                        let snapshot = media_snapshot(&restored, false)?;
-                                        let diagnostics = startup_diagnostics(&restored, &snapshot);
+                                        let config = restored.config;
+                                        let snapshot = media_snapshot(&config, false)?;
+                                        let diagnostics = startup_diagnostics(&config, &snapshot);
                                         let mut replacement =
-                                            ApplicationState::new(restored.clone(), snapshot)?;
+                                            ApplicationState::new(config.clone(), snapshot)?;
                                         replacement.push_log(
                                             "Backup restored and Config v5 loaded.".to_string(),
                                         );
@@ -8635,8 +9200,12 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                                             replacement.push_log(diagnostic);
                                         }
                                         Ok((
-                                            "Backup restored and loaded.".to_string(),
-                                            Some((restored, replacement)),
+                                            if restored.interface_restored {
+                                                "Settings restored. Close and reopen SPLINED to load restored theme, panes, locks, presets, and colors. Do not make other changes before restarting.".to_string()
+                                            } else {
+                                                "Backup restored and loaded.".to_string()
+                                            },
+                                            Some((config, replacement)),
                                         ))
                                     },
                                 )
@@ -8677,6 +9246,11 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                                 }
                             }
                             Err(error) => {
+                                let error = if restore_pending.load(Ordering::SeqCst) {
+                                    format!("{error} Interface Settings may have been restored; close and reopen SPLINED before making other changes.")
+                                } else {
+                                    error
+                                };
                                 if let Some(ui) = weak.upgrade()
                                     && (error.contains("requires a password")
                                         || error.contains("password is incorrect"))
@@ -9737,17 +10311,7 @@ fn edit_existing_cover(
     apply: bool,
     guard: Option<(&AtomicU64, u64)>,
 ) -> Result<(), String> {
-    let (
-        path,
-        config,
-        context,
-        artist,
-        album,
-        album_path,
-        album_key,
-        embed_thumbnails,
-        use_upscale,
-    ) = {
+    let (path, config, context, artist, album, album_path, embed_thumbnails, use_upscale) = {
         let app = state
             .lock()
             .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
@@ -9770,7 +10334,6 @@ fn edit_existing_cover(
             app.current_artist.clone(),
             app.current_album.clone(),
             app.current_album_path.clone(),
-            app.library.focused_album_key.clone(),
             apply && embedded_thumbnail_ready(&app),
             app.edit_preview_path.starts_with("memory-preview://"),
         )
@@ -9780,6 +10343,18 @@ fn edit_existing_cover(
     }
     let path = Path::new(&path);
     let candidate = Candidate::from_file("local", path, 0)?;
+    // cover.webp is source material, not the target of a direct WRITE Cover.
+    // Preserve animation and install a static JPEG beside it even before LAUNCH.
+    let target_format = if candidate.format == StaticFormat::Webp {
+        StaticFormat::Jpeg
+    } else {
+        candidate.format
+    };
+    let destination = if candidate.format == StaticFormat::Webp {
+        path.with_extension("jpg")
+    } else {
+        path.to_path_buf()
+    };
     let range = Range {
         min: config.range.min,
         ideal: config.range.ideal,
@@ -9789,20 +10364,20 @@ fn edit_existing_cover(
     let prepared = if apply && embed_thumbnails && !use_upscale {
         let mut output = config.output.clone();
         output.evaluate_final_image = false;
-        prepare_configured_artwork(&candidate, path, &range, candidate.format, &output, true)?
+        prepare_configured_artwork(&candidate, path, &range, target_format, &output, true)?
     } else {
         prepare_existing_cover_edit(
             &candidate,
             path,
             &range,
-            candidate.format,
+            target_format,
             &config.output,
             true,
         )?
     };
     let preview_key = if apply {
-        if fs::read(path).ok().as_deref() != Some(prepared.bytes.as_slice()) {
-            install_prepared_artwork(path, &prepared)?;
+        if fs::read(&destination).ok().as_deref() != Some(prepared.bytes.as_slice()) {
+            install_prepared_artwork(&destination, &prepared)?;
         }
         if embed_thumbnails {
             embed_album_thumbnails_from_cover(Path::new(&album_path), &prepared.bytes, &config)?;
@@ -9812,28 +10387,17 @@ fn edit_existing_cover(
         if !album_path.is_dir() {
             return Err("The selected Album directory is unavailable.".to_string());
         }
-        let material = RuntimeArtworkMaterial {
-            path: path.to_path_buf(),
-            format: format!("{:?}", prepared.info.format).to_ascii_uppercase(),
-            width: prepared.info.width,
-            height: prepared.info.height,
-        };
         let mut completion_config = config.clone();
         completion_config.scan.scan_mode_timeout = ScanTimeout(0.0);
-        record_album_outcome_from_runtime(
-            &completion_config,
-            album_path,
-            Some(album_path),
-            album_key.as_deref(),
-            "installed",
-            Some("local"),
-            Some(&material),
-        )?;
-        let path_text = path.to_string_lossy().into_owned();
+        // Refresh this Album's file inventory after a direct write. A runtime
+        // outcome alone updates cover_path but leaves cover.webp absent from
+        // older local_art_json snapshots, hiding the persistent blue dot.
+        record_album_outcome(&completion_config, album_path, "installed", Some("local"))?;
+        let path_text = destination.to_string_lossy().into_owned();
         if !preload_scaled_image(&path_text, PREVIEW_CACHE_DIMENSION) {
             return Err(format!(
                 "Unable to load the saved existing cover {}.",
-                path.display()
+                destination.display()
             ));
         }
         path_text
@@ -9858,8 +10422,11 @@ fn edit_existing_cover(
         if let Some(snapshot) = refreshed_snapshot {
             app.library.replace_snapshot(snapshot)?;
             app.service_status = "Cover written; Album marked Processed.".to_string();
+            app.current_cover_path = destination.to_string_lossy().into_owned();
         }
-        app.edit_preview_path = preview_key;
+        // The saved file is now the selected album's cover. Drop the transient
+        // edit preview so an enabled animated WebP can resume immediately.
+        app.edit_preview_path = if apply { String::new() } else { preview_key };
         if apply {
             app.embedded_thumbnail_preview_path.clear();
             app.embedded_thumbnail_owner_key.clear();
@@ -9867,7 +10434,7 @@ fn edit_existing_cover(
         app.push_log(if apply {
             format!(
                 "Edited existing cover and marked the Album Processed: {}",
-                path.display()
+                destination.display()
             )
         } else {
             "Prepared existing-cover preview in memory without changing album files.".to_string()
@@ -10470,6 +11037,12 @@ fn project_adjustments(app: &ApplicationState, config: &mut Config) {
     config.output.upscale_brightness_percent = app.adjustments.brightness_percent;
     config.output.upscale_gamma_percent = app.adjustments.gamma_percent;
     config.output.upscale_color_temperature = app.adjustments.color_temperature;
+}
+
+fn unsaved_adjustment_defaults(app: &ApplicationState) -> bool {
+    let mut projected = app.config.clone();
+    project_adjustments(app, &mut projected);
+    projected.output != app.config.output
 }
 
 fn candidate_ui_row(candidate: &CandidateState, compared: bool) -> UiCandidateRow {
@@ -11424,6 +11997,14 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_default_adjustment_preset(preset_rows[0].clone());
     ui.set_custom_adjustment_presets(model(preset_rows[1..].to_vec()));
     ui.set_adjustment_preset_rows(model(preset_rows));
+    ui.set_theme_banner_sync_frame_letters(state.banner_sync_frame_letters);
+    ui.set_theme_banner_random_harmony(state.banner_random_harmony);
+    ui.set_theme_wheel_hue_shift(i32::from(state.wheel_hue_shift_degrees));
+    ui.set_theme_wheel_brightness(i32::from(state.wheel_brightness_percent));
+    ui.set_theme_wheel_image(theme_wheel_image(
+        state.wheel_hue_shift_degrees,
+        state.wheel_brightness_percent,
+    ));
     ui.set_theme_banner_rows(model(
         state
             .banner_theme_styles
@@ -11434,6 +12015,10 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
                 background: themed_color(&style.background, &state.appearance_mode, true),
                 frame: themed_color(&style.frame, &state.appearance_mode, false),
                 letters: themed_color(&style.letters, &state.appearance_mode, false),
+                at_baseline: state
+                    .banner_theme_baseline_styles
+                    .iter()
+                    .any(|baseline| baseline.key == style.key && baseline == style),
             })
             .collect(),
     ));
@@ -11445,12 +12030,17 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
                 key: frame.key.clone().into(),
                 name: frame.name.clone().into(),
                 color: themed_color(&frame.color, &state.appearance_mode, false),
+                at_baseline: state
+                    .album_frame_theme_baseline_styles
+                    .iter()
+                    .any(|baseline| baseline.key == frame.key && baseline == frame),
             })
             .collect(),
     ));
     let color_target = ui.get_theme_color_target().to_string();
     let selected_hex = theme_target_hex(&state, &color_target).unwrap_or("#3478FF");
     ui.set_theme_selected_color(themed_color(selected_hex, &state.appearance_mode, false));
+    ui.set_theme_selected_hex(selected_hex.into());
     ui.set_adjustment_rows(model(vec![
         adjustment_row(&state, "Picture", adjustment.picture_percent, "%"),
         adjustment_row(&state, "Sharpen", adjustment.sharpen_percent, "%"),
@@ -11709,6 +12299,19 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             .selected_candidate()
             .is_some_and(|candidate| candidate.source.eq_ignore_ascii_case("samples"));
     ui.set_selected_artwork_embed_available(embed_available);
+    let webp_needs_still = state
+        .library
+        .focused_album_key
+        .as_ref()
+        .and_then(|key| {
+            state
+                .library
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+        })
+        .is_some_and(|album| canonical_webp_status(&album.snapshot).1);
+    ui.set_selected_artwork_webp_needs_still(webp_needs_still);
     let embedded_infos = current_embedded_thumbnail_infos(&state);
     ui.set_selected_artwork_embedded_info(if embed_available {
         format_existing_embedded_info(&embedded_infos).into()
@@ -11898,8 +12501,14 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_completion_message(SharedString::from(state.completion_message.clone()));
     ui.set_settings_disable_intro_message(state.disable_intro_message);
     ui.set_settings_disable_confirmation_messages(state.disable_confirmation_messages);
-    ui.set_artist_filter_text(SharedString::from(state.library.artist_filter.clone()));
-    ui.set_album_filter_text(SharedString::from(state.library.album_filter.clone()));
+    // Reassigning a bound LineEdit on every keystroke steals its caret/focus
+    // on some Windows backends and produces the system error sound.
+    if ui.get_artist_filter_text().as_str() != state.library.artist_filter.as_str() {
+        ui.set_artist_filter_text(SharedString::from(state.library.artist_filter.clone()));
+    }
+    if ui.get_album_filter_text().as_str() != state.library.album_filter.as_str() {
+        ui.set_album_filter_text(SharedString::from(state.library.album_filter.clone()));
+    }
     ui.set_fallback_artist(SharedString::from(state.fallback_artist.clone()));
     ui.set_fallback_album(SharedString::from(state.fallback_album.clone()));
     ui.set_fallback_reason(SharedString::from(state.fallback_reason.clone()));
@@ -12013,7 +12622,222 @@ fn theme_target_hex<'a>(state: &'a ApplicationState, target: &str) -> Option<&'a
     }
 }
 
-fn wheel_rgb(x: f32, y: f32, scroll_delta: f32, current: &str) -> String {
+fn set_banner_theme_color(
+    style: &mut BannerThemeStyle,
+    part: &str,
+    selected: String,
+    synchronize_frame_letters: bool,
+) -> bool {
+    match part {
+        "background" => style.background = selected.clone(),
+        "frame" if !synchronize_frame_letters => style.frame = selected.clone(),
+        "letters" if !synchronize_frame_letters => style.letters = selected.clone(),
+        "frame" | "letters" => {}
+        _ => return false,
+    }
+    if synchronize_frame_letters {
+        style.frame = selected.clone();
+        style.letters = selected;
+    }
+    true
+}
+
+fn apply_theme_selected_color(
+    app: &mut ApplicationState,
+    target: &str,
+    selected: String,
+    seed: u64,
+) -> bool {
+    if let Some(key) = target.strip_prefix("frame.") {
+        if let Some(style) = app
+            .album_frame_theme_styles
+            .iter_mut()
+            .find(|style| style.key == key)
+        {
+            style.color = selected;
+            app.enhancement_settings_dirty = true;
+            return true;
+        }
+        return false;
+    }
+    let Some((key, part)) = target.split_once('.') else {
+        return false;
+    };
+    let synchronize = app.banner_sync_frame_letters;
+    let random = app.banner_random_harmony;
+    let light = app.appearance_mode.eq_ignore_ascii_case("light");
+    if let Some(style) = app
+        .banner_theme_styles
+        .iter_mut()
+        .find(|style| style.key == key)
+    {
+        if random {
+            let (background, frame, letters) = banner_harmony(&selected, seed, light, synchronize);
+            style.background = background;
+            style.frame = frame;
+            style.letters = letters;
+        } else if !set_banner_theme_color(style, part, selected, synchronize) {
+            return false;
+        }
+        app.enhancement_settings_dirty = true;
+        return true;
+    }
+    false
+}
+
+fn rgb_to_hsv(rgb: [u8; 3]) -> (f32, f32, f32) {
+    let [red, green, blue] = rgb.map(|channel| f32::from(channel) / 255.0);
+    let maximum = red.max(green).max(blue);
+    let minimum = red.min(green).min(blue);
+    let difference = maximum - minimum;
+    let hue = if difference <= f32::EPSILON {
+        0.0
+    } else if maximum == red {
+        60.0 * ((green - blue) / difference).rem_euclid(6.0)
+    } else if maximum == green {
+        60.0 * ((blue - red) / difference + 2.0)
+    } else {
+        60.0 * ((red - green) / difference + 4.0)
+    };
+    let saturation = if maximum <= f32::EPSILON {
+        0.0
+    } else {
+        difference / maximum
+    };
+    (hue, saturation, maximum)
+}
+
+fn hsv_to_rgb(hue: f32, saturation: f32, value: f32) -> [u8; 3] {
+    let hue = hue.rem_euclid(360.0);
+    let saturation = saturation.clamp(0.0, 1.0);
+    let value = value.clamp(0.0, 1.0);
+    let chroma = value * saturation;
+    let section = hue / 60.0;
+    let secondary = chroma * (1.0 - (section.rem_euclid(2.0) - 1.0).abs());
+    let (red, green, blue) = match section as u8 {
+        0 => (chroma, secondary, 0.0),
+        1 => (secondary, chroma, 0.0),
+        2 => (0.0, chroma, secondary),
+        3 => (0.0, secondary, chroma),
+        4 => (secondary, 0.0, chroma),
+        _ => (chroma, 0.0, secondary),
+    };
+    let offset = value - chroma;
+    [red, green, blue].map(|channel| ((channel + offset) * 255.0).round() as u8)
+}
+
+fn hex_from_rgb(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+fn next_harmony_random(seed: &mut u64) -> f32 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    (*seed % 10_000) as f32 / 10_000.0
+}
+
+fn banner_harmony(
+    anchor: &str,
+    seed: u64,
+    light: bool,
+    synchronize: bool,
+) -> (String, String, String) {
+    let (hue, saturation, value) = rgb_to_hsv(rgb_from_hex(anchor));
+    let mut seed = seed.max(1);
+    let direction = if next_harmony_random(&mut seed) < 0.5 {
+        -1.0
+    } else {
+        1.0
+    };
+    let base_hue = hue + (next_harmony_random(&mut seed) - 0.5) * 24.0;
+    let accent_hue = base_hue + direction * (15.0 + next_harmony_random(&mut seed) * 20.0);
+    let background = hex_from_rgb(hsv_to_rgb(
+        base_hue,
+        saturation.max(0.56),
+        if light {
+            value.max(0.72)
+        } else {
+            value.clamp(0.32, 0.55)
+        },
+    ));
+    let frame = hex_from_rgb(hsv_to_rgb(
+        accent_hue,
+        saturation.max(0.65),
+        if light { 0.44 } else { 0.95 },
+    ));
+    let letters = if synchronize {
+        frame.clone()
+    } else {
+        hex_from_rgb(hsv_to_rgb(
+            accent_hue + direction * (5.0 + next_harmony_random(&mut seed) * 10.0),
+            saturation.max(0.58),
+            if light { 0.28 } else { 1.0 },
+        ))
+    };
+    (background, frame, letters)
+}
+
+fn wheel_source() -> &'static image::RgbaImage {
+    static WHEEL: OnceLock<image::RgbaImage> = OnceLock::new();
+    WHEEL.get_or_init(|| {
+        let decoded = image::load_from_memory(include_bytes!("../gui/oled-chroma-wheel.png"))
+            .expect("the bundled OLED chroma wheel must decode")
+            .to_rgba8();
+        image::imageops::resize(&decoded, 384, 384, image::imageops::FilterType::Triangle)
+    })
+}
+
+fn transformed_wheel_rgb(rgb: [u8; 3], hue_shift: u16, brightness: u8) -> [u8; 3] {
+    let (hue, saturation, value) = rgb_to_hsv(rgb);
+    hsv_to_rgb(
+        hue + f32::from(hue_shift),
+        saturation,
+        value * f32::from(brightness) / 100.0,
+    )
+}
+
+thread_local! {
+    static THEME_WHEEL_RENDER_CACHE: RefCell<Option<((u16, u8), slint::Image)>> = const { RefCell::new(None) };
+}
+
+fn theme_wheel_image(hue_shift: u16, brightness: u8) -> slint::Image {
+    THEME_WHEEL_RENDER_CACHE.with(|cache| {
+        if let Some(((old_hue, old_brightness), image)) = cache.borrow().as_ref()
+            && (*old_hue, *old_brightness) == (hue_shift, brightness)
+        {
+            return image.clone();
+        }
+        let source = wheel_source();
+        let mut pixels = Vec::with_capacity((source.width() * source.height() * 4) as usize);
+        for pixel in source.pixels() {
+            let [red, green, blue] =
+                transformed_wheel_rgb([pixel[0], pixel[1], pixel[2]], hue_shift, brightness);
+            pixels.extend_from_slice(&[red, green, blue, pixel[3]]);
+        }
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+            &pixels,
+            source.width(),
+            source.height(),
+        );
+        let image = slint::Image::from_rgba8(buffer);
+        *cache.borrow_mut() = Some(((hue_shift, brightness), image.clone()));
+        image
+    })
+}
+
+fn wheel_contains(x: f32, y: f32) -> bool {
+    (x - 0.5).powi(2) + (y - 0.5).powi(2) <= 0.44_f32.powi(2)
+}
+
+fn wheel_rgb(
+    x: f32,
+    y: f32,
+    scroll_delta: f32,
+    current: &str,
+    hue_shift: u16,
+    brightness: u8,
+) -> String {
     if scroll_delta.abs() > f32::EPSILON {
         let mut rgb = rgb_from_hex(current);
         let multiplier = if scroll_delta > 0.0 { 1.07 } else { 0.93 };
@@ -12022,22 +12846,40 @@ fn wheel_rgb(x: f32, y: f32, scroll_delta: f32, current: &str) -> String {
         }
         return format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
     }
-    if ((x - 0.5).powi(2) + (y - 0.5).powi(2)).sqrt() > 0.48 {
+    if !wheel_contains(x, y) {
         return current.to_string();
     }
-    static WHEEL: OnceLock<Option<image::RgbaImage>> = OnceLock::new();
-    let Some(wheel) = WHEEL.get_or_init(|| {
-        image::load_from_memory(include_bytes!("../gui/oled-chroma-wheel.png"))
-            .ok()
-            .map(|decoded| decoded.to_rgba8())
-    }) else {
-        return current.to_string();
-    };
+    let wheel = wheel_source();
     let pixel = wheel.get_pixel(
         (x.clamp(0.0, 1.0) * (wheel.width() - 1) as f32) as u32,
         (y.clamp(0.0, 1.0) * (wheel.height() - 1) as f32) as u32,
     );
-    format!("#{:02X}{:02X}{:02X}", pixel[0], pixel[1], pixel[2])
+    hex_from_rgb(transformed_wheel_rgb(
+        [pixel[0], pixel[1], pixel[2]],
+        hue_shift,
+        brightness,
+    ))
+}
+
+fn canonical_webp_status(snapshot: &MediaAlbumSnapshot) -> (bool, bool) {
+    let has_name = |expected: &str| {
+        snapshot.local_artwork_files.iter().any(|file| {
+            Path::new(file)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+        })
+    };
+    let webp = has_name("cover.webp") || snapshot.cover_name.eq_ignore_ascii_case("cover.webp");
+    // Runtime writes update cover_name immediately; the cached local-art list
+    // can lag until the next folder inventory.
+    let still = has_name("cover.jpg")
+        || has_name("cover.jpeg")
+        || has_name("cover.png")
+        || ["cover.jpg", "cover.jpeg", "cover.png"]
+            .iter()
+            .any(|name| snapshot.cover_name.eq_ignore_ascii_case(name));
+    (webp, webp && !still)
 }
 
 fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRow> {
@@ -12275,6 +13117,17 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                     "Checking Embedded Art against the thumbnail preference…".to_string(),
                 );
             }
+            let (has_webp, needs_still) = canonical_webp_status(snapshot);
+            add_bullet(
+                has_webp,
+                Color::from_rgb_u8(52, 120, 255),
+                if needs_still {
+                    "cover.webp preserved · WRITE Cover to create cover.jpg and embed a still"
+                } else {
+                    "cover.webp preserved alongside a still cover"
+                }
+                .to_string(),
+            );
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
@@ -12355,6 +13208,7 @@ fn artist_overview_legend_counts(
                 color if color == Color::from_rgb_u8(239, 165, 78) => counts.orange_dots += 1,
                 color if color == Color::from_rgb_u8(50, 221, 160) => counts.green_dots += 1,
                 color if color == Color::from_rgb_u8(124, 77, 255) => counts.purple_dots += 1,
+                color if color == Color::from_rgb_u8(52, 120, 255) => counts.blue_dots += 1,
                 _ => {}
             }
         }
@@ -13789,16 +14643,16 @@ mod tests {
     use super::{
         AlbumEmbeddedCheck, ArtistAlbumEmbedTarget, CachedPixels, MaximizeGuard,
         PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow,
-        add_embedded_thumbnail_decision, album_embedded_check, album_embedded_check_cache,
-        album_embedded_check_key, apply_ui_preferences, artist_album_card_display_title,
-        artist_art_candidate_source, artist_art_query_sources,
+        WorkspaceLayout, add_embedded_thumbnail_decision, album_embedded_check,
+        album_embedded_check_cache, album_embedded_check_key, apply_ui_preferences,
+        artist_album_card_display_title, artist_art_candidate_source, artist_art_query_sources,
         artist_compilation_thumb_repair_plan, artist_fallback_embedded_check_key,
         artist_fallback_embedded_track_paths, artist_is_secondary_credit,
         artist_overview_is_fully_complete, artist_overview_legend_counts,
         artist_overview_release_banners, artist_overview_ui_model, automatic_backup_is_due,
         backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
         cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail,
-        circular_artist_art_png, clear_rendered_preview_for_adjustment,
+        canonical_webp_status, circular_artist_art_png, clear_rendered_preview_for_adjustment,
         compilation_artwork_context, compilation_thumb_repair_plan,
         completed_compilation_track_needs_attention, disable_embedded_thumbnail_preview,
         edit_existing_cover, embedded_artwork_footer, embedded_artwork_size_comparison,
@@ -13811,16 +14665,19 @@ mod tests {
         musicbrainz_failed_url, musicbrainz_ui_rows_equal, normalize_backup_schedule,
         normalize_status_bar_intensity, normalize_status_bar_position, normalize_status_bar_size,
         plan_artist_album_embeds, preload_scaled_image, preload_scaled_image_bytes,
-        prepare_embedded_thumbnail_preview, preview_compilation_track, preview_image_source_paths,
-        preview_musicbrainz_cover, preview_musicbrainz_existing, preview_request_is_current,
-        primary_credit_biography_artist, raw_image_cache, require_active_compilation_write_target,
-        restore_request_from_args, safe_reset_config, selected_artist_album_embed_sources,
-        selected_artwork_preview_type, selected_artwork_write_label, split_values,
-        synchronize_fallback_album, trim_large_raw_image_cache, write_artist_art_file,
+        prepare_embedded_thumbnail_preview, preserve_filter_state, preview_compilation_track,
+        preview_image_source_paths, preview_musicbrainz_cover, preview_musicbrainz_existing,
+        preview_request_is_current, primary_credit_biography_artist, raw_image_cache,
+        require_active_compilation_write_target, restore_request_from_args, safe_reset_config,
+        selected_artist_album_embed_sources, selected_artwork_preview_type,
+        selected_artwork_write_label, split_values, synchronize_fallback_album,
+        trim_large_raw_image_cache, write_artist_art_file,
     };
     use serde_json::json;
     use slint::{Color, Model};
-    use splined_core::application::{ApplicationState, LaunchMode, LibraryView, RunPhase};
+    use splined_core::application::{
+        ApplicationState, LaunchMode, LibraryView, RunPhase, StatusFilter,
+    };
     use splined_core::config::{Config, Mode};
     use splined_core::media_database::{
         MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, media_snapshot,
@@ -15636,6 +16493,105 @@ mod tests {
     }
 
     #[test]
+    fn direct_write_from_webp_preserves_animation_and_creates_jpeg_still() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let library = directory.path().join("music");
+        let album_directory = library.join("Artist").join("Album");
+        fs::create_dir_all(&album_directory).unwrap();
+        fs::write(album_directory.join("01.mp3"), []).unwrap();
+        let webp = album_directory.join("cover.webp");
+        image::RgbaImage::from_pixel(96, 96, image::Rgba([42, 90, 170, 255]))
+            .save_with_format(&webp, image::ImageFormat::WebP)
+            .unwrap();
+        let original = fs::read(&webp).unwrap();
+        let mut config = Config {
+            mode: Mode::Write,
+            ..Config::default()
+        };
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.scan_library_dir = config.library.music_library.clone();
+        config.scan.cache_dir = directory
+            .path()
+            .join("database")
+            .to_string_lossy()
+            .into_owned();
+        config.scan.temporary_cache_dir = directory
+            .path()
+            .join("temporary")
+            .to_string_lossy()
+            .into_owned();
+        let initial = media_snapshot(&config, false).unwrap();
+        let connection = rusqlite::Connection::open(&initial.database_path).unwrap();
+        connection
+            .execute(
+                "UPDATE albums SET musicbrainz_albumid = 'artist-album-release-id'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let mut snapshot = media_snapshot(&config, false).unwrap();
+        snapshot.albums[0].local_artwork_files = vec![webp.to_string_lossy().into_owned()];
+        snapshot.albums[0].cover_name = "cover.webp".to_string();
+        snapshot.albums[0].cover_path = webp.to_string_lossy().into_owned();
+        assert_eq!(canonical_webp_status(&snapshot.albums[0]), (true, true));
+        let key = snapshot.albums[0].album_key.clone();
+        let mut app = ApplicationState::new(config, snapshot).unwrap();
+        app.library.focused_album_key = Some(key);
+        app.current_artist = "Artist".to_string();
+        app.current_album = "Album".to_string();
+        app.current_album_path = album_directory.to_string_lossy().into_owned();
+        app.current_cover_path = webp.to_string_lossy().into_owned();
+        let state = Arc::new(Mutex::new(app));
+
+        edit_existing_cover(&state, true, None).unwrap();
+
+        let jpg = album_directory.join("cover.jpg");
+        assert!(jpg.is_file());
+        assert_eq!(
+            image::ImageFormat::from_path(&jpg).unwrap(),
+            image::ImageFormat::Jpeg
+        );
+        assert_eq!(fs::read(&webp).unwrap(), original);
+        let app = state.lock().unwrap();
+        assert_eq!(app.current_cover_path, jpg.to_string_lossy());
+        let album = &app.library.albums[0].snapshot;
+        assert_eq!(canonical_webp_status(album), (true, false));
+    }
+
+    #[test]
+    fn settings_rebuild_keeps_locked_filter_authority() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut previous = ApplicationState::new(Config::default(), snapshot.clone()).unwrap();
+        previous.media_filter_locked = true;
+        previous.candidate_filter_locked = true;
+        previous.library.set_artist_filter("Brenton Wood");
+        previous.library.set_album_filter("Oogum Boogum");
+        previous.library.set_status_filter(StatusFilter::Processed);
+        previous
+            .candidate_included_types
+            .insert("FrontCover".to_string());
+        let mut replacement = ApplicationState::new(Config::default(), snapshot).unwrap();
+        preserve_filter_state(&mut replacement, &previous);
+        assert!(replacement.media_filter_locked);
+        assert!(replacement.candidate_filter_locked);
+        assert_eq!(replacement.library.artist_filter, "Brenton Wood");
+        assert_eq!(replacement.library.album_filter, "Oogum Boogum");
+        assert!(
+            replacement
+                .library
+                .status_filters
+                .contains(&StatusFilter::Processed)
+        );
+        assert!(replacement.candidate_included_types.contains("FrontCover"));
+    }
+
+    #[test]
     fn fallback_album_focus_never_projects_folder_cover_art() {
         let directory = tempfile::TempDir::new().unwrap();
         let library = directory.path().join("music");
@@ -15990,6 +16946,132 @@ mod tests {
         };
         apply_ui_preferences(&mut state, &write_preference);
         assert_eq!(state.launch_mode, LaunchMode::Read);
+    }
+
+    #[test]
+    fn restored_interface_rehydrates_locked_filters_palette_and_pane_sizes() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        let mut preferences = UiPreferences {
+            appearance: "Chalk".to_string(),
+            media_filter_locked: true,
+            candidate_filter_locked: true,
+            banner_sync_frame_letters: true,
+            banner_random_harmony: true,
+            wheel_hue_shift_degrees: 42,
+            wheel_brightness_percent: 130,
+            candidate_excluded_types: vec!["BackCover".to_string()],
+            candidate_included_sources: vec!["Navidrome".to_string()],
+            media_pane_width: 390,
+            media_pane_expanded_width: 390,
+            artwork_pane_width: 510,
+            artwork_pane_expanded_width: 510,
+            ..UiPreferences::default()
+        };
+        preferences.banner_theme_baseline_styles = preferences.banner_theme_styles.clone();
+        preferences.album_frame_theme_baseline_styles =
+            preferences.album_frame_theme_styles.clone();
+        preferences.banner_theme_styles[0].background = "#123ABC".to_string();
+        preferences.album_frame_theme_styles[0].color = "#20BFA0".to_string();
+        preferences.adjustment_presets[1].name = "Bright".to_string();
+        preferences.adjustment_presets[1].values = [1, 2, 3, 4, 5, 6, 7, 8];
+        preferences.adjustment_presets[1].saved = true;
+
+        apply_ui_preferences(&mut state, &preferences);
+        let layout = WorkspaceLayout::from_preferences(&preferences);
+        assert!(state.media_filter_locked);
+        assert!(state.candidate_filter_locked);
+        assert!(state.banner_sync_frame_letters);
+        assert!(state.banner_random_harmony);
+        assert_eq!(state.wheel_hue_shift_degrees, 42);
+        assert_eq!(state.wheel_brightness_percent, 130);
+        assert!(state.candidate_excluded_types.contains("BackCover"));
+        assert!(state.candidate_included_sources.contains("Navidrome"));
+        assert_eq!(state.appearance_mode, "Chalk");
+        assert_eq!(state.adjustment_presets[1].name, "Bright");
+        assert_eq!(state.banner_theme_styles[0].background, "#123ABC");
+        assert_eq!(state.banner_theme_baseline_styles[0].background, "#3478FF");
+        assert_eq!(state.album_frame_theme_styles[0].color, "#20BFA0");
+        assert_eq!(layout.media_pane_width, 390);
+        assert_eq!(layout.artwork_pane_width, 510);
+
+        preferences.banner_theme_baseline_styles.clear();
+        preferences.album_frame_theme_baseline_styles.clear();
+        apply_ui_preferences(&mut state, &preferences);
+        assert_eq!(state.banner_theme_baseline_styles[0].background, "#123ABC");
+        assert_eq!(state.album_frame_theme_baseline_styles[0].color, "#20BFA0");
+
+        preferences.candidate_filter_locked = false;
+        apply_ui_preferences(&mut state, &preferences);
+        assert!(state.candidate_excluded_types.is_empty());
+    }
+
+    #[test]
+    fn banner_color_sync_links_frame_and_letters_only_when_enabled() {
+        let mut style = splined_core::settings::default_banner_theme_styles().remove(0);
+        let original_background = style.background.clone();
+        assert!(super::set_banner_theme_color(
+            &mut style,
+            "frame",
+            "#D6A42A".to_string(),
+            true,
+        ));
+        assert_eq!(style.background, original_background);
+        assert_eq!(style.frame, "#D6A42A");
+        assert_eq!(style.letters, "#D6A42A");
+        assert!(super::set_banner_theme_color(
+            &mut style,
+            "background",
+            "#C38412".to_string(),
+            true,
+        ));
+        assert_eq!(style.background, "#C38412");
+        assert_eq!(style.frame, "#C38412");
+        assert_eq!(style.letters, "#C38412");
+        assert!(super::set_banner_theme_color(
+            &mut style,
+            "letters",
+            "#3178B1".to_string(),
+            false,
+        ));
+        assert_eq!(style.frame, "#C38412");
+        assert_eq!(style.letters, "#3178B1");
+    }
+
+    #[test]
+    fn wheel_has_warm_gold_and_rejects_outside_clicks() {
+        let _base = super::theme_wheel_image(0, 100);
+        let _cached = super::theme_wheel_image(0, 100);
+        let _shifted = super::theme_wheel_image(180, 70);
+        let gold = super::wheel_rgb(0.19, 0.39, 0.0, "#000000", 0, 100);
+        let [red, green, blue] = super::rgb_from_hex(&gold);
+        assert!(red > 220 && green > 110 && blue < 60, "{gold}");
+        assert!(!super::wheel_contains(0.02, 0.02));
+        assert_eq!(
+            super::wheel_rgb(0.02, 0.02, 0.0, "#123ABC", 0, 100),
+            "#123ABC"
+        );
+        let dark = super::wheel_rgb(0.19, 0.39, 0.0, "#000000", 0, 50);
+        assert!(super::rgb_from_hex(&dark)[0] < red);
+        let rotated = super::wheel_rgb(0.19, 0.39, 0.0, "#000000", 180, 100);
+        assert_ne!(rotated, gold);
+    }
+
+    #[test]
+    fn random_banner_harmony_is_coordinated_and_reproducible() {
+        let first = super::banner_harmony("#D8A321", 42, false, false);
+        let second = super::banner_harmony("#D8A321", 42, false, false);
+        assert_eq!(first, second);
+        assert_ne!(first.0, first.1);
+        assert_ne!(first.1, first.2);
+        let synced = super::banner_harmony("#D8A321", 43, false, true);
+        assert_eq!(synced.1, synced.2);
     }
 }
 

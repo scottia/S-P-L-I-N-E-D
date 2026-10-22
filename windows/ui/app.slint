@@ -4,9 +4,9 @@ export struct UiLibraryRow { key: string, primary: string, secondary: string, st
 export struct UiAlbumStatusBullet { color: color, tip: string }
 export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color }
 export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
-export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color }
-export struct UiAlbumFrameThemeRow { key: string, name: string, color: color }
-export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
+export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color, at-baseline: bool }
+export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
+export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
 export struct UiSimilarArtistRow { name: string, artwork: image, available: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
 export struct UiCompilationReportRow { album-key: string, album-title: string, path: string, file-name: string, status: string, album-header: bool, expanded: bool }
@@ -962,8 +962,17 @@ export component AppWindow inherits Window {
     in property <[UiAdjustmentPresetRow]> custom-adjustment-presets;
     in property <[UiBannerThemeRow]> theme-banner-rows;
     in property <[UiAlbumFrameThemeRow]> theme-frame-rows;
+    in-out property <bool> theme-banner-sync-frame-letters: false;
+    in-out property <bool> theme-banner-random-harmony: false;
     in-out property <string> theme-color-target: "compiled.background";
     in property <color> theme-selected-color: #3478ff;
+    in property <string> theme-selected-hex: "#3478FF";
+    in property <image> theme-wheel-image;
+    in property <int> theme-wheel-hue-shift: 0;
+    in property <int> theme-wheel-brightness: 100;
+    in property <bool> theme-wheel-marker-visible: false;
+    in property <float> theme-wheel-marker-x: 0.5;
+    in property <float> theme-wheel-marker-y: 0.5;
     in-out property <int> preset-confirm-index: -1;
     in-out property <int> settings-preview-preset-index: 0;
     in-out property <bool> enhancement-help-visible: false;
@@ -1022,6 +1031,8 @@ export component AppWindow inherits Window {
     in property <bool> artist-overview-show-all: false;
     in property <image> original-preview;
     in property <image> current-preview;
+    in property <image> animated-webp-frame;
+    in property <bool> animated-webp-active: false;
     in property <image> settings-original-preview;
     in property <image> settings-current-preview;
     in property <string> selected-artwork-source;
@@ -1046,6 +1057,7 @@ export component AppWindow inherits Window {
     in property <bool> selected-artwork-comp: false;
     in property <string> selected-artwork-write-label: "WRITE Cover";
     in property <string> selected-artwork-embedded-info;
+    in property <bool> selected-artwork-webp-needs-still: false;
     in property <bool> selected-artwork-embed-available: false;
     in property <bool> artist-artwork-mode: false;
     in property <bool> selected-artwork-artist-overview: false;
@@ -1169,6 +1181,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-file-formats: "jpeg, png, webp";
     in-out property <string> settings-file-name: "cover";
     in-out property <bool> settings-preserve-file: true;
+    in-out property <bool> settings-animate-webp-preview: false;
     in-out property <bool> settings-square: true;
     in-out property <string> settings-square-mode: "Crop";
     in-out property <string> settings-square-round-to: "16";
@@ -1293,7 +1306,7 @@ export component AppWindow inherits Window {
     callback apply-built-in-filter(int); callback adjustment-preset-pressed(int); callback adjustment-preset-confirmed(int, string);
     callback adjustment-preset-name-changed(int, string); callback adjustment-preset-save(int); callback adjustment-preset-apply(int);
     callback settings-preset-select(int);
-    callback theme-color-target-changed(string); callback theme-color-picked(float, float, float); callback banner-theme-name-changed(string, string);
+    callback theme-color-target-changed(string); callback theme-color-picked(float, float, float, bool); callback theme-wheel-range-changed(string, float, bool); callback banner-theme-name-changed(string, string); callback banner-theme-sync-changed(bool); callback banner-theme-random-changed(bool); callback theme-style-reset(string);
     callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
     callback prepare-embedded-thumbnail();
     callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory();
@@ -1760,7 +1773,7 @@ export component AppWindow inherits Window {
                                                         }
                                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                                     }
-                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 282px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
+                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 315px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
                                                         VerticalLayout { padding: 9px; spacing: 0px;
                                                             Text { text: "Album Status Key"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; height: 21px; }
                                                             Rectangle { height: 7px; background: transparent; }
@@ -1777,6 +1790,8 @@ export component AppWindow inherits Window {
                                                                     Text { text: "Artist's tracks complete"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
                                                                     ArtistLegendCountRow { label: "●  Purple"; label-color: AppTheme.violet; count: root.artist-overview-legend-counts.purple-dots; }
                                                                     Text { text: "Embedded art needs attention"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    ArtistLegendCountRow { label: "●  Blue"; label-color: AppTheme.blue; count: root.artist-overview-legend-counts.blue-dots; }
+                                                                    Text { text: "cover.webp present; review the still cover"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
                                                                     Text { text: "ALBUM CARD FRAMES"; color: AppTheme.secondary-foreground; font-size: 13px; font-weight: 800; height: 20px; }
@@ -2103,7 +2118,7 @@ export component AppWindow inherits Window {
                                         y: (parent.height - self.height) / 2;
                                         background: root.artwork-placeholder-visible ? transparent : #01050a;
                                         visible: !root.artwork-placeholder-visible && !root.selected-artwork-artist-overview;
-                                        Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
+                                        Image { source: root.animated-webp-active ? root.animated-webp-frame : root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
                                     }
                                     if root.selected-artwork-artist-overview && root.selected-artwork-artist-has-art: Image {
                                         source: root.selected-artwork-artist-art;
@@ -2128,10 +2143,10 @@ export component AppWindow inherits Window {
                                     if root.selected-artwork-is-sample && !root.artwork-placeholder-visible && !root.selected-artwork-artist-overview: Rectangle { x: (parent.width - 150px) / 2; y: 12px; width: 150px; height: 38px; border-radius: 6px; background: #d51d21;
                                         Text { text: "SAMPLE"; color: #ffffff; font-size: 21px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
                                     }
-                                    if root.selected-artwork-embed-available: Rectangle {
+                                    if root.selected-artwork-embed-available && !root.animated-webp-active: Rectangle {
                                         x: 8px; y: parent.height - 33px; width: parent.width - 16px; height: 25px;
                                         border-radius: 5px; background: #ed081221;
-                                        Text { text: root.selected-artwork-embedded-info; color: AppTheme.yellow; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                        Text { text: root.selected-artwork-embedded-info; color: root.selected-artwork-webp-needs-still ? AppTheme.blue : AppTheme.yellow; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                     }
                                 }
                                 HorizontalLayout { height: 38px; spacing: 6px;
@@ -2189,6 +2204,7 @@ export component AppWindow inherits Window {
                                     if !root.selected-artwork-size-comparison: Text { row: 2; col: 2; text: root.selected-artwork-embedded-dimensions; color: root.selected-artwork-embedded-dimensions-color; font-size: 13px; overflow: elide; }
                                     if !root.selected-artwork-size-comparison: Text { row: 2; col: 3; text: root.selected-artwork-embedded-size; color: AppTheme.foreground; font-size: 13px; overflow: elide; }
                                 }
+                                if root.selected-artwork-webp-needs-still && !root.animated-webp-active: Text { text: "cover.webp → WRITE Cover creates cover.jpg; WebP stays."; color: AppTheme.blue; font-size: 12px; height: 17px; overflow: elide; }
                             }
                         }
                     }
@@ -2415,7 +2431,7 @@ export component AppWindow inherits Window {
                     VerticalLayout { padding: 10px; spacing: 7px;
                         HorizontalLayout { height: 32px; spacing: 8px;
                             Heading { text: root.settings-section == "Artwork" ? "Artwork & Embedding" : "Enhancement"; color: AppTheme.violet; horizontal-stretch: 1; }
-                            NeonAction { width: 72px; height: 30px; label: "Save"; tone: root.settings-section-dirty ? "active" : "cyan"; clicked => { root.save-settings(); if (root.settings-section == "Enhancement") { root.save-interface-settings(); } } }
+                            NeonAction { width: 72px; height: 30px; label: "Save"; tone: root.settings-section-dirty ? "active" : "cyan"; clicked => root.save-settings(); }
                         }
                         Text { text: root.settings-section == "Artwork" ? "Set the rules for saved cover.* / artist.* files and embedded track thumbnails." : "Set candidate resolution goals and preview the default image adjustments."; color: AppTheme.secondary-foreground; font-size: 14px; height: 36px; wrap: word-wrap; }
                         ScrollView { vertical-stretch: 1;
@@ -2427,6 +2443,8 @@ export component AppWindow inherits Window {
                                 SettingField { label: "Formats"; value <=> root.settings-file-formats; hint: "jpeg, png, webp"; }
                                 SettingToggle { label: "Preserve Existing cover.* / artist.*"; value <=> root.settings-preserve-file; }
                                 Text { text: "On keeps existing art and uses a numbered filename. Off replaces the matching cover or Artist Art."; color: AppTheme.secondary-foreground; font-size: 13px; height: 30px; wrap: word-wrap; }
+                                SettingToggle { label: "Play Animated cover.webp Preview"; value <=> root.settings-animate-webp-preview; }
+                                Text { text: "On plays cover.webp in Selected Artwork. WRITE Cover creates a JPEG still and preserves the WebP."; color: AppTheme.secondary-foreground; font-size: 13px; height: 30px; wrap: word-wrap; }
                                 SettingToggle { label: "Square Artwork"; value <=> root.settings-square; }
                                 HorizontalLayout { height: 36px; spacing: 8px;
                                     Label { text: "Square Mode"; width: 230px; }
@@ -2444,25 +2462,76 @@ export component AppWindow inherits Window {
                                 }
                                 }
                                 if root.settings-section == "Enhancement": VerticalLayout { spacing: 5px;
-                                SettingsHelpTip { summary: "What do these resolution values mean?"; detail: "Minimum, Ideal, Maximum, and Ladder classify candidate image quality. Upscale below Ideal permits an optional larger preview, bounded by Max upscale percent. Existing native art above Ideal is preserved instead of being reduced."; }
-                                Heading { text: "Resolution Range"; height: 27px; }
-                                SettingField { label: "Minimum"; value <=> root.settings-range-min; hint: "1200"; }
-                                SettingField { label: "Ideal"; value <=> root.settings-range-ideal; hint: "1800"; }
-                                SettingField { label: "Maximum"; value <=> root.settings-range-max; hint: "2400"; }
-                                SettingField { label: "Ladder"; value <=> root.settings-range-ladder; hint: "3600"; }
-                                SettingToggle { label: "Upscale Below Ideal"; value <=> root.settings-upscale-below-ideal; }
-                                SettingField { label: "Max Upscale Percent"; value <=> root.settings-upscale-max-percent; hint: "100–800"; }
-                                SettingToggle { label: "Enhancement Upscale Defaults"; value <=> root.settings-upscale-adaptive; }
-                                SettingToggle { label: "Evaluate Final Image"; value <=> root.settings-evaluate-final; }
-                                Heading { text: "Artwork Slider Filtering"; height: 27px; color: AppTheme.cyan; }
-                                SettingsHelpTip { summary: "How do saved slider filters work?"; detail: "Built-in filters are ready-to-preview starting points. Default and Custom A–D capture all eight slider values. Select a radio circle to load that slot into the comparison preview below; adjust sliders and Save Current to replace its values. Rename a slot here, then Save Enhancement. The quick button in Upscale / Enhance asks before Overwrite. None of these buttons writes artwork."; }
-                                for preset in root.custom-adjustment-presets: HorizontalLayout { height: 38px; spacing: 7px;
-                                    Rectangle { width: 28px; height: 28px; background: transparent; Text { text: root.settings-preview-preset-index == preset.index ? "◉" : "○"; color: AppTheme.cyan; font-size: 23px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { enabled: preset.saved; mouse-cursor: pointer; clicked => { root.settings-preview-preset-index = preset.index; root.settings-preset-select(preset.index); } } }
-                                    Text { text: "Custom " + (preset.index == 1 ? "A" : (preset.index == 2 ? "B" : (preset.index == 3 ? "C" : "D"))); color: AppTheme.secondary-foreground; width: 78px; vertical-alignment: center; }
-                                    LineEdit { text: preset.name; width: 150px; edited(value) => root.adjustment-preset-name-changed(preset.index, value); }
-                                    Text { text: preset.summary; color: AppTheme.secondary-foreground; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
-                                    NeonAction { label: "Save Current"; width: 104px; height: 28px; label-font-size: 12px; clicked => root.adjustment-preset-save(preset.index); }
-                                    NeonAction { label: "Apply"; width: 62px; height: 28px; label-font-size: 12px; enabled: preset.saved; clicked => root.adjustment-preset-apply(preset.index); }
+                                Heading { text: "Theme Enhancements"; height: 28px; color: AppTheme.cyan; }
+                                SettingsHelpTip { summary: "How does the OLED Chroma Wheel work?"; detail: "Choose a Banner or Album Card Frame swatch, then click or drag on the wheel. The ring marks your last color. Hue Range rotates the wheel's visible spectrum; Brightness changes its dark/light range. Synchronize Banner Frame & Lettering links those colors. Random Harmony uses the chosen hue to preview a coordinated background, frame, and lettering for the selected Banner only. Save Enhancement to keep changes. The round Baseline control restores one row to its first saved palette."; }
+                                NeonPanel { height: 590px;
+                                    HorizontalLayout { padding: 8px; spacing: 12px;
+                                        VerticalLayout { width: 366px; spacing: 7px;
+                                            Text { text: "OLED Chroma Wheel"; color: AppTheme.cyan; font-size: 15px; font-weight: 800; height: 25px; }
+                                            wheel := Rectangle { width: 340px; height: 340px; border-radius: 170px; clip: true; background: AppTheme.image-surface;
+                                                Image { source: root.theme-wheel-image; width: parent.width; height: parent.height; image-fit: contain; }
+                                                Rectangle { visible: root.theme-wheel-marker-visible; x: root.theme-wheel-marker-x * wheel.width - 11px; y: root.theme-wheel-marker-y * wheel.height - 11px; width: 22px; height: 22px; border-radius: 11px; border-width: 2px; border-color: #111827; background: transparent;
+                                                    Rectangle { x: 3px; y: 3px; width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: #ffffff; background: transparent; }
+                                                }
+                                                TouchArea { mouse-cursor: pointer;
+                                                    clicked => root.theme-color-picked(self.mouse-x / wheel.width, self.mouse-y / wheel.height, 0, false);
+                                                    moved => { if (self.pressed) { root.theme-color-picked(self.mouse-x / wheel.width, self.mouse-y / wheel.height, 0, true); } }
+                                                    scroll-event(event) => { root.theme-color-picked(self.mouse-x / wheel.width, self.mouse-y / wheel.height, event.delta-y / 1px, false); accept }
+                                                }
+                                            }
+                                            HorizontalLayout { height: 25px; spacing: 7px;
+                                                Rectangle { width: 28px; height: 23px; border-width: 1px; border-color: AppTheme.border; background: root.theme-selected-color; border-radius: 4px; }
+                                                Text { text: root.theme-color-target + "  " + root.theme-selected-hex; color: AppTheme.secondary-foreground; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                                            }
+                                            Text { text: "Hue Range · " + root.theme-wheel-hue-shift + "°"; color: AppTheme.secondary-foreground; font-size: 12px; height: 18px; }
+                                            hue-track := Rectangle { width: 340px; height: 24px; border-radius: 4px; border-width: 1px; border-color: AppTheme.border; background: @linear-gradient(90deg, #f13342, #ee8e2f, #f4d64b, #34c774, #26cad9, #4374eb, #bd49e8, #f13342);
+                                                Rectangle { x: root.theme-wheel-hue-shift * (hue-track.width - 5px) / 359; width: 5px; height: parent.height; background: #ffffff; border-width: 1px; border-color: #131923; }
+                                                TouchArea { mouse-cursor: pointer;
+                                                    clicked => root.theme-wheel-range-changed("hue", max(0, min(1, self.mouse-x / hue-track.width)), false);
+                                                    moved => { if (self.pressed) { root.theme-wheel-range-changed("hue", max(0, min(1, self.mouse-x / hue-track.width)), true); } }
+                                                }
+                                            }
+                                            Text { text: "Brightness · " + root.theme-wheel-brightness + "%"; color: AppTheme.secondary-foreground; font-size: 12px; height: 18px; }
+                                            brightness-track := Rectangle { width: 340px; height: 24px; border-radius: 4px; border-width: 1px; border-color: AppTheme.border; background: @linear-gradient(90deg, #101216, #56606a, root.theme-selected-color, #ffffff);
+                                                Rectangle { x: (root.theme-wheel-brightness - 30) * (brightness-track.width - 5px) / 140; width: 5px; height: parent.height; background: #ffffff; border-width: 1px; border-color: #131923; }
+                                                TouchArea { mouse-cursor: pointer;
+                                                    clicked => root.theme-wheel-range-changed("brightness", max(0, min(1, self.mouse-x / brightness-track.width)), false);
+                                                    moved => { if (self.pressed) { root.theme-wheel-range-changed("brightness", max(0, min(1, self.mouse-x / brightness-track.width)), true); } }
+                                                }
+                                            }
+                                        }
+                                        VerticalLayout { horizontal-stretch: 1; spacing: 6px;
+                                                Text { text: "Banners · Rename And Edit Each Color"; color: AppTheme.foreground; font-size: 14px; font-weight: 800; height: 24px; }
+                                                RadioToggle { label: "Synchronize Banner Frame & Lettering"; checked <=> root.theme-banner-sync-frame-letters; height: 38px; toggled(value) => root.banner-theme-sync-changed(value); }
+                                                RadioToggle { label: "Random Harmony · Selected Banner"; checked <=> root.theme-banner-random-harmony; height: 38px; toggled(value) => root.banner-theme-random-changed(value); }
+                                                HorizontalLayout { height: 20px; spacing: 7px;
+                                                    Text { text: "Name (10 max)"; width: 130px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                    Text { text: "Background"; width: 100px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                    Text { text: "Frame"; width: 70px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                    Text { text: "Letters"; width: 70px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                    Text { text: "Baseline"; width: 84px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                }
+                                                for style in root.theme-banner-rows: HorizontalLayout { height: 38px; spacing: 7px;
+                                                    LineEdit { text: style.name; width: 130px; edited(value) => root.banner-theme-name-changed(style.key, value); }
+                                                    Rectangle { width: 100px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".background" ? AppTheme.cyan : AppTheme.border; background: style.background; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".background"); } }
+                                                    Rectangle { width: 70px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".frame" ? AppTheme.cyan : AppTheme.border; background: style.frame; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".frame"); } }
+                                                    Rectangle { width: 70px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".letters" ? AppTheme.cyan : AppTheme.border; background: style.letters; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".letters"); } }
+                                                    Rectangle { width: 84px; height: 28px; background: transparent;
+                                                        HorizontalLayout { spacing: 3px; Text { text: style.at-baseline ? "◉" : "○"; color: style.at-baseline ? AppTheme.green : AppTheme.cyan; width: 27px; font-size: 23px; vertical-alignment: center; } Text { text: "Reset"; color: AppTheme.secondary-foreground; font-size: 12px; vertical-alignment: center; } }
+                                                        TouchArea { mouse-cursor: pointer; clicked => root.theme-style-reset(style.key); }
+                                                    }
+                                                }
+                                                Text { text: "Album Card Frames"; color: AppTheme.foreground; font-size: 14px; font-weight: 800; height: 24px; }
+                                                for frame in root.theme-frame-rows: HorizontalLayout { height: 35px; spacing: 7px;
+                                                    Text { text: frame.name; color: AppTheme.secondary-foreground; width: 130px; vertical-alignment: center; }
+                                                    Rectangle { width: 100px; height: 27px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == "frame." + frame.key ? AppTheme.cyan : AppTheme.border; background: frame.color; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed("frame." + frame.key); } }
+                                                    Rectangle { width: 84px; height: 27px; background: transparent;
+                                                        HorizontalLayout { spacing: 3px; Text { text: frame.at-baseline ? "◉" : "○"; color: frame.at-baseline ? AppTheme.green : AppTheme.cyan; width: 27px; font-size: 23px; vertical-alignment: center; } Text { text: "Reset"; color: AppTheme.secondary-foreground; font-size: 12px; vertical-alignment: center; } }
+                                                        TouchArea { mouse-cursor: pointer; clicked => root.theme-style-reset("frame." + frame.key); }
+                                                    }
+                                                }
+                                        }
+                                    }
                                 }
                                 Heading { text: "Enhancement Defaults"; height: 27px; }
                                 HorizontalLayout { height: 38px; spacing: 7px;
@@ -2474,6 +2543,16 @@ export component AppWindow inherits Window {
                                     NeonAction { label: "Apply"; width: 62px; height: 28px; label-font-size: 12px; enabled: root.default-adjustment-preset.saved; clicked => root.adjustment-preset-apply(0); }
                                 }
                                 NeonAction { label: "Use Suggested Slider Values"; width: 220px; height: 28px; label-font-size: 12px; clicked => root.apply-enhancement-defaults(); }
+                                Heading { text: "Artwork Slider Filtering"; height: 27px; color: AppTheme.cyan; }
+                                SettingsHelpTip { summary: "How do saved slider filters work?"; detail: "Built-in filters are ready-to-preview starting points. Default and Custom A–D capture all eight slider values. Select a radio circle to load that slot into the comparison preview below; adjust sliders and Save Current to replace its values. Rename a slot here, then Save Enhancement. The quick button in Upscale / Enhance asks before Overwrite. None of these buttons writes artwork."; }
+                                for preset in root.custom-adjustment-presets: HorizontalLayout { height: 38px; spacing: 7px;
+                                    Rectangle { width: 28px; height: 28px; background: transparent; Text { text: root.settings-preview-preset-index == preset.index ? "◉" : "○"; color: AppTheme.cyan; font-size: 23px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { enabled: preset.saved; mouse-cursor: pointer; clicked => { root.settings-preview-preset-index = preset.index; root.settings-preset-select(preset.index); } } }
+                                    Text { text: "Custom " + (preset.index == 1 ? "A" : (preset.index == 2 ? "B" : (preset.index == 3 ? "C" : "D"))); color: AppTheme.secondary-foreground; width: 78px; vertical-alignment: center; }
+                                    LineEdit { text: preset.name; width: 150px; edited(value) => root.adjustment-preset-name-changed(preset.index, value); }
+                                    Text { text: preset.summary; color: AppTheme.secondary-foreground; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                                    NeonAction { label: "Save Current"; width: 104px; height: 28px; label-font-size: 12px; clicked => root.adjustment-preset-save(preset.index); }
+                                    NeonAction { label: "Apply"; width: 62px; height: 28px; label-font-size: 12px; enabled: preset.saved; clicked => root.adjustment-preset-apply(preset.index); }
+                                }
                                 NeonPanel { height: 220px; clip: true;
                                     HorizontalLayout { spacing: 0px;
                                         Rectangle { horizontal-stretch: 1; background: #020913; clip: true;
@@ -2491,7 +2570,7 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
-                                ScrollView { height: 176px;
+                                ScrollView { height: 116px;
                                     HorizontalLayout { spacing: 7px;
                                         for adjustment in root.adjustment-rows: AdjustmentTile {
                                             width: 138px;
@@ -2512,48 +2591,16 @@ export component AppWindow inherits Window {
                                 }
                                 if root.settings-enhancement-changed && root.settings-preview-preset-index == 0: Text { text: "Default Enhancement Values Changed; Use Suggested Slider Values to Return to the Safe Starting Point."; color: AppTheme.yellow; font-size: 14px; wrap: word-wrap; height: 42px; }
                                 SettingsHelpTip { summary: "Do adjustment controls write artwork now?"; detail: "No. The current/adjusted preview and the eight image controls change enhancement defaults. Artwork files are changed only by a later explicit WRITE or EMBED action in the workspace."; }
-                                Heading { text: "Theme Enhancements"; height: 28px; color: AppTheme.cyan; }
-                                SettingsHelpTip { summary: "How does the OLED Chroma Wheel work?"; detail: "Choose a Background, Frame, Letter, or Album Card Frame swatch on the right, then click the wheel to choose a hue. Scroll over the wheel for finer shade adjustments. Custom colors follow the active Light, Dark, or Chalk theme. Banner names are limited to 10 characters. Save Enhancement to keep these changes."; }
-                                NeonPanel { height: 355px;
-                                    HorizontalLayout { padding: 8px; spacing: 12px;
-                                        VerticalLayout { width: 258px; spacing: 7px;
-                                            Text { text: "OLED Chroma Wheel"; color: AppTheme.cyan; font-size: 15px; font-weight: 800; height: 25px; }
-                                            wheel := Rectangle { width: 244px; height: 244px; border-radius: 122px; clip: true; background: AppTheme.image-surface;
-                                                Image { source: @image-url("../gui/oled-chroma-wheel.png"); width: parent.width; height: parent.height; image-fit: contain; }
-                                                TouchArea { mouse-cursor: pointer;
-                                                    clicked => root.theme-color-picked(self.mouse-x / wheel.width, self.mouse-y / wheel.height, 0);
-                                                    scroll-event(event) => { root.theme-color-picked(self.mouse-x / wheel.width, self.mouse-y / wheel.height, event.delta-y / 1px); accept }
-                                                }
-                                            }
-                                            HorizontalLayout { height: 25px; spacing: 7px;
-                                                Rectangle { width: 28px; height: 23px; border-width: 1px; border-color: AppTheme.border; background: root.theme-selected-color; border-radius: 4px; }
-                                                Text { text: root.theme-color-target; color: AppTheme.secondary-foreground; font-size: 12px; vertical-alignment: center; overflow: elide; }
-                                            }
-                                        }
-                                        ScrollView { horizontal-stretch: 1;
-                                            VerticalLayout { spacing: 6px;
-                                                Text { text: "Banners · Rename And Edit Each Color"; color: AppTheme.foreground; font-size: 14px; font-weight: 800; height: 24px; }
-                                                HorizontalLayout { height: 20px; spacing: 7px;
-                                                    Text { text: "Name (10 max)"; width: 130px; color: AppTheme.secondary-foreground; font-size: 12px; }
-                                                    Text { text: "Background"; width: 100px; color: AppTheme.secondary-foreground; font-size: 12px; }
-                                                    Text { text: "Frame"; width: 70px; color: AppTheme.secondary-foreground; font-size: 12px; }
-                                                    Text { text: "Letters"; width: 70px; color: AppTheme.secondary-foreground; font-size: 12px; }
-                                                }
-                                                for style in root.theme-banner-rows: HorizontalLayout { height: 38px; spacing: 7px;
-                                                    LineEdit { text: style.name; width: 130px; edited(value) => root.banner-theme-name-changed(style.key, value); }
-                                                    Rectangle { width: 100px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".background" ? AppTheme.cyan : AppTheme.border; background: style.background; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".background"); } }
-                                                    Rectangle { width: 70px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".frame" ? AppTheme.cyan : AppTheme.border; background: style.frame; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".frame"); } }
-                                                    Rectangle { width: 70px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".letters" ? AppTheme.cyan : AppTheme.border; background: style.letters; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".letters"); } }
-                                                }
-                                                Text { text: "Album Card Frames"; color: AppTheme.foreground; font-size: 14px; font-weight: 800; height: 24px; }
-                                                for frame in root.theme-frame-rows: HorizontalLayout { height: 35px; spacing: 7px;
-                                                    Text { text: frame.name; color: AppTheme.secondary-foreground; width: 130px; vertical-alignment: center; }
-                                                    Rectangle { width: 100px; height: 27px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == "frame." + frame.key ? AppTheme.cyan : AppTheme.border; background: frame.color; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed("frame." + frame.key); } }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                SettingsHelpTip { summary: "What do these resolution values mean?"; detail: "Minimum, Ideal, Maximum, and Ladder classify candidate image quality. Upscale below Ideal permits an optional larger preview, bounded by Max upscale percent. Existing native art above Ideal is preserved instead of being reduced."; }
+                                Heading { text: "Resolution Range"; height: 27px; }
+                                SettingField { label: "Minimum"; value <=> root.settings-range-min; hint: "1200"; }
+                                SettingField { label: "Ideal"; value <=> root.settings-range-ideal; hint: "1800"; }
+                                SettingField { label: "Maximum"; value <=> root.settings-range-max; hint: "2400"; }
+                                SettingField { label: "Ladder"; value <=> root.settings-range-ladder; hint: "3600"; }
+                                SettingToggle { label: "Upscale Below Ideal"; value <=> root.settings-upscale-below-ideal; }
+                                SettingField { label: "Max Upscale Percent"; value <=> root.settings-upscale-max-percent; hint: "100–800"; }
+                                SettingToggle { label: "Enhancement Upscale Defaults"; value <=> root.settings-upscale-adaptive; }
+                                SettingToggle { label: "Evaluate Final Image"; value <=> root.settings-evaluate-final; }
                                 }
                             }
                         }
@@ -2713,6 +2760,7 @@ export component AppWindow inherits Window {
                                 LineEdit { text <=> root.backup-password; input-type: InputType.password; horizontal-stretch: 1; }
                             }
                             NeonAction { label: "Back Up Settings .spl"; height: 36px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-settings", root.backup-directory, root.backup-password, root.backup-settings, root.backup-credentials, false, root.backup-interface, false); }
+                            SettingsHelpTip { summary: "Will this preserve sliders, locks, panes, and banner colors?"; detail: "Yes, after you Save Enhancement: Config V5 stores global slider defaults, while Interface Settings stores named slider presets, filter locks and locked choices, pane sizes, Theme, Banner and Frame styles, and their original Baselines. Keep both categories selected. A Settings Archive never includes the music database; back it up separately."; }
                         }
                         if root.backup-selected-type == "SQLite Database": VerticalLayout { spacing: 7px;
                             Heading { text: "SQLite Database Snapshot (.sqlite)"; height: 28px; }
@@ -2743,7 +2791,7 @@ export component AppWindow inherits Window {
                             ComboBox { horizontal-stretch: 1; model: root.archived-backup-files; current-value <=> root.archived-backup-selection; selected(value) => { root.restore-path = value; } }
                         }
                         SettingsHelpTip { summary: "Can I open a .spl file directly?"; detail: "Yes. Double-clicking an associated unprotected .spl backup opens SPLINED and restores its Config V5 settings. Review the backup before opening it. Password-protected archives require the Restore flow."; }
-                    Text { text: ".spl restores the selected settings contents. .sqlite replaces only the configured library database and reloads Media Library. Diagnostic .json files are reference-only."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: 58px; }
+                    Text { text: ".spl restores selected settings. If Interface Settings is selected, close and reopen SPLINED afterward before changing anything else. .sqlite restores only the database. Diagnostic .json files are reference-only."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: 58px; }
                 }
                 }
             }
