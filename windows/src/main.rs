@@ -11650,8 +11650,17 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             let embedded_check = embedded_status.flatten();
             let checking_embedded = embedded_check.is_none()
                 && (processed || fallback_progress.is_some_and(|(completed, _)| completed > 0));
+            // An unknown check is not evidence that an otherwise complete
+            // album has regressed. Keep it out of the In Process count until
+            // the background thumbnail validation returns a real result.
+            let validating = embedded_check.is_none()
+                && if fallback {
+                    fallback_complete
+                } else {
+                    processed && snapshot.has_local_artwork
+                };
             let check_embedded = embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention)
-                || checking_embedded;
+                || (checking_embedded && !validating);
             let fully_complete = artist_overview_is_fully_complete(
                 fallback,
                 fallback_complete,
@@ -11695,7 +11704,7 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 .to_string(),
             );
             add_bullet(
-                processed && !fully_complete,
+                processed && !fully_complete && !validating,
                 Color::from_rgb_u8(239, 165, 78),
                 "Processed Album".to_string(),
             );
@@ -11721,7 +11730,7 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                         state.config.output.embedded_thumbnail_size
                     ),
                 );
-            } else if checking_embedded {
+            } else if checking_embedded && !validating {
                 add_bullet(
                     true,
                     Color::from_rgb_u8(124, 77, 255),
@@ -11752,6 +11761,7 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 selected: album.selected,
                 bullets: model(bullets),
                 check_embedded,
+                validating,
                 processed,
                 fully_complete,
                 fallback,
@@ -11776,7 +11786,9 @@ fn artist_overview_legend_counts(
             continue;
         };
         counts.shown += 1;
-        if album.fully_complete {
+        if album.validating {
+            counts.validating += 1;
+        } else if album.fully_complete {
             counts.completed += 1;
             counts.green_frames += 1;
         } else if album.check_embedded
@@ -11819,7 +11831,7 @@ fn artist_overview_legend_counts(
             counts.artist += 1;
         }
     }
-    counts.in_process = counts.shown - counts.completed;
+    counts.in_process = counts.shown - counts.completed - counts.validating;
     for track in tracks {
         if track.status_color == Color::from_rgb_u8(124, 77, 255) {
             counts.track_purple += 1;
@@ -13916,7 +13928,8 @@ mod tests {
         let counts = artist_overview_legend_counts(&cards, &[]);
         assert_eq!(counts.shown, 12);
         assert_eq!(counts.completed, 0);
-        assert_eq!(counts.in_process, 12);
+        assert_eq!(counts.in_process, 4);
+        assert_eq!(counts.validating, 8);
         assert_eq!(counts.feat, 2);
         assert_eq!(counts.various, 2);
         assert_eq!(counts.ost, 2);
@@ -13954,6 +13967,26 @@ mod tests {
         app.artist_overview_track_paths
             .insert("comp-new".into(), vec!["comp-track.mp3".into()]);
         let side = app.config.output.embedded_thumbnail_size;
+        for album in &app.library.albums {
+            let key = if album.snapshot.album_mbid.is_empty() {
+                artist_fallback_embedded_check_key(&album.snapshot.path, side, "Mariah Carey")
+            } else {
+                album_embedded_check_key(&album.snapshot.path, side)
+            };
+            album_embedded_check_cache().lock().unwrap().remove(&key);
+        }
+        let cards = artist_overview_ui_model(&app);
+        let counts = artist_overview_legend_counts(&cards, &[]);
+        assert_eq!(counts.shown, 4);
+        assert_eq!(counts.validating, 4);
+        assert_eq!(counts.in_process, 0);
+        assert_eq!(counts.orange_dots, 0);
+        assert_eq!(counts.purple_dots, 0);
+        assert!((0..cards.row_count()).all(|index| {
+            cards
+                .row_data(index)
+                .is_some_and(|card| card.validating && !card.check_embedded)
+        }));
         for album in &app.library.albums {
             let key = if album.snapshot.album_mbid.is_empty() {
                 artist_fallback_embedded_check_key(&album.snapshot.path, side, "Mariah Carey")

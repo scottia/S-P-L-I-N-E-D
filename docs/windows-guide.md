@@ -234,10 +234,12 @@ it; the columns distinguish album conditions from track-level progress:
   means the album was processed; green means the selected artist's artwork is
   complete; purple means embedded art is missing or does not match **Embedded
   Thumbnail Preference**.
-- **Album card frames:** Green means completion with embedded art at the
-  preferred size. Orange/purple means a processed album still needs an
-  embedded-thumbnail check. Green/purple means the selected artist's COMP
-  tracks are complete but their embedded thumbnails still need attention.
+- **Album card frames:** Cyan means SPLINED is still validating an otherwise
+  complete album's embedded thumbnails; it is counted as **Validating**, not
+  **In Process**. Green means completion with embedded art at the preferred
+  size. Orange/purple means a processed album has a confirmed embedded-art
+  issue. Green/purple means the selected artist's COMP tracks are complete but
+  their embedded thumbnails still need attention.
 - **Banners:** A solid, horizontal banner sits between each cover thumbnail
   and album title. Red **COMPILED** identifies a track-by-track fallback album;
   it becomes green when that artist's matching tracks are complete. Cyan
