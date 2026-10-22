@@ -240,14 +240,17 @@ it; the columns distinguish album conditions from track-level progress:
   size. Orange/purple means a processed album has a confirmed embedded-art
   issue. Green/purple means the selected artist's COMP tracks are complete but
   their embedded thumbnails still need attention.
-- **Banners:** A solid, horizontal banner sits between each cover thumbnail
-  and album title. Red **COMPILED** identifies a track-by-track fallback album;
-  it becomes green when that artist's matching tracks are complete. Cyan
-  **FEATURING** means the selected artist is credited second or later on a
-  track, whether the album has a Release ID or not. Without a secondary
-  credit, the card keeps its album-type banner: hot-pink **SOUNDTRACK**,
-  dark-pink **VARIOUS**, or gold **ARTIST** for a regular Artist Album with a
-  Release ID. Rating stars are not shown on these cards.
+- **Banners:** A narrow vertical strip sits beside the cover thumbnail. Its
+  translucent background, border, and lettering identify the album type and
+  do not change when processing finishes: **COMPILED** has an orange background
+  with a blue border and letters; **FEATURING** has blue with yellow;
+  **SOUNDTRACK** has purple with gold; **VARIOUS** has cyan with purple; and
+  **ARTIST** has gold with orange. COMPILED identifies a compilation album.
+  FEATURING means the selected artist is credited second or later on a track,
+  whether the album has a Release ID or not. Without a secondary credit, the
+  card keeps its album-type banner. The album-status dots and card frames
+  separately show processing and embedded-art completion. Rating stars remain
+  below the album title.
 - **COMP track rows:** Blue means pending artwork, green means completed
   artwork, and purple means a completed track whose embedded image needs
   attention.

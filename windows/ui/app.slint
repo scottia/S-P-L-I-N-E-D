@@ -362,8 +362,9 @@ component ArtistAlbumCard inherits Rectangle {
             }
             HorizontalLayout { padding: 5px; spacing: 4px;
                 Rectangle { width: 20px; clip: true; border-radius: 4px; border-width: 1px;
-                    background: root.item.featured ? #263478ff : (root.item.fallback ? (root.item.fallback-complete ? #2632dda0 : #26efa54e) : (root.item.soundtrack ? #267c4dff : (root.item.various-artists ? #2621d8ff : #26d9ad43)));
-                    border-color: root.item.featured ? AppTheme.yellow : (root.item.fallback ? (root.item.fallback-complete ? AppTheme.cyan : AppTheme.blue) : (root.item.soundtrack ? #d9ad43 : (root.item.various-artists ? AppTheme.violet : #ff9738)));
+                    // Slint's eight-digit literals are #RRGGBBAA; the banner identifies album type, not processing state.
+                    background: root.item.featured ? #3478ff26 : (root.item.fallback ? #efa54e26 : (root.item.soundtrack ? #7c4dff26 : (root.item.various-artists ? #21d8ff26 : #d9ad4326)));
+                    border-color: root.item.featured ? AppTheme.yellow : (root.item.fallback ? AppTheme.blue : (root.item.soundtrack ? #d9ad43 : (root.item.various-artists ? AppTheme.violet : #ff9738)));
                     Text {
                         text: root.item.featured ? "F\nE\nA\nT\nU\nR\nI\nN\nG" : (root.item.fallback ? "C\nO\nM\nP\nI\nL\nE\nD" : (root.item.soundtrack ? "S\nO\nU\nN\nD\nT\nR\nA\nC\nK" : (root.item.various-artists ? "V\nA\nR\nI\nO\nU\nS" : "A\nR\nT\nI\nS\nT")));
                         color: parent.border-color; font-size: 12px; font-weight: 800;
@@ -1739,7 +1740,7 @@ export component AppWindow inherits Window {
                                                         }
                                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                                     }
-                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 317px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
+                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 282px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
                                                         VerticalLayout { padding: 9px; spacing: 0px;
                                                             Text { text: "Album Status Key"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; height: 21px; }
                                                             Rectangle { height: 7px; background: transparent; }
@@ -1782,17 +1783,15 @@ export component AppWindow inherits Window {
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
                                                                     Text { text: "BANNERS"; color: AppTheme.secondary-foreground; font-size: 13px; font-weight: 800; height: 20px; }
-                                                                    ArtistBannerLegendRow { label: "COMPILED"; tint: #26efa54e; ink: AppTheme.blue; count: root.artist-overview-legend-counts.comp-pending; }
-                                                                    Text { text: "Fallback album, track by track"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "COMPILED"; tint: #2632dda0; ink: AppTheme.cyan; count: root.artist-overview-legend-counts.comp-complete; }
-                                                                    Text { text: "Artist's tracks complete"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "FEATURING"; tint: #263478ff; ink: AppTheme.yellow; count: root.artist-overview-legend-counts.feat; }
+                                                                    ArtistBannerLegendRow { label: "COMPILED"; tint: #efa54e26; ink: AppTheme.blue; count: root.artist-overview-legend-counts.comp-pending + root.artist-overview-legend-counts.comp-complete; }
+                                                                    Text { text: "Compilation album"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    ArtistBannerLegendRow { label: "FEATURING"; tint: #3478ff26; ink: AppTheme.yellow; count: root.artist-overview-legend-counts.feat; }
                                                                     Text { text: "Selected artist is a secondary track credit"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "SOUNDTRACK"; tint: #267c4dff; ink: #d9ad43; count: root.artist-overview-legend-counts.ost; }
+                                                                    ArtistBannerLegendRow { label: "SOUNDTRACK"; tint: #7c4dff26; ink: #d9ad43; count: root.artist-overview-legend-counts.ost; }
                                                                     Text { text: "Soundtrack release"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "VARIOUS"; tint: #2621d8ff; ink: AppTheme.violet; count: root.artist-overview-legend-counts.various; }
+                                                                    ArtistBannerLegendRow { label: "VARIOUS"; tint: #21d8ff26; ink: AppTheme.violet; count: root.artist-overview-legend-counts.various; }
                                                                     Text { text: "Various Artists release"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "ARTIST"; tint: #26d9ad43; ink: #ff9738; count: root.artist-overview-legend-counts.artist; }
+                                                                    ArtistBannerLegendRow { label: "ARTIST"; tint: #d9ad4326; ink: #ff9738; count: root.artist-overview-legend-counts.artist; }
                                                                     Text { text: "Artist Album with a Release ID"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
