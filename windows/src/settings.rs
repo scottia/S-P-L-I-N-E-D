@@ -28,6 +28,8 @@ pub struct UiPreferences {
     pub media_selector_expanded: bool,
     pub media_filter_expanded: bool,
     pub candidate_filter_expanded: bool,
+    pub media_filter_locked: bool,
+    pub candidate_filter_locked: bool,
     pub artwork_editing_expanded: bool,
     pub show_artwork: bool,
     pub hover_enabled: bool,
@@ -107,6 +109,8 @@ impl Default for UiPreferences {
             media_selector_expanded: true,
             media_filter_expanded: false,
             candidate_filter_expanded: true,
+            media_filter_locked: false,
+            candidate_filter_locked: false,
             artwork_editing_expanded: true,
             show_artwork: true,
             hover_enabled: false,
@@ -212,7 +216,7 @@ pub const MIN_WINDOW_WIDTH: u32 = 960;
 pub const MIN_WINDOW_HEIGHT: u32 = 640;
 pub const MEDIA_PANE_MIN: u32 = 270;
 pub const MEDIA_PANE_MAX: u32 = 900;
-pub const MEDIA_PANE_COLLAPSED: u32 = 88;
+pub const MEDIA_PANE_COLLAPSED: u32 = 0;
 pub const ARTWORK_PANE_MIN: u32 = 280;
 pub const ARTWORK_PANE_MAX: u32 = 1600;
 pub const CENTER_PANE_MIN: u32 = 300;
@@ -747,6 +751,8 @@ mod tests {
             show_tracks: true,
             media_selector_expanded: false,
             candidate_filter_expanded: false,
+            media_filter_locked: true,
+            candidate_filter_locked: true,
             artwork_editing_expanded: true,
             show_artwork: true,
             hover_enabled: true,
@@ -799,6 +805,8 @@ window_height = 700
             defaults.candidate_filter_height
         );
         assert_eq!(restored.appearance, "System");
+        assert!(!restored.media_filter_locked);
+        assert!(!restored.candidate_filter_locked);
         assert_eq!(restored.workspace_mode, 0);
         assert!(!restored.window_maximized);
         assert!(restored.migrate_workspace_layout());
@@ -937,6 +945,7 @@ window_height = 1977
 
     #[test]
     fn collapsed_panes_reclaim_space_and_restore_expanded_widths() {
+        assert_eq!(MEDIA_PANE_COLLAPSED, 0);
         let preferences = UiPreferences {
             media_pane_width: 410,
             media_pane_expanded_width: 410,

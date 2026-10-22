@@ -2178,6 +2178,8 @@ pub struct ApplicationState {
     pub artist_overview_artwork_candidates: Vec<(String, String)>,
     pub artist_overview_top_songs: Vec<String>,
     pub artist_overview_top_songs_loading: bool,
+    /// None marks an in-flight request; Some includes an empty successful result.
+    pub artist_top_songs_cache: HashMap<String, Option<Vec<String>>>,
     pub artist_overview_loading: bool,
     pub artist_overview_show_all: bool,
     pub artist_artwork_mode: bool,
@@ -2201,7 +2203,7 @@ pub struct ApplicationState {
     pub candidate_excluded_types: BTreeSet<String>,
     pub candidate_excluded_policies: BTreeSet<String>,
     pub candidate_excluded_ranges: BTreeSet<String>,
-    /// Session-only filter locks; an unlocked filter retains its prior behavior.
+    /// Persisted filter locks; an unlocked filter retains its prior behavior.
     pub media_filter_locked: bool,
     pub candidate_filter_locked: bool,
     pub comparison_candidates: BTreeSet<usize>,
@@ -2354,6 +2356,7 @@ impl ApplicationState {
             artist_overview_artwork_candidates: Vec::new(),
             artist_overview_top_songs: Vec::new(),
             artist_overview_top_songs_loading: false,
+            artist_top_songs_cache: HashMap::new(),
             artist_overview_loading: false,
             artist_overview_show_all: false,
             artist_artwork_mode: false,

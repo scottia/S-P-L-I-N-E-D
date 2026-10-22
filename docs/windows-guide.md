@@ -87,7 +87,10 @@ It provides three views over the same album authority:
 
 Media Filter is clipped and internally scrollable, so its Artist/Album searches,
 three equal-width scalable Select Mode buttons, and Library Status radios cannot
-bleed into the library list. Application text has a 14-pixel explicit minimum,
+bleed into the library list. The Media Filter and Candidate Filter locks retain
+their locked/unlocked state across restarts; an unlocked filter keeps its normal
+behavior. Candidate Filter's Include, Disregard, and Reset buttons share the
+available width evenly. Application text has a 14-pixel explicit minimum,
 with 20–22-pixel radio glyphs and a 16-pixel native default.
 
 The main window is resizable and maximizable. Artwork is clipped to its preview
@@ -95,9 +98,10 @@ card so a native-resolution cover cannot cover the library or intercept its
 controls. The Media Library heading reports the current visible-row count, and
 an empty compilation-track section yields its space to the scrollable library.
 The library list retains a usable minimum height ahead of secondary status
-content. When the sidebar is collapsed, its narrow rail always keeps a visible
-expand control; expansion is requested through Rust, restores a clamped width
-at or above the media-pane minimum, and immediately renders the resident model.
+content. Collapsing the Media Library removes its rail entirely and exposes a
+cyan expand control beside Find & Match Artwork. Expansion is requested through
+Rust, restores a clamped width at or above the media-pane minimum, and
+immediately renders the resident model.
 
 ### Resizable workspace
 
@@ -177,7 +181,7 @@ track-level reopen while retaining the parent Album's queue and completion autho
 Completed track-art ledger entries are green; tracks without a completed entry
 are blue. Folder-level `cover.*` files are not used or counted.
 
-In Artist Overview, a fallback compilation has a diagonal **COMP** ribbon. Its
+In Artist Overview, a fallback compilation has a vertical **COMPILED** strip. Its
 matching tracks appear directly beneath the selected card. **LAUNCH** can
 process that artist's pending compilation tracks in sequence; changing the
 selection stops that list without discarding blue/green progress. Selecting one
@@ -187,7 +191,7 @@ cover, or an explicitly selected **Existing** source—never the compilation
 folder's `cover.*` or Artist Art.
 Opening a COMP card shows its matching tracks without automatically starting
 an artwork review, even when there is only one track. Click a track to review
-it. This keeps **Repair purple COMP** available without first skipping an
+it. This keeps **REPAIR COMP** available without first skipping an
 unwanted artwork review. The colored status bar remains visible for single-
 and multi-track cards. **REPAIR COMP**, immediately before **LAUNCH COMP** in
 the expanded list, inspects only completed tracks with off-preference embedded
@@ -241,11 +245,11 @@ it; the columns distinguish album conditions from track-level progress:
   issue. Green/purple means the selected artist's COMP tracks are complete but
   their embedded thumbnails still need attention.
 - **Banners:** A narrow vertical strip sits beside the cover thumbnail. Its
-  translucent background, border, and lettering identify the album type and
-  do not change when processing finishes: **COMPILED** has an orange background
-  with a blue border and letters; **FEATURING** has blue with yellow;
-  **SOUNDTRACK** has purple with gold; **VARIOUS** has cyan with purple; and
-  **ARTIST** has gold with orange. COMPILED identifies a compilation album.
+  50%-transparent background, border, and lettering identify the album type
+  and do not change when processing finishes: **COMPILED** has blue with a gold
+  border and letters; **FEATURING** has gold with green; **SOUNDTRACK** has
+  purple with gold; **VARIOUS** has orange with green; and **ARTIST** has green
+  with gold. COMPILED identifies a compilation album.
   FEATURING means the selected artist is credited second or later on a track,
   whether the album has a Release ID or not. Without a secondary credit, the
   card keeps its album-type banner. The album-status dots and card frames
@@ -258,6 +262,13 @@ it; the columns distinguish album conditions from track-level progress:
 These colors are independent conditions, not one exclusive album state. A
 completed COMP card can retain a red missing-Release-ID dot because the
 missing Release ID is what makes it a fallback album.
+
+Artist Overview keeps album-type groups and newest-to-oldest sorting without
+visible group separators. Similar Artists is followed by **Artist & Featured
+Artist Top Genres**, then Albums, then Top Songs. Top Songs loads automatically
+from Navidrome in the background when an artist is selected. The biography's
+More/Less controls appear only when the text exceeds four lines at the current
+pane width.
 
 ## Running work
 

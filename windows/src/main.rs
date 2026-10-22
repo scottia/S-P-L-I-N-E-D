@@ -709,6 +709,11 @@ fn publish_thumbnail_paths(
                     invalidate_album_embedded_check(Path::new(&album.snapshot.path));
                 }
             }
+            let top_songs = app
+                .artist_top_songs_cache
+                .get(&metadata.artist_key)
+                .and_then(|songs| songs.clone())
+                .unwrap_or_default();
             let cached = ArtistOverviewCacheEntry {
                 biography: metadata.biography,
                 external_url: metadata.external_url,
@@ -722,7 +727,7 @@ fn publish_thumbnail_paths(
                 track_paths_by_album: metadata.track_paths_by_album,
                 album_ratings: metadata.album_ratings,
                 artwork_candidates: metadata.artwork_candidates,
-                top_songs: Vec::new(),
+                top_songs: top_songs.clone(),
             };
             app.artist_overview_biography = cached.biography.clone();
             app.artist_overview_external_url = cached.external_url.clone();
@@ -736,6 +741,11 @@ fn publish_thumbnail_paths(
             app.artist_overview_track_paths = cached.track_paths_by_album.clone();
             app.artist_overview_album_ratings = cached.album_ratings.clone();
             app.artist_overview_artwork_candidates = cached.artwork_candidates.clone();
+            if app.library.focused_artist.as_ref().is_some_and(|artist| {
+                artist.trim().eq_ignore_ascii_case(&metadata.artist_key)
+            }) {
+                app.artist_overview_top_songs = top_songs;
+            }
             app.artist_overview_cache
                 .insert(metadata.artist_key, cached);
         }
@@ -822,6 +832,8 @@ fn capture_ui_preferences(
         media_selector_expanded: state.media_selector_expanded,
         media_filter_expanded: ui.get_media_filter_expanded(),
         candidate_filter_expanded: state.candidate_filter_expanded,
+        media_filter_locked: state.media_filter_locked,
+        candidate_filter_locked: state.candidate_filter_locked,
         artwork_editing_expanded: state.artwork_editing_expanded,
         show_artwork: state.show_artwork,
         hover_enabled: state.hover_enabled,
@@ -963,6 +975,12 @@ fn refresh_navidrome_thumbnails(
     let requested_artist = focused_artist
         .as_deref()
         .map(|value| value.trim().to_ascii_lowercase());
+    // Top Songs runs independently of the heavier artist artwork hydration.
+    if requested_artist.is_some()
+        && let Some(ui) = weak.upgrade()
+    {
+        ui.invoke_load_artist_top_songs();
+    }
     let Some((config, albums, needs_refresh)) = state.lock().ok().map(|mut app| {
         let albums = app
             .library
@@ -2900,6 +2918,8 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     state.adjustments.preserve_source_resolution = false;
     state.adjustments.apply_edit_profile = true;
     state.clear_candidate_filters();
+    state.media_filter_locked = preferences.media_filter_locked;
+    state.candidate_filter_locked = preferences.candidate_filter_locked;
     state.set_primary_adjustments(&preferences.primary_adjustments);
 }
 
@@ -5774,16 +5794,20 @@ fn bind_callbacks(
         let weak = ui.as_weak();
         ui.on_load_artist_top_songs(move || {
             let prepared = state.lock().ok().and_then(|mut app| {
-                if app.artist_overview_top_songs_loading {
+                let artist = app.library.focused_artist.clone()?;
+                let artist_key = artist.trim().to_ascii_lowercase();
+                if let Some(cached) = app.artist_top_songs_cache.get(&artist_key).cloned() {
+                    app.artist_overview_top_songs_loading = cached.is_none();
+                    if let Some(songs) = cached {
+                        app.artist_overview_top_songs = songs;
+                    }
                     return None;
                 }
-                let artist = app.library.focused_artist.clone()?;
+                app.artist_top_songs_cache.insert(artist_key.clone(), None);
                 app.artist_overview_top_songs_loading = true;
-                app.operation_status = format!("Loading {artist} top songs from Navidrome…");
-                app.operation_tone = "cyan".to_string();
-                Some((app.config.clone(), artist))
+                Some((app.config.clone(), artist, artist_key))
             });
-            let Some((config, artist)) = prepared else {
+            let Some((config, artist, artist_key)) = prepared else {
                 return;
             };
             refresh_weak(&weak, &state);
@@ -5805,31 +5829,31 @@ fn bind_callbacks(
                 })();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Ok(mut app) = state.lock() {
-                        app.artist_overview_top_songs_loading = false;
+                        let focused = app.library.focused_artist.as_ref().is_some_and(|name| {
+                            name.trim().eq_ignore_ascii_case(&artist)
+                        });
                         match &result {
                             Ok(songs) => {
-                                app.artist_overview_top_songs.clone_from(songs);
-                                if let Some(cache) = app
-                                    .artist_overview_cache
-                                    .get_mut(&artist.trim().to_ascii_lowercase())
-                                {
+                                app.artist_top_songs_cache
+                                    .insert(artist_key.clone(), Some(songs.clone()));
+                                if let Some(cache) = app.artist_overview_cache.get_mut(&artist_key) {
                                     cache.top_songs.clone_from(songs);
                                 }
-                                app.operation_status = format!(
-                                    "Loaded {} Navidrome top song{} for {artist}",
-                                    songs.len(),
-                                    if songs.len() == 1 { "" } else { "s" }
-                                );
-                                app.operation_tone = "green".to_string();
+                                if focused {
+                                    app.artist_overview_top_songs.clone_from(songs);
+                                    app.artist_overview_top_songs_loading = false;
+                                }
                             }
-                            Err(_) => {
-                                app.operation_status = "Top songs could not be loaded".to_string();
-                                app.operation_tone = "red".to_string();
+                            Err(error) => {
+                                app.artist_top_songs_cache.remove(&artist_key);
+                                if focused {
+                                    app.artist_overview_top_songs_loading = false;
+                                }
+                                if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
+                                    log.record(format!("artist-top-songs artist={artist} error={error}"));
+                                }
                             }
                         }
-                    }
-                    if let Err(error) = result {
-                        record_action_result(&state, Err(error));
                     }
                     refresh_weak(&weak, &state);
                 });
