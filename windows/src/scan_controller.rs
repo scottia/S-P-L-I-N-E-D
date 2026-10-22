@@ -179,7 +179,7 @@ impl ScanController {
                     }
                 }
             } else {
-                state.library.queue(state.scan_scope)
+                state.launch_targets()
             };
             if queue.is_empty() {
                 self.running.store(false, Ordering::SeqCst);
@@ -770,7 +770,7 @@ mod tests {
                 compilation_completed_tracks: 0,
                 release_year: String::new(),
                 artist_mbid: String::new(),
-                album_mbid: String::new(),
+                album_mbid: "release-album".to_string(),
                 release_group_mbid: String::new(),
                 has_local_artwork: false,
                 local_artwork_files: Vec::new(),
@@ -816,6 +816,7 @@ mod tests {
         let ace_of_base = r"C:\Music\Various Artists\Billboard 1994\01 - Ace of Base.mp3";
         let ten_thousand_maniacs =
             r"C:\Music\Various Artists\Billboard 1994\40 - 10,000 Maniacs.mp3";
+        app.library.albums[0].snapshot.album_mbid.clear();
         app.library.albums[0].snapshot.compilation = true;
         app.library.albums[0].snapshot.compilation_tracks = vec![
             MediaTrackSnapshot {

@@ -284,6 +284,12 @@ owned by `ScanController`, and **STOP** requests cancellation of the active
 Rust operation, including an operator-decision wait. Albums are processed
 sequentially; a failed album remains recoverable and later queued albums are not
 silently marked complete.
+In Artists view, selecting an artist for a normal LAUNCH queues unfinished
+Release-ID albums, including Soundtrack, Various Artists, and secondary-credit
+Featuring appearances shown in that artist's overview. Completed albums are
+skipped when revisiting the artist; select a completed album card explicitly
+to reprocess it. COMPILED fallback tracks retain their separate LAUNCH COMP
+workflow.
 
 ## Candidate artwork and sources
 
@@ -453,9 +459,25 @@ removes it from Excluded sources when the policy is updated and Settings is
 saved. A successful connection test in **Connections** does not itself enable
 artwork search. Existing priority order is preserved when a provider is added.
 In Artwork Sources, drag a provider card onto another card to move it in the
-search priority; < / > remains available for precise steps. Samples and Local
+single-row search priority; < / > remains available for precise steps. Samples and Local
 Files have fixed positions. Reordering updates the draft Source priority field;
 the section Save applies it to the main workspace and Config v5.
+
+In **Enhancement**, the existing **Enhancement Defaults** area defines the
+renameable Default quick filter. **Artwork Slider Filtering** holds Custom A–D.
+Each saved slot records all eight sliders; select its radio circle to load its
+values into the shared current/adjusted comparison, then choose Save Current
+to replace that slot or Apply to preview it again. Selecting a Custom slot for
+comparison does not replace global enhancement defaults when the section is
+saved. The Upscale / Enhance workspace has five built-in starting filters and
+five saved-slot buttons; a saved-slot button asks whether to Apply or
+Overwrite. These preview actions never write artwork.
+
+**Theme Enhancements** offers a clickable, scroll-adjustable OLED chroma wheel.
+Choose a banner background, frame, or letters swatch, or an album card frame
+swatch, before choosing a color. Banner labels can be renamed to at most ten
+characters. Banner backgrounds remain 50% transparent, and selected colors
+are adjusted with the active Light, Dark, or Chalk theme.
 
 Provider credentials remain separate JSON files. The credential surface
 supports Navidrome/OpenSubsonic, Fanart.tv, Last.fm, Discogs, and MusicBrainz.

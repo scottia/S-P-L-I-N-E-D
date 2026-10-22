@@ -741,9 +741,12 @@ fn publish_thumbnail_paths(
             app.artist_overview_track_paths = cached.track_paths_by_album.clone();
             app.artist_overview_album_ratings = cached.album_ratings.clone();
             app.artist_overview_artwork_candidates = cached.artwork_candidates.clone();
-            if app.library.focused_artist.as_ref().is_some_and(|artist| {
-                artist.trim().eq_ignore_ascii_case(&metadata.artist_key)
-            }) {
+            if app
+                .library
+                .focused_artist
+                .as_ref()
+                .is_some_and(|artist| artist.trim().eq_ignore_ascii_case(&metadata.artist_key))
+            {
                 app.artist_overview_top_songs = top_songs;
             }
             app.artist_overview_cache
@@ -881,6 +884,9 @@ fn capture_ui_preferences(
         candidate_excluded_policies: Vec::new(),
         candidate_excluded_ranges: Vec::new(),
         primary_adjustments: state.primary_adjustments.clone(),
+        adjustment_presets: state.adjustment_presets.clone(),
+        banner_theme_styles: state.banner_theme_styles.clone(),
+        album_frame_theme_styles: state.album_frame_theme_styles.clone(),
         selected_source_name: ui.get_selected_source_name().to_string(),
         musicbrainz_id_editor_expanded: ui.get_musicbrainz_id_editor_expanded(),
         media_pane_width: layout.media_pane_width,
@@ -2677,6 +2683,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         && (ui.get_settings_disable_intro_message() != app.disable_intro_message
                             || ui.get_settings_disable_confirmation_messages()
                                 != app.disable_confirmation_messages))
+                    || (section == "Enhancement" && app.enhancement_settings_dirty)
             });
         ui.set_settings_section_dirty(dirty);
         if ui.get_page_index() == 1 && section == "Runtime" {
@@ -2697,7 +2704,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 *diagnostic_last_level.borrow_mut() = level;
             }
         }
-        let Some(current) = capture_ui_preferences(
+        let Some(mut current) = capture_ui_preferences(
             &ui,
             &preference_state,
             &preference_layout,
@@ -2706,6 +2713,16 @@ fn main() -> Result<(), slint::PlatformError> {
         ) else {
             return;
         };
+        if preference_state
+            .lock()
+            .ok()
+            .is_some_and(|app| app.enhancement_settings_dirty)
+        {
+            let saved = timer_last_preferences.borrow();
+            current.adjustment_presets = saved.adjustment_presets.clone();
+            current.banner_theme_styles = saved.banner_theme_styles.clone();
+            current.album_frame_theme_styles = saved.album_frame_theme_styles.clone();
+        }
         if current != *timer_last_preferences.borrow()
             && splined_core::settings::save_ui_preferences(&current).is_ok()
         {
@@ -2921,6 +2938,22 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     state.media_filter_locked = preferences.media_filter_locked;
     state.candidate_filter_locked = preferences.candidate_filter_locked;
     state.set_primary_adjustments(&preferences.primary_adjustments);
+    state.adjustment_presets = if preferences.adjustment_presets.len() == 5 {
+        preferences.adjustment_presets.clone()
+    } else {
+        splined_core::settings::default_adjustment_presets()
+    };
+    state.banner_theme_styles = if preferences.banner_theme_styles.len() == 5 {
+        preferences.banner_theme_styles.clone()
+    } else {
+        splined_core::settings::default_banner_theme_styles()
+    };
+    state.album_frame_theme_styles = if preferences.album_frame_theme_styles.len() == 3 {
+        preferences.album_frame_theme_styles.clone()
+    } else {
+        splined_core::settings::default_album_frame_theme_styles()
+    };
+    state.appearance_mode = preferences.appearance.clone();
 }
 
 fn parse_status_filter(value: &str) -> StatusFilter {
@@ -4724,13 +4757,18 @@ fn bind_callbacks(
     }
     {
         let appearance = Rc::clone(&appearance);
+        let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_set_appearance(move |value| {
             let normalized = normalize_appearance(value.as_str());
             *appearance.borrow_mut() = normalized.clone();
+            if let Ok(mut app) = state.lock() {
+                app.appearance_mode = normalized.clone();
+            }
             if let Some(ui) = weak.upgrade() {
                 ui.set_appearance_mode(SharedString::from(normalized));
             }
+            refresh_weak(&weak, &state);
         });
     }
     {
@@ -4750,11 +4788,20 @@ fn bind_callbacks(
                 preferences.status_bar_intensity = intensity.to_string();
                 preferences.status_bar_position = position.to_string();
                 preferences.status_bar_size = size.to_string();
+                let saving_enhancement = ui.get_settings_section() == "Enhancement";
+                if saving_enhancement && let Ok(app) = state.lock() {
+                    preferences.adjustment_presets = app.adjustment_presets.clone();
+                    preferences.banner_theme_styles = app.banner_theme_styles.clone();
+                    preferences.album_frame_theme_styles = app.album_frame_theme_styles.clone();
+                }
                 splined_core::settings::save_ui_preferences(&preferences)?;
                 ui.set_status_bar_intensity(intensity.into());
                 ui.set_status_bar_position(position.into());
                 ui.set_status_bar_size(size.into());
                 if let Ok(mut app) = state.lock() {
+                    if saving_enhancement {
+                        app.enhancement_settings_dirty = false;
+                    }
                     app.service_status = "Saved Interface & Status settings.".to_string();
                 }
                 Ok(())
@@ -5829,14 +5876,17 @@ fn bind_callbacks(
                 })();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Ok(mut app) = state.lock() {
-                        let focused = app.library.focused_artist.as_ref().is_some_and(|name| {
-                            name.trim().eq_ignore_ascii_case(&artist)
-                        });
+                        let focused = app
+                            .library
+                            .focused_artist
+                            .as_ref()
+                            .is_some_and(|name| name.trim().eq_ignore_ascii_case(&artist));
                         match &result {
                             Ok(songs) => {
                                 app.artist_top_songs_cache
                                     .insert(artist_key.clone(), Some(songs.clone()));
-                                if let Some(cache) = app.artist_overview_cache.get_mut(&artist_key) {
+                                if let Some(cache) = app.artist_overview_cache.get_mut(&artist_key)
+                                {
                                     cache.top_songs.clone_from(songs);
                                 }
                                 if focused {
@@ -5850,7 +5900,9 @@ fn bind_callbacks(
                                     app.artist_overview_top_songs_loading = false;
                                 }
                                 if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
-                                    log.record(format!("artist-top-songs artist={artist} error={error}"));
+                                    log.record(format!(
+                                        "artist-top-songs artist={artist} error={error}"
+                                    ));
                                 }
                             }
                         }
@@ -7619,6 +7671,221 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let revision = Arc::clone(&adjustment_preview_revision);
+        let gate = Arc::clone(&adjustment_preview_gate);
+        ui.on_apply_built_in_filter(move |index| {
+            let values = match index {
+                0 => [4, 12, 0, 8, 0, 0, 0, 0],
+                1 => [2, 0, 12, -3, 2, 3, 0, 0],
+                2 => [2, 3, 0, 2, 0, 1, 0, 12],
+                3 => [6, 8, 0, 12, 2, 3, 0, 4],
+                4 => [3, 5, 4, 3, 8, 12, 5, 3],
+                _ => return,
+            };
+            apply_adjustment_values(&state, &weak, &revision, &gate, values);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_adjustment_preset_pressed(move |index| {
+            let Ok(mut app) = state.lock() else {
+                return;
+            };
+            let Some(preset) = app.adjustment_presets.get(index as usize).cloned() else {
+                return;
+            };
+            if preset.saved {
+                drop(app);
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_preset_confirm_index(index);
+                }
+            } else {
+                let values = app.adjustments.slider_values();
+                if let Some(preset) = app.adjustment_presets.get_mut(index as usize) {
+                    preset.values = values;
+                    preset.saved = true;
+                    app.enhancement_settings_dirty = true;
+                    app.service_status =
+                        "Preset captured. Save Enhancement Settings to keep it.".to_string();
+                }
+                drop(app);
+                refresh_weak(&weak, &state);
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let revision = Arc::clone(&adjustment_preview_revision);
+        let gate = Arc::clone(&adjustment_preview_gate);
+        ui.on_adjustment_preset_confirmed(move |index, action| {
+            if action.as_str() == "overwrite" {
+                if let Ok(mut app) = state.lock() {
+                    let values = app.adjustments.slider_values();
+                    if let Some(preset) = app.adjustment_presets.get_mut(index as usize) {
+                        preset.values = values;
+                        preset.saved = true;
+                        app.enhancement_settings_dirty = true;
+                        app.service_status =
+                            "Preset overwritten. Save Enhancement Settings to keep it.".to_string();
+                    }
+                }
+                refresh_weak(&weak, &state);
+            } else if action.as_str() == "apply" {
+                let values = state.lock().ok().and_then(|app| {
+                    app.adjustment_presets
+                        .get(index as usize)
+                        .filter(|preset| preset.saved)
+                        .map(|preset| preset.values)
+                });
+                if let Some(values) = values {
+                    apply_adjustment_values(&state, &weak, &revision, &gate, values);
+                }
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_adjustment_preset_name_changed(move |index, name| {
+            let trimmed = name.trim().chars().take(18).collect::<String>();
+            if trimmed.is_empty() {
+                return;
+            }
+            if let Ok(mut app) = state.lock() {
+                if let Some(preset) = app.adjustment_presets.get_mut(index as usize) {
+                    preset.name = trimmed;
+                    app.enhancement_settings_dirty = true;
+                }
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_adjustment_preset_save(move |index| {
+            if let Ok(mut app) = state.lock() {
+                let values = app.adjustments.slider_values();
+                if let Some(preset) = app.adjustment_presets.get_mut(index as usize) {
+                    preset.values = values;
+                    preset.saved = true;
+                    app.enhancement_settings_dirty = true;
+                }
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let revision = Arc::clone(&adjustment_preview_revision);
+        let gate = Arc::clone(&adjustment_preview_gate);
+        ui.on_adjustment_preset_apply(move |index| {
+            let values = state.lock().ok().and_then(|app| {
+                app.adjustment_presets
+                    .get(index as usize)
+                    .filter(|preset| preset.saved)
+                    .map(|preset| preset.values)
+            });
+            if let Some(values) = values {
+                apply_adjustment_values(&state, &weak, &revision, &gate, values);
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let revision = Arc::clone(&adjustment_preview_revision);
+        let gate = Arc::clone(&adjustment_preview_gate);
+        ui.on_settings_preset_select(move |index| {
+            let values = state.lock().ok().and_then(|app| {
+                app.adjustment_presets
+                    .get(index as usize)
+                    .filter(|preset| preset.saved)
+                    .map(|preset| preset.values)
+            });
+            if let Some(values) = values {
+                apply_adjustment_values(&state, &weak, &revision, &gate, values);
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_theme_color_target_changed(move |target| {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_theme_color_target(target);
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_theme_color_picked(move |x, y, scroll| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let target = ui.get_theme_color_target().to_string();
+            if let Ok(mut app) = state.lock() {
+                let current = theme_target_hex(&app, &target)
+                    .unwrap_or("#3478FF")
+                    .to_string();
+                let selected = wheel_rgb(x, y, scroll, &current);
+                if let Some(key) = target.strip_prefix("frame.") {
+                    if let Some(style) = app
+                        .album_frame_theme_styles
+                        .iter_mut()
+                        .find(|style| style.key == key)
+                    {
+                        style.color = selected;
+                        app.enhancement_settings_dirty = true;
+                    }
+                } else if let Some((key, part)) = target.split_once('.') {
+                    if let Some(style) = app
+                        .banner_theme_styles
+                        .iter_mut()
+                        .find(|style| style.key == key)
+                    {
+                        match part {
+                            "background" => style.background = selected,
+                            "frame" => style.frame = selected,
+                            "letters" => style.letters = selected,
+                            _ => {}
+                        }
+                        app.enhancement_settings_dirty = true;
+                    }
+                }
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_banner_theme_name_changed(move |key, name| {
+            let trimmed = name.trim().chars().take(10).collect::<String>();
+            if trimmed.is_empty() {
+                return;
+            }
+            if let Ok(mut app) = state.lock() {
+                if let Some(style) = app
+                    .banner_theme_styles
+                    .iter_mut()
+                    .find(|style| style.key == key.as_str())
+                {
+                    style.name = trimmed;
+                    app.enhancement_settings_dirty = true;
+                }
+            }
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
         ui.on_completion_acknowledged(move || {
             if let Ok(mut app) = state.lock() {
                 app.completion_dialog_visible = false;
@@ -7981,6 +8248,16 @@ fn bind_service_callbacks(ui: &AppWindow, state: Arc<Mutex<ApplicationState>>) {
                 } else {
                     prior_preferences.disable_confirmation_messages
                 };
+                replacement.adjustment_presets = prior_preferences.adjustment_presets.clone();
+                replacement.banner_theme_styles = prior_preferences.banner_theme_styles.clone();
+                replacement.album_frame_theme_styles =
+                    prior_preferences.album_frame_theme_styles.clone();
+                replacement.appearance_mode = prior_preferences.appearance_mode.clone();
+                replacement.enhancement_settings_dirty =
+                    prior_preferences.enhancement_settings_dirty;
+                if section == "Enhancement" && ui.get_settings_preview_preset_index() != 0 {
+                    replacement.adjustments = prior_preferences.adjustments.clone();
+                }
                 drop(prior_preferences);
                 replacement.intro_dismissed = intro_dismissed || replacement.disable_intro_message;
                 replacement.push_log(format!("Validated and saved {section} settings."));
@@ -8619,6 +8896,42 @@ fn set_settings_adjustment_ui(ui: &AppWindow, app: &ApplicationState, changed: b
     ui.set_settings_enhancement_changed(changed);
 }
 
+fn apply_adjustment_values(
+    state: &Arc<Mutex<ApplicationState>>,
+    weak: &slint::Weak<AppWindow>,
+    revision: &Arc<AtomicU64>,
+    gate: &Arc<Mutex<()>>,
+    values: [i32; 8],
+) {
+    if let Ok(mut app) = state.lock() {
+        app.adjustments.apply_slider_values(values);
+        app.upscale_preview_only = true;
+        clear_rendered_preview_for_adjustment(&mut app);
+    }
+    if let Some(ui) = weak.upgrade() {
+        if let Ok(app) = state.lock() {
+            set_settings_adjustment_ui(&ui, &app, true);
+        }
+        ui.set_settings_section_dirty(true);
+    }
+    refresh_weak(weak, state);
+    if weak.upgrade().is_some_and(|ui| ui.get_page_index() == 1) {
+        schedule_settings_adjustment_preview(
+            Arc::clone(state),
+            weak.clone(),
+            Arc::clone(revision),
+            Arc::clone(gate),
+        );
+    } else {
+        schedule_adjustment_preview(
+            Arc::clone(state),
+            weak.clone(),
+            Arc::clone(revision),
+            Arc::clone(gate),
+        );
+    }
+}
+
 fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_music_library(config.library.music_library.clone().into());
     ui.set_settings_scan_library(config.scan.scan_library_dir.clone().into());
@@ -8873,24 +9186,29 @@ fn apply_settings_section_ui(
                 "Maximum upscale percent",
             )?;
             config.output.upscale_adaptive_defaults = ui.get_settings_upscale_adaptive();
-            config.output.upscale_picture_percent =
-                parse_setting(&ui.get_settings_upscale_picture(), "Picture adjustment")?;
-            config.output.upscale_sharpen_percent =
-                parse_setting(&ui.get_settings_upscale_sharpen(), "Sharpen adjustment")?;
-            config.output.upscale_softness_percent =
-                parse_setting(&ui.get_settings_upscale_softness(), "Softness adjustment")?;
-            config.output.upscale_contrast_percent =
-                parse_setting(&ui.get_settings_upscale_contrast(), "Contrast adjustment")?;
-            config.output.upscale_exposure_percent =
-                parse_setting(&ui.get_settings_upscale_exposure(), "Exposure adjustment")?;
-            config.output.upscale_brightness_percent = parse_setting(
-                &ui.get_settings_upscale_brightness(),
-                "Brightness adjustment",
-            )?;
-            config.output.upscale_gamma_percent =
-                parse_setting(&ui.get_settings_upscale_gamma(), "Gamma adjustment")?;
-            config.output.upscale_color_temperature =
-                parse_setting(&ui.get_settings_upscale_color(), "Color temperature")?;
+            // A Custom A–D radio previews that slot in the existing comparison
+            // area. Saving its name/values must not silently replace the global
+            // enhancement defaults in Config v5.
+            if ui.get_settings_preview_preset_index() == 0 {
+                config.output.upscale_picture_percent =
+                    parse_setting(&ui.get_settings_upscale_picture(), "Picture adjustment")?;
+                config.output.upscale_sharpen_percent =
+                    parse_setting(&ui.get_settings_upscale_sharpen(), "Sharpen adjustment")?;
+                config.output.upscale_softness_percent =
+                    parse_setting(&ui.get_settings_upscale_softness(), "Softness adjustment")?;
+                config.output.upscale_contrast_percent =
+                    parse_setting(&ui.get_settings_upscale_contrast(), "Contrast adjustment")?;
+                config.output.upscale_exposure_percent =
+                    parse_setting(&ui.get_settings_upscale_exposure(), "Exposure adjustment")?;
+                config.output.upscale_brightness_percent = parse_setting(
+                    &ui.get_settings_upscale_brightness(),
+                    "Brightness adjustment",
+                )?;
+                config.output.upscale_gamma_percent =
+                    parse_setting(&ui.get_settings_upscale_gamma(), "Gamma adjustment")?;
+                config.output.upscale_color_temperature =
+                    parse_setting(&ui.get_settings_upscale_color(), "Color temperature")?;
+            }
             config.output.evaluate_final_image = ui.get_settings_evaluate_final();
             config.range.min = parse_setting(&ui.get_settings_range_min(), "Range minimum")?;
             config.range.ideal = parse_setting(&ui.get_settings_range_ideal(), "Range ideal")?;
@@ -11082,6 +11400,57 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ));
 
     let adjustment = &state.adjustments;
+    let preset_rows = state
+        .adjustment_presets
+        .iter()
+        .enumerate()
+        .map(|(index, preset)| UiAdjustmentPresetRow {
+            index: index as i32,
+            name: preset.name.clone().into(),
+            summary: if preset.saved {
+                preset
+                    .values
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            } else {
+                "Not saved yet".to_string()
+            }
+            .into(),
+            saved: preset.saved,
+        })
+        .collect::<Vec<_>>();
+    ui.set_default_adjustment_preset(preset_rows[0].clone());
+    ui.set_custom_adjustment_presets(model(preset_rows[1..].to_vec()));
+    ui.set_adjustment_preset_rows(model(preset_rows));
+    ui.set_theme_banner_rows(model(
+        state
+            .banner_theme_styles
+            .iter()
+            .map(|style| UiBannerThemeRow {
+                key: style.key.clone().into(),
+                name: style.name.clone().into(),
+                background: themed_color(&style.background, &state.appearance_mode, true),
+                frame: themed_color(&style.frame, &state.appearance_mode, false),
+                letters: themed_color(&style.letters, &state.appearance_mode, false),
+            })
+            .collect(),
+    ));
+    ui.set_theme_frame_rows(model(
+        state
+            .album_frame_theme_styles
+            .iter()
+            .map(|frame| UiAlbumFrameThemeRow {
+                key: frame.key.clone().into(),
+                name: frame.name.clone().into(),
+                color: themed_color(&frame.color, &state.appearance_mode, false),
+            })
+            .collect(),
+    ));
+    let color_target = ui.get_theme_color_target().to_string();
+    let selected_hex = theme_target_hex(&state, &color_target).unwrap_or("#3478FF");
+    ui.set_theme_selected_color(themed_color(selected_hex, &state.appearance_mode, false));
     ui.set_adjustment_rows(model(vec![
         adjustment_row(&state, "Picture", adjustment.picture_percent, "%"),
         adjustment_row(&state, "Sharpen", adjustment.sharpen_percent, "%"),
@@ -11583,6 +11952,94 @@ fn artist_album_card_display_title(title: &str) -> String {
     display
 }
 
+fn rgb_from_hex(value: &str) -> [u8; 3] {
+    let hex = value.trim().trim_start_matches('#');
+    if hex.len() == 6
+        && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&hex[0..2], 16),
+            u8::from_str_radix(&hex[2..4], 16),
+            u8::from_str_radix(&hex[4..6], 16),
+        )
+    {
+        return [r, g, b];
+    }
+    [52, 120, 255]
+}
+
+fn themed_color(value: &str, appearance: &str, background: bool) -> Color {
+    let mut channels = rgb_from_hex(value);
+    for channel in &mut channels {
+        let base = f32::from(*channel);
+        let adjusted = if appearance.eq_ignore_ascii_case("Chalk") {
+            base * 0.78 + 132.0 * 0.22
+        } else if appearance.eq_ignore_ascii_case("Light") {
+            if background {
+                base * 0.84 + 255.0 * 0.16
+            } else {
+                base * 0.72
+            }
+        } else {
+            base
+        };
+        *channel = adjusted.round().clamp(0.0, 255.0) as u8;
+    }
+    Color::from_argb_u8(
+        if background { 128 } else { 255 },
+        channels[0],
+        channels[1],
+        channels[2],
+    )
+}
+
+fn theme_target_hex<'a>(state: &'a ApplicationState, target: &str) -> Option<&'a str> {
+    if let Some(key) = target.strip_prefix("frame.") {
+        return state
+            .album_frame_theme_styles
+            .iter()
+            .find(|style| style.key == key)
+            .map(|style| style.color.as_str());
+    }
+    let (key, part) = target.split_once('.')?;
+    let style = state
+        .banner_theme_styles
+        .iter()
+        .find(|style| style.key == key)?;
+    match part {
+        "background" => Some(style.background.as_str()),
+        "frame" => Some(style.frame.as_str()),
+        "letters" => Some(style.letters.as_str()),
+        _ => None,
+    }
+}
+
+fn wheel_rgb(x: f32, y: f32, scroll_delta: f32, current: &str) -> String {
+    if scroll_delta.abs() > f32::EPSILON {
+        let mut rgb = rgb_from_hex(current);
+        let multiplier = if scroll_delta > 0.0 { 1.07 } else { 0.93 };
+        for channel in &mut rgb {
+            *channel = (f32::from(*channel) * multiplier).round().clamp(0.0, 255.0) as u8;
+        }
+        return format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]);
+    }
+    if ((x - 0.5).powi(2) + (y - 0.5).powi(2)).sqrt() > 0.48 {
+        return current.to_string();
+    }
+    static WHEEL: OnceLock<Option<image::RgbaImage>> = OnceLock::new();
+    let Some(wheel) = WHEEL.get_or_init(|| {
+        image::load_from_memory(include_bytes!("../gui/oled-chroma-wheel.png"))
+            .ok()
+            .map(|decoded| decoded.to_rgba8())
+    }) else {
+        return current.to_string();
+    };
+    let pixel = wheel.get_pixel(
+        (x.clamp(0.0, 1.0) * (wheel.width() - 1) as f32) as u32,
+        (y.clamp(0.0, 1.0) * (wheel.height() - 1) as f32) as u32,
+    );
+    format!("#{:02X}{:02X}{:02X}", pixel[0], pixel[1], pixel[2])
+}
+
 fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRow> {
     if state.library.view != LibraryView::Artists || state.library.focused_artist.is_none() {
         return model(Vec::new());
@@ -11655,6 +12112,63 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             let processed = album.state == splined_core::application::AlbumState::Processed;
             let complete_art = !fallback && processed && has_artist_art && !missing_album_art;
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
+            let banner_key = if featured {
+                "featuring"
+            } else if fallback {
+                "compiled"
+            } else if soundtrack {
+                "soundtrack"
+            } else if various_artists {
+                "various"
+            } else {
+                "artist"
+            };
+            let banner_style = state
+                .banner_theme_styles
+                .iter()
+                .find(|style| style.key == banner_key);
+            let banner_text = banner_style
+                .map(|style| style.name.as_str())
+                .unwrap_or("ARTIST");
+            let banner_display = banner_text
+                .chars()
+                .take(10)
+                .map(|character| character.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let banner_background = themed_color(
+                banner_style
+                    .map(|style| style.background.as_str())
+                    .unwrap_or("#006B3C"),
+                &state.appearance_mode,
+                true,
+            );
+            let banner_frame = themed_color(
+                banner_style
+                    .map(|style| style.frame.as_str())
+                    .unwrap_or("#D9AD43"),
+                &state.appearance_mode,
+                false,
+            );
+            let banner_letters = themed_color(
+                banner_style
+                    .map(|style| style.letters.as_str())
+                    .unwrap_or("#D9AD43"),
+                &state.appearance_mode,
+                false,
+            );
+            let frame_color = |key: &str, fallback: &str| {
+                themed_color(
+                    state
+                        .album_frame_theme_styles
+                        .iter()
+                        .find(|style| style.key == key)
+                        .map(|style| style.color.as_str())
+                        .unwrap_or(fallback),
+                    &state.appearance_mode,
+                    false,
+                )
+            };
             let embedded_status = album_embedded_check_cache().lock().ok().and_then(|cache| {
                 cache
                     .get(&if fallback {
@@ -11794,6 +12308,13 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 soundtrack,
                 various_artists,
                 separator_before,
+                banner_display: banner_display.into(),
+                banner_background,
+                banner_frame,
+                banner_letters,
+                complete_frame: frame_color("complete", "#32DDA0"),
+                pending_frame: frame_color("in_process", "#EFA54E"),
+                attention_frame: frame_color("thumbnail", "#7C4DFF"),
             }
         })
         .collect::<Vec<_>>();

@@ -2,7 +2,10 @@ import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView } from "std-w
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool }
 export struct UiAlbumStatusBullet { color: color, tip: string }
-export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool }
+export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color }
+export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
+export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color }
+export struct UiAlbumFrameThemeRow { key: string, name: string, color: color }
 export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
 export struct UiSimilarArtistRow { name: string, artwork: image, available: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
@@ -91,12 +94,12 @@ component LaunchAction inherits Rectangle {
     callback clicked();
     width: 91px;
     height: 27px;
-    border-radius: 6px;
+    border-radius: 8px;
     clip: true;
     background: root.enabled ? @linear-gradient(90deg, #1bb8e0, #d335b5, #e7ad32, #37ce82) : AppTheme.border;
     Rectangle {
         x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-        border-radius: 5px;
+        border-radius: 7px;
         background: root.enabled ? (AppTheme.chalk ? #294039 : (AppTheme.light ? #c8e3d0 : #10392e)) : AppTheme.card;
         Text {
             x: 4px; width: parent.width - 8px; height: parent.height;
@@ -354,8 +357,8 @@ component ArtistAlbumCard inherits Rectangle {
             clip: true;
             border-radius: 7px;
             border-width: self.mixed-embedded-outline ? 0px : 2px;
-            border-color: root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? AppTheme.green : (root.item.check-embedded ? AppTheme.violet : root.item.status-color));
-            background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, AppTheme.green, AppTheme.violet, AppTheme.green) : @linear-gradient(135deg, AppTheme.violet, AppTheme.yellow, AppTheme.violet)) : root.item.selected ? AppTheme.selected-surface : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
+            border-color: root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)));
+            background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : root.item.selected ? AppTheme.selected-surface : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
             if self.mixed-embedded-outline: Rectangle {
                 x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
                 border-radius: 5px; background: root.item.selected ? AppTheme.selected-surface : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
@@ -363,11 +366,11 @@ component ArtistAlbumCard inherits Rectangle {
             HorizontalLayout { padding: 5px; spacing: 4px;
                 Rectangle { width: 20px; clip: true; border-radius: 4px; border-width: 1px;
                     // Slint's eight-digit literals are #RRGGBBAA; the banner identifies album type, not processing state.
-                    background: root.item.featured ? #d9ad4380 : (root.item.fallback ? #3478ff80 : (root.item.soundtrack ? #7c4dff80 : (root.item.various-artists ? #efa54e80 : #32dda080)));
-                    border-color: root.item.featured ? AppTheme.green : (root.item.fallback || root.item.soundtrack ? #d9ad43 : (root.item.various-artists ? AppTheme.green : #d9ad43));
+                    background: root.item.banner-background;
+                    border-color: root.item.banner-frame;
                     Text {
-                        text: root.item.featured ? "F\nE\nA\nT\nU\nR\nI\nN\nG" : (root.item.fallback ? "C\nO\nM\nP\nI\nL\nE\nD" : (root.item.soundtrack ? "S\nO\nU\nN\nD\nT\nR\nA\nC\nK" : (root.item.various-artists ? "V\nA\nR\nI\nO\nU\nS" : "A\nR\nT\nI\nS\nT")));
-                        color: parent.border-color; font-size: 12px; font-weight: 800;
+                        text: root.item.banner-display;
+                        color: root.item.banner-letters; font-size: 12px; font-weight: 800;
                         horizontal-alignment: center; vertical-alignment: center;
                     }
                 }
@@ -954,6 +957,16 @@ export component AppWindow inherits Window {
     background: AppTheme.window-background;
     in property <[UiLibraryRow]> library-rows;
     in property <[UiArtistAlbumRow]> artist-overview-albums;
+    in property <[UiAdjustmentPresetRow]> adjustment-preset-rows;
+    in property <UiAdjustmentPresetRow> default-adjustment-preset;
+    in property <[UiAdjustmentPresetRow]> custom-adjustment-presets;
+    in property <[UiBannerThemeRow]> theme-banner-rows;
+    in property <[UiAlbumFrameThemeRow]> theme-frame-rows;
+    in-out property <string> theme-color-target: "compiled.background";
+    in property <color> theme-selected-color: #3478ff;
+    in-out property <int> preset-confirm-index: -1;
+    in-out property <int> settings-preview-preset-index: 0;
+    in-out property <bool> enhancement-help-visible: false;
     in property <UiArtistOverviewLegendCounts> artist-overview-legend-counts;
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <int> artist-overview-compilation-index: -1;
@@ -1277,6 +1290,10 @@ export component AppWindow inherits Window {
     callback fallback-retry(string, string);
     callback musicbrainz-selected(int); callback musicbrainz-hovered(int, bool); callback musicbrainz-use-selected(); callback musicbrainz-use-existing(); callback musicbrainz-existing-selected(int); callback musicbrainz-existing-hovered(int, bool); callback musicbrainz-apply-authority(string, string); callback musicbrainz-leave-unchanged(); callback musicbrainz-filter(string, string); callback open-musicbrainz-page(int); callback open-musicbrainz-info(); callback adjustment-step(string, int); callback adjustment-set(string, float); callback adjustment-reset(string);
     callback primary-adjustment-move(string, int); callback primary-adjustment-promote(string); callback activate-all-adjustments();
+    callback apply-built-in-filter(int); callback adjustment-preset-pressed(int); callback adjustment-preset-confirmed(int, string);
+    callback adjustment-preset-name-changed(int, string); callback adjustment-preset-save(int); callback adjustment-preset-apply(int);
+    callback settings-preset-select(int);
+    callback theme-color-target-changed(string); callback theme-color-picked(float, float, float); callback banner-theme-name-changed(string, string);
     callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
     callback prepare-embedded-thumbnail();
     callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory();
@@ -1786,16 +1803,10 @@ export component AppWindow inherits Window {
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
                                                                     Text { text: "BANNERS"; color: AppTheme.secondary-foreground; font-size: 13px; font-weight: 800; height: 20px; }
-                                                                    ArtistBannerLegendRow { label: "COMPILED"; tint: #3478ff80; ink: #d9ad43; count: root.artist-overview-legend-counts.comp-pending + root.artist-overview-legend-counts.comp-complete; }
-                                                                    Text { text: "Compilation album"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "FEATURING"; tint: #d9ad4380; ink: AppTheme.green; count: root.artist-overview-legend-counts.feat; }
-                                                                    Text { text: "Selected artist is a secondary track credit"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "SOUNDTRACK"; tint: #7c4dff80; ink: #d9ad43; count: root.artist-overview-legend-counts.ost; }
-                                                                    Text { text: "Soundtrack release"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "VARIOUS"; tint: #efa54e80; ink: AppTheme.green; count: root.artist-overview-legend-counts.various; }
-                                                                    Text { text: "Various Artists release"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
-                                                                    ArtistBannerLegendRow { label: "ARTIST"; tint: #32dda080; ink: #d9ad43; count: root.artist-overview-legend-counts.artist; }
-                                                                    Text { text: "Artist Album with a Release ID"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    for banner in root.theme-banner-rows: VerticalLayout { height: 35px; spacing: 0px;
+                                                                        ArtistBannerLegendRow { label: banner.name; tint: banner.background; ink: banner.letters; count: banner.key == "compiled" ? root.artist-overview-legend-counts.comp-pending + root.artist-overview-legend-counts.comp-complete : (banner.key == "featuring" ? root.artist-overview-legend-counts.feat : (banner.key == "soundtrack" ? root.artist-overview-legend-counts.ost : (banner.key == "various" ? root.artist-overview-legend-counts.various : root.artist-overview-legend-counts.artist))); }
+                                                                        Text { text: banner.key == "compiled" ? "Compilation album" : (banner.key == "featuring" ? "Selected artist is a secondary track credit" : (banner.key == "soundtrack" ? "Soundtrack release" : (banner.key == "various" ? "Various Artists release" : "Artist Album with a Release ID"))); color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    }
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
                                                                     Text { text: "COMP TRACK ROWS"; color: AppTheme.secondary-foreground; font-size: 13px; font-weight: 800; height: 20px; }
@@ -2016,13 +2027,21 @@ export component AppWindow inherits Window {
                                                     Text { x: 10px; y: 9px; width: 190px; height: 30px; text: root.upscale-preview-only ? "UPSCALE PREVIEW" : "UPSCALE"; color: AppTheme.danger; font-size: 16px; font-weight: 900; vertical-alignment: center; overflow: elide; }
                                                 }
                                             }
-                                            NeonPanel { height: 174px;
+                                            if root.enhancement-help-visible: Rectangle { height: 100px; border-width: 1px; border-radius: 6px; border-color: AppTheme.cyan; background: AppTheme.card;
+                                                VerticalLayout { padding: 9px; spacing: 3px;
+                                                    Text { text: "Enhancement Sliders · Quick Filters"; color: AppTheme.cyan; font-weight: 800; font-size: 15px; }
+                                                    Text { text: "Five built-in filters change the eight sliders for a preview; they do not write artwork. Default and Custom A–D are your saved slider sets. Select a saved set to Apply it or confirm Overwrite with current values. Rename and review saved sets in Settings → Enhancement. WRITE/EMBED remains a separate action."; color: AppTheme.foreground; font-size: 13px; wrap: word-wrap; }
+                                                }
+                                            }
+                                            NeonPanel { height: root.preset-confirm-index >= 0 ? 250px : 214px;
                                                 VerticalLayout { padding: 7px; spacing: 5px;
                                                     HorizontalLayout { height: 30px;
+                                            NeonAction { label: "?"; width: 28px; height: 27px; tone: "cyan"; clicked => { root.enhancement-help-visible = !root.enhancement-help-visible; } }
                                                         Heading { text: "Enhancement Sliders"; font-size: 15px; horizontal-stretch: 1; }
                                                         NeonAction { label: "Activate All 8"; width: 124px; height: 28px; tone: "active"; clicked => root.activate-all-adjustments(); }
                                                     }
-                                                    ScrollView { vertical-stretch: 1;
+                                                    HorizontalLayout { spacing: 8px; vertical-stretch: 1;
+                                                    ScrollView { horizontal-stretch: 1;
                                                         HorizontalLayout { spacing: 7px;
                                                             for adjustment in root.adjustment-rows: AdjustmentTile {
                                                                 width: 190px;
@@ -2033,6 +2052,17 @@ export component AppWindow inherits Window {
                                                                 promote(name) => root.primary-adjustment-promote(name);
                                                             }
                                                         }
+                                                    }
+                                                    GridLayout { width: 246px; spacing: 4px;
+                                                        for label[i] in ["Clarity", "Soft Portrait", "Warmth", "Vivid", "Low Light"]: NeonAction { row: i; col: 0; width: 116px; height: 27px; label: label; label-font-size: 12px; tone: "cyan"; clicked => root.apply-built-in-filter(i); }
+                                                        for preset in root.adjustment-preset-rows: NeonAction { row: preset.index; col: 1; width: 116px; height: 27px; label: preset.name; label-font-size: 12px; tone: preset.saved ? "active" : "purple"; clicked => root.adjustment-preset-pressed(preset.index); }
+                                                    }
+                                                    }
+                                                    if root.preset-confirm-index >= 0: HorizontalLayout { height: 28px; spacing: 5px;
+                                                        Text { text: "Saved filter: Apply or replace with current sliders?"; color: AppTheme.cyan; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; }
+                                                        NeonAction { label: "Apply"; width: 62px; height: 26px; label-font-size: 11px; clicked => { root.adjustment-preset-confirmed(root.preset-confirm-index, "apply"); root.preset-confirm-index = -1; } }
+                                                        NeonAction { label: "Overwrite"; width: 75px; height: 26px; label-font-size: 11px; tone: "orange"; clicked => { root.adjustment-preset-confirmed(root.preset-confirm-index, "overwrite"); root.preset-confirm-index = -1; } }
+                                                        NeonAction { label: "Cancel"; width: 62px; height: 26px; label-font-size: 11px; clicked => { root.preset-confirm-index = -1; } }
                                                     }
                                                 }
                                             }
@@ -2179,7 +2209,7 @@ export component AppWindow inherits Window {
                         VerticalLayout { padding: 8px; spacing: 6px;
                             HorizontalLayout { height: 29px; spacing: 4px;
                                 Text { text: "⌘"; width: 22px; color: AppTheme.magenta; font-size: 22px; vertical-alignment: center; }
-                                Heading { text: "Candidate Artwork"; width: 150px; font-size: 16px; }
+                                Heading { text: "Candidate Artwork"; width: 140px; font-size: 16px; }
                                 Text { text: "⌘"; width: 22px; color: AppTheme.magenta; font-size: 22px; vertical-alignment: center; }
                                 LaunchAction {
                                     width: 126px;
@@ -2385,7 +2415,7 @@ export component AppWindow inherits Window {
                     VerticalLayout { padding: 10px; spacing: 7px;
                         HorizontalLayout { height: 32px; spacing: 8px;
                             Heading { text: root.settings-section == "Artwork" ? "Artwork & Embedding" : "Enhancement"; color: AppTheme.violet; horizontal-stretch: 1; }
-                            NeonAction { width: 72px; height: 30px; label: "Save"; tone: root.settings-section-dirty ? "active" : "cyan"; clicked => root.save-settings(); }
+                            NeonAction { width: 72px; height: 30px; label: "Save"; tone: root.settings-section-dirty ? "active" : "cyan"; clicked => { root.save-settings(); if (root.settings-section == "Enhancement") { root.save-interface-settings(); } } }
                         }
                         Text { text: root.settings-section == "Artwork" ? "Set the rules for saved cover.* / artist.* files and embedded track thumbnails." : "Set candidate resolution goals and preview the default image adjustments."; color: AppTheme.secondary-foreground; font-size: 14px; height: 36px; wrap: word-wrap; }
                         ScrollView { vertical-stretch: 1;
@@ -2424,8 +2454,26 @@ export component AppWindow inherits Window {
                                 SettingField { label: "Max Upscale Percent"; value <=> root.settings-upscale-max-percent; hint: "100–800"; }
                                 SettingToggle { label: "Enhancement Upscale Defaults"; value <=> root.settings-upscale-adaptive; }
                                 SettingToggle { label: "Evaluate Final Image"; value <=> root.settings-evaluate-final; }
+                                Heading { text: "Artwork Slider Filtering"; height: 27px; color: AppTheme.cyan; }
+                                SettingsHelpTip { summary: "How do saved slider filters work?"; detail: "Built-in filters are ready-to-preview starting points. Default and Custom A–D capture all eight slider values. Select a radio circle to load that slot into the comparison preview below; adjust sliders and Save Current to replace its values. Rename a slot here, then Save Enhancement. The quick button in Upscale / Enhance asks before Overwrite. None of these buttons writes artwork."; }
+                                for preset in root.custom-adjustment-presets: HorizontalLayout { height: 38px; spacing: 7px;
+                                    Rectangle { width: 28px; height: 28px; background: transparent; Text { text: root.settings-preview-preset-index == preset.index ? "◉" : "○"; color: AppTheme.cyan; font-size: 23px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { enabled: preset.saved; mouse-cursor: pointer; clicked => { root.settings-preview-preset-index = preset.index; root.settings-preset-select(preset.index); } } }
+                                    Text { text: "Custom " + (preset.index == 1 ? "A" : (preset.index == 2 ? "B" : (preset.index == 3 ? "C" : "D"))); color: AppTheme.secondary-foreground; width: 78px; vertical-alignment: center; }
+                                    LineEdit { text: preset.name; width: 150px; edited(value) => root.adjustment-preset-name-changed(preset.index, value); }
+                                    Text { text: preset.summary; color: AppTheme.secondary-foreground; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                                    NeonAction { label: "Save Current"; width: 104px; height: 28px; label-font-size: 12px; clicked => root.adjustment-preset-save(preset.index); }
+                                    NeonAction { label: "Apply"; width: 62px; height: 28px; label-font-size: 12px; enabled: preset.saved; clicked => root.adjustment-preset-apply(preset.index); }
+                                }
                                 Heading { text: "Enhancement Defaults"; height: 27px; }
-                                RadioToggle { label: "Apply Defaults"; checked: false; toggled(value) => { if (value) { root.apply-enhancement-defaults(); } } }
+                                HorizontalLayout { height: 38px; spacing: 7px;
+                                    Rectangle { width: 28px; height: 28px; background: transparent; Text { text: root.settings-preview-preset-index == 0 ? "◉" : "○"; color: AppTheme.cyan; font-size: 23px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { mouse-cursor: pointer; clicked => { root.settings-preview-preset-index = 0; root.settings-preset-select(0); } } }
+                                    Text { text: "Default"; color: AppTheme.secondary-foreground; width: 78px; vertical-alignment: center; }
+                                    LineEdit { text: root.default-adjustment-preset.name; width: 150px; edited(value) => root.adjustment-preset-name-changed(0, value); }
+                                    Text { text: root.default-adjustment-preset.summary; color: AppTheme.secondary-foreground; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                                    NeonAction { label: "Save Current"; width: 104px; height: 28px; label-font-size: 12px; clicked => root.adjustment-preset-save(0); }
+                                    NeonAction { label: "Apply"; width: 62px; height: 28px; label-font-size: 12px; enabled: root.default-adjustment-preset.saved; clicked => root.adjustment-preset-apply(0); }
+                                }
+                                NeonAction { label: "Use Suggested Slider Values"; width: 220px; height: 28px; label-font-size: 12px; clicked => root.apply-enhancement-defaults(); }
                                 NeonPanel { height: 220px; clip: true;
                                     HorizontalLayout { spacing: 0px;
                                         Rectangle { horizontal-stretch: 1; background: #020913; clip: true;
@@ -2455,15 +2503,57 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
-                                if root.settings-enhancement-changed: RadioToggle {
+                                if root.settings-enhancement-changed && root.settings-preview-preset-index == 0: RadioToggle {
                                     label: "Save Enhancement Upscale Defaults";
                                     checked: false;
                                     toggled(value) => {
                                         if (value) { root.save-adjustments(); root.settings-enhancement-changed = false; }
                                     }
                                 }
-                                if root.settings-enhancement-changed: Text { text: "Default Enhancement Values Changed, use Apply Defaults to Return to Suggested Values"; color: AppTheme.yellow; font-size: 14px; wrap: word-wrap; height: 42px; }
+                                if root.settings-enhancement-changed && root.settings-preview-preset-index == 0: Text { text: "Default Enhancement Values Changed; Use Suggested Slider Values to Return to the Safe Starting Point."; color: AppTheme.yellow; font-size: 14px; wrap: word-wrap; height: 42px; }
                                 SettingsHelpTip { summary: "Do adjustment controls write artwork now?"; detail: "No. The current/adjusted preview and the eight image controls change enhancement defaults. Artwork files are changed only by a later explicit WRITE or EMBED action in the workspace."; }
+                                Heading { text: "Theme Enhancements"; height: 28px; color: AppTheme.cyan; }
+                                SettingsHelpTip { summary: "How does the OLED Chroma Wheel work?"; detail: "Choose a Background, Frame, Letter, or Album Card Frame swatch on the right, then click the wheel to choose a hue. Scroll over the wheel for finer shade adjustments. Custom colors follow the active Light, Dark, or Chalk theme. Banner names are limited to 10 characters. Save Enhancement to keep these changes."; }
+                                NeonPanel { height: 355px;
+                                    HorizontalLayout { padding: 8px; spacing: 12px;
+                                        VerticalLayout { width: 258px; spacing: 7px;
+                                            Text { text: "OLED Chroma Wheel"; color: AppTheme.cyan; font-size: 15px; font-weight: 800; height: 25px; }
+                                            wheel := Rectangle { width: 244px; height: 244px; border-radius: 122px; clip: true; background: AppTheme.image-surface;
+                                                Image { source: @image-url("../gui/oled-chroma-wheel.png"); width: parent.width; height: parent.height; image-fit: contain; }
+                                                TouchArea { mouse-cursor: pointer;
+                                                    clicked => root.theme-color-picked(self.mouse-x / wheel.width, self.mouse-y / wheel.height, 0);
+                                                    scroll-event(event) => { root.theme-color-picked(self.mouse-x / wheel.width, self.mouse-y / wheel.height, event.delta-y / 1px); accept }
+                                                }
+                                            }
+                                            HorizontalLayout { height: 25px; spacing: 7px;
+                                                Rectangle { width: 28px; height: 23px; border-width: 1px; border-color: AppTheme.border; background: root.theme-selected-color; border-radius: 4px; }
+                                                Text { text: root.theme-color-target; color: AppTheme.secondary-foreground; font-size: 12px; vertical-alignment: center; overflow: elide; }
+                                            }
+                                        }
+                                        ScrollView { horizontal-stretch: 1;
+                                            VerticalLayout { spacing: 6px;
+                                                Text { text: "Banners · Rename And Edit Each Color"; color: AppTheme.foreground; font-size: 14px; font-weight: 800; height: 24px; }
+                                                HorizontalLayout { height: 20px; spacing: 7px;
+                                                    Text { text: "Name (10 max)"; width: 130px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                    Text { text: "Background"; width: 100px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                    Text { text: "Frame"; width: 70px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                    Text { text: "Letters"; width: 70px; color: AppTheme.secondary-foreground; font-size: 12px; }
+                                                }
+                                                for style in root.theme-banner-rows: HorizontalLayout { height: 38px; spacing: 7px;
+                                                    LineEdit { text: style.name; width: 130px; edited(value) => root.banner-theme-name-changed(style.key, value); }
+                                                    Rectangle { width: 100px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".background" ? AppTheme.cyan : AppTheme.border; background: style.background; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".background"); } }
+                                                    Rectangle { width: 70px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".frame" ? AppTheme.cyan : AppTheme.border; background: style.frame; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".frame"); } }
+                                                    Rectangle { width: 70px; height: 28px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == style.key + ".letters" ? AppTheme.cyan : AppTheme.border; background: style.letters; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed(style.key + ".letters"); } }
+                                                }
+                                                Text { text: "Album Card Frames"; color: AppTheme.foreground; font-size: 14px; font-weight: 800; height: 24px; }
+                                                for frame in root.theme-frame-rows: HorizontalLayout { height: 35px; spacing: 7px;
+                                                    Text { text: frame.name; color: AppTheme.secondary-foreground; width: 130px; vertical-alignment: center; }
+                                                    Rectangle { width: 100px; height: 27px; border-radius: 4px; border-width: 1px; border-color: root.theme-color-target == "frame." + frame.key ? AppTheme.cyan : AppTheme.border; background: frame.color; TouchArea { mouse-cursor: pointer; clicked => root.theme-color-target-changed("frame." + frame.key); } }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 }
                             }
                         }
@@ -2483,9 +2573,10 @@ export component AppWindow inherits Window {
                                 SettingsHelpTip { summary: "Why can a connected provider say Excluded?"; detail: "A connection Test proves the service is reachable; it does not put the provider in artwork search. Enable the provider below, then Save Artwork Sources. Drag source cards to change search priority, or use Up/Dn. Samples and Local Files stay fixed. Exclusions suppress candidates."; }
                                 Heading { text: "Artwork Search Order"; height: 27px; }
                                 Text { text: "Drag a provider by its name onto another card. Use < / > for precise moves."; color: AppTheme.secondary-foreground; font-size: 14px; height: 20px; }
-                                GridLayout { height: 306px; spacing: 6px; padding-left: 6px; padding-right: 6px;
-                                    for source[i] in root.settings-source-rows: SourceCard {
-                                        row: i / 4; col: mod(i, 4); height: 94px; source-row: source;
+                                ScrollView { height: 130px;
+                                    HorizontalLayout { spacing: 6px; padding-left: 6px; padding-right: 6px;
+                                    for source in root.settings-source-rows: SourceCard {
+                                        width: 118px; height: 112px; source-row: source;
                                         drag-reorder-enabled: true;
                                         selected: root.selected-source-name == source.name;
                                         chosen(name) => { root.selected-source-name = name; root.candidate-source-filter(name); }
@@ -2493,6 +2584,7 @@ export component AppWindow inherits Window {
                                         make-drag-data(name) => root.make-source-drag-data(name);
                                         accept-drop(data, target) => root.can-drop-source(data, target);
                                         drop-source(data, target) => root.drop-source(data, target);
+                                    }
                                     }
                                 }
                                 SettingField { label: "Source Priority"; value <=> root.settings-source-order; hint: "Ordered Providers"; }

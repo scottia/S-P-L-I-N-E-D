@@ -8,6 +8,79 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdjustmentPreset {
+    pub name: String,
+    pub values: [i32; 8],
+    pub saved: bool,
+}
+
+pub fn default_adjustment_presets() -> Vec<AdjustmentPreset> {
+    ["Default", "Custom A", "Custom B", "Custom C", "Custom D"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| AdjustmentPreset {
+            name: name.to_string(),
+            values: if index == 0 {
+                [2, 4, 0, 10, -5, -1, -6, 0]
+            } else {
+                [0; 8]
+            },
+            saved: index == 0,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BannerThemeStyle {
+    pub key: String,
+    pub name: String,
+    pub background: String,
+    pub frame: String,
+    pub letters: String,
+}
+
+pub fn default_banner_theme_styles() -> Vec<BannerThemeStyle> {
+    [
+        ("compiled", "COMPILED", "#3478FF", "#D9AD43", "#D9AD43"),
+        ("featuring", "FEATURING", "#B8875D", "#008B8B", "#008B8B"),
+        ("soundtrack", "SOUNDTRACK", "#4B0082", "#B49B00", "#B49B00"),
+        ("various", "VARIOUS", "#654321", "#32DDA0", "#32DDA0"),
+        ("artist", "ARTIST", "#006B3C", "#D9AD43", "#D9AD43"),
+    ]
+    .into_iter()
+    .map(|(key, name, background, frame, letters)| BannerThemeStyle {
+        key: key.to_string(),
+        name: name.to_string(),
+        background: background.to_string(),
+        frame: frame.to_string(),
+        letters: letters.to_string(),
+    })
+    .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlbumFrameThemeStyle {
+    pub key: String,
+    pub name: String,
+    pub color: String,
+}
+
+pub fn default_album_frame_theme_styles() -> Vec<AlbumFrameThemeStyle> {
+    [
+        ("complete", "Complete", "#32DDA0"),
+        ("in_process", "In Process", "#EFA54E"),
+        ("thumbnail", "Thumbnail Check", "#7C4DFF"),
+    ]
+    .into_iter()
+    .map(|(key, name, color)| AlbumFrameThemeStyle {
+        key: key.to_string(),
+        name: name.to_string(),
+        color: color.to_string(),
+    })
+    .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPreferences {
     #[serde(default = "legacy_workspace_layout_revision")]
@@ -67,6 +140,9 @@ pub struct UiPreferences {
     pub candidate_excluded_policies: Vec<String>,
     pub candidate_excluded_ranges: Vec<String>,
     pub primary_adjustments: Vec<String>,
+    pub adjustment_presets: Vec<AdjustmentPreset>,
+    pub banner_theme_styles: Vec<BannerThemeStyle>,
+    pub album_frame_theme_styles: Vec<AlbumFrameThemeStyle>,
     pub selected_source_name: String,
     pub musicbrainz_id_editor_expanded: bool,
     pub media_pane_width: u32,
@@ -153,6 +229,9 @@ impl Default for UiPreferences {
                 "Gamma".to_string(),
                 "Color".to_string(),
             ],
+            adjustment_presets: default_adjustment_presets(),
+            banner_theme_styles: default_banner_theme_styles(),
+            album_frame_theme_styles: default_album_frame_theme_styles(),
             selected_source_name: "All".to_string(),
             musicbrainz_id_editor_expanded: false,
             media_pane_width: 350,
