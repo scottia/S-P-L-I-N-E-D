@@ -6,7 +6,7 @@
 use crate::config::{Config, resolve_sources};
 use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
-use crate::scan::{AlbumDirectory, inventory_album_directories};
+use crate::scan::{AlbumDirectory, audio_containing_directories, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
 use image::ImageFormat;
 use rusqlite::{
@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use unicode_casefold::UnicodeCaseFold;
@@ -36,6 +37,31 @@ pub const DB_NAME: &str = "splined.db";
 pub const SCHEMA_VERSION: i64 = 2;
 const INVENTORY_KEY: &str = "splined-media-library";
 const SCHEMA: &str = include_str!("../../python/splined_schema.sql");
+pub(crate) fn claim_shared_database(path: &Path) -> Result<fs::File, String> {
+    let lock_path = path.with_file_name(format!(
+        "{}.client-lock",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!(
+                "Cannot open shared database lock {}: {error}",
+                lock_path.display()
+            )
+        })?;
+    file.try_lock().map_err(|error| {
+        format!(
+            "The shared SPLINED database is in use by another client ({}): {error}",
+            path.display()
+        )
+    })?;
+    Ok(file)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MediaSnapshot {
@@ -44,6 +70,88 @@ pub struct MediaSnapshot {
     pub canonical_root: String,
     pub local_root: String,
     pub albums: Vec<MediaAlbumSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewMediaFolders {
+    pub count: usize,
+    pub examples: Vec<String>,
+}
+
+/// A startup notice is deliberately cheaper than an index refresh: retain
+/// only folders containing supported audio, without track metadata or tags.
+pub fn find_unindexed_audio_folders(config: &Config) -> Result<NewMediaFolders, String> {
+    let local_root = config.library.music_library.trim();
+    if local_root.is_empty() {
+        return Ok(NewMediaFolders {
+            count: 0,
+            examples: Vec::new(),
+        });
+    }
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    if !database_access.path().exists() {
+        return Ok(NewMediaFolders {
+            count: 0,
+            examples: Vec::new(),
+        });
+    }
+    let (connection, version) = open_database_read_only(database_access.path())?;
+    if version != SCHEMA_VERSION {
+        return Err(incompatible_schema(version));
+    }
+    let Some(signature) = read_signature(&connection)? else {
+        return Ok(NewMediaFolders {
+            count: 0,
+            examples: Vec::new(),
+        });
+    };
+    validate_signature(config, Some(&signature))?;
+    let canonical_root = signature
+        .get("library_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "The media index has no canonical library root.".to_string())?;
+    let mapper = PathMapper::new(canonical_root, local_root)?;
+    let ignored = if config.scan.sqlite_shared {
+        signature
+            .get("ignored_subs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "The shared inventory has no ignored-folder policy.".to_string())?
+            .iter()
+            .map(|value| value.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                "The shared inventory has an invalid ignored-folder policy.".to_string()
+            })?
+    } else {
+        config.library.ignored_subs.clone()
+    };
+    let mut indexed = HashSet::new();
+    let mut statement = connection
+        .prepare("SELECT path FROM albums")
+        .map_err(db_error("prepare indexed Album paths"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_error("read indexed Album paths"))?;
+    for row in rows {
+        indexed.insert(casefold(&row.map_err(db_error("read indexed Album path"))?));
+    }
+    drop(statement);
+    drop(connection);
+    drop(database_access);
+    let audio_folders = audio_containing_directories(Path::new(local_root), &ignored)?;
+    let mut count = 0;
+    let mut examples = Vec::new();
+    for album in audio_folders {
+        let canonical = mapper.to_canonical(&album.to_string_lossy())?;
+        if !indexed.contains(&casefold(&canonical)) {
+            count += 1;
+            if examples.len() < 3 {
+                examples.push(album.display().to_string());
+            }
+        }
+    }
+    Ok(NewMediaFolders { count, examples })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -381,12 +489,36 @@ pub fn database_path(cache_dir: impl AsRef<Path>) -> PathBuf {
 
 struct DatabasePathAccess {
     sqlite_path: PathBuf,
+    _shared_lock: Option<fs::File>,
     #[cfg(windows)]
     _temporary_mapping: Option<TemporaryDriveMapping>,
 }
 
+// Keep both the network mapping and the shared client lock alive until the
+// SQLite connection has actually closed. Some runtime cache methods return a
+// connection to their caller rather than doing all work in one stack frame.
+struct RuntimeConnection {
+    connection: Connection,
+    _database_access: DatabasePathAccess,
+}
+
+impl Deref for RuntimeConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl DerefMut for RuntimeConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.connection
+    }
+}
+
 impl DatabasePathAccess {
     fn new(path: &Path, shared: bool) -> Result<Self, String> {
+        let shared_lock = shared.then(|| claim_shared_database(path)).transpose()?;
         #[cfg(windows)]
         if shared {
             // Preserve the active network provider (including NFS) by
@@ -395,6 +527,7 @@ impl DatabasePathAccess {
             if let Some(sqlite_path) = existing_mapped_path(path) {
                 return Ok(Self {
                     sqlite_path,
+                    _shared_lock: shared_lock,
                     _temporary_mapping: None,
                 });
             }
@@ -405,6 +538,7 @@ impl DatabasePathAccess {
                         "{}\\{}",
                         mapping.local_name, relative_path
                     )),
+                    _shared_lock: shared_lock,
                     _temporary_mapping: Some(mapping),
                 });
             }
@@ -412,6 +546,7 @@ impl DatabasePathAccess {
 
         Ok(Self {
             sqlite_path: path.to_path_buf(),
+            _shared_lock: shared_lock,
             #[cfg(windows)]
             _temporary_mapping: None,
         })
@@ -577,7 +712,7 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
     // also lets simultaneous GUI warm-load requests coexist as readers. Only
     // an explicit refresh (or a missing/uninitialized index) enters the
     // writable initialization path below.
-    if (!refresh || config.scan.sqlite_shared) && database_access.path().exists() {
+    if !refresh && database_access.path().exists() {
         let (connection, current) = open_database_read_only(database_access.path())?;
         if current == SCHEMA_VERSION {
             let saved_signature = read_signature(&connection)?;
@@ -603,9 +738,9 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
         }
     }
 
-    if config.scan.sqlite_shared {
+    if config.scan.sqlite_shared && !refresh {
         return Err(
-            "The shared SPLINED database has no usable Python inventory. Refresh the library index from Python, then reload it in Windows."
+            "The shared SPLINED database has no usable inventory. Use Refresh DB to build it from this client's library view."
                 .to_string(),
         );
     }
@@ -621,6 +756,35 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
     validate_signature(config, saved_signature.as_ref())?;
     let mapper = PathMapper::new(canonical_root, local_root)?;
 
+    // The first publisher defines the shared folder policy and canonical path
+    // namespace. Windows can refresh that existing inventory, but must not
+    // silently replace its ignored-folder or cover-name choices with local
+    // settings. Initial shared publication needs a canonical path mapping.
+    let mut shared_refresh_config = config.clone();
+    if config.scan.sqlite_shared {
+        let signature = saved_signature.as_ref().ok_or_else(|| {
+            "The shared database has no published inventory policy or canonical path mapping; create its first index before refreshing from Windows.".to_string()
+        })?;
+        shared_refresh_config.library.ignored_subs = signature
+            .get("ignored_subs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                "The shared inventory is missing its ignored-folder policy.".to_string()
+            })?
+            .iter()
+            .map(|value| value.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                "The shared inventory has an invalid ignored-folder policy.".to_string()
+            })?;
+        shared_refresh_config.output.file_name = signature
+            .get("cover_name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "The shared inventory is missing its cover-name policy.".to_string())?
+            .to_string();
+    }
+
     let usable = saved_signature.is_some()
         && connection
             .query_row("SELECT count(*) FROM albums", [], |row| {
@@ -631,7 +795,7 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
     if refresh || !usable {
         rebuild_index(
             &mut connection,
-            config,
+            &shared_refresh_config,
             &mapper,
             if refresh { "refresh" } else { "initial-build" },
         )?;
@@ -1057,7 +1221,9 @@ fn canonical_runtime_path(
     mapper.to_canonical(&local_material_path.to_string_lossy())
 }
 
-fn runtime_connection_and_mapper(config: &Config) -> Result<(Connection, PathMapper), String> {
+fn runtime_connection_and_mapper(
+    config: &Config,
+) -> Result<(RuntimeConnection, PathMapper), String> {
     let db_path = database_path(&config.scan.cache_dir);
     let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
     if !database_access.path().exists() {
@@ -1075,7 +1241,13 @@ fn runtime_connection_and_mapper(config: &Config) -> Result<(Connection, PathMap
         .and_then(Value::as_str)
         .unwrap_or(config.library.music_library.as_str());
     let mapper = PathMapper::new(canonical_root, &config.library.music_library)?;
-    Ok((connection, mapper))
+    Ok((
+        RuntimeConnection {
+            connection,
+            _database_access: database_access,
+        },
+        mapper,
+    ))
 }
 
 pub fn cached_recording_releases(
@@ -2189,9 +2361,9 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
         .and_then(Value::as_str)
         .ok_or_else(|| "SPLINED database signature is missing library_root.".to_string())?;
     let expected = expected_signature(config, canonical_root);
-    // A shared database is a Python-published inventory. Windows maps its own
-    // local library root onto that inventory and must not impose its local
-    // scan exclusions or output filename on Python's indexing policy.
+    // A shared database's first publisher defines its inventory. Another
+    // client maps its local library root onto that canonical inventory and
+    // must not impose its own scan exclusions or cover filename.
     let fields: &[&str] = if config.scan.sqlite_shared {
         &["schema_version"]
     } else {
@@ -2376,7 +2548,10 @@ fn rebuild_index(
             representative_mtime_ns: mtime,
             tag_signature,
             track_count: album.audio_files.len() as i64,
-            inventory_fingerprint: inventory_fingerprint(album),
+            // Normal refresh needs filenames and one representative tag, not
+            // metadata reads for every track in every Album. Timeout history
+            // computes its own fingerprint only when that policy needs it.
+            inventory_fingerprint: String::new(),
             status,
             cover_found: cover.found,
             cover_path: cover.path,
@@ -3078,39 +3253,6 @@ fn casefold(value: &str) -> String {
     value.case_fold().collect()
 }
 
-fn inventory_fingerprint(album: &AlbumDirectory) -> String {
-    let mut digest = Sha256::new();
-    for path in &album.audio_files {
-        let metadata = fs::metadata(path).ok();
-        digest.update(
-            path.file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .as_bytes(),
-        );
-        digest.update([0]);
-        digest.update(
-            metadata
-                .as_ref()
-                .map(|value| value.len())
-                .unwrap_or(0)
-                .to_string()
-                .as_bytes(),
-        );
-        digest.update([0]);
-        digest.update(
-            metadata
-                .as_ref()
-                .map(modified_ns)
-                .unwrap_or(0)
-                .to_string()
-                .as_bytes(),
-        );
-        digest.update([0]);
-    }
-    hex_bytes(&digest.finalize())
-}
-
 fn modified_ns(metadata: &fs::Metadata) -> i64 {
     metadata
         .modified()
@@ -3376,6 +3518,33 @@ mod tests {
     }
 
     #[test]
+    fn shared_database_client_lock_rejects_another_handle() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join(DB_NAME);
+        let held = claim_shared_database(&db).unwrap();
+        assert!(claim_shared_database(&db).is_err());
+        drop(held);
+        assert!(claim_shared_database(&db).is_ok());
+    }
+
+    #[test]
+    fn runtime_connection_keeps_shared_lock_until_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        fs::create_dir_all(&library).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        config.scan.sqlite_shared = true;
+        let db = database_path(&config.scan.cache_dir);
+        drop(open_database(&db, true).unwrap());
+        let (connection, _) = runtime_connection_and_mapper(&config).unwrap();
+        assert!(claim_shared_database(&db).is_err());
+        drop(connection);
+        assert!(claim_shared_database(&db).is_ok());
+    }
+
+    #[test]
     fn canonical_posix_paths_round_trip_through_windows_namespace() {
         let mapper = PathMapper::new("/music", r"\\server\share\media\music").unwrap();
         let canonical = "/music/10,000 Maniacs/Love Among the Ruins/1-01 - Rainy Day.mp3";
@@ -3519,6 +3688,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(builds, 1);
+    }
+
+    #[test]
+    fn new_media_notice_and_refresh_use_audio_folders_not_library_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let original = library.join("Artist").join("Album");
+        fs::create_dir_all(&original).unwrap();
+        File::create(original.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        assert_eq!(media_snapshot(&config, false).unwrap().albums.len(), 1);
+
+        for name in [
+            "New Artist/Debut",
+            "Soundtracks/New OST",
+            "Various Artists/New Collection",
+        ] {
+            let folder = library.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            File::create(folder.join("01.mp3")).unwrap();
+        }
+        fs::create_dir_all(library.join("Empty Folder")).unwrap();
+        assert_eq!(find_unindexed_audio_folders(&config).unwrap().count, 3);
+        // Ordinary startup still reuses the saved index until the user asks to refresh.
+        assert_eq!(media_snapshot(&config, false).unwrap().albums.len(), 1);
+        assert_eq!(media_snapshot(&config, true).unwrap().albums.len(), 4);
+        assert_eq!(find_unindexed_audio_folders(&config).unwrap().count, 0);
+        let connection = Connection::open(database_path(&config.scan.cache_dir)).unwrap();
+        let without_track_metadata: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM albums WHERE inventory_fingerprint = ''",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(without_track_metadata, 4);
+    }
+
+    #[test]
+    fn shared_refresh_keeps_published_folder_policy_and_adds_new_audio_album() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let original = library.join("Artist").join("Album");
+        fs::create_dir_all(&original).unwrap();
+        File::create(original.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        config.scan.sqlite_shared = true;
+        let db = database_path(&config.scan.cache_dir);
+        let connection = open_database(&db, true).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let published_signature = json!({
+            "schema_version": SCHEMA_VERSION,
+            "library_root": "/music",
+            "ignored_subs": ["ignore-me"],
+            "cover_name": "folder",
+        });
+        connection.execute(
+            "INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')",
+            params![INVENTORY_KEY, published_signature.to_string(), now],
+        ).unwrap();
+        drop(connection);
+
+        let new_album = library.join("Various Artists").join("Compilation");
+        fs::create_dir_all(&new_album).unwrap();
+        File::create(new_album.join("01.mp3")).unwrap();
+        let ignored = library.join("ignore-me").join("Not an Album");
+        fs::create_dir_all(&ignored).unwrap();
+        File::create(ignored.join("01.mp3")).unwrap();
+        assert_eq!(find_unindexed_audio_folders(&config).unwrap().count, 2);
+        let snapshot = media_snapshot(&config, true).unwrap();
+        assert_eq!(snapshot.albums.len(), 2);
+        assert!(snapshot.albums.iter().all(|album| {
+            album
+                .path
+                .starts_with(&library.to_string_lossy().to_string())
+        }));
+        let connection = Connection::open(&db).unwrap();
+        let saved: String = connection
+            .query_row(
+                "SELECT signature_json FROM picker_inventory WHERE inventory_key=?",
+                [INVENTORY_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).unwrap(),
+            published_signature
+        );
+        assert_eq!(find_unindexed_audio_folders(&config).unwrap().count, 0);
     }
 
     #[test]

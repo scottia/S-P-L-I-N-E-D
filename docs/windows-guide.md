@@ -120,7 +120,7 @@ Artwork Preview & Editing, or Artwork Filter reclaims its space while retaining
 the previous expanded width or height for the next expansion.
 
 Pane geometry, expanded dimensions, the active artwork mode, normal window
-size, maximized state, and the **System / Light / Dark** appearance choice are
+size, maximized state, and the **System / Dark / Light / Chalk** appearance choice are
 presentation preferences in `data\ui.toml`. They are not Config v5 fields.
 Older `ui.toml` files remain valid and acquire safe defaults for fields they do
 not contain. A numbered-workspace layout revision retires obsolete temporary-
@@ -185,6 +185,34 @@ track opens MusicBrainz for that track. The Selected Artwork preview for a
 compilation track uses only its embedded image, a hovered/selected MusicBrainz
 cover, or an explicitly selected **Existing** source—never the compilation
 folder's `cover.*` or Artist Art.
+Opening a COMP card shows its matching tracks without automatically starting
+an artwork review, even when there is only one track. Click a track to review
+it. This keeps **Repair purple COMP** available without first skipping an
+unwanted artwork review. The colored status bar remains visible for single-
+and multi-track cards. **REPAIR COMP**, immediately before **LAUNCH COMP** in
+the expanded list, inspects only completed tracks with off-preference embedded
+dimensions. It then changes to **YES, Repair**, with **NO** on its left and a
+cyan confirmation beneath. Confirming resizes embedded art without searching
+MusicBrainz or changing the fallback folder's `cover.*`. When every matching
+track verifies green, the list closes after two seconds; a new selection takes
+priority. Tracks still missing art or failing verification keep their album's
+attention state and the list remains available.
+
+**REPAIR ALL Comps**, beside **EMBED Artist Art**, compiles an Artist-wide
+two-column COMP report (Album and full Track File name) with green completed,
+purple off-preference/unreadable, and blue unfinished rows. Duplicate album
+names are grouped under album headers: click a header to collapse or expand
+just that album's tracks. The Artist Overview's main scroll reaches every
+track, even in a large report; the lower workspace pane need not be resized.
+Click a track row to review artwork with the normal candidate and MusicBrainz
+flow. Only completed tracks with readable off-size embedded art are offered
+for one Artist-wide bulk repair, with a separate confirmation before any audio
+file changes. The report has a **Close** button, and a report opened while the
+Artist still needs work closes automatically two seconds after every shown
+album verifies complete. A new selection during those two seconds keeps the
+report open. The circled help tip in the COMP heading explains the repair
+scope and why the current tagged Album authority and MusicBrainz release
+suggestions appear as separate results.
 
 Matching local artwork appears at the top of MusicBrainz Results as separate
 green/cyan **Existing** choices, so different Artist Album covers can be
@@ -210,10 +238,14 @@ it; the columns distinguish album conditions from track-level progress:
   preferred size. Orange/purple means a processed album still needs an
   embedded-thumbnail check. Green/purple means the selected artist's COMP
   tracks are complete but their embedded thumbnails still need attention.
-- **Banners:** Red **COMP** identifies a track-by-track fallback album; it
-  becomes green when that artist's matching tracks are complete. Cyan **FEAT**
-  identifies the selected artist as a featured credit. Hot-pink **OST** marks
-  a soundtrack, and dark-pink **V/A** marks a Various Artists release.
+- **Banners:** A solid, horizontal banner sits between each cover thumbnail
+  and album title. Red **COMPILED** identifies a track-by-track fallback album;
+  it becomes green when that artist's matching tracks are complete. Cyan
+  **FEATURING** means the selected artist is credited second or later on a
+  track, whether the album has a Release ID or not. Without a secondary
+  credit, the card keeps its album-type banner: hot-pink **SOUNDTRACK**,
+  dark-pink **VARIOUS**, or gold **ARTIST** for a regular Artist Album with a
+  Release ID. Rating stars are not shown on these cards.
 - **COMP track rows:** Blue means pending artwork, green means completed
   artwork, and purple means a completed track whose embedded image needs
   attention.
@@ -348,13 +380,66 @@ the same validated final-artwork pipeline and safe replacement behavior.
 
 ## Settings and credentials
 
-Normal Settings is a structured Slint surface for paths, scan behavior, SQLite
-sharing, source order and exclusions, source policies, ranges, output and
-square/upscale behavior, adjustment defaults, history/log retention, and
-supported provider options. Controls update the Rust Config model, validate the
-complete document, atomically write Config v5, and reload application state.
+Normal Settings uses one wide work area with task-based navigation: **Library
+& Files**, **Artwork & Embedding**, **Enhancement**, **Artwork Sources**,
+**Connections**, **Backup / Restore**, and **Processing & Logs**. The
+**Advanced** toggle in the Settings header reveals specialist controls inside
+their related sections; it is off by default. Expand the in-app
+help tips for the effect of each group of controls. The tips explain the
+workflow in place; they do not open this guide. Each Config section has a compact Save
+action that applies only that section's edits. The complete resulting Config v5
+is validated and written atomically, then application state is reloaded. A green
+Save highlight indicates an unsaved change. Backup schedules and interface
+preferences are remembered separately.
+The main header places a single framed **🎬 Theme** menu (System, Dark, Light,
+or Chalk) between Home and Settings. Chalk uses muted neutral surfaces across
+the workspace, and Light uses a subdued slate palette with darker accent text.
+**Backup / Restore** section opens separate side-by-side Backup and Restore
+panels to the right of the persistent Settings Sections list. Returning to Settings
+keeps the live Settings draft rather than reloading it. There is no global Save
+button. Settings section names are
+left-aligned with fixed-width glyphs.
+The header **Help** button is available from Home as well as Settings and opens
+a two-item menu. **Get Help** opens the
+Windows guide on GitHub's `main` branch; **About** opens a themed card with
+version, license, technology, project and release links, the Microsoft Store
+listing, and update controls. Library & Files ends with the current runtime
+version, database location, and run state.
+**Processing & Logs** is split into Processing and Logging panes. Processing
+Mode is the saved Read/Write default. Processing Override Delay ranges from
+Always Override (zero hours) through one month (30 days); an older custom
+timeout is preserved as a Custom option. New Config v5 defaults retain 14 days
+of History, without changing an existing user's choice. Logging offers Current
+(in memory, cleared on exit), Verbose (run decisions), Debugger (technical
+debug/trace events), and Error (session errors plus the latest Diagnostic
+Summary JSON). Verbose and Debugger file capture begins on the next launch
+after saving. Log Retention (Days) applies to Windows UI diagnostic files on
+startup; zero keeps them all.
+**Processing & Logs > Status Bar** appears in Advanced mode and offers Aggressive, Full, Mild, or Off intensity;
+Top, Middle, or Bottom position; and Small, Medium, or Large size. Middle is
+wider and taller. The rainbow strip is static, so intensity changes primarily
+affect appearance rather than system resource use. Interface preferences are
+stored separately from Config v5 options.
+Advanced mode also reveals **Reset / Validate / Save** in Processing & Logs for operational Config v5 only.
+It first previews the reset and requires a second red confirmation with typed
+`RESET`. It backs up the existing config before restoring built-in defaults
+(including READ mode). Music and ignored-folder locations, database/cache/log
+and credential paths, SQLite shared mode, `splined.db`, audio/art files, and
+provider credential files are preserved. Interface theme, layout, status bar,
+and backup schedules are not part of this reset.
 Application configuration is never duplicated in a Slint-specific authority,
 and raw TOML is not the normal Settings workflow.
+
+In **Artwork Sources**, a provider is active only when it appears in Source
+priority, is not excluded, and has an enabled source policy. Turning on
+**Include in artwork search** adds a missing provider to Source priority and
+removes it from Excluded sources when the policy is updated and Settings is
+saved. A successful connection test in **Connections** does not itself enable
+artwork search. Existing priority order is preserved when a provider is added.
+In Artwork Sources, drag a provider card onto another card to move it in the
+search priority; < / > remains available for precise steps. Samples and Local
+Files have fixed positions. Reordering updates the draft Source priority field;
+the section Save applies it to the main workspace and Config v5.
 
 Provider credentials remain separate JSON files. The credential surface
 supports Navidrome/OpenSubsonic, Fanart.tv, Last.fm, Discogs, and MusicBrainz.
@@ -369,11 +454,21 @@ response.
 
 The Media Library requests the Artist and Album thumbnails exposed by
 Navidrome/OpenSubsonic. Downloaded 192-pixel thumbnails are kept under the
-portable state root at `data/navidrome-thumbnails`; SPLINED does not write into
+configured temporary cache directory in `navidrome-thumbnails`; SPLINED does not write into
 the music library to render the list. Missing thumbnails refresh in the
 background at startup and the selected Artist is retried immediately. Album
 rows temporarily project a newly processed local cover until Navidrome's
 read-only thumbnail projection catches up.
+
+When Config v5 uses debug or trace logging, the Windows UI run log records
+startup config, database projection, application-model, and UI creation times.
+Navidrome catalog reads report memory-cache hit/miss, item count, and elapsed
+time; focused thumbnail work reports disk-artwork cache hits and misses. These
+timings help distinguish database startup delay from the first cold Navidrome
+artist load without recording provider secrets. UI refresh entries also report
+cumulative decoded-image memory hits, file decodes, stale invalidations, and
+preload hits. Rewritten file-backed artwork is checked against its size and
+modification time before cached pixels are reused.
 
 ## Backup and restore
 
@@ -386,22 +481,32 @@ remembered, browsable paths. Windows backups are deliberately independent:
 - the secret-free diagnostic summary is a readable timestamped `.json` and is
   reference material rather than a restorable settings payload.
 
-Each file type has its own exclusive Off, Daily, Weekly, and Monthly schedule,
+Choose a Backup Type to see its Off, Daily, Weekly, or Monthly schedule,
 so the database can be protected more frequently than infrequently changing
-settings. Due jobs run only while SPLINED is open and idle and do not register an
+settings. Each type has a Max Backup File Count. Zero (the default) keeps all;
+at startup, a nonzero limit removes only older timestamped SPLINED files of
+that type from the selected backup directory. Other files are left alone.
+Diagnostic Summary is an Advanced-only option for generating reference JSON
+to inspect before sending a bug report; it is not a backup that can be
+restored. On a first run without a settings archive, SPLINED offers to create
+one, without modifying the music library. The latest backup fills Restore
+File automatically and the Restore pane lists archived backup files.
+Due jobs run only while SPLINED is open and idle and do not register an
 operating-system background task. Manual `.spl` settings archives may be
 password protected with the established PBKDF2-HMAC-SHA1, AES-256-CBC, and
 HMAC-SHA256 envelope. Restore auto-detects `.spl` and `.sqlite`, validates the
-selected file, uses atomic replacement, and immediately reloads the applicable
+selected file, uses atomic replacement for settings and credentials and SQLite's
+online backup API for database restores, then immediately reloads the applicable
 configuration or Media Library. Older `.spl` archives with an embedded database
-remain restorable through the explicit legacy SQLite selection.
+remain restorable through the **SQLite Database Backup** selection. Password
+entry is requested only when a selected archive requires it.
 
 Opening an associated unprotected `.spl` file, or launching
 `splined.exe --restore <file>`, automatically imports the archive's Config v5
 settings before startup and then loads the configured database. Other backup
 categories are not changed. If the archive is password protected or its Config
 v5 cannot be imported, SPLINED opens the maintenance/restore surface with the
-archive preselected so the operator can enter the password and review the
+archive preselected so the operator can enter the password when prompted and review the
 categories. Portable startup maintains the current user-scoped `.spl` shell
 association; packaged installs use the manifest-owned association.
 

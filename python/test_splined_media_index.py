@@ -4,6 +4,8 @@ import inspect
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -18,6 +20,37 @@ from splined_media_tags import inspect_album
 
 
 class SplinedMediaIndexTests(unittest.TestCase):
+    def test_shared_client_lock_rejects_another_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "splined.db"
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; import sys; "
+                    "from splined_media_database import connect; "
+                    "connection = connect(Path(sys.argv[1]), 'test', shared=True); "
+                    "print('READY', flush=True); sys.stdin.readline()",
+                    str(database),
+                ],
+                cwd=Path(__file__).parent,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                self.assertEqual(child.stdout.readline().strip(), "READY")
+                with self.assertRaisesRegex(RuntimeError, "in use by another client"):
+                    connect(database, "test", shared=True)
+            finally:
+                if child.poll() is None and child.stdin:
+                    child.stdin.write("\n")
+                    child.stdin.flush()
+                child.communicate(timeout=10)
+            reopened = connect(database, "test", shared=True)
+            reopened.close()
+
     def test_fallback_album_ignores_existing_cover(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "music"

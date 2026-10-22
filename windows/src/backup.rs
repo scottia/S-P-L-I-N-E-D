@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
+use crate::media_database::claim_shared_database;
 use crate::safe_write::{replace_binary_file, replace_file_from, replace_text_file};
 use crate::settings::{config_text, save_config_text, ui_preferences_path};
 use rusqlite::{Connection, MAIN_DB, OpenFlags};
@@ -139,9 +140,18 @@ pub fn export_backup(
     }
     if selection.database {
         let database = Path::new(&config.scan.cache_dir).join("splined.db");
+        let _shared_lock = config
+            .scan
+            .sqlite_shared
+            .then(|| claim_shared_database(&database))
+            .transpose()?;
         if database.is_file() {
-            payload.database = Some(encode(&std::fs::read(&database).map_err(|error| {
-                format!("Unable to read database {}: {error}", database.display())
+            let (_temporary, snapshot_path) = create_sqlite_snapshot(&database)?;
+            payload.database = Some(encode(&std::fs::read(&snapshot_path).map_err(|error| {
+                format!(
+                    "Unable to read SQLite snapshot {}: {error}",
+                    snapshot_path.display()
+                )
             })?));
         }
     }
@@ -164,16 +174,32 @@ pub fn export_backup(
 pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<PathBuf, String> {
     let path = with_extension(requested_path, "sqlite");
     let source_path = Path::new(&config.scan.cache_dir).join("splined.db");
+    let _shared_lock = config
+        .scan
+        .sqlite_shared
+        .then(|| claim_shared_database(&source_path))
+        .transpose()?;
     if !source_path.is_file() {
         return Err(format!(
             "The configured SPLINED database does not exist: {}",
             source_path.display()
         ));
     }
+    let (_temporary, snapshot_path) = create_sqlite_snapshot(&source_path)?;
+    replace_file_from(
+        &path,
+        &snapshot_path,
+        "SQLite backup",
+        validate_sqlite_backup,
+    )?;
+    Ok(path)
+}
+
+fn create_sqlite_snapshot(source_path: &Path) -> Result<(tempfile::TempDir, PathBuf), String> {
     let temporary = tempfile::TempDir::new()
         .map_err(|error| format!("Unable to create SQLite backup staging directory: {error}"))?;
     let snapshot_path = temporary.path().join("splined.sqlite");
-    let source = Connection::open_with_flags(&source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| {
             format!(
                 "Unable to open SPLINED database {} for backup: {error}",
@@ -184,26 +210,38 @@ pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<
         .backup(MAIN_DB, &snapshot_path, None)
         .map_err(|error| format!("Unable to create the SQLite snapshot: {error}"))?;
     validate_sqlite_backup(&snapshot_path)?;
-    replace_file_from(
-        &path,
-        &snapshot_path,
-        "SQLite backup",
-        validate_sqlite_backup,
-    )?;
-    Ok(path)
+    Ok((temporary, snapshot_path))
 }
 
 /// Restore a standalone SQLite snapshot to the configured database location.
 pub fn restore_database_backup(path: &Path, config: &Config) -> Result<PathBuf, String> {
     validate_sqlite_backup(path)?;
     let destination = Path::new(&config.scan.cache_dir).join("splined.db");
-    replace_file_from(
-        &destination,
-        path,
-        "SPLINED SQLite database",
-        validate_sqlite_backup,
-    )?;
+    let _shared_lock = config
+        .scan
+        .sqlite_shared
+        .then(|| claim_shared_database(&destination))
+        .transpose()?;
+    restore_sqlite_snapshot(path, &destination)?;
     Ok(destination)
+}
+
+fn restore_sqlite_snapshot(source_path: &Path, destination: &Path) -> Result<(), String> {
+    validate_sqlite_backup(source_path)?;
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Unable to prepare database directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Unable to open SQLite backup for restore: {error}"))?;
+    source
+        .backup(MAIN_DB, destination, None)
+        .map_err(|error| format!("Unable to restore the SQLite snapshot: {error}"))?;
+    validate_sqlite_backup(destination)
 }
 
 /// Write a human-readable, secret-free diagnostic summary as its own JSON
@@ -337,14 +375,18 @@ pub fn restore_backup(
     {
         let bytes = decode(&encoded, "database")?;
         let database = Path::new(&destination.scan.cache_dir).join("splined.db");
-        replace_binary_file(&database, &bytes, "restored SPLINED database", |staged| {
-            let bytes = std::fs::read(staged)
-                .map_err(|error| format!("Unable to verify restored database: {error}"))?;
-            if bytes.len() < 16 || &bytes[..16] != b"SQLite format 3\0" {
-                return Err("The restored database is not a SQLite database.".to_string());
-            }
-            Ok(())
+        let _shared_lock = destination
+            .scan
+            .sqlite_shared
+            .then(|| claim_shared_database(&database))
+            .transpose()?;
+        let temporary = tempfile::TempDir::new().map_err(|error| {
+            format!("Unable to create database restore staging directory: {error}")
         })?;
+        let staged = temporary.path().join("splined.sqlite");
+        std::fs::write(&staged, bytes)
+            .map_err(|error| format!("Unable to stage the database restore: {error}"))?;
+        restore_sqlite_snapshot(&staged, &database)?;
     }
     Ok(destination)
 }
@@ -598,5 +640,55 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(diagnostics).unwrap()).unwrap();
         assert_eq!(summary["format"], "SPLINED-DIAGNOSTIC-SUMMARY");
         assert_eq!(summary["database"]["quick_check"], "ok");
+    }
+
+    #[test]
+    fn spl_archive_includes_committed_wal_rows() {
+        let root = TempDir::new().unwrap();
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let database = cache.join("splined.db");
+        let writer = Connection::open(&database).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('from-wal');",
+            )
+            .unwrap();
+        assert!(database.with_extension("db-wal").is_file());
+
+        let mut config = Config::default();
+        config.scan.cache_dir = cache.to_string_lossy().into_owned();
+        let selection = BackupSelection {
+            settings: false,
+            credentials: false,
+            database: true,
+            interface: false,
+            diagnostics: false,
+        };
+        let archive = export_backup(&root.path().join("library"), &config, selection, "").unwrap();
+        let envelope: BackupEnvelope =
+            serde_json::from_slice(&std::fs::read(&archive).unwrap()).unwrap();
+        let payload: BackupPayload =
+            serde_json::from_slice(&unprotect(&envelope, "").unwrap()).unwrap();
+        let snapshot = root.path().join("extracted.sqlite");
+        std::fs::write(
+            &snapshot,
+            decode(payload.database.as_deref().unwrap(), "database").unwrap(),
+        )
+        .unwrap();
+        let value: String = Connection::open(&snapshot)
+            .unwrap()
+            .query_row("SELECT value FROM fixture", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "from-wal");
+
+        writer
+            .execute("UPDATE fixture SET value = 'changed-after-backup'", [])
+            .unwrap();
+        restore_backup(&archive, &config, selection, "").unwrap();
+        let restored: String = writer
+            .query_row("SELECT value FROM fixture", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(restored, "from-wal");
     }
 }

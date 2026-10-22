@@ -21,6 +21,7 @@ pub enum ControllerNotice {
 pub struct ScanController {
     state: Arc<Mutex<ApplicationState>>,
     running: Arc<AtomicBool>,
+    refreshing: Arc<AtomicBool>,
     musicbrainz_requested: Arc<AtomicBool>,
     notices: mpsc::Sender<ControllerNotice>,
     debug: Option<ProcessingDebugSink>,
@@ -99,6 +100,7 @@ impl ScanController {
             Self {
                 state,
                 running: Arc::new(AtomicBool::new(false)),
+                refreshing: Arc::new(AtomicBool::new(false)),
                 musicbrainz_requested: Arc::new(AtomicBool::new(false)),
                 notices,
                 debug,
@@ -157,6 +159,10 @@ impl ScanController {
             .is_err()
         {
             return Err("A SPLINED run is already active.".to_string());
+        }
+        if self.refreshing.load(Ordering::SeqCst) {
+            self.running.store(false, Ordering::SeqCst);
+            return Err("Wait for Refresh DB to finish before starting a run.".to_string());
         }
 
         let (base_config, queue, launch_mode, auto_ideal, selection_epoch) = {
@@ -486,23 +492,34 @@ impl ScanController {
     }
 
     pub fn refresh_library(&self, refresh: bool) -> Result<(), String> {
-        if self.is_running() {
-            return Err("The media library cannot be rebuilt during an active run.".to_string());
+        if self
+            .refreshing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("Refresh DB is already in progress.".to_string());
         }
-        let config = self
-            .state
-            .lock()
-            .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
-            .config
-            .clone();
-        let snapshot = media_snapshot(&config, refresh)?;
-        self.state
-            .lock()
-            .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
-            .library
-            .replace_snapshot(snapshot)?;
-        let _ = self.notices.send(ControllerNotice::StateChanged);
-        Ok(())
+        let result = (|| {
+            if self.is_running() {
+                return Err("The media library cannot be rebuilt during an active run.".to_string());
+            }
+            let config = self
+                .state
+                .lock()
+                .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
+                .config
+                .clone();
+            let snapshot = media_snapshot(&config, refresh)?;
+            self.state
+                .lock()
+                .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
+                .library
+                .replace_snapshot(snapshot)?;
+            let _ = self.notices.send(ControllerNotice::StateChanged);
+            Ok(())
+        })();
+        self.refreshing.store(false, Ordering::SeqCst);
+        result
     }
 }
 

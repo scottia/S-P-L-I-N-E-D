@@ -57,14 +57,14 @@ def image_signature(path: Path) -> VisualSignature:
         image = ImageOps.exif_transpose(opened).convert("L")
         width, height = image.size
         dhash_image = image.resize((9, 8), Image.Resampling.LANCZOS)
-        pixels = list(dhash_image.getdata())
+        pixels = list(dhash_image.get_flattened_data())
         comparisons = [
             pixels[(row * 9) + column] > pixels[(row * 9) + column + 1]
             for row in range(8)
             for column in range(8)
         ]
         average_image = image.resize((8, 8), Image.Resampling.LANCZOS)
-        average_pixels = list(average_image.getdata())
+        average_pixels = list(average_image.get_flattened_data())
         average = sum(average_pixels) / max(1, len(average_pixels))
         average_comparisons = [value >= average for value in average_pixels]
     signature = VisualSignature(

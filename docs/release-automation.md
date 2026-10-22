@@ -19,7 +19,11 @@ GitHub Release.
 
 Run `SPLINED (All OS) and GHCR` from `main`. Select Windows, Ubuntu, macOS, or
 All. **Microsoft Store** defaults to `true`; **Extended Windows validation**
-defaults to `false`.
+defaults to `false`. Leave **Release version** blank for the next patch, or enter
+a numeric version such as `2.0.0` for an intentional major/minor jump. An
+explicit version must exceed the current source version and every existing
+numeric tag. The workflow—not the maintainer's branch merge—updates all release
+metadata and creates the tag after validation.
 
 The workflow prepares an exact untagged release commit, builds and validates
 the selected targets, and only then atomically creates the numeric tag and

@@ -414,7 +414,7 @@ impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            retention_days: 0,
+            retention_days: 14,
         }
     }
 }

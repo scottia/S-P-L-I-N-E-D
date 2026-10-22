@@ -716,9 +716,41 @@ impl LibraryState {
     }
 
     fn track_matches_artist(track_artist: &str, artist: &str) -> bool {
-        track_artist
+        Self::artist_credit_position(track_artist, artist).is_some()
+    }
+
+    fn artist_credit_position(track_artist: &str, artist: &str) -> Option<usize> {
+        let selected = artist.trim().to_lowercase();
+        if selected.is_empty() {
+            return None;
+        }
+        // Preserve an artist name containing '&' when the tag already has
+        // explicit multi-value separators (or names just one band).
+        let explicit = track_artist
             .split(['\0', ';'])
-            .any(|value| value.trim().eq_ignore_ascii_case(artist.trim()))
+            .map(str::trim)
+            .filter(|credit| !credit.is_empty())
+            .collect::<Vec<_>>();
+        if let Some(position) = explicit
+            .iter()
+            .position(|credit| credit.to_lowercase() == selected)
+        {
+            return Some(position);
+        }
+        let credits = [" & ", " feat. ", " featuring ", " ft. ", " with "]
+            .iter()
+            .fold(track_artist.to_lowercase(), |text, separator| {
+                text.replace(separator, "\0")
+            });
+        credits
+            .split(['\0', ';'])
+            .map(str::trim)
+            .filter(|credit| !credit.is_empty())
+            .position(|credit| credit == selected.as_str())
+    }
+
+    pub fn artist_credit_is_secondary(track_artist: &str, artist: &str) -> bool {
+        Self::artist_credit_position(track_artist, artist).is_some_and(|position| position > 0)
     }
 
     /// Completion of a fallback appearance is scoped to this artist's tracks,
@@ -747,22 +779,14 @@ impl LibraryState {
         })
     }
 
-    /// A featured credit appears after the primary performer in the track's
-    /// multi-artist tag. Do not mark a primary credit as FEAT on mixed albums.
+    /// FEATURING is based on any track where this artist follows the primary
+    /// performer, even when they are primary on another track in the album.
     pub fn artist_fallback_is_featured(album: &AlbumEntry, artist: &str) -> bool {
-        let mut featured = false;
-        for track in &album.snapshot.compilation_tracks {
-            let position = track
-                .artist
-                .split(['\0', ';'])
-                .position(|credit| credit.trim().eq_ignore_ascii_case(artist.trim()));
-            match position {
-                Some(0) => return false,
-                Some(_) => featured = true,
-                None => {}
-            }
-        }
-        featured
+        album
+            .snapshot
+            .compilation_tracks
+            .iter()
+            .any(|track| Self::artist_credit_is_secondary(&track.artist, artist))
     }
 
     pub fn rows(&self) -> Vec<LibraryRow> {
@@ -2177,6 +2201,9 @@ pub struct ApplicationState {
     pub candidate_excluded_types: BTreeSet<String>,
     pub candidate_excluded_policies: BTreeSet<String>,
     pub candidate_excluded_ranges: BTreeSet<String>,
+    /// Session-only filter locks; an unlocked filter retains its prior behavior.
+    pub media_filter_locked: bool,
+    pub candidate_filter_locked: bool,
     pub comparison_candidates: BTreeSet<usize>,
     pub hover_enabled: bool,
     pub hovered_candidate: Option<usize>,
@@ -2219,6 +2246,12 @@ pub struct ApplicationState {
     pub intro_dismissed: bool,
     pub completion_dialog_visible: bool,
     pub completion_message: String,
+    pub compilation_report_artist: String,
+    pub compilation_report_summary: String,
+    pub compilation_report_collapsed_albums: HashSet<String>,
+    pub compilation_report_auto_close_armed: bool,
+    pub compilation_report_close_pending: bool,
+    pub compilation_report_generation: u64,
     pub log: Vec<String>,
     pub last_error: Option<String>,
     pub service_status: String,
@@ -2372,6 +2405,8 @@ impl ApplicationState {
             primary_adjustments: default_primary_adjustments(),
             media_selector_expanded: true,
             candidate_filter_expanded: true,
+            media_filter_locked: false,
+            candidate_filter_locked: false,
             artwork_editing_expanded: true,
             show_artwork: true,
             upscale_preview_only: true,
@@ -2380,6 +2415,12 @@ impl ApplicationState {
             intro_dismissed: false,
             completion_dialog_visible: false,
             completion_message: String::new(),
+            compilation_report_artist: String::new(),
+            compilation_report_summary: String::new(),
+            compilation_report_collapsed_albums: HashSet::new(),
+            compilation_report_auto_close_armed: false,
+            compilation_report_close_pending: false,
+            compilation_report_generation: 0,
             log: vec!["SPLINED Rust application initialized.".to_string()],
             last_error: None,
             service_status: "Ready".to_string(),
@@ -2729,7 +2770,9 @@ impl ApplicationState {
         self.selected_candidate = None;
         self.comparison_candidates.clear();
         self.hovered_candidate = None;
-        self.clear_candidate_filters();
+        if !self.candidate_filter_locked {
+            self.clear_candidate_filters();
+        }
         self.current_album_path.clear();
         self.current_artist = focused_artist.clone().unwrap_or_default();
         self.current_album.clear();
@@ -2953,6 +2996,9 @@ impl ApplicationState {
     }
 
     pub fn activate_available_candidate_filters(&mut self) {
+        if self.candidate_filter_locked {
+            return;
+        }
         self.clear_candidate_filters();
         for key in [
             "Recommended",
@@ -3161,6 +3207,32 @@ impl ApplicationState {
             .min(self.config.sources.cover_sources.len().saturating_sub(1));
         if index != target {
             self.config.sources.cover_sources.swap(index, target);
+            let by_name = self
+                .sources
+                .iter()
+                .map(|item| (item.name.to_ascii_lowercase(), item.clone()))
+                .collect::<HashMap<_, _>>();
+            self.sources = candidate_source_card_names(&self.config)
+                .into_iter()
+                .filter_map(|name| by_name.get(&name.to_ascii_lowercase()).cloned())
+                .collect();
+        }
+        Ok(())
+    }
+
+    pub fn move_source_to(&mut self, source: &str, target: &str) -> Result<(), String> {
+        let order = &mut self.config.sources.cover_sources;
+        let source_index = order
+            .iter()
+            .position(|item| item.eq_ignore_ascii_case(source))
+            .ok_or_else(|| format!("Unknown artwork source: {source}"))?;
+        let target_index = order
+            .iter()
+            .position(|item| item.eq_ignore_ascii_case(target))
+            .ok_or_else(|| format!("Unknown artwork source: {target}"))?;
+        if source_index != target_index {
+            let moved = order.remove(source_index);
+            order.insert(target_index, moved);
             let by_name = self
                 .sources
                 .iter()
@@ -4872,6 +4944,24 @@ mod tests {
             "Jason Derulo"
         ));
         assert!(LibraryState::artist_fallback_is_featured(album, "2 Chainz"));
+        album.snapshot.compilation_tracks.push(MediaTrackSnapshot {
+            path: r"C:\Music\Various Artists\Compilation\Duet.mp3".to_string(),
+            title: "Duet".to_string(),
+            artist: "George Jones & Merle Haggard".to_string(),
+            embedded_artwork_recorded: true,
+        });
+        assert!(!LibraryState::artist_fallback_is_featured(
+            album,
+            "George Jones"
+        ));
+        assert!(LibraryState::artist_fallback_is_featured(
+            album,
+            "Merle Haggard"
+        ));
+        assert_eq!(
+            LibraryState::artist_fallback_track_progress(album, "Merle Haggard"),
+            Some((1, 1))
+        );
     }
 
     #[test]
@@ -6270,6 +6360,24 @@ mod tests {
                 .find(|source| source.name == "navidrome")
                 .unwrap()
                 .enabled
+        );
+        state.move_source_to("navidrome", "discogs").unwrap();
+        assert_eq!(
+            state.config.sources.cover_sources,
+            vec!["navidrome", "discogs", "itunes"]
+        );
+        assert_eq!(
+            state
+                .sources
+                .iter()
+                .map(|source| source.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["samples", "local", "navidrome", "discogs", "itunes"]
+        );
+        state.move_source_to("navidrome", "itunes").unwrap();
+        assert_eq!(
+            state.config.sources.cover_sources,
+            vec!["discogs", "itunes", "navidrome"]
         );
     }
 

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::error::Error as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const CLIENT_NAME: &str = "SPLINED";
 const PROTOCOL_VERSION: &str = "1.16.1";
@@ -161,13 +161,37 @@ pub struct NavidromeArtistLibrary {
 pub struct NavidromeCompanion {
     client: Client,
     credential: NavidromeCredential,
+    artwork_cache_stats: Arc<NavidromeArtworkCacheCounters>,
+}
+
+#[derive(Default)]
+struct NavidromeArtworkCacheCounters {
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NavidromeArtworkCacheStats {
+    pub hits: u64,
+    pub misses: u64,
 }
 
 impl NavidromeCompanion {
     pub fn new(credential: NavidromeCredential) -> Result<Self, String> {
         credential.validate()?;
         let client = navidrome_client(&credential.server_url)?;
-        Ok(Self { client, credential })
+        Ok(Self {
+            client,
+            credential,
+            artwork_cache_stats: Arc::new(NavidromeArtworkCacheCounters::default()),
+        })
+    }
+
+    pub fn artwork_cache_stats(&self) -> NavidromeArtworkCacheStats {
+        NavidromeArtworkCacheStats {
+            hits: self.artwork_cache_stats.hits.load(Ordering::Relaxed),
+            misses: self.artwork_cache_stats.misses.load(Ordering::Relaxed),
+        }
     }
 
     /// Upload artist artwork through Navidrome's native artist-image API.
@@ -664,8 +688,14 @@ impl NavidromeCompanion {
             .collect::<String>();
         let path = cache_directory.join(format!("{filename}.img"));
         if path.is_file() && crate::inspect::inspect_image(&path).is_ok() {
+            self.artwork_cache_stats
+                .hits
+                .fetch_add(1, Ordering::Relaxed);
             return Ok(Some(path));
         }
+        self.artwork_cache_stats
+            .misses
+            .fetch_add(1, Ordering::Relaxed);
         let response = self
             .client
             .get(parsed)
@@ -717,8 +747,14 @@ impl NavidromeCompanion {
             .collect::<String>();
         let path = cache_directory.join(format!("{filename}.img"));
         if path.is_file() && crate::inspect::inspect_image(&path).is_ok() {
+            self.artwork_cache_stats
+                .hits
+                .fetch_add(1, Ordering::Relaxed);
             return Ok(Some(path));
         }
+        self.artwork_cache_stats
+            .misses
+            .fetch_add(1, Ordering::Relaxed);
         let mut parameters = vec![("id", cover_art_id.to_string())];
         if size > 0 {
             parameters.push(("size", size.to_string()));
@@ -1835,6 +1871,9 @@ mod tests {
             .unwrap();
         assert_eq!(first, second);
         assert!(crate::inspect::inspect_image(&first).is_ok());
+        assert_eq!(companion.artwork_cache_stats().misses, 1);
+        assert_eq!(companion.artwork_cache_stats().hits, 1);
+        assert_eq!(companion.clone().artwork_cache_stats().hits, 1);
         let cover_requests = server
             .requests()
             .iter()

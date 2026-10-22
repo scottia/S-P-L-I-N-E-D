@@ -52,6 +52,79 @@ pub fn inventory_album_directories(
     })
 }
 
+/// Discover Album folders for the startup new-media notice without retaining
+/// every track path. Directory entries must still be enumerated to find child
+/// folders, but no audio file is opened or statted here.
+pub fn audio_containing_directories(
+    root: &Path,
+    ignored_subs: &[String],
+) -> Result<Vec<PathBuf>, String> {
+    if !root.is_dir() {
+        return Err(format!(
+            "SPLINED scan directory does not exist or is not a directory: {}",
+            root.display()
+        ));
+    }
+    let mut albums = Vec::new();
+    visit_audio_directories(root, ignored_subs, true, &mut albums)?;
+    albums.sort();
+    Ok(albums)
+}
+
+fn visit_audio_directories(
+    directory: &Path,
+    ignored_subs: &[String],
+    is_root: bool,
+    albums: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    if !is_root
+        && directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| should_ignore_directory(name, ignored_subs))
+    {
+        return Ok(());
+    }
+    let mut has_audio = false;
+    let mut child_directories = Vec::new();
+    for entry in fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Unable to read SPLINED scan directory {}: {error}",
+            directory.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Unable to read an entry in SPLINED scan directory {}: {error}",
+                directory.display()
+            )
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "Unable to inspect SPLINED scan entry {}: {error}",
+                path.display()
+            )
+        })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            child_directories.push(path);
+        } else if !has_audio && file_type.is_file() && is_supported_audio_file(&path) {
+            has_audio = true;
+        }
+    }
+    if has_audio {
+        albums.push(directory.to_path_buf());
+    }
+    child_directories.sort();
+    for child in child_directories {
+        visit_audio_directories(&child, ignored_subs, false, albums)?;
+    }
+    Ok(())
+}
+
 fn visit_directory(
     directory: &Path,
     ignored_subs: &[String],
@@ -206,6 +279,14 @@ mod tests {
                 .any(|item| item.path == nested_album)
         );
         assert_eq!(inventory.ignored_directories, vec![root.join("metadata")]);
+        assert_eq!(
+            audio_containing_directories(root, &["metadata".to_string()]).unwrap(),
+            inventory
+                .albums
+                .iter()
+                .map(|album| album.path.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -339,7 +339,7 @@ ladder = 3600
         assert_eq!(parsed.credentials.credential_dir, "private-credentials");
         assert_eq!(parsed.logging.retention_days, 14);
         assert!(parsed.history.enabled);
-        assert_eq!(parsed.history.retention_days, 0);
+        assert_eq!(parsed.history.retention_days, 14);
         assert!(migrated.contains("[source_policies]"));
         assert!(!migrated.contains("credential_file"));
         assert!(!migrated.contains("token_file"));

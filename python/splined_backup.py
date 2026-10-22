@@ -8,10 +8,12 @@ Python never pretends to decrypt or silently weakens them.
 from __future__ import annotations
 
 import base64
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
 import json
 import os
+import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +23,38 @@ from typing import Any, Iterable
 FORMAT = "SPLINED-BACKUP"
 VERSION = 1
 COMPONENTS = frozenset({"settings", "interface", "credentials", "database", "diagnostics"})
+
+
+@contextmanager
+def _database_client_lock(path: Path, shared: bool):
+    if not shared:
+        yield
+        return
+    from splined_media_database import _claim_shared_database, _release_shared_database
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _claim_shared_database(path)
+    try:
+        yield
+    finally:
+        _release_shared_database(lock_path)
+
+
+def _verify_sqlite(path: Path) -> None:
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+        result = connection.execute("PRAGMA quick_check").fetchone()
+        if result is None or result[0] != "ok":
+            raise ValueError("The backup database failed SQLite integrity validation.")
+
+
+def _database_snapshot_bytes(path: Path, shared: bool) -> bytes:
+    with _database_client_lock(path, shared), tempfile.TemporaryDirectory() as directory:
+        snapshot = Path(directory) / "splined.sqlite"
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(snapshot)) as destination:
+                source.backup(destination)
+        _verify_sqlite(snapshot)
+        return snapshot.read_bytes()
 
 
 def _atomic_bytes(path: Path, content: bytes) -> None:
@@ -62,6 +96,7 @@ def export_backup(
     components: Iterable[str],
     interface_path: Path | None = None,
     diagnostics: str = "",
+    shared: bool = False,
 ) -> Path:
     selected = _selection(components)
     path = Path(destination)
@@ -88,7 +123,9 @@ def export_backup(
                 credentials[item.name] = base64.b64encode(item.read_bytes()).decode("ascii")
         payload["credentials"] = credentials
     if "database" in selected and database_path.is_file() and not database_path.is_symlink():
-        payload["database"] = base64.b64encode(database_path.read_bytes()).decode("ascii")
+        payload["database"] = base64.b64encode(
+            _database_snapshot_bytes(database_path, shared)
+        ).decode("ascii")
 
     plain = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     envelope = {
@@ -140,6 +177,7 @@ def restore_backup(
     credential_dir: Path,
     database_path: Path,
     interface_path: Path | None = None,
+    shared: bool = False,
 ) -> set[str]:
     selected = _selection(components)
     payload = read_backup(source)
@@ -181,22 +219,36 @@ def restore_backup(
         except (ValueError, TypeError) as exc:
             raise ValueError("The backup database payload is damaged.") from exc
 
-    # Every selected payload is validated before the first destination file is
-    # replaced. Each replacement is then atomic on its destination filesystem.
-    restored: set[str] = set()
-    if settings_bytes is not None:
-        _atomic_bytes(config_path, settings_bytes)
-        restored.add("settings")
-    if interface_bytes is not None and interface_path is not None:
-        _atomic_bytes(interface_path, interface_bytes)
-        restored.add("interface")
-    if "credentials" in selected and isinstance(credentials, dict):
-        for safe_name, content in decoded_credentials.items():
-            _atomic_bytes(credential_dir / safe_name, content)
-        restored.add("credentials")
-    if database_bytes is not None:
-        _atomic_bytes(database_path, database_bytes)
-        restored.add("database")
-    if "diagnostics" in selected and payload.get("diagnostics") is not None:
-        restored.add("diagnostics")
-    return restored
+    database_staging = tempfile.TemporaryDirectory() if database_bytes is not None else None
+    try:
+        if database_staging is not None:
+            staged_database = Path(database_staging.name) / "splined.sqlite"
+            staged_database.write_bytes(database_bytes)
+            _verify_sqlite(staged_database)
+
+        # Validate every selected payload before writing any destination. SQLite's
+        # online backup API restores the database safely even when WAL is active.
+        with _database_client_lock(database_path, shared and database_bytes is not None):
+            restored: set[str] = set()
+            if settings_bytes is not None:
+                _atomic_bytes(config_path, settings_bytes)
+                restored.add("settings")
+            if interface_bytes is not None and interface_path is not None:
+                _atomic_bytes(interface_path, interface_bytes)
+                restored.add("interface")
+            if "credentials" in selected and isinstance(credentials, dict):
+                for safe_name, content in decoded_credentials.items():
+                    _atomic_bytes(credential_dir / safe_name, content)
+                restored.add("credentials")
+            if database_staging is not None:
+                database_path.parent.mkdir(parents=True, exist_ok=True)
+                with closing(sqlite3.connect(staged_database)) as source:
+                    with closing(sqlite3.connect(database_path)) as destination:
+                        source.backup(destination)
+                restored.add("database")
+            if "diagnostics" in selected and payload.get("diagnostics") is not None:
+                restored.add("diagnostics")
+            return restored
+    finally:
+        if database_staging is not None:
+            database_staging.cleanup()

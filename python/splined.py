@@ -8354,6 +8354,7 @@ def run_backup_command(
                 f"verbosity={cfg.get('verbosity', 'info')};"
                 f"log_retention_days={section(cfg, 'logging').get('retention_days', 14)}"
             ),
+            shared=bool(section(cfg, "scan").get("sqlite_shared", False)),
         )
         print(f"SPLINED backup written: {destination}")
         return 0
@@ -8378,6 +8379,7 @@ def run_backup_command(
         credential_dir=credentials,
         database_path=cache / "splined.db",
         interface_path=interface_path,
+        shared=bool(section(destination_cfg, "scan").get("sqlite_shared", False)),
     )
     print(
         "SPLINED backup restored: "

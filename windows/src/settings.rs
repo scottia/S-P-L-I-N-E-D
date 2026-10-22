@@ -13,6 +13,9 @@ pub struct UiPreferences {
     #[serde(default = "legacy_workspace_layout_revision")]
     pub workspace_layout_revision: u32,
     pub appearance: String,
+    pub status_bar_intensity: String,
+    pub status_bar_position: String,
+    pub status_bar_size: String,
     pub workspace_mode: u8,
     pub library_view: String,
     pub status_filter: String,
@@ -33,6 +36,13 @@ pub struct UiPreferences {
     pub disable_confirmation_messages: bool,
     pub backup_directory: String,
     pub restore_path: String,
+    pub backup_selected_type: String,
+    /// Zero keeps every matching file. Limits apply only to SPLINED's own
+    /// timestamped backups in the selected backup directory.
+    pub max_settings_backup_files: String,
+    pub max_database_backup_files: String,
+    pub max_diagnostic_backup_files: String,
+    pub backup_prompt_dismissed: bool,
     /// Settings/credentials/interface `.spl` schedule. The original field name
     /// is retained so existing portable UI preferences migrate without loss.
     pub backup_schedule: String,
@@ -82,6 +92,9 @@ impl Default for UiPreferences {
         Self {
             workspace_layout_revision: CURRENT_WORKSPACE_LAYOUT_REVISION,
             appearance: "System".to_string(),
+            status_bar_intensity: "Full".to_string(),
+            status_bar_position: "Top".to_string(),
+            status_bar_size: "Small".to_string(),
             workspace_mode: 0,
             library_view: "artists".to_string(),
             status_filter: "all".to_string(),
@@ -102,6 +115,11 @@ impl Default for UiPreferences {
             disable_confirmation_messages: false,
             backup_directory: String::new(),
             restore_path: String::new(),
+            backup_selected_type: "Settings Archive".to_string(),
+            max_settings_backup_files: "0".to_string(),
+            max_database_backup_files: "0".to_string(),
+            max_diagnostic_backup_files: "0".to_string(),
+            backup_prompt_dismissed: false,
             backup_schedule: "Off".to_string(),
             database_backup_schedule: "Off".to_string(),
             diagnostics_backup_schedule: "Off".to_string(),
@@ -473,6 +491,7 @@ pub fn normalize_appearance(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "light" => "Light",
         "dark" => "Dark",
+        "chalk" => "Chalk",
         _ => "System",
     }
     .to_string()
@@ -719,6 +738,9 @@ mod tests {
     fn mature_interface_preferences_round_trip_without_a_second_authority() {
         let preferences = UiPreferences {
             appearance: "Light".to_string(),
+            status_bar_intensity: "Mild".to_string(),
+            status_bar_position: "Bottom".to_string(),
+            status_bar_size: "Large".to_string(),
             workspace_mode: 2,
             library_view: "folders".to_string(),
             status_filters: vec!["Unprocessed".to_string(), "Incomplete".to_string()],
@@ -1060,6 +1082,7 @@ window_height = 1977
         assert_eq!(layout.normal_window_height, 720);
         assert!(layout.maximized);
         assert_eq!(normalize_appearance("light"), "Light");
+        assert_eq!(normalize_appearance("chalk"), "Chalk");
         assert_eq!(normalize_appearance("anything else"), "System");
     }
 }

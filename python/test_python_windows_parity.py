@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+from contextlib import closing
 import hashlib
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -195,7 +197,10 @@ class StructuredSettingsAndBackupTests(unittest.TestCase):
             config.write_text("config_version = 5\n", encoding="utf-8")
             interface.write_text("theme = 'OLED'\n", encoding="utf-8")
             (credentials / "musicbrainz.json").write_text('{"token":"fixture"}', encoding="utf-8")
-            database.write_bytes(b"sqlite-fixture")
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute("CREATE TABLE fixture (value TEXT)")
+                connection.execute("INSERT INTO fixture VALUES ('sqlite-fixture')")
+                connection.commit()
             backup = export_backup(
                 root / "portable",
                 config_path=config,
@@ -209,7 +214,11 @@ class StructuredSettingsAndBackupTests(unittest.TestCase):
             self.assertEqual(envelope["format"], "SPLINED-BACKUP")
             self.assertFalse(envelope["password_protected"])
             payload = read_backup(backup)
-            self.assertEqual(base64.b64decode(payload["database"]), b"sqlite-fixture")
+            extracted = root / "extracted.sqlite"
+            extracted.write_bytes(base64.b64decode(payload["database"]))
+            with closing(sqlite3.connect(extracted)) as connection:
+                value = connection.execute("SELECT value FROM fixture").fetchone()[0]
+            self.assertEqual(value, "sqlite-fixture")
 
             restored_config = root / "restore" / "config.toml"
             restored_ui = root / "restore" / "ui.toml"
@@ -228,6 +237,44 @@ class StructuredSettingsAndBackupTests(unittest.TestCase):
             self.assertTrue(restored_ui.is_file())
             self.assertFalse(restored_credentials.exists())
             self.assertFalse(restored_database.exists())
+
+    def test_backup_captures_wal_and_restores_into_active_wal_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.toml"
+            config.write_text("config_version = 5\n", encoding="utf-8")
+            database = root / "splined.db"
+            writer = sqlite3.connect(database)
+            try:
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute("CREATE TABLE fixture(value TEXT)")
+                writer.execute("INSERT INTO fixture VALUES ('before')")
+                writer.commit()
+                self.assertTrue(Path(str(database) + "-wal").is_file())
+                backup = export_backup(
+                    root / "library.spl",
+                    config_path=config,
+                    credential_dir=root / "credentials",
+                    database_path=database,
+                    splined_version="1.0.99",
+                    components=("database",),
+                )
+                writer.execute("UPDATE fixture SET value = 'after'")
+                writer.commit()
+            finally:
+                writer.close()
+
+            restored = restore_backup(
+                backup,
+                components=("database",),
+                config_path=config,
+                credential_dir=root / "credentials",
+                database_path=database,
+            )
+            self.assertEqual(restored, {"database"})
+            with closing(sqlite3.connect(database)) as connection:
+                value = connection.execute("SELECT value FROM fixture").fetchone()[0]
+            self.assertEqual(value, "before")
 
     def test_restore_preflights_every_selected_payload_before_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

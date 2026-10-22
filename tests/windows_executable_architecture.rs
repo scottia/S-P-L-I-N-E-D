@@ -175,9 +175,9 @@ fn slint_surface_exposes_real_migrated_workflows() {
         "MusicBrainz Results",
         "Upscale / Enhance",
         "Provider Credentials",
-        "Separate Backup / Restore Files",
-        "SQLite database snapshot (.sqlite)",
-        "Diagnostic summary (.json)",
+        "Backup / Restore",
+        "SQLite Database Snapshot (.sqlite)",
+        "Diagnostic Summary (.json)",
     ] {
         assert!(ui.contains(label), "Slint surface is missing {label}");
     }
@@ -235,14 +235,11 @@ fn slint_surface_exposes_real_migrated_workflows() {
     assert!(!ui.contains("Upscale Settings"));
     assert!(!ui.contains("Select a candidate below to preview and apply."));
     assert!(!ui.contains("All eight controls update both previews live."));
+    assert!(ui.contains("label: \"Upscale Preview\"; width: (parent.width - 12px) / 3"));
     assert!(
-        ui.contains(
-            "label: \"Upscale Preview\"; width: 144px; height: 34px; label-font-size: 14px"
-        )
+        ui.contains("label: root.selected-artwork-write-label; width: (parent.width - 12px) / 3")
     );
-    assert!(
-        ui.contains("label: root.artist-artwork-mode ? \"WRITE Artist\" : (root.selected-artwork-existing ? \"Existing\" : \"WRITE Cover\"); width: 128px; height: 34px; label-font-size: 14px")
-    );
+    assert!(ui.contains("label: \"EMBED Thumbs\"; width: (parent.width - 12px) / 3"));
     assert!(ui.contains("source: root.original-preview"));
     assert!(ui.contains("source: root.current-preview"));
     assert_eq!(main.matches("set_original_preview").count(), 1);
@@ -295,9 +292,14 @@ fn slint_surface_exposes_real_migrated_workflows() {
     assert!(!ui.contains("root.position + (root.reverse"));
     assert!(ui.contains("component WorkspaceButton inherits Rectangle"));
     assert_eq!(ui.matches("WorkspaceButton { label: \"").count(), 5);
-    assert!(ui.contains("border-color: AppTheme.light ? #6b9dbb : #285a91"));
-    assert!(ui.contains("width: 6px;\n    background: drag-area.pressed ? #205b7c"));
-    assert!(ui.contains("height: 6px;\n    background: drag-area.pressed ? #205b7c"));
+    assert!(ui.contains("component WorkspaceButton inherits Rectangle"));
+    assert!(ui.contains("border-color: AppTheme.border;"));
+    assert!(
+        ui.contains("width: 6px;\n    background: drag-area.pressed ? AppTheme.selected-surface")
+    );
+    assert!(
+        ui.contains("height: 6px;\n    background: drag-area.pressed ? AppTheme.selected-surface")
+    );
     assert!(ui.contains("x: (parent.width - self.width) / 2; source: @image-url(\"../gui/source-icons/musicbrainz.svg\")"));
     assert!(ui.contains("padding-left: 6px; padding-right: 6px; spacing: 7px"));
     assert!(ui.contains("in-out property <bool> artist-biography-expanded: false"));
@@ -312,20 +314,16 @@ fn slint_surface_exposes_real_migrated_workflows() {
     assert!(ui.contains("height: self.preferred-height;"));
     assert!(ui.contains("Rectangle { horizontal-stretch: 1; background: transparent; }"));
     assert!(ui.contains("callback artist-overview-navigate(int)"));
-    assert!(ui.contains("clicked => root.artist-overview-navigate(-1)"));
-    assert!(ui.contains("clicked => root.artist-overview-navigate(1)"));
+    assert!(!ui.contains("clicked => root.artist-overview-navigate(-1)"));
+    assert!(!ui.contains("clicked => root.artist-overview-navigate(1)"));
     assert!(main.contains("adjacent_pending_artist"));
     assert!(!ui.contains("Select an artist for Artist Overview"));
     assert!(!ui.contains("root.current-artist + \"  >  \" + root.current-album; color:"));
     assert!(ui.contains("visible: root.current-artist != \"\" || root.current-album != \"\""));
-    assert!(ui.contains("Text { text: root.selected-artwork-dimensions; color: #ffffff; font-size: 16px; font-weight: 700"));
-    for undersized in ["font-size: 10px", "font-size: 11px", "font-size: 12px"] {
-        assert!(
-            !ui.contains(undersized),
-            "Slint surface regressed to undersized typography: {undersized}"
-        );
-    }
-    assert_eq!(ui.matches("font-size: 13px").count(), 1);
+    assert!(!ui.contains("Text { text: root.selected-artwork-dimensions; color: #ffffff; font-size: 16px; font-weight: 700"));
+    assert!(ui.contains("Text { text: root.selected-artwork-quality; color: AppTheme.green"));
+    assert!(ui.contains("default-font-size: 16px"));
+    assert!(ui.contains("text: root.detail; color: AppTheme.foreground; font-size: 14px"));
     assert!(ui.contains("On keeps existing art and uses a numbered filename. Off replaces the matching cover or Artist Art.\"; color: AppTheme.secondary-foreground; font-size: 13px"));
     assert!(application.contains("fallback_album_rows"));
     assert!(application.contains("toggle_artist_scope"));
@@ -349,12 +347,10 @@ fn slint_surface_exposes_real_migrated_workflows() {
     assert!(main.contains("Saved {file_name}"));
     assert!(main.contains("discover_remote_artist_artwork"));
     assert!(main.contains("synchronize_fallback_album"));
-    assert!(main.contains(
-        "let current_cover_path = if state.library.show_tracks || artist_overview_fallback_album"
-    ));
-    assert!(application.contains("focused || self.album_visible"));
-    assert!(ui.contains("window-background: root.light ? #eaf1f7 : #030d20"));
-    assert!(ui.contains("panel-background: root.light ? #f7fbfe : #030d20"));
+    assert!(main.contains("let current_cover_path = if suppress_fallback_cover"));
+    assert!(application.contains("self.album_visible(*index, &artists)"));
+    assert!(ui.contains("window-background: root.chalk ?"));
+    assert!(ui.contains("panel-background: root.chalk ?"));
     assert!(!ui.contains("imagination-message.svg"));
     assert!(!ui.contains("Welcome to S.P.L.I.N.E.D."));
     assert!(ui.contains(

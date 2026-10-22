@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import os
 import sqlite3
+import threading
 import time
 from typing import Any
 
@@ -30,6 +31,60 @@ VALID_ARTIST_STATUSES = {
     "complete",
     "contains-bypass",
 }
+
+_SHARED_LOCK_GUARD = threading.Lock()
+_SHARED_LOCK_FILES: dict[Path, Any] = {}
+
+
+def _claim_shared_database(path: Path) -> Path:
+    """Lock a shared DB while one connection is actively using it.
+
+    Both runtimes lock the first byte of the same sidecar file. The OS releases
+    the lock if a process exits unexpectedly; the file itself may remain.
+    """
+    lock_path = path.with_name(path.name + ".client-lock")
+    with _SHARED_LOCK_GUARD:
+        if lock_path in _SHARED_LOCK_FILES:
+            raise RuntimeError(
+                f"The shared SPLINED database is in use by another client ({path})."
+            )
+        handle = lock_path.open("a+b")
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.lockf(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB, 1)
+        except (OSError, ImportError) as exc:
+            handle.close()
+            raise RuntimeError(
+                f"The shared SPLINED database is in use by another client ({path}): {exc}"
+            ) from exc
+        _SHARED_LOCK_FILES[lock_path] = handle
+    return lock_path
+
+
+def _release_shared_database(lock_path: Path) -> None:
+    with _SHARED_LOCK_GUARD:
+        handle = _SHARED_LOCK_FILES.pop(lock_path, None)
+        if handle is not None:
+            handle.close()
+
+
+class _SharedConnection(sqlite3.Connection):
+    _splined_lock_path: Path | None = None
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if self._splined_lock_path is not None:
+                _release_shared_database(self._splined_lock_path)
+                self._splined_lock_path = None
 
 
 @dataclass
@@ -125,9 +180,16 @@ def connect(
 ) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     shared_mode = _shared_mode(shared)
+    lock_path = _claim_shared_database(path) if shared_mode else None
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(path, timeout=30.0)
+        connection = sqlite3.connect(
+            path,
+            timeout=30.0,
+            factory=_SharedConnection if shared_mode else sqlite3.Connection,
+        )
+        if isinstance(connection, _SharedConnection):
+            connection._splined_lock_path = lock_path
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
@@ -179,6 +241,8 @@ def connect(
                 connection.close()
             except Exception:
                 pass
+        elif lock_path is not None:
+            _release_shared_database(lock_path)
         raise
     except (sqlite3.DatabaseError, OSError) as exc:
         if connection is not None:
@@ -186,6 +250,8 @@ def connect(
                 connection.close()
             except Exception:
                 pass
+        elif lock_path is not None:
+            _release_shared_database(lock_path)
         if shared_mode:
             raise RuntimeError(
                 f"SPLINED shared database could not be opened safely: {exc}"
