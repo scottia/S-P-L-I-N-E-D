@@ -80,6 +80,10 @@ pub struct ScanConfig {
     /// Use rollback journaling for an intentionally shared/network SQLite file.
     #[serde(default)]
     pub sqlite_shared: bool,
+    /// Optional Windows-side coordination with Python's shared client lock.
+    /// SQLite's own locking remains active when this is disabled.
+    #[serde(default)]
+    pub windows_client_lock: bool,
     #[serde(default = "default_log_dir")]
     pub log_dir: String,
     pub scan_library_dir: String,
@@ -339,6 +343,7 @@ impl Default for ScanConfig {
             cache_dir: DEFAULT_CACHE_DIR.to_string(),
             temporary_cache_dir: DEFAULT_CACHE_DIR.to_string(),
             sqlite_shared: false,
+            windows_client_lock: false,
             log_dir: default_log_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
         }
@@ -930,6 +935,7 @@ mod tests {
         assert_eq!(config.verbosity, Verbosity::Info);
         assert!(config.scan.scan_mode);
         assert!(!config.scan.library_scan);
+        assert!(!config.scan.windows_client_lock);
         assert_eq!(config.scan.cache_dir, "_cache");
         assert_eq!(config.scan.temporary_cache_dir, "_cache");
         assert!(config.scan.scan_library_dir.is_empty());
@@ -975,6 +981,20 @@ mod tests {
         assert_eq!(parsed.output.embedded_thumbnail_size, 1600);
         config.output.embedded_thumbnail_size = 299;
         assert!(parse_config(&toml::to_string(&config).unwrap()).is_err());
+    }
+
+    #[test]
+    fn older_shared_config_defaults_optional_windows_lock_off() {
+        let mut config = Config::default();
+        config.scan.sqlite_shared = true;
+        let mut value = toml::Value::try_from(&config).unwrap();
+        value["scan"]
+            .as_table_mut()
+            .unwrap()
+            .remove("windows_client_lock");
+        let parsed: Config = toml::from_str(&toml::to_string(&value).unwrap()).unwrap();
+        assert!(parsed.scan.sqlite_shared);
+        assert!(!parsed.scan.windows_client_lock);
     }
 
     #[test]

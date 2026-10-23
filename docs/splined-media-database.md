@@ -59,8 +59,8 @@ sqlite_shared = true
 TOML keys are section-scoped: `sqlite_shared` must appear after the `[scan]`
 header and before the next table header. Placing the same text elsewhere in the
 Python/Docker file does not configure `scan.sqlite_shared`. On Windows, enable
-**Shared SQLite database (network / multi-OS)** in Settings; the GUI stores the
-same Config v5 field internally.
+**Shared/Network SQLite** in Setup or Advanced Processing Settings; the GUI
+stores the same Config v5 field internally.
 
 The first index publication establishes the shared database's canonical path
 namespace, ignored-folder policy, and cover filename. After that, either the
@@ -75,15 +75,16 @@ rollback `DELETE` journal, `synchronous=FULL`, foreign keys, and a 30-second
 busy timeout. This prevents Linux from repeatedly forcing WAL while Windows
 opens the same file through a UNC/network share.
 
-Updated Python and Windows clients also hold an OS-managed lock on the same
-`splined.db.client-lock` sidecar during each shared-database operation. Both
-applications may stay open; if their database operations overlap, the second
-gets an explicit in-use error and can retry. An abandoned sidecar file does
-not itself hold the lock. The sidecar coordinates index refreshes and database
-operations that use the shared media-index access path; SQLite's own rollback
-journal and busy timeout still govern other direct SQL operations. It depends on the
-shared filesystem honoring cross-host file locks; verify this for a new SMB or
-NFS deployment before relying on it.
+Python/Docker continues to hold an OS-managed lock on the
+`splined.db.client-lock` sidecar during shared-database operations. Windows can
+participate by enabling `scan.windows_client_lock` in Setup or Advanced
+Processing Settings; this extra lock is off by default, including for older
+Windows Config v5 files without the key. An abandoned sidecar file does not
+itself hold a lock. If Windows does not participate, the sidecar does not
+coordinate Windows with Python, so avoid overlapping cross-host writes.
+SQLite's rollback journal and 30-second busy timeout still apply. The optional
+sidecar depends on the shared filesystem honoring cross-host file locks; do not
+assume that a timeout substitutes for verified coordination.
 
 An existing database establishes its canonical path namespace in
 `picker_inventory.signature_json`. For a cross-mounted shared database, build

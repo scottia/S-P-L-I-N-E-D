@@ -89,7 +89,11 @@ pub fn find_unindexed_audio_folders(config: &Config) -> Result<NewMediaFolders, 
         });
     }
     let db_path = database_path(&config.scan.cache_dir);
-    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
     if !database_access.path().exists() {
         return Ok(NewMediaFolders {
             count: 0,
@@ -517,8 +521,10 @@ impl DerefMut for RuntimeConnection {
 }
 
 impl DatabasePathAccess {
-    fn new(path: &Path, shared: bool) -> Result<Self, String> {
-        let shared_lock = shared.then(|| claim_shared_database(path)).transpose()?;
+    fn new(path: &Path, shared: bool, client_lock: bool) -> Result<Self, String> {
+        let shared_lock = (shared && client_lock)
+            .then(|| claim_shared_database(path))
+            .transpose()?;
         #[cfg(windows)]
         if shared {
             // Preserve the active network provider (including NFS) by
@@ -704,7 +710,11 @@ pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, S
         );
     }
     let db_path = database_path(&config.scan.cache_dir);
-    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
 
     // A normal Select Media startup is a projection of an already-published
     // index. Keep that path strictly read-only: in particular, do not request
@@ -851,7 +861,11 @@ pub fn clear_album_bypass_from_runtime(
     indexed_album_key: Option<&str>,
 ) -> Result<bool, String> {
     let db_path = database_path(&config.scan.cache_dir);
-    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
     if !database_access.path().exists() {
         return Err(format!(
             "SPLINED database is missing: {}",
@@ -926,7 +940,11 @@ fn record_album_outcome_inner(
     }
     let database_started = Instant::now();
     let db_path = database_path(&config.scan.cache_dir);
-    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
     if !database_access.path().exists() {
         return Err(format!(
             "SPLINED database is missing: {}",
@@ -1225,7 +1243,11 @@ fn runtime_connection_and_mapper(
     config: &Config,
 ) -> Result<(RuntimeConnection, PathMapper), String> {
     let db_path = database_path(&config.scan.cache_dir);
-    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
     if !database_access.path().exists() {
         return Err(format!(
             "SPLINED database is missing: {}",
@@ -2143,7 +2165,11 @@ pub fn read_runtime_cache_payload(
     cache_key: &str,
 ) -> Result<Option<String>, String> {
     let db_path = database_path(&config.scan.cache_dir);
-    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
     if !database_access.path().exists() {
         return Ok(None);
     }
@@ -2171,7 +2197,11 @@ pub fn write_runtime_cache_payload(
         return Ok(());
     }
     let db_path = database_path(&config.scan.cache_dir);
-    let database_access = DatabasePathAccess::new(&db_path, config.scan.sqlite_shared)?;
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
     if !database_access.path().exists() {
         return Err(format!(
             "SPLINED database is missing: {}",
@@ -3528,6 +3558,20 @@ mod tests {
     }
 
     #[test]
+    fn optional_client_lock_does_not_gate_shared_database_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join(DB_NAME);
+        let access = DatabasePathAccess::new(&db, true, false).unwrap();
+        assert!(access._shared_lock.is_none());
+        assert!(!db.with_file_name("splined.db.client-lock").exists());
+        drop(access);
+
+        let _held = claim_shared_database(&db).unwrap();
+        assert!(DatabasePathAccess::new(&db, true, true).is_err());
+        assert!(DatabasePathAccess::new(&db, true, false).is_ok());
+    }
+
+    #[test]
     fn runtime_connection_keeps_shared_lock_until_closed() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
@@ -3536,6 +3580,7 @@ mod tests {
         config.library.music_library = library.to_string_lossy().into_owned();
         config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
         config.scan.sqlite_shared = true;
+        config.scan.windows_client_lock = true;
         let db = database_path(&config.scan.cache_dir);
         drop(open_database(&db, true).unwrap());
         let (connection, _) = runtime_connection_and_mapper(&config).unwrap();

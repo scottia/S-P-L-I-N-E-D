@@ -1159,6 +1159,8 @@ export component AppWindow inherits Window {
     in-out property <int> workspace-mode: 0;
     in-out property <string> selected-source-name: "All";
     in-out property <bool> setup-required: false;
+    in-out property <bool> setup-saving: false;
+    in-out property <bool> import-client-lock-prompt-visible: false;
     in property <string> setup-message;
     in-out property <string> settings-music-library;
     in-out property <string> settings-scan-library;
@@ -1174,6 +1176,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-scan-timeout: "1 Day Override";
     in property <[string]> settings-override-options: ["Always Override", "1 Hour Override", "3 Hour Override", "6 Hour Override", "12 Hour Override", "1 Day Override", "1 Week Override", "1 Month Override"];
     in-out property <bool> settings-sqlite-shared: false;
+    in-out property <bool> settings-windows-client-lock: false;
     in-out property <bool> settings-sample-write: true;
     in-out property <string> settings-sample-dir;
     in-out property <bool> settings-disable-intro-message: false;
@@ -1310,7 +1313,7 @@ export component AppWindow inherits Window {
     callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
     callback prepare-embedded-thumbnail();
     callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory();
-    callback browse-backup-directory(); callback browse-restore-file();
+    callback browse-backup-directory(); callback browse-restore-file(); callback browse-setup-settings-file(); callback load-setup-settings-file();
     callback refresh-archived-backups();
     callback completion-acknowledged(); callback apply-selected-sample();
     callback load-settings(); callback save-settings(); callback save-interface-settings(); callback reset-advanced-settings(); callback save-setup();
@@ -1318,6 +1321,7 @@ export component AppWindow inherits Window {
     callback save-credential(string, string, string, string, string, string, string);
     callback test-credential(string, string, string, string, string, string, string);
     callback backup-action(string, string, string, bool, bool, bool, bool, bool); callback check-update();
+    callback choose-import-client-lock(bool);
     callback install-store-update();
     callback open-about-link(string);
 
@@ -1360,26 +1364,37 @@ export component AppWindow inherits Window {
         }
 
         if root.setup-required && root.page-index != 4: Panel { vertical-stretch: 1;
+            ScrollView { vertical-stretch: 1;
             VerticalLayout { padding: 20px; spacing: 8px;
                 HorizontalLayout { height: 62px; alignment: center;
                     BrandMark { width: 360px; height: 54px; }
                 }
                 Text { text: "S.P.L.I.N.E.D. searches, compares, enhances, and curates artwork for your music library. Browse to the Media Library you want to use, then choose Save & Open Settings to get started."; color: AppTheme.cyan; font-size: 16px; wrap: word-wrap; height: 62px; }
-                Text { text: root.setup-message; color: #f1c458; font-size: 14px; wrap: word-wrap; height: 46px; }
-                Text { text: "The Media Library must already exist. Portable database, cache, log, credential, sample, and backup locations are prefilled beside splined.exe and are created only after you save."; color: #9fc1d5; font-size: 14px; wrap: word-wrap; height: 48px; }
+                Text { text: root.setup-message; color: #f1c458; font-size: 14px; wrap: word-wrap; height: 68px; }
+                Text { text: "Moved your portable SPLINED folder? Load an existing .spl Settings Archive, review the paths below, then save. The archive is only read at this step."; color: AppTheme.cyan; font-size: 14px; wrap: word-wrap; height: 36px; }
+                PathSettingField { label: "Existing settings (.spl)"; value <=> root.restore-path; hint: "Optional Settings Archive"; browse => root.browse-setup-settings-file(); }
+                HorizontalLayout { height: 36px; spacing: 8px;
+                    Label { text: "Archive password (if set)"; width: 230px; }
+                    LineEdit { text <=> root.backup-password; input-type: InputType.password; horizontal-stretch: 1; placeholder-text: "Leave blank for an unprotected archive"; }
+                    Button { text: "Load into Setup"; width: 146px; enabled: !root.setup-saving && root.restore-path != ""; clicked => root.load-setup-settings-file(); }
+                }
+                Text { text: "The Media Library must already exist. Portable database, cache, log, credential, and sample locations are prefilled beside splined.exe and are created only after you save. A backup folder is created when you make a backup."; color: #9fc1d5; font-size: 14px; wrap: word-wrap; height: 48px; }
                 PathSettingField { label: "Media Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC music directory"; browse => root.browse-setting-directory("music"); }
+                PathSettingField { label: "Scan Library (optional)"; value <=> root.settings-scan-library; hint: "Defaults to Media Library when blank"; browse => root.browse-setting-directory("scan"); }
                 PathSettingField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Directory that owns splined.db"; browse => root.browse-setting-directory("database"); }
                 PathSettingField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; browse => root.browse-setting-directory("temporary"); }
                 PathSettingField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; browse => root.browse-setting-directory("logs"); }
                 PathSettingField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
                 RadioToggle { label: "Shared/network SQLite (Python/Docker owns the inventory)"; checked <=> root.settings-sqlite-shared; }
+                RadioToggle { label: "Use extra .client-lock for shared SQLite (optional)"; checked <=> root.settings-windows-client-lock; enabled: root.settings-sqlite-shared; }
                 SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated; optional"; }
                 Rectangle { vertical-stretch: 1; background: transparent; }
                 HorizontalLayout { spacing: 8px;
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                    Button { text: "Save & Open Settings"; width: 210px; clicked => root.save-setup(); }
+                    Button { text: root.setup-saving ? "Saving & Loading Library…" : "Save & Open Settings"; width: root.setup-saving ? 242px : 210px; enabled: !root.setup-saving; clicked => root.save-setup(); }
                 }
                 Text { text: root.error-text; color: #ff6b76; font-size: 14px; wrap: word-wrap; height: 48px; }
+            }
             }
         }
 
@@ -2375,7 +2390,6 @@ export component AppWindow inherits Window {
                                     SettingsHelpTip { summary: "What does Processing Override Delay do?"; detail: "It controls when a previously completed album becomes eligible for another scan. Always Override removes the waiting period. One Month is 30 days. It never writes files by itself."; }
                                     SettingToggle { label: "Scan Mode Enabled"; value <=> root.settings-scan-mode; }
                                     SettingToggle { label: "Full Library Scan"; value <=> root.settings-library-scan; }
-                                    SettingToggle { label: "Shared/Network SQLite"; value <=> root.settings-sqlite-shared; }
                                     SettingToggle { label: "Status History Enabled"; value <=> root.settings-history-enabled; }
                                     SettingField { label: "History Retention (Days; 0 = All)"; value <=> root.settings-history-retention; hint: "14"; }
                                     SettingsHelpTip { summary: "How do run controls differ from saved settings?"; detail: "Scope and LIVE WRITE/READ below affect the next launch in this workspace. Processing Mode above is the saved default. A run begins only after you select work and press LAUNCH."; }
@@ -2385,6 +2399,10 @@ export component AppWindow inherits Window {
                                     }
                                     Text { text: "Run " + root.run-completed + " / " + root.run-total + " Completed  ·  " + root.run-failed + " Failed"; color: root.run-failed > 0 ? AppTheme.danger : AppTheme.green; height: 24px; }
                                     if root.settings-advanced-visible: VerticalLayout { spacing: 6px;
+                                        Heading { text: "Database Access"; height: 29px; color: AppTheme.cyan; }
+                                        SettingToggle { label: "Shared/Network SQLite"; value <=> root.settings-sqlite-shared; }
+                                        RadioToggle { label: "Use extra .client-lock for shared SQLite"; checked <=> root.settings-windows-client-lock; enabled: root.settings-sqlite-shared; height: 30px; }
+                                        SettingsHelpTip { summary: "How is shared database access protected?"; detail: "Shared mode keeps SQLite's own locks, rollback journal, and 30-second busy timeout. The optional .client-lock adds another Windows/Python coordination layer only when every client uses it. Leave it off if that file cannot be locked; do not write from multiple clients at once."; }
                                         Heading { text: "Status Bar"; height: 29px; color: AppTheme.cyan; }
                                         SettingsHelpTip { summary: "Will Mild or Off improve performance?"; detail: "The colored strip is static, not animated. Mild and Off simplify its appearance but are not expected to materially reduce CPU or memory use."; }
                                         HorizontalLayout { height: 38px; spacing: 8px;
@@ -2889,6 +2907,22 @@ export component AppWindow inherits Window {
                     NeonAction { width: 120px; label: "Later"; clicked => { root.backup-prompt-dismissed = true; root.backup-first-run-prompt-visible = false; } }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
                     NeonAction { width: 220px; label: "Create Settings Backup"; tone: "active"; clicked => { root.backup-prompt-dismissed = true; root.backup-first-run-prompt-visible = false; root.backup-action("backup-settings", root.backup-directory, "", true, false, false, true, false); } }
+                }
+            }
+        }
+    }
+
+    if root.import-client-lock-prompt-visible: Rectangle {
+        x: 0px; y: 0px; width: root.width; height: root.height; background: #bf10080c;
+        TouchArea { }
+        Rectangle { width: min(630px, root.width - 48px); height: 220px; x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; border-radius: 10px; background: AppTheme.panel-background; border-color: AppTheme.cyan; border-width: 2px;
+            VerticalLayout { padding: 18px; spacing: 12px;
+                Heading { text: "Extra Shared-Database Lock?"; color: AppTheme.cyan; height: 32px; }
+                Text { text: "This .spl archive has the optional Windows .client-lock disabled. Enable it for this installation? SQLite's own locks and busy timeout remain active either way. If the extra lock cannot be acquired, SPLINED will continue without it and show a warning."; color: AppTheme.foreground; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout { height: 38px; spacing: 10px;
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    NeonAction { width: 120px; label: "No"; clicked => root.choose-import-client-lock(false); }
+                    NeonAction { width: 120px; label: "Yes"; tone: "active"; clicked => root.choose-import-client-lock(true); }
                 }
             }
         }

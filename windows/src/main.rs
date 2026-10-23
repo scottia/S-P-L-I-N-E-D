@@ -11,7 +11,7 @@ use splined_core::application::{
 };
 use splined_core::backup::{
     BackupSelection, export_backup, export_database_backup, export_diagnostic_summary,
-    restore_backup, restore_database_backup,
+    read_backup_settings, restore_backup, restore_database_backup,
 };
 use splined_core::candidate::{Candidate, StaticFormat};
 use splined_core::config::{Config, Mode, ScanTimeout, Verbosity, configured_samples_dir};
@@ -2274,10 +2274,41 @@ fn main() -> Result<(), slint::PlatformError> {
     let automatic_settings_import = restore_request
         .as_deref()
         .map(import_settings_from_opened_backup);
+    // A moved portable archive can contain paths unavailable on this PC.
+    // Keep its settings as an editable Setup draft instead of abandoning the
+    // archive or preventing the application window from opening.
+    let staged_archive_config = if automatic_settings_import
+        .as_ref()
+        .is_some_and(Result::is_err)
+    {
+        restore_request
+            .as_deref()
+            .and_then(|path| read_backup_settings(path, "").ok())
+    } else {
+        None
+    };
+    let archive_setup_staged = staged_archive_config.is_some();
+    let prompt_for_import_client_lock = automatic_settings_import
+        .as_ref()
+        .and_then(|result| result.as_ref().ok())
+        .or(staged_archive_config.as_ref())
+        .is_some_and(|config| config.scan.sqlite_shared && !config.scan.windows_client_lock);
     let association_warning =
         splined_core::file_association::register_portable_backup_association().err();
     let state_load_started = Instant::now();
-    let (mut state, setup_required, startup_error) = load_application_state();
+    let (mut state, mut setup_required, mut startup_error) = load_application_state();
+    if let Some(config) = staged_archive_config {
+        let reason = automatic_settings_import
+            .as_ref()
+            .and_then(|result| result.as_ref().err())
+            .cloned()
+            .unwrap_or_else(|| "Archive paths need review on this PC.".to_string());
+        let snapshot = empty_snapshot(&config);
+        state = ApplicationState::new(config, snapshot)
+            .expect("a parsed Settings Archive must initialize the Setup model");
+        setup_required = true;
+        startup_error = Some(format!("Settings Archive loaded for review: {reason}"));
+    }
     record_startup_timing(format!(
         "startup-state-load elapsed_ms={}",
         state_load_started.elapsed().as_millis()
@@ -2375,6 +2406,10 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     ui.window().set_maximized(true);
     ui.set_setup_required(setup_required);
+    ui.set_import_client_lock_prompt_visible(prompt_for_import_client_lock);
+    if let Some(path) = restore_request.as_deref() {
+        ui.set_restore_path(SharedString::from(path.to_string_lossy().into_owned()));
+    }
     if setup_required {
         ui.set_page_index(3);
         ui.set_setup_message(SharedString::from(startup_error.clone().unwrap_or_else(
@@ -2476,18 +2511,24 @@ fn main() -> Result<(), slint::PlatformError> {
     initialize_service_ui(&ui, &state);
     if let Some(path) = restore_request
         && let Some(Err(error)) = automatic_settings_import
+        && !archive_setup_staged
     {
-        ui.set_page_index(2);
-        ui.set_backup_mode(SharedString::from("Restore"));
         ui.set_restore_path(SharedString::from(path.to_string_lossy().into_owned()));
-        ui.set_backup_settings(true);
-        ui.set_backup_credentials(false);
-        ui.set_backup_database(false);
-        ui.set_backup_interface(false);
-        ui.set_backup_diagnostics(false);
+        if setup_required {
+            ui.set_page_index(3);
+            ui.set_setup_message(format!("Could not read the opened .spl archive: {error} Enter its password in Setup and choose Load into Setup, or enter the paths manually.").into());
+        } else {
+            ui.set_page_index(2);
+            ui.set_backup_mode(SharedString::from("Restore"));
+            ui.set_backup_settings(true);
+            ui.set_backup_credentials(false);
+            ui.set_backup_database(false);
+            ui.set_backup_interface(false);
+            ui.set_backup_diagnostics(false);
+        }
         if let Ok(mut app) = state.lock() {
             app.service_status = format!(
-                "Automatic Config v5 import needs attention: {error} Enter the backup password if required, then choose Restore."
+                "Automatic Config v5 import needs attention: {error} Enter the archive password if required, then load its settings."
             );
         }
     }
@@ -8481,7 +8522,25 @@ fn bind_callbacks(
                 .unwrap_or_default();
             let weak = weak.clone();
             std::thread::spawn(move || {
-                let selected = browse_for_backup_file(&current);
+                let selected = browse_for_backup_file(&current, false);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let (Some(path), Some(ui)) = (selected, weak.upgrade()) {
+                        ui.set_restore_path(path.into());
+                    }
+                });
+            });
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_browse_setup_settings_file(move || {
+            let current = weak
+                .upgrade()
+                .map(|ui| ui.get_restore_path().to_string())
+                .unwrap_or_default();
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let selected = browse_for_backup_file(&current, true);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let (Some(path), Some(ui)) = (selected, weak.upgrade()) {
                         ui.set_restore_path(path.into());
@@ -8866,30 +8925,166 @@ fn bind_service_callbacks(
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
         let settings_draft = Arc::clone(&settings_draft);
+        ui.on_choose_import_client_lock(move |enable| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.set_import_client_lock_prompt_visible(false);
+            if !enable {
+                if let Ok(mut app) = state.lock() {
+                    app.service_status = "Extra .client-lock remains off; SQLite locking is still active.".to_string();
+                }
+                refresh_weak(&weak, &state);
+                return;
+            }
+            if ui.get_setup_required() {
+                ui.set_settings_windows_client_lock(true);
+                if let Ok(mut draft) = settings_draft.lock() {
+                    draft.scan.windows_client_lock = true;
+                }
+                ui.set_setup_message("Extra .client-lock selected. Review the paths, then Save & Open Settings; you can turn it off here if this PC cannot acquire it.".into());
+                return;
+            }
+            let candidate = match state.lock() {
+                Ok(app) => {
+                    let mut config = app.config.clone();
+                    config.scan.windows_client_lock = true;
+                    config
+                }
+                Err(_) => return,
+            };
+            if let Ok(mut app) = state.lock() {
+                app.service_status = "Checking the extra shared-database lock…".to_string();
+            }
+            refresh_weak(&weak, &state);
+            let weak = weak.clone();
+            let state = Arc::clone(&state);
+            let settings_draft = Arc::clone(&settings_draft);
+            std::thread::spawn(move || {
+                let result = media_snapshot(&candidate, false)
+                    .and_then(|_| splined_core::settings::save_config(&candidate));
+                let _ = slint::invoke_from_event_loop(move || {
+                    match result {
+                        Ok(saved) => {
+                            if let Ok(mut app) = state.lock() {
+                                app.config = saved.clone();
+                                app.service_status = "Extra .client-lock enabled for this installation.".to_string();
+                            }
+                            if let Ok(mut draft) = settings_draft.lock() {
+                                *draft = saved.clone();
+                            }
+                            if let Some(ui) = weak.upgrade() {
+                                ui.set_settings_windows_client_lock(true);
+                            }
+                        }
+                        Err(error) => {
+                            record_action_result(
+                                &state,
+                                Err(format!("Could not enable extra .client-lock; SPLINED continues with it off: {error}")),
+                            );
+                        }
+                    }
+                    refresh_weak(&weak, &state);
+                });
+            });
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        let settings_draft = Arc::clone(&settings_draft);
+        ui.on_load_setup_settings_file(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if ui.get_setup_saving() {
+                return;
+            }
+            let path = PathBuf::from(ui.get_restore_path().as_str());
+            if !path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("spl"))
+            {
+                record_action_result(
+                    &state,
+                    Err("Choose an existing .spl Settings Archive first.".to_string()),
+                );
+                refresh_weak(&weak, &state);
+                return;
+            }
+            let password = ui.get_backup_password().to_string();
+            ui.set_setup_saving(true);
+            ui.set_setup_message("Reading Settings Archive…".into());
+            let weak = weak.clone();
+            let state = Arc::clone(&state);
+            let settings_draft = Arc::clone(&settings_draft);
+            std::thread::spawn(move || {
+                let result = read_backup_settings(&path, &password);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_setup_saving(false);
+                        match result {
+                            Ok(config) => {
+                                if let Ok(mut draft) = settings_draft.lock() {
+                                    *draft = config.clone();
+                                }
+                                set_settings_ui(&ui, &config);
+                                ui.set_backup_password(SharedString::default());
+                                ui.set_setup_message("Settings loaded from the .spl archive. Review every path and the shared SQLite options, then choose Save & Open Settings. No settings have been saved yet.".into());
+                                if let Ok(mut app) = state.lock() {
+                                    app.last_error = None;
+                                }
+                            }
+                            Err(error) => {
+                                ui.set_setup_message("Settings Archive could not be loaded. Check the file and password, or enter paths below.".into());
+                                record_action_result(&state, Err(error));
+                            }
+                        }
+                    }
+                    refresh_weak(&weak, &state);
+                });
+            });
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        let settings_draft = Arc::clone(&settings_draft);
         ui.on_save_setup(move || {
-            let result =
-                (|| {
-                    let ui = weak
-                        .upgrade()
-                        .ok_or_else(|| "The SPLINED Setup window is unavailable.".to_string())?;
-                    let mut config = settings_draft
-                        .lock()
-                        .map_err(|_| "The structured Settings draft is unavailable.".to_string())?
-                        .clone();
-                    apply_settings_ui(&ui, &mut config)?;
-                    if config.scan.scan_library_dir.trim().is_empty() {
-                        config.scan.scan_library_dir = config.library.music_library.clone();
-                    }
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if ui.get_setup_saving() {
+                return;
+            }
+            let prepared = (|| {
+                let mut config = settings_draft
+                    .lock()
+                    .map_err(|_| "The structured Settings draft is unavailable.".to_string())?
+                    .clone();
+                apply_settings_ui(&ui, &mut config)?;
+                if config.scan.scan_library_dir.trim().is_empty() {
+                    config.scan.scan_library_dir = config.library.music_library.clone();
+                }
+                Ok::<_, String>(config)
+            })();
+            let config = match prepared {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    record_action_result(&state, Err(error));
+                    refresh_weak(&weak, &state);
+                    return;
+                }
+            };
+            ui.set_setup_saving(true);
+            ui.set_setup_message("Saving settings and loading the music library… This may take a while on a new library.".into());
+            let weak = weak.clone();
+            let state = Arc::clone(&state);
+            let settings_draft = Arc::clone(&settings_draft);
+            std::thread::spawn(move || {
+                let result = (|| {
                     let config = splined_core::settings::save_config(&config)?;
-                    let backup_directory = PathBuf::from(ui.get_backup_directory().as_str());
-                    if !backup_directory.as_os_str().is_empty() {
-                        fs::create_dir_all(&backup_directory).map_err(|error| {
-                            format!(
-                                "Unable to create the portable backup directory {}: {error}",
-                                backup_directory.display()
-                            )
-                        })?;
-                    }
                     let snapshot = media_snapshot(&config, false)?;
                     let diagnostics = startup_diagnostics(&config, &snapshot);
                     let mut replacement = ApplicationState::new(config.clone(), snapshot)?;
@@ -8897,23 +9092,35 @@ fn bind_service_callbacks(
                     for diagnostic in diagnostics {
                         replacement.push_log(diagnostic);
                     }
-                    *state.lock().map_err(|_| {
-                        "The SPLINED application state is unavailable.".to_string()
-                    })? = replacement;
-                    *settings_draft.lock().map_err(|_| {
-                        "The structured Settings draft is unavailable.".to_string()
-                    })? = config.clone();
-                    ui.set_setup_required(false);
-                    ui.set_page_index(1);
-                    set_settings_ui(&ui, &config);
-                    splined_core::settings::save_ui_preferences(&UiPreferences::default())?;
-                    if let Ok(editor) = load_editor(&config, "Navidrome") {
-                        set_credential_ui(&ui, &editor);
-                    }
-                    Ok(())
+                    Ok::<_, String>((config, replacement))
                 })();
-            record_action_result(&state, result);
-            refresh_weak(&weak, &state);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_setup_saving(false);
+                        match result {
+                            Ok((config, replacement)) => {
+                                if let Ok(mut app) = state.lock() {
+                                    *app = replacement;
+                                }
+                                if let Ok(mut draft) = settings_draft.lock() {
+                                    *draft = config.clone();
+                                }
+                                ui.set_setup_required(false);
+                                ui.set_page_index(1);
+                                set_settings_ui(&ui, &config);
+                                if let Ok(editor) = load_editor(&config, "Navidrome") {
+                                    set_credential_ui(&ui, &editor);
+                                }
+                            }
+                            Err(error) => {
+                                ui.set_setup_message("Setup could not finish. Correct the problem below and try Save & Open Settings again.".into());
+                                record_action_result(&state, Err(error));
+                            }
+                        }
+                    }
+                    refresh_weak(&weak, &state);
+                });
+            });
         });
     }
     {
@@ -9535,6 +9742,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_override_options(model(override_options));
     ui.set_settings_scan_timeout(override_label.into());
     ui.set_settings_sqlite_shared(config.scan.sqlite_shared);
+    ui.set_settings_windows_client_lock(config.scan.windows_client_lock);
     ui.set_settings_sample_write(config.samples.sample_write);
     ui.set_settings_sample_dir(
         configured_samples_dir(config)
@@ -9661,6 +9869,7 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
     config.scan.scan_mode_timeout.0 =
         override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
     config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
+    config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
     config.samples.sample_write = ui.get_settings_sample_write();
     config.samples.sample_dir = ui.get_settings_sample_dir().trim().to_string();
     config.output.file_formats = split_values(ui.get_settings_file_formats().as_str());
@@ -9810,6 +10019,7 @@ fn apply_settings_section_ui(
             config.scan.scan_mode_timeout.0 =
                 override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
             config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
+            config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
             config.history.enabled = ui.get_settings_history_enabled();
             config.history.retention_days =
                 parse_setting(&ui.get_settings_history_retention(), "History retention")?;
@@ -9843,6 +10053,7 @@ fn safe_reset_config(current: &Config) -> Config {
     reset.scan.temporary_cache_dir = current.scan.temporary_cache_dir.clone();
     reset.scan.log_dir = current.scan.log_dir.clone();
     reset.scan.sqlite_shared = current.scan.sqlite_shared;
+    reset.scan.windows_client_lock = current.scan.windows_client_lock;
     reset.credentials = current.credentials.clone();
     reset
 }
@@ -14160,14 +14371,19 @@ fn browse_for_folder(_initial: &str, _description: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn browse_for_backup_file(initial: &str) -> Option<String> {
+fn browse_for_backup_file(initial: &str, settings_only: bool) -> Option<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let script = r#"
 Add-Type -AssemblyName PresentationFramework
 $dialog = New-Object Microsoft.Win32.OpenFileDialog
-$dialog.Title = 'Choose a SPLINED backup to restore'
-$dialog.Filter = 'SPLINED backups (*.spl;*.sqlite)|*.spl;*.sqlite|Settings archives (*.spl)|*.spl|SQLite snapshots (*.sqlite)|*.sqlite|All files (*.*)|*.*'
+if ($env:SPLINED_SETTINGS_ARCHIVE_ONLY -eq '1') {
+    $dialog.Title = 'Choose a SPLINED Settings Archive'
+    $dialog.Filter = 'Settings archives (*.spl)|*.spl'
+} else {
+    $dialog.Title = 'Choose a SPLINED backup to restore'
+    $dialog.Filter = 'SPLINED backups (*.spl;*.sqlite)|*.spl;*.sqlite|Settings archives (*.spl)|*.spl|SQLite snapshots (*.sqlite)|*.sqlite|All files (*.*)|*.*'
+}
 $dialog.CheckFileExists = $true
 $dialog.Multiselect = $false
 if ($env:SPLINED_RESTORE_INITIAL) {
@@ -14185,6 +14401,10 @@ if ($dialog.ShowDialog()) {
     let output = std::process::Command::new("powershell.exe")
         .args(["-NoLogo", "-NoProfile", "-STA", "-Command", script])
         .env("SPLINED_RESTORE_INITIAL", initial)
+        .env(
+            "SPLINED_SETTINGS_ARCHIVE_ONLY",
+            if settings_only { "1" } else { "0" },
+        )
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
@@ -14196,7 +14416,7 @@ if ($dialog.ShowDialog()) {
 }
 
 #[cfg(not(windows))]
-fn browse_for_backup_file(_initial: &str) -> Option<String> {
+fn browse_for_backup_file(_initial: &str, _settings_only: bool) -> Option<String> {
     None
 }
 
@@ -14732,6 +14952,7 @@ mod tests {
         current.scan.temporary_cache_dir = r"E:\SPLINED\temp".to_string();
         current.scan.log_dir = r"E:\SPLINED\logs".to_string();
         current.scan.sqlite_shared = true;
+        current.scan.windows_client_lock = true;
         current.credentials.credential_dir = r"E:\SPLINED\credentials".to_string();
         current.output.file_name = "custom-cover".to_string();
         let reset = safe_reset_config(&current);
@@ -14746,6 +14967,7 @@ mod tests {
         );
         assert_eq!(reset.scan.log_dir, current.scan.log_dir);
         assert!(reset.scan.sqlite_shared);
+        assert!(reset.scan.windows_client_lock);
         assert_eq!(reset.credentials, current.credentials);
     }
 

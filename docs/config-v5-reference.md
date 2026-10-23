@@ -65,6 +65,7 @@ normally absolute container paths supplied by bind mounts.
 | `cache_dir` | `"_cache"` | Persistent SQL database directory containing `<cache_dir>/splined.db`; the historical key name is retained for compatibility |
 | `temporary_cache_dir` | `"_cache"` | Disposable downloaded/derived artwork and optional review samples; an older Config v5 file that omits it falls back to `cache_dir` |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; Python owns shared inventory, while rollback journaling and a 30-second busy timeout protect shared writes |
+| `windows_client_lock` | `false` | Windows-only optional `.client-lock` coordination for shared SQLite. Has no effect unless `sqlite_shared` is true; older Config v5 files default to off |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 
 The `_cache` and `_logs` values above are schema defaults used to describe a
@@ -99,7 +100,9 @@ SPLINED uses:
 ```
 
 Windows Setup exposes separate **SQL Database Directory** and **Temporary Run
-Cache** fields plus an explicit **Shared/network SQLite** control. The database
+Cache** fields plus explicit **Shared/network SQLite** and optional
+**Use extra .client-lock** controls. Both controls also appear under Advanced
+Processing Settings. The database
 field derives the same filename. A local database directory creates an
 independent database; an operator-enabled shared database may expose the same
 physical database as Python/Docker or another installation while the disposable
@@ -118,6 +121,9 @@ shared mode uses rollback journaling plus `busy_timeout=30000`. Python/Docker
 owns shared Album inventory and exclusions. Windows `ignored_subs` and output
 filename remain local configuration and are not compatibility requirements;
 Windows Refresh reloads the Python-published inventory instead of rebuilding it.
+The Windows `.client-lock` is off by default and does not replace SQLite's own
+locking. If it is enabled, every client must participate for the extra lock to
+coordinate access. With it off, avoid overlapping writes from different hosts.
 
 See [SPLINED media database](splined-media-database.md).
 

@@ -146,9 +146,7 @@ pub fn export_backup(
     }
     if selection.database {
         let database = Path::new(&config.scan.cache_dir).join("splined.db");
-        let _shared_lock = config
-            .scan
-            .sqlite_shared
+        let _shared_lock = (config.scan.sqlite_shared && config.scan.windows_client_lock)
             .then(|| claim_shared_database(&database))
             .transpose()?;
         if database.is_file() {
@@ -180,9 +178,7 @@ pub fn export_backup(
 pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<PathBuf, String> {
     let path = with_extension(requested_path, "sqlite");
     let source_path = Path::new(&config.scan.cache_dir).join("splined.db");
-    let _shared_lock = config
-        .scan
-        .sqlite_shared
+    let _shared_lock = (config.scan.sqlite_shared && config.scan.windows_client_lock)
         .then(|| claim_shared_database(&source_path))
         .transpose()?;
     if !source_path.is_file() {
@@ -223,9 +219,7 @@ fn create_sqlite_snapshot(source_path: &Path) -> Result<(tempfile::TempDir, Path
 pub fn restore_database_backup(path: &Path, config: &Config) -> Result<PathBuf, String> {
     validate_sqlite_backup(path)?;
     let destination = Path::new(&config.scan.cache_dir).join("splined.db");
-    let _shared_lock = config
-        .scan
-        .sqlite_shared
+    let _shared_lock = (config.scan.sqlite_shared && config.scan.windows_client_lock)
         .then(|| claim_shared_database(&destination))
         .transpose()?;
     restore_sqlite_snapshot(path, &destination)?;
@@ -278,6 +272,7 @@ pub fn export_diagnostic_summary(
             "scan_mode": config.scan.scan_mode,
             "library_scan": config.scan.library_scan,
             "sqlite_shared": config.scan.sqlite_shared,
+            "windows_client_lock": config.scan.windows_client_lock,
         },
         "paths": {
             "music_library": config.library.music_library,
@@ -322,19 +317,7 @@ pub fn restore_backup(
     selection: BackupSelection,
     password: &str,
 ) -> Result<RestoredBackup, String> {
-    let body = std::fs::read_to_string(path)
-        .map_err(|error| format!("Unable to read SPLINED backup {}: {error}", path.display()))?;
-    let envelope: BackupEnvelope = serde_json::from_str(&body)
-        .map_err(|error| format!("Invalid SPLINED backup envelope: {error}"))?;
-    if envelope.format != FORMAT || envelope.version != FORMAT_VERSION {
-        return Err("This is not a supported SPLINED .spl backup.".to_string());
-    }
-    let plain = unprotect(&envelope, password)?;
-    let payload: BackupPayload = serde_json::from_slice(&plain)
-        .map_err(|error| format!("Invalid SPLINED backup payload: {error}"))?;
-    if payload.version != FORMAT_VERSION {
-        return Err("The SPLINED backup payload version is unsupported.".to_string());
-    }
+    let payload = read_backup_payload(path, password)?;
 
     if selection.interface && payload.interface_settings.is_none() {
         return Err("This archive does not contain Interface Settings. Deselect that restore option or choose a newer archive.".to_string());
@@ -378,9 +361,7 @@ pub fn restore_backup(
     {
         let bytes = decode(&encoded, "database")?;
         let database = Path::new(&destination.scan.cache_dir).join("splined.db");
-        let _shared_lock = destination
-            .scan
-            .sqlite_shared
+        let _shared_lock = (destination.scan.sqlite_shared && destination.scan.windows_client_lock)
             .then(|| claim_shared_database(&database))
             .transpose()?;
         let temporary = tempfile::TempDir::new().map_err(|error| {
@@ -412,6 +393,33 @@ pub fn restore_backup(
         config: destination,
         interface_restored: selection.interface && payload.interface_settings.is_some(),
     })
+}
+
+/// Inspect a Settings Archive without writing Config v5 or touching the database.
+/// Setup uses this so a moved portable installation can correct its paths first.
+pub fn read_backup_settings(path: &Path, password: &str) -> Result<Config, String> {
+    let payload = read_backup_payload(path, password)?;
+    let settings = payload.settings.as_deref().ok_or_else(|| {
+        "This archive does not contain Config V5 Settings. Choose a Settings Archive.".to_string()
+    })?;
+    crate::config::parse_config(settings)
+}
+
+fn read_backup_payload(path: &Path, password: &str) -> Result<BackupPayload, String> {
+    let body = std::fs::read_to_string(path)
+        .map_err(|error| format!("Unable to read SPLINED backup {}: {error}", path.display()))?;
+    let envelope: BackupEnvelope = serde_json::from_str(&body)
+        .map_err(|error| format!("Invalid SPLINED backup envelope: {error}"))?;
+    if envelope.format != FORMAT || envelope.version != FORMAT_VERSION {
+        return Err("This is not a supported SPLINED .spl backup.".to_string());
+    }
+    let plain = unprotect(&envelope, password)?;
+    let payload: BackupPayload = serde_json::from_slice(&plain)
+        .map_err(|error| format!("Invalid SPLINED backup payload: {error}"))?;
+    if payload.version != FORMAT_VERSION {
+        return Err("The SPLINED backup payload version is unsupported.".to_string());
+    }
+    Ok(payload)
 }
 
 fn protect(plain: &[u8], password: &str) -> Result<BackupEnvelope, String> {
@@ -586,6 +594,36 @@ mod tests {
             let envelope = protect(b"SPLINED fixture", password).unwrap();
             assert_eq!(unprotect(&envelope, password).unwrap(), b"SPLINED fixture");
         }
+    }
+
+    #[test]
+    fn setup_reads_settings_archive_without_restoring_files() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("settings.spl");
+        let mut config = Config::default();
+        config.scan.sqlite_shared = true;
+        config.scan.windows_client_lock = false;
+        let payload = BackupPayload {
+            version: FORMAT_VERSION,
+            created_utc: "fixture".to_string(),
+            splined_version: "fixture".to_string(),
+            settings: Some(toml::to_string(&config).unwrap()),
+            interface_settings: None,
+            credentials: BTreeMap::new(),
+            database: None,
+            diagnostics: None,
+        };
+        let envelope = protect(&serde_json::to_vec(&payload).unwrap(), "test password").unwrap();
+        std::fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        assert!(
+            read_backup_settings(&path, "")
+                .unwrap_err()
+                .contains("requires a password")
+        );
+        let restored = read_backup_settings(&path, "test password").unwrap();
+        assert!(restored.scan.sqlite_shared);
+        assert!(!restored.scan.windows_client_lock);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]

@@ -47,9 +47,13 @@ Setup displays the real error instead of silently continuing with defaults.
 1. In Setup, choose the Music Library.
 2. Choose the SQLite/database directory; it owns `splined.db`.
 3. Enable **Shared/network SQLite** only when Python/Docker owns that same
-   inventory. Leave it disabled for an independent Windows database.
+   inventory. Leave it disabled for an independent Windows database. The extra
+   Windows `.client-lock` is optional and off by default, including on the
+   startup Setup screen when a shared database cannot be opened.
 4. Choose separate temporary cache, log, and credential directories.
-5. Review ignored subdirectories, then select **Save and Continue**.
+5. Review ignored subdirectories, then select **Save & Open Settings**. The
+   button shows progress while the initial library is loaded; any error stays
+   visible on Setup so paths can be corrected and retried.
 6. Use structured Settings for scan behavior, source order/policies, artwork
    ranges, output, square/upscale, adjustments, and retention options.
 7. Add provider JSON in Credentials and complete authorization where required.
@@ -58,8 +62,16 @@ Setup displays the real error instead of silently continuing with defaults.
 
 As an alternative to typing an existing configuration, double-click an
 unprotected `.spl` backup. Portable SPLINED imports its Config v5 settings into
-`data\config.toml` before startup. A password-protected backup opens Backup &
-Updates with the archive preselected so its password can be entered.
+`data\config.toml` before startup. When that archive has shared SQLite enabled
+but the optional Windows `.client-lock` disabled, SPLINED asks Yes/No whether
+to enable the extra lock; No leaves it off. An unavailable archive path opens
+Setup with the imported fields for correction rather than preventing the app
+window from opening. A password-protected backup opens Backup & Updates with
+the archive preselected so its password can be entered.
+Setup also offers **Existing settings (.spl)** and **Load into Setup**. This
+reads either an unprotected or password-protected archive without saving it,
+then fills the Setup fields for review. Use this when moving a portable
+installation and correct any paths before selecting **Save & Open Settings**.
 
 ### Windows installed Microsoft Store MSIX
 

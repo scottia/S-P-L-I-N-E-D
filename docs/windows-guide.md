@@ -41,11 +41,20 @@ executable launched. If Config v5 is absent, invalid, or operationally
 incomplete, the ordinary workspace stays unavailable and a short **Welcome to
 S.P.L.I.N.E.D.** Setup opens with the actual error. A new user browses to an
 existing Media Library; the SQLite/database, temporary cache, log, credential,
-sample, and backup locations are prefilled from the portable executable root
-and remain individually browsable. Only **Save & Open Settings** validates the
-paths, creates the configured application-owned directories, writes Config v5
-atomically, loads the library, and opens the complete Settings screen for
-review. `ui.toml` is separate UI state.
+and sample locations are prefilled from the portable executable root
+and remain individually browsable. The Setup screen can also read an existing
+`.spl` Settings Archive into its fields without saving it, including a
+password-protected archive. Review the paths and optional shared-database
+`.client-lock` setting before continuing. **Save & Open Settings** validates
+the paths, creates the configured application-owned directories, writes Config
+v5 atomically, loads the library in the background with visible progress, and
+opens the complete Settings screen for review. Errors remain visible on Setup
+for correction and retry. `ui.toml` is separate UI state.
+A backup directory is created when a backup is actually made, not during Setup.
+Double-clicking an unprotected `.spl` archive imports settings directly; if it
+uses shared SQLite with the extra Windows lock disabled, a Yes/No prompt offers
+to enable that lock without blocking the window from opening. If the imported
+paths need correction on a moved PC, the archive values are staged in Setup.
 
 With an existing Config v5, startup opens `<scan.cache_dir>\splined.db`
 automatically and reports the active state root, Config path, SQLite path, and
