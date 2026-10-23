@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Optional numeric release version (for a major/minor jump, for example 2.0.0); blank selects the next patch"
+        description: "Optional numeric version; blank selects 2.0.0 from 1.0.99, then the next patch"
         required: false
         default: ""
         type: string
@@ -88,11 +88,20 @@ jobs:
               ["git", "tag", "--list"],
               text=True,
           ).splitlines()
+          # Only tags on the current main history define its release line.
+          # Old tags on abandoned histories must not block a new version.
           versions = []
           for tag in tags:
               match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
               if match:
-                  versions.append(tuple(map(int, match.groups())))
+                  result = subprocess.run(
+                      ["git", "merge-base", "--is-ancestor", f"refs/tags/{tag}^{{commit}}", "HEAD"],
+                      check=False,
+                  )
+                  if result.returncode == 0:
+                      versions.append(tuple(map(int, match.groups())))
+                  elif result.returncode != 1:
+                      raise SystemExit(f"Could not inspect release tag ancestry: {tag}")
 
           cargo_path = Path("Cargo.toml")
           cargo = cargo_path.read_text(encoding="utf-8-sig")
@@ -130,11 +139,18 @@ jobs:
               if not re.fullmatch(r"\d+\.\d+\.\d+", requested):
                   raise SystemExit("Requested release version must be numeric X.Y.Z")
               if tuple(map(int, requested.split("."))) <= max([source_version, *versions]):
-                  raise SystemExit("Requested release version must exceed the current source and all numeric tags")
+                  raise SystemExit("Requested release version must exceed the current source and numeric tags on main")
               release_version = requested
           else:
               baseline = max([source_version, *compatible_versions])
-              release_version = f"{baseline[0]}.{baseline[1]}.{baseline[2] + 1}"
+              # The 1.0.99 -> 2.0.0 jump is intentional, not a semantic-
+              # versioning rollover. Subsequent blank runs resume patch bumps.
+              release_version = (
+                  "2.0.0" if baseline == (1, 0, 99)
+                  else f"{baseline[0]}.{baseline[1]}.{baseline[2] + 1}"
+              )
+              if tuple(map(int, release_version.split("."))) <= max([source_version, *versions]):
+                  raise SystemExit("Automatic release version must exceed the current main release line")
           if release_version in tags or f"v{release_version}" in tags:
               raise SystemExit(f"Release tag already exists: {release_version}")
 

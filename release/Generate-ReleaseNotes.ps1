@@ -28,13 +28,24 @@ foreach ($requiredPath in @($ConfigPath, $GitHubTemplatePath)) {
 
 & git -C $repository rev-parse --verify "refs/tags/$Version^{commit}" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Release tag does not exist: $Version" }
+$releaseCommit = (& git -C $repository rev-parse "refs/tags/$Version^{commit}").Trim()
+if ($LASTEXITCODE -ne 0) { throw "Unable to resolve release tag: $Version" }
 
 $current = [Version]$Version
-$numericTags = @(& git -C $repository tag --list) |
-    Where-Object { $_ -match '^\d+\.\d+\.\d+$' } |
-    ForEach-Object { [PSCustomObject]@{ Text = $_; Version = [Version]$_ } } |
-    Where-Object { $_.Version -lt $current } |
-    Sort-Object Version -Descending
+$numericTags = @(
+    foreach ($tag in (& git -C $repository tag --list)) {
+        if ($tag -notmatch '^\d+\.\d+\.\d+$' -or [Version]$tag -ge $current) {
+            continue
+        }
+        # A newer-looking tag on another history is not the prior release.
+        & git -C $repository merge-base --is-ancestor "refs/tags/$tag^{commit}" $releaseCommit
+        if ($LASTEXITCODE -eq 0) {
+            [PSCustomObject]@{ Text = $tag; Version = [Version]$tag }
+        } elseif ($LASTEXITCODE -ne 1) {
+            throw "Unable to inspect release tag ancestry: $tag"
+        }
+    }
+) | Sort-Object Version -Descending
 if ($numericTags.Count -eq 0) {
     throw "No previous numeric release tag exists before $Version."
 }

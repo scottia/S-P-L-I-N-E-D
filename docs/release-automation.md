@@ -19,11 +19,16 @@ GitHub Release.
 
 Run `SPLINED (All OS) and GHCR` from `main`. Select Windows, Ubuntu, macOS, or
 All. **Microsoft Store** defaults to `true`; **Extended Windows validation**
-defaults to `false`. Leave **Release version** blank for the next patch, or enter
-a numeric version such as `2.0.0` for an intentional major/minor jump. An
-explicit version must exceed the current source version and every existing
-numeric tag. The workflow—not the maintainer's branch merge—updates all release
-metadata and creates the tag after validation.
+defaults to `false`. Leave **Release version** blank for the automatic next
+version, or enter an explicit numeric version. The current
+`1.0.99` release line has one intentional exception: leaving the field blank
+selects `2.0.0`; after that, a blank field resumes normal patch increments
+(`2.0.1`, and so on). An explicit version must exceed the current source
+version and numeric tags reachable from `main`. Historical tags on divergent
+branches do not advance that baseline, but an existing tag with the exact
+requested version still prevents a duplicate. The workflow—not the
+maintainer's branch merge—updates all release metadata and creates the tag
+after validation.
 
 The workflow prepares an exact untagged release commit, builds and validates
 the selected targets, and only then atomically creates the numeric tag and
@@ -84,7 +89,8 @@ same pinned git-cliff executable, `cliff.toml` classification, and checked-in
 Tera templates, but deliberately use different release ranges:
 
 - `release/Generate-ReleaseNotes.ps1` creates the incremental GitHub context
-  from the immediately previous numeric Git tag to the selected tag.
+  from the immediately previous numeric Git tag on the selected release's
+  ancestry to the selected tag.
 - `release/Resolve-StoreBaseline.ps1` queries the live product before package
   staging and resolves the last **published** Store package version to its
   matching numeric Git tag.
