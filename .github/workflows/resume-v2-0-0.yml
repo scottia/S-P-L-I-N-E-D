@@ -1,0 +1,166 @@
+name: Resume SPLINED 2.0.0 publication
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/resume-v2-0-0.yml
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  resume:
+    if: "github.event.head_commit.message == 'ci(release): resume v2.0.0 publication'"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: 2.0.0
+      BUILD_RUN_ID: 39910318082
+    steps:
+      - name: Checkout current release tooling with tag history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Verify the published tag and validated build source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 'refs/tags/2.0.0^{commit}')" = 959b7755456504ba0214db7f1c4451937afa7c2b
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" --jq .conclusion)" = failure
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID/jobs?per_page=100" --jq '[.jobs[] | select(.name == "Build Release — Windows")][0].conclusion')" = success
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The release-note engine must be git-cliff 2.14.2."
+          }
+
+      - name: Generate corrected incremental release notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Generate-ReleaseNotes.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ConfigPath cliff.toml `
+            -GitHubTemplatePath release/templates/github-release.tera `
+            -OutputDirectory release-notes
+
+      - name: Publish the validated Windows artifact as a GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh run download "$BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name splined-windows-x86_64 --dir release-assets
+          cd release-assets
+          mapfile -t archives < <(find . -maxdepth 1 -type f -name 'splined-*.zip' -printf '%f\n' | sort)
+          test "${#archives[@]}" -gt 0
+          release_files=("${archives[@]}")
+          if [ -f windows-update.json ]; then release_files+=(windows-update.json); fi
+          sha256sum "${release_files[@]}" > SHA256SUMS.txt
+          if gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_VERSION" "${release_files[@]}" SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
+              --notes-file ../release-notes/GITHUB-RELEASE.md
+          else
+            gh release create "$RELEASE_VERSION" "${release_files[@]}" SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "S:P:L:I:N:E:D $RELEASE_VERSION" \
+              --notes-file ../release-notes/GITHUB-RELEASE.md
+          fi
+
+      - name: Start tagged GHCR and Store-package resolution
+        id: resolutions
+        shell: bash
+        run: |
+          set -euo pipefail
+          ghcr_before=$(gh run list --workflow docker-ghcr-resolution.yml --branch main \
+            --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          package_before=$(gh run list --workflow windows-store-package-resolution.yml --branch main \
+            --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          echo "ghcr_before=$ghcr_before" >> "$GITHUB_OUTPUT"
+          echo "package_before=$package_before" >> "$GITHUB_OUTPUT"
+          gh workflow run docker-ghcr-resolution.yml --ref main -f version="$RELEASE_VERSION"
+          gh workflow run windows-store-package-resolution.yml --ref main -f version="$RELEASE_VERSION"
+
+      - name: Wait for the exact GHCR and Store-package runs
+        id: validated
+        shell: bash
+        run: |
+          set -euo pipefail
+          find_new_run() {
+            local workflow="$1" previous="$2" run_id=0
+            for attempt in $(seq 1 40); do
+              run_id=$(gh run list --workflow "$workflow" --branch main --limit 10 \
+                --json databaseId --jq "map(select(.databaseId > $previous)) | max_by(.databaseId) | .databaseId // 0")
+              if [ "$run_id" -gt "$previous" ]; then echo "$run_id"; return 0; fi
+              sleep 5
+            done
+            return 1
+          }
+          ghcr_id=$(find_new_run docker-ghcr-resolution.yml '${{ steps.resolutions.outputs.ghcr_before }}')
+          package_id=$(find_new_run windows-store-package-resolution.yml '${{ steps.resolutions.outputs.package_before }}')
+          echo "GHCR run: $ghcr_id; Store-package run: $package_id"
+          echo "ghcr_id=$ghcr_id" >> "$GITHUB_OUTPUT"
+          echo "package_id=$package_id" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 180); do
+            ghcr=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ghcr_id" --jq '.conclusion // "pending"')
+            package=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$package_id" --jq '.conclusion // "pending"')
+            if [ "$ghcr" = success ] && [ "$package" = success ]; then exit 0; fi
+            if [ "$ghcr" != pending ] && [ "$ghcr" != success ]; then
+              echo "GHCR resolution failed: $ghcr_id ($ghcr)"; exit 1
+            fi
+            if [ "$package" != pending ] && [ "$package" != success ]; then
+              echo "Store-package resolution failed: $package_id ($package)"; exit 1
+            fi
+            sleep 20
+          done
+          echo "Timed out waiting for tagged resolution runs"; exit 1
+
+      - name: Start the tagged Microsoft Store submission
+        id: submission
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous=$(gh run list --workflow windows-store-publish-update.yml --branch main \
+            --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          gh workflow run windows-store-publish-update.yml --ref main -f version="$RELEASE_VERSION"
+
+      - name: Wait for Microsoft Store submission
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous='${{ steps.submission.outputs.previous }}'
+          run_id=0
+          for attempt in $(seq 1 40); do
+            run_id=$(gh run list --workflow windows-store-publish-update.yml --branch main \
+              --limit 10 --json databaseId --jq "map(select(.databaseId > $previous)) | max_by(.databaseId) | .databaseId // 0")
+            if [ "$run_id" -gt "$previous" ]; then break; fi
+            sleep 5
+          done
+          if [ "$run_id" -le "$previous" ]; then echo "Store run did not appear"; exit 1; fi
+          echo "Microsoft Store submission run: $run_id"
+          for attempt in $(seq 1 180); do
+            result=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.conclusion // "pending"')
+            if [ "$result" = success ]; then
+              echo "Microsoft Store submission accepted by workflow: $run_id"
+              exit 0
+            fi
+            if [ "$result" != pending ]; then
+              echo "Microsoft Store submission failed: $run_id ($result)"
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "Timed out waiting for Store submission"; exit 1
