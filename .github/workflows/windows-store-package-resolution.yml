@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Existing numeric SPLINED release tag (example: 1.0.71)"
+        description: "ARTIFACT ONLY: builds a validated Store MSIX for this existing tag. Risk: it does NOT upload to Partner Center or submit a Store update."
         required: true
         type: string
 

@@ -2,6 +2,14 @@ name: 06. Store - Auth Diagnostics
 
 on:
   workflow_dispatch:
+    inputs:
+      run_note:
+        description: "DIAGNOSTIC: tests Store credentials and reports authentication failures. Risk: no package or listing changes; logs may contain diagnostics."
+        required: false
+        default: "Check authentication only"
+        type: choice
+        options:
+          - "Check authentication only"
   workflow_run:
     workflows:
       - 05. Store - Submit Package (Auto-submit)

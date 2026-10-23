@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Existing numeric SPLINED release tag (example: 1.0.71)"
+        description: "PUBLISHES GHCR image tags and replaces this existing tag's GitHub Release body. Risk: public image and notes change; no Store changes."
         required: true
         type: string
 

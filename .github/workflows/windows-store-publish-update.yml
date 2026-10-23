@@ -4,9 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Existing numeric SPLINED release tag (example: 1.0.71)"
+        description: "PUBLISH ONLY: submits an existing validated MSIX and updated Store Highlights; no rebuild. Enter the existing numeric release tag."
         required: true
         type: string
+      store_confirmation:
+        description: "RISK: writes to Partner Center and submits the package for certification. Select Submit to authorize this action."
+        required: true
+        default: "Stop - no Store submission"
+        type: choice
+        options:
+          - "Stop - no Store submission"
+          - "Submit existing package to Store"
 
 permissions:
   contents: read
@@ -28,6 +36,15 @@ jobs:
       cancel-in-progress: false
 
     steps:
+      - name: Require explicit Store submission choice before package work
+        shell: pwsh
+        env:
+          STORE_CONFIRMATION: ${{ inputs.store_confirmation }}
+        run: |
+          if ($env:STORE_CONFIRMATION -cne "Submit existing package to Store") {
+            throw "Store submission was not confirmed. Select 'Submit existing package to Store' to authorize Partner Center changes."
+          }
+
       - name: Validate numeric existing-tag input
         shell: pwsh
         run: |

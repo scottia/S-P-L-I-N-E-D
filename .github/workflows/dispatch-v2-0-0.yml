@@ -26,4 +26,6 @@ jobs:
             -f "inputs[release_version]=2.0.0" \
             -f "inputs[platform]=Windows" \
             -F "inputs[extended_windows_validation]=false" \
-            -F "inputs[microsoft_store]=true"
+            -F "inputs[microsoft_store]=true" \
+            -f "inputs[release_confirmation]=Create release now" \
+            -f "inputs[store_confirmation]=Submit to Microsoft Store"

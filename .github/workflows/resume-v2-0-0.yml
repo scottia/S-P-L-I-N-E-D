@@ -135,7 +135,9 @@ jobs:
           previous=$(gh run list --workflow windows-store-publish-update.yml --branch main \
             --limit 1 --json databaseId --jq '.[0].databaseId // 0')
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
-          gh workflow run windows-store-publish-update.yml --ref main -f version="$RELEASE_VERSION"
+          gh workflow run windows-store-publish-update.yml --ref main \
+            -f version="$RELEASE_VERSION" \
+            -f store_confirmation="Submit existing package to Store"
 
       - name: Wait for Microsoft Store submission
         shell: bash

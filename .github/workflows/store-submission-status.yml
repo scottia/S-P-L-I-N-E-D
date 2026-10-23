@@ -7,6 +7,14 @@ on:
     paths:
       - .github/workflows/store-submission-status.yml
   workflow_dispatch:
+    inputs:
+      run_note:
+        description: "READ-ONLY: shows the current SPLINED Partner Center submission state. Risk: no Store package, listing, or submission changes."
+        required: false
+        default: "Check status only"
+        type: choice
+        options:
+          - "Check status only"
 
 permissions:
   contents: read

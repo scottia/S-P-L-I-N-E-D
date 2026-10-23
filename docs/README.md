@@ -60,9 +60,9 @@ with the current product documentation.
   exact production identity, Store-managed in-app update requests, synchronized
   normal-release packaging and publication, existing-tag recovery, and isolated
   development QA.
-- [Release automation](release-automation.md) — the four supported workflows,
-  git-cliff 2.14.2 release-note authority, automatic Store submission, and
-  exact-tag Store/Docker recovery paths.
+- [Release automation](release-automation.md) — purpose, risk, and confirmation
+  choices for the numbered workflows; git-cliff 2.14.2 release-note authority;
+  and exact-tag Store/Docker recovery paths.
 - [Docker installation](../docker/README.md)
 - [Windows source and build guide](../windows/README.md)
 - [Windows portable instructions](../release/README-WINDOWS.txt)

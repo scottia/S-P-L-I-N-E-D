@@ -204,6 +204,7 @@ fn normal_release_notes_and_store_option_follow_the_release_contract() {
         .next()
         .unwrap();
     assert!(store_job.contains("inputs.microsoft_store"));
+    assert!(store_job.contains("inputs.store_confirmation == 'Submit to Microsoft Store'"));
     assert!(store_job.contains("inputs.platform == 'Windows' || inputs.platform == 'All'"));
     assert!(store_job.contains("name: splined-windows-store-submission"));
     assert!(store_job.contains("SPLINED-x64-store-unsigned.msix"));
@@ -213,6 +214,64 @@ fn normal_release_notes_and_store_option_follow_the_release_contract() {
     assert!(store_job.contains("Generate-StoreHighlights.ps1"));
     assert!(store_job.contains("Authenticate Microsoft Store before resolving published history"));
     assert!(store_job.contains("windows/package/Publish-StoreUpdate.ps1"));
+}
+
+#[test]
+fn manual_workflows_explain_scope_and_store_publication_fails_closed() {
+    for path in [
+        ".github/workflows/store-submission-status.yml",
+        ".github/workflows/windows-store-package-resolution.yml",
+        ".github/workflows/docker-ghcr-resolution.yml",
+        ".github/workflows/release-next-patch.yml",
+        ".github/workflows/windows-store-publish-update.yml",
+        ".github/workflows/test-msstore-auth.yml",
+    ] {
+        let workflow = source(path);
+        assert!(
+            workflow.contains("workflow_dispatch:"),
+            "{path} is not manually runnable"
+        );
+        assert!(
+            workflow.contains("description:"),
+            "{path} lacks a run-form note"
+        );
+        assert!(
+            workflow.contains("Risk:") || workflow.contains("RISK:"),
+            "{path} lacks a visible risk note"
+        );
+    }
+
+    let release = source(".github/workflows/release-next-patch.yml");
+    let release_preflight = release
+        .split("      - name: Require explicit release and Store choices before any release work")
+        .nth(1)
+        .unwrap()
+        .split("      - name: Require main branch dispatch")
+        .next()
+        .unwrap();
+    assert!(release.contains("default: \"Stop - no release\""));
+    assert!(release.contains("default: \"Do not submit to Store\""));
+    assert!(release_preflight.contains("RELEASE_CONFIRMATION"));
+    assert!(release_preflight.contains("STORE_CONFIRMATION"));
+    assert!(release_preflight.contains("exit 1"));
+
+    let store = source(".github/workflows/windows-store-publish-update.yml");
+    let store_preflight = store
+        .split("      - name: Require explicit Store submission choice before package work")
+        .nth(1)
+        .unwrap()
+        .split("      - name: Validate numeric existing-tag input")
+        .next()
+        .unwrap();
+    assert!(store.contains("default: \"Stop - no Store submission\""));
+    assert!(store_preflight.contains("STORE_CONFIRMATION"));
+    assert!(store_preflight.contains("throw"));
+
+    let dispatch = source(".github/workflows/dispatch-v2-0-0.yml");
+    let resume = source(".github/workflows/resume-v2-0-0.yml");
+    assert!(dispatch.contains("inputs[release_confirmation]=Create release now"));
+    assert!(dispatch.contains("inputs[store_confirmation]=Submit to Microsoft Store"));
+    assert!(resume.contains("-f store_confirmation=\"Submit existing package to Store\""));
 }
 
 #[test]

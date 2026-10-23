@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Optional numeric version; blank selects 2.0.0 from 1.0.99, then the next patch"
+        description: "FULL RELEASE: creates a tag, GitHub Release, and GHCR image. Store submission needs separate confirmation. Blank selects the next version."
         required: false
         default: ""
         type: string
       platform:
-        description: "Release platform"
+        description: "Build target; Windows or All can also build and submit a Store package."
         required: true
         default: "Windows"
         type: choice
@@ -24,10 +24,26 @@ on:
         default: false
         type: boolean
       microsoft_store:
-        description: "Build, validate, and submit Microsoft Store update"
+        description: "Store is ON by default. To submit, also select Yes in Store confirmation below; otherwise turn this OFF."
         required: false
         default: true
         type: boolean
+      release_confirmation:
+        description: "RISK: creates a new version, tag, GitHub Release, and GHCR image. Choose Create release now to proceed."
+        required: true
+        default: "Stop - no release"
+        type: choice
+        options:
+          - "Stop - no release"
+          - "Create release now"
+      store_confirmation:
+        description: "RISK: submits the Store package and Highlights to Partner Center when Microsoft Store is ON."
+        required: true
+        default: "Do not submit to Store"
+        type: choice
+        options:
+          - "Do not submit to Store"
+          - "Submit to Microsoft Store"
 
 permissions:
   contents: read
@@ -51,6 +67,27 @@ jobs:
       base: ${{ steps.release.outputs.base }}
 
     steps:
+      - name: Require explicit release and Store choices before any release work
+        shell: bash
+        env:
+          RELEASE_CONFIRMATION: ${{ inputs.release_confirmation }}
+          MICROSOFT_STORE: ${{ inputs.microsoft_store }}
+          STORE_CONFIRMATION: ${{ inputs.store_confirmation }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_CONFIRMATION" != "Create release now" ]; then
+            echo "::error title=Release not confirmed::Select 'Create release now' to authorize a version, tag, GitHub Release, and GHCR publication."
+            exit 1
+          fi
+          if [ "$MICROSOFT_STORE" = true ] && [ "$STORE_CONFIRMATION" != "Submit to Microsoft Store" ]; then
+            echo "::error title=Store not confirmed::Turn Microsoft Store off or explicitly select 'Submit to Microsoft Store'."
+            exit 1
+          fi
+          if [ "$MICROSOFT_STORE" != true ] && [ "$STORE_CONFIRMATION" = "Submit to Microsoft Store" ]; then
+            echo "::error title=Conflicting Store choices::Turn Microsoft Store on to submit, or leave Store confirmation at 'Do not submit to Store'."
+            exit 1
+          fi
+
       - name: Require main branch dispatch
         shell: bash
         run: |
@@ -940,6 +977,7 @@ jobs:
       ${{
         always() &&
         inputs.microsoft_store &&
+        inputs.store_confirmation == 'Submit to Microsoft Store' &&
         (inputs.platform == 'Windows' || inputs.platform == 'All') &&
         needs.prepare-release.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&

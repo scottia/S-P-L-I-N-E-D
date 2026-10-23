@@ -62,7 +62,9 @@ channel and does not require package identity.
 
 `04. Release - Build/Publish (Store auto-submit default)` is the only workflow that creates a release version
 and numeric tag. For Windows or All releases its **Microsoft Store** input
-defaults to enabled. The Windows job performs one clean x64
+defaults to enabled, but the run stops before release work unless **Create
+release now** is selected; Store submission also requires **Submit to Microsoft
+Store**. The Windows job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. Ubuntu-only
 and macOS-only runs ignore this Windows option.
@@ -143,7 +145,9 @@ detector.
 The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
 For a normal future Store update, maintainers leave **Microsoft Store** enabled
-in the corresponding `04. Release - Build/Publish (Store auto-submit default)` run. After selected build QA,
+and explicitly confirm both the release and Store submission in the
+corresponding `04. Release - Build/Publish (Store auto-submit default)` run.
+After selected build QA,
 the workflow creates the numeric tag, renders GitHub notes and concise Store
 Highlights with the same git-cliff 2.14.2 policy, publishes the GitHub Release
 and GHCR, then stages and submits the exact validated MSIX to the existing product
