@@ -1,0 +1,29 @@
+name: Dispatch SPLINED 2.0.0 release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/dispatch-v2-0-0.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: github.event.head_commit.message == 'ci(release): dispatch v2.0.0 standard validation'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start Windows release and Microsoft Store submission
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST \
+            "/repos/${{ github.repository }}/actions/workflows/release-next-patch.yml/dispatches" \
+            -f ref=main \
+            -f "inputs[release_version]=2.0.0" \
+            -f "inputs[platform]=Windows" \
+            -F "inputs[extended_windows_validation]=false" \
+            -F "inputs[microsoft_store]=true"
