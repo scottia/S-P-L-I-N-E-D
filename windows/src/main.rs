@@ -795,6 +795,7 @@ fn publish_thumbnail_paths(
             app.artist_overview_genres = cached.genres.clone();
             app.artist_overview_roles = cached.roles.clone();
             app.artist_overview_album_keys = cached.album_keys.clone();
+            app.select_artist_appearances_for_run();
             app.artist_overview_featured_album_keys = cached.featured_album_keys.clone();
             app.artist_overview_track_paths = cached.track_paths_by_album.clone();
             app.artist_overview_album_ratings = cached.album_ratings.clone();
@@ -4044,6 +4045,7 @@ fn select_adjacent_artist_for_overview(
         app.artist_overview_genres = cached.genres;
         app.artist_overview_roles = cached.roles;
         app.artist_overview_album_keys = cached.album_keys;
+        app.select_artist_appearances_for_run();
         app.artist_overview_featured_album_keys = cached.featured_album_keys;
         app.artist_overview_track_paths = cached.track_paths_by_album;
         app.artist_overview_album_ratings = cached.album_ratings;
@@ -5814,6 +5816,7 @@ fn bind_callbacks(
                     app.artist_overview_genres = cached.genres;
                     app.artist_overview_roles = cached.roles;
                     app.artist_overview_album_keys = cached.album_keys;
+                    app.select_artist_appearances_for_run();
                     app.artist_overview_featured_album_keys = cached.featured_album_keys;
                     app.artist_overview_track_paths = cached.track_paths_by_album;
                     app.artist_overview_album_ratings = cached.album_ratings;
@@ -5899,6 +5902,7 @@ fn bind_callbacks(
                         app.artist_overview_genres = cached.genres;
                         app.artist_overview_roles = cached.roles;
                         app.artist_overview_album_keys = cached.album_keys;
+                        app.select_artist_appearances_for_run();
                         app.artist_overview_featured_album_keys = cached.featured_album_keys;
                         app.artist_overview_track_paths = cached.track_paths_by_album;
                         app.artist_overview_album_ratings = cached.album_ratings;
@@ -11544,6 +11548,7 @@ fn refresh_weak(weak: &slint::Weak<AppWindow>, state: &Arc<Mutex<ApplicationStat
     let started = Instant::now();
     schedule_preview_image_loads(weak, state);
     schedule_artist_album_embedded_checks(weak, state);
+    update_artist_bulk_completion(state);
     schedule_visible_compilation_track_checks(weak, state);
     if let Some(ui) = weak.upgrade() {
         sync_ui(&ui, state);
@@ -14274,11 +14279,22 @@ fn schedule_artist_album_embedded_checks(
             return;
         }
         let side = app.config.output.embedded_thumbnail_size;
-        app.library
-            .artist_overview_album_indices(
-                &app.artist_overview_album_keys,
-                app.artist_overview_show_all,
-            )
+        let mut indices = app.library.artist_overview_album_indices(
+            &app.artist_overview_album_keys,
+            app.artist_overview_show_all,
+        );
+        if app.library.artist_run_scope_active && app.library.focused_album_key.is_none() {
+            for (index, album) in app.library.albums.iter().enumerate() {
+                if album.selected
+                    && !album.snapshot.album_mbid.trim().is_empty()
+                    && album.state == AlbumState::Processed
+                    && !indices.contains(&index)
+                {
+                    indices.push(index);
+                }
+            }
+        }
+        indices
             .into_iter()
             .filter_map(|index| app.library.albums.get(index))
             .map(|album| {
@@ -14337,6 +14353,58 @@ fn schedule_artist_album_embedded_checks(
         }
         let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
     });
+}
+
+fn update_artist_bulk_completion(state: &Arc<Mutex<ApplicationState>>) {
+    let Ok(mut app) = state.lock() else { return };
+    let was_pending = app.artist_bulk_validation_pending;
+    app.artist_bulk_complete_keys.clear();
+    app.artist_bulk_validation_pending = false;
+    if app.library.view != LibraryView::Artists
+        || !app.library.artist_run_scope_active
+        || app.library.focused_album_key.is_some()
+    {
+        return;
+    }
+    let Ok(cache) = album_embedded_check_cache().lock() else {
+        app.artist_bulk_validation_pending = true;
+        return;
+    };
+    let side = app.config.output.embedded_thumbnail_size;
+    let mut complete = BTreeSet::new();
+    let mut pending = false;
+    for album in app.library.albums.iter().filter(|album| {
+        album.selected
+            && !album.snapshot.album_mbid.trim().is_empty()
+            && album.state == AlbumState::Processed
+            && album.snapshot.has_local_artwork
+    }) {
+        let key = album_embedded_check_key(&album.snapshot.path, side);
+        match cache.get(&key).copied().flatten() {
+            Some(check) if check.tracks > 0 && !check.needs_attention() => {
+                complete.insert(album.snapshot.album_key.to_ascii_lowercase());
+            }
+            None => pending = true,
+            _ => {}
+        }
+    }
+    app.artist_bulk_complete_keys = complete;
+    app.artist_bulk_validation_pending = pending;
+    const VALIDATING: &str = "Checking artist albums for cover and embedded-art completion…";
+    if !app.artist_overview_loading && app.phase == RunPhase::Idle && !app.operation_busy {
+        if pending {
+            app.operation_status = VALIDATING.to_string();
+            app.operation_tone = "cyan".to_string();
+        } else if was_pending && app.operation_status == VALIDATING {
+            let remaining = app.launch_targets().len();
+            app.operation_status = if remaining == 0 {
+                "Artist albums already complete · select an album card to reprocess".to_string()
+            } else {
+                format!("Artist album selection ready · {remaining} albums need artwork")
+            };
+            app.operation_tone = if remaining == 0 { "green" } else { "cyan" }.to_string();
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -14891,7 +14959,7 @@ mod tests {
         require_active_compilation_write_target, restore_request_from_args, safe_reset_config,
         selected_artist_album_embed_sources, selected_artwork_preview_type,
         selected_artwork_write_label, split_values, synchronize_fallback_album,
-        trim_large_raw_image_cache, write_artist_art_file,
+        trim_large_raw_image_cache, update_artist_bulk_completion, write_artist_art_file,
     };
     use serde_json::json;
     use slint::{Color, Model};
@@ -15162,6 +15230,102 @@ mod tests {
             artist_fallback_embedded_check_key("C:/comp", 1200, "98°"),
             artist_fallback_embedded_check_key("C:/comp", 1200, "Mariah Carey"),
         );
+    }
+
+    #[test]
+    fn artist_bulk_launch_waits_for_validation_and_skips_only_green_albums() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().to_string_lossy().into_owned();
+        let album = MediaAlbumSnapshot {
+            album_key: "album-one".into(),
+            artist: "Alpha".into(),
+            tagged_artist: "Alpha".into(),
+            title: "Album One".into(),
+            path: path.clone(),
+            representative_file: String::new(),
+            status: "processed".into(),
+            compilation: false,
+            compilation_track_art_eligible: false,
+            compilation_tracks: Vec::new(),
+            track_count: 1,
+            compilation_completed_tracks: 0,
+            release_year: String::new(),
+            artist_mbid: String::new(),
+            album_mbid: "release-one".into(),
+            release_group_mbid: String::new(),
+            has_local_artwork: true,
+            local_artwork_files: Vec::new(),
+            cover_path: String::new(),
+            cover_name: String::new(),
+            cover_format: String::new(),
+            cover_width: 0,
+            cover_height: 0,
+            root_files: 0,
+            cover_files: 0,
+            processed_at: None,
+            timeout_until: None,
+            selected_source: None,
+        };
+        let mut app = ApplicationState::new(
+            Config::default(),
+            MediaSnapshot {
+                schema_version: splined_core::media_database::SCHEMA_VERSION,
+                database_path: String::new(),
+                canonical_root: String::new(),
+                local_root: String::new(),
+                albums: vec![album],
+            },
+        )
+        .unwrap();
+        app.library.set_view(LibraryView::Artists);
+        app.library.select_artist_exclusive("Alpha", false);
+        let key = album_embedded_check_key(&path, app.config.output.embedded_thumbnail_size);
+        let shared = Arc::new(Mutex::new(app));
+        album_embedded_check_cache()
+            .lock()
+            .unwrap()
+            .insert(key.clone(), None);
+        update_artist_bulk_completion(&shared);
+        assert!(shared.lock().unwrap().artist_bulk_validation_pending);
+        assert!(shared.lock().unwrap().launch_targets().is_empty());
+
+        album_embedded_check_cache().lock().unwrap().insert(
+            key.clone(),
+            Some(AlbumEmbeddedCheck {
+                tracks: 1,
+                missing: 0,
+                wrong_size: 0,
+            }),
+        );
+        update_artist_bulk_completion(&shared);
+        assert!(!shared.lock().unwrap().artist_bulk_validation_pending);
+        assert!(
+            shared
+                .lock()
+                .unwrap()
+                .artist_bulk_complete_keys
+                .contains("album-one")
+        );
+        assert!(shared.lock().unwrap().launch_targets().is_empty());
+
+        album_embedded_check_cache().lock().unwrap().insert(
+            key.clone(),
+            Some(AlbumEmbeddedCheck {
+                tracks: 1,
+                missing: 1,
+                wrong_size: 0,
+            }),
+        );
+        update_artist_bulk_completion(&shared);
+        assert!(
+            !shared
+                .lock()
+                .unwrap()
+                .artist_bulk_complete_keys
+                .contains("album-one")
+        );
+        assert_eq!(shared.lock().unwrap().launch_targets().len(), 1);
+        album_embedded_check_cache().lock().unwrap().remove(&key);
     }
 
     #[test]

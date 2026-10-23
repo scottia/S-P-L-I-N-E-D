@@ -298,9 +298,9 @@ component LibraryItem inherits Rectangle {
     changed item => { root.thumbnail-needed(root.item.key, root.item.kind); }
     height: root.item.kind == "artist" ? 74px : 68px;
     border-radius: 6px;
-    border-width: !root.status-only-album-selection && (root.item.expanded || (root.item.kind != "artist" && root.item.selected)) ? 1px : 0px;
+    border-width: !root.status-only-album-selection && root.item.kind != "artist" && (root.item.expanded || root.item.selected) ? 1px : 0px;
     border-color: root.status-only-album-selection ? transparent : (root.item.expanded ? AppTheme.border : (root.item.selected ? AppTheme.magenta : transparent));
-    background: !root.status-only-album-selection && (root.item.expanded || (root.item.kind != "artist" && root.item.selected)) ? (AppTheme.chalk || AppTheme.light ? AppTheme.selected-surface : @linear-gradient(90deg, #142e55, #1d3565)) : (row-touch.has-hover ? AppTheme.card-hover : transparent);
+    background: !root.status-only-album-selection && root.item.kind != "artist" && (root.item.expanded || root.item.selected) ? (AppTheme.chalk || AppTheme.light ? AppTheme.selected-surface : @linear-gradient(90deg, #142e55, #1d3565)) : (row-touch.has-hover ? AppTheme.card-hover : transparent);
     row-touch := TouchArea {
         mouse-cursor: pointer;
         clicked => root.activated(root.item.key);
@@ -317,10 +317,14 @@ component LibraryItem inherits Rectangle {
             }
             TouchArea {
                 mouse-cursor: pointer;
-                clicked => root.selection-activated(root.item.key);
+                // Artist dot and row use the same complete artist scope.
+                clicked => {
+                    if root.item.kind == "artist" { root.activated(root.item.key); }
+                    else { root.selection-activated(root.item.key); }
+                }
             }
         }
-        Rectangle { width: root.item.kind == "artist" ? 48px : 42px; height: root.item.kind == "artist" ? 48px : 42px; clip: true; border-radius: root.item.kind == "artist" ? 24px : 8px; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: 1px;
+        Rectangle { width: root.item.kind == "artist" ? 48px : 42px; height: root.item.kind == "artist" ? 48px : 42px; clip: true; border-radius: root.item.kind == "artist" ? 24px : 8px; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.kind != "artist" && root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: 1px;
             Text { text: root.item.primary == "" ? "?" : root.item.icon; color: AppTheme.foreground; font-size: 19px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
             Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; }
         }
@@ -358,10 +362,10 @@ component ArtistAlbumCard inherits Rectangle {
             border-radius: 7px;
             border-width: self.mixed-embedded-outline ? 0px : 2px;
             border-color: root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)));
-            background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : root.item.selected ? AppTheme.selected-surface : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
+            background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
             if self.mixed-embedded-outline: Rectangle {
                 x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
-                border-radius: 5px; background: root.item.selected ? AppTheme.selected-surface : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
+                border-radius: 5px; background: album-touch.has-hover ? AppTheme.card-hover : AppTheme.card;
             }
             HorizontalLayout { padding: 5px; spacing: 4px;
                 Rectangle { width: 20px; clip: true; border-radius: 4px; border-width: 1px;

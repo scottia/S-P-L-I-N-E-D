@@ -294,12 +294,16 @@ owned by `ScanController`, and **STOP** requests cancellation of the active
 Rust operation, including an operator-decision wait. Albums are processed
 sequentially; a failed album remains recoverable and later queued albums are not
 silently marked complete.
-In Artists view, selecting an artist for a normal LAUNCH queues unfinished
-Release-ID albums, including Soundtrack, Various Artists, and secondary-credit
-Featuring appearances shown in that artist's overview. Completed albums are
-skipped when revisiting the artist; select a completed album card explicitly
-to reprocess it. COMPILED fallback tracks retain their separate LAUNCH COMP
-workflow.
+In Artists view, clicking either an artist row or its selection dot selects
+all of that artist's Release-ID
+albums, plus Soundtrack, Various Artists, and secondary-credit Featuring
+appearances when the overview discovers them. LAUNCH waits for the overview and
+embedded-art validation, then queues every selected album that is not fully
+green. A database `processed` status by itself does not skip an album with a
+missing cover or embedded-art problem. Fully green albums are skipped in this
+artist-wide run; select an individual album card to reprocess one explicitly.
+COMPILED fallback tracks retain their separate LAUNCH COMP workflow and are
+never queued as whole folders by artist-wide LAUNCH.
 
 ## Candidate artwork and sources
 

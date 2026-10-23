@@ -1364,7 +1364,10 @@ impl LibraryState {
                 album.selected = true;
                 album.bypass_override = album.state == AlbumState::Bypassed
                     && album.compilation_track_artwork_pending();
-            } else if album.state == AlbumState::Bypassed && include_bypassed {
+            } else if album.state == AlbumState::Bypassed
+                && include_bypassed
+                && !album.snapshot.album_mbid.trim().is_empty()
+            {
                 album.selected = true;
                 album.bypass_override = true;
             }
@@ -1510,15 +1513,16 @@ impl LibraryState {
                 AlbumState::TimeoutActive => {}
                 AlbumState::Bypassed if !include_bypassed => {}
                 AlbumState::Bypassed => {
-                    album.selected = true;
-                    album.bypass_override = true;
+                    if !album.snapshot.album_mbid.trim().is_empty() {
+                        album.selected = true;
+                        album.bypass_override = true;
+                    }
                 }
-                // Artist-wide LAUNCH is for unfinished MBID-backed albums.
-                // A completed album remains available through its own card or
-                // row, which is an explicit request to reprocess it.
+                // Selecting an Artist selects all of their MBID-backed
+                // albums. LAUNCH filters completed albums from this bulk
+                // scope; an Album card remains an explicit reprocess action.
                 _ => {
-                    album.selected = !album.snapshot.album_mbid.trim().is_empty()
-                        && matches!(album.state, AlbumState::New | AlbumState::Incomplete);
+                    album.selected = !album.snapshot.album_mbid.trim().is_empty();
                 }
             }
         }
@@ -2218,6 +2222,11 @@ pub struct ApplicationState {
     pub artist_overview_genres: Vec<String>,
     pub artist_overview_roles: Vec<String>,
     pub artist_overview_album_keys: BTreeSet<String>,
+    /// Album keys verified green for the current artist-wide run. Database
+    /// `processed` alone is not enough: covers and embedded thumbs can still
+    /// need repair.
+    pub artist_bulk_complete_keys: BTreeSet<String>,
+    pub artist_bulk_validation_pending: bool,
     pub artist_overview_featured_album_keys: BTreeSet<String>,
     /// Validated Navidrome song paths for the focused artist, kept separate
     /// from the sparse SQLite compilation inventory and never used to scan.
@@ -2410,6 +2419,8 @@ impl ApplicationState {
             artist_overview_genres: Vec::new(),
             artist_overview_roles: Vec::new(),
             artist_overview_album_keys: BTreeSet::new(),
+            artist_bulk_complete_keys: BTreeSet::new(),
+            artist_bulk_validation_pending: false,
             artist_overview_featured_album_keys: BTreeSet::new(),
             artist_overview_track_paths: HashMap::new(),
             artist_overview_album_ratings: HashMap::new(),
@@ -2562,7 +2573,40 @@ impl ApplicationState {
         self.phase == RunPhase::Idle && !self.launch_targets().is_empty()
     }
 
+    /// Navidrome can discover albums where this Artist is credited on a
+    /// track, but the album belongs to a different Album Artist. Include
+    /// those cards in the artist-wide selection once their keys arrive.
+    pub fn select_artist_appearances_for_run(&mut self) {
+        if self.library.view != LibraryView::Artists
+            || !self.library.artist_run_scope_active
+            || self.library.focused_album_key.is_some()
+        {
+            return;
+        }
+        for album in &mut self.library.albums {
+            if !album.snapshot.album_mbid.trim().is_empty()
+                && self
+                    .artist_overview_album_keys
+                    .contains(&album.snapshot.album_key.to_ascii_lowercase())
+                && !matches!(
+                    album.state,
+                    AlbumState::TimeoutActive | AlbumState::Bypassed
+                )
+            {
+                album.selected = true;
+            }
+        }
+    }
+
     pub fn launch_targets(&self) -> Vec<ScanTarget> {
+        if self.scan_scope == ScanScope::Selected
+            && self.library.view == LibraryView::Artists
+            && self.library.artist_run_scope_active
+            && self.library.focused_album_key.is_none()
+            && (self.artist_bulk_validation_pending || self.artist_overview_loading)
+        {
+            return Vec::new();
+        }
         let mut queue = self.library.queue(self.scan_scope);
         if self.library.view == LibraryView::Artists && !self.library.show_tracks {
             // COMP is track-scoped and has its own LAUNCH COMP control. Never
@@ -2581,13 +2625,33 @@ impl ApplicationState {
                 && self.library.artist_run_scope_active
                 && self.library.focused_album_key.is_none()
             {
+                // Artist selection is a complete visual selection. Skip only
+                // albums verified green, not every database-processed album.
+                // An explicit Album card click can still reprocess one.
+                queue.retain(|target| {
+                    self.library.albums.iter().any(|album| {
+                        album
+                            .snapshot
+                            .album_key
+                            .eq_ignore_ascii_case(&target.album_key)
+                            && !self
+                                .artist_bulk_complete_keys
+                                .contains(&album.snapshot.album_key.to_ascii_lowercase())
+                    })
+                });
                 // Navidrome Artist Overview includes MBID-backed releases in
                 // which the selected artist appears, even when Album Artist
                 // is Various Artists or a soundtrack performer. Treat these
                 // as ordinary albums, but do not repeat completed work.
                 for album in &self.library.albums {
                     if album.snapshot.album_mbid.trim().is_empty()
-                        || !matches!(album.state, AlbumState::New | AlbumState::Incomplete)
+                        || matches!(
+                            album.state,
+                            AlbumState::TimeoutActive | AlbumState::Bypassed
+                        )
+                        || self
+                            .artist_bulk_complete_keys
+                            .contains(&album.snapshot.album_key.to_ascii_lowercase())
                         || !self
                             .artist_overview_album_keys
                             .contains(&album.snapshot.album_key.to_ascii_lowercase())
@@ -5876,7 +5940,7 @@ mod tests {
     }
 
     #[test]
-    fn artist_row_activation_skips_processed_albums_but_keeps_manual_reprocessing_available() {
+    fn artist_row_activation_selects_all_artist_albums_including_processed() {
         let mut state = library();
         state
             .albums
@@ -5905,10 +5969,13 @@ mod tests {
             .map(|album| album.snapshot.album_key.as_str())
             .collect::<Vec<_>>();
         selected.sort_unstable();
-        assert_eq!(selected, vec!["a"]);
+        assert_eq!(selected, vec!["a", "b"]);
         assert_eq!(state.focused_artist.as_deref(), Some("Alpha"));
         assert!(state.focused_album_key.is_none());
-        assert_eq!(state.toggle_album("b", false), SelectionResult::Changed);
+        assert_eq!(
+            state.select_album_exclusive("b", false),
+            SelectionResult::Changed
+        );
         assert!(
             state
                 .albums
@@ -5923,8 +5990,13 @@ mod tests {
     fn artist_launch_includes_unfinished_featured_releases_but_not_completed_or_compiled() {
         let mut own = album("own", "Alpha", "New Album", "unprocessed");
         own.album_mbid = "release-own".to_string();
+        let mut second = album("second", "Alpha", "Other Album", "incomplete");
+        second.album_mbid = "release-second".to_string();
         let mut done = album("done", "Alpha", "Finished Album", "processed");
         done.album_mbid = "release-done".to_string();
+        done.has_local_artwork = true;
+        let mut needs_repair = album("repair", "Alpha", "Missing Cover", "processed");
+        needs_repair.album_mbid = "release-repair".to_string();
         let mut featured = album("featured", "Various Artists", "Guest Track", "unprocessed");
         featured.album_mbid = "release-featured".to_string();
         let compiled = album("compiled", "Alpha", "Compilation", "unprocessed");
@@ -5935,25 +6007,47 @@ mod tests {
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
                 local_root: r"C:\Music".to_string(),
-                albums: vec![own, done, featured, compiled],
+                albums: vec![own, second, done, needs_repair, featured, compiled],
             },
         )
         .unwrap();
         state.scan_scope = ScanScope::Selected;
         state.library.set_view(LibraryView::Artists);
-        state
-            .artist_overview_album_keys
-            .extend(["own", "done", "featured", "compiled"].map(str::to_string));
+        state.artist_overview_album_keys.extend(
+            ["own", "second", "done", "repair", "featured", "compiled"].map(str::to_string),
+        );
         assert_eq!(
             state.library.select_artist_exclusive("Alpha", false),
             SelectionResult::Changed
         );
-        let keys = state
+        state.select_artist_appearances_for_run();
+        state.artist_bulk_complete_keys.insert("done".to_string());
+        let mut selected = state
+            .library
+            .albums
+            .iter()
+            .filter(|album| album.selected)
+            .map(|album| album.snapshot.album_key.as_str())
+            .collect::<Vec<_>>();
+        selected.sort_unstable();
+        assert_eq!(
+            selected,
+            vec!["done", "featured", "own", "repair", "second"]
+        );
+        let mut keys = state
             .launch_targets()
             .into_iter()
             .map(|target| target.album_key)
             .collect::<Vec<_>>();
-        assert_eq!(keys, vec!["own", "featured"]);
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["featured", "own", "repair", "second"]);
+
+        state.artist_bulk_validation_pending = true;
+        assert!(state.launch_targets().is_empty());
+        state.artist_bulk_validation_pending = false;
+        state.artist_overview_loading = true;
+        assert!(state.launch_targets().is_empty());
+        state.artist_overview_loading = false;
 
         assert_eq!(
             state.library.select_album_exclusive("done", false),
@@ -5965,6 +6059,8 @@ mod tests {
             .map(|target| target.album_key)
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["done"]);
+        state.select_artist_appearances_for_run();
+        assert_eq!(state.library.selected_count(), 1);
     }
 
     #[test]
@@ -6005,7 +6101,7 @@ mod tests {
             state.select_artist_exclusive("Alpha", false),
             SelectionResult::Changed
         );
-        assert_eq!(state.queue(ScanScope::Selected).len(), 1);
+        assert_eq!(state.queue(ScanScope::Selected).len(), 2);
         assert_eq!(
             state.toggle_compilation_track("e", track_path, false),
             SelectionResult::Changed
