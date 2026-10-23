@@ -89,20 +89,20 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, `04. Release - Build/Publish (Store auto-submit default)` builds the x64 Windows executable
+For maintainers, `01. Full Release - Build Selected OS and Publish` builds the x64 Windows executable
 once. The same `splined.exe` feeds the Portable ZIP
-and, when **Microsoft Store** is enabled, the unsigned Store MSIX. Portable and
+and, when either Store mode is selected, the unsigned Store MSIX. Portable and
 selected Store validation must both succeed before the numeric release tag is
-created. After the GitHub Release and GHCR publish, the workflow automatically
-stages the MSIX, preserves the existing Store submission metadata, updates only
-the en-US Store Highlights, and submits it for Microsoft processing. The MSIX
+created. After the GitHub Release, the selected Store mode stages the MSIX,
+preserves the existing Store submission metadata, updates only the en-US Store
+Highlights, and either stops as a draft or submits for certification. The MSIX
 is retained with `STORE-HIGHLIGHTS.txt` and its `STORE-SUBMISSION.json` history
 audit in the Actions-only
 `splined-windows-store-submission` artifact; it is not an end-user installer or
 a normal GitHub Release download. Development identity and signing use a
 separate temporary QA layout and cannot mutate the Store artifact.
-`02. Store - Build Package Only` rebuilds a package without
-submitting it; `05. Store - Submit Package (Auto-submit)` publishes an existing tag.
+`02. Store Recovery - Tagged Draft or Update` rebuilds and stages or submits
+an existing tagged package, according to the explicitly selected Store mode.
 See the [release automation guide](release-automation.md) and
 [Microsoft Store Windows channel](windows-store.md) for the live product,
 identity, and update-publication procedure.

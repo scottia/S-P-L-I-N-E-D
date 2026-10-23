@@ -6,422 +6,117 @@ fn source(path: &str) -> String {
         .replace("\r\n", "\n")
 }
 
-#[test]
-fn git_cliff_2_14_2_is_the_single_release_note_engine() {
-    let installer = source("release/Install-GitCliff.ps1");
-    let github_generator = source("release/Generate-ReleaseNotes.ps1");
-    let store_generator = source("release/Generate-StoreHighlights.ps1");
-    let store_resolver = source("release/Resolve-StoreBaseline.ps1");
-    let config = source("cliff.toml");
-    let github_template = source("release/templates/github-release.tera");
-    let store_template = source("release/templates/store-highlights.tera");
-
-    assert!(installer.contains("$version = \"2.14.2\""));
-    assert!(installer.contains("git-cliff $version"));
-    assert!(!installer.to_ascii_lowercase().contains("latest"));
-    assert!(installer.contains("24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4"));
-    assert!(installer.contains("6ece2112b3f4af462190ecbea4aeb1315fff6af415629b597f84319073c31131"));
-    assert!(
-        installer.contains("$env:PATH = \"$InstallDirectory$([IO.Path]::PathSeparator)$env:PATH\"")
-    );
-
-    assert_eq!(github_generator.matches("--context").count(), 1);
-    assert_eq!(github_generator.matches("--from-context").count(), 1);
-    assert!(github_generator.contains("release-context.json"));
-    assert!(github_generator.contains("GITHUB-RELEASE.md"));
-    assert!(!github_generator.contains("STORE-HIGHLIGHTS.txt"));
-    assert_eq!(store_generator.matches("--context").count(), 1);
-    assert_eq!(store_generator.matches("--from-context").count(), 1);
-    assert!(store_generator.contains("store-context.json"));
-    assert!(store_generator.contains("STORE-HIGHLIGHTS.txt"));
-    assert!(store_generator.contains("STORE-SUBMISSION.json"));
-    assert!(store_generator.contains("1500"));
-    assert!(store_resolver.contains("msstore apps get $ProductId"));
-    assert!(store_resolver.contains("msstore submission get $ProductId"));
-    assert!(store_resolver.contains("pendingApplicationSubmission"));
-    assert!(store_resolver.contains("lastPublishedApplicationSubmission"));
-    assert!(store_resolver.contains("applicationPackages"));
-    for script in [&github_generator, &store_generator, &store_resolver] {
-        assert!(!script.contains("python"));
-        assert!(!script.contains("node"));
-    }
-
-    for group in [
-        "✨ Highlights",
-        "🪟 Windows",
-        "🛍️ Microsoft Store",
-        "🐧 Linux / Ubuntu",
-        "🍎 macOS",
-        "🐳 Docker / GHCR",
-        "🛠️ Fixes & Reliability",
-        "📚 Documentation",
-        "🔧 Maintenance",
-        "📦 Other Changes",
-    ] {
-        assert!(config.contains(group), "missing git-cliff group: {group}");
-    }
-    assert!(config.contains("{ message = \".*\", group = \"📦 Other Changes\" }"));
-    assert!(config.contains("filter_unconventional = false"));
-    assert!(config.contains("filter_commits = false"));
-    assert!(github_template.contains("Full changelog:"));
-    assert!(github_template.contains("/compare/"));
-    assert!(store_template.contains("🛍️ Microsoft Store"));
-    assert!(!store_template.contains("📚 Documentation"));
-    assert!(!store_template.contains("🔧 Maintenance"));
-    assert!(store_template.contains("What's new in {{ version }}"));
-    assert!(store_template.contains("not commit.merge_commit"));
-    assert!(store_template.contains("commit.scope != \"ci\""));
-    assert!(store_template.contains("starting_with(\"ci(\")"));
-    assert!(!store_template.contains("emitted < 12"));
-}
+const FULL: &str = ".github/workflows/01-full-release.yml";
+const STORE: &str = ".github/workflows/02-store-recovery.yml";
+const GHCR: &str = ".github/workflows/03-ghcr-recovery.yml";
 
 #[test]
-fn every_release_note_generating_workflow_uses_the_shared_git_cliff_engine() {
-    for path in [
-        ".github/workflows/release-next-patch.yml",
-        ".github/workflows/docker-ghcr-resolution.yml",
-    ] {
+fn all_three_workflows_are_manual_and_actions_are_pinned() {
+    for path in [FULL, STORE, GHCR] {
         let workflow = source(path);
-        assert!(
-            workflow.contains("Install-GitCliff.ps1"),
-            "{path} does not install git-cliff"
-        );
-        assert!(
-            workflow.contains("git-cliff --version"),
-            "{path} does not verify git-cliff"
-        );
-        assert!(
-            workflow.contains("git-cliff 2.14.2"),
-            "{path} does not pin git-cliff 2.14.2"
-        );
-        assert!(
-            workflow.contains("Generate-ReleaseNotes.ps1"),
-            "{path} does not use the shared context renderer"
-        );
-        assert!(
-            workflow.contains("cliff.toml"),
-            "{path} does not use the authoritative classification"
-        );
-    }
-
-    for path in [
-        ".github/workflows/release-next-patch.yml",
-        ".github/workflows/windows-store-package-resolution.yml",
-        ".github/workflows/windows-store-publish-update.yml",
-    ] {
-        let workflow = source(path);
-        assert!(workflow.contains("Install-GitCliff.ps1"));
-        assert!(workflow.contains("git-cliff 2.14.2"));
-        assert!(workflow.contains("Resolve-StoreBaseline.ps1"));
-        assert!(workflow.contains("Generate-StoreHighlights.ps1"));
-        assert!(workflow.contains("Test-StoreBaseline.ps1"));
-        assert!(workflow.contains("cliff.toml"));
-    }
-}
-
-#[test]
-fn every_workflow_action_is_pinned_to_an_immutable_commit() {
-    for path in [
-        ".github/workflows/release-next-patch.yml",
-        ".github/workflows/windows-store-package-resolution.yml",
-        ".github/workflows/windows-store-publish-update.yml",
-        ".github/workflows/docker-ghcr-resolution.yml",
-    ] {
-        for line in source(path).lines().map(str::trim) {
+        assert!(workflow.contains("workflow_dispatch:"), "{path}");
+        assert!(workflow.contains("description:"), "{path}");
+        for line in workflow.lines().map(str::trim) {
             let Some(action) = line.strip_prefix("uses: ") else {
                 continue;
             };
-            let (repository, revision) = action
-                .split_once('@')
-                .unwrap_or_else(|| panic!("{path} action lacks a revision: {action}"));
+            let (repository, revision) = action.split_once('@').expect("pinned action revision");
             assert!(
                 repository.starts_with("actions/")
                     || repository == "microsoft/microsoft-store-apppublisher",
-                "{path} uses an unapproved action repository: {repository}"
+                "unapproved action: {action}"
             );
             let revision = revision.split_whitespace().next().unwrap_or_default();
             assert!(
-                revision.len() == 40 && revision.chars().all(|value| value.is_ascii_hexdigit()),
-                "{path} action is not pinned to a full commit SHA: {action}"
+                revision.len() == 40 && revision.chars().all(|c| c.is_ascii_hexdigit()),
+                "action is not pinned to a SHA: {action}"
             );
         }
     }
 }
 
 #[test]
-fn normal_release_notes_and_store_option_follow_the_release_contract() {
-    let workflow = source(".github/workflows/release-next-patch.yml");
-    assert!(workflow.contains("microsoft_store:"));
-    assert!(workflow.contains("default: true"));
-    assert!(!workflow.contains("--generate-notes"));
-    assert!(workflow.contains("--notes-file ../release-notes/GITHUB-RELEASE.md"));
-    assert!(workflow.contains("release-notes/release-context.json"));
-    assert!(!workflow.contains("release-notes/STORE-HIGHLIGHTS.txt"));
-
-    let windows_job = workflow
-        .split("  build-windows:")
-        .nth(1)
-        .unwrap()
-        .split("  build-ubuntu:")
-        .next()
-        .unwrap();
-    assert_eq!(
-        windows_job
-            .matches("cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET")
-            .count(),
-        1,
-        "normal release must compile the Windows Rust/Slint executable once"
-    );
-    assert_eq!(
-        windows_job
-            .matches("inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All')")
-            .count(),
-        4,
-        "all Store build/QA/upload steps must be gated by the Store option"
-    );
-    assert!(windows_job.contains("$releaseRoot/splined.exe"));
-    assert!(!windows_job.contains("splined_core.dll"));
-    assert!(!windows_job.contains("splined-core.dll"));
-    assert!(windows_job.contains("name: splined-windows-store-package"));
-
-    let public_release = workflow
-        .split("  publish-release:")
-        .nth(1)
-        .unwrap()
-        .split("  publish-ghcr:")
-        .next()
-        .unwrap();
-    assert!(!public_release.contains("SPLINED-x64-store-unsigned.msix"));
-    assert!(!public_release.contains("splined-windows-store-package"));
-    assert!(!public_release.contains("splined-windows-store-submission"));
-    assert!(public_release.contains("name: splined-windows-x86_64"));
-
-    let store_job = workflow
-        .split("  publish-store:")
-        .nth(1)
-        .unwrap()
-        .split("  release-summary:")
-        .next()
-        .unwrap();
-    assert!(store_job.contains("inputs.microsoft_store"));
-    assert!(store_job.contains("inputs.store_confirmation == 'Submit to Microsoft Store'"));
-    assert!(store_job.contains("inputs.platform == 'Windows' || inputs.platform == 'All'"));
-    assert!(store_job.contains("name: splined-windows-store-submission"));
-    assert!(store_job.contains("SPLINED-x64-store-unsigned.msix"));
-    assert!(store_job.contains("STORE-HIGHLIGHTS.txt"));
-    assert!(store_job.contains("STORE-SUBMISSION.json"));
-    assert!(store_job.contains("Resolve-StoreBaseline.ps1"));
-    assert!(store_job.contains("Generate-StoreHighlights.ps1"));
-    assert!(store_job.contains("Authenticate Microsoft Store before resolving published history"));
-    assert!(store_job.contains("windows/package/Publish-StoreUpdate.ps1"));
-}
-
-#[test]
-fn manual_workflows_explain_scope_and_store_publication_fails_closed() {
-    for path in [
-        ".github/workflows/store-submission-status.yml",
-        ".github/workflows/windows-store-package-resolution.yml",
-        ".github/workflows/docker-ghcr-resolution.yml",
-        ".github/workflows/release-next-patch.yml",
-        ".github/workflows/windows-store-publish-update.yml",
-        ".github/workflows/test-msstore-auth.yml",
-    ] {
+fn git_cliff_is_the_shared_pinned_release_note_engine() {
+    let installer = source("release/Install-GitCliff.ps1");
+    let github = source("release/Generate-ReleaseNotes.ps1");
+    let store = source("release/Generate-StoreHighlights.ps1");
+    let config = source("cliff.toml");
+    assert!(installer.contains("$version = \"2.14.2\""));
+    assert!(installer.contains("24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4"));
+    assert!(installer.contains("6ece2112b3f4af462190ecbea4aeb1315fff6af415629b597f84319073c31131"));
+    assert!(github.contains("release-context.json"));
+    assert!(github.contains("GITHUB-RELEASE.md"));
+    assert!(store.contains("STORE-HIGHLIGHTS.txt"));
+    assert!(store.contains("STORE-SUBMISSION.json"));
+    assert!(config.contains("🛍️ Microsoft Store"));
+    for path in [FULL, STORE, GHCR] {
         let workflow = source(path);
+        assert!(workflow.contains("Install-GitCliff.ps1"), "{path}");
+        assert!(workflow.contains("git-cliff 2.14.2"), "{path}");
+        assert!(workflow.contains("cliff.toml"), "{path}");
+    }
+    for path in [FULL, GHCR] {
+        assert!(source(path).contains("Generate-ReleaseNotes.ps1"), "{path}");
+    }
+    for path in [FULL, STORE] {
         assert!(
-            workflow.contains("workflow_dispatch:"),
-            "{path} is not manually runnable"
-        );
-        assert!(
-            workflow.contains("description:"),
-            "{path} lacks a run-form note"
-        );
-        assert!(
-            workflow.contains("Risk:") || workflow.contains("RISK:"),
-            "{path} lacks a visible risk note"
+            source(path).contains("Generate-StoreHighlights.ps1"),
+            "{path}"
         );
     }
-
-    let release = source(".github/workflows/release-next-patch.yml");
-    let release_preflight = release
-        .split("      - name: Require explicit release and Store choices before any release work")
-        .nth(1)
-        .unwrap()
-        .split("      - name: Require main branch dispatch")
-        .next()
-        .unwrap();
-    assert!(release.contains("default: \"Stop - no release\""));
-    assert!(release.contains("default: \"Do not submit to Store\""));
-    assert!(release_preflight.contains("RELEASE_CONFIRMATION"));
-    assert!(release_preflight.contains("STORE_CONFIRMATION"));
-    assert!(release_preflight.contains("exit 1"));
-
-    let store = source(".github/workflows/windows-store-publish-update.yml");
-    let store_preflight = store
-        .split("      - name: Require explicit Store submission choice before package work")
-        .nth(1)
-        .unwrap()
-        .split("      - name: Validate numeric existing-tag input")
-        .next()
-        .unwrap();
-    assert!(store.contains("default: \"Stop - no Store submission\""));
-    assert!(store_preflight.contains("STORE_CONFIRMATION"));
-    assert!(store_preflight.contains("throw"));
-
-    let dispatch = source(".github/workflows/dispatch-v2-0-0.yml");
-    let resume = source(".github/workflows/resume-v2-0-0.yml");
-    assert!(dispatch.contains("inputs[release_confirmation]=Create release now"));
-    assert!(dispatch.contains("inputs[store_confirmation]=Submit to Microsoft Store"));
-    assert!(resume.contains("-f store_confirmation=\"Submit existing package to Store\""));
 }
 
 #[test]
-fn normal_release_dependency_gates_tolerate_only_intentional_skips() {
-    let workflow = source(".github/workflows/release-next-patch.yml");
+fn full_release_has_selected_os_gates_and_optional_strict_windows_validation() {
+    let workflow = source(FULL);
+    for choice in ["- \"All\"", "- \"Windows\"", "- \"Ubuntu\"", "- \"macOS\""] {
+        assert!(workflow.contains(choice), "missing OS choice {choice}");
+    }
+    assert!(workflow.contains("extended_windows_validation:"));
+    assert!(workflow.contains("cargo fmt --manifest-path windows/Cargo.toml -- --check"));
+    assert!(workflow.contains("cargo clippy --locked --manifest-path windows/Cargo.toml"));
+    assert!(workflow.contains("cargo test --locked --manifest-path windows/Cargo.toml"));
+    assert!(workflow.contains("git push --atomic origin"));
+    assert!(workflow.contains("--notes-file ../release-notes/GITHUB-RELEASE.md"));
+    assert!(workflow.contains("gh release create \"$RELEASE_VERSION\""));
+    let finalize = workflow.split("  finalize-tag:").nth(1).unwrap();
+    for build in ["build-windows", "build-ubuntu", "build-macos"] {
+        assert!(finalize.contains(build));
+    }
+}
 
-    let finalize = workflow
-        .split("  finalize-tag:")
-        .nth(1)
-        .unwrap()
-        .split("  generate-release-notes:")
-        .next()
-        .unwrap();
-    assert!(finalize.contains("always() &&"));
-    for expected in [
-        "inputs.platform == 'Windows' &&\n            needs.build-windows.result == 'success' &&\n            needs.build-ubuntu.result == 'skipped' &&\n            needs.build-macos.result == 'skipped'",
-        "inputs.platform == 'Ubuntu' &&\n            needs.build-windows.result == 'skipped' &&\n            needs.build-ubuntu.result == 'success' &&\n            needs.build-macos.result == 'skipped'",
-        "inputs.platform == 'macOS' &&\n            needs.build-windows.result == 'skipped' &&\n            needs.build-ubuntu.result == 'skipped' &&\n            needs.build-macos.result == 'success'",
-        "inputs.platform == 'All' &&\n            needs.build-windows.result == 'success' &&\n            needs.build-ubuntu.result == 'success' &&\n            needs.build-macos.result == 'success'",
-    ] {
+#[test]
+fn both_store_workflows_require_one_explicit_mode_and_preserve_draft_choice() {
+    for path in [FULL, STORE] {
+        let workflow = source(path);
+        assert!(workflow.contains("store_submit_update:"), "{path}");
+        assert!(workflow.contains("store_submit_draft:"), "{path}");
+        assert!(workflow.contains("default: false"), "{path}");
+        assert!(workflow.contains("STORE_UPDATE"), "{path}");
+        assert!(workflow.contains("STORE_DRAFT"), "{path}");
+        assert!(workflow.contains("-DraftOnly:$draftOnly"), "{path}");
+        assert!(workflow.contains("Resolve-StoreBaseline.ps1"), "{path}");
+        assert!(workflow.contains("Generate-StoreHighlights.ps1"), "{path}");
+        assert!(workflow.contains("Publish-StoreUpdate.ps1"), "{path}");
         assert!(
-            finalize.contains(expected),
-            "missing selected-platform gate: {expected}"
+            workflow.contains("group: splined-microsoft-store-submission"),
+            "{path}"
         );
     }
-
-    let notes = workflow
-        .split("  generate-release-notes:")
-        .nth(1)
-        .unwrap()
-        .split("  publish-release:")
-        .next()
-        .unwrap();
-    assert!(notes.contains("always() &&"));
-    assert!(notes.contains("needs.prepare-release.result == 'success'"));
-    assert!(notes.contains("needs.finalize-tag.result == 'success'"));
-
-    let publication = workflow
-        .split("  publish-release:")
-        .nth(1)
-        .unwrap()
-        .split("  publish-ghcr:")
-        .next()
-        .unwrap();
-    assert!(publication.contains("always() &&"));
-    assert!(publication.contains(
-        "(needs.build-ubuntu.result == 'success' || needs.build-ubuntu.result == 'skipped')"
-    ));
-    assert!(publication.contains(
-        "(needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')"
-    ));
-    assert!(publication.contains("needs.generate-release-notes.result == 'success'"));
-
-    let summary = workflow.split("  release-summary:").nth(1).unwrap();
-    for dependency in [
-        "prepare-release",
-        "build-windows",
-        "build-ubuntu",
-        "build-macos",
-        "finalize-tag",
-        "generate-release-notes",
-        "publish-release",
-        "publish-ghcr",
-        "publish-store",
-    ] {
-        assert!(summary.contains(&format!("      - {dependency}")));
-    }
-    assert!(summary.contains("if: ${{ always() }}"));
-    assert!(summary.contains("expect_result \"Windows build\" \"$WINDOWS_RESULT\" success"));
-    assert!(summary.contains("expect_result \"Ubuntu build\" \"$UBUNTU_RESULT\" skipped"));
-    assert!(summary.contains("expect_result \"macOS build\" \"$MACOS_RESULT\" skipped"));
-    assert!(summary.contains("expect_result \"Numeric tag\" \"$TAG_RESULT\" success"));
-    assert!(
-        summary.contains("expect_result \"git-cliff release notes\" \"$NOTES_RESULT\" success")
-    );
-    assert!(
-        summary.contains("expect_result \"GitHub Release\" \"$GITHUB_RELEASE_RESULT\" success")
-    );
-    assert!(summary.contains("expect_result \"GHCR publication\" \"$GHCR_RESULT\" success"));
-    assert!(summary.contains("[ \"$MICROSOFT_STORE\" = true ]"));
-    assert!(
-        summary.contains("expect_result \"Microsoft Store submission\" \"$STORE_RESULT\" success")
-    );
-    assert!(
-        summary.contains("expect_result \"Microsoft Store submission\" \"$STORE_RESULT\" skipped")
-    );
-    assert!(summary.contains("exit 1"));
-    assert!(!summary.contains(
-        "needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped'",
-    ));
-
-    fn windows_path_is_complete(store_enabled: bool, notes: &str, store: &str) -> bool {
-        let expected_store = if store_enabled { "success" } else { "skipped" };
-        notes == "success" && store == expected_store
-    }
-    assert!(windows_path_is_complete(true, "success", "success"));
-    assert!(!windows_path_is_complete(true, "skipped", "success"));
-    assert!(!windows_path_is_complete(true, "success", "skipped"));
-    assert!(windows_path_is_complete(false, "success", "skipped"));
-    assert!(!windows_path_is_complete(false, "skipped", "skipped"));
-    assert!(!windows_path_is_complete(false, "success", "success"));
+    let full = source(FULL);
+    assert!(full.contains("Select only one Store mode"));
+    assert!(full.contains("Store publication requires Windows or All"));
+    let recovery = source(STORE);
+    assert!(recovery.contains("Select exactly one Store mode"));
+    assert!(recovery.contains("ref: refs/tags/${{ inputs.version }}"));
+    assert!(recovery.contains("$env:RELEASE_VERSION.0"));
+    assert!(!recovery.contains("git tag -a"));
+    assert!(!recovery.contains("gh release create"));
 }
 
 #[test]
-fn normal_release_atomically_keeps_the_tagged_commit_on_main() {
-    let workflow = source(".github/workflows/release-next-patch.yml");
-    let finalize = workflow
-        .split("  finalize-tag:")
-        .nth(1)
-        .unwrap()
-        .split("  generate-release-notes:")
-        .next()
-        .unwrap();
-
-    assert!(
-        finalize.contains("name: Publish numeric tag and release commit after successful builds")
-    );
-    assert!(finalize.contains("git push --atomic origin"));
-    assert!(finalize.contains("\"refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}\""));
-    assert!(finalize.contains("\"$RELEASE_COMMIT:refs/heads/main\""));
-    assert!(finalize.contains("git ls-remote origin \"refs/tags/$RELEASE_VERSION^{}\""));
-    assert!(finalize.contains("git ls-remote origin \"refs/heads/main\""));
-}
-
-#[test]
-fn microsoft_store_publication_is_pinned_preserving_and_fail_closed() {
-    let normal = source(".github/workflows/release-next-patch.yml");
-    let package = source(".github/workflows/windows-store-package-resolution.yml");
-    let publish = source(".github/workflows/windows-store-publish-update.yml");
+fn store_helper_stages_once_and_submits_only_when_not_draft() {
     let helper = source("windows/package/Publish-StoreUpdate.ps1");
-    let pinned_action =
-        "microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0";
-
-    for workflow in [&normal, &package, &publish] {
-        assert!(workflow.contains(pinned_action));
-        assert!(workflow.contains("version: v0.4.3"));
-        for secret in [
-            "AZURE_AD_APPLICATION_CLIENT_ID",
-            "AZURE_AD_APPLICATION_SECRET",
-            "AZURE_AD_TENANT_ID",
-            "SELLER_ID",
-        ] {
-            assert!(workflow.contains(&format!("secrets.{secret}")));
-        }
-        assert!(!workflow.contains("Write-Host $env:AZURE"));
-        assert!(!workflow.contains("Write-Output $env:AZURE"));
-        assert!(!workflow.contains("Write-Host $env:SELLER_ID"));
-        assert!(!workflow.contains("Write-Output $env:SELLER_ID"));
-    }
-
     let stage = helper
         .find("& msstore publish $package --appId $ProductId --noCommit")
         .unwrap();
@@ -434,125 +129,24 @@ fn microsoft_store_publication_is_pinned_preserving_and_fail_closed() {
         .unwrap();
     assert!(stage < read && read < update && update < submit);
     assert_eq!(helper.matches("& msstore publish ").count(), 1);
-    assert!(helper.contains("[switch]$SkipReconfigure"));
-    assert!(helper.contains("if (-not $SkipReconfigure)"));
-    assert!(helper.contains("Listings"));
-    assert!(helper.contains("en-US"));
-    assert!(helper.contains("BaseListing"));
-    assert!(helper.contains("ReleaseNotes"));
-    assert!(helper.contains("every other listing and package field is"));
-    assert!(helper.contains("submission status"));
-    assert!(helper.contains("[string]$BaselineMetadataPath"));
-    assert!(helper.contains("[string]$ExpectedVersion"));
+    assert!(helper.contains("[switch]$DraftOnly"));
+    assert!(helper.contains("if ($DraftOnly)"));
+    assert!(helper.contains("else {\n    $summaryTitle = \"submitted\"\n    & msstore submission publish"));
     assert!(helper.contains("1500-character"));
     assert!(helper.contains("highlights_sha256"));
 }
 
 #[test]
-fn store_highlights_follow_last_published_store_history() {
-    let normal = source(".github/workflows/release-next-patch.yml");
-    let package = source(".github/workflows/windows-store-package-resolution.yml");
-    let publish = source(".github/workflows/windows-store-publish-update.yml");
-    let resolver = source("release/Resolve-StoreBaseline.ps1");
-    let generator = source("release/Generate-StoreHighlights.ps1");
-    let fixture_test = source("release/Test-StoreBaseline.ps1");
-
-    assert!(resolver.contains("msstore apps get $ProductId"));
-    assert!(resolver.contains("pendingApplicationSubmission"));
-    assert!(resolver.contains("lastPublishedApplicationSubmission"));
-    assert!(resolver.contains("active or unresolved submission"));
-    assert!(resolver.contains("baseline_package_version"));
-    assert!(resolver.contains("$range = \"$baselineVersion..$TargetVersion\""));
-    assert!(generator.contains("$baseline.range"));
-    assert!(generator.contains("STORE-SUBMISSION.json"));
-    assert!(generator.contains("highlights_characters"));
-    assert!(generator.contains("highlights_sha256"));
-    assert!(fixture_test.contains("1.0.71..1.0.78"));
-    assert!(fixture_test.contains("store-app-pending.json"));
-    assert!(fixture_test.contains("store-submission-mixed.json"));
-
-    let normal_store = normal
-        .split("  publish-store:")
-        .nth(1)
-        .unwrap()
-        .split("  release-summary:")
-        .next()
-        .unwrap();
-    for store_publisher in [normal_store, publish.as_str()] {
-        assert!(store_publisher.contains("group: splined-microsoft-store-submission"));
-        assert!(store_publisher.contains("cancel-in-progress: false"));
-    }
-    let resolve = normal_store.find("Resolve-StoreBaseline.ps1").unwrap();
-    let render = normal_store.find("Generate-StoreHighlights.ps1").unwrap();
-    let stage = normal_store.find("Publish-StoreUpdate.ps1").unwrap();
-    assert!(resolve < render && render < stage);
-
-    for workflow in [normal_store, package.as_str(), publish.as_str()] {
-        assert!(workflow.contains("STORE-HIGHLIGHTS.txt"));
-        assert!(workflow.contains("STORE-SUBMISSION.json"));
-        assert!(workflow.contains("splined-windows-store-submission"));
-    }
-
-    let publish_resolve = publish.find("Resolve-StoreBaseline.ps1").unwrap();
-    let publish_artifact = publish
-        .find("Locate and validate retained Store submission artifact")
-        .unwrap();
-    let publish_render = publish
-        .find("Regenerate cumulative Store Highlights from live published baseline")
-        .unwrap();
-    let publish_stage = publish
-        .find("Publish retained package and update Store Highlights")
-        .unwrap();
-    assert!(publish_resolve < publish_artifact);
-    assert!(publish_artifact < publish_render && publish_render < publish_stage);
-}
-
-#[test]
-fn recovery_workflows_never_create_tags_or_duplicate_releases() {
-    let package = source(".github/workflows/windows-store-package-resolution.yml");
-    let publish = source(".github/workflows/windows-store-publish-update.yml");
-    let docker = source(".github/workflows/docker-ghcr-resolution.yml");
-
-    assert!(package.contains("ref: refs/tags/${{ inputs.version }}"));
-    assert!(package.contains("name: splined-windows-store-submission"));
-    assert!(package.contains("microsoft-store-apppublisher"));
-    assert!(package.contains("Resolve-StoreBaseline.ps1"));
-    assert!(package.contains("Generate-StoreHighlights.ps1"));
-    assert!(package.contains("STORE-SUBMISSION.json"));
-    assert!(!package.contains("Publish-StoreUpdate.ps1"));
-    assert!(!package.contains("msstore publish"));
-    assert!(!package.contains("msstore submission update"));
-    assert!(!package.contains("msstore submission publish"));
-    assert!(!package.contains("gh release create"));
-    assert!(!package.contains("git tag -a"));
-    assert!(!package.contains("packages: write"));
-
-    assert!(publish.contains("Publish-StoreUpdate.ps1"));
-    assert!(publish.contains("splined-windows-store-submission"));
-    assert!(publish.contains("actions/artifacts?name=$artifactName"));
-    assert!(publish.contains("gh run download"));
-    assert!(publish.contains("-SkipReconfigure"));
-    assert!(publish.contains("Authenticate Microsoft Store before artifact retrieval"));
-    assert!(publish.contains("Resolve-StoreBaseline.ps1"));
-    assert!(publish.contains("Generate-StoreHighlights.ps1"));
-    assert!(
-        publish.contains("Regenerate cumulative Store Highlights from live published baseline")
-    );
-    assert!(publish.contains("STORE-SUBMISSION.json"));
-    assert!(!publish.contains("cargo build"));
-    assert!(!publish.contains("rustup"));
-    assert!(!publish.contains("Build-StorePackage.ps1"));
-    assert!(!publish.contains("Test-DevelopmentPackage.ps1"));
-    assert!(publish.contains("Install-GitCliff.ps1"));
-    assert!(!publish.contains("Generate-ReleaseNotes.ps1"));
-    assert!(!publish.contains("gh release create"));
-    assert!(!publish.contains("git tag -a"));
-    assert!(!publish.contains("packages: write"));
-
-    assert!(docker.contains("ref: refs/tags/${{ inputs.version }}"));
-    assert!(docker.contains("gh release edit \"$RELEASE_VERSION\""));
-    assert!(!docker.contains("gh release create"));
-    assert!(!docker.contains("git tag -a"));
-    assert!(!docker.to_ascii_lowercase().contains("msstore"));
-    assert!(!docker.contains("microsoft-store-apppublisher"));
+fn ghcr_recovery_uses_existing_tag_and_adds_missing_ubuntu_asset_only() {
+    let workflow = source(GHCR);
+    assert!(workflow.contains("ref: refs/tags/${{ inputs.version }}"));
+    assert!(workflow.contains("gh release view \"$RELEASE_VERSION\""));
+    assert!(workflow.contains("docker push \"$IMAGE_NAME:v$RELEASE_VERSION\""));
+    assert!(workflow.contains("splined-linux-x86_64.tar.gz"));
+    assert!(workflow.contains("cargo build --locked --release"));
+    assert!(workflow.contains("gh release upload \"$RELEASE_VERSION\""));
+    assert!(!workflow.contains("--clobber"));
+    assert!(!workflow.contains("gh release create"));
+    assert!(!workflow.contains("git tag -a"));
+    assert!(!workflow.to_ascii_lowercase().contains("msstore"));
 }

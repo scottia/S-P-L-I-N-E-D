@@ -1,182 +1,102 @@
 # Release automation
 
-SPLINED has six manually runnable workflows. Four of them (02–05) build or
-publish release outputs; 01 and 06 are diagnostics. The two 2.0.0 helpers
-(07–08) are one-time, push-triggered workflows, not manual release choices.
-Only 04 creates a version, numeric tag, or GitHub Release.
+SPLINED exposes three manual GitHub Actions workflows. Only workflow 01 creates
+a version, tag, or GitHub Release. All three use pinned `git-cliff 2.14.2` for
+release notes or Store Highlights; no workflow is run merely by editing these
+files.
 
-| Workflow | Use and intent | Impact / risk |
+| Workflow | Use | Effect |
 |---|---|---|
-| `01. Store - Check Status (Read-only)` | Read the current Partner Center submission state. | No Store or release changes. Also runs when its workflow file changes on `main`. |
-| `02. Store - Build Package Only` | Rebuild and validate an unsigned Store MSIX and Highlights for an **existing** numeric tag; retain them as an Actions artifact. | Consumes a Windows runner and reads Store history, but does not stage or submit to Store. |
-| `03. GHCR - Rebuild Published Tag` | Rebuild Docker images from an **existing** tag. | Publishes GHCR tags and replaces that tag's GitHub Release body; does not touch Store. |
-| `04. Release - Build/Publish (Store auto-submit default)` | Create a **new** release from `main`, build selected platforms, publish GitHub assets and GHCR; optionally submit Store. | Creates a commit, tag, and public release. Store is checked by default and can submit to Partner Center; explicit release and Store confirmations are required before any release work. |
-| `05. Store - Submit Package (Auto-submit)` | Use an existing validated Store artifact and refresh its en-US Highlights for an **existing** tag; no binary rebuild. | Writes to Partner Center and submits for certification only after an explicit confirmation. |
-| `06. Store - Auth Diagnostics` | Test Store authentication and inspect failure diagnostics. | No package or listing changes. Also runs automatically after a failed 05 run. |
-| `07. One-time - Dispatch 2.0.0 Release` | Historical helper that dispatched the 2.0.0 release after an exact commit message. | Not a normal manual workflow; do not reuse for later versions. |
-| `08. One-time - Resume 2.0.0 Publication` | Historical helper that resumed 2.0.0 package publication after an exact commit message. | Not a normal manual workflow; do not reuse for later versions. |
+| `01. Full Release - Build Selected OS and Publish` | New versioned release from `main`; choose All, Windows, macOS, or Ubuntu. | Builds the selected OS targets, creates the version commit and numeric tag only after selected builds pass, publishes GitHub Release and GHCR, and optionally stages or submits Store. |
+| `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
+| `03. GHCR Recovery - Tagged Image and Ubuntu Asset` | Repair GHCR for an **existing** numeric Git tag if workflow 01's GHCR path failed. | Rebuilds/pushes version and latest GHCR images, adds a missing Ubuntu asset to that existing GitHub Release, and refreshes git-cliff notes. Does not touch Store. |
 
-**A successful 02 run does not update Microsoft Store.** Download its
-`splined-windows-store-submission` artifact, extract the MSIX, and upload that
-package in a new Partner Center update if you want to inspect the draft before
-submitting. If a listing-only update was approved while its Packages section
-still shows an older version, the newly built MSIX was not published. The new
-package must have a higher version than the published package. Workflow 05 can
-use the retained artifact, but it submits automatically after confirmation, so
-do not choose it when you want to review the Partner Center draft yourself.
+The previous status, authentication-diagnostic, package-only, publish-only, and
+one-time 2.0.0 workflows have been retired. GitHub may retain their historical
+run pages, but they are no longer runnable from the repository's default
+branch. Pin the three numbered workflows for routine use.
 
-The **Run workflow** form for 01–06 shows a short purpose/risk note. The note
-fields on 01 and 06 are informational. On 04 and 05, the confirmation choices
-are enforced before any release or Store work; leaving them at **Stop** fails
-the run without publishing anything. API/CLI dispatches must supply the same
-confirmations. Use `main` for 04; use an existing numeric tag for 02, 03, or
-05. GitHub does not display these notes directly on a workflow's run-list page.
+## Workflow 01: full release
 
-Recovery workflows never create, move, or delete a tag. The Store recovery
-workflows never create another GitHub Release or publish GHCR. The Docker
-recovery workflow never touches Microsoft Store and never creates a second
-GitHub Release.
+Run from `main`. `Release version` may be left blank for the next patch version
+or set to a new numeric `X.Y.Z` version greater than the current version. The
+workflow requires **Create release now** confirmation. `Extended Windows
+validation` is off by default; turn it on for `Windows` or `All` to run the
+Windows Rust formatting, Clippy, and library test checks. The standard Windows
+build always compiles the Rust/Slint executable; the checkbox adds strict
+validation rather than enabling Slint compilation.
 
-## Normal release
+The two Store options are both off by default and mutually exclusive:
 
-Run `04. Release - Build/Publish (Store auto-submit default)` from `main`. Select Windows, Ubuntu, macOS, or
-All. Choose **Create release now** in **Release confirmation**. **Microsoft Store**
-defaults to `true`; **Extended Windows validation** defaults to `false`. To
-include a Store submission, leave Microsoft Store on **and** choose **Submit to
-Microsoft Store** in **Store confirmation**. For a GitHub/GHCR-only release,
-turn Microsoft Store off and leave Store confirmation at **Do not submit to
-Store**. Conflicting choices stop before release preparation. Leave **Release
-version** blank for the automatic next version, or enter an explicit numeric
-version. The historical
-`1.0.99` release line had one intentional exception: leaving the field blank
-selects `2.0.0`; after that, a blank field resumes normal patch increments
-(`2.0.1`, and so on). An explicit version must exceed the current source
-version and numeric tags reachable from `main`. Historical tags on divergent
-branches do not advance that baseline, but an existing tag with the exact
-requested version still prevents a duplicate. The workflow—not the
-maintainer's branch merge—updates all release metadata and creates the tag
-after validation.
+- **Submit Update/No Draft:** build and validate the Store MSIX, stage it with
+  Partner Center, update en-US Highlights, then immediately submit it for
+  certification. The Store CLI creates a draft internally, but there is no
+  manual draft-review pause.
+- **Submit Draft/No Update:** build and validate the same MSIX and Highlights,
+  then stage them in Partner Center and stop. Review and submit that draft
+  manually when ready.
 
-The workflow prepares an exact untagged release commit, builds and validates
-the selected targets, and only then atomically creates the numeric tag and
-advances `main` to that exact release commit. The tag and `main` update are
-one atomic Git push, so a successful release cannot leave its version commit
-outside branch ancestry. A selected Windows build compiles the x64 Rust/Slint
-executable once. The Portable ZIP
-always contains that pair. With Microsoft Store enabled, the unsigned Store
-MSIX is created and validated from the same pair before tagging.
+Either Store option requires `Windows` or `All`. Selecting both, or requesting
+Windows-only validation for a non-Windows build, fails before release work.
+Leaving both Store options off produces GitHub Release and GHCR outputs only.
+Store and GHCR publication are independent after GitHub Release creation, so
+one can succeed if the other fails.
 
-- **Microsoft Store = false:** no Store package, Store QA, Store-submission
-  artifact, Store authentication, or Store API submission runs.
-  GitHub/Portable and GHCR publishing continue normally. No Store history is
-  queried and no Store Highlights are rendered.
-- **Microsoft Store = true** for Windows or All: the workflow creates and
-  validates `SPLINED-x64-store-unsigned.msix`, publishes the GitHub Release and
-  GHCR, stages the exact MSIX with Microsoft, updates only the existing en-US
-  `ReleaseNotes` field, and submits the draft for Store processing.
+The release commit and numeric Git tag are published atomically after all
+selected builds pass. Before the tag exists, workflows 02 and 03 cannot recover
+the release; rerun workflow 01 after correcting the build failure. Once the tag
+and GitHub Release exist, use the appropriate tagged recovery workflow.
 
-The Store MSIX is never attached to the public GitHub Release and is never
-included in public checksums. For audit/recovery, Actions retains
-`splined-windows-store-submission`, containing:
+Git release tags are three-part numeric versions, such as `2.0.0`. The Windows
+MSIX manifest uses the corresponding four-part version, `2.0.0.0`. Workflow
+02 checks that correspondence before staging anything.
 
-```text
-SPLINED-x64-store-unsigned.msix
-STORE-HIGHLIGHTS.txt
-STORE-SUBMISSION.json
-```
+The unsigned Store MSIX is never attached to the public GitHub Release. The
+full-release workflow retains an Actions audit artifact named
+`splined-windows-store-submission` with the validated MSIX, Highlights, and
+submission metadata.
 
-A successful Store step means the Store API accepted the package and metadata
-submission for processing. The workflow reports the returned status but does
-not wait indefinitely for certification.
+## Workflow 02: Store recovery
 
-## Release notes: git-cliff 2.14.2
+Enter the existing numeric tag `X.Y.Z` and select exactly one of the same two
+Store modes. Workflow 02 checks out that tag, verifies its source and Store
+manifest version, rebuilds and validates the Windows package, resolves the
+last **published** Store baseline, and renders cumulative Store Highlights
+with git-cliff before staging. It cannot silently substitute a different tag
+or published version. Draft mode stops before certification submission;
+Update mode submits after staging.
 
-`git-cliff` is the only release-note and highlight generator. CI downloads the
-official `git-cliff 2.14.2` archive selected for the runner, validates its pinned
-SHA-256, and fails unless `git-cliff --version` reports exactly `2.14.2`.
-Repology is a package/version reference only and is not queried by CI.
+Store publication is serialized across workflows 01 and 02. Both fail closed
+if Partner Center already has a pending or unresolved submission. In
+particular, if workflow 01 failed **after** it staged a draft, workflow 02 will
+not overwrite or cancel that draft. Inspect the Partner Center draft and
+submit or resolve it there before rerunning recovery. This is deliberate:
+an ambiguous active draft cannot safely be identified as a retry target.
 
-`cliff.toml` is the sole classification authority. It recognizes conventional
-and direct SPLINED commits and assigns every commit to one of:
+## Workflow 03: GHCR and Ubuntu recovery
 
-- `✨ Highlights`
-- `🪟 Windows`
-- `🛍️ Microsoft Store`
-- `🐧 Linux / Ubuntu`
-- `🍎 macOS`
-- `🐳 Docker / GHCR`
-- `🛠️ Fixes & Reliability`
-- `📚 Documentation`
-- `🔧 Maintenance`
-- `📦 Other Changes`
+Enter the existing numeric tag `X.Y.Z`. Workflow 03 requires its published,
+non-prerelease GitHub Release, rebuilds the tagged image, and pushes both
+`ghcr.io/scottia/splined:vX.Y.Z` and `:latest`. If the Ubuntu tarball is absent
+from that same release, it builds the exact tagged source and uploads the
+tarball plus a companion SHA-256 file. It never replaces an existing Ubuntu
+asset or creates a second release. It refreshes the existing release body with
+the shared git-cliff generator.
 
-The unconditional `📦 Other Changes` parser prevents unconventional commit
-messages from disappearing. GitHub Release notes and Store Highlights use the
-same pinned git-cliff executable, `cliff.toml` classification, and checked-in
-Tera templates, but deliberately use different release ranges:
+## Notes and Store safety
 
-- `release/Generate-ReleaseNotes.ps1` creates the incremental GitHub context
-  from the immediately previous numeric Git tag on the selected release's
-  ancestry to the selected tag.
-- `release/Resolve-StoreBaseline.ps1` queries the live product before package
-  staging and resolves the last **published** Store package version to its
-  matching numeric Git tag.
-- `release/Generate-StoreHighlights.ps1` creates the Store context from that
-  published Store tag through the selected tag. Therefore, GitHub-only releases
-  are included automatically the next time a Store update is submitted.
+The shared `cliff.toml` and checked-in Tera templates classify release changes.
+GitHub notes cover the previous numeric tag through the current tag. Store
+Highlights cover the **last published Store package** through the target tag,
+so intervening GitHub-only releases are included. The Store Highlights file
+must fit the 1,500-character Store limit; generation fails instead of
+truncating. `STORE-SUBMISSION.json` records the target, published baseline,
+range, git-cliff version, and Highlights checksum.
 
-For example, if Store version `1.0.71` is published and `1.0.72` through
-`1.0.78` are GitHub-only, a `1.0.79` Store submission renders
-`1.0.71..1.0.79`. A failed or rejected Store submission does not advance the
-baseline; only a published package does. Merge and release-preparation noise is
-excluded from Store Highlights. The complete customer-facing result must fit
-the Microsoft Store **What's new** limit of 1,500 characters; generation fails
-instead of silently truncating history.
-
-`STORE-SUBMISSION.json` records the Store product, published baseline package,
-target version and commits, exact range, git-cliff version, character count, and
-Highlights SHA-256. Publication verifies this audit record before staging.
-
-## Automated Store publication
-
-The live product is Store ID `9P8G4GMBBVBS`, package
-`Psycotix.SPLINED`. Store publication requires these GitHub Actions secrets:
-
-- `AZURE_AD_APPLICATION_CLIENT_ID`
-- `AZURE_AD_APPLICATION_SECRET`
-- `AZURE_AD_TENANT_ID`
-- `SELLER_ID`
-
-Missing credentials fail the Store publication step clearly. Values are passed
-as masked environment secrets and are not printed. The pinned Microsoft Store
-publisher action installs the pinned `msstore` CLI. Before staging, the workflow
-uses machine-readable application metadata to require no pending submission,
-identify `lastPublishedApplicationSubmission`, and read its package version.
-Any pending, certification, failed, or otherwise unresolved submission stops
-the workflow so a draft cannot be replaced and cannot be mistaken for
-release-history authority. Package staging with
-`--noCommit` occurs before metadata retrieval and editing. The complete pending
-submission is retrieved and preserved; only the existing en-US
-`BaseListing.ReleaseNotes` value is changed. The workflow then updates and
-publishes that same pending submission without recreating the draft. Normal and
-recovery publication jobs also share one non-canceling Store concurrency group,
-so two SPLINED submissions cannot stage over each other.
-
-If packaging needs correction without Store submission, run
-`02. Store - Build Package Only`. That workflow rebuilds,
-validates, queries Store history read-only, generates cumulative Highlights,
-and retains `splined-windows-store-submission`. It requires the same Store
-credentials to identify the published baseline, but it never stages or submits
-a package.
-
-`05. Store - Submit Package (Auto-submit)` is publication-only. Enter the
-existing tag and choose **Submit existing package to Store**; leaving the
-confirmation at **Stop - no Store submission** fails before package work. It
-authenticates before doing package work, resolves the live published baseline, locates a
-retained non-expired `splined-windows-store-submission` artifact, verifies the
-MSIX identity and requested numeric version, and regenerates
-`STORE-HIGHLIGHTS.txt` from current Store history immediately before submission.
-A stale retained Highlights file is never trusted. It never compiles
-Rust/Slint executable or rebuilds an MSIX. If no matching retained package exists, it
-fails and directs the operator to run the tagged Store Package Resolution
-workflow first.
+Store product `9P8G4GMBBVBS` uses the repository's
+`AZURE_AD_APPLICATION_CLIENT_ID`, `AZURE_AD_APPLICATION_SECRET`,
+`AZURE_AD_TENANT_ID`, and `SELLER_ID` Actions secrets. The publisher retrieves
+the pending submission after staging and changes only its existing en-US
+`BaseListing.ReleaseNotes`, preserving all other listing and package fields.
+No release workflow should be used as a read-only status check; inspect Partner
+Center directly for certification progress.

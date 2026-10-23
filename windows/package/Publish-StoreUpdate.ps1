@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ExpectedVersion,
     [string]$ProductId = "9P8G4GMBBVBS",
-    [switch]$SkipReconfigure
+    [switch]$SkipReconfigure,
+    [switch]$DraftOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -96,12 +97,19 @@ if ($null -eq $releaseNotesProperty) { throw "Store en-US BaseListing has no Rel
 $releaseNotesProperty.Value = $releaseNotes
 $updatedSubmission = $submission | ConvertTo-Json -Depth 100 -Compress
 & msstore submission update $ProductId $updatedSubmission
-& msstore submission publish $ProductId
-$status = ((& msstore submission status $ProductId) -join "`n").Trim()
+if ($DraftOnly) {
+    $summaryTitle = "staged as draft"
+    $status = "Draft staged for manual review; certification not submitted"
+}
+else {
+    $summaryTitle = "submitted"
+    & msstore submission publish $ProductId
+    $status = ((& msstore submission status $ProductId) -join "`n").Trim()
+}
 
 if (-not [String]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
     @"
-## Microsoft Store submission accepted
+## Microsoft Store submission $summaryTitle
 
 - Store ID: ``$ProductId``
 - Package: ``$([IO.Path]::GetFileName($package))``
@@ -113,4 +121,9 @@ if (-not [String]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
 "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 }
 
-Write-Output "Microsoft Store accepted the SPLINED package and listing update for processing."
+if ($DraftOnly) {
+    Write-Output "SPLINED Store draft staged for manual review; not submitted for certification."
+}
+else {
+    Write-Output "Microsoft Store accepted the SPLINED package and listing update for processing."
+}

@@ -416,8 +416,8 @@ fn portable_and_packaged_state_authorities_are_distinct() {
 
 #[test]
 fn windows_release_is_x64_single_executable_with_exact_portable_allowlist() {
-    let workflow = source(".github/workflows/release-next-patch.yml");
-    let store_workflow = source(".github/workflows/windows-store-package-resolution.yml");
+    let workflow = source(".github/workflows/01-full-release.yml");
+    let store_workflow = source(".github/workflows/02-store-recovery.yml");
     assert!(workflow.contains("WINDOWS_TARGET: \"x86_64-pc-windows-msvc\""));
     assert!(workflow.contains("Build clean x64 Rust/Slint executable"));
     assert!(workflow.contains("Assert-Amd64Pe \"$portableRoot/splined.exe\""));
@@ -437,8 +437,8 @@ fn windows_release_is_x64_single_executable_with_exact_portable_allowlist() {
 
 #[test]
 fn store_package_uses_the_same_single_rust_executable() {
-    let workflow = source(".github/workflows/release-next-patch.yml");
-    let store_workflow = source(".github/workflows/windows-store-package-resolution.yml");
+    let workflow = source(".github/workflows/01-full-release.yml");
+    let store_workflow = source(".github/workflows/02-store-recovery.yml");
     let packager = source("windows/package/Build-StorePackage.ps1");
     let qa = source("windows/package/Test-DevelopmentPackage.ps1");
     let package = source("windows/package/Package.appxmanifest");
@@ -490,33 +490,31 @@ fn updates_are_channel_aware_and_never_self_replace_binaries() {
 }
 
 #[test]
-fn repository_exposes_exactly_the_four_supported_workflows() {
+fn repository_exposes_exactly_the_three_supported_workflows() {
     let workflow_dir = Path::new(".github/workflows");
     let files = fs::read_dir(workflow_dir)
         .unwrap()
         .filter_map(|entry| {
             let entry = entry.unwrap();
             let path = entry.path();
-            let contents = fs::read_to_string(&path).ok()?;
-            contents
-                .starts_with("name: SPLINED")
+            let extension = path.extension().and_then(|value| value.to_str());
+            (extension == Some("yml") || extension == Some("yaml"))
                 .then(|| entry.file_name().to_string_lossy().into_owned())
         })
         .collect::<BTreeSet<_>>();
     assert_eq!(
         files,
         BTreeSet::from([
-            "docker-ghcr-resolution.yml".to_string(),
-            "release-next-patch.yml".to_string(),
-            "windows-store-package-resolution.yml".to_string(),
-            "windows-store-publish-update.yml".to_string(),
+            "01-full-release.yml".to_string(),
+            "02-store-recovery.yml".to_string(),
+            "03-ghcr-recovery.yml".to_string(),
         ])
     );
 }
 
 #[test]
 fn numeric_release_tag_is_pushed_only_after_selected_builds_pass() {
-    let workflow = source(".github/workflows/release-next-patch.yml");
+    let workflow = source(".github/workflows/01-full-release.yml");
     let prepare = workflow
         .split("  prepare-release:")
         .nth(1)
@@ -541,7 +539,7 @@ fn numeric_release_tag_is_pushed_only_after_selected_builds_pass() {
 
 #[test]
 fn windows_dependency_cache_does_not_restore_binary_targets() {
-    let workflow = source(".github/workflows/release-next-patch.yml");
+    let workflow = source(".github/workflows/01-full-release.yml");
     let cache = workflow
         .split("      - name: Restore Cargo dependency cache")
         .nth(1)
