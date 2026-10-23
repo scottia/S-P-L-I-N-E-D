@@ -1,4 +1,4 @@
-name: SPLINED (All OS) and GHCR
+name: 04. Release - Build/Publish (Store auto-submit default)
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: SPLINED (Docker) > GHCR Resolution
+name: 03. GHCR - Rebuild Published Tag
 
 on:
   workflow_dispatch:

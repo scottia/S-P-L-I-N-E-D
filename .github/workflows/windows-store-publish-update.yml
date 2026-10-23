@@ -1,4 +1,4 @@
-name: SPLINED > MS Store Publish & Update
+name: 05. Store - Submit Package (Auto-submit)
 
 on:
   workflow_dispatch:
@@ -149,13 +149,13 @@ jobs:
           $response = (& gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts?name=$artifactName&per_page=100" | ConvertFrom-Json)
           $candidates = @($response.artifacts | Where-Object { -not $_.expired } | Sort-Object { [DateTime]$_.created_at } -Descending)
           if ($candidates.Count -eq 0) {
-            throw "No retained validated Store submission artifact exists. Run 'SPLINED (Tagged) > MS Store Package Resolution' for $env:RELEASE_VERSION first."
+            throw "No retained validated Store submission artifact exists. Run '02. Store - Build Package Only' for $env:RELEASE_VERSION first."
           }
 
           $selected = $null
           foreach ($artifact in $candidates) {
             $run = (& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($artifact.workflow_run.id)" | ConvertFrom-Json)
-            if ($run.name -notin @("SPLINED (All OS) and GHCR", "SPLINED (Tagged) > MS Store Package Resolution", "SPLINED > MS Store Publish & Update")) {
+            if ($run.name -notin @("04. Release - Build/Publish (Store auto-submit default)", "02. Store - Build Package Only", "05. Store - Submit Package (Auto-submit)", "SPLINED (All OS) and GHCR", "SPLINED (Tagged) > MS Store Package Resolution", "SPLINED > MS Store Publish & Update")) {
               continue
             }
 
@@ -205,7 +205,7 @@ jobs:
           }
 
           if ($null -eq $selected) {
-            throw "No retained validated Store submission artifact matches version $env:RELEASE_VERSION. Run 'SPLINED (Tagged) > MS Store Package Resolution' first."
+            throw "No retained validated Store submission artifact matches version $env:RELEASE_VERSION. Run '02. Store - Build Package Only' first."
           }
 
           "artifact_id=$($selected.id)" | Add-Content $env:GITHUB_OUTPUT

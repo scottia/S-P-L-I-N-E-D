@@ -1,4 +1,4 @@
-name: SPLINED (Tagged) > MS Store Package Resolution
+name: 02. Store - Build Package Only
 
 on:
   workflow_dispatch:

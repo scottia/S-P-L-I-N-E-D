@@ -1,10 +1,10 @@
-name: TEST > MS Store Auth Diagnostics
+name: 06. Store - Auth Diagnostics
 
 on:
   workflow_dispatch:
   workflow_run:
     workflows:
-      - SPLINED > MS Store Publish & Update
+      - 05. Store - Submit Package (Auto-submit)
     types:
       - completed
 

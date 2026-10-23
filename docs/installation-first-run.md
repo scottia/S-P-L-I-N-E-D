@@ -89,7 +89,7 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, `SPLINED (All OS) and GHCR` builds the x64 Windows executable
+For maintainers, `04. Release - Build/Publish (Store auto-submit default)` builds the x64 Windows executable
 once. The same `splined.exe` feeds the Portable ZIP
 and, when **Microsoft Store** is enabled, the unsigned Store MSIX. Portable and
 selected Store validation must both succeed before the numeric release tag is
@@ -101,8 +101,8 @@ audit in the Actions-only
 `splined-windows-store-submission` artifact; it is not an end-user installer or
 a normal GitHub Release download. Development identity and signing use a
 separate temporary QA layout and cannot mutate the Store artifact.
-`SPLINED (Tagged) > MS Store Package Resolution` rebuilds a package without
-submitting it; `SPLINED > MS Store Publish & Update` publishes an existing tag.
+`02. Store - Build Package Only` rebuilds a package without
+submitting it; `05. Store - Submit Package (Auto-submit)` publishes an existing tag.
 See the [release automation guide](release-automation.md) and
 [Microsoft Store Windows channel](windows-store.md) for the live product,
 identity, and update-publication procedure.

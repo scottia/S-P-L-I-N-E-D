@@ -60,7 +60,7 @@ channel and does not require package identity.
 
 ## Store release and update package
 
-`SPLINED (All OS) and GHCR` is the only workflow that creates a release version
+`04. Release - Build/Publish (Store auto-submit default)` is the only workflow that creates a release version
 and numeric tag. For Windows or All releases its **Microsoft Store** input
 defaults to enabled. The Windows job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
@@ -92,12 +92,12 @@ Store processing supplies the production signing and deployment path.
 Store-installed updates are delivered by Windows/Microsoft Store package
 deployment; SPLINED does not replace its own binaries.
 
-`SPLINED (Tagged) > MS Store Package Resolution` is the package-only recovery
+`02. Store - Build Package Only` is the package-only recovery
 workflow. Given an existing numeric release tag, it rebuilds that exact source
 version, performs the same strict production packaging and isolated development
 QA, reads the last-published Store package version, generates cumulative Store
 Highlights, and uploads the same Actions artifact. Its Store access is read-only;
-it does not stage or submit a package. `SPLINED > MS Store Publish & Update`
+it does not stage or submit a package. `05. Store - Submit Package (Auto-submit)`
 uses an existing numeric tag and retained validated package, resolves Store
 history again at execution time, regenerates Highlights, then submits that exact
 package to the live product. Neither workflow creates or changes a version or
@@ -143,7 +143,7 @@ detector.
 The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
 For a normal future Store update, maintainers leave **Microsoft Store** enabled
-in the corresponding `SPLINED (All OS) and GHCR` run. After selected build QA,
+in the corresponding `04. Release - Build/Publish (Store auto-submit default)` run. After selected build QA,
 the workflow creates the numeric tag, renders GitHub notes and concise Store
 Highlights with the same git-cliff 2.14.2 policy, publishes the GitHub Release
 and GHCR, then stages and submits the exact validated MSIX to the existing product
@@ -169,8 +169,8 @@ recovery. Store publication requires `AZURE_AD_APPLICATION_CLIENT_ID`,
 `AZURE_AD_TENANT_ID`, and `SELLER_ID` as GitHub Actions secrets; missing values
 fail clearly. Selecting **Microsoft Store = false** performs no Store package,
 QA, authentication, Store-submission artifact, or Store API submission work. Use
-`SPLINED (Tagged) > MS Store Package Resolution` after a package rejection, or
-`SPLINED > MS Store Publish & Update` when an existing tag needs Store
+`02. Store - Build Package Only` after a package rejection, or
+`05. Store - Submit Package (Auto-submit)` when an existing tag needs Store
 publication/republication. See [Release automation](release-automation.md).
 
 The checked-in App Installer template is not the Microsoft Store update path.

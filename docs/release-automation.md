@@ -5,10 +5,13 @@ workflow creates a version, numeric tag, or GitHub Release.
 
 | Workflow | File | Purpose |
 |---|---|---|
-| `SPLINED (All OS) and GHCR` | `.github/workflows/release-next-patch.yml` | Create the next release from `main`, build the selected platforms, publish GitHub assets and GHCR, and optionally submit the Windows Store update. |
-| `SPLINED (Tagged) > MS Store Package Resolution` | `.github/workflows/windows-store-package-resolution.yml` | Rebuild and validate an unsigned Store package plus Store Highlights for an existing numeric tag. It stops at an Actions artifact. |
-| `SPLINED > MS Store Publish & Update` | `.github/workflows/windows-store-publish-update.yml` | Publish an already validated retained Store artifact for an existing numeric tag and update its en-US Store Highlights. It never rebuilds binaries or MSIX packages. |
-| `SPLINED (Docker) > GHCR Resolution` | `.github/workflows/docker-ghcr-resolution.yml` | Rebuild and publish Docker tags from an existing numeric tag, then replace that tag's existing GitHub Release body with the authoritative notes. |
+| `02. Store - Build Package Only` | `.github/workflows/windows-store-package-resolution.yml` | Rebuild and validate an unsigned Store package plus Store Highlights for an existing numeric tag. It stops at an Actions artifact. |
+| `03. GHCR - Rebuild Published Tag` | `.github/workflows/docker-ghcr-resolution.yml` | Rebuild and publish Docker tags from an existing numeric tag, then replace that tag's existing GitHub Release body with the authoritative notes. |
+| `04. Release - Build/Publish (Store auto-submit default)` | `.github/workflows/release-next-patch.yml` | Create the next release from `main`, build the selected platforms, publish GitHub assets and GHCR, and optionally submit the Windows Store update. |
+| `05. Store - Submit Package (Auto-submit)` | `.github/workflows/windows-store-publish-update.yml` | Publish an already validated retained Store artifact for an existing numeric tag and update its en-US Store Highlights. It never rebuilds binaries or MSIX packages. |
+
+`01. Store - Check Status (Read-only)` is a separate diagnostic workflow; it
+does not create a release, package, or Store submission.
 
 Recovery workflows never create, move, or delete a tag. The Store recovery
 workflows never create another GitHub Release or publish GHCR. The Docker
@@ -17,7 +20,7 @@ GitHub Release.
 
 ## Normal release
 
-Run `SPLINED (All OS) and GHCR` from `main`. Select Windows, Ubuntu, macOS, or
+Run `04. Release - Build/Publish (Store auto-submit default)` from `main`. Select Windows, Ubuntu, macOS, or
 All. **Microsoft Store** defaults to `true`; **Extended Windows validation**
 defaults to `false`. Leave **Release version** blank for the automatic next
 version, or enter an explicit numeric version. The current
@@ -136,13 +139,13 @@ recovery publication jobs also share one non-canceling Store concurrency group,
 so two SPLINED submissions cannot stage over each other.
 
 If packaging needs correction without Store submission, run
-`SPLINED (Tagged) > MS Store Package Resolution`. That workflow rebuilds,
+`02. Store - Build Package Only`. That workflow rebuilds,
 validates, queries Store history read-only, generates cumulative Highlights,
 and retains `splined-windows-store-submission`. It requires the same Store
 credentials to identify the published baseline, but it never stages or submits
 a package.
 
-`SPLINED > MS Store Publish & Update` is publication-only. It authenticates
+`05. Store - Submit Package (Auto-submit)` is publication-only. It authenticates
 before doing package work, resolves the live published baseline, locates a
 retained non-expired `splined-windows-store-submission` artifact, verifies the
 MSIX identity and requested numeric version, and regenerates

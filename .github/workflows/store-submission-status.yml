@@ -1,4 +1,4 @@
-name: SPLINED > Microsoft Store submission status
+name: 01. Store - Check Status (Read-only)
 
 on:
   push:
