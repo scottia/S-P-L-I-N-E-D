@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   dispatch:
-    if: github.event.head_commit.message == 'ci(release): dispatch v2.0.0 standard validation'
+    if: "github.event.head_commit.message == 'ci(release): dispatch v2.0.0 standard validation'"
     runs-on: ubuntu-latest
     steps:
       - name: Start Windows release and Microsoft Store submission
