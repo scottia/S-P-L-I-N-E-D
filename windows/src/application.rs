@@ -1038,6 +1038,8 @@ impl LibraryState {
     /// top-level model, so that explicit navigation must clear the drill-down.
     pub fn set_top_level_view(&mut self, view: LibraryView) {
         self.clear_artist_scope();
+        self.focused_album_key = None;
+        self.completed_fallback_return_key = None;
         self.set_view(view);
     }
 
@@ -1167,6 +1169,9 @@ impl LibraryState {
     }
 
     pub fn set_show_tracks(&mut self, enabled: bool) {
+        if enabled && !self.show_tracks {
+            self.set_top_level_view(LibraryView::Artists);
+        }
         self.show_tracks = enabled;
         if !enabled {
             self.completed_fallback_return_key = None;
@@ -2390,6 +2395,7 @@ pub struct ApplicationState {
     pub compilation_report_artist: String,
     pub compilation_report_summary: String,
     pub compilation_report_preview_mode: bool,
+    pub compilation_report_preview_album_key: String,
     pub compilation_report_preview_track_path: String,
     pub compilation_report_collapsed_albums: HashSet<String>,
     pub compilation_report_auto_close_armed: bool,
@@ -2578,6 +2584,7 @@ impl ApplicationState {
             compilation_report_artist: String::new(),
             compilation_report_summary: String::new(),
             compilation_report_preview_mode: false,
+            compilation_report_preview_album_key: String::new(),
             compilation_report_preview_track_path: String::new(),
             compilation_report_collapsed_albums: HashSet::new(),
             compilation_report_auto_close_armed: false,
@@ -2848,6 +2855,17 @@ impl ApplicationState {
                 || (!self.compilation_report_artist.is_empty()
                     && self.library.focused_artist.as_deref()
                         == Some(self.compilation_report_artist.as_str())
+                    && self
+                        .compilation_report_preview_track_path
+                        .eq_ignore_ascii_case(&self.compilation_track_preview_owner))
+                || (self.library.show_tracks
+                    && self
+                        .library
+                        .focused_album_key
+                        .as_deref()
+                        .is_some_and(|focused| {
+                            focused.eq_ignore_ascii_case(&self.compilation_report_preview_album_key)
+                        })
                     && self
                         .compilation_report_preview_track_path
                         .eq_ignore_ascii_case(&self.compilation_track_preview_owner))))
@@ -5120,6 +5138,28 @@ mod tests {
     }
 
     #[test]
+    fn fallback_report_preview_is_visible_only_for_its_focused_album() {
+        let mut app = application_state();
+        app.library.show_tracks = true;
+        app.library.focused_album_key = Some("fallback-a".to_string());
+        app.compilation_report_preview_mode = true;
+        app.compilation_report_preview_album_key = "fallback-a".to_string();
+        app.compilation_report_preview_track_path = r"C:\Music\Comp\01.mp3".to_string();
+        app.compilation_track_preview_owner = app
+            .compilation_report_preview_track_path
+            .to_ascii_lowercase();
+        app.compilation_track_preview_path = r"C:\Cache\saved-thumb.jpg".to_string();
+
+        assert_eq!(
+            app.active_compilation_track_preview(),
+            Some(r"C:\Cache\saved-thumb.jpg")
+        );
+        assert_eq!(app.library.selected_count(), 0);
+        app.library.focused_album_key = Some("fallback-b".to_string());
+        assert!(app.active_compilation_track_preview().is_none());
+    }
+
+    #[test]
     fn expanded_artist_children_honor_album_states_not_the_artist_aggregate() {
         let mut state = artist_library();
         state.albums.extend([
@@ -5786,6 +5826,20 @@ mod tests {
         assert_eq!(state.rows().len(), 5);
         state.set_top_level_view(LibraryView::Artists);
         assert_eq!(state.rows().len(), 4);
+    }
+
+    #[test]
+    fn fallback_and_album_tabs_do_not_inherit_the_prior_album_focus() {
+        let mut state = library();
+        state.set_top_level_view(LibraryView::Albums);
+        assert!(state.focus_album("a"));
+        state.set_show_tracks(true);
+        assert_eq!(state.view, LibraryView::Artists);
+        assert!(state.focused_album_key.is_none());
+        assert!(state.focus_album("a"));
+        state.set_show_tracks(false);
+        state.set_top_level_view(LibraryView::Albums);
+        assert!(state.focused_album_key.is_none());
     }
 
     #[test]

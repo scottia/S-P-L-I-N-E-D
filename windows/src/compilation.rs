@@ -181,6 +181,7 @@ impl CompilationMatchCache {
         };
         let focused_artist_ids = vec![focused_artist_mbid.clone()];
 
+        let mut verified_recording_without_release = false;
         let exact_error = if let Some(recording_mbid) =
             recording_mbid.filter(|value| !value.trim().is_empty())
         {
@@ -275,18 +276,34 @@ impl CompilationMatchCache {
                     };
                 }
                 Ok(_) => {
-                    return MusicBrainzResolution {
-                        matches: Vec::new(),
-                        warnings: vec!["The Recording and Artist IDs are valid, but no eligible official release was found through the Recording or its related Work.".to_string()],
-                        identity_status: "valid".to_string(),
-                        identity_message: "Recording and Artist IDs validated; no eligible official release is available. Use MB INFO to review MusicBrainz.".to_string(),
-                        recording_status: "valid".to_string(),
-                        artist_status: "valid".to_string(),
-                        friendly_artist,
-                        friendly_title: title.to_string(),
-                        used_fuzzy_search: false,
-                        focused_artist_mbid: Some(focused_artist_mbid),
-                    };
+                    verified_recording_without_release = true;
+                    // Automatic COMP choices exclude Remix/Live releases. If
+                    // that leaves no containing release, expose official
+                    // releases of the *same* verified Recording for manual
+                    // artwork-source review before trying title recovery.
+                    if config.is_some()
+                        && let Ok(mut matches) = self
+                            .browser_matches_exact(client, recording_mbid, &focused_artist_ids)
+                            .await
+                        && !matches.is_empty()
+                    {
+                        finalize_interactive_matches(&mut matches);
+                        return MusicBrainzResolution {
+                            matches,
+                            warnings: vec!["No release met the automatic COMP policy; official releases containing the verified Recording are available for manual artwork review.".to_string()],
+                            identity_status: "valid".to_string(),
+                            identity_message: format!(
+                                "Validated Recording and Artist identity: {friendly_artist} — {title}. Review a containing release to search artwork sources; this does not assign an Album ID to the COMP track."
+                            ),
+                            recording_status: "valid".to_string(),
+                            artist_status: "valid".to_string(),
+                            friendly_artist,
+                            friendly_title: title.to_string(),
+                            used_fuzzy_search: false,
+                            focused_artist_mbid: Some(focused_artist_mbid),
+                        };
+                    }
+                    "The Recording and Artist IDs are valid, but no eligible official release was found through the Recording or its related Work.".to_string()
                 }
                 Err(error) => error,
             }
@@ -303,11 +320,27 @@ impl CompilationMatchCache {
                 MusicBrainzResolution {
                     matches,
                     warnings: vec![warning.clone()],
-                    identity_status: "invalid".to_string(),
-                    identity_message: format!(
-                        "{warning} Artist-restricted title recovery is shown below; choose a release or correct Advanced IDs."
-                    ),
-                    recording_status: "invalid".to_string(),
+                    identity_status: if verified_recording_without_release {
+                        "valid"
+                    } else {
+                        "invalid"
+                    }
+                    .to_string(),
+                    identity_message: if verified_recording_without_release {
+                        format!(
+                            "{warning} Artist-restricted title suggestions are shown for manual artwork-source review; they are not the tagged Recording."
+                        )
+                    } else {
+                        format!(
+                            "{warning} Artist-restricted title recovery is shown below; choose a release or correct Advanced IDs."
+                        )
+                    },
+                    recording_status: if verified_recording_without_release {
+                        "valid"
+                    } else {
+                        "invalid"
+                    }
+                    .to_string(),
                     artist_status: "valid".to_string(),
                     friendly_artist,
                     friendly_title: title.to_string(),
@@ -318,11 +351,18 @@ impl CompilationMatchCache {
             Ok(_) => {
                 let mut result = MusicBrainzResolution::failed(
                     exact_error,
-                    "invalid",
+                    if verified_recording_without_release {
+                        "valid"
+                    } else {
+                        "invalid"
+                    },
                     "valid",
                     friendly_artist,
                     title,
                 );
+                if verified_recording_without_release {
+                    result.identity_status = "valid".to_string();
+                }
                 result.focused_artist_mbid = Some(focused_artist_mbid);
                 result
             }
@@ -332,11 +372,18 @@ impl CompilationMatchCache {
                         "{} Artist-restricted recovery also failed: {error}",
                         exact_error
                     ),
-                    "invalid",
+                    if verified_recording_without_release {
+                        "valid"
+                    } else {
+                        "invalid"
+                    },
                     "valid",
                     friendly_artist,
                     title,
                 );
+                if verified_recording_without_release {
+                    result.identity_status = "valid".to_string();
+                }
                 result.focused_artist_mbid = Some(focused_artist_mbid);
                 result
             }
@@ -1167,6 +1214,55 @@ mod tests {
         assert_eq!(
             classify_release_for_browser(&release(Some("Album"), &["Soundtrack"])),
             Some(ReleaseClass::Soundtrack)
+        );
+    }
+
+    #[test]
+    fn verified_comp_recording_can_offer_remix_album_for_manual_artwork_search() {
+        // MusicBrainz Recording 827560c6 (R. Kelly, "Ignition - Remix") is
+        // on the official Remix City Volume 1 album. The automatic COMP
+        // policy excludes Remix releases, but the interactive source picker
+        // must still be able to search artwork for this containing release.
+        let artist_mbid = "c2d25856-a09a-4d15-b404-77dd19c19e63".to_string();
+        let release = RecordingRelease {
+            id: "8db84f4f-9cac-4c77-9a85-ef786806d19d".into(),
+            title: "Remix City Volume 1".into(),
+            artist_credit: "Various Artists".into(),
+            status: Some("Official".into()),
+            date: Some("2005-11-14".into()),
+            country: Some("XW".into()),
+            artist_mbids: Vec::new(),
+            release_group_id: Some("20b65846-6a69-3dab-af1a-eb9dcc029916".into()),
+            release_group_title: Some("Remix City, Volume 1".into()),
+            release_group_primary_type: Some("Album".into()),
+            release_group_secondary_types: vec!["Remix".into()],
+        };
+        assert!(
+            project_releases(
+                "827560c6-089b-4195-a64c-f3af3c446ba0",
+                "Ignition - Remix",
+                "R. Kelly",
+                std::slice::from_ref(&artist_mbid),
+                vec![release.clone()],
+                100,
+                true,
+            )
+            .is_empty()
+        );
+        let manual = project_releases(
+            "827560c6-089b-4195-a64c-f3af3c446ba0",
+            "Ignition - Remix",
+            "R. Kelly",
+            &[artist_mbid],
+            vec![release],
+            100,
+            false,
+        );
+        assert_eq!(manual.len(), 1);
+        assert_eq!(manual[0].release_title, "Remix City Volume 1");
+        assert_eq!(
+            manual[0].recording_mbid,
+            "827560c6-089b-4195-a64c-f3af3c446ba0"
         );
     }
 
