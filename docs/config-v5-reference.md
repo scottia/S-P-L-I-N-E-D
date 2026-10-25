@@ -117,13 +117,14 @@ UNC and never names a drive letter.
 
 For an intentional shared file, set `sqlite_shared = true` in every process
 that can open it. Local databases default to WAL for warm-start performance;
-shared mode uses rollback journaling plus `busy_timeout=30000`. Python/Docker
-owns shared Album inventory and exclusions. Windows `ignored_subs` and output
-filename remain local configuration and are not compatibility requirements;
-Windows Refresh reloads the Python-published inventory instead of rebuilding it.
-The Windows `.client-lock` is off by default and does not replace SQLite's own
-locking. If it is enabled, every client must participate for the extra lock to
-coordinate access. With it off, avoid overlapping writes from different hosts.
+shared mode uses rollback journaling plus `busy_timeout=30000`. The first
+publisher establishes the canonical path mapping, ignored-folder policy, and
+cover filename. Python/Docker is the normal first publisher for a cross-mounted
+library; Windows can explicitly refresh an existing shared index using that
+published policy. A normal Windows launch reads the index without rebuilding
+it. The Windows `.client-lock` is off by default and does not replace SQLite's
+own locking. Enable it when every client can acquire it on the chosen share;
+otherwise avoid overlapping writes from different hosts.
 
 See [SPLINED media database](splined-media-database.md).
 

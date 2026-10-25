@@ -80,6 +80,14 @@ pub fn default_album_frame_theme_styles() -> Vec<AlbumFrameThemeStyle> {
     .collect()
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArtistLookupOverride {
+    pub artist: String,
+    pub lookup_name: String,
+    pub musicbrainz_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiPreferences {
@@ -133,6 +141,8 @@ pub struct UiPreferences {
     pub backup_diagnostics: bool,
     pub artist_filter: String,
     pub album_filter: String,
+    /// Local Navidrome lookup hints keyed by the album-tagged Artist name.
+    pub artist_lookup_overrides: Vec<ArtistLookupOverride>,
     pub candidate_included_sources: Vec<String>,
     pub candidate_included_types: Vec<String>,
     pub candidate_included_policies: Vec<String>,
@@ -221,6 +231,7 @@ impl Default for UiPreferences {
             backup_diagnostics: false,
             artist_filter: String::new(),
             album_filter: String::new(),
+            artist_lookup_overrides: Vec::new(),
             candidate_included_sources: Vec::new(),
             candidate_included_types: Vec::new(),
             candidate_included_policies: Vec::new(),

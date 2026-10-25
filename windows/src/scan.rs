@@ -224,6 +224,15 @@ fn wildcard_match_ascii_case_insensitive(pattern: &str, value: &str) -> bool {
 }
 
 pub fn is_supported_audio_file(path: &Path) -> bool {
+    // Interrupted atomic writes may leave a same-directory MP3 stage behind.
+    // It is not a song, even though its suffix is a supported audio format.
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().starts_with(".splined-stage-"))
+    {
+        return false;
+    }
     path.extension()
         .and_then(|extension| extension.to_str())
         .map(|extension| extension.to_ascii_lowercase())
@@ -296,5 +305,20 @@ mod tests {
 
         let error = inventory_album_directories(&missing, &[]).expect_err("missing root rejected");
         assert!(error.contains("does not exist"));
+    }
+
+    #[test]
+    fn staging_files_are_not_inventoried_as_tracks() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let album = temp.path().join("Artist").join("Album");
+        fs::create_dir_all(&album).expect("album directory");
+        File::create(album.join("01 - Song.mp3")).expect("song");
+        File::create(album.join(".splined-stage-orphan.mp3")).expect("orphan stage");
+        let inventory = inventory_album_directories(temp.path(), &[]).expect("inventory");
+        assert_eq!(inventory.albums.len(), 1);
+        assert_eq!(
+            inventory.albums[0].audio_files,
+            vec![album.join("01 - Song.mp3")]
+        );
     }
 }

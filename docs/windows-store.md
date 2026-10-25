@@ -60,12 +60,14 @@ channel and does not require package identity.
 
 ## Store release and update package
 
-`SPLINED (All OS) and GHCR` is the only workflow that creates a release version
-and numeric tag. For Windows or All releases its **Microsoft Store** input
-defaults to enabled. The Windows job performs one clean x64
+`01. Full Release - Build Selected OS and Publish` is the only workflow that
+creates a release version and numeric tag. Its Store modes are both off by
+default; for Windows or All choose either **Submit Update/No Draft** or
+**Submit Draft/No Update**. The run stops before release work unless **Create
+release now** is selected. The Windows job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. Ubuntu-only
-and macOS-only runs ignore this Windows option.
+and macOS-only runs cannot select a Store mode.
 
 The production layout is created directly from the Partner Center manifest and
 the same version/commit-bound binaries used by the Portable ZIP. It updates
@@ -92,16 +94,12 @@ Store processing supplies the production signing and deployment path.
 Store-installed updates are delivered by Windows/Microsoft Store package
 deployment; SPLINED does not replace its own binaries.
 
-`SPLINED (Tagged) > MS Store Package Resolution` is the package-only recovery
-workflow. Given an existing numeric release tag, it rebuilds that exact source
-version, performs the same strict production packaging and isolated development
-QA, reads the last-published Store package version, generates cumulative Store
-Highlights, and uploads the same Actions artifact. Its Store access is read-only;
-it does not stage or submit a package. `SPLINED > MS Store Publish & Update`
-uses an existing numeric tag and retained validated package, resolves Store
-history again at execution time, regenerates Highlights, then submits that exact
-package to the live product. Neither workflow creates or changes a version or
-tag, creates another GitHub Release, or publishes GHCR.
+`02. Store Recovery - Tagged Draft or Update` accepts an existing numeric
+release tag, rebuilds that exact source version, performs production packaging
+and isolated development QA, and generates cumulative Store Highlights. It
+then stages a Partner Center draft or submits for certification according to
+the selected Store mode. It does not create a version, tag, GitHub Release, or
+GHCR image.
 
 ## Development package validation
 
@@ -142,8 +140,11 @@ detector.
 
 The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
-For a normal future Store update, maintainers leave **Microsoft Store** enabled
-in the corresponding `SPLINED (All OS) and GHCR` run. After selected build QA,
+For a normal future Store update, maintainers choose **Submit Update/No Draft**
+and confirm the release in the corresponding
+`01. Full Release - Build Selected OS and Publish` run. Choose **Submit
+Draft/No Update** instead when manual Partner Center review is wanted.
+After selected build QA,
 the workflow creates the numeric tag, renders GitHub notes and concise Store
 Highlights with the same git-cliff 2.14.2 policy, publishes the GitHub Release
 and GHCR, then stages and submits the exact validated MSIX to the existing product
@@ -167,11 +168,11 @@ exact MSIX, `STORE-HIGHLIGHTS.txt`, and `STORE-SUBMISSION.json` audit record for
 recovery. Store publication requires `AZURE_AD_APPLICATION_CLIENT_ID`,
 `AZURE_AD_APPLICATION_SECRET`,
 `AZURE_AD_TENANT_ID`, and `SELLER_ID` as GitHub Actions secrets; missing values
-fail clearly. Selecting **Microsoft Store = false** performs no Store package,
+fail clearly. Leaving both Store modes off performs no Store package,
 QA, authentication, Store-submission artifact, or Store API submission work. Use
-`SPLINED (Tagged) > MS Store Package Resolution` after a package rejection, or
-`SPLINED > MS Store Publish & Update` when an existing tag needs Store
-publication/republication. See [Release automation](release-automation.md).
+`02. Store Recovery - Tagged Draft or Update` when an existing tag needs
+Store publication or a rebuilt package. See
+[Release automation](release-automation.md).
 
 The checked-in App Installer template is not the Microsoft Store update path.
 It is retained only for a possible separately signed direct-distribution

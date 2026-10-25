@@ -1,10 +1,10 @@
-name: SPLINED (Docker) > GHCR Resolution
+name: 03. GHCR Recovery - Tagged Image and Ubuntu Asset
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Existing numeric SPLINED release tag (example: 1.0.71)"
+        description: "RISK: rebuilds GHCR image for an existing numeric tag, adds a missing Ubuntu release asset, and refreshes git-cliff notes. No Store changes."
         required: true
         type: string
 
@@ -12,12 +12,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: splined-docker-ghcr-resolution-${{ inputs.version }}
+  group: splined-ghcr-recovery-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
   publish-ghcr:
-    name: Publish exact tagged image and refresh release body
+    name: Publish tagged image and repair Ubuntu release asset
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -27,6 +27,17 @@ jobs:
       RELEASE_VERSION: ${{ inputs.version }}
 
     steps:
+      - name: Require main branch dispatch
+        shell: bash
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REF" = refs/heads/main || {
+            echo "::error title=Main branch required::Run GHCR recovery from main."
+            exit 1
+          }
+
       - name: Validate numeric existing-tag input
         shell: bash
         run: |
@@ -61,7 +72,15 @@ jobs:
           set -euo pipefail
           git fetch --force --tags origin
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")"
-          gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null
+          release=$(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease)
+          test "$(jq -r '.tagName' <<< "$release")" = "$RELEASE_VERSION"
+          test "$(jq -r '.isDraft' <<< "$release")" = false
+          test "$(jq -r '.isPrerelease' <<< "$release")" = false
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')
+          if [ "$latest" != "$RELEASE_VERSION" ]; then
+            echo "::error title=Older release refused::Recovery would move GHCR latest backward from $latest to $RELEASE_VERSION."
+            exit 1
+          fi
 
       - name: Install and verify git-cliff 2.14.2
         shell: pwsh
@@ -111,6 +130,75 @@ jobs:
           set -euo pipefail
           docker push "$IMAGE_NAME:v$RELEASE_VERSION"
           docker push "$IMAGE_NAME:latest"
+
+      - name: Check whether Ubuntu asset already exists
+        id: ubuntu-asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          assets=$(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          if grep -Fxq 'splined-linux-x86_64.tar.gz' <<< "$assets"; then
+            echo 'missing=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'missing=true' >> "$GITHUB_OUTPUT"
+          fi
+          if grep -Fxq 'splined-linux-x86_64.sha256' <<< "$assets"; then
+            echo 'checksum_missing=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'checksum_missing=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install stable Rust for missing Ubuntu asset
+        if: ${{ steps.ubuntu-asset.outputs.missing == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Build exact tagged Ubuntu release asset
+        if: ${{ steps.ubuntu-asset.outputs.missing == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release
+          mkdir -p release-package release-assets
+          cp target/release/splined release-package/splined
+          cp release/README-LINUX.txt release-package/README-LINUX.txt
+          chmod +x release-package/splined
+          tar -czf release-assets/splined-linux-x86_64.tar.gz -C release-package splined README-LINUX.txt
+
+      - name: Add missing Ubuntu asset without replacing existing assets
+        if: ${{ steps.ubuntu-asset.outputs.missing == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_VERSION" release-assets/splined-linux-x86_64.tar.gz --repo "$GITHUB_REPOSITORY"
+
+      - name: Retrieve existing Ubuntu asset when only its checksum is missing
+        if: ${{ steps.ubuntu-asset.outputs.missing == 'false' && steps.ubuntu-asset.outputs.checksum_missing == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'splined-linux-x86_64.tar.gz' --dir release-assets
+
+      - name: Add missing Ubuntu asset checksum
+        if: ${{ steps.ubuntu-asset.outputs.checksum_missing == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          (cd release-assets && sha256sum splined-linux-x86_64.tar.gz > splined-linux-x86_64.sha256)
+          gh release upload "$RELEASE_VERSION" release-assets/splined-linux-x86_64.sha256 --repo "$GITHUB_REPOSITORY"
 
       - name: Replace existing GitHub Release body with git-cliff notes
         shell: bash

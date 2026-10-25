@@ -915,41 +915,45 @@ pub async fn run_scan_library_read_report(
             });
             display_indices.truncate(10);
         }
-        let suggested_index = automatic_index.or_else(|| {
-            display_indices
-                .iter()
-                .copied()
-                .filter(|index| {
-                    result.candidates[*index].strict.preferred_eligible
-                        && candidate_meets_upscale_limit(
-                            &result.candidates[*index].downloaded.candidate,
+        // A preserved cover.webp supplies the highest-resolution local source;
+        // its cached JPEG still is the recommended second local comparison.
+        let suggested_index = recommended_webp_local_index(&result.candidates, &display_indices)
+            .or(automatic_index)
+            .or_else(|| {
+                display_indices
+                    .iter()
+                    .copied()
+                    .filter(|index| {
+                        result.candidates[*index].strict.preferred_eligible
+                            && candidate_meets_upscale_limit(
+                                &result.candidates[*index].downloaded.candidate,
+                                &range,
+                                config,
+                            )
+                            && candidate_quality_eligible_for_preferred(
+                                &result.candidates[*index],
+                                &range,
+                                config,
+                            )
+                            && !matches!(
+                                result.candidates[*index]
+                                    .downloaded
+                                    .candidate
+                                    .source
+                                    .as_str(),
+                                "local" | "webpstill" | "existing"
+                            )
+                    })
+                    .min_by(|left_index, right_index| {
+                        compare_fallback_suggestions(
+                            &result.candidates[*left_index],
+                            &result.candidates[*right_index],
                             &range,
-                            config,
+                            &format_order,
+                            &config.output,
                         )
-                        && candidate_quality_eligible_for_preferred(
-                            &result.candidates[*index],
-                            &range,
-                            config,
-                        )
-                        && !matches!(
-                            result.candidates[*index]
-                                .downloaded
-                                .candidate
-                                .source
-                                .as_str(),
-                            "local" | "webpstill" | "existing"
-                        )
-                })
-                .min_by(|left_index, right_index| {
-                    compare_fallback_suggestions(
-                        &result.candidates[*left_index],
-                        &result.candidates[*right_index],
-                        &range,
-                        &format_order,
-                        &config.output,
-                    )
-                })
-        });
+                    })
+            });
         let mut selected_index = if gui_events::review_required() {
             if gui_events::auto_ideal_enabled() {
                 automatic_ideal_index
@@ -1749,6 +1753,22 @@ pub async fn run_scan_library_read_report(
     }));
 
     Ok(summary)
+}
+
+fn recommended_webp_local_index(
+    candidates: &[PipelineCandidate],
+    display_indices: &[usize],
+) -> Option<usize> {
+    display_indices.iter().copied().find(|index| {
+        candidates.get(*index).is_some_and(|candidate| {
+            candidate.strict.preferred_eligible
+                && candidate
+                    .downloaded
+                    .candidate
+                    .source
+                    .eq_ignore_ascii_case("webpstill")
+        })
+    })
 }
 
 fn prepare_samples_dir(sample_dir: &Path) -> Result<(), String> {
@@ -4626,6 +4646,39 @@ fn projected_range_class(short_side: u32, range: &Range) -> &'static str {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn webp_still_is_recommended_as_second_visible_local_candidate() {
+        let directory = TempDir::new().unwrap();
+        let image_path = directory.path().join("still.jpg");
+        image::RgbImage::from_pixel(32, 32, image::Rgb([20, 80, 140]))
+            .save(&image_path)
+            .unwrap();
+        let mut candidates = existing_compilation_pipeline(
+            &image_path,
+            &directory.path().join("track.mp3"),
+            "artist-album-cover",
+        )
+        .unwrap()
+        .candidates;
+        candidates.push(PipelineCandidate {
+            reference: ArtworkReference {
+                source: "webpstill".to_string(),
+                id: "cover.webp".to_string(),
+                url: String::new(),
+                front: true,
+                approved: true,
+                types: vec!["CoverFile".to_string()],
+            },
+            downloaded: DownloadedCandidate::from_existing_path("webpstill", image_path, 0, "")
+                .unwrap(),
+            strict: StrictContentDecision::default(),
+        });
+        assert_eq!(recommended_webp_local_index(&candidates, &[0, 1]), Some(1));
+        assert_eq!(recommended_webp_local_index(&candidates, &[0]), None);
+        candidates[1].strict.preferred_eligible = false;
+        assert_eq!(recommended_webp_local_index(&candidates, &[0, 1]), None);
+    }
 
     #[test]
     fn compilation_embed_always_uses_preferred_dimensions_without_altering_source() {

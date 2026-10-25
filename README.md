@@ -111,14 +111,13 @@ leave configured external resources untouched.
 See
 [Windows upgrade](docs/installation-first-run.md#windows-upgrade).
 
-For maintainers, `SPLINED (All OS) and GHCR` builds the Windows executable
+For maintainers, `01. Full Release - Build Selected OS and Publish` builds the Windows executable
 once and uses that same binary for the Portable ZIP and, when selected, the
 unsigned Microsoft Store submission package. Both must validate before the
-numeric tag is created; the selected Store path then submits the validated
-package and generated Store Highlights automatically. Exact-tag recovery is
-split between `SPLINED (Tagged) > MS Store Package Resolution`,
-`SPLINED > MS Store Publish & Update`, and
-`SPLINED (Docker) > GHCR Resolution`. GitHub notes and Store Highlights are
+numeric tag is created; the selected Store path then stages a draft or submits
+the validated package and generated Store Highlights. Exact-tag recovery uses
+`02. Store Recovery - Tagged Draft or Update` or
+`03. GHCR Recovery - Tagged Image and Ubuntu Asset`. GitHub notes and Store Highlights are
 rendered with one git-cliff 2.14.2 policy: GitHub notes are incremental, while
 Store Highlights include every customer-facing change since the last package
 actually published by Microsoft Store. See the

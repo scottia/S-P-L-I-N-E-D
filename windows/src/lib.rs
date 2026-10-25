@@ -7,6 +7,7 @@ pub mod config_migration;
 pub mod credential_store;
 pub mod credentials;
 pub mod download;
+pub mod embed_queue;
 pub mod embedded_artwork;
 pub mod evaluate;
 pub mod file_association;

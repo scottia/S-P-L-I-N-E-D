@@ -2867,10 +2867,15 @@ fn load_snapshot(
                     "incomplete".to_string()
                 };
             }
+            let tagged_artist: String = row.get(1)?;
             Ok(MediaAlbumSnapshot {
                 album_key: album_key.clone(),
-                artist: physical_artist,
-                tagged_artist: row.get(1)?,
+                artist: if tagged_artist.trim().is_empty() {
+                    physical_artist
+                } else {
+                    tagged_artist.clone()
+                },
+                tagged_artist,
                 title: row.get(2)?,
                 path: local_path,
                 representative_file: mapper.to_local(&representative).unwrap_or_default(),
@@ -3774,6 +3779,45 @@ mod tests {
     }
 
     #[test]
+    fn windows_refresh_indexes_dot_prefixed_artist_and_album_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let original = library.join("Artist").join("Album");
+        fs::create_dir_all(&original).unwrap();
+        File::create(original.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        assert_eq!(media_snapshot(&config, false).unwrap().albums.len(), 1);
+
+        let dot_artist = library.join(".38 Special").join("The Very Best");
+        let dot_album = library.join("Britney Spears").join("...Baby One More Time");
+        for folder in [&dot_artist, &dot_album] {
+            fs::create_dir_all(folder).unwrap();
+            File::create(folder.join("01.mp3")).unwrap();
+            #[cfg(windows)]
+            {
+                let status = std::process::Command::new("attrib")
+                    .arg("+h")
+                    .arg(folder)
+                    .status()
+                    .expect("set Windows Hidden attribute");
+                assert!(status.success());
+            }
+        }
+        assert_eq!(find_unindexed_audio_folders(&config).unwrap().count, 2);
+        let refreshed = media_snapshot(&config, true).unwrap();
+        let paths = refreshed
+            .albums
+            .iter()
+            .map(|album| album.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&dot_artist.to_string_lossy().as_ref()));
+        assert!(paths.contains(&dot_album.to_string_lossy().as_ref()));
+        assert_eq!(find_unindexed_audio_folders(&config).unwrap().count, 0);
+    }
+
+    #[test]
     fn shared_refresh_keeps_published_folder_policy_and_adds_new_audio_album() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
@@ -4209,6 +4253,32 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert_eq!(progress, (100, 99));
+    }
+
+    #[test]
+    fn artist_overview_uses_tagged_name_when_folder_cannot_contain_a_slash() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("music");
+        let album = root.join("AC-DC").join("Back in Black");
+        fs::create_dir_all(&album).unwrap();
+        let database = temp.path().join("artists.db");
+        let connection = open_database(&database, false).unwrap();
+        let root_text = root.to_string_lossy().into_owned();
+        let mapper = PathMapper::new(&root_text, &root_text).unwrap();
+        let album_path = mapper.to_canonical(&album.to_string_lossy()).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('acdc','AC/DC',?,?,?,?,'test')",
+            params![root_text, now, now, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,path,representative_file,tag_signature,track_count,status,created_at,updated_at,last_seen_at,splined_version) VALUES('back','acdc','Back in Black',?,?,'tags',1,'new',?,?,?,'test')",
+            params![album_path, album_path, now, now, now],
+        ).unwrap();
+        let snapshot = load_snapshot(&connection, &database, &mapper).unwrap();
+        assert_eq!(snapshot.albums[0].artist, "AC/DC");
+        assert_eq!(snapshot.albums[0].tagged_artist, "AC/DC");
+        assert!(snapshot.albums[0].path.contains("AC-DC"));
     }
 
     #[test]

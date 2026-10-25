@@ -38,10 +38,19 @@ $numericTags = @(
             continue
         }
         # A newer-looking tag on another history is not the prior release.
-        & git -C $repository merge-base --is-ancestor "refs/tags/$tag^{commit}" $releaseCommit
-        if ($LASTEXITCODE -eq 0) {
+        # Exit 1 means this older numeric tag belongs to another history.
+        # PowerShell's native-command error preference must not turn that
+        # expected result into a terminating exception.
+        $PSNativeCommandUseErrorActionPreference = $false
+        try {
+            & git -C $repository merge-base --is-ancestor "refs/tags/$tag^{commit}" $releaseCommit
+            $ancestorExitCode = $LASTEXITCODE
+        } finally {
+            $PSNativeCommandUseErrorActionPreference = $true
+        }
+        if ($ancestorExitCode -eq 0) {
             [PSCustomObject]@{ Text = $tag; Version = [Version]$tag }
-        } elseif ($LASTEXITCODE -ne 1) {
+        } elseif ($ancestorExitCode -ne 1) {
             throw "Unable to inspect release tag ancestry: $tag"
         }
     }

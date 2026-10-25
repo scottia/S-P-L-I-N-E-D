@@ -1,18 +1,28 @@
-name: SPLINED (Tagged) > MS Store Package Resolution
+name: 02. Store Recovery - Tagged Draft or Update
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Existing numeric SPLINED release tag (example: 1.0.71)"
+        description: "Existing numeric Git release tag X.Y.Z. The Store package is verified as X.Y.Z.0; no new release or tag is created."
         required: true
         type: string
+      store_submit_update:
+        description: "RISK: Submit Update/No Draft - stage package and immediately submit for certification. No manual draft review."
+        required: false
+        default: false
+        type: boolean
+      store_submit_draft:
+        description: "RISK: Submit Draft/No Update - stage package and Highlights, then stop for manual Partner Center review."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: splined-windows-store-package-resolution-${{ inputs.version }}
+  group: splined-store-recovery-${{ inputs.version }}
   cancel-in-progress: false
 
 env:
@@ -23,10 +33,32 @@ env:
 
 jobs:
   build-store-package:
-    name: Rebuild and validate existing tag
+    name: Rebuild and stage or submit existing tag
     runs-on: windows-latest
+    concurrency:
+      group: splined-microsoft-store-submission
+      cancel-in-progress: false
 
     steps:
+      - name: Require main branch dispatch
+        shell: pwsh
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          if ($env:DISPATCH_REF -cne 'refs/heads/main') {
+            throw "Run Store recovery from main so the release engine is authoritative."
+          }
+
+      - name: Require one explicit Store mode before package work
+        shell: pwsh
+        env:
+          STORE_UPDATE: ${{ inputs.store_submit_update }}
+          STORE_DRAFT: ${{ inputs.store_submit_draft }}
+        run: |
+          if (($env:STORE_UPDATE -eq 'true') -eq ($env:STORE_DRAFT -eq 'true')) {
+            throw "Select exactly one Store mode: Submit Update/No Draft or Submit Draft/No Update."
+          }
+
       - name: Validate numeric existing-tag input
         shell: pwsh
         run: |
@@ -54,10 +86,13 @@ jobs:
             release/Test-StoreBaseline.ps1
             release/tests
             release/templates
+            windows/package/Publish-StoreUpdate.ps1
 
       - name: Verify exact tag and release metadata
         id: release
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
@@ -65,6 +100,10 @@ jobs:
           $commit = (git rev-parse HEAD).Trim()
           $tagCommit = (git rev-parse "refs/tags/$env:RELEASE_VERSION^{commit}").Trim()
           if ($commit -ne $tagCommit) { throw "Checked-out commit does not match existing tag $env:RELEASE_VERSION." }
+          $release = (& gh release view $env:RELEASE_VERSION --repo $env:GITHUB_REPOSITORY --json tagName,isDraft,isPrerelease | ConvertFrom-Json)
+          if ($release.tagName -cne $env:RELEASE_VERSION -or $release.isDraft -or $release.isPrerelease) {
+            throw "Version $env:RELEASE_VERSION must have a published non-prerelease GitHub Release."
+          }
 
           function Read-PackageVersion([string]$path) {
             $content = Get-Content -Raw -LiteralPath $path
@@ -243,16 +282,37 @@ jobs:
             store-submission/STORE-SUBMISSION.json
           if-no-files-found: error
 
-      - name: Report Store resolution artifact
+      - name: Stage package and Highlights; submit only in Update mode
+        shell: pwsh
+        env:
+          STORE_DRAFT: ${{ inputs.store_submit_draft }}
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $draftOnly = $env:STORE_DRAFT -eq 'true'
+          & .splined-release-engine/windows/package/Publish-StoreUpdate.ps1 `
+            -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
+            -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
+            -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `
+            -ExpectedVersion $env:RELEASE_VERSION `
+            -ProductId 9P8G4GMBBVBS `
+            -SkipReconfigure `
+            -DraftOnly:$draftOnly
+
+      - name: Report Store recovery result
         shell: pwsh
         run: |
           @"
-          ## SPLINED tagged Store package resolution
+          ## SPLINED tagged Store recovery
 
           - Existing tag: ``$env:RELEASE_VERSION``
           - Artifact: ``splined-windows-store-submission``
           - Package: ``SPLINED-x64-store-unsigned.msix``
           - Store Highlights range: ``${{ steps.store-baseline.outputs.range }}``
           - History authority: last published Microsoft Store package
-          - Microsoft Store publication: not performed by this workflow
+          - Draft mode: ``${{ inputs.store_submit_draft }}``
+          - Certification submission mode: ``${{ inputs.store_submit_update }}``
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY

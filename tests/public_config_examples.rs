@@ -121,7 +121,7 @@ fn windows_and_release_versions_advance_coherently() {
         .expect("Windows package manifest");
     assert!(package.contains(&format!("Version=\"{version}.0\"")));
 
-    let workflow = fs::read_to_string(".github/workflows/release-next-patch.yml")
+    let workflow = fs::read_to_string(".github/workflows/01-full-release.yml")
         .expect("release workflow")
         .replace("\r\n", "\n");
     assert!(workflow.contains(
@@ -154,7 +154,14 @@ fn windows_and_release_versions_advance_coherently() {
         .expect("publish-ghcr job body");
     assert!(ghcr_job.contains("needs.publish-release.result == 'success'"));
     assert!(workflow.contains("needs.publish-release.result == 'success'"));
-    assert!(workflow.contains("needs.publish-ghcr.result == 'success'"));
+    let store_job = workflow
+        .split("  publish-store:")
+        .nth(1)
+        .expect("publish-store job")
+        .split("  release-summary:")
+        .next()
+        .expect("publish-store job body");
+    assert!(!store_job.contains("needs.publish-ghcr.result == 'success'"));
     assert!(workflow.contains("release-summary:\n    name: Release summary"));
     assert!(workflow.contains("      - name: Enforce selected build and publication results"));
     assert!(workflow.contains("if: ${{ always() }}"));

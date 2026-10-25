@@ -354,7 +354,7 @@ fn canonical_local_files(album_path: &Path, file_name: &str) -> Result<Canonical
 
 fn webp_still_candidate(
     path: &Path,
-    album: &AlbumDirectory,
+    _album: &AlbumDirectory,
     config: &Config,
     range: &Range,
     cache_dir: &Path,
@@ -371,17 +371,20 @@ fn webp_still_candidate(
         &config.output,
         true,
     )?;
-    let destination = if config.mode == Mode::Write {
-        album.path.join(format!("{}.jpg", config.output.file_name))
-    } else {
-        cache_path(cache_dir, "webp-still", path, &prepared.bytes, "jpg")
-    };
-    replace_binary_file(
-        &destination,
-        &prepared.bytes,
-        "local WebP still",
-        |staged| inspect_image(staged).map(|_| ()),
-    )?;
+    // Candidate discovery is read-only for the album even in Write mode.
+    // WRITE Cover is the explicit action that installs the WebP still.
+    let destination = cache_path(cache_dir, "webp-still", path, &prepared.bytes, "jpg");
+    if fs::read(&destination)
+        .map(|existing| existing != prepared.bytes)
+        .unwrap_or(true)
+    {
+        replace_binary_file(
+            &destination,
+            &prepared.bytes,
+            "local WebP still preview",
+            |staged| inspect_image(staged).map(|_| ()),
+        )?;
+    }
     let still = DownloadedCandidate::from_existing_path("webpstill", destination.clone(), 0, "")?;
     Ok((still, source, destination))
 }
@@ -583,6 +586,33 @@ mod tests {
         );
         assert!(webp.exists());
         assert!(preflight.generated_destination.unwrap().exists());
+    }
+
+    #[test]
+    fn write_mode_webp_candidate_does_not_replace_existing_cover() {
+        let temp = tempdir().unwrap();
+        let album_path = temp.path().join("album");
+        let cache = temp.path().join("cache");
+        fs::create_dir_all(&album_path).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let webp = album_path.join("cover.webp");
+        let still = album_path.join("cover.jpg");
+        write_image(&webp, 900, 900, ImageFormat::WebP);
+        write_image(&still, 600, 600, ImageFormat::Jpeg);
+        let original_still = fs::read(&still).unwrap();
+        let album = AlbumDirectory {
+            path: album_path,
+            audio_files: Vec::new(),
+        };
+        let preflight =
+            inspect_local_preflight(&album, &Config::default(), &Range::default(), &cache);
+        assert_eq!(preflight.action, LocalPreflightAction::Compare);
+        assert_eq!(
+            preflight.candidate.unwrap().downloaded.candidate.source,
+            "webpstill"
+        );
+        assert_eq!(fs::read(&still).unwrap(), original_still);
+        assert!(preflight.generated_destination.unwrap().starts_with(&cache));
     }
 
     #[test]

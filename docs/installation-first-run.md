@@ -46,10 +46,12 @@ Setup displays the real error instead of silently continuing with defaults.
 
 1. In Setup, choose the Music Library.
 2. Choose the SQLite/database directory; it owns `splined.db`.
-3. Enable **Shared/network SQLite** only when Python/Docker owns that same
-   inventory. Leave it disabled for an independent Windows database. The extra
-   Windows `.client-lock` is optional and off by default, including on the
-   startup Setup screen when a shared database cannot be opened.
+3. Enable **Shared/network SQLite** only after reading the
+   [shared-database guide](splined-media-database.md#before-enabling-shared-mode)
+   and confirming every client uses the same physical database and reliable
+   cross-host locks. Leave it disabled for an independent Windows database.
+   The extra Windows `.client-lock` is optional and off by default; enable it
+   when every client can acquire it, and never refresh from two clients at once.
 4. Choose separate temporary cache, log, and credential directories.
 5. Review ignored subdirectories, then select **Save & Open Settings**. The
    button shows progress while the initial library is loaded; any error stays
@@ -89,20 +91,20 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, `SPLINED (All OS) and GHCR` builds the x64 Windows executable
+For maintainers, `01. Full Release - Build Selected OS and Publish` builds the x64 Windows executable
 once. The same `splined.exe` feeds the Portable ZIP
-and, when **Microsoft Store** is enabled, the unsigned Store MSIX. Portable and
+and, when either Store mode is selected, the unsigned Store MSIX. Portable and
 selected Store validation must both succeed before the numeric release tag is
-created. After the GitHub Release and GHCR publish, the workflow automatically
-stages the MSIX, preserves the existing Store submission metadata, updates only
-the en-US Store Highlights, and submits it for Microsoft processing. The MSIX
+created. After the GitHub Release, the selected Store mode stages the MSIX,
+preserves the existing Store submission metadata, updates only the en-US Store
+Highlights, and either stops as a draft or submits for certification. The MSIX
 is retained with `STORE-HIGHLIGHTS.txt` and its `STORE-SUBMISSION.json` history
 audit in the Actions-only
 `splined-windows-store-submission` artifact; it is not an end-user installer or
 a normal GitHub Release download. Development identity and signing use a
 separate temporary QA layout and cannot mutate the Store artifact.
-`SPLINED (Tagged) > MS Store Package Resolution` rebuilds a package without
-submitting it; `SPLINED > MS Store Publish & Update` publishes an existing tag.
+`02. Store Recovery - Tagged Draft or Update` rebuilds and stages or submits
+an existing tagged package, according to the explicitly selected Store mode.
 See the [release automation guide](release-automation.md) and
 [Microsoft Store Windows channel](windows-store.md) for the live product,
 identity, and update-publication procedure.

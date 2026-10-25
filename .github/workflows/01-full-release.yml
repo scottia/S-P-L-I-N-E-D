@@ -1,33 +1,46 @@
-name: SPLINED (All OS) and GHCR
+name: 01. Full Release - Build Selected OS and Publish
 
 on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Optional numeric version; blank selects 2.0.0 from 1.0.99, then the next patch"
+        description: "FULL RELEASE: creates a tag, GitHub Release, and GHCR image. Store submission needs separate confirmation. Blank selects the next version."
         required: false
         default: ""
         type: string
       platform:
-        description: "Release platform"
+        description: "Build target; Windows or All can also build and submit a Store package."
         required: true
         default: "Windows"
         type: choice
         options:
-          - "Windows"
-          - "Ubuntu"
-          - "macOS"
           - "All"
+          - "Windows"
+          - "macOS"
+          - "Ubuntu"
       extended_windows_validation:
         description: "Run the full Rust/Slint Windows regression suite before packaging"
         required: false
         default: false
         type: boolean
-      microsoft_store:
-        description: "Build, validate, and submit Microsoft Store update"
+      store_submit_update:
+        description: "RISK: Submit Update/No Draft - stage package and immediately submit for certification. No manual draft review."
         required: false
-        default: true
+        default: false
         type: boolean
+      store_submit_draft:
+        description: "RISK: Submit Draft/No Update - stage package and Highlights, then stop for manual Partner Center review."
+        required: false
+        default: false
+        type: boolean
+      release_confirmation:
+        description: "RISK: creates a new version, tag, GitHub Release, and GHCR image. Choose Create release now to proceed."
+        required: true
+        default: "Stop - no release"
+        type: choice
+        options:
+          - "Stop - no release"
+          - "Create release now"
 
 permissions:
   contents: read
@@ -51,6 +64,35 @@ jobs:
       base: ${{ steps.release.outputs.base }}
 
     steps:
+      - name: Require explicit release and nonconflicting Store choices before any release work
+        shell: bash
+        env:
+          RELEASE_CONFIRMATION: ${{ inputs.release_confirmation }}
+          STORE_UPDATE: ${{ inputs.store_submit_update }}
+          STORE_DRAFT: ${{ inputs.store_submit_draft }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          EXTENDED_WINDOWS_VALIDATION: ${{ inputs.extended_windows_validation }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_CONFIRMATION" != "Create release now" ]; then
+            echo "::error title=Release not confirmed::Select 'Create release now' to authorize a version, tag, GitHub Release, and GHCR publication."
+            exit 1
+          fi
+          if [ "$STORE_UPDATE" = true ] && [ "$STORE_DRAFT" = true ]; then
+            echo "::error title=Conflicting Store choices::Select only one Store mode."
+            exit 1
+          fi
+          if { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; } &&
+             [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
+            echo "::error title=Windows build required::Store publication requires Windows or All."
+            exit 1
+          fi
+          if [ "$EXTENDED_WINDOWS_VALIDATION" = true ] &&
+             [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
+            echo "::error title=Windows validation unavailable::Strict Rust/Slint validation requires Windows or All."
+            exit 1
+          fi
+
       - name: Require main branch dispatch
         shell: bash
         run: |
@@ -469,7 +511,7 @@ jobs:
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
       - name: Install pinned upstream WinAppCli for Store packaging
-        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -485,7 +527,7 @@ jobs:
 
       - name: Build and strictly validate unsigned production Store MSIX from release binaries
         id: store-package
-        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -508,7 +550,7 @@ jobs:
           "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package
-        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -530,7 +572,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload internal Store package artifact
-        if: ${{ inputs.microsoft_store && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: splined-windows-store-package
@@ -546,7 +588,7 @@ jobs:
           - Cargo dependency cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
-          - Microsoft Store submission selected: ``${{ inputs.microsoft_store }}``
+          - Microsoft Store update: ``${{ inputs.store_submit_update }}``; draft: ``${{ inputs.store_submit_draft }}``
           - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
@@ -930,21 +972,19 @@ jobs:
           docker push "$IMAGE_NAME:latest"
 
   publish-store:
-    name: Publish Microsoft Store update
+    name: Stage or submit Microsoft Store package
     needs:
       - prepare-release
       - generate-release-notes
       - publish-release
-      - publish-ghcr
     if: >-
       ${{
         always() &&
-        inputs.microsoft_store &&
+        (inputs.store_submit_update || inputs.store_submit_draft) &&
         (inputs.platform == 'Windows' || inputs.platform == 'All') &&
         needs.prepare-release.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&
-        needs.publish-release.result == 'success' &&
-        needs.publish-ghcr.result == 'success'
+        needs.publish-release.result == 'success'
       }}
     runs-on: windows-latest
     concurrency:
@@ -1063,21 +1103,24 @@ jobs:
             store-submission/STORE-SUBMISSION.json
           if-no-files-found: error
 
-      - name: Stage package, update en-US Store Highlights, and submit
+      - name: Stage package and Highlights; submit only in Update mode
         shell: pwsh
         env:
+          STORE_DRAFT: ${{ inputs.store_submit_draft }}
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
           AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
           AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
           SELLER_ID: ${{ secrets.SELLER_ID }}
         run: |
           $ErrorActionPreference = "Stop"
+          $draftOnly = $env:STORE_DRAFT -eq 'true'
           & windows/package/Publish-StoreUpdate.ps1 `
             -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
             -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
             -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `
             -ExpectedVersion ${{ needs.prepare-release.outputs.version }} `
-            -ProductId 9P8G4GMBBVBS
+            -ProductId 9P8G4GMBBVBS `
+            -DraftOnly:$draftOnly
 
   release-summary:
     name: Release summary
@@ -1099,7 +1142,8 @@ jobs:
         shell: bash
         env:
           RELEASE_PLATFORM: ${{ inputs.platform }}
-          MICROSOFT_STORE: ${{ inputs.microsoft_store }}
+          STORE_UPDATE: ${{ inputs.store_submit_update }}
+          STORE_DRAFT: ${{ inputs.store_submit_draft }}
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           WINDOWS_RESULT: ${{ needs.build-windows.result }}
           UBUNTU_RESULT: ${{ needs.build-ubuntu.result }}
@@ -1157,10 +1201,10 @@ jobs:
           expect_result "GHCR publication" "$GHCR_RESULT" success
 
           if { [ "$RELEASE_PLATFORM" = Windows ] || [ "$RELEASE_PLATFORM" = All ]; } &&
-             [ "$MICROSOFT_STORE" = true ]; then
-            expect_result "Microsoft Store submission" "$STORE_RESULT" success
+             { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; }; then
+            expect_result "Microsoft Store selected mode" "$STORE_RESULT" success
           else
-            expect_result "Microsoft Store submission" "$STORE_RESULT" skipped
+            expect_result "Microsoft Store selected mode" "$STORE_RESULT" skipped
           fi
 
           if [ "$failures" -ne 0 ]; then
@@ -1185,9 +1229,13 @@ jobs:
             echo "- GitHub Release: published"
             echo "- GHCR: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
             echo "- GHCR latest: \`ghcr.io/scottia/splined:latest\`"
-            echo "- Microsoft Store selected: \`${{ inputs.microsoft_store }}\`"
+            echo "- Microsoft Store update: \`${{ inputs.store_submit_update }}\`; draft: \`${{ inputs.store_submit_draft }}\`"
             if [ "${{ needs.publish-store.result }}" = "success" ]; then
-              echo "- Microsoft Store: package and en-US Store Highlights accepted for processing"
+              if [ "${{ inputs.store_submit_draft }}" = true ]; then
+                echo "- Microsoft Store: package and Highlights staged as a draft; manual review required"
+              else
+                echo "- Microsoft Store: package and Highlights submitted for certification"
+              fi
             else
               echo "- Microsoft Store: not run (disabled or no Windows target selected)"
             fi
