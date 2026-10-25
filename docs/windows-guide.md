@@ -190,6 +190,11 @@ missing rows with a read-only enumeration of that one folder, for direct
 track-level reopen while retaining the parent Album's queue and completion authority.
 Completed track-art ledger entries are green; tracks without a completed entry
 are blue. Folder-level `cover.*` files are not used or counted.
+After a track finishes, SPLINED refreshes that fallback folder's track list
+without switching to the Albums tab. A deliberate top-level tab change clears
+the prior album focus. The Albums tab uses the Artist Overview layout for the
+selected album's artist, but shows only that album card; its EMBED Album action
+stages only that album.
 
 In Artist Overview, a fallback compilation has a vertical **COMPILED** strip. Its
 matching tracks appear directly beneath the selected card. **LAUNCH** can
@@ -388,18 +393,28 @@ when EMBED Thumbs was chosen. **Play Animated cover.webp Preview** in Artwork
 & Embedding is off by default. When on, an animated WebP plays in Selected
 Artwork while the Album is selected; it never embeds animation in audio tags.
 
-For a COMP fallback track, **EMBED Comp** can write the selected artwork
-directly; **EMBED Thumbs** is an optional in-memory preview of the preferred
-size. **Embed Existing** is also available immediately for an Existing source.
-Both actions embed at the configured preference size, including after an
-optional Upscale Preview; neither saves a compilation `cover.*`. An album
-without an active fallback track cannot use the write action. For an Artist
-Album, pressing **EMBED Thumbs** changes the action to purple **EMBED w/Cover**
-(or **EMBED** when using an Existing cover): the full-resolution `cover.*` is
-saved while a preference-sized copy is embedded in all supported album tracks.
-Without **EMBED Thumbs**, Artist Albums retain **WRITE Cover** or **Embed
-Existing**. Set **Embedded Thumbnail Preference** in Settings above Enhancement
-defaults (1200 pixels by default, 300–4000 allowed).
+For a COMP fallback track, **EMBED Comp** writes the selected artwork to that
+track at the configured thumbnail size; it does not save a compilation-folder
+`cover.*`. The Fallback tab opens a one-album overview and a track report:
+blue needs artwork, purple needs thumbnail repair, and green is complete.
+**LAUNCH COMP** processes pending tracks in sequence, while selecting a report
+track opens its own review. The report's preview control shows saved thumbs
+without enabling write actions. It reads only the selected track's saved thumb
+in the background and reuses the cached preview until that track changes.
+A missing MusicBrainz Album ID—not a Various
+Artists tag—is the fallback criterion.
+
+For an Artist Album, **EMBED Batch** immediately stages its selected cover or
+Upscale Preview, saving the full-resolution `cover.jpg`/`cover.png` first. No
+separate **WRITE Cover** press is needed. **Start All Staged** then embeds the
+prepared preference-sized thumbnail in every supported track. **EMBED All
+Albums** stages the focused artist's visible regular and featured albums with
+saved covers; COMP fallback albums remain track-scoped. Queue rows use purple
+for staged, orange for running, red for failure, green for completed, and blue
+when all existing tracks already have the preferred thumbnail dimensions.
+Blue reflects dimensions only, not image identity; starting that job still
+embeds the chosen cover. Set **Embedded Thumbnail Preference** in Settings
+(1200 pixels by default, 300–4000 allowed).
 
 ## Artwork editing and upscale
 
@@ -500,7 +515,9 @@ five saved-slot buttons; a saved-slot button asks whether to Apply or
 Overwrite. These preview actions never write artwork.
 
 **Theme Enhancements** shows all banner and album-frame rows without a nested
-scroll pane. Its larger, clickable OLED chroma wheel includes a broad yellow
+scroll pane. Its live sample is the same album-card component used in Artist
+Overview, showing the selected banner and frame colors. The larger, clickable
+OLED chroma wheel includes a broad yellow
 and gold range. A ring marks the most recently clicked color, and the selected
 swatch's hex value appears below the wheel. Drag across the wheel to preview
 nearby colors. The **Hue Range** bar rotates its visible spectrum, while the
