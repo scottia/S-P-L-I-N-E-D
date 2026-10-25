@@ -31,9 +31,7 @@ def ignored_signature(patterns: Iterable[str]) -> str:
 
 
 def should_ignore(name: str, patterns: Iterable[str]) -> bool:
-    """Apply built-in POSIX-hidden exclusion plus configured wildcard rules."""
-    if name.startswith("."):
-        return True
+    """Apply configured wildcard rules without hiding valid dot-prefixed music."""
     for pattern in patterns:
         value = str(pattern).strip()
         if not value:
@@ -248,7 +246,7 @@ class PickerIndex:
         self.close()
 
     def discover_artists(self) -> list[PickerArtist]:
-        """Enumerate only immediate non-hidden/non-excluded Artist folders."""
+        """Enumerate immediate Artist folders except configured exclusions."""
         try:
             with os.scandir(self.library_root) as iterator:
                 entries = sorted(iterator, key=lambda item: item.name.casefold())

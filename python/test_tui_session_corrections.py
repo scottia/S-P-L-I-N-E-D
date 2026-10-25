@@ -199,15 +199,17 @@ class CountScopeTests(unittest.TestCase):
 
 
 class HiddenDirectoryTests(unittest.TestCase):
-    def test_dot_directories_never_enter_direct_root_or_nested_inventory(self) -> None:
+    def test_dot_music_names_are_indexed_unless_explicitly_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "music"
             for artist in (
                 ".animatedartworkdownloader",
                 ".nomifo",
                 ".hidden",
+                ".38 Special",
                 "10,000 Maniacs",
                 "Aerosmith",
+                "Britney Spears",
                 "[videos]",
             ):
                 album = root / artist / "Album"
@@ -216,6 +218,16 @@ class HiddenDirectoryTests(unittest.TestCase):
             nested = root / "10,000 Maniacs" / ".private" / "Hidden Album"
             nested.mkdir(parents=True)
             (nested / "track.flac").write_bytes(b"audio")
+            dot_album = root / "Britney Spears" / "...Baby One More Time"
+            dot_album.mkdir(parents=True)
+            (dot_album / "track.flac").write_bytes(b"audio")
+            ignored_names = [
+                "[videos]",
+                ".animatedartworkdownloader",
+                ".nomifo",
+                ".hidden",
+                ".private",
+            ]
 
             with os.scandir(root) as iterator:
                 names = sorted(
@@ -223,15 +235,19 @@ class HiddenDirectoryTests(unittest.TestCase):
                     for entry in iterator
                     if not entry.is_symlink()
                     and entry.is_dir(follow_symlinks=False)
-                    and not splined.picker_should_ignore(entry.name, ["[videos]"])
+                    and not splined.picker_should_ignore(entry.name, ignored_names)
                 )
-            self.assertEqual(names, ["10,000 Maniacs", "Aerosmith"])
+            self.assertEqual(
+                names,
+                [".38 Special", "10,000 Maniacs", "Aerosmith", "Britney Spears"],
+            )
 
-            albums, ignored = splined.inventory(root, ["[videos]"])
+            albums, ignored = splined.inventory(root, ignored_names)
             self.assertEqual(
                 {album.path.parent.name for album in albums},
-                {"10,000 Maniacs", "Aerosmith"},
+                {".38 Special", "10,000 Maniacs", "Aerosmith", "Britney Spears"},
             )
+            self.assertIn(dot_album, {album.path for album in albums})
             self.assertTrue(any(path.name == ".private" for path in ignored))
 
 

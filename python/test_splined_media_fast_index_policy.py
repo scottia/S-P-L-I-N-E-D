@@ -13,6 +13,7 @@ from splined_media_fast_index_policy import (
     _discover_index_albums,
     _index_track_count,
 )
+from tui.picker_index import should_ignore
 
 
 @dataclass
@@ -27,7 +28,7 @@ class RepresentativeTrackIndexTests(unittest.TestCase):
     def test_discovery_keeps_one_track_path_and_counts_the_album(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "music"
-            album_path = root / "Artist" / "Album"
+            album_path = root / ".38 Special" / "...Baby One More Time"
             album_path.mkdir(parents=True)
             tracks = [
                 album_path / "01.flac",
@@ -47,7 +48,7 @@ class RepresentativeTrackIndexTests(unittest.TestCase):
                 TuiSessionExit=RuntimeError,
                 AUDIO_EXTENSIONS={".flac", ".mp3"},
                 AlbumDir=FakeAlbumDir,
-                should_ignore=lambda _name, _patterns: False,
+                should_ignore=should_ignore,
                 _is_inventory_local_art=lambda path, configured: (
                     path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
                     and path.stem.casefold().startswith(configured.casefold())
