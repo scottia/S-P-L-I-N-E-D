@@ -1118,6 +1118,20 @@ mod tests {
     }
 
     #[test]
+    fn webp_cover_can_supply_a_static_jpeg_embed_thumbnail() {
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(ImageBuffer::from_pixel(12, 12, Rgb([12, 90, 180])))
+            .write_to(&mut cursor, ImageFormat::WebP)
+            .unwrap();
+        let original = cursor.into_inner();
+        let thumb = prepare_embedded_thumbnail(&original, 300, StaticFormat::Jpeg).unwrap();
+        assert_eq!(image::guess_format(&thumb).unwrap(), ImageFormat::Jpeg);
+        let decoded = image::load_from_memory(&thumb).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (300, 300));
+        assert_eq!(image::guess_format(&original).unwrap(), ImageFormat::WebP);
+    }
+
+    #[test]
     fn wide_embedded_thumbnail_fits_instead_of_cropping_away_its_sides() {
         let source = ImageBuffer::from_fn(1600, 800, |x, _| {
             if !(200..1400).contains(&x) {

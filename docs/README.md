@@ -69,6 +69,11 @@ with the current product documentation.
 - [Linux portable instructions](../release/README-LINUX.txt)
 - [macOS portable instructions](../release/README-MACOS.txt)
 
+### Maintainer follow-ups
+
+- [Windows Setup follow-ups](windows-setup-follow-ups.md) — unreleased
+  first-run and shared-database wording items awaiting UI verification.
+
 ## Runtime map
 
 | Runtime | User interface | Configuration | Persistent state |

@@ -2,6 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 use tempfile::{Builder, NamedTempFile};
 
 static CREDENTIAL_PROTECTION_WARNING: AtomicBool = AtomicBool::new(false);
@@ -380,7 +381,21 @@ pub fn transform_existing_file<M, V>(
 ) -> Result<(), String>
 where
     M: FnOnce(&Path) -> Result<(), String>,
-    V: FnOnce(&Path) -> Result<(), String>,
+    V: Fn(&Path) -> Result<(), String>,
+{
+    transform_existing_file_with_staging(path, label, mutate, validate, is_remote_path(path))
+}
+
+fn transform_existing_file_with_staging<M, V>(
+    path: &Path,
+    label: &str,
+    mutate: M,
+    validate: V,
+    stage_locally: bool,
+) -> Result<(), String>
+where
+    M: FnOnce(&Path) -> Result<(), String>,
+    V: Fn(&Path) -> Result<(), String>,
 {
     if !path.is_file() {
         return Err(format!(
@@ -400,6 +415,42 @@ where
         .and_then(|extension| extension.to_str())
         .map(|extension| format!(".{extension}"))
         .unwrap_or_default();
+    if stage_locally {
+        // Tag libraries perform several seeks and rewrites. On an SMB share,
+        // do that work in the user's local temp directory, then make one
+        // validated same-directory copy for recoverable replacement.
+        let local_stage = Builder::new()
+            .prefix(".splined-local-stage-")
+            .suffix(&staged_suffix)
+            .tempfile_in(std::env::temp_dir())
+            .map_err(|error| format!("Unable to create local {label} stage: {error}"))?;
+        fs::copy(path, local_stage.path()).map_err(|error| {
+            format!(
+                "Unable to copy {label} file {} to local stage: {error}",
+                path.display()
+            )
+        })?;
+        mutate(local_stage.path())?;
+        validate(local_stage.path())?;
+        let mut staged = Builder::new()
+            .prefix(".splined-stage-")
+            .suffix(&staged_suffix)
+            .tempfile_in(parent)
+            .map_err(|error| format!("Unable to create staged {label} file: {error}"))?;
+        let mut input = fs::File::open(local_stage.path())
+            .map_err(|error| format!("Unable to open local {label} stage: {error}"))?;
+        std::io::copy(&mut input, &mut staged)
+            .map_err(|error| format!("Unable to copy prepared {label} to the library: {error}"))?;
+        staged
+            .flush()
+            .map_err(|error| format!("Unable to flush staged {label} file: {error}"))?;
+        staged
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("Unable to sync staged {label} file: {error}"))?;
+        validate(staged.path())?;
+        return install_staged_file(path, staged, label);
+    }
     let staged = Builder::new()
         .prefix(".splined-stage-")
         .suffix(&staged_suffix)
@@ -423,6 +474,129 @@ where
         .map_err(|error| format!("Unable to sync staged {label} file: {error}"))?;
     validate(staged.path())?;
     install_staged_file(path, staged, label)
+}
+
+#[cfg(windows)]
+fn is_remote_path(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
+    const DRIVE_REMOTE: u32 = 4;
+
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                let root = [letter as u16, b':' as u16, b'\\' as u16, 0];
+                unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOTE }
+            }
+            _ => false,
+        },
+        _ => path
+            .as_os_str()
+            .encode_wide()
+            .next()
+            .is_some_and(|first| first == b'\\' as u16),
+    }
+}
+
+#[cfg(not(windows))]
+fn is_remote_path(_path: &Path) -> bool {
+    false
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct StageCleanupReport {
+    pub removed: usize,
+    pub skipped_recent: usize,
+    pub skipped_busy: usize,
+    pub errors: usize,
+}
+
+/// Remove only old SPLINED audio stages from known album directories. This is
+/// intended to run in the background at startup, never on the UI thread.
+/// The age grace and exclusive-open check protect another client's active
+/// write on a shared music library.
+pub fn cleanup_stale_audio_stages(
+    album_directories: &[PathBuf],
+    minimum_age: Duration,
+) -> StageCleanupReport {
+    let mut report = StageCleanupReport::default();
+    let now = SystemTime::now();
+    for directory in album_directories {
+        let Ok(entries) = fs::read_dir(directory) else {
+            report.errors += 1;
+            continue;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                report.errors += 1;
+                continue;
+            };
+            if !entry
+                .file_name()
+                .to_str()
+                .is_some_and(is_splined_audio_stage_name)
+            {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                report.errors += 1;
+                continue;
+            };
+            if !file_type.is_file() || file_type.is_symlink() {
+                continue;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                report.errors += 1;
+                continue;
+            };
+            if !metadata
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age >= minimum_age)
+            {
+                report.skipped_recent += 1;
+                continue;
+            }
+            if !stage_is_exclusively_openable(&entry.path()) {
+                report.skipped_busy += 1;
+                continue;
+            }
+            match fs::remove_file(entry.path()) {
+                Ok(()) => report.removed += 1,
+                Err(_) => report.errors += 1,
+            }
+        }
+    }
+    report
+}
+
+fn is_splined_audio_stage_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    (lower.starts_with(".splined-stage-") || lower.starts_with(".splined-local-stage-"))
+        && [
+            ".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif",
+        ]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+}
+
+#[cfg(windows)]
+fn stage_is_exclusively_openable(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(path)
+        .is_ok()
+}
+
+#[cfg(not(windows))]
+fn stage_is_exclusively_openable(_path: &Path) -> bool {
+    false
 }
 
 fn install_staged_file(path: &Path, staged: NamedTempFile, label: &str) -> Result<(), String> {
@@ -604,6 +778,81 @@ mod tests {
 
         assert_eq!(fs::read(&path).unwrap(), b"updated");
         assert!(!backup_path(&path).exists());
+    }
+
+    #[test]
+    fn local_preparation_keeps_recoverable_album_replacement() {
+        let dir = TempDir::new().expect("temporary directory");
+        let track = dir.path().join("song.mp3");
+        fs::write(&track, b"original").expect("original track");
+        transform_existing_file_with_staging(
+            &track,
+            "audio tag",
+            |stage| {
+                assert_eq!(
+                    stage.extension().and_then(|value| value.to_str()),
+                    Some("mp3")
+                );
+                fs::write(stage, b"updated").map_err(|error| error.to_string())
+            },
+            |stage| {
+                (fs::read(stage).map_err(|error| error.to_string())? == b"updated")
+                    .then_some(())
+                    .ok_or_else(|| "invalid stage".to_string())
+            },
+            true,
+        )
+        .expect("local preparation should install");
+        assert_eq!(fs::read(&track).unwrap(), b"updated");
+        assert!(!backup_path(&track).exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn startup_cleanup_removes_only_old_splined_audio_stages() {
+        let dir = TempDir::new().expect("temporary directory");
+        let album = dir.path().join("Album");
+        fs::create_dir(&album).expect("album directory");
+        let stage = album.join(".splined-stage-orphan.mp3");
+        let song = album.join("01 - Song.mp3");
+        let image = album.join(".splined-stage-image.jpg");
+        fs::write(&stage, b"stage").expect("stage");
+        fs::write(&song, b"song").expect("song");
+        fs::write(&image, b"image").expect("image");
+
+        let protected = cleanup_stale_audio_stages(
+            std::slice::from_ref(&album),
+            Duration::from_secs(24 * 60 * 60),
+        );
+        assert_eq!(protected.removed, 0);
+        assert_eq!(protected.skipped_recent, 1);
+        let cleaned = cleanup_stale_audio_stages(std::slice::from_ref(&album), Duration::ZERO);
+        #[cfg(windows)]
+        assert_eq!(cleaned.removed, 1);
+        #[cfg(not(windows))]
+        assert_eq!(cleaned.removed, 0);
+        assert_eq!(song.exists(), true);
+        assert_eq!(image.exists(), true);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unc_audio_path_uses_local_preparation() {
+        assert!(is_remote_path(Path::new(r"\\server\share\song.mp3")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_cleanup_skips_a_stage_held_open_by_another_writer() {
+        let dir = TempDir::new().expect("temporary directory");
+        let stage = dir.path().join(".splined-stage-active.mp3");
+        fs::write(&stage, b"active").expect("stage");
+        let held = fs::File::open(&stage).expect("hold stage open");
+        let report = cleanup_stale_audio_stages(&[dir.path().to_path_buf()], Duration::ZERO);
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.skipped_busy, 1);
+        assert!(stage.exists());
+        drop(held);
     }
 
     #[test]

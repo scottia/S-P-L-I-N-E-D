@@ -46,10 +46,12 @@ Setup displays the real error instead of silently continuing with defaults.
 
 1. In Setup, choose the Music Library.
 2. Choose the SQLite/database directory; it owns `splined.db`.
-3. Enable **Shared/network SQLite** only when Python/Docker owns that same
-   inventory. Leave it disabled for an independent Windows database. The extra
-   Windows `.client-lock` is optional and off by default, including on the
-   startup Setup screen when a shared database cannot be opened.
+3. Enable **Shared/network SQLite** only after reading the
+   [shared-database guide](splined-media-database.md#before-enabling-shared-mode)
+   and confirming every client uses the same physical database and reliable
+   cross-host locks. Leave it disabled for an independent Windows database.
+   The extra Windows `.client-lock` is optional and off by default; enable it
+   when every client can acquire it, and never refresh from two clients at once.
 4. Choose separate temporary cache, log, and credential directories.
 5. Review ignored subdirectories, then select **Save & Open Settings**. The
    button shows progress while the initial library is loaded; any error stays

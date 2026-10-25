@@ -70,6 +70,24 @@ uses the published ignored-folder and cover-name policy instead of silently
 substituting its local settings. The two runtime configurations resolve
 `scan.cache_dir` to the same physical `splined.db` and enable `sqlite_shared`.
 
+### Before enabling shared mode
+
+Shared SQLite is an advanced choice, not required for a Windows-only library.
+Each client must point to the **same physical database**, map the same music
+files beneath its own library root, and use a share whose cross-host file locks
+have been verified. Do not copy independent databases over one another or
+refresh from two clients at once. Back up `splined.db` and the settings archive
+before changing the shared path or publisher. A 30-second busy timeout can
+wait for a transient SQLite lock; it cannot repair a disconnected share or
+replace cross-host coordination.
+
+The extra `.client-lock` is **recommended when every client can acquire it**.
+It is not a password or a stale-file marker: the OS lock is held only by a
+running process and is released when that process closes. If a client cannot
+acquire the extra lock on the chosen share, leave it disabled and avoid
+overlapping writers. SQLite's own locks still apply either way. Setup and
+Advanced Settings link to this guide before shared mode is saved.
+
 Local/default mode retains WAL and `synchronous=NORMAL`. Shared mode uses the
 rollback `DELETE` journal, `synchronous=FULL`, foreign keys, and a 30-second
 busy timeout. This prevents Linux from repeatedly forcing WAL while Windows
@@ -85,6 +103,13 @@ coordinate Windows with Python, so avoid overlapping cross-host writes.
 SQLite's rollback journal and 30-second busy timeout still apply. The optional
 sidecar depends on the shared filesystem honoring cross-host file locks; do not
 assume that a timeout substitutes for verified coordination.
+
+Python's configured `ignored_subs` patterns control which folders are excluded.
+A leading period alone is not an exclusion: `.38 Special` and
+`...Baby One More Time` are valid music-folder names. Explicitly list service
+folders such as `.nomifo` or `.animatedartworkdownloader` when they should be
+ignored. A shared refresh preserves the representative-track indexing policy:
+one track supplies an Album's index tags, rather than opening every track.
 
 An existing database establishes its canonical path namespace in
 `picker_inventory.signature_json`. For a cross-mounted shared database, build
@@ -319,9 +344,11 @@ SPLINED actions, such as processing an Album or adding/removing a bypass.
 
 ## Explicit Refresh
 
-`R` / Refresh is the external-library reconciliation boundary for Python and
-for an independent Windows database. With `sqlite_shared = true`, Python owns
-the rebuild and Windows Refresh reloads that published result.
+`R` / Refresh is the external-library reconciliation boundary for Python.
+Windows can explicitly refresh an existing shared index or build and refresh an
+independent local index. In a shared configuration, agree on one refresh
+publisher at a time; a normal Windows launch reads the published index rather
+than rebuilding it.
 
 An explicit refresh:
 
