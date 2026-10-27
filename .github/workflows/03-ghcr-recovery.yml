@@ -1,29 +1,32 @@
-name: 03. GHCR Recovery - Tagged Image and Ubuntu Asset
+name: 03. GHCR Recovery - Existing Published Release
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "RISK: rebuilds GHCR image for an existing numeric tag, adds a missing Ubuntu release asset, and refreshes git-cliff notes. No Store changes."
+        description: "RISK: recover missing GHCR tags for the latest existing published numeric release. Does not change GitHub Releases, tags, assets, or Store."
         required: true
         type: string
 
 permissions:
   contents: read
 
+# Serialize normal publication and recovery so Workflow 03 cannot race
+# Workflow 01 while it is publishing the authoritative GHCR tags.
 concurrency:
-  group: splined-ghcr-recovery-${{ inputs.version }}
+  group: splined-release-next-patch
   cancel-in-progress: false
 
 jobs:
-  publish-ghcr:
-    name: Publish tagged image and repair Ubuntu release asset
+  recover-ghcr:
+    name: Verify or recover existing release image tags
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
     env:
       IMAGE_NAME: ghcr.io/scottia/splined
+      IMAGE_SOURCE: https://github.com/scottia/S-P-L-I-N-E-D
       RELEASE_VERSION: ${{ inputs.version }}
 
     steps:
@@ -43,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: version must be an existing numeric release tag such as 1.0.71."
+            echo "ERROR: version must be an existing numeric release tag such as 2.0.3."
             exit 1
           fi
 
@@ -53,68 +56,29 @@ jobs:
           ref: refs/tags/${{ inputs.version }}
           fetch-depth: 0
 
-      - name: Checkout current authoritative release engine
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          path: .splined-release-engine
-          sparse-checkout: |
-            cliff.toml
-            release/Install-GitCliff.ps1
-            release/Generate-ReleaseNotes.ps1
-            release/templates
-
-      - name: Verify exact existing tag and GitHub Release
+      - name: Verify exact existing tag and published GitHub Release
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git fetch --force --tags origin
-          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")"
+          release_commit=$(git rev-parse HEAD)
+          test "$release_commit" = "$(git rev-parse "refs/tags/$RELEASE_VERSION^{commit}")"
+
           release=$(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease)
           test "$(jq -r '.tagName' <<< "$release")" = "$RELEASE_VERSION"
           test "$(jq -r '.isDraft' <<< "$release")" = false
           test "$(jq -r '.isPrerelease' <<< "$release")" = false
+
           latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')
           if [ "$latest" != "$RELEASE_VERSION" ]; then
             echo "::error title=Older release refused::Recovery would move GHCR latest backward from $latest to $RELEASE_VERSION."
             exit 1
           fi
 
-      - name: Install and verify git-cliff 2.14.2
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & .splined-release-engine/release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
-          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
-            throw "The release-note engine must be git-cliff 2.14.2."
-          }
-
-      - name: Render GitHub release notes from the authoritative git-cliff context
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & .splined-release-engine/release/Generate-ReleaseNotes.ps1 `
-            -Version $env:RELEASE_VERSION `
-            -RepositoryRoot . `
-            -ConfigPath .splined-release-engine/cliff.toml `
-            -GitHubTemplatePath .splined-release-engine/release/templates/github-release.tera `
-            -OutputDirectory release-notes
-
-      - name: Build exact release Docker image
-        shell: bash
-        run: |
-          set -euo pipefail
-          RELEASE_COMMIT=$(git rev-parse HEAD)
-          docker build --pull \
-            --build-arg SPLINED_BUILD_CHANNEL=release \
-            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
-            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
-            --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
-            --tag "$IMAGE_NAME:v$RELEASE_VERSION" \
-            --tag "$IMAGE_NAME:latest" \
-            ./python
+          echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
         shell: bash
@@ -124,103 +88,218 @@ jobs:
           set -euo pipefail
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Publish version and latest tags
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker push "$IMAGE_NAME:v$RELEASE_VERSION"
-          docker push "$IMAGE_NAME:latest"
-
-      - name: Check whether Ubuntu asset already exists
-        id: ubuntu-asset
+      - name: Inspect existing tags, digests, and OCI provenance
+        id: inspect
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ steps.release.outputs.commit }}
         run: |
           set -euo pipefail
-          assets=$(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
-          if grep -Fxq 'splined-linux-x86_64.tar.gz' <<< "$assets"; then
-            echo 'missing=false' >> "$GITHUB_OUTPUT"
+
+          VERSION_REF="$IMAGE_NAME:v$RELEASE_VERSION"
+          LATEST_REF="$IMAGE_NAME:latest"
+
+          fail_closed() {
+            local title=$1
+            local message=$2
+            {
+              echo "## SPLINED GHCR recovery blocked"
+              echo
+              echo "- Status: failed closed"
+              echo "- Release: \`$RELEASE_VERSION\`"
+              echo "- Exact release commit: \`$EXPECTED_COMMIT\`"
+              echo "- Reason: $message"
+              echo "- GitHub Release, tag, and assets modified: \`no\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=$title::$message"
+            exit 1
+          }
+
+          inspect_tag() {
+            local prefix=$1
+            local reference=$2
+            local pull_log="$RUNNER_TEMP/ghcr-${prefix,,}-pull.log"
+
+            if docker pull "$reference" >"$pull_log" 2>&1; then
+              cat "$pull_log"
+              local image_json digest version revision source
+              image_json=$(docker image inspect "$reference" --format '{{json .}}')
+              digest=$(jq -r --arg image "$IMAGE_NAME" \
+                '.RepoDigests[]? | select(startswith($image + "@")) | split("@")[1]' \
+                <<< "$image_json" | sed -n '1p')
+              version=$(jq -r '.Config.Labels["org.opencontainers.image.version"] // ""' <<< "$image_json")
+              revision=$(jq -r '.Config.Labels["org.opencontainers.image.revision"] // ""' <<< "$image_json")
+              source=$(jq -r '.Config.Labels["org.opencontainers.image.source"] // ""' <<< "$image_json")
+
+              if [ -z "$digest" ] || [ -z "$version" ] || [ -z "$revision" ] || [ -z "$source" ]; then
+                fail_closed "GHCR provenance unavailable" \
+                  "Provenance cannot be verified for $reference because its digest or required OCI labels are missing."
+              fi
+              if [ "$version" != "$RELEASE_VERSION" ] || \
+                 [ "$revision" != "$EXPECTED_COMMIT" ] || \
+                 [ "$source" != "$IMAGE_SOURCE" ]; then
+                fail_closed "GHCR provenance conflict" \
+                  "Existing image $reference has unexpected source, version, or revision provenance; it will not be overwritten."
+              fi
+
+              printf -v "${prefix}_STATE" '%s' present
+              printf -v "${prefix}_DIGEST" '%s' "$digest"
+              return
+            fi
+
+            cat "$pull_log"
+            if grep -Eiq '(manifest unknown|no such manifest|name unknown|not found)' "$pull_log"; then
+              printf -v "${prefix}_STATE" '%s' missing
+              printf -v "${prefix}_DIGEST" '%s' ''
+              return
+            fi
+
+            fail_closed "GHCR inspection failed" \
+              "Provenance cannot be verified for $reference because the registry lookup failed unexpectedly."
+          }
+
+          inspect_tag VERSION "$VERSION_REF"
+          inspect_tag LATEST "$LATEST_REF"
+
+          if [ "$VERSION_STATE" = present ] && [ "$LATEST_STATE" = present ]; then
+            if [ "$VERSION_DIGEST" != "$LATEST_DIGEST" ]; then
+              fail_closed "GHCR digest conflict" \
+                "Existing version and latest tags have different digests; neither tag will be overwritten."
+            fi
+            action=noop
+            source_digest=$VERSION_DIGEST
+          elif [ "$VERSION_STATE" = present ]; then
+            action=recover-latest
+            source_digest=$VERSION_DIGEST
+          elif [ "$LATEST_STATE" = present ]; then
+            action=recover-version
+            source_digest=$LATEST_DIGEST
           else
-            echo 'missing=true' >> "$GITHUB_OUTPUT"
-          fi
-          if grep -Fxq 'splined-linux-x86_64.sha256' <<< "$assets"; then
-            echo 'checksum_missing=false' >> "$GITHUB_OUTPUT"
-          else
-            echo 'checksum_missing=true' >> "$GITHUB_OUTPUT"
+            fail_closed "GHCR artifact equivalence unavailable" \
+              "Both tags are missing. Workflow 01 recorded no published image digest or signed attestation, and its historical build inputs cannot be proven identical; recovery will not rebuild or publish a potentially different image. Create a new versioned release."
           fi
 
-      - name: Install stable Rust for missing Ubuntu asset
-        if: ${{ steps.ubuntu-asset.outputs.missing == 'true' }}
+          {
+            echo "version_state=$VERSION_STATE"
+            echo "version_digest=$VERSION_DIGEST"
+            echo "latest_state=$LATEST_STATE"
+            echo "latest_digest=$LATEST_DIGEST"
+            echo "source_digest=$source_digest"
+            echo "action=$action"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Reuse verified image for missing version tag
+        if: ${{ steps.inspect.outputs.action == 'recover-version' }}
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:v$RELEASE_VERSION"
 
-      - name: Build exact tagged Ubuntu release asset
-        if: ${{ steps.ubuntu-asset.outputs.missing == 'true' }}
+      - name: Reuse verified image for missing latest tag
+        if: ${{ steps.inspect.outputs.action == 'recover-latest' }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release
-          mkdir -p release-package release-assets
-          cp target/release/splined release-package/splined
-          cp release/README-LINUX.txt release-package/README-LINUX.txt
-          chmod +x release-package/splined
-          tar -czf release-assets/splined-linux-x86_64.tar.gz -C release-package splined README-LINUX.txt
+          docker tag "$IMAGE_NAME:v$RELEASE_VERSION" "$IMAGE_NAME:latest"
 
-      - name: Add missing Ubuntu asset without replacing existing assets
-        if: ${{ steps.ubuntu-asset.outputs.missing == 'true' }}
+      - name: Publish only missing GHCR tags
+        if: ${{ steps.inspect.outputs.action != 'noop' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          RECOVERY_ACTION: ${{ steps.inspect.outputs.action }}
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_VERSION" release-assets/splined-linux-x86_64.tar.gz --repo "$GITHUB_REPOSITORY"
 
-      - name: Retrieve existing Ubuntu asset when only its checksum is missing
-        if: ${{ steps.ubuntu-asset.outputs.missing == 'false' && steps.ubuntu-asset.outputs.checksum_missing == 'true' }}
+          VERSION_REF="$IMAGE_NAME:v$RELEASE_VERSION"
+          LATEST_REF="$IMAGE_NAME:latest"
+
+          assert_remote_tag_missing() {
+            local reference=$1
+            local inspect_log="$RUNNER_TEMP/ghcr-pre-push-$(echo "$reference" | tr '/:' '--').log"
+            if docker manifest inspect "$reference" >"$inspect_log" 2>&1; then
+              cat "$inspect_log"
+              echo "::error title=GHCR tag appeared during recovery::$reference now exists; refusing a possible overwrite. Rerun recovery to verify it."
+              exit 1
+            fi
+            cat "$inspect_log"
+            if ! grep -Eiq '(manifest unknown|no such manifest|name unknown|not found)' "$inspect_log"; then
+              echo "::error title=GHCR pre-push inspection failed::Could not prove $reference is absent; refusing to publish."
+              exit 1
+            fi
+          }
+
+          case "$RECOVERY_ACTION" in
+            recover-version)
+              assert_remote_tag_missing "$VERSION_REF"
+              docker push "$VERSION_REF"
+              ;;
+            recover-latest)
+              assert_remote_tag_missing "$LATEST_REF"
+              docker push "$LATEST_REF"
+              ;;
+            *)
+              echo "ERROR: unsupported recovery action: $RECOVERY_ACTION"
+              exit 1
+              ;;
+          esac
+
+      - name: Verify final tags, digests, and provenance
+        id: verify
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          EXPECTED_COMMIT: ${{ steps.release.outputs.commit }}
+          RECOVERY_ACTION: ${{ steps.inspect.outputs.action }}
         run: |
           set -euo pipefail
-          mkdir -p release-assets
-          gh release download "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
-            --pattern 'splined-linux-x86_64.tar.gz' --dir release-assets
 
-      - name: Add missing Ubuntu asset checksum
-        if: ${{ steps.ubuntu-asset.outputs.checksum_missing == 'true' }}
+          verify_tag() {
+            local reference=$1
+            docker pull "$reference" >&2
+            local image_json digest version revision source
+            image_json=$(docker image inspect "$reference" --format '{{json .}}')
+            digest=$(jq -r --arg image "$IMAGE_NAME" \
+              '.RepoDigests[]? | select(startswith($image + "@")) | split("@")[1]' \
+              <<< "$image_json" | sed -n '1p')
+            version=$(jq -r '.Config.Labels["org.opencontainers.image.version"] // ""' <<< "$image_json")
+            revision=$(jq -r '.Config.Labels["org.opencontainers.image.revision"] // ""' <<< "$image_json")
+            source=$(jq -r '.Config.Labels["org.opencontainers.image.source"] // ""' <<< "$image_json")
+            if [ -z "$digest" ] || [ "$version" != "$RELEASE_VERSION" ] || \
+               [ "$revision" != "$EXPECTED_COMMIT" ] || [ "$source" != "$IMAGE_SOURCE" ]; then
+              echo "::error title=GHCR final verification failed::Digest or OCI provenance is invalid for $reference."
+              exit 1
+            fi
+            printf '%s' "$digest"
+          }
+
+          version_digest=$(verify_tag "$IMAGE_NAME:v$RELEASE_VERSION")
+          latest_digest=$(verify_tag "$IMAGE_NAME:latest")
+          if [ "$version_digest" != "$latest_digest" ]; then
+            echo "::error title=GHCR final digest conflict::Version and latest tags do not resolve to the same digest."
+            exit 1
+          fi
+
+          {
+            echo "digest=$version_digest"
+            echo "action=$RECOVERY_ACTION"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: GHCR recovery summary
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          (cd release-assets && sha256sum splined-linux-x86_64.tar.gz > splined-linux-x86_64.sha256)
-          gh release upload "$RELEASE_VERSION" release-assets/splined-linux-x86_64.sha256 --repo "$GITHUB_REPOSITORY"
-
-      - name: Replace existing GitHub Release body with git-cliff notes
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh release edit "$RELEASE_VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --notes-file release-notes/GITHUB-RELEASE.md
-
-      - name: GHCR resolution summary
-        shell: bash
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RECOVERY_ACTION: ${{ steps.verify.outputs.action }}
+          VERIFIED_DIGEST: ${{ steps.verify.outputs.digest }}
         run: |
           set -euo pipefail
           {
-            echo "## SPLINED Docker/GHCR resolution complete"
+            echo "## SPLINED GHCR recovery complete"
             echo
-            echo "- Existing tag: \`$RELEASE_VERSION\`"
-            echo "- Exact release commit: \`$(git rev-parse HEAD)\`"
-            echo "- GHCR: \`$IMAGE_NAME:v$RELEASE_VERSION\` and \`$IMAGE_NAME:latest\`"
-            echo "- Existing GitHub Release body: refreshed from git-cliff context"
-            echo "- Release or tag created: \`no\`"
+            echo "- Existing published release: \`$RELEASE_VERSION\`"
+            echo "- Exact release commit: \`$RELEASE_COMMIT\`"
+            echo "- Recovery action: \`$RECOVERY_ACTION\`"
+            echo "- Verified manifest digest: \`$VERIFIED_DIGEST\`"
+            echo "- Provenance: source, version, and revision OCI labels verified"
+            echo "- Signed provenance: not asserted; Workflow 01 does not publish a separately verifiable GHCR attestation"
+            echo "- GitHub Release, tag, and assets modified: \`no\`"
             echo "- Microsoft Store touched: \`no\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -49,15 +49,13 @@ fn git_cliff_is_the_shared_pinned_release_note_engine() {
     assert!(store.contains("STORE-HIGHLIGHTS.txt"));
     assert!(store.contains("STORE-SUBMISSION.json"));
     assert!(config.contains("🛍️ Microsoft Store"));
-    for path in [FULL, STORE, GHCR] {
+    for path in [FULL, STORE] {
         let workflow = source(path);
         assert!(workflow.contains("Install-GitCliff.ps1"), "{path}");
         assert!(workflow.contains("git-cliff 2.14.2"), "{path}");
         assert!(workflow.contains("cliff.toml"), "{path}");
     }
-    for path in [FULL, GHCR] {
-        assert!(source(path).contains("Generate-ReleaseNotes.ps1"), "{path}");
-    }
+    assert!(source(FULL).contains("Generate-ReleaseNotes.ps1"));
     for path in [FULL, STORE] {
         assert!(
             source(path).contains("Generate-StoreHighlights.ps1"),
@@ -131,22 +129,121 @@ fn store_helper_stages_once_and_submits_only_when_not_draft() {
     assert_eq!(helper.matches("& msstore publish ").count(), 1);
     assert!(helper.contains("[switch]$DraftOnly"));
     assert!(helper.contains("if ($DraftOnly)"));
-    assert!(helper.contains("else {\n    $summaryTitle = \"submitted\"\n    & msstore submission publish"));
+    assert!(
+        helper.contains(
+            "else {\n    $summaryTitle = \"submitted\"\n    & msstore submission publish"
+        )
+    );
     assert!(helper.contains("1500-character"));
     assert!(helper.contains("highlights_sha256"));
 }
 
 #[test]
-fn ghcr_recovery_uses_existing_tag_and_adds_missing_ubuntu_asset_only() {
+fn ghcr_recovery_is_release_immutable_and_existing_release_only() {
     let workflow = source(GHCR);
     assert!(workflow.contains("ref: refs/tags/${{ inputs.version }}"));
     assert!(workflow.contains("gh release view \"$RELEASE_VERSION\""));
-    assert!(workflow.contains("docker push \"$IMAGE_NAME:v$RELEASE_VERSION\""));
-    assert!(workflow.contains("splined-linux-x86_64.tar.gz"));
-    assert!(workflow.contains("cargo build --locked --release"));
-    assert!(workflow.contains("gh release upload \"$RELEASE_VERSION\""));
-    assert!(!workflow.contains("--clobber"));
-    assert!(!workflow.contains("gh release create"));
-    assert!(!workflow.contains("git tag -a"));
-    assert!(!workflow.to_ascii_lowercase().contains("msstore"));
+    assert!(workflow.contains("test \"$(jq -r '.isDraft' <<< \"$release\")\" = false"));
+    assert!(workflow.contains("test \"$(jq -r '.isPrerelease' <<< \"$release\")\" = false"));
+    assert!(workflow.contains("GitHub Release, tag, and assets modified: \\`no\\`"));
+
+    for forbidden in [
+        "gh release upload",
+        "gh release download",
+        "gh release edit",
+        "gh release create",
+        "gh release delete",
+        "splined-linux-x86_64",
+        "git tag -a",
+        "git push",
+        "--clobber",
+        "Generate-ReleaseNotes.ps1",
+        "Install-GitCliff.ps1",
+        "msstore",
+    ] {
+        assert!(
+            !workflow
+                .to_ascii_lowercase()
+                .contains(&forbidden.to_ascii_lowercase()),
+            "recovery contains forbidden release mutation: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn ghcr_recovery_is_idempotent_and_fails_closed_on_conflicts() {
+    let workflow = source(GHCR);
+    for action in [
+        "action=noop",
+        "action=recover-version",
+        "action=recover-latest",
+    ] {
+        assert!(
+            workflow.contains(action),
+            "missing recovery action {action}"
+        );
+    }
+    for provenance in [
+        "org.opencontainers.image.source",
+        "org.opencontainers.image.version",
+        "org.opencontainers.image.revision",
+        "Provenance cannot be verified",
+    ] {
+        assert!(
+            workflow.contains(provenance),
+            "missing provenance check {provenance}"
+        );
+    }
+    assert!(workflow.contains("Existing version and latest tags have different digests"));
+    assert!(workflow.contains("neither tag will be overwritten"));
+    assert!(workflow.contains("assert_remote_tag_missing"));
+    assert!(workflow.contains("refusing a possible overwrite"));
+    assert!(workflow.contains("if: ${{ steps.inspect.outputs.action != 'noop' }}"));
+    assert!(workflow.contains("docker push \"$VERSION_REF\""));
+    assert!(workflow.contains("docker push \"$LATEST_REF\""));
+    assert!(workflow.contains("Both tags are missing"));
+    assert!(workflow.contains("historical build inputs cannot be proven identical"));
+    assert!(
+        workflow.contains("recovery will not rebuild or publish a potentially different image")
+    );
+    assert!(!workflow.contains("action=build-both"));
+    assert!(!workflow.contains("docker build"));
+
+    let recover_version = workflow
+        .split("            recover-version)")
+        .nth(1)
+        .expect("recover-version branch")
+        .split("            recover-latest)")
+        .next()
+        .unwrap();
+    assert!(recover_version.contains("assert_remote_tag_missing \"$VERSION_REF\""));
+    assert!(recover_version.contains("docker push \"$VERSION_REF\""));
+    assert!(!recover_version.contains("docker push \"$LATEST_REF\""));
+
+    let recover_latest = workflow
+        .split("            recover-latest)")
+        .nth(1)
+        .expect("recover-latest branch")
+        .split("            *)")
+        .next()
+        .unwrap();
+    assert!(recover_latest.contains("assert_remote_tag_missing \"$LATEST_REF\""));
+    assert!(recover_latest.contains("docker push \"$LATEST_REF\""));
+    assert!(!recover_latest.contains("docker push \"$VERSION_REF\""));
+}
+
+#[test]
+fn workflow_one_remains_the_sole_normal_ghcr_publisher() {
+    let full = source(FULL);
+    let recovery = source(GHCR);
+    assert!(full.contains("  publish-ghcr:"));
+    assert!(full.contains("needs.publish-release.result == 'success'"));
+    assert!(full.contains("docker push \"$IMAGE_NAME:v${RELEASE_VERSION}\""));
+    assert!(full.contains("docker push \"$IMAGE_NAME:latest\""));
+    assert!(recovery.contains("group: splined-release-next-patch"));
+    assert!(recovery.contains("Older release refused"));
+    assert!(recovery.contains("action=noop"));
+    assert!(!recovery.contains("release_version:"));
+    assert!(!recovery.contains("gh release create"));
+    assert!(!recovery.contains("git tag -a"));
 }

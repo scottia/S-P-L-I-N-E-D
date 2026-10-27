@@ -1,15 +1,15 @@
 # Release automation
 
 SPLINED exposes three manual GitHub Actions workflows. Only workflow 01 creates
-a version, tag, or GitHub Release. All three use pinned `git-cliff 2.14.2` for
-release notes or Store Highlights; no workflow is run merely by editing these
-files.
+a version, tag, or GitHub Release or performs normal GHCR publication.
+Workflows 01 and 02 use pinned `git-cliff 2.14.2` for release notes or Store
+Highlights; no workflow is run merely by editing these files.
 
 | Workflow | Use | Effect |
 |---|---|---|
 | `01. Full Release - Build Selected OS and Publish` | New versioned release from `main`; choose All, Windows, macOS, or Ubuntu. | Builds the selected OS targets, creates the version commit and numeric tag only after selected builds pass, publishes GitHub Release and GHCR, and optionally stages or submits Store. |
 | `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
-| `03. GHCR Recovery - Tagged Image and Ubuntu Asset` | Repair GHCR for an **existing** numeric Git tag if workflow 01's GHCR path failed. | Rebuilds/pushes version and latest GHCR images, adds a missing Ubuntu asset to that existing GitHub Release, and refreshes git-cliff notes. Does not touch Store. |
+| `03. GHCR Recovery - Existing Published Release` | Safely recover missing GHCR tags for the latest **existing published** numeric release if workflow 01's GHCR path failed. | Verifies existing tag digests and OCI source/version/revision labels, performs no work when both tags are valid, and publishes only missing GHCR tags. Never changes a GitHub Release, release asset, Git tag, version, or Store submission. |
 
 The previous status, authentication-diagnostic, package-only, publish-only, and
 one-time 2.0.0 workflows have been retired. GitHub may retain their historical
@@ -73,15 +73,40 @@ not overwrite or cancel that draft. Inspect the Partner Center draft and
 submit or resolve it there before rerunning recovery. This is deliberate:
 an ambiguous active draft cannot safely be identified as a retry target.
 
-## Workflow 03: GHCR and Ubuntu recovery
+## Workflow 03: GHCR-only recovery
 
-Enter the existing numeric tag `X.Y.Z`. Workflow 03 requires its published,
-non-prerelease GitHub Release, rebuilds the tagged image, and pushes both
-`ghcr.io/scottia/splined:vX.Y.Z` and `:latest`. If the Ubuntu tarball is absent
-from that same release, it builds the exact tagged source and uploads the
-tarball plus a companion SHA-256 file. It never replaces an existing Ubuntu
-asset or creates a second release. It refreshes the existing release body with
-the shared git-cliff generator.
+Enter the existing numeric tag `X.Y.Z`. Workflow 03 requires that tag to have a
+published, non-prerelease GitHub Release and refuses any version other than the
+current latest release. It shares workflow 01's release concurrency group so
+normal publication and recovery cannot race each other.
+
+Workflow 01 remains the sole normal GHCR publisher. Workflow 03 inspects
+`ghcr.io/scottia/splined:vX.Y.Z` and `:latest` before doing any recovery:
+
+- If both tags exist, have the expected source/version/revision OCI labels, and
+  resolve to the same manifest digest, recovery is a no-op.
+- If exactly one tag is missing, the verified existing image is reused and only
+  the missing tag is published.
+- If both tags are missing, recovery fails closed. Workflow 01 does not record a
+  published manifest digest or signed build attestation, and its historical
+  container inputs are not fully immutable, so an equivalent rebuild cannot be
+  proven. A potentially different image is never published under an existing
+  release version; create a new versioned release instead.
+- A retry after a partial failure reuses the one verified tag that succeeded and
+  publishes only the other tag instead of rebuilding or overwriting either one.
+- If an existing tag has missing or unexpected provenance labels, the two tags
+  have different digests, or the registry cannot prove a target tag is absent,
+  recovery fails closed without overwriting either tag.
+
+The OCI source, release version, release commit, and registry digest are the
+available provenance checked by workflows 01 and 03. Workflow 01 does not emit
+a separately verifiable signed GHCR build attestation, so workflow 03 reports
+that limitation rather than claiming signed provenance.
+
+Workflow 03 never creates or edits a GitHub Release, moves or creates a Git tag,
+or adds, replaces, or deletes release assets. Published release assets are final
+when Release Immutability is enabled. A missing or defective archive or checksum
+therefore requires a new versioned release; it cannot be repaired in place.
 
 ## Notes and Store safety
 
