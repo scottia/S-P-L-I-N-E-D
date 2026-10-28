@@ -276,7 +276,7 @@ class PreviewApp:
                 "SELECT albums.album_key, albums.album_name, albums.artist_key, "
                 "artists.artist_name, albums.path, albums.cover_path, albums.track_count, "
                 "albums.artwork_jpeg, albums.artwork_png, albums.artwork_webp, "
-                "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
+                "albums.status, albums.compilation, albums.musicbrainz_albumid, albums.release_year FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE albums.album_key=?", (album_id,),
             ).fetchone()
@@ -303,7 +303,7 @@ class PreviewApp:
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
-            "album_mbid": row["musicbrainz_albumid"] or "",
+            "album_mbid": row["musicbrainz_albumid"] or "", "year": row["release_year"] or "",
             "embedded": int(row["artwork_jpeg"] or 0) + int(row["artwork_png"] or 0) + int(row["artwork_webp"] or 0),
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover and cover.is_file() else None,
             "candidates": candidates, "track_titles": track_titles,

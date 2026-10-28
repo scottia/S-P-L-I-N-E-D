@@ -109,21 +109,41 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .album-grid,.album-grid.expanded{flex-wrap:wrap;align-content:flex-start;max-height:none;overflow:visible}
 .hero:has(.album-grid.expanded) .hero-details{display:none}
 .hero:has(.album-grid.expanded) .hero-main{opacity:1}
-.hero.fallback-overview .hero-shade{background:linear-gradient(90deg,#071323eb,#101523bd),linear-gradient(0deg,#10101ad9,transparent 60%)}
-.hero.fallback-overview .hero-main{position:sticky;top:0;z-index:4;min-height:100px;padding:8px 12px;background:#0a192beF;border-bottom:1px solid var(--line)}
-.hero.fallback-overview .similar-heading,.hero.fallback-overview .similar-artists{display:none}
-.hero.fallback-overview .hero-details{margin-top:0}
+.hero.fallback-overview{background-color:#241b21;background-image:none}
+.hero.fallback-overview::before{content:"";position:absolute;top:18%;left:20%;width:60%;height:64%;background:url('/assets/splined-watermark.png') center/contain no-repeat;opacity:.16;pointer-events:none}
+.hero.fallback-overview .hero-shade{background:linear-gradient(180deg,#340d1d20,#5c122a32 60%,#571a293b)}
+.hero.fallback-overview .hero-main,.hero.fallback-overview .hero-details{display:none}
+.fallback-help{position:relative;z-index:1;margin:10px 12px 0;min-height:78px;color:var(--text);font-size:12px;line-height:1.35}
+.fallback-help[hidden]{display:none}
+.fallback-help p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;margin:0}
+.fallback-help.expanded p{display:block}
+.fallback-help button{display:block;margin:4px 0 0 auto;border:0;background:transparent;color:var(--yellow);font-weight:800;cursor:pointer}
 .hero.fallback-overview .hero-lower{margin-top:3px}
 .fallback-album-card{cursor:default!important}
-.fallback-album-card .album-type-banner{background:#513477;color:#fff}
-.fallback-report{display:flex;flex-direction:column;gap:4px;margin:9px 0;padding:8px;border:1px solid #32668a;border-radius:6px;background:#081527d9}
+.fallback-report{position:relative;z-index:1;display:flex;flex-direction:column;gap:4px;margin:9px 0;padding:7px;border:2px solid var(--violet,#9b59b6);border-radius:6px;background:#381821c9}
 .fallback-report[hidden]{display:none}
-.fallback-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--cyan);font-size:12px}
-.fallback-toolbar button{border:1px solid var(--green);border-radius:4px;background:#0b493e;color:#e5fff7;padding:5px 9px;font-size:11px;font-weight:750}
-.fallback-toolbar button:disabled{opacity:.5}
-.fallback-track{display:flex;align-items:center;width:100%;gap:9px;padding:5px 8px;border:1px solid #24445c;border-radius:4px;background:#0b1c2c;color:var(--text);text-align:left}
-.fallback-track:hover,.fallback-track.selected{border-color:var(--cyan);background:#12344a}
-.fallback-track-dot{font-size:15px;flex:none}.fallback-track-dot.pending{color:#3999ff}.fallback-track-dot.complete{color:var(--green)}
-.fallback-track-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}.fallback-track-copy strong,.fallback-track-copy small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fallback-track-copy small{color:var(--muted);font-size:10px}
-.fallback-track-state{color:var(--muted);font-size:10px}
+.fallback-toolbar{display:flex;align-items:center;gap:7px;min-width:0;color:var(--cyan);font-size:14px}
+.fallback-toolbar strong{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fallback-toolbar button:not(.fallback-preview-radio){flex:none;min-width:98px;height:27px;border:1px solid var(--cyan);border-radius:4px;background:#102c3d;color:var(--cyan);padding:3px 8px;font-size:11px;font-weight:800;cursor:pointer}
+.fallback-toolbar .fallback-repair{border-color:var(--violet,#9b59b6)!important;color:var(--violet,#b878dc)!important;background:#291b35!important}
+.fallback-toolbar button:disabled{opacity:.45;cursor:default}
+.fallback-toolbar .fallback-preview-radio{width:19px;height:19px;flex:none;border:2px solid var(--pink);border-radius:50%;background:#000;cursor:pointer}
+.fallback-toolbar .fallback-preview-radio.active{background:var(--green)}
+.fallback-report-summary{text-align:right;color:var(--cyan);font-size:10px}
+.fallback-report-columns{display:grid;grid-template-columns:min(220px,23%) 1fr;gap:8px;color:var(--muted);font-size:11px;font-weight:800}
+.fallback-report-album,.fallback-track{display:grid;grid-template-columns:min(220px,23%) minmax(0,1fr);align-items:center;width:100%;min-height:25px;gap:8px;padding:3px 7px;border:1px solid #398efa;border-radius:4px;background:#182a38;color:var(--text);text-align:left;cursor:pointer}
+.fallback-report-album strong,.fallback-report-album span,.fallback-track-file{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fallback-report-album span{color:var(--cyan);font-size:10px}
+.fallback-track{min-height:24px;background:#171d24;font-size:11px}
+.fallback-track.complete{border-color:var(--green)}
+.fallback-track.complete .fallback-track-file{color:var(--green)}
+.fallback-track.pending .fallback-track-file{color:#6ba9ff}
+.fallback-track:hover,.fallback-track.selected{background:#263b4b}
+.fallback-library-track{min-height:25px!important;padding-left:22px!important;gap:5px!important;color:var(--green)!important}
+.fallback-library-status{color:var(--green);font-size:10px;flex:none}
+.fallback-library-file{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}
+.fallback-library-select{color:var(--pink);font-size:13px;flex:none}
+.fallback-library-track.selected .fallback-library-select{color:var(--green)}
+.hero.fallback-overview .album-grid{margin-bottom:6px}
+html[data-theme=chalk] .fallback-report,html[data-theme=light] .fallback-report{background:#ba8490cc}
 .album-status-key{top:28px;bottom:auto}
