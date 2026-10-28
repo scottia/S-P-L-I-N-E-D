@@ -770,9 +770,26 @@ $("bannerRadio").addEventListener("click", () => { state.radioBanner = !state.ra
 $("useArtist").addEventListener("click", () => { state.radioArtist = true; state.radioBanner = false; state.radioCurrent = false; renderPanes(); renderReview(); });
 $("useBanner").addEventListener("click", () => { state.radioBanner = true; state.radioArtist = false; state.radioCurrent = false; renderPanes(); renderReview(); });
 $("showAllAlbums").addEventListener("click", () => { const expanded = $("albumGrid").classList.toggle("expanded"); $("showAllAlbums").textContent = expanded ? "Show Less" : "Show All"; });
+$("albumGrid").addEventListener("wheel", event => {
+  const grid = $("albumGrid");
+  if (grid.classList.contains("expanded") || grid.scrollWidth <= grid.clientWidth) return;
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+  const next = Math.max(0, Math.min(grid.scrollLeft + delta, grid.scrollWidth - grid.clientWidth));
+  if (next === grid.scrollLeft) return;
+  event.preventDefault();
+  grid.scrollLeft = next;
+}, {passive: false});
+function closeAlbumStatusKey() {
+  $("albumStatusKey").hidden = true;
+  $("albumStatusHelp").setAttribute("aria-expanded", "false");
+}
 $("albumStatusHelp").addEventListener("click", () => {
   const key = $("albumStatusKey"), opening = key.hidden; key.hidden = !opening;
   $("albumStatusHelp").setAttribute("aria-expanded", String(opening));
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape" && !$("albumStatusKey").hidden) closeAlbumStatusKey(); });
+document.addEventListener("pointerdown", event => {
+  if (!$("albumStatusKey").hidden && !event.target.closest("#albumStatusKey, #albumStatusHelp")) closeAlbumStatusKey();
 });
 $("compReportButton").addEventListener("click", () => {
   const albums = (state.artist?.albums || []).filter(album => album.compilation);
