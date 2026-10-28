@@ -8,6 +8,7 @@ writes music, artwork, tags, or database rows.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from dataclasses import dataclass, field
 import hashlib
 from hashlib import sha256
@@ -89,7 +90,7 @@ class PreviewApp:
         return "/api/image/" + token
 
     def artists(self, query: str) -> list[dict[str, object]]:
-        with self.connect() as db:
+        with closing(self.connect()) as db:
             rows = db.execute(
                 "SELECT artists.artist_key, artists.artist_name, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
@@ -108,14 +109,14 @@ class PreviewApp:
         ]
 
     def albums(self, query: str, fallback_only: bool = False) -> list[dict[str, object]]:
-        with self.connect() as db:
+        with closing(self.connect()) as db:
             rows = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.artist_key, "
                 "artists.artist_name, albums.cover_path, albums.track_count, "
-                "albums.status, albums.compilation FROM albums "
+                "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE (albums.album_name LIKE ? ESCAPE '\\' OR artists.artist_name LIKE ? ESCAPE '\\') "
-                "AND (?=0 OR albums.compilation=1) "
+                "AND (?=0 OR TRIM(COALESCE(albums.musicbrainz_albumid,''))='') "
                 "ORDER BY albums.album_name COLLATE NOCASE LIMIT 250",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2
                 + (1 if fallback_only else 0,),
@@ -130,11 +131,12 @@ class PreviewApp:
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
                 "cover": self.image(cover), "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
+                "album_mbid": row["musicbrainz_albumid"] or "",
             })
         return items
 
     def artist(self, artist_id: str) -> dict[str, object]:
-        with self.connect() as db:
+        with closing(self.connect()) as db:
             artist = db.execute(
                 "SELECT artist_key, artist_name, musicbrainz_artistid, album_count, status "
                 "FROM artists WHERE artist_key=?", (artist_id,),
@@ -161,7 +163,7 @@ class PreviewApp:
         candidates = []
         for label, path in local_candidates(targets):
             if inside(path, self.music) or inside(path, self.artist_art):
-                candidates.append({"source": "Local", "kind": label.lower(),
+                candidates.append({"source": "Local", "kind": label.lower(), "acceptable": True,
                                    "image": self.image(path), **image_metadata(path)})
         albums = []
         for row in rows:
@@ -191,7 +193,7 @@ class PreviewApp:
         }
 
     def album(self, album_id: str) -> dict[str, object]:
-        with self.connect() as db:
+        with closing(self.connect()) as db:
             row = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.artist_key, "
                 "artists.artist_name, albums.path, albums.cover_path, albums.track_count, "
@@ -302,7 +304,7 @@ class PreviewApp:
                 width, height = image.size
             candidates.append({
                 "source": label.split()[0],
-                "kind": "banner" if "banner" in label.casefold() else "artist",
+                "kind": "banner" if "banner" in label.casefold() else "artist", "acceptable": True,
                 "name": label, "width": width, "height": height,
                 "bytes": len(data), "digest": sha256(data).hexdigest(),
                 "image": self.image(data),

@@ -2,6 +2,8 @@
 
 This is the comparison baseline for the SPLINED browser workspace and Windows GUI. Review it whenever either interface changes. The Windows implementation is in `windows/ui/app.slint`; the browser template is in `python/web_preview/index.html`, `app.css`, and `app.js`.
 
+The [function and event-sequence audit](windows-web-function-audit.md) records the Windows rules behind this layout, current browser coverage, and the remaining gaps.
+
 ## Screen arrangement
 
 ```text

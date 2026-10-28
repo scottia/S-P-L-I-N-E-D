@@ -6,7 +6,8 @@ const state = {
   libraryMode: "artists", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null,
   activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
-  candidateType: "all", mediaStatus: "all", mediaFilterLocked: false, candidateFilterLocked: false,
+  mediaStatuses: new Set(["unprocessed", "incomplete", "processed", "bypassed", "partial", "artistComplete", "artistBypass"]),
+  mediaSelected: new Set(), candidateFilters: new Map(), mediaFilterLocked: false, candidateFilterLocked: false,
   fx: {artist: {}, banner: {}, album: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(),
   embedQueue: [], listRequest: 0, selectionRequest: 0, searchRequest: 0,
@@ -37,14 +38,14 @@ function node(tag, className = "", text) {
   return element;
 }
 function image(src, className = "", alt = "") {
-  const element = node("img", className); element.src = src; element.alt = alt; element.loading = "lazy"; return element;
+  const element = node("img", className); element.src = src; element.alt = alt; element.loading = "lazy"; element.draggable = false; return element;
 }
 function clear(element) { element.replaceChildren(); }
 function clearFocusCandidates() {
   state.candidates = [];
   state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null;
-  state.activeSource = ""; state.candidateType = "all"; state.compare.clear();
-  $("candidateSearch").value = "";
+  state.compare.clear();
+  if (!state.candidateFilterLocked) { state.activeSource = ""; state.candidateFilters.clear(); $("candidateSearch").value = ""; }
 }
 function resetFocusAdjustments() {
   state.fx = {artist: {}, banner: {}, album: {}, current: {}, package: {}};
@@ -64,6 +65,60 @@ function sourceKey(value) {
 }
 function candidateKind(candidate) {
   return String(candidate.kind || "").toLowerCase().includes("banner") ? "banner" : state.editorMode === "album" ? "cover" : "artist";
+}
+const MEDIA_STATUSES = [["unprocessed", "Unprocessed"], ["incomplete", "Incomplete"], ["processed", "Processed"], ["bypassed", "Bypassed"], ["partial", "Partial / Error"], ["artistComplete", "Artist Complete"], ["artistBypass", "Artist Bypass"]];
+const CANDIDATE_TYPES = [["Recommended", "Recommended"], ["Upscalable", "Upscalable"], ["Rejected", "Rejected"], ["Local", "Local"], ["Samples", "Samples"], ["FrontCover", "Front Cover"], ["BackCover", "Back Cover"], ["ArtistImage", "Artist Image"], ["MediaBooklet", "Media / Booklet"], ["Other", "Other"]];
+const CANDIDATE_RANGES = [["Ideal", "Ideal"], ["UpperRange", "Upper range"], ["Ladder", "Ladder"], ["AboveLadder", "Above ladder"], ["LowerRange", "Lower range"], ["BelowMinimum", "Below minimum"]];
+function mediaStatusKey(item) {
+  const raw = String(item.status || "unprocessed").toLowerCase();
+  if (raw === "complete") return "artistComplete";
+  if (raw.includes("bypass")) return raw.includes("artist") ? "artistBypass" : "bypassed";
+  if (raw.includes("partial") || raw.includes("error") || raw.includes("timeout")) return "partial";
+  return MEDIA_STATUSES.some(([key]) => key === raw) ? raw : "unprocessed";
+}
+function mediaMatches(item) { return state.mediaStatuses.has(mediaStatusKey(item)); }
+function candidateRange(candidate) {
+  const shortSide = Math.min(Number(candidate.width) || 0, Number(candidate.height) || 0);
+  if (shortSide < 1200) return "BelowMinimum";
+  if (shortSide < 1800) return "LowerRange";
+  if (shortSide === 1800) return "Ideal";
+  if (shortSide <= 2400) return "UpperRange";
+  if (shortSide <= 3600) return "Ladder";
+  return "AboveLadder";
+}
+function candidateMatches(candidate, dimension, key) {
+  const kind = candidateKind(candidate);
+  const range = candidate.range_class || candidateRange(candidate);
+  const acceptable = candidate.acceptable === undefined ? !["BelowMinimum", "AboveLadder"].includes(range) : candidate.acceptable;
+  if (dimension === "range") return range.toLowerCase() === key.toLowerCase();
+  if (dimension === "policy") return key === "Acceptable" ? acceptable : candidate.strict_override_active === true;
+  if (dimension === "source") return sourceKey(candidate.source) === sourceKey(key);
+  if (key === "Recommended") return candidate.recommended === true;
+  if (key === "Upscalable") return candidate.upscaled === true && candidate.acceptable !== false;
+  if (key === "Rejected") return !acceptable || candidate.policy_status === "reject";
+  if (key === "Local") return sourceKey(candidate.source) === "local";
+  if (key === "Samples") return sourceKey(candidate.source) === "samples";
+  if (key === "FrontCover") return kind === "cover";
+  if (key === "ArtistImage") return kind === "artist";
+  if (key === "Other") return kind === "banner";
+  return false;
+}
+function candidateFilterKey(dimension, key) { return dimension + ":" + key; }
+function resetCandidateFilters() {
+  if (state.candidateFilterLocked) return;
+  state.candidateFilters.clear();
+  for (const [dimension, rows] of [["type", CANDIDATE_TYPES], ["policy", [["Acceptable"], ["Strict"]]], ["range", CANDIDATE_RANGES]]) {
+    for (const [key] of rows) if (state.candidates.some(candidate => candidateMatches(candidate, dimension, key))) state.candidateFilters.set(candidateFilterKey(dimension, key), "included");
+  }
+}
+function candidateVisible(candidate) {
+  if (state.activeSource && sourceKey(candidate.source) !== state.activeSource) return false;
+  for (const [filter, disposition] of state.candidateFilters) {
+    if (disposition !== "disregarded") continue;
+    const separator = filter.indexOf(":");
+    if (candidateMatches(candidate, filter.slice(0, separator), filter.slice(separator + 1))) return false;
+  }
+  return true;
 }
 function candidateBanner(candidate) {
   if (candidateKind(candidate) === "banner") return candidate;
@@ -86,10 +141,10 @@ function renderLibrary() {
   $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Fallback Albums" : state.libraryMode === "albums" ? "Albums" : "Artists";
   const list = $("artistList"); clear(list);
   if (state.libraryMode === "artists") {
-    $("artistCount").textContent = state.artists.length + " shown";
-    for (const artist of state.artists.filter(item => state.mediaStatus === "all" || String(item.status || "Unprocessed") === state.mediaStatus)) {
+    $("artistCount").textContent = state.artists.filter(mediaMatches).length + " shown";
+    for (const artist of state.artists.filter(mediaMatches)) {
       const button = node("button", "library-row" + (state.artist?.id === artist.id ? " active" : "")); button.type = "button";
-      button.append(node("span", "status-orbit", state.artist?.id === artist.id ? "●" : "○"));
+      button.append(node("span", "status-orbit" + (state.mediaSelected.has(artist.id) ? " selected" : ""), state.mediaSelected.has(artist.id) ? "●" : "○"));
       const thumb = state.artist?.id === artist.id && state.artist.portrait ? image(state.artist.portrait, "library-thumb", "") : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
       button.append(thumb);
       const copy = node("span", "row-copy"); copy.append(node("strong", "", artist.name), node("small", "", "(" + artist.albums + " Albums)")); button.append(copy, node("span", "expand-mark", state.artist?.id === artist.id ? "−" : "+"));
@@ -102,8 +157,8 @@ function renderLibrary() {
       }
     }
   } else {
-    $("artistCount").textContent = state.albumsIndex.length + " shown";
-    for (const album of state.albumsIndex.filter(item => state.mediaStatus === "all" || String(item.status || "Unprocessed") === state.mediaStatus)) list.append(albumRow(album, false));
+    $("artistCount").textContent = state.albumsIndex.filter(mediaMatches).length + " shown";
+    for (const album of state.albumsIndex.filter(mediaMatches)) list.append(albumRow(album, false));
   }
   if (!list.childElementCount) list.append(node("p", "empty-copy", "No items match this filter."));
   renderMediaStatusChips();
@@ -111,26 +166,37 @@ function renderLibrary() {
 function renderMediaStatusChips() {
   const items = state.libraryMode === "artists" ? state.artists : state.albumsIndex;
   const counts = new Map();
-  for (const item of items) { const key = String(item.status || "Unprocessed"); counts.set(key, (counts.get(key) || 0) + 1); }
+  for (const item of items) { const key = mediaStatusKey(item); counts.set(key, (counts.get(key) || 0) + 1); }
+  $("mediaStatusTitle").textContent = state.libraryMode === "artists" ? "Artists State" : state.libraryMode === "fallback" ? "Fallback State" : "Albums State";
   const host = $("mediaStatusChips"); clear(host);
-  for (const [key, count] of [["all", items.length], ...counts]) {
-    const button = node("button", "filter-chip" + (state.mediaStatus === key ? " active" : ""), (state.mediaStatus === key ? "● " : "○ ") + (key === "all" ? "All" : key) + " " + count);
+  for (const [key, label] of [["all", "All"], ...MEDIA_STATUSES]) {
+    const enabled = key === "all" ? state.mediaStatuses.size === MEDIA_STATUSES.length : state.mediaStatuses.has(key);
+    const button = node("button", "filter-chip" + (enabled ? " active" : ""));
     button.type = "button"; button.disabled = state.mediaFilterLocked;
-    button.addEventListener("click", () => { state.mediaStatus = key; renderLibrary(); }); host.append(button);
+    button.append(node("span", "filter-dot", enabled ? "●" : "○"), node("span", "filter-label", label), node("span", "filter-count", String(key === "all" ? items.length : counts.get(key) || 0)));
+    button.addEventListener("click", () => { if (key === "all") state.mediaStatuses = new Set(MEDIA_STATUSES.map(([item]) => item)); else if (state.mediaStatuses.has(key)) state.mediaStatuses.delete(key); else state.mediaStatuses.add(key); renderLibrary(); }); host.append(button);
   }
 }
 function renderCandidateTypeChips() {
-  const host = $("candidateTypeChips"); clear(host);
-  for (const [key, label] of [["all", "All"], ["artist", "Artist"], ["banner", "Banner"]]) {
-    const count = key === "all" ? state.candidates.length : state.candidates.filter(item => (candidateKind(item) === "banner") === (key === "banner")).length;
-    const button = node("button", "filter-chip" + (state.candidateType === key ? " active" : ""), (state.candidateType === key ? "● " : "○ ") + label + " " + count);
-    button.type = "button"; button.disabled = state.candidateFilterLocked;
-    button.addEventListener("click", () => { state.candidateType = key; renderCandidates(); }); host.append(button);
+  for (const [hostId, dimension, rows] of [["candidateTypeChips", "type", CANDIDATE_TYPES], ["candidatePolicyChips", "policy", [["Acceptable", "Acceptable"], ["Strict", "Strict"]]], ["candidateRangeChips", "range", CANDIDATE_RANGES]]) {
+    const host = $(hostId); clear(host);
+    for (const [key, label] of rows) {
+      const filterKey = candidateFilterKey(dimension, key);
+      const disposition = state.candidateFilters.get(filterKey) || "neutral";
+      const count = state.candidates.filter(candidate => candidateMatches(candidate, dimension, key)).length;
+      const button = node("button", "filter-chip " + disposition); button.type = "button"; button.disabled = state.candidateFilterLocked;
+      button.title = label + ": " + disposition + ". Click to cycle Included, Disregarded, Neutral.";
+      button.append(node("span", "filter-dot", disposition === "included" ? "●" : "○"), node("span", "filter-label", label), node("span", "filter-count", String(count)));
+      button.addEventListener("click", () => { const next = disposition === "neutral" ? "included" : disposition === "included" ? "disregarded" : "neutral"; if (next === "neutral") state.candidateFilters.delete(filterKey); else state.candidateFilters.set(filterKey, next); renderCandidates(); }); host.append(button);
+    }
   }
+  const sourceChosen = !!state.activeSource;
+  $("candidateIncludeSource").disabled = !sourceChosen || state.candidateFilterLocked;
+  $("candidateDisregardSource").disabled = !sourceChosen || state.candidateFilterLocked;
 }
 function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "") + (state.album?.id === album.id ? " active" : "")); button.type = "button";
-  button.append(node("span", "status-orbit", state.album?.id === album.id ? "●" : "○"));
+  button.append(node("span", "status-orbit" + (state.mediaSelected.has(album.id) ? " selected" : ""), state.mediaSelected.has(album.id) ? "●" : "○"));
   button.append(album.cover ? image(album.cover, "library-thumb", "") : node("span", "library-thumb", "♫"));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
@@ -188,7 +254,7 @@ function renderSources() {
 function renderCandidates() {
   const grid = $("candidateGrid"); clear(grid);
   const query = $("candidateSearch").value.trim().toLowerCase();
-  const visible = state.candidates.filter(candidate => (!state.activeSource || sourceKey(candidate.source) === state.activeSource) && (state.candidateType === "all" || (state.candidateType === "banner") === (candidateKind(candidate) === "banner")) && (!query || (candidate.name + " " + candidate.source).toLowerCase().includes(query)));
+  const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || (candidate.name + " " + candidate.source).toLowerCase().includes(query)));
   $("candidateCount").textContent = state.candidates.length + (state.candidates.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
   $("candidateHint").textContent = state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
@@ -235,7 +301,10 @@ function packageFrame(frame, banner, portrait) {
   if (portrait) frame.append(image(portrait, "package-portrait", "Artist portrait"));
 }
 function paneImage(frame, src, label, portrait = false) {
-  clear(frame); frame.append(src ? image(src, portrait ? "portrait-preview" : "", label) : node("span", "empty-image", label));
+  clear(frame);
+  if (!src) { frame.append(node("span", "empty-image", label)); return; }
+  if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(src, "portrait-preview", label)); frame.append(mask); }
+  else frame.append(image(src, "", label));
 }
 function renderPanes() {
   const isAlbum = state.editorMode === "album";
@@ -264,7 +333,7 @@ function selectedImage() {
     const portrait = state.radioCurrent ? state.artist?.portrait : state.selectedPortrait?.image || state.artist?.portrait;
     const packageView = node("div", "selected-package");
     if (banner) packageView.append(image(banner, "banner-art", "Artist banner"));
-    if (portrait) packageView.append(image(portrait, "portrait-art", "Artist portrait"));
+    if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(portrait, "portrait-art", "Artist portrait")); packageView.append(mask); }
     if (banner || portrait) frame.append(packageView);
     type = "Artist package"; source = state.radioCurrent ? "Current local art" : "Candidate preview"; quality = state.radioCurrent ? "Current" : "Preview";
   } else {
@@ -272,7 +341,8 @@ function selectedImage() {
     candidate = bannerOnly ? state.selectedBanner : state.selectedPortrait;
     url = candidate?.image || (bannerOnly ? state.artist?.banner : state.artist?.portrait);
     type = bannerOnly ? "Artist Banner" : "Artist Image"; source = candidate?.source || (url ? "Local" : "—"); quality = candidate ? "Preview" : "Current";
-    if (url) frame.append(image(url, bannerOnly ? "selected-image" : "selected-image portrait", type));
+    if (url && bannerOnly) frame.append(image(url, "selected-image", type));
+    else if (url) { const mask = node("span", "portrait-viewport"); mask.append(image(url, "selected-image portrait", type)); frame.append(mask); }
   }
   if (!frame.childElementCount) frame.append(image("/assets/set-your-imagination-tv.jpg", "", "Set your imagination now"));
   $("selectedType").textContent = type; $("selectedSource").textContent = source;
@@ -327,6 +397,13 @@ function transformFor(target) {
   const fit = state.fit[target];
   return fit ? `translate(${fit.x}%, ${fit.y}%) scale(${fit.zoom})` : "";
 }
+function fitZoom(value) {
+  const position = Number(value);
+  return position < 0 ? 1 + position / 200 : 1 + position * .07;
+}
+function fitSlider(zoom) {
+  return Math.round(zoom < 1 ? (zoom - 1) * 200 : (zoom - 1) / .07);
+}
 function styleImage(element, target, additional = null) {
   if (!element) return;
   element.style.filter = effectFilter(state.fx[target]) + (additional ? " " + effectFilter(state.fx[additional]) : "");
@@ -348,12 +425,12 @@ function applyPreviewEffects() {
 function sliderRow(host, label, target, field, minimum = -100, maximum = 100, initial = 0) {
   const row = node("label", "adjustment-row");
   const top = node("span", "adjustment-label"); top.append(node("strong", "", label), node("span", "adjustment-value", ""));
-  const range = node("input"); range.type = "range"; range.min = String(minimum); range.max = String(maximum); range.value = String(field === "fit" ? Math.round((state.fit[target]?.zoom || 1) * 100) : state.fx[target][label] ?? initial);
+  const range = node("input"); range.type = "range"; range.min = String(minimum); range.max = String(maximum); range.value = String(field === "fit" ? fitSlider(state.fit[target]?.zoom || 1) : state.fx[target][label] ?? initial);
   const value = top.querySelector(".adjustment-value");
-  const updateLabel = () => { value.textContent = field === "fit" ? (Number(range.value) / 100).toFixed(2) + "×" : (Number(range.value) > 0 ? "+" : "") + range.value; };
+  const updateLabel = () => { value.textContent = field === "fit" ? fitZoom(range.value).toFixed(2) + "×" : (Number(range.value) > 0 ? "+" : "") + range.value; };
   updateLabel();
   range.addEventListener("input", () => {
-    if (field === "fit") state.fit[target].zoom = Number(range.value) / 100;
+    if (field === "fit") state.fit[target].zoom = fitZoom(range.value);
     else state.fx[target][label] = Number(range.value);
     updateLabel(); applyPreviewEffects();
   });
@@ -374,7 +451,7 @@ function renderEnhancementMenus() {
   const targets = target === "package" ? ["artist", "banner"] : target === "artist" || target === "banner" ? [target] : [];
   if (!targets.length) { fitment.append(node("p", "menu-note", "Select Artist Image or Artist Banner to adjust fitment.")); return; }
   fitment.append(node("p", "menu-note", "Wheel over the preview to zoom; drag the image to position."));
-  for (const component of targets) sliderRow(fitment, component === "artist" ? "Artist" : "Banner", component, "fit", 100, 300, 100);
+  for (const component of targets) sliderRow(fitment, component === "artist" ? "Artist" : "Banner", component, "fit", -100, 100, 0);
   const reset = node("button", "minor-button", "Reset fitment"); reset.type = "button"; reset.addEventListener("click", () => { for (const component of targets) state.fit[component] = {zoom: 1, x: 0, y: 0}; renderEnhancementMenus(); applyPreviewEffects(); }); fitment.append(reset);
 }
 function renderWorkspace() {
@@ -396,8 +473,8 @@ async function loadLibrary(query = "") {
     else state.albumsIndex = await api("/api/albums?view=" + state.libraryMode + "&q=" + encodeURIComponent(query));
     if (request !== state.listRequest) return;
     renderLibrary();
-    if (!state.artist && state.artists.length) await chooseArtist(state.artists[0].id);
-    else setStatus("Library ready · browser layout preview");
+    if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id);
+    else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No missing-ID albums in this test index" : "Library ready · browser layout preview");
   } catch (error) { if (request === state.listRequest) setStatus(error.message, "error"); }
 }
 async function chooseArtist(id) {
@@ -413,7 +490,7 @@ async function chooseArtist(id) {
     if (request !== state.selectionRequest) return;
     state.artist = artist; state.artistMetadata = null;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
-    state.candidates = state.artist.local_candidates || [];
+    state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
     renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums"); loadArtistMetadata(id);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
@@ -434,7 +511,7 @@ async function chooseAlbum(id) {
       state.artist = artist; state.artistMetadata = null; loadArtistMetadata(album.artist_id);
     }
     state.album = album; state.editorMode = "album"; state.workspace = "find";
-    state.candidates = album.candidates || [];
+    state.candidates = album.candidates || []; resetCandidateFilters();
     renderAll(); setStatus("Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
@@ -454,12 +531,12 @@ async function searchArtist() {
   try {
     const result = await api("/api/search/artist", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id})});
     if (request !== state.searchRequest || state.artist?.id !== id || state.editorMode !== "artist") return;
-    state.candidates = [...(state.artist.local_candidates || []), ...result.candidates];
+    state.candidates = [...(state.artist.local_candidates || []), ...result.candidates]; resetCandidateFilters();
     renderSources(); renderCandidates(); renderPanes(); renderReview();
     setStatus(result.candidates.length + " online candidates found" + (result.warnings.length ? " · " + result.warnings.length + " source warnings" : ""));
   } catch (error) {
     if (request !== state.searchRequest) return;
-    state.candidates = state.artist?.local_candidates || [];
+    state.candidates = state.artist?.local_candidates || []; resetCandidateFilters();
     renderSources(); renderCandidates();
     setStatus("Online artist search failed · local art remains available", "error");
   }
@@ -505,17 +582,42 @@ function showDialog(title, lines) {
 $("artistSearch").addEventListener("input", event => { if (state.libraryMode === "artists") loadLibrary(event.target.value); });
 $("albumSearch").addEventListener("input", event => { if (state.libraryMode === "artists") renderLibrary(); else loadLibrary(event.target.value); });
 $("candidateSearch").addEventListener("input", renderCandidates);
-$("clearCandidateFilter").addEventListener("click", () => { $("candidateSearch").value = ""; state.activeSource = ""; state.candidateType = "all"; renderSources(); renderCandidates(); });
+$("clearCandidateFilter").addEventListener("click", () => { $("candidateSearch").value = ""; state.activeSource = ""; resetCandidateFilters(); renderSources(); renderCandidates(); });
+for (const [buttonId, disposition] of [["candidateIncludeSource", "included"], ["candidateDisregardSource", "disregarded"]]) {
+  $(buttonId).addEventListener("click", () => { if (!state.activeSource) return; state.candidateFilters.set(candidateFilterKey("source", state.activeSource), disposition); state.activeSource = ""; renderSources(); renderCandidates(); });
+}
+for (const [buttonId, mode] of [["selectAllMedia", "all"], ["selectFilteredMedia", "filtered"], ["selectNoMedia", "none"]]) {
+  $(buttonId).addEventListener("click", () => {
+    if (state.mediaFilterLocked) return;
+    if (mode === "none") state.mediaSelected.clear();
+    else {
+      const items = state.libraryMode === "artists" ? state.artists : state.albumsIndex;
+      if (mode === "filtered" && !$("artistSearch").value.trim() && !$("albumSearch").value.trim() && state.mediaStatuses.size === MEDIA_STATUSES.length && state.libraryMode !== "fallback") {
+        setStatus("Select Filtered needs a search, status filter, or Fallback view", "error"); return;
+      }
+      state.mediaSelected.clear();
+      for (const item of items.filter(mediaMatches)) state.mediaSelected.add(item.id);
+    }
+    renderLibrary(); setStatus("Selected " + state.mediaSelected.size + " library items for review · scan queue not connected");
+  });
+}
 for (const [kind, id] of [["media", "mediaFilterLock"], ["candidate", "candidateFilterLock"]]) {
   $(id).addEventListener("click", () => {
     const key = kind === "media" ? "mediaFilterLocked" : "candidateFilterLocked";
     state[key] = !state[key]; $(id).textContent = state[key] ? "🔒" : "🔓"; $(id).setAttribute("aria-pressed", String(state[key]));
-    for (const field of (kind === "media" ? ["artistSearch", "albumSearch"] : ["candidateSearch", "clearCandidateFilter"])) $(field).disabled = state[key];
+    for (const field of (kind === "media" ? ["artistSearch", "albumSearch", "selectAllMedia", "selectFilteredMedia", "selectNoMedia"] : ["candidateSearch", "clearCandidateFilter", "candidateIncludeSource", "candidateDisregardSource"])) $(field).disabled = state[key];
     renderMediaStatusChips(); renderCandidateTypeChips();
   });
 }
 for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums"], ["fallbackTab", "fallback"]]) {
-  $(buttonId).addEventListener("click", () => { state.libraryMode = mode; loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value); renderLibrary(); });
+  $(buttonId).addEventListener("click", () => {
+    if (state.libraryMode === mode) return;
+    ++state.selectionRequest; ++state.searchRequest;
+    state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null;
+    state.editorMode = "artist"; state.workspace = "find";
+    clearFocusCandidates(); resetFocusAdjustments(); renderAll();
+    loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value);
+  });
 }
 for (const [buttonId, name] of [["findTab", "find"], ["enhanceTab", "enhance"], ["embedTab", "embed"]]) {
   $(buttonId).addEventListener("click", () => { state.workspace = name; renderWorkspace(); if (name === "embed") renderQueue(); setStatus(name === "embed" ? "Embedding queue preview · no tags changed" : name === "enhance" ? "Enhancement layout preview · no image processing" : "Find & Match Artwork ready"); });
@@ -655,28 +757,44 @@ $("candidateGrid").addEventListener("wheel", event => {
   event.preventDefault();
 }, {passive: false});
 
-$("selectedFrame").addEventListener("wheel", event => {
-  if (state.editorMode !== "artist" || state.radioCurrent) return;
-  const target = state.radioArtist && state.radioBanner ? (event.target.closest(".portrait-art") ? "artist" : "banner") : state.radioBanner ? "banner" : "artist";
-  state.fit[target].zoom = clamp(state.fit[target].zoom + (event.deltaY < 0 ? .08 : -.08), 1, 3);
-  renderEnhancementMenus(); applyPreviewEffects(); event.preventDefault();
-}, {passive: false});
-let imageDrag = null;
-$("selectedFrame").addEventListener("pointerdown", event => {
-  if (state.editorMode !== "artist" || state.radioCurrent || event.button !== 0 || !event.target.closest("img")) return;
-  const target = state.radioArtist && state.radioBanner ? (event.target.closest(".portrait-art") ? "artist" : "banner") : state.radioBanner ? "banner" : "artist";
-  imageDrag = {target, x: event.clientX, y: event.clientY, startX: state.fit[target].x, startY: state.fit[target].y};
-  $("selectedFrame").setPointerCapture(event.pointerId); event.preventDefault();
-});
-$("selectedFrame").addEventListener("pointermove", event => {
-  if (!imageDrag) return;
-  const box = $("selectedFrame").getBoundingClientRect();
-  state.fit[imageDrag.target].x = clamp(imageDrag.startX + (event.clientX - imageDrag.x) / box.width * 100, -100, 100);
-  state.fit[imageDrag.target].y = clamp(imageDrag.startY + (event.clientY - imageDrag.y) / box.height * 100, -100, 100);
-  applyPreviewEffects();
-});
-$("selectedFrame").addEventListener("pointerup", () => { imageDrag = null; });
-$("selectedFrame").addEventListener("pointercancel", () => { imageDrag = null; });
+function fitGestureTarget(host, event) {
+  if (state.editorMode !== "artist" || state.radioCurrent || !event.target.closest("img")) return null;
+  if (host.id === "artistPane") return state.radioArtist ? "artist" : null;
+  if (host.id === "bannerPane") return state.radioBanner ? "banner" : null;
+  if (state.radioArtist && state.radioBanner) {
+    if (!state.themedPackaging) return null;
+    return event.target.closest(".portrait-art") ? "artist" : "banner";
+  }
+  return state.radioBanner ? "banner" : "artist";
+}
+for (const id of ["selectedFrame", "artistPane", "bannerPane"]) {
+  const host = $(id);
+  let drag = null;
+  host.addEventListener("dragstart", event => event.preventDefault());
+  host.addEventListener("wheel", event => {
+    const target = fitGestureTarget(host, event);
+    if (!target) return;
+    const old = state.fit[target].zoom;
+    state.fit[target].zoom = clamp(old + (event.deltaY < 0 ? .1 : -.1) * Math.max(1, old / 2), .5, 8);
+    renderEnhancementMenus(); applyPreviewEffects(); event.preventDefault();
+  }, {passive: false});
+  host.addEventListener("pointerdown", event => {
+    const target = fitGestureTarget(host, event);
+    if (!target || event.button !== 0) return;
+    drag = {target, x: event.clientX, y: event.clientY, startX: state.fit[target].x, startY: state.fit[target].y, pointerId: event.pointerId};
+    host.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  host.addEventListener("pointermove", event => {
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const box = host.getBoundingClientRect();
+    state.fit[drag.target].x = clamp(drag.startX + (event.clientX - drag.x) / box.width * 100, -100, 100);
+    state.fit[drag.target].y = clamp(drag.startY + (event.clientY - drag.y) / box.height * 100, -100, 100);
+    applyPreviewEffects();
+    event.preventDefault();
+  });
+  for (const end of ["pointerup", "pointercancel", "lostpointercapture"]) host.addEventListener(end, () => { drag = null; });
+}
 try { const theme = localStorage.getItem("splined.browser-preview.theme"); if (["dark", "chalk", "light"].includes(theme)) { state.theme = theme; document.documentElement.dataset.theme = theme; } } catch {}
 
 loadLibrary();
