@@ -67,6 +67,13 @@ function candidateKind(candidate) {
   return String(candidate.kind || "").toLowerCase().includes("banner") ? "banner" : state.editorMode === "album" ? "cover" : "artist";
 }
 const MEDIA_STATUSES = [["unprocessed", "Unprocessed"], ["incomplete", "Incomplete"], ["processed", "Processed"], ["bypassed", "Bypassed"], ["partial", "Partial / Error"], ["artistComplete", "Artist Complete"], ["artistBypass", "Artist Bypass"]];
+const MEDIA_STATUS_COLORS = {all: "#eef8ff", unprocessed: "#eef8ff", incomplete: "#50b9ff", processed: "#efa54e", bypassed: "#ff5c66", partial: "#b55ce4", artistComplete: "#4cd989", artistBypass: "#4099ff"};
+const MEDIA_STATUS_COLORS_LIGHT = {all: "#304b5b", unprocessed: "#304b5b", incomplete: "#12659a", processed: "#99600b", bypassed: "#b72e40", partial: "#8036a8", artistComplete: "#176a3e", artistBypass: "#185aab"};
+function mediaStatusColor(key) { return MEDIA_STATUS_COLORS[key] || MEDIA_STATUS_COLORS.unprocessed; }
+function applyStatusPalette(element, key) {
+  element.style.setProperty("--status-color", mediaStatusColor(key));
+  element.style.setProperty("--status-color-light", MEDIA_STATUS_COLORS_LIGHT[key] || MEDIA_STATUS_COLORS_LIGHT.unprocessed);
+}
 const CANDIDATE_TYPES = [["Recommended", "Recommended"], ["Upscalable", "Upscalable"], ["Rejected", "Rejected"], ["Local", "Local"], ["Samples", "Samples"], ["FrontCover", "Front Cover"], ["BackCover", "Back Cover"], ["ArtistImage", "Artist Image"], ["MediaBooklet", "Media / Booklet"], ["Other", "Other"]];
 const CANDIDATE_RANGES = [["Ideal", "Ideal"], ["UpperRange", "Upper range"], ["Ladder", "Ladder"], ["AboveLadder", "Above ladder"], ["LowerRange", "Lower range"], ["BelowMinimum", "Below minimum"]];
 function mediaStatusKey(item) {
@@ -144,7 +151,8 @@ function renderLibrary() {
     $("artistCount").textContent = state.artists.filter(mediaMatches).length + " shown";
     for (const artist of state.artists.filter(mediaMatches)) {
       const button = node("button", "library-row" + (state.artist?.id === artist.id ? " active" : "")); button.type = "button";
-      button.append(node("span", "status-orbit" + (state.mediaSelected.has(artist.id) ? " selected" : ""), state.mediaSelected.has(artist.id) ? "●" : "○"));
+      const orbit = node("span", "status-orbit" + (state.mediaSelected.has(artist.id) ? " selected" : ""), state.mediaSelected.has(artist.id) ? "●" : "○");
+      applyStatusPalette(orbit, mediaStatusKey(artist)); button.append(orbit);
       const thumb = state.artist?.id === artist.id && state.artist.portrait ? image(state.artist.portrait, "library-thumb", "") : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
       button.append(thumb);
       const copy = node("span", "row-copy"); copy.append(node("strong", "", artist.name), node("small", "", "(" + artist.albums + " Albums)")); button.append(copy, node("span", "expand-mark", state.artist?.id === artist.id ? "−" : "+"));
@@ -171,8 +179,9 @@ function renderMediaStatusChips() {
   const host = $("mediaStatusChips"); clear(host);
   for (const [key, label] of [["all", "All"], ...MEDIA_STATUSES]) {
     const enabled = key === "all" ? state.mediaStatuses.size === MEDIA_STATUSES.length : state.mediaStatuses.has(key);
-    const button = node("button", "filter-chip" + (enabled ? " active" : ""));
+    const button = node("button", "filter-chip media-status" + (enabled ? " active" : ""));
     button.type = "button"; button.disabled = state.mediaFilterLocked;
+    applyStatusPalette(button, key);
     button.append(node("span", "filter-dot", enabled ? "●" : "○"), node("span", "filter-label", label), node("span", "filter-count", String(key === "all" ? items.length : counts.get(key) || 0)));
     button.addEventListener("click", () => { if (key === "all") state.mediaStatuses = new Set(MEDIA_STATUSES.map(([item]) => item)); else if (state.mediaStatuses.has(key)) state.mediaStatuses.delete(key); else state.mediaStatuses.add(key); renderLibrary(); }); host.append(button);
   }
@@ -196,7 +205,8 @@ function renderCandidateTypeChips() {
 }
 function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "") + (state.album?.id === album.id ? " active" : "")); button.type = "button";
-  button.append(node("span", "status-orbit" + (state.mediaSelected.has(album.id) ? " selected" : ""), state.mediaSelected.has(album.id) ? "●" : "○"));
+  const orbit = node("span", "status-orbit" + (state.mediaSelected.has(album.id) ? " selected" : ""), state.mediaSelected.has(album.id) ? "●" : "○");
+  applyStatusPalette(orbit, mediaStatusKey(album)); button.append(orbit);
   button.append(album.cover ? image(album.cover, "library-thumb", "") : node("span", "library-thumb", "♫"));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
@@ -218,7 +228,11 @@ function renderHero() {
     similar.append(card);
   }
   const facts = $("albumOverviewFacts"); clear(facts);
-  if (state.album) facts.append(node("strong", "", state.album.name), node("span", "status-indicator", "● " + (state.album.status || "unprocessed")), node("span", "", state.album.tracks + " tracks · " + state.album.embedded + " embedded"));
+  if (state.album) {
+    const indicator = node("span", "status-indicator", "● " + (state.album.status || "unprocessed"));
+    applyStatusPalette(indicator, mediaStatusKey(state.album));
+    facts.append(node("strong", "", state.album.name), indicator, node("span", "", state.album.tracks + " tracks · " + state.album.embedded + " embedded"));
+  }
   const songs = state.album ? state.album.track_titles || [] : metadata?.top_songs?.length ? metadata.top_songs : artist?.top_tracks || [];
   $("topSongs").textContent = state.album && !songs.length ? "Album track titles unavailable in this test index" : songs.length ? (state.album ? "Album tracks: " : metadata?.top_songs?.length ? "Navidrome top songs: " : "Indexed songs: ") + songs.slice(0, 10).map((song, index) => (index + 1) + ". " + song).join("  ·  ") : "";
   $("hero").style.backgroundImage = artist?.banner ? `url("${artist.banner}")` : artist?.portrait ? `url("${artist.portrait}")` : "none";
@@ -233,7 +247,9 @@ function renderHero() {
   for (const album of albums) {
     const button = node("button", "album-card" + (state.album?.id === album.id ? " active" : "")); button.type = "button";
     button.append(album.cover ? image(album.cover, "", album.name + " cover") : node("span", "album-placeholder", "♫"));
-    button.append(node("span", "album-card-status " + (album.status || "unprocessed").toLowerCase().replace(/[^a-z]+/g, "-"), "●"), node("strong", "", album.name), node("small", "", album.tracks + " tracks"));
+    const cardStatus = node("span", "album-card-status", "●");
+    applyStatusPalette(cardStatus, mediaStatusKey(album));
+    button.append(cardStatus, node("strong", "", album.name), node("small", "", album.tracks + " tracks"));
     button.addEventListener("click", () => chooseAlbum(album.id)); grid.append(button);
   }
 }
