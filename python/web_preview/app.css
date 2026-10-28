@@ -100,4 +100,13 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .album-key-row small{font-size:10px;color:#d0d8db}
 .album-key-row b{text-align:right}
 .album-key-note{margin:6px 0 0;color:#c6d0d5;font-size:10px}
-@media(max-height:850px){.album-card.windows-card{width:144px;height:178px;min-height:178px}.album-card-picture{height:113px}.album-status-key{top:28px;bottom:auto;max-height:min(240px,40vh)}}
+@media(max-height:850px){.album-card.windows-card{width:144px;height:178px;min-height:178px}.album-card-picture{height:113px}.album-status-key{max-height:min(240px,40vh)}}
+
+/* Keep the album cards in responsive rows inside the scrollable overview. */
+.hero{overflow-y:auto;overflow-x:hidden}
+.hero-details{position:relative;top:auto;left:auto;right:auto;max-height:none;margin:0 12px}
+.hero-lower{position:relative;left:auto;right:auto;bottom:auto;margin:8px 10px 10px}
+.album-grid,.album-grid.expanded{flex-wrap:wrap;align-content:flex-start;max-height:none;overflow:visible}
+.hero:has(.album-grid.expanded) .hero-details{display:none}
+.hero:has(.album-grid.expanded) .hero-main{opacity:1}
+.album-status-key{top:28px;bottom:auto}
