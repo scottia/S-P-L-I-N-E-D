@@ -109,4 +109,21 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .album-grid,.album-grid.expanded{flex-wrap:wrap;align-content:flex-start;max-height:none;overflow:visible}
 .hero:has(.album-grid.expanded) .hero-details{display:none}
 .hero:has(.album-grid.expanded) .hero-main{opacity:1}
+.hero.fallback-overview .hero-shade{background:linear-gradient(90deg,#071323eb,#101523bd),linear-gradient(0deg,#10101ad9,transparent 60%)}
+.hero.fallback-overview .hero-main{position:sticky;top:0;z-index:4;min-height:100px;padding:8px 12px;background:#0a192beF;border-bottom:1px solid var(--line)}
+.hero.fallback-overview .similar-heading,.hero.fallback-overview .similar-artists{display:none}
+.hero.fallback-overview .hero-details{margin-top:0}
+.hero.fallback-overview .hero-lower{margin-top:3px}
+.fallback-album-card{cursor:default!important}
+.fallback-album-card .album-type-banner{background:#513477;color:#fff}
+.fallback-report{display:flex;flex-direction:column;gap:4px;margin:9px 0;padding:8px;border:1px solid #32668a;border-radius:6px;background:#081527d9}
+.fallback-report[hidden]{display:none}
+.fallback-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--cyan);font-size:12px}
+.fallback-toolbar button{border:1px solid var(--green);border-radius:4px;background:#0b493e;color:#e5fff7;padding:5px 9px;font-size:11px;font-weight:750}
+.fallback-toolbar button:disabled{opacity:.5}
+.fallback-track{display:flex;align-items:center;width:100%;gap:9px;padding:5px 8px;border:1px solid #24445c;border-radius:4px;background:#0b1c2c;color:var(--text);text-align:left}
+.fallback-track:hover,.fallback-track.selected{border-color:var(--cyan);background:#12344a}
+.fallback-track-dot{font-size:15px;flex:none}.fallback-track-dot.pending{color:#3999ff}.fallback-track-dot.complete{color:var(--green)}
+.fallback-track-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}.fallback-track-copy strong,.fallback-track-copy small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fallback-track-copy small{color:var(--muted);font-size:10px}
+.fallback-track-state{color:var(--muted);font-size:10px}
 .album-status-key{top:28px;bottom:auto}

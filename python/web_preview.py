@@ -1,13 +1,9 @@
-"""Read-only browser prototype for the isolated SPLINED Python test library.
-
-The index is opened read-only. Artwork is served only when its path is inside the
-configured copied music tree or the isolated Artist Art directory. No endpoint
-writes music, artwork, tags, or database rows.
-"""
+"""Read-only browser workspace for the isolated SPLINED Python test library."""
 
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import closing
 from dataclasses import dataclass, field
 import hashlib
@@ -26,6 +22,9 @@ from threading import Lock
 from urllib.parse import parse_qs, urlsplit
 
 from PIL import Image, ImageOps
+from mutagen import File as MutagenFile
+from mutagen.id3 import ID3, ID3NoHeaderError
+from mutagen.flac import Picture
 import requests
 
 from splined_artist_art import ArtistAlbum, artist_targets, local_candidates, saved_package
@@ -34,6 +33,7 @@ from tui.artist_search import discover_artist_images
 
 ASSETS = Path(__file__).with_name("web_preview")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 
 
 def inside(path: Path, root: Path) -> bool:
@@ -53,6 +53,42 @@ def image_metadata(path: Path) -> dict[str, object]:
         "height": height,
         "bytes": path.stat().st_size,
     }
+
+
+def embedded_track_image(path: Path) -> bytes | None:
+    """Read one track's embedded cover; never substitute the album folder cover."""
+    artwork: bytes | None = None
+    try:
+        if path.suffix.casefold() == ".mp3":
+            frames = ID3(path).getall("APIC")
+            if frames:
+                artwork = next((frame.data for frame in frames if frame.type == 3), frames[0].data)
+        else:
+            audio = MutagenFile(path)
+            if audio is not None:
+                pictures = getattr(audio, "pictures", None)
+                if pictures:
+                    artwork = next((picture.data for picture in pictures if picture.type == 3), pictures[0].data)
+                elif audio.tags:
+                    covers = audio.tags.get("covr")
+                    if covers:
+                        artwork = bytes(covers[0])
+                    elif audio.tags.get("metadata_block_picture"):
+                        raw = audio.tags["metadata_block_picture"][0]
+                        artwork = Picture(base64.b64decode(raw)).data
+    except (OSError, ValueError, ID3NoHeaderError):
+        return None
+    if not artwork:
+        return None
+    try:
+        with Image.open(BytesIO(artwork)) as opened:
+            image = ImageOps.exif_transpose(opened)
+            image.thumbnail((2400, 2400), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            image.convert("RGB").save(output, format="PNG")
+            return output.getvalue()
+    except (OSError, ValueError):
+        return None
 
 
 @dataclass
@@ -88,6 +124,36 @@ class PreviewApp:
                 for old in list(self.images)[:100]:
                     del self.images[old]
         return "/api/image/" + token
+
+    def image_source(self, image_url: str) -> Path | bytes:
+        if not image_url.startswith("/api/image/"):
+            raise ValueError("Choose an image from Selected Artwork")
+        with self.lock:
+            source = self.images.get(image_url.removeprefix("/api/image/"))
+        if source is None:
+            raise KeyError("Image preview expired; select the artwork again")
+        if isinstance(source, Path) and not (inside(source, self.music) or inside(source, self.artist_art)):
+            raise ValueError("Image is outside the isolated library")
+        return source
+
+    def upscale_preview(self, image_url: str) -> dict[str, object]:
+        source = self.image_source(image_url)
+        with Image.open(source if isinstance(source, Path) else BytesIO(source)) as opened:
+            prepared = ImageOps.exif_transpose(opened).convert("RGB")
+        width, height = prepared.size
+        short_side = min(width, height)
+        # Mirror the default Windows 1800-pixel ideal and 200% safety ceiling.
+        requested = 1800 / short_side if short_side else 1
+        scale = requested if 1 < requested <= 2 else 1
+        if scale > 1:
+            prepared = prepared.resize((round(width * scale), round(height * scale)), Image.Resampling.LANCZOS)
+        output = BytesIO()
+        prepared.save(output, format="PNG")
+        return {"image": self.image(output.getvalue()), "width": prepared.width,
+                "height": prepared.height, "bytes": output.tell(), "upscaled": scale > 1,
+                "reason": "enlarged to the 1800-pixel ideal" if scale > 1 else
+                "source already meets the ideal" if requested <= 1 else
+                "required enlargement exceeds the 200% limit"}
 
     def artists(self, query: str) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
@@ -210,7 +276,7 @@ class PreviewApp:
                 "SELECT albums.album_key, albums.album_name, albums.artist_key, "
                 "artists.artist_name, albums.path, albums.cover_path, albums.track_count, "
                 "albums.artwork_jpeg, albums.artwork_png, albums.artwork_webp, "
-                "albums.status, albums.compilation FROM albums "
+                "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE albums.album_key=?", (album_id,),
             ).fetchone()
@@ -237,10 +303,58 @@ class PreviewApp:
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
+            "album_mbid": row["musicbrainz_albumid"] or "",
             "embedded": int(row["artwork_jpeg"] or 0) + int(row["artwork_png"] or 0) + int(row["artwork_webp"] or 0),
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover and cover.is_file() else None,
             "candidates": candidates, "track_titles": track_titles,
         }
+
+    def fallback_tracks(self, album_id: str) -> list[dict[str, object]]:
+        with closing(self.connect()) as db:
+            album = db.execute("SELECT path, musicbrainz_albumid FROM albums WHERE album_key=?",
+                               (album_id,)).fetchone()
+            if album is None:
+                raise KeyError("Album not found")
+            if str(album["musicbrainz_albumid"] or "").strip():
+                raise ValueError("This Album has a MusicBrainz Album ID and is not COMP fallback")
+            folder = Path(album["path"])
+            if not inside(folder, self.music):
+                raise ValueError("Fallback Album is outside the isolated music copy")
+            has_ledger = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'").fetchone() is not None
+            rows = db.execute(
+                "SELECT track_key, path, title, artist_name FROM tracks WHERE album_key=? ORDER BY path COLLATE NOCASE",
+                (album_id,),
+            ).fetchall()
+            completed = set()
+            if has_ledger:
+                completed = {str(row[0]).casefold() for row in db.execute(
+                    "SELECT track_path FROM compilation_track_artwork WHERE outcome IN ('embedded-replaced','embedded-existing')",
+                )}
+        tracks = [{"key": row["track_key"], "path": row["path"],
+                   "title": row["title"], "artist": row["artist_name"],
+                   "file": Path(row["path"]).name,
+                   "completed": str(row["path"]).casefold() in completed}
+                  for row in rows if inside(Path(row["path"]), folder)]
+        if not tracks:
+            # Windows fills an older uncached fallback from this folder only.
+            tracks = [{"key": str(path), "path": str(path), "title": path.stem,
+                       "artist": "", "file": path.name,
+                       "completed": str(path).casefold() in completed}
+                      for path in sorted(folder.iterdir(), key=lambda item: item.name.casefold())
+                      if path.is_file() and not path.is_symlink() and path.suffix.casefold() in AUDIO_EXTENSIONS]
+        return tracks[:250]
+
+    def fallback_track_preview(self, album_id: str, track_key: str) -> dict[str, object]:
+        track = next((item for item in self.fallback_tracks(album_id) if item["key"] == track_key), None)
+        if track is None:
+            raise KeyError("COMP track not found")
+        artwork = embedded_track_image(Path(track["path"]))
+        metadata: dict[str, object] = {"image": None, "width": 0, "height": 0, "bytes": 0}
+        if artwork:
+            with Image.open(BytesIO(artwork)) as opened:
+                metadata = {"image": self.image(artwork), "width": opened.width,
+                            "height": opened.height, "bytes": len(artwork)}
+        return {**track, **metadata}
 
     def artist_metadata(self, artist_id: str) -> dict[str, object]:
         with self.lock:
@@ -374,6 +488,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(self.app.artist_metadata(parse_qs(url.query).get("id", [""])[0]))
             elif url.path == "/api/album":
                 self.send_json(self.app.album(parse_qs(url.query).get("id", [""])[0]))
+            elif url.path == "/api/fallback/tracks":
+                self.send_json(self.app.fallback_tracks(parse_qs(url.query).get("id", [""])[0]))
+            elif url.path == "/api/fallback/track":
+                params = parse_qs(url.query)
+                self.send_json(self.app.fallback_track_preview(params.get("id", [""])[0], params.get("key", [""])[0]))
             elif url.path.startswith("/api/image/"):
                 token = url.path.removeprefix("/api/image/")
                 with self.app.lock:
@@ -400,7 +519,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(error)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:
-        if urlsplit(self.path).path != "/api/search/artist":
+        path = urlsplit(self.path).path
+        if path not in {"/api/search/artist", "/api/preview/upscale"}:
             self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
@@ -408,9 +528,15 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length < 4096:
                 raise ValueError("Invalid request size")
             payload = json.loads(self.rfile.read(length))
-            if not isinstance(payload, dict) or not isinstance(payload.get("id"), str):
-                raise ValueError("Choose an indexed artist")
-            self.send_json(self.app.search_artist(payload["id"]))
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid artwork request")
+            if path == "/api/search/artist":
+                if not isinstance(payload.get("id"), str):
+                    raise ValueError("Choose an indexed artist")
+                result = self.app.search_artist(payload["id"])
+            elif path == "/api/preview/upscale":
+                result = self.app.upscale_preview(str(payload.get("image") or ""))
+            self.send_json(result)
         except (ValueError, KeyError, OSError, sqlite3.Error) as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
