@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import io
 import time
+import tempfile
 import unittest
 from dataclasses import dataclass
+from pathlib import Path
 from unittest import mock
 
+from PIL import Image
 from pyratatui import Rect
 
 from tui.aispline import AiCandidate, EnhancementSelection
@@ -119,6 +122,12 @@ def _region(state: TuiState, target: str, index: int | None = None) -> HitRegion
     )
 
 
+def _open_home_filter(state: TuiState, adapter: TuiAdapter, width: int = 150, height: int = 44) -> None:
+    handle_mouse(state, adapter, _center(_region(state, "home-filter-toggle")))
+    render(_Frame(width, height), state, select_theme("OLED"))
+    assert state.home_media_filter_open
+
+
 class RenderHitMapTests(unittest.TestCase):
     def test_home_artwork_shortcuts_and_about_actions_are_clickable(self) -> None:
         state = _library_state()
@@ -193,16 +202,15 @@ class RenderHitMapTests(unittest.TestCase):
 
     def test_library_hit_geometry_is_rebuilt_at_all_responsive_sizes(self) -> None:
         required = {
-            "status-control",
-            "select-control",
-            "scan-control",
             "artist-row",
             "album-row",
             "artist-filter",
-            "album-filter",
             "artist-scroll",
             "album-scroll",
             "source-policy-open",
+            "home-filter-toggle",
+            "home-library-toggle",
+            "home-albums-toggle",
         }
         for width, height in ((150, 44), (108, 36), (72, 40)):
             state = _library_state()
@@ -219,6 +227,9 @@ class RenderHitMapTests(unittest.TestCase):
                         for region in state.hit_regions
                     )
                 )
+                _open_home_filter(state, TuiAdapter(), width, height)
+                self.assertTrue({"status-control", "select-control", "scan-control", "album-filter"} <=
+                                {region.target for region in state.hit_regions})
 
     def test_artist_and_album_rows_are_the_only_selection_hit_surfaces(self) -> None:
         state = _library_state()
@@ -228,6 +239,77 @@ class RenderHitMapTests(unittest.TestCase):
         self.assertIn("album-row", targets)
         self.assertNotIn("artist-checkbox", targets)
         self.assertNotIn("album-checkbox", targets)
+
+    def test_home_package_and_album_cards_use_native_images_and_filter_covers_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artist = root / "music" / "3 Doors Down"
+            album = artist / "Away from the Sun"
+            album.mkdir(parents=True)
+            cache = root / "cache"
+            cache.mkdir()
+            for name, size, color in (
+                ("artist.png", (500, 500), "red"),
+                ("banner.png", (1200, 400), "blue"),
+            ):
+                Image.new("RGB", size, color).save(artist / name)
+            Image.new("RGB", (600, 600), "green").save(album / "cover.png")
+            payload = _payload(1, 1)
+            payload["root"] = str(root / "music")
+            payload["albums"][0].update(path=str(album), artist="3 Doors Down", album="Away from the Sun")
+            payload["runtime_info"] = {"cache": str(cache), "artist_art": str(root / "managed")}
+            state = TuiState(started_at=0.0)
+            state.apply("library", payload)
+            state.apply("input", {"prompt": "", "context": {"kind": "library-selection"}})
+            state.image_protocol = "Sixel"
+            adapter = TuiAdapter()
+            with mock.patch("tui.splined_tui.native_prepare_image_overlay") as prepare:
+                prepare.side_effect = lambda _data, width, height, _limit: mock.Mock(width=width, height=height)
+                render(_Frame(150, 44), state, select_theme("OLED"))
+                self.assertIsNotNone(state.home_artist_package_path)
+                assert state.home_artist_package_path is not None
+                with Image.open(state.home_artist_package_path) as package:
+                    self.assertEqual(package.size, (960, 360))
+                self.assertIn(1, state.workspace_overlay_pending)
+                self.assertIn(10, state.workspace_overlay_pending)
+                self.assertIn("album-row", {region.target for region in state.hit_regions})
+                _open_home_filter(state, adapter)
+                self.assertFalse(state.workspace_overlay_pending)
+                self.assertIn("scan-control", {region.target for region in state.hit_regions})
+                close = next(region for region in reversed(state.hit_regions) if region.target == "home-filter-toggle")
+                handle_mouse(state, adapter, _center(close))
+                render(_Frame(150, 44), state, select_theme("OLED"))
+                self.assertIn(1, state.workspace_overlay_pending)
+                self.assertIn(10, state.workspace_overlay_pending)
+
+    def test_home_sections_collapse_and_restore_without_changing_selection(self) -> None:
+        state = _library_state(artists=2, albums_each=2)
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        model = state.library
+        assert model is not None
+        selected_before = [item.selected for item in model.albums]
+
+        handle_mouse(state, adapter, _center(_region(state, "home-albums-toggle")))
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        self.assertFalse(state.home_albums_expanded)
+        self.assertNotIn("album-row", {region.target for region in state.hit_regions})
+        handle_mouse(state, adapter, _center(_region(state, "home-albums-toggle")))
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        self.assertTrue(state.home_albums_expanded)
+        self.assertIn("album-row", {region.target for region in state.hit_regions})
+
+        handle_mouse(state, adapter, _center(_region(state, "home-library-toggle")))
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        self.assertFalse(state.home_library_expanded)
+        self.assertNotIn("artist-row", {region.target for region in state.hit_regions})
+        handle_mouse(state, adapter, _center(_region(state, "home-library-toggle")))
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        self.assertTrue(state.home_library_expanded)
+        self.assertIn("artist-row", {region.target for region in state.hit_regions})
+        self.assertEqual([item.selected for item in model.albums], selected_before)
+        self.assertTrue(adapter.responses.empty())
 
 
 class ReportAndStatusAuthorityTests(unittest.TestCase):
@@ -688,6 +770,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.assertTrue(adapter.responses.empty())
         self.assertTrue(state.transient.startswith("Input busy"))
 
+        _open_home_filter(state, adapter)
         handle_mouse(
             state,
             adapter,
@@ -767,6 +850,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.assertEqual(self.state.library_focus, 3)
 
         render(_Frame(150, 44), self.state, select_theme("OLED"))
+        _open_home_filter(self.state, self.adapter)
         album_filter = _region(self.state, "album-filter")
         handle_mouse(self.state, self.adapter, _center(album_filter))
         for letter in "ruins":
@@ -914,6 +998,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         self.assertEqual(json.loads(self.adapter.responses.get_nowait())["action"], "refresh-index")
 
     def test_status_select_and_scan_controls_are_direct_actions(self) -> None:
+        _open_home_filter(self.state, self.adapter)
         model = self.state.library
         assert model is not None
         for index in range(7):
@@ -943,6 +1028,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             adapter = TuiAdapter()
             adapter.waiting.set()
             render(_Frame(150, 44), state, select_theme("OLED"))
+            _open_home_filter(state, adapter)
             handle_mouse(
                 state,
                 adapter,
@@ -964,6 +1050,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         adapter = TuiAdapter()
         adapter.waiting.set()
         render(_Frame(150, 44), state, select_theme("OLED"))
+        _open_home_filter(state, adapter)
         handle_mouse(
             state,
             adapter,
@@ -982,6 +1069,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             adapter = TuiAdapter()
             adapter.waiting.set()
             render(_Frame(150, 44), state, select_theme("OLED"))
+            _open_home_filter(state, adapter)
             handle_mouse(
                 state,
                 adapter,
@@ -995,6 +1083,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             adapter = TuiAdapter()
             adapter.waiting.set()
             render(_Frame(150, 44), state, select_theme("OLED"))
+            _open_home_filter(state, adapter)
             handle_mouse(
                 state,
                 adapter,
@@ -1020,6 +1109,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
         state.library.albums[0].selected = True
         state.library_activate_guard_until = time.monotonic() + 1.0
         render(_Frame(150, 44), state, select_theme("OLED"))
+        _open_home_filter(state, adapter)
         handle_mouse(
             state,
             adapter,
@@ -1051,6 +1141,7 @@ class LibraryMouseAndFilterTests(unittest.TestCase):
             adapter.waiting.set()
             render(_Frame(150, 44), state, select_theme("OLED"))
 
+        _open_home_filter(state, adapter)
         handle_mouse(
             state,
             adapter,

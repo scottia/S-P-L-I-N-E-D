@@ -26,10 +26,29 @@ is a different SQLite file. The Python configuration has `sqlite_shared=false`
 and `logging.database_audit=true`. If either database or library path differs,
 stop the run before writing images or audio tags.
 
+## Home and Media Filter checks
+
+Select Media opens with the **Artist Overview** in the center. Its background
+and round portrait use the saved local `banner.*` and `artist.*`; album cards
+show local `cover.*` images. Click an artist on the left to change the overview.
+Click an album card to select it and load the right-side artwork. At a narrow
+terminal width the three areas stack instead of squeezing the images.
+
+1. Click **Media Filter +**. Artist Search, Album Search, status filters,
+   selection, and scan controls should appear in one overlay. Click the close
+   control or press `Esc` to return to the overview. The images underneath
+   should reappear without changing the selection.
+2. Click **Media Library −/+** and **Albums −/+** to collapse and restore those
+   sections. Click **G Artist Art** or **O Album Art** to open the corresponding
+   editor. The `?` button opens help. `A` still opens About, where the configured
+   local paths can be checked.
+3. Resize the terminal if practical. Artist and album selections should remain
+   clickable in both wide and stacked layouts. The home images should use the
+   same smooth native terminal rendering as the selected album preview.
+
 ## Artwork checks
 
-The Select Media tools now offer clickable **G Artist Art**, **O Album Art**,
-and **A About** actions. In Artist Art, click a candidate, choose **Use as
+In Artist Art, click a candidate, choose **Use as
 Artist** or **Use as Banner**, then click the pane title to activate its radio.
 The slider selector, adjustment steps, zoom, position, upscale, reset, write,
 and back controls are clickable. Wheel over an active image to zoom; hold and

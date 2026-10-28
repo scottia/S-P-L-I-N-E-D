@@ -5,9 +5,11 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import queue
 import re
 import signal
+import sqlite3
 
 import requests
 import sys
@@ -55,7 +57,11 @@ except ImportError:  # plain CLI and automatic fallback remain independently usa
 from .animation import animation_step, fit_phrase, startup_frame
 from .artist_workspace import ArtistWorkspace
 from .album_workspace import AlbumWorkspace
-from splined_artist_art import ADJUSTMENT_FIELDS
+from splined_artist_art import (
+    ADJUSTMENT_FIELDS, SUPPORTED_EXTENSIONS, ArtistArtTarget, artist_albums_from_db,
+    artist_targets, choose_banner, compose_package,
+    prepare_banner, saved_package,
+)
 from .aispline import (
     AISPLINE_TITLE,
     SPLINED_TITLE,
@@ -374,6 +380,13 @@ class TuiState:
     workspace_drag_slot: int = 0
     workspace_drag_column: int = 0
     workspace_drag_row: int = 0
+    home_media_filter_open: bool = False
+    home_library_expanded: bool = True
+    home_albums_expanded: bool = True
+    home_artist_targets_key: tuple[str, str, str] | None = None
+    home_artist_targets: list[ArtistArtTarget] = field(default_factory=list)
+    home_artist_package_key: tuple[Any, ...] | None = None
+    home_artist_package_path: Path | None = None
     hover_target: str = ""
     hover_index: int = -1
     status_loading: bool = False
@@ -492,6 +505,8 @@ class TuiState:
                 self.transient = ""
             if event == "library" or self.library is None:
                 self.library = LibraryModel.from_payload(payload)
+                if self.library_focus in {0, 1, 2}:
+                    self.library_focus = 3
             else:
                 prior_albums = self.library.visible_albums(active_artist_only=True)
                 prior_album_path = (
@@ -2771,37 +2786,288 @@ def _render_library_side_panels(
 
 
 
+def _home_artist_package(state: TuiState) -> Path | None:
+    """Build one disposable overview composite from the saved local art."""
+    model = state.library
+    if model is None or not model.active_artist:
+        return None
+    artist = model.active_artist
+    database_text = str(state.runtime_info.get("database", "") or "")
+    managed_text = str(state.runtime_info.get("artist_art", "") or "")
+    targets_key = (artist, database_text, managed_text)
+    if state.home_artist_targets_key != targets_key:
+        root = Path(model.root)
+        direct: list[ArtistArtTarget] = []
+        seen: set[str] = set()
+        sources = [Path(item.path) for item in model.artists if item.name == artist]
+        sources.extend(Path(item.path).parent for item in model.albums if item.artist == artist)
+        for directory in sources:
+            if not directory.is_absolute() or (root.is_absolute() and not directory.is_relative_to(root)):
+                continue
+            key = str(directory).casefold()
+            if key not in seen:
+                seen.add(key)
+                direct.append(ArtistArtTarget(directory, "artist"))
+        database = Path(database_text) if database_text else None
+        managed = Path(managed_text) if managed_text else None
+        if database is not None and database.is_file() and managed is not None:
+            try:
+                with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+                    connection.execute("PRAGMA query_only=ON")
+                    indexed = artist_targets(artist_albums_from_db(connection, artist), artist, managed)
+                for target in indexed:
+                    key = str(target.directory).casefold()
+                    if key not in seen and (target.managed or not root.is_absolute() or target.directory.is_relative_to(root)):
+                        seen.add(key)
+                        direct.append(target)
+            except (OSError, sqlite3.Error, ValueError):
+                pass
+        state.home_artist_targets_key = targets_key
+        state.home_artist_targets = direct
+    package = saved_package(state.home_artist_targets)
+    portrait = package.portrait
+    banner, expansion = choose_banner(package.banner, None, portrait)
+    def identity(path: Path | None) -> tuple[str, int, int]:
+        if path is None:
+            return ("", 0, 0)
+        try:
+            info = path.stat()
+            return (str(path), int(info.st_size), int(info.st_mtime_ns))
+        except OSError:
+            return (str(path), 0, 0)
+    package_key: tuple[Any, ...] = (artist, identity(portrait), identity(banner))
+    if state.home_artist_package_key == package_key:
+        return state.home_artist_package_path
+    state.home_artist_package_key = package_key
+    state.home_artist_package_path = None
+    cache_text = str(state.runtime_info.get("cache", "") or "")
+    if (portrait is None and banner is None) or not cache_text:
+        return None
+    try:
+        portrait_bytes = portrait.read_bytes() if portrait else None
+        banner_bytes = banner.read_bytes() if banner else None
+        if banner_bytes is not None and expansion:
+            banner_bytes = prepare_banner(banner_bytes, width=1200, height=450)
+        destination = Path(cache_text) / f"_tui-home-{os.getpid()}.png"
+        destination.write_bytes(compose_package(portrait_bytes, banner_bytes))
+        state.home_artist_package_path = destination
+        return destination
+    except (OSError, ValueError):
+        return None
+
+
+def _home_album_cover(state: TuiState, album_path: str) -> Path | None:
+    model = state.library
+    path = Path(album_path)
+    if model is None or not path.is_absolute() or (
+        Path(model.root).is_absolute() and not path.is_relative_to(Path(model.root))
+    ):
+        return None
+    for item in state.selected_album_stats:
+        if str(item.get("path", "")) == album_path:
+            selected = Path(str(item.get("cover_path", "") or ""))
+            if selected.is_file() and not selected.is_symlink():
+                return selected
+    try:
+        covers = [item for item in path.iterdir() if item.is_file() and not item.is_symlink()
+                  and item.stem.casefold() == "cover" and item.suffix.casefold() in SUPPORTED_EXTENSIONS]
+    except OSError:
+        return None
+    return sorted(covers, key=lambda item: item.suffix.casefold())[0] if covers else None
+
+
+def _render_home_header(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    compact = int(area.width) < 96
+    controls = (
+        ("[Library " + ("−" if state.home_library_expanded else "+") + "]" if compact else
+         "[Media Library " + ("−" if state.home_library_expanded else "+") + "]", "home-library-toggle"),
+        ("[Filter " + ("−" if state.home_media_filter_open else "+") + "]" if compact else
+         "[Media Filter " + ("−" if state.home_media_filter_open else "+") + "]", "home-filter-toggle"),
+        ("[Albums " + ("−" if state.home_albums_expanded else "+") + "]", "home-albums-toggle"),
+        ("[G]" if compact else "[G Artist Art]", "artist-art-open"),
+        ("[O]" if compact else "[O Album Art]", "album-art-open"),
+        ("[?]", "home-help"),
+    )
+    spans: list[Span] = []
+    x = int(area.x) + 2
+    for label, target in controls:
+        if x + len(label) >= int(area.x + area.width) - 1:
+            break
+        if spans:
+            spans.append(Span(" ", style(theme, Semantic.MUTED)))
+            x += 1
+        spans.append(Span(label, style(theme, Semantic.SPECIAL, bold=True)))
+        _register_hit(state, target, Rect(x, int(area.y) + 1, len(label), 1))
+        x += len(label)
+    frame.render_widget(
+        Paragraph(Text([Line(spans)])).block(card(theme, "ARTIST OVERVIEW / SELECT MEDIA", Semantic.ACTIVE)),
+        area,
+    )
+
+
+def _render_home_album_gallery(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    model = state.library
+    assert model is not None
+    albums = model.visible_albums(active_artist_only=True)
+    frame.render_widget(
+        Paragraph.from_string("").block(card(theme, f"ALBUMS · {len(albums)} FOR {model.active_artist or 'ARTIST'}", Semantic.ACTIVE)),
+        area,
+    )
+    if not albums:
+        frame.render_widget(
+            Paragraph.from_string("Choose an Artist or adjust Media Filter.")
+            .style(style(theme, Semantic.MUTED)),
+            Rect(int(area.x) + 2, int(area.y) + 2, max(1, int(area.width) - 4), 1),
+        )
+        return
+    columns = 2 if int(area.width) >= 42 else 1
+    card_height = 6 if int(area.height) >= 11 else 4
+    rows = max(1, (int(area.height) - 3) // card_height)
+    capacity = rows * columns
+    state.album_page_size = capacity
+    state.album_scroll = max(0, min(state.album_scroll, max(0, len(albums) - capacity)))
+    _register_hit(state, "album-scroll", area)
+    cell_width = max(1, (int(area.width) - 2) // columns)
+    for offset, album in enumerate(albums[state.album_scroll:state.album_scroll + capacity]):
+        index = state.album_scroll + offset
+        column = offset % columns
+        row = offset // columns
+        card_area = Rect(
+            int(area.x) + 1 + column * cell_width,
+            int(area.y) + 2 + row * card_height,
+            cell_width, card_height,
+        )
+        if int(card_area.y + card_area.height) > int(area.y + area.height) - 1:
+            break
+        semantic = _album_status_semantic(album.status)
+        frame.render_widget(
+            Paragraph.from_string("").block(card(theme, "", semantic)), card_area,
+        )
+        cover = _home_album_cover(state, album.path)
+        if cover is not None and cell_width >= 18 and card_height >= 6:
+            thumb = Rect(int(card_area.x) + 1, int(card_area.y) + 1, 8, 4)
+            _render_workspace_image(frame, thumb, state, theme, cover, "", 10 + offset)
+        marker = "●" if album.selected else "○"
+        label_x = int(card_area.x) + (10 if cover is not None and cell_width >= 18 and card_height >= 6 else 2)
+        label_width = max(1, int(card_area.x + card_area.width) - label_x - 1)
+        lines = [
+            Line([Span(_truncate(album.title, label_width), style(theme, semantic, bold=True))]),
+            Line([Span(_truncate(album.artist, label_width), style(theme, Semantic.MUTED))]),
+            Line([Span(f"{marker} {album.status.value}", style(theme, Semantic.ACCEPTED if album.selected else semantic))]),
+        ]
+        frame.render_widget(
+            Paragraph(Text(lines)), Rect(label_x, int(card_area.y) + 1, label_width, 3),
+        )
+        _register_hit(state, "album-row", card_area, index=index, value=album.path)
+
+
+def _render_home_artist_overview(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    model = state.library
+    assert model is not None
+    banner_height = max(5, min(15, int(area.height) // 2))
+    if int(area.height) < 20:
+        banner_height = min(banner_height, max(5, int(area.height) - 10))
+    banner, detail, gallery = _split_vertical(
+        area, [Constraint.length(banner_height), Constraint.length(3), Constraint.fill(1)],
+    )
+    package = _home_artist_package(state)
+    _render_workspace_image(
+        frame, banner, state, theme,
+        package or Path("__missing_artist_overview__"),
+        f"ARTIST OVERVIEW · {model.active_artist or 'CHOOSE AN ARTIST'}", 1,
+    )
+    albums = model.visible_albums(active_artist_only=True)
+    processed = sum(item.status is AlbumStatus.PROCESSED for item in albums)
+    selected = sum(item.selected for item in albums)
+    summary = (
+        f"{model.active_artist or 'Choose an Artist'}  ·  "
+        f"{len(albums)} Albums  ·  {processed} Completed  ·  {selected} Selected"
+    )
+    frame.render_widget(
+        Paragraph.from_string(_truncate(summary, max(1, int(detail.width) - 4)))
+        .block(card(theme, "ARTIST & ALBUM SELECTION", Semantic.SPECIAL)),
+        detail,
+    )
+    if state.home_albums_expanded:
+        _render_home_album_gallery(frame, gallery, state, theme)
+    else:
+        frame.render_widget(
+            Paragraph.from_string("Albums are collapsed · click Albums + above to reopen.")
+            .block(card(theme, "ALBUMS COLLAPSED", Semantic.MUTED)), gallery,
+        )
+
+
+def _render_home_media_filter(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    model = state.library
+    assert model is not None
+    width = min(max(55, int(area.width) * 2 // 3), max(1, int(area.width) - 2))
+    height = min(31, max(1, int(area.height) - 1))
+    popup = Rect(int(area.x) + 1, int(area.y) + 1, width, height)
+    frame.render_widget(Clear(), popup)
+    frame.render_widget(
+        Paragraph.from_string("").block(card(theme, "MEDIA FILTER · SELECT & SCAN", Semantic.SPECIAL)), popup,
+    )
+    _register_hit(state, "home-overlay-block", popup)
+    close_x = int(popup.x + popup.width) - 5
+    frame.render_widget(
+        Paragraph.from_string("[×]").style(style(theme, Semantic.WARNING, bold=True)),
+        Rect(close_x, int(popup.y), 3, 1),
+    )
+    _register_hit(state, "home-filter-toggle", Rect(close_x, int(popup.y), 3, 1))
+    inner = Rect(int(popup.x) + 1, int(popup.y) + 1, max(1, int(popup.width) - 2), max(1, int(popup.height) - 2))
+    artist_label = f"Artist Search: {model.artist_filter or 'Click to type'}"
+    album_label = f"Album Search:  {model.album_filter or 'Click to type'}"
+    frame.render_widget(
+        Paragraph.from_string(_truncate(artist_label, int(inner.width))),
+        Rect(int(inner.x), int(inner.y), int(inner.width), 1),
+    )
+    frame.render_widget(
+        Paragraph.from_string(_truncate(album_label, int(inner.width))),
+        Rect(int(inner.x), int(inner.y) + 1, int(inner.width), 1),
+    )
+    _register_hit(state, "artist-filter", Rect(int(inner.x), int(inner.y), int(inner.width), 1))
+    _register_hit(state, "album-filter", Rect(int(inner.x), int(inner.y) + 1, int(inner.width), 1))
+    controls = Rect(int(inner.x), int(inner.y) + 3, int(inner.width), max(1, int(inner.height) - 3))
+    _render_library_controls(frame, controls, state, theme)
+
+
 def _render_library(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     if state.library is None:
         _render_overview(frame, area, state, theme)
         return
     spec = layout_spec(area.width, area.height)
+    header, body = _split_vertical(area, [Constraint.length(3), Constraint.fill(1)])
+    _render_home_header(frame, header, state, theme)
     if spec.stack_cards:
-        controls, lower = _split_vertical(
-            area, [Constraint.length(26), Constraint.fill(1)]
+        sections = _split_vertical(
+            body,
+            [Constraint.length(9 if state.home_library_expanded else 3),
+             Constraint.fill(1), Constraint.length(9)],
         )
-        picker_height = max(6, int(lower.height) // 2)
-        pickers, side = _split_vertical(
-            lower,
-            [Constraint.length(picker_height), Constraint.fill(1)],
-        )
-        artist, album = _split_vertical(
-            pickers, [Constraint.percentage(50), Constraint.fill(1)]
-        )
-        _render_library_controls(frame, controls, state, theme)
-        _render_artist_picker(frame, artist, state, theme)
-        _render_album_picker(frame, album, state, theme)
-        _render_library_side_panels(frame, side, state, theme)
+        if state.home_library_expanded:
+            _render_artist_picker(frame, sections[0], state, theme)
+        else:
+            frame.render_widget(Paragraph.from_string("[+] Media Library").block(card(theme, "LIBRARY", Semantic.ACTIVE)), sections[0])
+            _register_hit(state, "home-library-toggle", sections[0])
+        _render_home_artist_overview(frame, sections[1], state, theme)
+        _render_library_side_panels(frame, sections[2], state, theme)
     else:
-        top, bottom = _split_vertical(area, [Constraint.length(9), Constraint.fill(1)])
-        _render_library_controls(frame, top, state, theme)
         columns = _split_horizontal(
-            bottom,
-            [Constraint.percentage(25), Constraint.percentage(50), Constraint.fill(1)],
+            body,
+            [Constraint.percentage(25), Constraint.percentage(50), Constraint.fill(1)]
+            if state.home_library_expanded else
+            [Constraint.length(5), Constraint.percentage(65), Constraint.fill(1)],
         )
-        _render_artist_picker(frame, columns[0], state, theme)
-        _render_album_picker(frame, columns[1], state, theme)
+        if state.home_library_expanded:
+            _render_artist_picker(frame, columns[0], state, theme)
+        else:
+            frame.render_widget(Paragraph.from_string("[+]").block(card(theme, "", Semantic.ACTIVE)), columns[0])
+            _register_hit(state, "home-library-toggle", columns[0])
+        _render_home_artist_overview(frame, columns[1], state, theme)
         _render_library_side_panels(frame, columns[2], state, theme)
+    if state.home_media_filter_open:
+        state.workspace_overlay_pending.clear()
+        _render_home_media_filter(frame, area, state, theme)
 
 
 def _render_library_embedded(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -5699,9 +5965,7 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         return
 
     library_header = state.workflow == "library"
-    # On Select Media the spectral SPLINED wordmark now lives inside the
-    # yellow ALBUM STATUS panel title. Reclaim the former one-line floating
-    # header instead of rendering a duplicate wordmark above the controls.
+    # The Select Media home has its own header, so use the full content height.
     header_height = (
         0 if library_header else context_header_height(area.width, area.height)
     )
@@ -5770,6 +6034,8 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
     )
     if state.status_loading and state.workflow == "library":
         _render_artist_status_loading_banner(frame, area, state, theme)
+    if state.help_open or state.dialog_open or state.status_loading:
+        state.workspace_overlay_pending.clear()
     if state.help_open:
         _render_help(frame, area, state, theme)
     if state.dialog_open:
@@ -6304,6 +6570,10 @@ def _handle_library_key(
         return _handle_artist_workspace_key(state, event, action)
     if state.workspace == "album-art":
         return _handle_album_workspace_key(state, event, action)
+    if state.workspace == "library" and state.home_media_filter_open and action is Action.BACK:
+        state.home_media_filter_open = False
+        state.library_focus = 3
+        return True
     if state.workspace == "library" and state.library_focus not in {4, 6} and code.casefold() == "g" and not bool(getattr(event, "ctrl", False)):
         _open_artist_workspace(state)
         return True
@@ -6490,7 +6760,7 @@ def _handle_library_key(
         return True
 
     if action in {Action.NEXT_REGION, Action.PREVIOUS_REGION}:
-        focus_order = (0, 1, 2, 3, 5)
+        focus_order = (0, 1, 2, 3, 5) if state.home_media_filter_open else (3, 5)
         step = -1 if action is Action.PREVIOUS_REGION else 1
         current = state.library_focus if state.library_focus in focus_order else (3 if state.library_focus == 4 else 5)
         state.library_focus = focus_order[(focus_order.index(current) + step) % len(focus_order)]
@@ -6568,6 +6838,8 @@ def _handle_library_key(
         _respond_library_action(state, adapter, "refresh-index")
         return True
     if action is Action.FILTER:
+        if state.library_focus in {5, 6}:
+            state.home_media_filter_open = True
         state.library_focus = 6 if state.library_focus in {5, 6} else 4
         return True
     if action in {Action.LEFT, Action.RIGHT}:
@@ -7096,6 +7368,8 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             _clear_remote_hover_preview(state, adapter)
         return
     if code in {"scroll_up", "scroll_down"}:
+        if state.workspace == "library" and state.home_media_filter_open:
+            return
         image_region = hit_test(state, column, row)
         if image_region is not None and image_region.target == "workspace-image":
             _workspace_mouse_fit(
@@ -7152,6 +7426,23 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             _apply_dialog_decision(state, adapter, False)
         return
 
+    if region.target == "home-library-toggle" and state.workspace == "library":
+        state.home_library_expanded = not state.home_library_expanded
+        return
+    if region.target == "home-filter-toggle" and state.workspace == "library":
+        state.home_media_filter_open = not state.home_media_filter_open
+        if not state.home_media_filter_open:
+            state.library_focus = 3
+        return
+    if region.target == "home-albums-toggle" and state.workspace == "library":
+        state.home_albums_expanded = not state.home_albums_expanded
+        return
+    if region.target == "home-help" and state.workspace == "library":
+        state.help_topic = "library"
+        state.help_open = True
+        return
+    if region.target == "home-overlay-block":
+        return
     if region.target == "workspace-key":
         if state.workspace in {"artist-art", "album-art", "about"}:
             handle_key(state, adapter, SimpleNamespace(code=region.value, ctrl=False, shift=False))
@@ -7803,6 +8094,14 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                             if state.tab == "main"
                             and state.workflow == "library"
                             and state.workspace in {"artist-art", "album-art"}
+                            else "home"
+                            if state.tab == "main"
+                            and state.workflow == "library"
+                            and state.workspace == "library"
+                            and not state.home_media_filter_open
+                            and not state.help_open
+                            and not state.dialog_open
+                            and not state.status_loading
                             else ""
                         )
                         if state.workspace_overlay_kind != workspace_kind:
@@ -7879,6 +8178,11 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
             raise
     finally:
         adapter.cancel_wait()
+        if state.home_artist_package_path is not None:
+            try:
+                state.home_artist_package_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         for workspace in (state.artist_workspace, state.album_workspace):
             if workspace is not None:
                 try:
