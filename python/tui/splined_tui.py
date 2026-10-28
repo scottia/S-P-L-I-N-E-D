@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from datetime import datetime
 from typing import Any, Callable
 
@@ -370,6 +371,9 @@ class TuiState:
     workspace_overlay_pending: dict[int, tuple[tuple[str, int, int, int, int], Any, tuple[int, int, int, int]]] = field(default_factory=dict)
     workspace_overlay_drawn: dict[int, tuple[tuple[str, int, int, int, int], tuple[int, int, int, int]]] = field(default_factory=dict)
     workspace_overlay_kind: str = ""
+    workspace_drag_slot: int = 0
+    workspace_drag_column: int = 0
+    workspace_drag_row: int = 0
     hover_target: str = ""
     hover_index: int = -1
     status_loading: bool = False
@@ -2705,6 +2709,25 @@ def _render_library_tools(
         )
         cursor += len(label)
 
+    if int(area.height) >= 4:
+        for choices in (
+            (("[G] Artist Art", "artist-art-open"), ("[O] Album Art", "album-art-open")),
+            (("[G] Artist", "artist-art-open"), ("[O] Album", "album-art-open")),
+            (("[G]", "artist-art-open"), ("[O]", "album-art-open")),
+        ):
+            if sum(len(label) for label, _ in choices) + 2 <= inner_width:
+                break
+        extra_text = "  ".join(label for label, _ in choices)
+        extra_x = int(area.x) + 1 + max(0, (inner_width - len(extra_text)) // 2)
+        extra_y = int(area.y) + 2
+        frame.render_widget(
+            Paragraph.from_string(extra_text).style(style(theme, Semantic.SPECIAL, bold=True)),
+            Rect(extra_x, extra_y, min(len(extra_text), inner_width), 1),
+        )
+        for label, target in choices:
+            _register_hit(state, target, Rect(extra_x, extra_y, len(label), 1))
+            extra_x += len(label) + 2
+
 
 
 
@@ -2714,7 +2737,7 @@ def _render_library_side_panels(
     state: TuiState,
     theme: Theme,
 ) -> None:
-    tools_height = 3
+    tools_height = 4
     scan_lines = _scan_directory_stat_lines(state, theme, int(area.width))
     # These two lower panels are fixed/affixed.  The selected-Album panel owns
     # every remaining row and becomes scrollable as selections accumulate.
@@ -4705,11 +4728,20 @@ def _render_about(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None
         lines.extend([Line([Span("")]), Line([Span("PROVIDER AUTHENTICATION", style(theme, Semantic.ACCEPTED, bold=True))])])
         for provider, status_value in sorted(providers.items()):
             lines.append(Line([Span(f"{provider:<14} {status_value}", style(theme, Semantic.TEXT))]))
-    lines.extend([Line([Span("")]), Line([Span("[U] Check for updates · Esc return", style(theme, Semantic.DEBUG))])])
     frame.render_widget(
-        Paragraph(Text(lines)).wrap(True, False).block(card(theme, "ABOUT / RUNTIME DIAGNOSTICS", Semantic.SPECIAL)),
+        Paragraph(Text(lines[: max(1, int(area.height) - 3)])).wrap(True, False)
+        .block(card(theme, "ABOUT / RUNTIME DIAGNOSTICS", Semantic.SPECIAL)),
         area,
     )
+    footer_y = int(area.y + area.height) - 2
+    footer_x = int(area.x) + 2
+    footer_text = "[Check for updates]  [Back]"
+    frame.render_widget(
+        Paragraph.from_string(footer_text).style(style(theme, Semantic.DEBUG, bold=True)),
+        Rect(footer_x, footer_y, min(len(footer_text), max(1, int(area.width) - 4)), 1),
+    )
+    _register_hit(state, "workspace-key", Rect(footer_x, footer_y, len("[Check for updates]"), 1), value="u")
+    _register_hit(state, "workspace-key", Rect(footer_x + len("[Check for updates]  "), footer_y, len("[Back]"), 1), value="Esc")
 
 
 def _render_history(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
@@ -5387,6 +5419,29 @@ def _render_track_overlay(
     )
 
 
+def _workspace_control_line(
+    state: TuiState, theme: Theme, area: Rect, line: int,
+    controls: tuple[tuple[str, str], ...],
+) -> Line:
+    """Draw a compact clickable toolbar within a framed workspace panel."""
+    spans: list[Span] = []
+    x = int(area.x) + 1
+    right = int(area.x + area.width) - 1
+    y = int(area.y) + 1 + line
+    for label, key in controls:
+        if x + len(label) > right:
+            break
+        if spans:
+            spans.append(Span(" ", style(theme, Semantic.MUTED)))
+            x += 1
+        if x + len(label) > right:
+            break
+        spans.append(Span(label, style(theme, Semantic.SPECIAL, bold=True)))
+        _register_hit(state, "workspace-key", Rect(x, y, len(label), 1), value=key)
+        x += len(label)
+    return Line(spans)
+
+
 def _render_workspace_image(
     frame: Any, area: Rect, state: TuiState, theme: Theme,
     path: Path, title: str, slot: int,
@@ -5394,6 +5449,17 @@ def _render_workspace_image(
     """Use the same native image path as the selected album thumbnail."""
     width = max(1, int(area.width) - 2)
     height = max(1, int(area.height) - 2)
+    if state.workspace == "artist-art":
+        _register_hit(
+            state, "workspace-key",
+            Rect(int(area.x) + 1, int(area.y), width, 1),
+            value=str(slot),
+        )
+        _register_hit(
+            state, "workspace-image",
+            Rect(int(area.x) + 1, int(area.y) + 1, width, height),
+            index=slot,
+        )
     native_images = str(state.image_protocol).casefold() not in {
         "unknown", "halfblocks", "half-blocks", "halfblocks protocol",
     }
@@ -5442,6 +5508,7 @@ def _clear_workspace_overlays(state: TuiState) -> None:
                 pass
     state.workspace_overlay_drawn.clear()
     state.workspace_overlay_kind = ""
+    state.workspace_drag_slot = 0
 
 
 def _draw_workspace_overlays(state: TuiState) -> None:
@@ -5484,12 +5551,18 @@ def _render_artist_workspace(frame: Any, area: Rect, state: TuiState, theme: The
         else "PACKAGE · EDIT LOCKED" if session.portrait_active and session.banner_active
         else "BANNER" if session.banner_active else "ARTIST IMAGE"
     )
-    heading = (
-        f"{session.artist}  ·  {active}  ·  {selected_field.upper()} {getattr(profile, selected_field):+d}\n"
-        f"[ ] choose slider   +/- adjust   Z/X zoom   H/J/K/L position   U upscale   R reset"
+    heading = f"{session.artist}  ·  {active}  ·  {selected_field.upper()} {getattr(profile, selected_field):+d}"
+    controls = _workspace_control_line(
+        state, theme, header, 1,
+        (("[‹ Slider]", "["), ("[Slider ›]", "]"),
+         ("[−5]", "-"), ("[+5]", "+"),
+         ("[Zoom −]", "x"), ("[Zoom +]", "z"),
+         ("[←]", "h"), ("[↑]", "k"), ("[↓]", "j"), ("[→]", "l"),
+         ("[Upscale]", "u"), ("[Reset]", "r")),
     )
     frame.render_widget(
-        Paragraph.from_string(heading).block(card(theme, "ENHANCEMENTS", Semantic.SPECIAL)),
+        Paragraph(Text([Line([Span(heading, style(theme, Semantic.TEXT))]), controls]))
+        .block(card(theme, "ENHANCEMENTS", Semantic.SPECIAL)),
         header,
     )
     left, selected_area = _split_horizontal(body, [Constraint.percentage(72), Constraint.fill(1)])
@@ -5506,26 +5579,48 @@ def _render_artist_workspace(frame: Any, area: Rect, state: TuiState, theme: The
     image_panel(selected_area, selected or session.preview_dir / "missing.png", "4  SELECTED ARTWORK", 4)
 
     candidate_lines = []
+    candidate_indexes: list[int] = []
     if session.candidates:
         start = max(0, min(session.selected_candidate - 2, max(0, len(session.candidates) - 4)))
         for index in range(start, min(len(session.candidates), start + 4)):
             label, path = session.candidates[index]
             prefix = "▶" if index == session.selected_candidate else " "
             candidate_lines.append(f"{prefix} {index + 1:>2}. {label:<8} {path.name}")
+            candidate_indexes.append(index)
     else:
         candidate_lines.append("No saved local images · press I to add an image file")
     if session.input_path is not None:
         candidate_lines.append(f"Image path: {session.input_path}▌")
-    candidate_lines.append(session.notice or "↑/↓ candidate · P portrait · B banner · I add local image")
+    if session.input_path is None:
+        candidate_lines.append(session.notice or "Click a candidate, then use it as Artist or Banner art.")
+        candidate_lines.append("[Use as Artist] [Use as Banner] [Add Image]")
+    else:
+        candidate_lines.append("Type an image path, then click Load Path or Cancel.")
     frame.render_widget(
         Paragraph.from_string("\n".join(candidate_lines)).block(card(theme, "ARTIST ART CANDIDATES", Semantic.ACTIVE)),
         candidates_area,
     )
-    actions = "1 current · 2 image · 3 banner · 4 package · T Themed Packaging · W WRITE Artist Art · Esc return"
-    if session.confirm_write:
-        actions = "CONFIRM WRITE: press W again · Esc cancels"
+    for row, index in enumerate(candidate_indexes):
+        _register_hit(state, "workspace-candidate", _row_rect(candidates_area, row), index=index)
+    if session.input_path is None:
+        actions_y = int(candidates_area.y) + 1 + len(candidate_lines) - 1
+        actions_x = int(candidates_area.x) + 1
+        for label, key in (("[Use as Artist]", "p"), ("[Use as Banner]", "b"), ("[Add Image]", "i")):
+            _register_hit(state, "workspace-key", Rect(actions_x, actions_y, len(label), 1), value=key)
+            actions_x += len(label) + 1
+    actions = (
+        (("[Load Path]", "Enter"), ("[Cancel]", "Esc"))
+        if session.input_path is not None else
+        (("[Confirm WRITE]", "w"), ("[Cancel]", "Esc"))
+        if session.confirm_write else
+        (("[1 Current]", "1"), ("[2 Artist]", "2"),
+         ("[3 Banner]", "3"), ("[4 Package]", "4"),
+         ("[Themed Packaging]", "t"), ("[WRITE Artist Art]", "w"),
+         ("[Back]", "Esc"))
+    )
+    action_line = _workspace_control_line(state, theme, footer, 0, actions)
     frame.render_widget(
-        Paragraph.from_string(actions).centered().block(card(theme, "ACTIONS", Semantic.ACCEPTED if session.confirm_write else Semantic.DEBUG)),
+        Paragraph(Text([action_line])).block(card(theme, "ACTIONS", Semantic.ACCEPTED if session.confirm_write else Semantic.DEBUG)),
         footer,
     )
 
@@ -5539,15 +5634,28 @@ def _render_album_workspace(frame: Any, area: Rect, state: TuiState, theme: Them
         area, [Constraint.length(5), Constraint.fill(1), Constraint.length(4)]
     )
     selected_field = ADJUSTMENT_FIELDS[session.selected_adjustment]
-    heading = (
-        f"{session.album.name}  ·  {selected_field.upper()} {getattr(session.profile, selected_field):+d}\n"
-        "[ ] choose slider   +/- adjust   U upscale   R reset   I choose image"
+    heading = f"{session.album.name}  ·  {selected_field.upper()} {getattr(session.profile, selected_field):+d}"
+    toolbar = (
+        (("[Load Path]", "Enter"), ("[Cancel]", "Esc"))
+        if session.input_path is not None else
+        (("[‹ Slider]", "["), ("[Slider ›]", "]"),
+         ("[−5]", "-"), ("[+5]", "+"),
+         ("[Upscale]", "u"), ("[Reset]", "r"),
+         ("[Add Image]", "i"))
     )
-    if session.input_path is not None:
-        heading += f"\nImage path: {session.input_path}▌"
-    elif session.notice:
-        heading += f"\n{session.notice}"
-    frame.render_widget(Paragraph.from_string(heading).block(card(theme, "ALBUM ART ENHANCEMENTS", Semantic.SPECIAL)), header)
+    controls = _workspace_control_line(
+        state, theme, header, 1,
+        toolbar,
+    )
+    notice = (
+        f"Image path: {session.input_path}▌" if session.input_path is not None
+        else session.notice
+    )
+    frame.render_widget(
+        Paragraph(Text([Line([Span(heading, style(theme, Semantic.TEXT))]), controls,
+                        Line([Span(notice, style(theme, Semantic.MUTED))])]))
+        .block(card(theme, "ALBUM ART ENHANCEMENTS", Semantic.SPECIAL)), header,
+    )
     center, selected_area = _split_horizontal(body, [Constraint.percentage(70), Constraint.fill(1)])
     original_area, enhanced_area = _split_horizontal(center, [Constraint.percentage(50), Constraint.fill(1)])
 
@@ -5557,10 +5665,17 @@ def _render_album_workspace(frame: Any, area: Rect, state: TuiState, theme: Them
     image_panel(original_area, "original.png", "ORIGINAL", 1)
     image_panel(enhanced_area, "enhanced.png", "ENHANCED PREVIEW", 2)
     image_panel(selected_area, "enhanced.png", "SELECTED ARTWORK", 4)
-    actions = "W WRITE Cover · Esc return to Select Media"
-    if session.confirm_write:
-        actions = "CONFIRM WRITE: press W again · Esc cancels"
-    frame.render_widget(Paragraph.from_string(actions).centered().block(card(theme, "ACTIONS", Semantic.ACCEPTED if session.confirm_write else Semantic.DEBUG)), footer)
+    actions = (
+        (("[Load Path]", "Enter"), ("[Cancel]", "Esc"))
+        if session.input_path is not None else
+        (("[Confirm WRITE]", "w"), ("[Cancel]", "Esc"))
+        if session.confirm_write else
+        (("[WRITE Cover]", "w"), ("[Back to Select Media]", "Esc"))
+    )
+    action_line = _workspace_control_line(state, theme, footer, 0, actions)
+    frame.render_widget(
+        Paragraph(Text([action_line])).block(card(theme, "ACTIONS", Semantic.ACCEPTED if session.confirm_write else Semantic.DEBUG)), footer,
+    )
 
 
 def render(frame: Any, state: TuiState, theme: Theme) -> None:
@@ -6021,6 +6136,9 @@ def _handle_album_workspace_key(state: TuiState, event: Any, action: Action) -> 
         elif len(code) == 1 and code.isprintable() and not bool(getattr(event, "ctrl", False)):
             session.input_path += code
         return True
+    if session.confirm_write and action is Action.BACK:
+        session.confirm_write = False
+        return True
     if action is Action.BACK or lowered == "q" and not bool(getattr(event, "ctrl", False)):
         _invalidate_album_previews(state)
         session.close()
@@ -6107,6 +6225,9 @@ def _handle_artist_workspace_key(state: TuiState, event: Any, action: Action) ->
             session.input_path = session.input_path[:-1]
         elif len(code) == 1 and code.isprintable() and not bool(getattr(event, "ctrl", False)):
             session.input_path += code
+        return True
+    if session.confirm_write and action is Action.BACK:
+        session.confirm_write = False
         return True
     if action is Action.BACK or lowered == "q" and not bool(getattr(event, "ctrl", False)):
         _invalidate_artist_previews(state)
@@ -6893,6 +7014,33 @@ def _scroll_region(state: TuiState, region: HitRegion, delta: int) -> None:
         state.report_scroll = max(0, state.report_scroll + delta * 3)
 
 
+def _workspace_image_editable(state: TuiState, slot: int) -> bool:
+    session = state.artist_workspace
+    if state.workspace != "artist-art" or session is None:
+        return False
+    component = session.selected_component
+    return (
+        (slot == 2 and component == "portrait")
+        or (slot == 3 and component == "banner")
+        or (slot == 4 and component == "package" and session.theme_enabled)
+    )
+
+
+def _workspace_mouse_fit(
+    state: TuiState, slot: int, *, zoom: float = 0.0,
+    x: float = 0.0, y: float = 0.0,
+) -> None:
+    if not _workspace_image_editable(state, slot):
+        return
+    session = state.artist_workspace
+    assert session is not None
+    try:
+        session.fit(zoom=zoom, x=x, y=y)
+        _invalidate_artist_previews(state)
+    except (OSError, ValueError) as error:
+        session.notice = str(error)
+
+
 def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     """Map a crossterm mouse event through current render-time geometry."""
     code = str(getattr(event, "code", "")).lower()
@@ -6901,6 +7049,25 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
     ctrl = bool(getattr(event, "ctrl", False))
     if state.status_loading:
         return
+    if code == "up":
+        state.workspace_drag_slot = 0
+        return
+    if code == "drag" and str(getattr(event, "button", "")).lower() == "left":
+        slot = state.workspace_drag_slot
+        if slot and _workspace_image_editable(state, slot):
+            pane = next((item for item in state.hit_regions if item.target == "workspace-image" and item.index == slot), None)
+            if pane is not None:
+                delta_x = column - state.workspace_drag_column
+                delta_y = row - state.workspace_drag_row
+                if delta_x or delta_y:
+                    _workspace_mouse_fit(
+                        state, slot,
+                        x=-2 * delta_x / max(1, pane.width),
+                        y=-2 * delta_y / max(1, pane.height),
+                    )
+                    state.workspace_drag_column = column
+                    state.workspace_drag_row = row
+            return
     if code == "moved":
         region = hit_test(state, column, row)
         state.hover_target = region.target if region is not None else ""
@@ -6929,6 +7096,13 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             _clear_remote_hover_preview(state, adapter)
         return
     if code in {"scroll_up", "scroll_down"}:
+        image_region = hit_test(state, column, row)
+        if image_region is not None and image_region.target == "workspace-image":
+            _workspace_mouse_fit(
+                state, image_region.index,
+                zoom=0.05 if code == "scroll_up" else -0.05,
+            )
+            return
         region = _scroll_hit_test(state, column, row)
         target = repr(region.target) if region is not None else "'none'"
         now = time.monotonic()
@@ -6949,6 +7123,7 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if code != "down" or str(getattr(event, "button", "")).lower() != "left":
         return
+    state.workspace_drag_slot = 0
     region = hit_test(state, column, row)
     if region is None:
         _runtime_trace(
@@ -6975,6 +7150,26 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
             _apply_dialog_decision(state, adapter, True)
         elif region.target == "dialog-no":
             _apply_dialog_decision(state, adapter, False)
+        return
+
+    if region.target == "workspace-key":
+        if state.workspace in {"artist-art", "album-art", "about"}:
+            handle_key(state, adapter, SimpleNamespace(code=region.value, ctrl=False, shift=False))
+        return
+    if region.target == "workspace-candidate" and state.artist_workspace is not None:
+        state.artist_workspace.selected_candidate = region.index
+        return
+    if region.target == "workspace-image":
+        if _workspace_image_editable(state, region.index):
+            state.workspace_drag_slot = region.index
+            state.workspace_drag_column = column
+            state.workspace_drag_row = row
+        return
+    if region.target == "artist-art-open" and state.workspace == "library":
+        _open_artist_workspace(state)
+        return
+    if region.target == "album-art-open" and state.workspace == "library":
+        _open_album_workspace(state)
         return
 
     model = state.library

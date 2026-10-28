@@ -120,6 +120,27 @@ def _region(state: TuiState, target: str, index: int | None = None) -> HitRegion
 
 
 class RenderHitMapTests(unittest.TestCase):
+    def test_home_artwork_shortcuts_and_about_actions_are_clickable(self) -> None:
+        state = _library_state()
+        adapter = TuiAdapter()
+        render(_Frame(160, 44), state, select_theme("OLED"))
+        with mock.patch("tui.splined_tui._open_artist_workspace") as open_artist:
+            handle_mouse(state, adapter, _center(_region(state, "artist-art-open")))
+        open_artist.assert_called_once_with(state)
+        with mock.patch("tui.splined_tui._open_album_workspace") as open_album:
+            handle_mouse(state, adapter, _center(_region(state, "album-art-open")))
+        open_album.assert_called_once_with(state)
+        handle_mouse(state, adapter, _center(_region(state, "about-open")))
+        self.assertEqual(state.workspace, "about")
+        render(_Frame(160, 44), state, select_theme("OLED"))
+        update = next(item for item in state.hit_regions if item.target == "workspace-key" and item.value == "u")
+        with mock.patch("tui.splined_tui._respond_library_action") as respond:
+            handle_mouse(state, adapter, _center(update))
+        respond.assert_called_once_with(state, adapter, "check-updates")
+        back = next(item for item in state.hit_regions if item.target == "workspace-key" and item.value == "Esc")
+        handle_mouse(state, adapter, _center(back))
+        self.assertEqual(state.workspace, "library")
+
     def test_compilation_artwork_routes_automatically_and_requires_launch(self) -> None:
         state = _library_state(artists=1, albums_each=1)
         assert state.library is not None

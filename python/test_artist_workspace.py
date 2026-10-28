@@ -14,7 +14,7 @@ from tui.artist_workspace import ArtistWorkspace
 from tui.library import LibraryModel
 from tui.splined_tui import (
     InputRequest, TuiAdapter, TuiState, _clear_workspace_overlays,
-    _draw_workspace_overlays, handle_key, render,
+    _draw_workspace_overlays, handle_key, handle_mouse, render,
 )
 from tui.theme import select_theme
 from pyratatui import Rect
@@ -121,6 +121,7 @@ class ArtistWorkspaceTests(unittest.TestCase):
             })
             state.input_request = InputRequest("", "library-selection", {})
             state.runtime_info = {"database": str(database), "cache": str(cache), "artist_art": str(root / "managed")}
+            state.artist_write_mode = True
             adapter = TuiAdapter()
             key = lambda code: SimpleNamespace(code=code, ctrl=False, shift=False)
             state.library_focus = 4
@@ -169,6 +170,43 @@ class ArtistWorkspaceTests(unittest.TestCase):
                 render(frame, state, select_theme("OLED"))
                 self.assertFalse(state.workspace_overlay_pending)
                 self.assertEqual(len(overlays), prepared_count)
+            def click(target, *, index=None, value=None):
+                region = next(item for item in state.hit_regions if item.target == target
+                              and (index is None or item.index == index)
+                              and (value is None or item.value == value))
+                handle_mouse(state, adapter, SimpleNamespace(
+                    code="down", button="left", ctrl=False,
+                    column=region.x + 1, row=region.y,
+                ))
+            click("workspace-key", value="]")
+            self.assertEqual(state.artist_workspace.selected_adjustment, 1)
+            click("workspace-key", value="+")
+            self.assertEqual(state.artist_workspace.portrait_adjustments.sharpen, 5)
+            image_region = next(item for item in state.hit_regions if item.target == "workspace-image" and item.index == 2)
+            handle_mouse(state, adapter, SimpleNamespace(
+                code="scroll_up", button="none", ctrl=False,
+                column=image_region.x + 2, row=image_region.y + 2,
+            ))
+            self.assertEqual(state.artist_workspace.portrait_fit.zoom, 1.05)
+            handle_mouse(state, adapter, SimpleNamespace(
+                code="down", button="left", ctrl=False,
+                column=image_region.x + 2, row=image_region.y + 2,
+            ))
+            handle_mouse(state, adapter, SimpleNamespace(
+                code="drag", button="left", ctrl=False,
+                column=image_region.x + 4, row=image_region.y + 2,
+            ))
+            handle_mouse(state, adapter, SimpleNamespace(code="up", button="left", ctrl=False))
+            self.assertLess(state.artist_workspace.portrait_fit.x, 0)
+            click("workspace-candidate", index=1)
+            self.assertEqual(state.artist_workspace.selected_candidate, 1)
+            click("workspace-key", value="3")
+            self.assertEqual(state.artist_workspace.selected_component, "banner")
+            click("workspace-key", value="w")
+            self.assertTrue(state.artist_workspace.confirm_write)
+            click("workspace-key", value="Esc")
+            self.assertFalse(state.artist_workspace.confirm_write)
+            self.assertEqual(state.workspace, "artist-art")
             self.assertGreater(frame.rendered, 4)
             handle_key(state, adapter, key("esc"))
             self.assertEqual(state.workspace, "library")

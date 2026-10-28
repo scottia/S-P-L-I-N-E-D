@@ -28,6 +28,14 @@ stop the run before writing images or audio tags.
 
 ## Artwork checks
 
+The Select Media tools now offer clickable **G Artist Art**, **O Album Art**,
+and **A About** actions. In Artist Art, click a candidate, choose **Use as
+Artist** or **Use as Banner**, then click the pane title to activate its radio.
+The slider selector, adjustment steps, zoom, position, upscale, reset, write,
+and back controls are clickable. Wheel over an active image to zoom; hold and
+drag it to position. Album Art has clickable adjustment, upscale, reset, image
+path, write, and back controls. About has clickable update and back controls.
+
 1. Focus **3 Doors Down** and press `G`. Check that the saved package, artist
    image, banner, and Selected Artwork appear as smooth native images, like the
    selected Album thumbnail in Select Media, rather than large terminal pixels.

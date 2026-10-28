@@ -9,7 +9,7 @@ from PIL import Image
 
 from tui.album_workspace import AlbumWorkspace
 from tui.library import LibraryModel
-from tui.splined_tui import InputRequest, TuiAdapter, TuiState, handle_key, render
+from tui.splined_tui import InputRequest, TuiAdapter, TuiState, handle_key, handle_mouse, render
 from tui.theme import select_theme
 from pyratatui import Rect
 
@@ -42,8 +42,25 @@ class AlbumWorkspaceTests(unittest.TestCase):
             frame = Frame()
             render(frame, state, select_theme("OLED"))
             self.assertGreater(frame.rendered, 4)
+            def click(value):
+                region = next(item for item in state.hit_regions if item.target == "workspace-key" and item.value == value)
+                handle_mouse(state, adapter, SimpleNamespace(
+                    code="down", button="left", ctrl=False,
+                    column=region.x + 1, row=region.y,
+                ))
+            click("]")
+            self.assertEqual(state.album_workspace.selected_adjustment, 1)
+            click("+")
+            self.assertEqual(state.album_workspace.profile.sharpen, 5)
+            click("u")
+            self.assertTrue(state.album_workspace.upscale)
+            click("i")
+            self.assertEqual(state.album_workspace.input_path, "")
+            render(frame, state, select_theme("OLED"))
+            click("Esc")
+            self.assertIsNone(state.album_workspace.input_path)
             self.assertTrue(adapter.responses.empty())
-            handle_key(state, adapter, key("esc"))
+            click("Esc")
             self.assertEqual(state.workspace, "library")
 
     def test_adjustments_preview_then_explicit_write(self) -> None:
