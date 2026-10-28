@@ -48,7 +48,8 @@ from tui.picker_index import (
     PickerArtist,
     should_ignore as picker_should_ignore,
 )
-from tui.result_filters import order_musicbrainz_results
+from tui.result_filters import order_musicbrainz_results, musicbrainz_title_match
+from splined_db_audit import connect_sqlite
 
 USER_AGENT = "SPLINED/2.0.3 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
@@ -281,6 +282,13 @@ def runtime_cache_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
     return DEFAULT_CACHE_DIR
 
 
+def runtime_artist_art_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
+    configured = str(section(cfg, "scan").get("shared_artist_art_dir", "")).strip()
+    if configured:
+        return resolve_path(config_file, configured)
+    return runtime_cache_dir(config_file, cfg) / "artist-art"
+
+
 def runtime_credential_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
     configured = str(section(cfg, "credentials").get("credential_dir", "")).strip()
     if configured:
@@ -502,7 +510,7 @@ def _load_cache_state(database: Path, key: str) -> dict[str, Any] | None:
     if not database.exists():
         return None
     try:
-        connection = sqlite3.connect(database, timeout=30.0)
+        connection = connect_sqlite(database, timeout=30.0)
         row = connection.execute(
             "SELECT payload_json FROM cache_entries WHERE cache_key=?",
             (key,),
@@ -532,7 +540,7 @@ def _save_cache_state(
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     body = json.dumps(value, sort_keys=True, separators=(",", ":"))
     try:
-        connection = sqlite3.connect(database, timeout=30.0)
+        connection = connect_sqlite(database, timeout=30.0)
         with connection:
             connection.execute(
                 "INSERT INTO cache_entries"
@@ -2416,7 +2424,9 @@ def prepare_tui_library_selection(
                 "library": str(index_root),
                 "database": str(runtime_cache_dir(config_file, cfg) / "splined.db"),
                 "cache": str(runtime_cache_dir(config_file, cfg)),
+                "artist_art": str(runtime_artist_art_dir(config_file, cfg)),
                 "logs": str(runtime_log_dir(config_file, cfg)),
+                "database_audit": str(runtime_log_dir(config_file, cfg) / "db-audit") if bool(section(cfg, "logging").get("database_audit", False)) else "Off",
                 "credentials": str(runtime_credential_dir(config_file, cfg)),
                 "providers": dict(authentication_statuses(config_file, cfg)),
             },
@@ -3211,6 +3221,15 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
         "========================================\n"
     )
     _RUNTIME_LOG_HANDLE.flush()
+    if bool(section(cfg, "logging").get("database_audit", False)):
+        from splined_db_audit import configure as configure_db_audit
+
+        configure_db_audit(
+            log_dir,
+            runtime_cache_dir(config_file, cfg) / "splined.db",
+            shared=bool(section(cfg, "scan").get("sqlite_shared", False)),
+            retention_days=retention_days,
+        )
     # Native terminal/input-extension failures bypass Python exception
     # handling. Record their thread stacks in the same per-run log once, only
     # on a fatal interpreter signal; routine debug output remains compact.
@@ -5837,6 +5856,8 @@ def decorate_musicbrainz_results(
     *,
     current_release_id: str = "",
     inspected_resolutions: dict[str, str] | None = None,
+    query_artist: str = "",
+    query_album: str = "",
 ) -> list[dict[str, str]]:
     """Add stable display/cache state without performing artwork requests."""
     current = str(current_release_id or "").strip().casefold()
@@ -5858,6 +5879,9 @@ def decorate_musicbrainz_results(
             else ""
         )
         item["resolution"] = inspected.get(release_id, "")
+        if not item.get("score", "").strip():
+            item["score"] = str(musicbrainz_title_match(query_album, item.get("title", "")))
+        item["query_artist"] = query_artist
         release_group_id = item.get("release_group_id", "").strip().casefold()
         item["artwork_url"] = (
             f"https://coverartarchive.org/release-group/{release_group_id}/front"
@@ -5951,6 +5975,8 @@ def musicbrainz_picker(
         results,
         current_release_id=current_release_id,
         inspected_resolutions=inspected_resolutions,
+        query_artist=artist,
+        query_album=album,
     )
 
     print()

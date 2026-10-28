@@ -242,9 +242,13 @@ def restore_backup(
                 restored.add("credentials")
             if database_staging is not None:
                 database_path.parent.mkdir(parents=True, exist_ok=True)
+                from splined_db_audit import record_operation
+
+                record_operation("restore_begin", database_path)
                 with closing(sqlite3.connect(staged_database)) as source:
                     with closing(sqlite3.connect(database_path)) as destination:
                         source.backup(destination)
+                record_operation("restore_complete", database_path)
                 restored.add("database")
             if "diagnostics" in selected and payload.get("diagnostics") is not None:
                 restored.add("diagnostics")

@@ -279,12 +279,13 @@ def check_docs(audit: Audit) -> None:
         media_body = (ROOT / "docs/media-filter-status-colors.md").read_text(
             encoding="utf-8"
         )
-        windows_body = (ROOT / "windows/gui/LibraryModel.cs").read_text(
+        windows_body = (ROOT / "windows/src/media_database.rs").read_text(
             encoding="utf-8"
         )
         assert "do not create Processed authority" in database_body
         assert "inventory information only" in media_body
-        assert "Never processed by SPLINED" in windows_body
+        assert "has_processed_evidence" in windows_body
+        assert "processed_at" in windows_body
 
     audit.check(
         "DOC-002",
@@ -678,6 +679,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     args = parse_args(argv)
     audit = Audit(verbose=bool(args.verbose))
 

@@ -52,6 +52,9 @@ except ImportError:  # plain CLI and automatic fallback remain independently usa
     native_clear_image_area = None  # type: ignore[assignment]
 
 from .animation import animation_step, fit_phrase, startup_frame
+from .artist_workspace import ArtistWorkspace
+from .album_workspace import AlbumWorkspace
+from splined_artist_art import ADJUSTMENT_FIELDS
 from .aispline import (
     AISPLINE_TITLE,
     SPLINED_TITLE,
@@ -78,6 +81,9 @@ from .result_filters import (
     CandidateFilter,
     MusicBrainzFilter,
     comparison_pair,
+    musicbrainz_artist_album_preferred,
+    musicbrainz_match_score,
+    musicbrainz_match_section,
 )
 from .semantic import Semantic, log_semantic, outcome_semantic, range_semantic
 from .status import use_adapter
@@ -296,6 +302,9 @@ class TuiState:
     settings_buffer: str = ""
     runtime_info: dict[str, Any] = field(default_factory=dict)
     workspace: str = "library"
+    artist_workspace: ArtistWorkspace | None = None
+    album_workspace: AlbumWorkspace | None = None
+    artist_write_mode: bool = False
     library_focus: int = 0
     status_index: int = 0
     select_index: int = 1
@@ -451,7 +460,8 @@ class TuiState:
                 ] = self.remote_hover_overlay
         elif event in {"library", "library_update"}:
             self.workflow = "library"
-            self.workspace = "library"
+            if self.workspace not in {"artist-art", "album-art"}:
+                self.workspace = "library"
             if self.batch_return_pending:
                 self.batch_return_pending = False
                 self.library_activate_guard_until = (
@@ -519,6 +529,7 @@ class TuiState:
             )
             config = payload.get("config", {})
             if isinstance(config, dict):
+                self.artist_write_mode = str(config.get("mode", "read")).casefold() == "write"
                 self.policy = PolicyDraft.from_config(config)
                 self.settings = RuntimeSettingsDraft.from_config(config)
                 ai = payload.get("aisplined", config.get("aisplined", {}))
@@ -2896,7 +2907,7 @@ def _render_candidate_table(frame: Any, area: Rect, state: TuiState, theme: Them
     headers = {
         "#": "#",
         "source": "SOURCE",
-        "resolution": "RESOLUTION",
+    "resolution": "RESOLUTION",
         "format": "FORMAT",
         "range": "RANGE TYPE",
         "distance": "DISTANCE",
@@ -2935,15 +2946,46 @@ def _musicbrainz_grouped_rows(
     options: list[dict[str, str]],
     option_indexes: list[int] | None = None,
 ) -> list[tuple[str, int, str]]:
-    """Build the Windows-style flat result table without decade groups."""
-    indexes = option_indexes or list(range(len(options)))
-    if not options:
+    """Keep editions together under Best Match, Artist, and Other sections."""
+    indexes = option_indexes if option_indexes is not None else list(range(len(options)))
+    if not indexes:
         return []
-    return [
-        ("header", -1, ""),
-        ("separator", -1, ""),
-        *[("result", option_index, "") for option_index in indexes],
-    ]
+    families: dict[str, list[int]] = {}
+    seen_releases: set[str] = set()
+    for option_index in indexes:
+        item = options[option_index]
+        release_id = item.get("id", "").strip().casefold()
+        if release_id and release_id in seen_releases:
+            continue
+        if release_id:
+            seen_releases.add(release_id)
+        family = (item.get("release_group_id") or release_id or f"row:{option_index}").casefold()
+        families.setdefault(family, []).append(option_index)
+    sections: dict[int, list[list[int]]] = {0: [], 1: [], 2: []}
+    for members in families.values():
+        section = min(musicbrainz_match_section(options[index]) for index in members)
+        sections[section].append(sorted(members, key=lambda index: (-musicbrainz_match_score(options[index]), index)))
+    rows: list[tuple[str, int, str]] = [("header", -1, ""), ("separator", -1, "")]
+    titles = {
+        0: "BEST MATCH · 90–100% + EXISTING",
+        1: "ARTIST RELEASE PRIORITY",
+        2: "OTHER RELEASES",
+    }
+    for section, title in titles.items():
+        if not sections[section]:
+            continue
+        rows.append(("section", -1, title))
+        ordered = sorted(
+            sections[section],
+            key=lambda group: (-max(musicbrainz_match_score(options[index]) for index in group), group[0]),
+        )
+        for members in ordered:
+            best_item = options[members[0]]
+            label = best_item.get("title", "Release family")
+            score = max(musicbrainz_match_score(options[index]) for index in members)
+            rows.append(("family", -1, f"{score}% · Release Family · {label}"))
+            rows.extend(("result", index, "") for index in members)
+    return rows
 
 
 def _musicbrainz_visible_indexes(state: TuiState) -> list[int]:
@@ -2972,7 +3014,7 @@ def _render_musicbrainz(
         "artist": "ARTIST",
         "country": "COUNTRY",
         "date": "DATE",
-        "resolution": "RESOLUTION",
+        "resolution": "MATCH / RES",
         "release": "RELEASE",
         "url": "URL",
     }
@@ -3003,8 +3045,7 @@ def _render_musicbrainz(
         prefix_width - sum(numeric_widths[:-1]),
     )
     visible_indexes = _musicbrainz_visible_indexes(state)
-    visible_options = [state.release_options[index] for index in visible_indexes]
-    display_rows = _musicbrainz_grouped_rows(visible_options, visible_indexes)
+    display_rows = _musicbrainz_grouped_rows(state.release_options, visible_indexes)
     selected_option = max(
         0,
         min(state.selected_index, max(0, len(state.release_options) - 1)),
@@ -3058,13 +3099,13 @@ def _render_musicbrainz(
         if kind == "blank":
             rendered.append(Line([Span("")]))
             continue
-        if kind == "type":
+        if kind in {"section", "family"}:
             rendered.append(
                 Line(
                     [
                         Span(
-                            f"RELEASE TYPE [{label.upper()}]",
-                            style(theme, Semantic.FALLBACK, bold=True),
+                            _truncate(label, max(1, int(area.width) - 4)),
+                            style(theme, Semantic.FALLBACK if kind == "section" else Semantic.ACTIVE, bold=True),
                         )
                     ]
                 )
@@ -3094,7 +3135,8 @@ def _render_musicbrainz(
                 option.get("artist", ""),
                 option.get("country", ""),
                 option.get("date", ""),
-                option.get("resolution", ""),
+                (f"{musicbrainz_match_score(option)}%"
+                 + (f" · {option['resolution']}" if option.get("resolution") else "")),
                 option.get("title", ""),
                 "[URL]" if option.get("artwork_url", "") else "",
             ]
@@ -4638,7 +4680,9 @@ def _render_about(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None
         ("Library", info.get("library", "")),
         ("SQLite", info.get("database", "")),
         ("Cache", info.get("cache", "")),
+        ("Artist Art", info.get("artist_art", "")),
         ("Logs", info.get("logs", "")),
+        ("DB activity", info.get("database_audit", "Off")),
         ("Credentials", info.get("credentials", "")),
         ("Interface", "Python Ratatui · SQLite authority"),
     )
@@ -4849,16 +4893,20 @@ def _footer_text(state: TuiState) -> str:
     # so the staging footer must not duplicate those controls. Other normal
     # views retain the complete options bar. Ctrl+C is described once as Exit.
     staging_footer = (
-        "↑/↓ move • Enter open Artist • Space select • / filter • "
+        "G Artist Art • O Album Art • ↑/↓ move • Enter open Artist • Space select • / filter • "
         "Ctrl+C [Exit] • ? help"
     )
     options_footer = (
-        "↑/↓ move • Enter open Artist • Space select • / filter • "
+        "G Artist Art • O Album Art • ↑/↓ move • Enter open Artist • Space select • / filter • "
         "P policy • E settings • R refresh folders • Ctrl+C [Exit] • ? help"
     )
 
     if state.transient:
         return state.transient
+    if state.workflow == "library" and state.workspace == "artist-art":
+        return "↑/↓ local image · P artist · B banner · 1 current · 2/3/4 radio · [/] control · +/- edit · U upscale · W write · Esc library"
+    if state.workflow == "library" and state.workspace == "album-art":
+        return "[ ] choose slider · +/- adjust · I image file · U upscale · R reset · W WRITE Cover · Esc library"
     if state.input_request:
         kind = state.input_request.kind
         if kind == "batch-summary":
@@ -5334,6 +5382,113 @@ def _render_track_overlay(
     )
 
 
+def _render_artist_workspace(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    session = state.artist_workspace
+    if session is None or session.preview_dir is None:
+        frame.render_widget(Paragraph.from_string("Artist Art is unavailable.").block(card(theme, "ARTIST ART", Semantic.WARNING)), area)
+        return
+    header, body, candidates_area, footer = _split_vertical(
+        area,
+        [Constraint.length(4), Constraint.fill(1), Constraint.length(8), Constraint.length(3)],
+    )
+    selected_field = ADJUSTMENT_FIELDS[session.selected_adjustment]
+    profile = (
+        session.theme_adjustments if session.theme_enabled
+        else session.banner_adjustments if session.banner_active
+        else session.portrait_adjustments
+    )
+    active = (
+        "PACKAGE · THEMED" if session.theme_enabled
+        else "PACKAGE · EDIT LOCKED" if session.portrait_active and session.banner_active
+        else "BANNER" if session.banner_active else "ARTIST IMAGE"
+    )
+    heading = (
+        f"{session.artist}  ·  {active}  ·  {selected_field.upper()} {getattr(profile, selected_field):+d}\n"
+        f"[ ] choose slider   +/- adjust   Z/X zoom   H/J/K/L position   U upscale   R reset"
+    )
+    frame.render_widget(
+        Paragraph.from_string(heading).block(card(theme, "ENHANCEMENTS", Semantic.SPECIAL)),
+        header,
+    )
+    left, selected_area = _split_horizontal(body, [Constraint.percentage(72), Constraint.fill(1)])
+    top, banner_area = _split_vertical(left, [Constraint.percentage(53), Constraint.fill(1)])
+    current_area, portrait_area = _split_horizontal(top, [Constraint.percentage(50), Constraint.fill(1)])
+
+    def image_panel(rect: Rect, path: Path, title: str) -> None:
+        preview = _path_preview(state, str(path), max(1, int(rect.width) - 2), max(1, int(rect.height) - 2))
+        if preview is None:
+            frame.render_widget(Paragraph.from_string("No image selected").centered().block(card(theme, title, Semantic.MUTED)), rect)
+        else:
+            _render_prepared_preview(frame, rect, preview, theme, title=title)
+
+    image_panel(current_area, session.preview_dir / "current.png", "1  CURRENT PACKAGE  ●")
+    image_panel(portrait_area, session.preview_dir / "portrait.png", "2  ARTIST IMAGE  ◯" if not session.portrait_active else "2  ARTIST IMAGE  ●")
+    image_panel(banner_area, session.preview_dir / "banner.png", "3  ARTIST BANNER  ◯" if not session.banner_active else "3  ARTIST BANNER  ●")
+    selected = session.selected_path
+    image_panel(selected_area, selected or session.preview_dir / "missing.png", "4  SELECTED ARTWORK")
+
+    candidate_lines = []
+    if session.candidates:
+        start = max(0, min(session.selected_candidate - 2, max(0, len(session.candidates) - 4)))
+        for index in range(start, min(len(session.candidates), start + 4)):
+            label, path = session.candidates[index]
+            prefix = "▶" if index == session.selected_candidate else " "
+            candidate_lines.append(f"{prefix} {index + 1:>2}. {label:<8} {path.name}")
+    else:
+        candidate_lines.append("No saved local images · press I to add an image file")
+    if session.input_path is not None:
+        candidate_lines.append(f"Image path: {session.input_path}▌")
+    candidate_lines.append(session.notice or "↑/↓ candidate · P portrait · B banner · I add local image")
+    frame.render_widget(
+        Paragraph.from_string("\n".join(candidate_lines)).block(card(theme, "ARTIST ART CANDIDATES", Semantic.ACTIVE)),
+        candidates_area,
+    )
+    actions = "1 current · 2 image · 3 banner · 4 package · T Themed Packaging · W WRITE Artist Art · Esc return"
+    if session.confirm_write:
+        actions = "CONFIRM WRITE: press W again · Esc cancels"
+    frame.render_widget(
+        Paragraph.from_string(actions).centered().block(card(theme, "ACTIONS", Semantic.ACCEPTED if session.confirm_write else Semantic.DEBUG)),
+        footer,
+    )
+
+
+def _render_album_workspace(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    session = state.album_workspace
+    if session is None or session.preview_dir is None:
+        frame.render_widget(Paragraph.from_string("Album Art is unavailable.").block(card(theme, "ALBUM ART", Semantic.WARNING)), area)
+        return
+    header, body, footer = _split_vertical(
+        area, [Constraint.length(5), Constraint.fill(1), Constraint.length(4)]
+    )
+    selected_field = ADJUSTMENT_FIELDS[session.selected_adjustment]
+    heading = (
+        f"{session.album.name}  ·  {selected_field.upper()} {getattr(session.profile, selected_field):+d}\n"
+        "[ ] choose slider   +/- adjust   U upscale   R reset   I choose image"
+    )
+    if session.input_path is not None:
+        heading += f"\nImage path: {session.input_path}▌"
+    elif session.notice:
+        heading += f"\n{session.notice}"
+    frame.render_widget(Paragraph.from_string(heading).block(card(theme, "ALBUM ART ENHANCEMENTS", Semantic.SPECIAL)), header)
+    center, selected_area = _split_horizontal(body, [Constraint.percentage(70), Constraint.fill(1)])
+    original_area, enhanced_area = _split_horizontal(center, [Constraint.percentage(50), Constraint.fill(1)])
+
+    def image_panel(rect: Rect, name: str, title: str) -> None:
+        preview = _path_preview(state, str(session.preview_dir / name), max(1, int(rect.width) - 2), max(1, int(rect.height) - 2))
+        if preview is None:
+            frame.render_widget(Paragraph.from_string("No image selected").centered().block(card(theme, title, Semantic.MUTED)), rect)
+        else:
+            _render_prepared_preview(frame, rect, preview, theme, title=title)
+
+    image_panel(original_area, "original.png", "ORIGINAL")
+    image_panel(enhanced_area, "enhanced.png", "ENHANCED PREVIEW")
+    image_panel(selected_area, "enhanced.png", "SELECTED ARTWORK")
+    actions = "W WRITE Cover · Esc return to Select Media"
+    if session.confirm_write:
+        actions = "CONFIRM WRITE: press W again · Esc cancels"
+    frame.render_widget(Paragraph.from_string(actions).centered().block(card(theme, "ACTIONS", Semantic.ACCEPTED if session.confirm_write else Semantic.DEBUG)), footer)
+
+
 def render(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
     state.hit_regions.clear()
@@ -5389,6 +5544,10 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
         _render_runtime_settings(frame, content, state, theme)
     elif state.workflow == "library" and state.workspace == "about":
         _render_about(frame, content, state, theme)
+    elif state.workflow == "library" and state.workspace == "artist-art":
+        _render_artist_workspace(frame, content, state, theme)
+    elif state.workflow == "library" and state.workspace == "album-art":
+        _render_album_workspace(frame, content, state, theme)
     elif state.workflow == "library":
         _render_library(frame, content, state, theme)
     elif state.input_request and state.input_request.kind == "musicbrainz":
@@ -5713,6 +5872,230 @@ def _open_artist(
     )
 
 
+def _invalidate_artist_previews(state: TuiState) -> None:
+    session = state.artist_workspace
+    if session is None or session.preview_dir is None:
+        return
+    prefix = str(session.preview_dir)
+    for key in tuple(state.preview_cache):
+        if key[0].startswith(prefix):
+            del state.preview_cache[key]
+    for key in tuple(state.preview_identity):
+        if key.startswith(prefix):
+            del state.preview_identity[key]
+
+
+def _invalidate_album_previews(state: TuiState) -> None:
+    session = state.album_workspace
+    if session is None or session.preview_dir is None:
+        return
+    prefix = str(session.preview_dir)
+    for key in tuple(state.preview_cache):
+        if key[0].startswith(prefix):
+            del state.preview_cache[key]
+    for key in tuple(state.preview_identity):
+        if key.startswith(prefix):
+            del state.preview_identity[key]
+
+
+def _open_album_workspace(state: TuiState) -> None:
+    model = state.library
+    if model is None:
+        return
+    albums = model.visible_albums(active_artist_only=True)
+    if not albums:
+        state.transient = "Select an Album before opening Album Art Enhancements."
+        return
+    album = albums[min(state.album_index_cursor, len(albums) - 1)]
+    cache = Path(str(state.runtime_info.get("cache", "")))
+    cover_stem = str(state.settings.values.get("output.file_name", "cover")) if state.settings else "cover"
+    try:
+        session = AlbumWorkspace.load(
+            Path(album.path), cache, writable=state.artist_write_mode, cover_stem=cover_stem,
+        )
+    except (OSError, ValueError) as error:
+        state.transient = f"Album Art unavailable: {error}"
+        return
+    if state.album_workspace is not None:
+        _invalidate_album_previews(state)
+        state.album_workspace.close()
+    state.album_workspace = session
+    state.workspace = "album-art"
+    state.transient = ""
+
+
+def _handle_album_workspace_key(state: TuiState, event: Any, action: Action) -> bool:
+    session = state.album_workspace
+    if session is None:
+        state.workspace = "library"
+        return True
+    code = str(event.code)
+    lowered = code.casefold()
+    if session.input_path is not None:
+        if action is Action.BACK:
+            session.input_path = None
+        elif action is Action.ACTIVATE:
+            try:
+                session.choose_local(Path(session.input_path.strip().strip('"')))
+            except (OSError, ValueError) as error:
+                session.notice = str(error)
+            session.input_path = None
+            _invalidate_album_previews(state)
+        elif lowered in {"backspace", "delete"}:
+            session.input_path = session.input_path[:-1]
+        elif len(code) == 1 and code.isprintable() and not bool(getattr(event, "ctrl", False)):
+            session.input_path += code
+        return True
+    if action is Action.BACK or lowered == "q" and not bool(getattr(event, "ctrl", False)):
+        _invalidate_album_previews(state)
+        session.close()
+        state.album_workspace = None
+        state.workspace = "library"
+        state.transient = ""
+        return True
+    if action is Action.QUIT:
+        return False
+    try:
+        if lowered == "i":
+            session.input_path = ""
+        elif lowered in {"[", "]"}:
+            step = -1 if lowered == "[" else 1
+            session.selected_adjustment = (session.selected_adjustment + step) % len(ADJUSTMENT_FIELDS)
+        elif lowered in {"+", "="}:
+            session.adjust(5)
+        elif lowered in {"-", "_"}:
+            session.adjust(-5)
+        elif lowered == "u":
+            session.upscale = not session.upscale
+            session.confirm_write = False
+            session.refresh_preview()
+        elif lowered == "r":
+            session.reset()
+        elif lowered == "w":
+            session.write_approved()
+        else:
+            return True
+    except (OSError, ValueError, PermissionError) as error:
+        session.notice = str(error)
+        session.confirm_write = False
+    _invalidate_album_previews(state)
+    return True
+
+
+def _open_artist_workspace(state: TuiState) -> None:
+    model = state.library
+    if model is None:
+        return
+    artist = model.active_artist
+    if not artist:
+        visible = model.visible_artists()
+        if visible:
+            artist = visible[min(state.artist_index, len(visible) - 1)].name
+    if not artist:
+        state.transient = "Select an Artist before opening Artist Art."
+        return
+    database = Path(str(state.runtime_info.get("database", "")))
+    cache = Path(str(state.runtime_info.get("cache", "")))
+    managed = Path(str(state.runtime_info.get("artist_art", ""))) if state.runtime_info.get("artist_art") else cache / "artist-art"
+    try:
+        session = ArtistWorkspace.load(
+            artist, database, managed, cache, writable=state.artist_write_mode,
+        )
+    except (OSError, ValueError) as error:
+        state.transient = f"Artist Art unavailable: {error}"
+        return
+    if state.artist_workspace is not None:
+        _invalidate_artist_previews(state)
+        state.artist_workspace.close()
+    state.artist_workspace = session
+    state.workspace = "artist-art"
+    state.transient = ""
+
+
+def _handle_artist_workspace_key(state: TuiState, event: Any, action: Action) -> bool:
+    session = state.artist_workspace
+    if session is None:
+        state.workspace = "library"
+        return True
+    code = str(event.code)
+    lowered = code.casefold()
+    if session.input_path is not None:
+        if action is Action.BACK:
+            session.input_path = None
+        elif action is Action.ACTIVATE:
+            try:
+                session.add_local_candidate(Path(session.input_path.strip().strip('"')))
+            except (OSError, ValueError) as error:
+                session.notice = str(error)
+            session.input_path = None
+        elif lowered in {"backspace", "delete"}:
+            session.input_path = session.input_path[:-1]
+        elif len(code) == 1 and code.isprintable() and not bool(getattr(event, "ctrl", False)):
+            session.input_path += code
+        return True
+    if action is Action.BACK or lowered == "q" and not bool(getattr(event, "ctrl", False)):
+        _invalidate_artist_previews(state)
+        session.close()
+        state.artist_workspace = None
+        state.workspace = "library"
+        state.transient = ""
+        return True
+    if action is Action.QUIT:
+        return False
+    try:
+        if action in {Action.UP, Action.DOWN} and session.candidates:
+            step = -1 if action is Action.UP else 1
+            session.selected_candidate = (session.selected_candidate + step) % len(session.candidates)
+        elif lowered == "p":
+            session.choose_candidate("portrait")
+        elif lowered == "b":
+            session.choose_candidate("banner")
+        elif lowered == "i":
+            session.input_path = ""
+        elif lowered == "1":
+            session.select_radios(True, True, current=True)
+        elif lowered == "2":
+            session.select_radios(True, False)
+        elif lowered == "3":
+            session.select_radios(False, True)
+        elif lowered == "4":
+            session.select_radios(True, True)
+        elif lowered == "t":
+            if session.selected_component != "package":
+                raise ValueError("Select both radios with 4 before using Themed Packaging")
+            session.theme_enabled = not session.theme_enabled
+            session.refresh_preview()
+        elif lowered in {"[", "]"}:
+            step = -1 if lowered == "[" else 1
+            session.selected_adjustment = (session.selected_adjustment + step) % len(ADJUSTMENT_FIELDS)
+        elif lowered in {"+", "="}:
+            session.adjust(5)
+        elif lowered in {"-", "_"}:
+            session.adjust(-5)
+        elif lowered == "z":
+            session.fit(zoom=0.05)
+        elif lowered == "x":
+            session.fit(zoom=-0.05)
+        elif lowered in {"h", "j", "k", "l"}:
+            delta = 0.05
+            session.fit(x=-delta if lowered == "h" else delta if lowered == "l" else 0,
+                        y=delta if lowered == "j" else -delta if lowered == "k" else 0)
+        elif lowered == "u":
+            session.upscale = not session.upscale
+            session.refresh_preview()
+        elif lowered == "r":
+            session.reset_preview()
+        elif lowered == "w":
+            session.write_approved()
+        else:
+            return True
+    except (OSError, ValueError, PermissionError) as error:
+        session.notice = str(error)
+        session.confirm_write = False
+    _invalidate_artist_previews(state)
+    return True
+
+
 def _handle_library_key(
     state: TuiState, adapter: TuiAdapter, event: Any, action: Action
 ) -> bool:
@@ -5721,6 +6104,16 @@ def _handle_library_key(
     if model is None or request is None or request.kind != "library-selection":
         return False
     code = str(event.code)
+    if state.workspace == "artist-art":
+        return _handle_artist_workspace_key(state, event, action)
+    if state.workspace == "album-art":
+        return _handle_album_workspace_key(state, event, action)
+    if state.workspace == "library" and state.library_focus not in {4, 6} and code.casefold() == "g" and not bool(getattr(event, "ctrl", False)):
+        _open_artist_workspace(state)
+        return True
+    if state.workspace == "library" and state.library_focus not in {4, 6} and code.casefold() == "o" and not bool(getattr(event, "ctrl", False)):
+        _open_album_workspace(state)
+        return True
     if action is Action.ACTIVATE and state.library_activate_guard_until:
         now = time.monotonic()
         if now < state.library_activate_guard_until:
@@ -7203,6 +7596,12 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
             raise
     finally:
         adapter.cancel_wait()
+        for workspace in (state.artist_workspace, state.album_workspace):
+            if workspace is not None:
+                try:
+                    workspace.close()
+                except OSError:
+                    pass
         if previous_sigterm is not None:
             signal.signal(signal.SIGTERM, previous_sigterm)
 

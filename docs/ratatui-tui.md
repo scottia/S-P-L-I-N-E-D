@@ -70,6 +70,35 @@ terminal-native workflow:
   track previews it; `Space` explicitly checks a track for one-track reopen,
   including a completed track. A normal Album launch clears explicit track
   targeting and resumes from authoritative SQLite progress.
+- MusicBrainz release editions are presented under **Best Match**, **Artist
+  Release Priority**, and **Other Releases**, with the album-title match
+  percentage visible for every result. An Existing result remains in Best Match.
+- `G` opens a terminal-native **Artist Art** workspace for the focused indexed
+  Artist. Its panes show the saved package, proposed portrait, proposed banner,
+  and Selected Artwork. `↑/↓` chooses a saved local candidate; `I` adds a local
+  image path; `P` proposes it as the portrait and `B` as the banner. `1` loads
+  current saved art, `2` and `3` activate individual editing, and `4` shows the
+  package. `T` enables Themed Packaging when both are active. `[` and `]` choose
+  one of the 11 detailed controls; `+` and `-` adjust it. `Z`/`X` zoom,
+  `H`/`J`/`K`/`L` move the image, `U` toggles the upscale preview, and `R`
+  resets the active preview. `W` requires a second press to save the active
+  portrait and/or banner. `Esc` closes the workspace without writing.
+  Dedicated Artists use `artist.*`/`banner.*` beside their Albums. Shared
+  Soundtracks/Various Artists paths use Artist-specific names under
+  `scan.shared_artist_art_dir`. The circular thumbnail is only a preview;
+  written `artist.*` remains square. Missing Album IDs do not acquire Artist Art.
+- `O` opens **Album Art Enhancements** for the focused Album. It shows Original,
+  Enhanced Preview, and Selected Artwork without staging an embed job. `I` can
+  choose another local image; `[`/`]` and `+`/`-` select and adjust the same
+  detailed controls as Artist Art. `U` previews a 2× upscale, `R` resets the
+  preview, and `W` requires a second press before writing the still cover.
+  If the source is `cover.webp`, a still `cover.jpg` is created while the WebP
+  remains intact. Embedded track thumbnails are a separate engine action.
+- Set `logging.database_audit=true` to create a separate Python SQLite activity
+  log under `<scan.log_dir>/db-audit`. Its `[machine]-python-db-…log` name,
+  expected database path, connection opens, transaction boundaries, and write
+  attempts help compare a Python session with Windows logs. It does not log SQL
+  values and a write attempt is not proof of a committed change.
 
 ## Persistent Select Media startup
 

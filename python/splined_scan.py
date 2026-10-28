@@ -1029,6 +1029,8 @@ def _manual_discovery_options(
                 "id": str(item.release_mbid),
                 "recording_id": str(item.recording_mbid),
                 "artist": str(item.recording_artist),
+                "recording_artist": str(item.recording_artist),
+                "release_artist": str(item.release_artist),
                 "track": str(item.recording_title),
                 "title": str(item.release_title),
                 "date": str(item.release_date),
@@ -1068,6 +1070,7 @@ def _manual_choose_release(
         print(
             f"    {core.magenta(str(number).rjust(2))}  "
             f"{core.white(option['artist'])} · "
+            f"{core.green(option['score'] + '%')} · "
             f"{core.orange(option['track'])} · "
             f"{core.cyan(option['release_class'])} · "
             f"{core.white(option['date'] or 'Unknown year')} · "

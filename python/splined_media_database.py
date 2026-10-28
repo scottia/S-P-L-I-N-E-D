@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from splined_media_tags import inspect_album, json_list, utc_now
+from splined_db_audit import audit_connection
 
 
 DB_NAME = "splined.db"
@@ -188,6 +189,7 @@ def connect(
             timeout=30.0,
             factory=_SharedConnection if shared_mode else sqlite3.Connection,
         )
+        audit_connection(connection, path)
         if isinstance(connection, _SharedConnection):
             connection._splined_lock_path = lock_path
         connection.row_factory = sqlite3.Row
@@ -205,6 +207,7 @@ def connect(
             connection = None
             quarantine_database(path, f"schema-v{current}")
             connection = sqlite3.connect(path, timeout=30.0)
+            audit_connection(connection, path)
             connection.row_factory = sqlite3.Row
         _configure_connection(connection, shared_mode)
         try:
@@ -258,6 +261,7 @@ def connect(
             ) from exc
         quarantine_database(path, "corrupt")
         connection = sqlite3.connect(path, timeout=30.0)
+        audit_connection(connection, path)
         connection.row_factory = sqlite3.Row
         _configure_connection(connection, shared_mode)
         connection.executescript(schema_path().read_text(encoding="utf-8"))

@@ -19,6 +19,7 @@ scan_mode_timeout = 24
 # Python/Docker stores the persistent Select Media index at /_cache/splined.db.
 # Candidate downloads and samples beside it remain disposable.
 cache_dir = "/_cache"
+shared_artist_art_dir = "/_cache/artist-art"
 temporary_cache_dir = "/_cache"
 # Set true only when this exact splined.db is also opened through another OS/share.
 # Shared mode uses a rollback journal plus a busy timeout instead of WAL.
@@ -135,6 +136,7 @@ sample_dir = "samples"
 credential_dir = "/credentials"
 
 [logging]
+database_audit = false
 retention_days = 14
 
 [history]

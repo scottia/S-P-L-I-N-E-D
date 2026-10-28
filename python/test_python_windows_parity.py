@@ -27,7 +27,7 @@ from tui.runtime_settings import (
     SETTING_SPECS,
     persist_runtime_settings,
 )
-from tui.splined_tui import CandidateView, InputRequest, TuiAdapter, TuiState, handle_key
+from tui.splined_tui import CandidateView, InputRequest, TuiAdapter, TuiState, _musicbrainz_grouped_rows, handle_key
 
 
 def output_config(*, upscale: bool = True, maximum: int = 200) -> dict[str, object]:
@@ -114,6 +114,35 @@ class ResultPresentationParityTests(unittest.TestCase):
             [item["id"] for item in ordered],
             ["later-us", "earlier-gb", "soundtrack", "various"],
         )
+
+    def test_scored_musicbrainz_families_have_distinct_priority_sections(self) -> None:
+        rows = [
+            {"id": "artist-low", "release_group_id": "artist-family", "title": "Solo", "artist": "Artist", "recording_artist": "Artist", "release_artist": "Artist", "release_class": "Album", "score": "69"},
+            {"id": "best", "release_group_id": "best-family", "title": "Exact", "artist": "Various Artists", "release_class": "Soundtrack", "score": "100"},
+            {"id": "best-edition", "release_group_id": "best-family", "title": "Exact", "artist": "Various Artists", "release_class": "Soundtrack", "score": "72"},
+            {"id": "other", "release_group_id": "other-family", "title": "Other", "artist": "Various Artists", "release_class": "Soundtrack", "score": "68"},
+            {"id": "existing", "release_group_id": "existing-family", "title": "Current", "artist": "Various Artists", "release_class": "Compilation", "score": "12", "selection_state": "current"},
+        ]
+        groups = _musicbrainz_grouped_rows(rows)
+        labels = [label for kind, _, label in groups if kind == "section"]
+        self.assertEqual(labels, ["BEST MATCH · 90–100% + EXISTING", "ARTIST RELEASE PRIORITY", "OTHER RELEASES"])
+        self.assertEqual(
+            [index for kind, index, _ in groups if kind == "result"],
+            [1, 2, 4, 0, 3],
+        )
+
+    def test_album_search_generates_title_percentages_when_musicbrainz_omits_them(self) -> None:
+        rows = core.decorate_musicbrainz_results(
+            [
+                {"id": "other", "title": "Different Album", "artist": "Artist"},
+                {"id": "exact", "title": "The Bodyguard", "artist": "Artist"},
+            ],
+            query_artist="Artist",
+            query_album="The Bodyguard",
+        )
+        self.assertEqual(rows[0]["id"], "exact")
+        self.assertEqual(rows[0]["score"], "100")
+        self.assertLess(int(rows[1]["score"]), 90)
 
     def test_artist_and_release_type_filters_combine(self) -> None:
         selection = MusicBrainzFilter.from_items(self.rows)

@@ -28,6 +28,7 @@ from mutagen.flac import FLAC, Picture
 from mutagen.id3 import APIC, ID3, ID3NoHeaderError
 from mutagen.mp4 import MP4, MP4Cover
 import requests
+from splined_db_audit import connect_sqlite
 
 from splined_media_tags import inspect_album_tracks
 
@@ -207,7 +208,7 @@ def local_artwork_rows(
     artist_placeholders = ",".join("?" for _value in artist_mbids)
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(database, timeout=10.0)
+        connection = connect_sqlite(database, timeout=10.0)
         connection.row_factory = sqlite3.Row
         release_clause = (
             "AND lower(al.musicbrainz_albumid)=? "
@@ -383,7 +384,7 @@ def _cached_releases(
         return ()
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(database, timeout=3.0)
+        connection = connect_sqlite(database, timeout=3.0)
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
             "SELECT c.* FROM recording_release_candidates c "
@@ -425,7 +426,7 @@ def _cache_releases(
     if not candidates:
         return
     database = _database_path(core, config_file, cfg)
-    connection = sqlite3.connect(database, timeout=10.0)
+    connection = connect_sqlite(database, timeout=10.0)
     try:
         first = candidates[0]
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -1374,7 +1375,7 @@ def record_application(
     artist = _artist_key(_mbids(getattr(track, "artist_mbid", None)))
     if not recording or not artist:
         return
-    connection = sqlite3.connect(
+    connection = connect_sqlite(
         _database_path(core, config_file, cfg), timeout=10.0
     )
     try:
@@ -1474,7 +1475,7 @@ def record_progress(
     completed_tracks: int,
 ) -> None:
     """Persist compilation progress independently of an artwork write."""
-    connection = sqlite3.connect(
+    connection = connect_sqlite(
         _database_path(core, config_file, cfg), timeout=10.0
     )
     try:
@@ -1507,7 +1508,7 @@ def completed_track_paths(
     database = _database_path(core, config_file, cfg)
     if not database.exists() or not tracks:
         return set()
-    connection = sqlite3.connect(database, timeout=10.0)
+    connection = connect_sqlite(database, timeout=10.0)
     connection.row_factory = sqlite3.Row
     try:
         _ensure_progress_table(connection)

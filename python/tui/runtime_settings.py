@@ -34,6 +34,7 @@ SETTING_SPECS = (
     SettingSpec("library", "music_library", "Music library", "text", ""),
     SettingSpec("library", "ignored_subs", "Ignored sub-directories", "list", []),
     SettingSpec("scan", "cache_dir", "Persistent cache / SQLite", "text", "_cache"),
+    SettingSpec("scan", "shared_artist_art_dir", "V/A / OST Artist images", "text", ""),
     SettingSpec("scan", "temporary_cache_dir", "Temporary candidate cache", "text", "_cache"),
     SettingSpec("scan", "sqlite_shared", "Shared/network SQLite mode", "bool", False),
     SettingSpec("scan", "log_dir", "Run log directory", "text", "_logs"),
@@ -49,6 +50,7 @@ SETTING_SPECS = (
     SettingSpec("output", "evaluate_final_image", "Evaluate projected final image", "bool", True),
     SettingSpec("credentials", "credential_dir", "Credential directory", "text", "credentials"),
     SettingSpec("logging", "retention_days", "Log retention days", "int", 14, minimum=0),
+    SettingSpec("logging", "database_audit", "Separate database activity log", "bool", False),
     SettingSpec("history", "enabled", "Completion history", "bool", True),
     SettingSpec("history", "retention_days", "History retention days", "int", 0, minimum=0),
 )

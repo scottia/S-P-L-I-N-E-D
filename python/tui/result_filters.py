@@ -8,6 +8,8 @@ review; the CURRENT ALBUM authority is deliberately outside these filters.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+import re
 from typing import Any, Iterable
 
 
@@ -84,13 +86,40 @@ def _integer_value(item: Any, name: str, default: int = 0) -> int:
         return default
 
 
-def musicbrainz_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
-    """Match the accepted Windows deterministic release ordering.
+def musicbrainz_title_match(query: str, title: str) -> int:
+    """Estimate a display percentage when MusicBrainz did not supply one."""
+    def normalized(value: str) -> str:
+        return " ".join(re.findall(r"\w+", value.casefold()))
 
-    Artist-family releases lead, followed by Soundtrack, Compilation, Various
-    Artists, and blank-artist rows.  Within a family the newest release leads;
-    US precedes other countries and blank country remains last.
-    """
+    left, right = normalized(query), normalized(title)
+    if not left or not right:
+        return 0
+    return round(100 * SequenceMatcher(None, left, right).ratio())
+
+
+def musicbrainz_match_score(item: dict[str, Any]) -> int:
+    return max(0, min(100, _integer_value(item, "score")))
+
+
+def musicbrainz_artist_album_preferred(item: dict[str, Any]) -> bool:
+    if musicbrainz_release_type(item).casefold() not in {"album", "compilation"}:
+        return False
+    release_artist = _value(item, "release_artist") or musicbrainz_artist(item)
+    recording_artist = _value(item, "recording_artist") or _value(item, "query_artist")
+    def key(value: str) -> str:
+        compact = "".join(character for character in value.casefold().replace("&", "and") if character.isalnum())
+        return compact.removeprefix("the")
+    return bool(release_artist and recording_artist and key(release_artist) == key(recording_artist))
+
+
+def musicbrainz_match_section(item: dict[str, Any]) -> int:
+    if _value(item, "selection_state") == "current" or musicbrainz_match_score(item) >= 90:
+        return 0
+    return 1 if musicbrainz_artist_album_preferred(item) else 2
+
+
+def musicbrainz_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Order scored results by section and percentage, then by release detail."""
 
     family = _family_rank(item)
     artist = musicbrainz_artist(item)
@@ -99,7 +128,10 @@ def musicbrainz_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
     release_id = _value(item, "id") or _value(item, "release_mbid")
     title = _value(item, "title") or _value(item, "release_title")
     date_value = _value(item, "date") or _value(item, "release_date")
+    scored = _value(item, "score") != ""
     return (
+        musicbrainz_match_section(item) if scored else 0,
+        -musicbrainz_match_score(item) if scored else 0,
         family,
         artist.casefold() if family == 0 else "",
         -_date_sort_value(date_value),
