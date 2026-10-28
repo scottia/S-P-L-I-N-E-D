@@ -56,6 +56,7 @@ except ImportError:  # plain CLI and automatic fallback remain independently usa
 
 from .animation import animation_step, fit_phrase, startup_frame
 from .artist_workspace import ArtistWorkspace
+from .artist_search import discover_artist_images
 from .album_workspace import AlbumWorkspace
 from splined_artist_art import (
     ADJUSTMENT_FIELDS, SUPPORTED_EXTENSIONS, ArtistArtTarget, artist_albums_from_db,
@@ -387,6 +388,10 @@ class TuiState:
     home_artist_targets: list[ArtistArtTarget] = field(default_factory=list)
     home_artist_package_key: tuple[Any, ...] | None = None
     home_artist_package_path: Path | None = None
+    artist_search_busy: bool = False
+    artist_search_request_id: int = 0
+    artwork_action: str = ""
+    artwork_action_started: float = 0.0
     hover_target: str = ""
     hover_index: int = -1
     status_loading: bool = False
@@ -412,7 +417,24 @@ class TuiState:
     exception: BaseException | None = None
 
     def apply(self, event: str, payload: dict[str, Any]) -> None:
-        if event == "cache_build_start":
+        if event == "artist_search_result":
+            if int(payload.get("request_id", -1)) != self.artist_search_request_id:
+                return
+            self.artist_search_busy = False
+            self.artwork_action = ""
+            session = self.artist_workspace
+            if session is None or session.artist != payload.get("artist"):
+                return
+            try:
+                count = session.add_discovered_candidates(payload.get("candidates", []))
+            except OSError as error:
+                session.notice = f"Could not load Artist image candidates: {error}"
+                return
+            warnings = payload.get("warnings", [])
+            session.notice = f"Found {count} Artist image candidates" if count else "No new Artist images found"
+            if warnings:
+                session.notice += f" · {len(warnings)} source issue(s)"
+        elif event == "cache_build_start":
             self.workflow = "startup"
             self.cache_phase = "build"
             self.cache_processed = 0
@@ -480,6 +502,8 @@ class TuiState:
                     self.remote_hover_url
                 ] = self.remote_hover_overlay
         elif event in {"library", "library_update"}:
+            if event == "library":
+                self.artwork_action = ""
             self.workflow = "library"
             if self.workspace not in {"artist-art", "album-art"}:
                 self.workspace = "library"
@@ -751,6 +775,7 @@ class TuiState:
                     else f"Incomplete ({progress_completed}/{progress_total})"
                 )
         elif event == "candidates":
+            self.artwork_action = ""
             self.workflow = "candidates"
             self.remote_hover_token += 1
             self.remote_hover_index = -1
@@ -1057,6 +1082,7 @@ class TuiState:
             # authority allowed to publish this event.
             self.ai_activity.apply(payload)
         elif event == "worker_done":
+            self.artwork_action = ""
             _runtime_trace(
                 f"worker_done exit_code={payload.get('exit_code', 0)!r} "
                 f"exception={type(payload.get('exception')).__name__ if payload.get('exception') is not None else 'none'}"
@@ -1596,6 +1622,48 @@ def _render_artist_status_loading_banner(
         Paragraph(body).block(
             card(theme, title, Semantic.SPECIAL)
         ),
+        popup,
+    )
+
+
+def _render_artwork_action_banner(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
+    width = min(int(area.width) - 4, 72)
+    height = min(int(area.height), 7)
+    popup = Rect(
+        int(area.x) + max(0, (int(area.width) - width) // 2),
+        int(area.y) + max(0, (int(area.height) - height) // 2),
+        width, height,
+    )
+    frame.render_widget(Clear(), popup)
+    artist_search = state.artwork_action == "artist-search"
+    title = "FINDING ARTIST IMAGES" if artist_search else "FINDING ALBUM COVERS"
+    headline = (
+        f"Searching for {state.artist_workspace.artist}"
+        if artist_search and state.artist_workspace is not None else
+        f"Searching selected Albums · {state.album_index:,} / {state.album_total:,}"
+        if state.album_total else "Starting selected Album search…"
+    )
+    note = (
+        "Fanart.tv and Deezer candidates will appear in Artist Art."
+        if artist_search else "Artwork candidates will open for review."
+    )
+    inner_width = max(4, width - 8)
+    pulse = int((time.monotonic() - state.artwork_action_started) * 8) % (inner_width + 10)
+    spans = [Span("[", style(theme, Semantic.MUTED))]
+    for index in range(inner_width):
+        if pulse - 10 <= index <= pulse:
+            rgb = _status_gradient_rgb(index / max(1, inner_width - 1))
+            spans.append(Span("█", Style().fg(Color.rgb(*rgb))))
+        else:
+            spans.append(Span("░", style(theme, Semantic.MUTED)))
+    spans.append(Span("]", style(theme, Semantic.MUTED)))
+    frame.render_widget(
+        Paragraph(Text([
+            Line([Span(_truncate(headline, width - 6), style(theme, Semantic.ACTIVE, bold=True))]).centered(),
+            Line([]),
+            Line(spans).centered(),
+            Line([Span(_truncate(note, width - 6), style(theme, Semantic.TEXT))]).centered(),
+        ])).block(card(theme, title, Semantic.SPECIAL)),
         popup,
     )
 
@@ -2879,14 +2947,11 @@ def _home_album_cover(state: TuiState, album_path: str) -> Path | None:
 def _render_home_header(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     compact = int(area.width) < 96
     controls = (
-        ("[Library " + ("−" if state.home_library_expanded else "+") + "]" if compact else
-         "[Media Library " + ("−" if state.home_library_expanded else "+") + "]", "home-library-toggle"),
         ("[Filter " + ("−" if state.home_media_filter_open else "+") + "]" if compact else
          "[Media Filter " + ("−" if state.home_media_filter_open else "+") + "]", "home-filter-toggle"),
+        ("[Artists " + ("−" if state.home_library_expanded else "+") + "]", "home-library-toggle"),
         ("[Albums " + ("−" if state.home_albums_expanded else "+") + "]", "home-albums-toggle"),
-        ("[G]" if compact else "[G Artist Art]", "artist-art-open"),
-        ("[O]" if compact else "[O Album Art]", "album-art-open"),
-        ("[?]", "home-help"),
+        ("[? Help]", "home-help"),
     )
     spans: list[Span] = []
     x = int(area.x) + 2
@@ -2900,7 +2965,7 @@ def _render_home_header(frame: Any, area: Rect, state: TuiState, theme: Theme) -
         _register_hit(state, target, Rect(x, int(area.y) + 1, len(label), 1))
         x += len(label)
     frame.render_widget(
-        Paragraph(Text([Line(spans)])).block(card(theme, "ARTIST OVERVIEW / SELECT MEDIA", Semantic.ACTIVE)),
+        Paragraph(Text([Line(spans)])).block(card(theme, "CHOOSE ARTIST → SELECT ALBUM → FIND ARTWORK", Semantic.ACTIVE)),
         area,
     )
 
@@ -2964,11 +3029,9 @@ def _render_home_album_gallery(frame: Any, area: Rect, state: TuiState, theme: T
 def _render_home_artist_overview(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     model = state.library
     assert model is not None
-    banner_height = max(5, min(15, int(area.height) // 2))
-    if int(area.height) < 20:
-        banner_height = min(banner_height, max(5, int(area.height) - 10))
+    banner_height = max(4, min(15, int(area.height) // 2, int(area.height) - 12))
     banner, detail, gallery = _split_vertical(
-        area, [Constraint.length(banner_height), Constraint.length(3), Constraint.fill(1)],
+        area, [Constraint.length(banner_height), Constraint.length(5), Constraint.fill(1)],
     )
     package = _home_artist_package(state)
     _render_workspace_image(
@@ -2983,11 +3046,31 @@ def _render_home_artist_overview(frame: Any, area: Rect, state: TuiState, theme:
         f"{model.active_artist or 'Choose an Artist'}  ·  "
         f"{len(albums)} Albums  ·  {processed} Completed  ·  {selected} Selected"
     )
+    frame.render_widget(Paragraph.from_string("").block(card(theme, "ARTWORK ACTIONS", Semantic.SPECIAL)), detail)
     frame.render_widget(
-        Paragraph.from_string(_truncate(summary, max(1, int(detail.width) - 4)))
-        .block(card(theme, "ARTIST & ALBUM SELECTION", Semantic.SPECIAL)),
-        detail,
+        Paragraph.from_string(_truncate(summary, max(1, int(detail.width) - 4))).style(style(theme, Semantic.TEXT)),
+        Rect(int(detail.x) + 2, int(detail.y) + 1, max(1, int(detail.width) - 4), 1),
     )
+    def action_row(y: int, buttons: tuple[tuple[str, str], ...]) -> None:
+        x = int(detail.x) + 2
+        right = int(detail.x + detail.width) - 2
+        for label, target in buttons:
+            if x + len(label) > right:
+                break
+            frame.render_widget(
+                Paragraph.from_string(label).style(style(theme, Semantic.ACCEPTED if target.endswith("search") else Semantic.SPECIAL, bold=True)),
+                Rect(x, y, len(label), 1),
+            )
+            _register_hit(state, target, Rect(x, y, len(label), 1))
+            x += len(label) + 1
+    action_row(int(detail.y) + 2, (
+        ("[Find Artist Images]", "artist-art-search"),
+        (f"[Find Covers ({selected} selected)]", "album-cover-search"),
+    ))
+    action_row(int(detail.y) + 3, (
+        ("[Edit Artist Image/Banner]", "artist-art-open"),
+        ("[Edit Album Cover]", "album-art-open"),
+    ))
     if state.home_albums_expanded:
         _render_home_album_gallery(frame, gallery, state, theme)
     else:
@@ -5804,7 +5887,7 @@ def _render_artist_workspace(frame: Any, area: Rect, state: TuiState, theme: The
         return
     header, body, candidates_area, footer = _split_vertical(
         area,
-        [Constraint.length(4), Constraint.fill(1), Constraint.length(8), Constraint.length(3)],
+        [Constraint.length(4), Constraint.fill(1), Constraint.length(12), Constraint.length(3)],
     )
     selected_field = ADJUSTMENT_FIELDS[session.selected_adjustment]
     profile = (
@@ -5844,36 +5927,50 @@ def _render_artist_workspace(frame: Any, area: Rect, state: TuiState, theme: The
     selected = session.selected_path
     image_panel(selected_area, selected or session.preview_dir / "missing.png", "4  SELECTED ARTWORK", 4)
 
-    candidate_lines = []
-    candidate_indexes: list[int] = []
-    if session.candidates:
-        start = max(0, min(session.selected_candidate - 2, max(0, len(session.candidates) - 4)))
-        for index in range(start, min(len(session.candidates), start + 4)):
-            label, path = session.candidates[index]
-            prefix = "▶" if index == session.selected_candidate else " "
-            candidate_lines.append(f"{prefix} {index + 1:>2}. {label:<8} {path.name}")
-            candidate_indexes.append(index)
-    else:
-        candidate_lines.append("No saved local images · press I to add an image file")
-    if session.input_path is not None:
-        candidate_lines.append(f"Image path: {session.input_path}▌")
-    if session.input_path is None:
-        candidate_lines.append(session.notice or "Click a candidate, then use it as Artist or Banner art.")
-        candidate_lines.append("[Use as Artist] [Use as Banner] [Add Image]")
-    else:
-        candidate_lines.append("Type an image path, then click Load Path or Cancel.")
+    count = len(session.candidates)
+    columns = 4 if int(candidates_area.width) >= 100 else 2 if int(candidates_area.width) >= 54 else 1
+    start = (session.selected_candidate // columns) * columns if count else 0
+    end = min(count, start + columns)
     frame.render_widget(
-        Paragraph.from_string("\n".join(candidate_lines)).block(card(theme, "ARTIST ART CANDIDATES", Semantic.ACTIVE)),
+        Paragraph.from_string("").block(card(theme, f"ARTIST IMAGE CANDIDATES · {count}", Semantic.ACTIVE)),
         candidates_area,
     )
-    for row, index in enumerate(candidate_indexes):
-        _register_hit(state, "workspace-candidate", _row_rect(candidates_area, row), index=index)
     if session.input_path is None:
-        actions_y = int(candidates_area.y) + 1 + len(candidate_lines) - 1
-        actions_x = int(candidates_area.x) + 1
-        for label, key in (("[Use as Artist]", "p"), ("[Use as Banner]", "b"), ("[Add Image]", "i")):
-            _register_hit(state, "workspace-key", Rect(actions_x, actions_y, len(label), 1), value=key)
-            actions_x += len(label) + 1
+        candidate_actions = (("[Find More]", "f"), ("[Use as Artist]", "p"),
+                             ("[Use as Banner]", "b"), ("[Add Image]", "i"))
+    else:
+        candidate_actions = (("[Load Path]", "Enter"), ("[Cancel]", "Esc"))
+    frame.render_widget(
+        Paragraph(Text([_workspace_control_line(state, theme, candidates_area, 0, candidate_actions)])),
+        Rect(int(candidates_area.x) + 1, int(candidates_area.y) + 1, max(1, int(candidates_area.width) - 2), 1),
+    )
+    previous = "[‹ Page]"
+    following = "[Page ›]"
+    nav_text = f"{previous} {following}  {start + 1 if count else 0}–{end} of {count}"
+    frame.render_widget(
+        Paragraph.from_string(nav_text).style(style(theme, Semantic.SPECIAL)),
+        Rect(int(candidates_area.x) + 1, int(candidates_area.y) + 2, max(1, int(candidates_area.width) - 2), 1),
+    )
+    _register_hit(state, "workspace-candidate-page", Rect(int(candidates_area.x) + 1, int(candidates_area.y) + 2, len(previous), 1), index=columns, value="prev")
+    _register_hit(state, "workspace-candidate-page", Rect(int(candidates_area.x) + 2 + len(previous), int(candidates_area.y) + 2, len(following), 1), index=columns, value="next")
+    notice = (
+        f"Image path: {session.input_path}▌" if session.input_path is not None else
+        session.notice or "Click a candidate, then choose Artist or Banner."
+    )
+    frame.render_widget(
+        Paragraph.from_string(_truncate(notice, max(1, int(candidates_area.width) - 4)))
+        .style(style(theme, Semantic.WARNING if state.artist_search_busy else Semantic.TEXT)),
+        Rect(int(candidates_area.x) + 2, int(candidates_area.y) + 3, max(1, int(candidates_area.width) - 4), 1),
+    )
+    gallery_y = int(candidates_area.y) + 4
+    gallery_width = max(1, int(candidates_area.width) - 2)
+    cell_width = max(1, gallery_width // columns)
+    for offset, index in enumerate(range(start, end)):
+        label, path = session.candidates[index]
+        rect = Rect(int(candidates_area.x) + 1 + offset * cell_width, gallery_y, cell_width, 6)
+        title = f"{'▶' if index == session.selected_candidate else ' '} {index + 1} {label}"
+        _render_workspace_image(frame, rect, state, theme, path, _truncate(title, cell_width - 2), 20 + offset)
+        _register_hit(state, "workspace-candidate", rect, index=index)
     actions = (
         (("[Load Path]", "Enter"), ("[Cancel]", "Esc"))
         if session.input_path is not None else
@@ -6034,7 +6131,10 @@ def render(frame: Any, state: TuiState, theme: Theme) -> None:
     )
     if state.status_loading and state.workflow == "library":
         _render_artist_status_loading_banner(frame, area, state, theme)
-    if state.help_open or state.dialog_open or state.status_loading:
+    if state.artwork_action:
+        _render_artwork_action_banner(frame, area, state, theme)
+        _register_hit(state, "artwork-action-block", area)
+    if state.help_open or state.dialog_open or state.status_loading or state.artwork_action:
         state.workspace_overlay_pending.clear()
     if state.help_open:
         _render_help(frame, area, state, theme)
@@ -6468,10 +6568,42 @@ def _open_artist_workspace(state: TuiState) -> None:
         state.artist_workspace.close()
     state.artist_workspace = session
     state.workspace = "artist-art"
+    state.artist_search_busy = False
+    state.artist_search_request_id += 1
     state.transient = ""
 
 
-def _handle_artist_workspace_key(state: TuiState, event: Any, action: Action) -> bool:
+def _start_artist_search(state: TuiState, adapter: TuiAdapter) -> None:
+    session = state.artist_workspace
+    if session is None:
+        return
+    if state.artist_search_busy:
+        session.notice = "Artist image search is already running…"
+        return
+    state.artist_search_request_id += 1
+    request_id = state.artist_search_request_id
+    artist = session.artist
+    artist_mbid = session.artist_mbid
+    credential_dir = Path(str(state.runtime_info.get("credentials", "") or ""))
+    state.artist_search_busy = True
+    state.artwork_action = "artist-search"
+    state.artwork_action_started = time.monotonic()
+    session.notice = "Searching Fanart.tv and Deezer for Artist images…"
+
+    def work() -> None:
+        try:
+            candidates, warnings = discover_artist_images(artist, artist_mbid, credential_dir)
+        except Exception as error:
+            candidates, warnings = [], [f"Artist search failed: {error}"]
+        adapter.emit("artist_search_result", {
+            "request_id": request_id, "artist": artist,
+            "candidates": candidates, "warnings": warnings,
+        })
+
+    threading.Thread(target=work, name="splined-artist-search", daemon=True).start()
+
+
+def _handle_artist_workspace_key(state: TuiState, adapter: TuiAdapter, event: Any, action: Action) -> bool:
     session = state.artist_workspace
     if session is None:
         state.workspace = "library"
@@ -6497,6 +6629,10 @@ def _handle_artist_workspace_key(state: TuiState, event: Any, action: Action) ->
         return True
     if action is Action.BACK or lowered == "q" and not bool(getattr(event, "ctrl", False)):
         _invalidate_artist_previews(state)
+        state.artist_search_request_id += 1
+        state.artist_search_busy = False
+        if state.artwork_action == "artist-search":
+            state.artwork_action = ""
         session.close()
         state.artist_workspace = None
         state.workspace = "library"
@@ -6514,6 +6650,8 @@ def _handle_artist_workspace_key(state: TuiState, event: Any, action: Action) ->
             session.choose_candidate("banner")
         elif lowered == "i":
             session.input_path = ""
+        elif lowered == "f":
+            _start_artist_search(state, adapter)
         elif lowered == "1":
             session.select_radios(True, True, current=True)
         elif lowered == "2":
@@ -6567,7 +6705,7 @@ def _handle_library_key(
         return False
     code = str(event.code)
     if state.workspace == "artist-art":
-        return _handle_artist_workspace_key(state, event, action)
+        return _handle_artist_workspace_key(state, adapter, event, action)
     if state.workspace == "album-art":
         return _handle_album_workspace_key(state, event, action)
     if state.workspace == "library" and state.home_media_filter_open and action is Action.BACK:
@@ -7443,12 +7581,22 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if region.target == "home-overlay-block":
         return
+    if region.target == "artwork-action-block":
+        return
     if region.target == "workspace-key":
         if state.workspace in {"artist-art", "album-art", "about"}:
             handle_key(state, adapter, SimpleNamespace(code=region.value, ctrl=False, shift=False))
         return
     if region.target == "workspace-candidate" and state.artist_workspace is not None:
         state.artist_workspace.selected_candidate = region.index
+        return
+    if region.target == "workspace-candidate-page" and state.artist_workspace is not None:
+        session = state.artist_workspace
+        if session.candidates:
+            step = max(1, region.index)
+            page = session.selected_candidate // step
+            next_page = page + (-1 if region.value == "prev" else 1)
+            session.selected_candidate = max(0, min(len(session.candidates) - 1, next_page * step))
         return
     if region.target == "workspace-image":
         if _workspace_image_editable(state, region.index):
@@ -7458,6 +7606,21 @@ def handle_mouse(state: TuiState, adapter: TuiAdapter, event: Any) -> None:
         return
     if region.target == "artist-art-open" and state.workspace == "library":
         _open_artist_workspace(state)
+        return
+    if region.target == "artist-art-search" and state.workspace == "library":
+        _open_artist_workspace(state)
+        if state.workspace == "artist-art":
+            _start_artist_search(state, adapter)
+        return
+    if region.target == "album-cover-search" and state.workspace == "library":
+        if not _library_input_ready(state, adapter):
+            return
+        state.scan_scope = ""
+        state.scan_index = 0
+        _submit_library(state, adapter)
+        if state.input_request is None:
+            state.artwork_action = "album-search"
+            state.artwork_action_started = time.monotonic()
         return
     if region.target == "album-art-open" and state.workspace == "library":
         _open_album_workspace(state)
@@ -8083,6 +8246,8 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                     current_animation_step = (
                         animation_step(time.monotonic() - state.started_at)
                         if state.workflow == "startup"
+                            else int(time.monotonic() * 6)
+                            if state.artwork_action
                         else -1
                     )
                     if current_animation_step != last_animation_step:
@@ -8102,6 +8267,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                             and not state.help_open
                             and not state.dialog_open
                             and not state.status_loading
+                            and not state.artwork_action
                             else ""
                         )
                         if state.workspace_overlay_kind != workspace_kind:

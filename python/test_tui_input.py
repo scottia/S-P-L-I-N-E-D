@@ -211,6 +211,8 @@ class RenderHitMapTests(unittest.TestCase):
             "home-filter-toggle",
             "home-library-toggle",
             "home-albums-toggle",
+            "artist-art-search",
+            "album-cover-search",
         }
         for width, height in ((150, 44), (108, 36), (72, 40)):
             state = _library_state()
@@ -310,6 +312,34 @@ class RenderHitMapTests(unittest.TestCase):
         self.assertIn("artist-row", {region.target for region in state.hit_regions})
         self.assertEqual([item.selected for item in model.albums], selected_before)
         self.assertTrue(adapter.responses.empty())
+
+    def test_home_search_buttons_route_to_artist_candidates_and_album_read_search(self) -> None:
+        state = _library_state(artists=1, albums_each=2)
+        adapter = TuiAdapter()
+        adapter.waiting.set()
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        self.assertIn("artist-art-search", {item.target for item in state.hit_regions})
+        self.assertIn("album-cover-search", {item.target for item in state.hit_regions})
+
+        def open_artist(current: TuiState) -> None:
+            current.workspace = "artist-art"
+
+        with mock.patch("tui.splined_tui._open_artist_workspace", side_effect=open_artist) as open_editor, \
+             mock.patch("tui.splined_tui._start_artist_search") as start_search:
+            handle_mouse(state, adapter, _center(_region(state, "artist-art-search")))
+        open_editor.assert_called_once_with(state)
+        start_search.assert_called_once_with(state, adapter)
+
+        state.workspace = "library"
+        assert state.library is not None
+        state.library.albums[0].selected = True
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        handle_mouse(state, adapter, _center(_region(state, "album-cover-search")))
+        self.assertEqual(json.loads(adapter.responses.get_nowait())["scan_mode"], "filtered-read")
+        self.assertEqual(state.artwork_action, "album-search")
+        render(_Frame(150, 44), state, select_theme("OLED"))
+        state.apply("candidates", {"items": []})
+        self.assertEqual(state.artwork_action, "")
 
 
 class ReportAndStatusAuthorityTests(unittest.TestCase):

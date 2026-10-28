@@ -10,11 +10,12 @@ from unittest import mock
 from PIL import Image
 
 from splined_media_database import connect
+from splined_artist_art import ArtistPackage
 from tui.artist_workspace import ArtistWorkspace
 from tui.library import LibraryModel
 from tui.splined_tui import (
     InputRequest, TuiAdapter, TuiState, _clear_workspace_overlays,
-    _draw_workspace_overlays, handle_key, handle_mouse, render,
+    _draw_workspace_overlays, _start_artist_search, handle_key, handle_mouse, render,
 )
 from tui.theme import select_theme
 from pyratatui import Rect
@@ -57,6 +58,7 @@ class ArtistWorkspaceTests(unittest.TestCase):
             connection.close()
             session = ArtistWorkspace.load("Air", database, root / "managed", cache, writable=True)
             try:
+                self.assertEqual(session.artist_mbid, ARTIST_ID)
                 self.assertTrue((session.preview_dir / "current.png").is_file())
                 self.assertEqual(session.selected_component, "portrait")
                 candidate = root / "blue.png"
@@ -87,6 +89,28 @@ class ArtistWorkspaceTests(unittest.TestCase):
                 preview = session.preview_dir
                 session.close()
                 self.assertFalse(preview.exists())
+
+    def test_remote_search_populates_disposable_candidates_and_clears_status(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            session = ArtistWorkspace("Air", [], ArtistPackage(None, None), [], root, False)
+            session.preview_dir = root
+            session.artist_mbid = ARTIST_ID
+            state = TuiState(started_at=0.0, workflow="library", workspace="artist-art")
+            state.artist_workspace = session
+            state.runtime_info = {"credentials": str(root)}
+            adapter = TuiAdapter()
+            with mock.patch("tui.splined_tui.discover_artist_images", return_value=([("Fanart portrait", _png("blue"))], [])):
+                _start_artist_search(state, adapter)
+                self.assertTrue(state.artist_search_busy)
+                self.assertEqual(state.artwork_action, "artist-search")
+                event, payload = adapter.events.get(timeout=3)
+            state.apply(event, payload)
+            self.assertFalse(state.artist_search_busy)
+            self.assertEqual(state.artwork_action, "")
+            self.assertEqual(len(session.candidates), 1)
+            self.assertTrue(session.candidates[0][1].is_file())
+            self.assertIn("Found 1", session.notice)
 
     def test_tui_artist_shortcut_opens_and_returns_without_writing(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -151,17 +175,18 @@ class ArtistWorkspaceTests(unittest.TestCase):
                 return overlay
             with mock.patch("tui.splined_tui.native_prepare_image_overlay", side_effect=prepare), mock.patch("tui.splined_tui.native_clear_image_area") as clear:
                 render(frame, state, select_theme("OLED"))
-                self.assertEqual(len(state.workspace_overlay_pending), 4)
+                initial = len(state.workspace_overlay_pending)
+                self.assertEqual(initial, 6)  # four panes plus two local candidate previews
                 _draw_workspace_overlays(state)
-                self.assertEqual(sum(len(item.draws) for item in overlays), 4)
+                self.assertEqual(sum(len(item.draws) for item in overlays), initial)
                 render(frame, state, select_theme("OLED"))
                 _draw_workspace_overlays(state)
-                self.assertEqual(len(overlays), 4)
-                self.assertEqual(sum(len(item.draws) for item in overlays), 4)
+                self.assertEqual(len(overlays), initial)
+                self.assertEqual(sum(len(item.draws) for item in overlays), initial)
                 state.artist_workspace.adjust(10)
                 render(frame, state, select_theme("OLED"))
                 _draw_workspace_overlays(state)
-                self.assertGreater(sum(len(item.draws) for item in overlays), 4)
+                self.assertGreater(sum(len(item.draws) for item in overlays), initial)
                 _clear_workspace_overlays(state)
                 self.assertTrue(clear.called)
                 self.assertFalse(state.workspace_overlay_drawn)

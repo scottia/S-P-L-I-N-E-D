@@ -38,30 +38,33 @@ terminal width the three areas stack instead of squeezing the images.
    selection, and scan controls should appear in one overlay. Click the close
    control or press `Esc` to return to the overview. The images underneath
    should reappear without changing the selection.
-2. Click **Media Library −/+** and **Albums −/+** to collapse and restore those
-   sections. Click **G Artist Art** or **O Album Art** to open the corresponding
-   editor. The `?` button opens help. `A` still opens About, where the configured
-   local paths can be checked.
+2. Click **Artists −/+** and **Albums −/+** to collapse and restore those
+   sections. The center action panel has four separate actions: **Find Artist
+   Images**, **Find Covers (N selected)**, **Edit Artist Image/Banner**, and
+   **Edit Album Cover**. The `? Help` button opens help. `A` still opens About,
+   where the configured local paths can be checked.
 3. Resize the terminal if practical. Artist and album selections should remain
    clickable in both wide and stacked layouts. The home images should use the
    same smooth native terminal rendering as the selected album preview.
 
 ## Artwork checks
 
-In Artist Art, click a candidate, choose **Use as
-Artist** or **Use as Banner**, then click the pane title to activate its radio.
+In Artist Art, click a candidate image, choose **Use as Artist** or **Use as
+Banner**, then click the pane title to activate its radio.
 The slider selector, adjustment steps, zoom, position, upscale, reset, write,
 and back controls are clickable. Wheel over an active image to zoom; hold and
 drag it to position. Album Art has clickable adjustment, upscale, reset, image
 path, write, and back controls. About has clickable update and back controls.
 
-1. Focus **3 Doors Down** and press `G`. Check that the saved package, artist
-   image, banner, and Selected Artwork appear as smooth native images, like the
-   selected Album thumbnail in Select Media, rather than large terminal pixels.
-   There should be local Artist and
-   Banner candidates. Press `2` or `3` to edit one component; use `[`/`]` to
-   choose a control and `+`/`-` to change it. The chosen pane and Selected
-   Artwork should visibly change, while the current package remains unchanged.
+1. Focus **3 Doors Down** and click **Find Artist Images**. A colored status bar
+   should appear in the center while Fanart.tv and Deezer are searched. The
+   Artist Art candidate gallery should then contain source-labeled portrait
+   and banner previews alongside saved local images. Click a candidate and
+   choose **Use as Artist** or **Use as Banner**. **Find More** repeats the
+   search. The current package, proposed image/banner, and Selected Artwork
+   should render smoothly like the selected Album thumbnail. Use `2` or `3`
+   (or click the pane title) to edit one component; use `[`/`]` to choose a
+   control and `+`/`-` to change it. The current package remains unchanged.
 2. Press `4` for the combined package. Editing should require `T` to enable
    Themed Packaging. Switch back to `2` and confirm its earlier adjustment is
    retained. Press `U` to toggle the upscale preview; the panes should remain
@@ -70,7 +73,10 @@ path, write, and back controls. About has clickable update and back controls.
    Banner component and press `W` twice. One `W` only asks for confirmation.
    Reopen `G` and confirm the saved package and local candidates reflect the
    written `artist.*` or `banner.*`. `Esc` leaves without writing.
-4. Focus an A-artist Album with a saved `cover.*` and press `O`. Compare Original,
+4. Select an A-artist Album card and click **Find Covers (N selected)**. A
+   colored status bar should appear before the Album candidate review opens.
+   This runs the engine's READ search; it does not write a cover. Click **Edit
+   Album Cover** to work on the local saved cover. Compare Original,
    Enhanced Preview, and Selected Artwork. Change Brightness or Contrast and
    verify visible pixel changes; `U` toggles the 2× preview. `W` twice writes
    the still cover on the copied Album. Opening `O`, editing, or using `Esc`
@@ -102,10 +108,9 @@ committed database change.
 
 ## Scope of this run-through
 
-This Python pass covers MusicBrainz result presentation, local Artist Art
-packages, individual and themed image controls, local Album cover enhancement,
-and separate database activity logging. Existing Python fallback track review
-and the engine-owned scan and embed path remain available. The Windows remote
-Artist Art provider strip, GUI filter presets, COMP Report bulk actions, and
-Album Track Embedding queue are not yet exposed in the Python TUI; do not use
-this run-through to assess those Windows features.
+This Python pass covers MusicBrainz result presentation, Fanart.tv and Deezer
+Artist image search, local Artist Art packages, individual and themed image
+controls, local Album cover enhancement, and separate database activity logging.
+Existing Python fallback track review and the engine-owned scan and embed path
+remain available. Windows GUI filter presets, COMP Report bulk actions, and the
+Album Track Embedding queue are outside this Python run-through.

@@ -52,6 +52,7 @@ class ArtistWorkspace:
     confirm_write: bool = False
     input_path: str | None = None
     preview_dir: Path | None = None
+    artist_mbid: str = ""
 
     @classmethod
     def load(
@@ -71,6 +72,7 @@ class ArtistWorkspace:
             artist, targets, saved, local_candidates(targets),
             cache_dir, writable, saved.portrait, saved.banner,
         )
+        session.artist_mbid = next((item.artist_mbid for item in albums if item.artist_mbid), "")
         session.preview_dir = Path(tempfile.mkdtemp(prefix="artist-preview-", dir=cache_dir))
         session.refresh_preview()
         return session
@@ -123,6 +125,18 @@ class ArtistWorkspace:
         self.candidates.append(("Added local image", source))
         self.selected_candidate = len(self.candidates) - 1
         self.notice = f"Local candidate ready: {source.name}"
+
+    def add_discovered_candidates(self, found: list[tuple[str, bytes]]) -> int:
+        if self.preview_dir is None:
+            return 0
+        first = len(self.candidates)
+        for label, image in found:
+            destination = self.preview_dir / f"remote-{len(self.candidates) + 1:02d}.png"
+            destination.write_bytes(image)
+            self.candidates.append((label, destination))
+        if len(self.candidates) > first:
+            self.selected_candidate = first
+        return len(self.candidates) - first
 
     def _theme(self, prepared: bytes) -> bytes:
         if not self.theme_enabled:
