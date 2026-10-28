@@ -2420,6 +2420,7 @@ def prepare_tui_library_selection(
                 "version": display_version(),
                 "python": platform.python_version(),
                 "platform": platform.platform(),
+                "source": str(Path(__file__).resolve().parent),
                 "config": str(config_file),
                 "library": str(index_root),
                 "database": str(runtime_cache_dir(config_file, cfg) / "splined.db"),

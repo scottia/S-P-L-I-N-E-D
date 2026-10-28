@@ -2,7 +2,10 @@
 
 This plan uses the MEDIAPC Python shortcut `splined` and the copied test library.
 Close any Python TUI started before these source changes, then relaunch it so the
-new code and database audit are active. No Git build or push is needed.
+new code and database audit are active. The shortcut runs the standalone
+`E:\apps\ChatGpt\SPLINED-local-test-library\python-local` copy, including its
+own virtual environment. It does not execute from the Git `dev` checkout.
+No Git build or push is needed.
 
 ## Confirm the test boundaries
 
@@ -10,6 +13,8 @@ Press `A` in Select Media and check these paths:
 
 | Item | Expected local path |
 | --- | --- |
+| Python source | `E:\apps\ChatGpt\SPLINED-local-test-library\python-local\python` |
+| Python executable | `E:\apps\ChatGpt\SPLINED-local-test-library\python-local\.venv\Scripts\python.exe` |
 | Library | `E:\apps\ChatGpt\SPLINED-local-test-library\music` |
 | Python SQLite | `E:\apps\ChatGpt\SPLINED-local-test-library\state\cache-python-local-index-20261027\splined.db` |
 | Artist images | `E:\apps\ChatGpt\SPLINED-local-test-library\state\artist-art` |

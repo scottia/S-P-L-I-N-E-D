@@ -4676,6 +4676,7 @@ def _render_about(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None
         ("SPLINED", info.get("version", "Unknown")),
         ("Python", info.get("python", sys.version.split()[0])),
         ("Platform", info.get("platform", sys.platform)),
+        ("Source", info.get("source", "")),
         ("Config", info.get("config", "")),
         ("Library", info.get("library", "")),
         ("SQLite", info.get("database", "")),
