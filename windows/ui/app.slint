@@ -520,6 +520,7 @@ component MediaLibraryPane inherits NeonPanel {
     in property <[UiCandidateFilterRow]> candidate-range-filter-rows;
     in property <string> selected-source-name: "All";
     in property <string> library-view-label;
+    in property <string> media-status-scope-label;
     in-out property <string> artist-filter-text;
     in-out property <string> album-filter-text;
     in property <bool> include-bypassed;
@@ -624,7 +625,7 @@ component MediaLibraryPane inherits NeonPanel {
                             Rectangle { horizontal-stretch: 1; NeonAction { label: "Filtered"; width: parent.width; height: 38px; enabled: !root.media-filter-locked; clicked => root.select-filtered(); } }
                             Rectangle { horizontal-stretch: 1; NeonAction { label: "None"; width: parent.width; height: 38px; tone: "red"; enabled: !root.media-filter-locked; clicked => root.select-none(); } }
                         }
-                        Text { text: (root.show-tracks ? "Fallback" : root.library-view-label) + " State"; color: AppTheme.foreground; font-size: 16px; font-weight: 700; }
+                        Text { text: root.media-status-scope-label + " State"; color: AppTheme.foreground; font-size: 16px; font-weight: 700; }
                         GridLayout { spacing: 4px;
                             for status[i] in root.status-filter-rows: Rectangle {
                                 row: i / 2; col: mod(i, 2); height: 36px; background: transparent;
@@ -1361,6 +1362,7 @@ export component AppWindow inherits Window {
     in-out property <bool> enhancement-reset-active: false;
     in property <int> selected-count;
     in property <string> library-view-label: "Artists";
+    in property <string> media-status-scope-label: "Artists";
     in property <string> database-label;
     in property <string> current-artist;
     in property <string> current-album;
@@ -1877,6 +1879,7 @@ export component AppWindow inherits Window {
                     candidate-range-filter-rows: root.candidate-range-filter-rows;
                     selected-source-name: root.selected-source-name;
                     library-view-label: root.library-view-label;
+                    media-status-scope-label: root.media-status-scope-label;
                     artist-filter-text <=> root.artist-filter-text;
                     album-filter-text <=> root.album-filter-text;
                     include-bypassed: root.include-bypassed;

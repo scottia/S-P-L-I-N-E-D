@@ -145,7 +145,8 @@ class PreviewApp:
                 raise KeyError("Artist not found")
             rows = db.execute(
                 "SELECT album_key, album_name, musicbrainz_albumid, path, cover_path, "
-                "track_count, artwork_jpeg, artwork_png, artwork_webp, status, compilation "
+                "track_count, artwork_jpeg, artwork_png, artwork_webp, status, compilation, "
+                "release_year, webp_found, cover_found "
                 "FROM albums WHERE artist_key=? ORDER BY album_name COLLATE NOCASE",
                 (artist_id,),
             ).fetchall()
@@ -178,6 +179,17 @@ class PreviewApp:
                 "tracks": row["track_count"], "status": row["status"],
                 "compilation": bool(row["compilation"]),
                 "embedded": int(row["artwork_jpeg"] or 0) + int(row["artwork_png"] or 0) + int(row["artwork_webp"] or 0),
+                "album_mbid": row["musicbrainz_albumid"] or "",
+                "year": row["release_year"] or "",
+                "soundtrack": bool(row["musicbrainz_albumid"]) and (
+                    any(part.casefold() in {"[soundtracks]", "soundtracks"} for part in folder.parts)
+                    or "soundtrack" in row["album_name"].casefold()
+                    or "original motion picture" in row["album_name"].casefold()
+                    or "music from the motion picture" in row["album_name"].casefold()
+                    or row["album_name"].casefold().endswith(" ost")
+                ),
+                "webp_found": bool(row["webp_found"]),
+                "cover_found": bool(row["cover_found"]),
                 "cover": self.image(cover),
             })
         return {

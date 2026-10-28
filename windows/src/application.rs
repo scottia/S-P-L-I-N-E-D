@@ -1133,9 +1133,60 @@ impl LibraryState {
             .count()
     }
 
+    /// Count only the item currently being reviewed in the Media Filter.
+    /// The library-wide count remains available to scan and reporting code.
+    pub fn focused_status_count(&self, value: StatusFilter) -> usize {
+        if self.show_tracks {
+            return self
+                .focused_album_key
+                .as_deref()
+                .and_then(|key| {
+                    self.albums.iter().find(|album| {
+                        album.snapshot.album_key.eq_ignore_ascii_case(key)
+                            && Self::is_fallback_album(album)
+                    })
+                })
+                .map_or(0, |album| {
+                    Self::fallback_track_count_for_filter(album, value)
+                });
+        }
+        if let Some(album_key) = self.focused_album_key.as_deref() {
+            return self
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
+                .map_or(0, |album| {
+                    usize::from(
+                        value == StatusFilter::All || Self::album_matches_filter(album, value),
+                    )
+                });
+        }
+        if self.view == LibraryView::Artists {
+            let Some(artist) = self.focused_artist.as_deref() else {
+                return 0;
+            };
+            let indices = self
+                .albums
+                .iter()
+                .enumerate()
+                .filter(|(_, album)| album.snapshot.artist.eq_ignore_ascii_case(artist))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            return usize::from(
+                !indices.is_empty()
+                    && (value == StatusFilter::All || self.artist_matches_filter(&indices, value)),
+            );
+        }
+        0
+    }
+
     pub fn state_scope_label(&self) -> &'static str {
         if self.show_tracks {
             "Fallback"
+        } else if self.focused_album_key.is_some() {
+            "Album"
+        } else if self.view == LibraryView::Artists && self.focused_artist.is_some() {
+            "Artist"
         } else {
             match self.view {
                 LibraryView::Artists => "Artists",
@@ -5415,6 +5466,25 @@ mod tests {
             state.status_label(StatusFilter::ArtistComplete),
             "Fallback Complete"
         );
+    }
+
+    #[test]
+    fn media_filter_counts_follow_the_focused_artist_or_album() {
+        let mut state = artist_library();
+        assert_eq!(state.focused_status_count(StatusFilter::All), 0);
+        state.focused_artist = Some("Alpha".to_string());
+        assert_eq!(state.state_scope_label(), "Artist");
+        assert_eq!(state.focused_status_count(StatusFilter::All), 1);
+        assert_eq!(state.focused_status_count(StatusFilter::Processed), 1);
+        state.focused_album_key = Some("a".to_string());
+        assert_eq!(state.state_scope_label(), "Album");
+        assert_eq!(state.focused_status_count(StatusFilter::Processed), 0);
+        assert_eq!(state.focused_status_count(StatusFilter::Unprocessed), 1);
+        state.set_top_level_view(LibraryView::Albums);
+        state.focused_album_key = Some("b".to_string());
+        assert_eq!(state.focused_status_count(StatusFilter::All), 1);
+        assert_eq!(state.focused_status_count(StatusFilter::Processed), 1);
+        assert_eq!(state.focused_status_count(StatusFilter::Unprocessed), 0);
     }
 
     #[test]

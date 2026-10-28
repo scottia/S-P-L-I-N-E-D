@@ -16357,6 +16357,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             .into(),
     );
     ui.set_library_view_label(SharedString::from(state.library.view.label()));
+    ui.set_media_status_scope_label(SharedString::from(state.library.state_scope_label()));
     ui.set_compilation_track_rows(model(compilation_tracks));
     let artist_report_visible = state.library.view == LibraryView::Artists
         && !state.library.show_tracks
@@ -18455,7 +18456,7 @@ fn status_filter_ui_rows(state: &ApplicationState) -> Vec<UiStatusFilterRow> {
     .map(|filter| UiStatusFilterRow {
         key: SharedString::from(filter.label()),
         label: SharedString::from(state.library.status_label(filter)),
-        count: state.library.status_count(filter) as i32,
+        count: state.library.focused_status_count(filter) as i32,
         enabled: state.library.status_filter_enabled(filter),
         semantic_color: status_filter_color(filter),
     })

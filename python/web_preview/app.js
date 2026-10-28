@@ -84,6 +84,19 @@ function mediaStatusKey(item) {
   return MEDIA_STATUSES.some(([key]) => key === raw) ? raw : "unprocessed";
 }
 function mediaMatches(item) { return state.mediaStatuses.has(mediaStatusKey(item)); }
+function selectedMedia(item) { return state.mediaSelected.has(item.id); }
+function markSelectedArtist(artist) {
+  state.mediaSelected.clear();
+  state.mediaSelected.add(artist.id);
+  for (const album of artist.albums) {
+    const status = String(album.status || "").toLowerCase();
+    if (album.album_mbid && status !== "bypassed" && status !== "timeout") state.mediaSelected.add(album.id);
+  }
+}
+function markSelectedAlbum(album) {
+  state.mediaSelected.clear();
+  state.mediaSelected.add(album.id);
+}
 function candidateRange(candidate) {
   const shortSide = Math.min(Number(candidate.width) || 0, Number(candidate.height) || 0);
   if (shortSide < 1200) return "BelowMinimum";
@@ -150,9 +163,9 @@ function renderLibrary() {
   if (state.libraryMode === "artists") {
     $("artistCount").textContent = state.artists.filter(mediaMatches).length + " shown";
     for (const artist of state.artists.filter(mediaMatches)) {
-      const button = node("button", "library-row" + (state.artist?.id === artist.id ? " active" : "")); button.type = "button";
-      const orbit = node("span", "status-orbit" + (state.mediaSelected.has(artist.id) ? " selected" : ""), state.mediaSelected.has(artist.id) ? "●" : "○");
-      applyStatusPalette(orbit, mediaStatusKey(artist)); button.append(orbit);
+      const button = node("button", "library-row"); button.type = "button";
+      const orbit = node("span", "status-orbit" + (selectedMedia(artist) ? " selected" : ""), selectedMedia(artist) ? "●" : "○"); button.append(orbit);
+      applyStatusPalette(button, mediaStatusKey(artist));
       const thumb = state.artist?.id === artist.id && state.artist.portrait ? image(state.artist.portrait, "library-thumb", "") : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
       button.append(thumb);
       const copy = node("span", "row-copy"); copy.append(node("strong", "", artist.name), node("small", "", "(" + artist.albums + " Albums)")); button.append(copy, node("span", "expand-mark", state.artist?.id === artist.id ? "−" : "+"));
@@ -172,10 +185,13 @@ function renderLibrary() {
   renderMediaStatusChips();
 }
 function renderMediaStatusChips() {
-  const items = state.libraryMode === "artists" ? state.artists : state.albumsIndex;
+  // The state panel describes the current selection, never the whole index.
+  const focusedAlbum = state.album && selectedMedia(state.album);
+  const items = focusedAlbum ? [state.album]
+    : state.artist && selectedMedia(state.artist) ? [state.artist] : [];
   const counts = new Map();
   for (const item of items) { const key = mediaStatusKey(item); counts.set(key, (counts.get(key) || 0) + 1); }
-  $("mediaStatusTitle").textContent = state.libraryMode === "artists" ? "Artists State" : state.libraryMode === "fallback" ? "Fallback State" : "Albums State";
+  $("mediaStatusTitle").textContent = state.libraryMode === "fallback" ? "Fallback State" : focusedAlbum || state.libraryMode === "albums" ? "Album State" : "Artist State";
   const host = $("mediaStatusChips"); clear(host);
   for (const [key, label] of [["all", "All"], ...MEDIA_STATUSES]) {
     const enabled = key === "all" ? state.mediaStatuses.size === MEDIA_STATUSES.length : state.mediaStatuses.has(key);
@@ -204,12 +220,73 @@ function renderCandidateTypeChips() {
   $("candidateDisregardSource").disabled = !sourceChosen || state.candidateFilterLocked;
 }
 function albumRow(album, child) {
-  const button = node("button", "library-row album-row" + (child ? " album-child" : "") + (state.album?.id === album.id ? " active" : "")); button.type = "button";
-  const orbit = node("span", "status-orbit" + (state.mediaSelected.has(album.id) ? " selected" : ""), state.mediaSelected.has(album.id) ? "●" : "○");
-  applyStatusPalette(orbit, mediaStatusKey(album)); button.append(orbit);
+  const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
+  const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
+  applyStatusPalette(button, mediaStatusKey(album));
   button.append(album.cover ? image(album.cover, "library-thumb", "") : node("span", "library-thumb", "♫"));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
+}
+
+const ALBUM_BANNERS = {
+  compiled: ["COMPILED", "#3478ff", "#d9ad43"],
+  featuring: ["FEATURING", "#b8875d", "#008b8b"],
+  soundtrack: ["SOUNDTRACK", "#4b0082", "#b49b00"],
+  various: ["VARIOUS", "#654321", "#32dda0"],
+  artist: ["ARTIST", "#006b3c", "#d9ad43"],
+};
+function albumBannerKind(album, artist) {
+  if (!album.album_mbid) return "compiled";
+  if (album.soundtrack) return "soundtrack";
+  if (/^\[?various artists\]?$/i.test((artist?.name || "").trim())) return "various";
+  return "artist";
+}
+function albumPresentationGroup(album, artist) {
+  const kind = albumBannerKind(album, artist);
+  if (kind === "compiled") return 5;
+  if (kind === "soundtrack") return 2;
+  if (kind === "various") return 3;
+  return mediaStatusKey(album) === "unprocessed" ? 0 : 1;
+}
+function albumCardState(album, artist) {
+  const status = mediaStatusKey(album);
+  const missingCover = !album.cover_found || !album.cover;
+  const missingArtist = !artist?.portrait;
+  const unfinished = album.tracks > 0 && album.embedded < album.tracks;
+  const dots = [];
+  if (missingArtist) dots.push(["#f4cc4d", "Artist artwork missing"]);
+  if (missingCover || status === "incomplete" || status === "unprocessed") dots.push(["#ff5268", missingCover ? "Album artwork missing" : "Album not complete"]);
+  if (status === "bypassed" || status === "artistBypass") dots.push(["#f4cc4d", "Bypassed"]);
+  if (status === "processed" && unfinished) dots.push(["#efa54e", "Processed; track artwork review pending"]);
+  if (status === "artistComplete" && !unfinished && !missingArtist && !missingCover) dots.push(["#32dda0", "Artwork complete"]);
+  if (album.webp_found) dots.push(["#3478ff", "cover.webp present"]);
+  // The isolated index does not store Windows' live embedded thumbnail check.
+  const frame = status === "artistComplete" && !unfinished && !missingArtist && !missingCover ? "#32dda0"
+    : status === "processed" ? "#efa54e" : status === "partial" ? "#7c4dff" : "#ff5268";
+  return {dots, frame};
+}
+function renderAlbumStatusKey(albums, artist) {
+  const host = $("albumStatusKey"); clear(host);
+  host.append(node("h3", "", "Album Status Key"));
+  const columns = node("div", "album-key-columns");
+  const sections = [
+    ["Status dots", [["Red", "Missing art or unfinished album", "#ff5268"], ["Yellow", "Artist art missing or bypassed", "#f4cc4d"], ["Orange", "Processed; review still pending", "#efa54e"], ["Green", "Artist and album art complete", "#32dda0"], ["Purple", "Embedded thumbnail needs attention (Windows validation)", "#7c4dff"], ["Blue", "cover.webp present", "#3478ff"]]],
+    ["Album card frames", [["Green", "Complete", "#32dda0"], ["Orange", "Processed", "#efa54e"], ["Purple", "Partial or error", "#7c4dff"], ["Red", "Missing or incomplete", "#ff5268"]]],
+    ["Banners", Object.entries(ALBUM_BANNERS).map(([key, [label, , ink]]) => [label, key === "compiled" ? "No release ID" : key === "artist" ? "Artist release" : key === "various" ? "Various Artists release" : key === "soundtrack" ? "Soundtrack release" : "Featured artist", ink])],
+  ];
+  for (const [title, rows] of sections) {
+    const column = node("div", "album-key-column"); column.append(node("h4", "", title));
+    for (const [label, detail, color] of rows) {
+      const row = node("div", "album-key-row");
+      const swatch = node("span", "album-key-swatch", "●"); swatch.style.color = color;
+      const count = title === "Banners" ? albums.filter(album => albumBannerKind(album, artist) === label.toLowerCase()).length
+        : title === "Album card frames" ? albums.filter(album => albumCardState(album, artist).frame.toLowerCase() === color).length
+        : albums.filter(album => albumCardState(album, artist).dots.some(([dot]) => dot.toLowerCase() === color)).length;
+      row.append(swatch, node("strong", "", label), node("small", "", detail), node("b", "", String(count))); column.append(row);
+    }
+    columns.append(column);
+  }
+  host.append(columns, node("p", "album-key-note", "Counts use this test index. Embedded thumbnail size validation and Featured credit classification are not indexed here."));
 }
 
 function renderHero() {
@@ -242,14 +319,26 @@ function renderHero() {
   $("artistArtEntry").disabled = !artist;
   $("artistArtEntry").classList.toggle("active", !!artist && state.editorMode === "artist");
   const grid = $("albumGrid"); clear(grid);
-  const albums = artist?.albums || []; $("albumCount").textContent = albums.length + " shown";
+  const albums = [...(artist?.albums || [])].sort((a, b) =>
+    albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
+    || (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
+    || a.name.localeCompare(b.name));
+  $("albumCount").textContent = albums.length + " shown";
+  renderAlbumStatusKey(albums, artist);
   if (!albums.length) { grid.append(node("p", "empty-copy", "Choose an artist to view albums.")); return; }
   for (const album of albums) {
-    const button = node("button", "album-card" + (state.album?.id === album.id ? " active" : "")); button.type = "button";
-    button.append(album.cover ? image(album.cover, "", album.name + " cover") : node("span", "album-placeholder", "♫"));
-    const cardStatus = node("span", "album-card-status", "●");
-    applyStatusPalette(cardStatus, mediaStatusKey(album));
-    button.append(cardStatus, node("strong", "", album.name), node("small", "", album.tracks + " tracks"));
+    const button = node("button", "album-card windows-card"); button.type = "button";
+    const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
+    button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + (album.status || "unprocessed"));
+    const kind = albumBannerKind(album, artist), [banner, background, ink] = ALBUM_BANNERS[kind];
+    const bannerNode = node("span", "album-type-banner", banner); bannerNode.style.setProperty("--banner-bg", background); bannerNode.style.setProperty("--banner-ink", ink);
+    const body = node("span", "album-card-body");
+    const picture = node("span", "album-card-picture"); picture.append(album.cover ? image(album.cover, "", album.name + " cover") : node("span", "album-placeholder", "♫"));
+    const dots = node("span", "album-status-dots"); for (const [color, tip] of cardState.dots) { const dot = node("span", "", "●"); dot.style.color = color; dot.title = tip; dots.append(dot); }
+    picture.append(dots);
+    if (state.embedQueue.some(item => item.id === album.id)) { const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding"; picture.append(staged); }
+    body.append(picture, node("strong", "", album.name), node("span", "album-card-foot", (album.year || "—") + "   ☆☆☆☆☆"));
+    button.append(bannerNode, body);
     button.addEventListener("click", () => chooseAlbum(album.id)); grid.append(button);
   }
 }
@@ -489,11 +578,11 @@ async function loadLibrary(query = "") {
     else state.albumsIndex = await api("/api/albums?view=" + state.libraryMode + "&q=" + encodeURIComponent(query));
     if (request !== state.listRequest) return;
     renderLibrary();
-    if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id);
+    if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
     else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No missing-ID albums in this test index" : "Library ready · browser layout preview");
   } catch (error) { if (request === state.listRequest) setStatus(error.message, "error"); }
 }
-async function chooseArtist(id) {
+async function chooseArtist(id, select = true) {
   const request = ++state.selectionRequest;
   ++state.searchRequest;
   clearFocusCandidates(); resetFocusAdjustments();
@@ -506,6 +595,7 @@ async function chooseArtist(id) {
     if (request !== state.selectionRequest) return;
     state.artist = artist; state.artistMetadata = null;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
+    if (select) markSelectedArtist(artist);
     state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
     renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums"); loadArtistMetadata(id);
@@ -527,6 +617,7 @@ async function chooseAlbum(id) {
       state.artist = artist; state.artistMetadata = null; loadArtistMetadata(album.artist_id);
     }
     state.album = album; state.editorMode = "album"; state.workspace = "find";
+    markSelectedAlbum(album);
     state.candidates = album.candidates || []; resetCandidateFilters();
     renderAll(); setStatus("Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
@@ -578,14 +669,14 @@ function renderQueue() {
     const card = node("div", "queue-card");
     card.append(item.cover ? image(item.cover, "", item.name + " cover") : node("span", "library-thumb", "♫"));
     const copy = node("span", "row-copy"); copy.append(node("strong", "", item.artist + " — " + item.name), node("small", "", "Preview staged · " + item.tracks + " tracks · no tags changed")); card.append(copy);
-    const remove = node("button", "", "Remove"); remove.type = "button"; remove.addEventListener("click", () => { state.embedQueue = state.embedQueue.filter(entry => entry.id !== item.id); renderQueue(); setStatus("Removed album from preview queue"); }); card.append(remove); queue.append(card);
+    const remove = node("button", "", "Remove"); remove.type = "button"; remove.addEventListener("click", () => { state.embedQueue = state.embedQueue.filter(entry => entry.id !== item.id); renderQueue(); renderHero(); setStatus("Removed album from preview queue"); }); card.append(remove); queue.append(card);
   }
   $("removeAllStaged").disabled = !state.embedQueue.length;
 }
 function stageAlbum() {
   if (!state.album) return;
   if (!state.embedQueue.some(item => item.id === state.album.id)) state.embedQueue.push({id: state.album.id, name: state.album.name, artist: state.album.artist_name, cover: state.selectedCover?.image || state.album.cover, tracks: state.album.tracks});
-  state.workspace = "embed"; renderQueue(); renderWorkspace(); setStatus("Preview staged: " + state.album.name + " · no tracks changed");
+  state.workspace = "embed"; renderQueue(); renderHero(); renderWorkspace(); setStatus("Preview staged: " + state.album.name + " · no tracks changed");
 }
 
 function showDialog(title, lines) {
@@ -607,12 +698,14 @@ for (const [buttonId, mode] of [["selectAllMedia", "all"], ["selectFilteredMedia
     if (state.mediaFilterLocked) return;
     if (mode === "none") state.mediaSelected.clear();
     else {
-      const items = state.libraryMode === "artists" ? state.artists : state.albumsIndex;
+      const items = state.libraryMode === "artists" ? (state.artist?.albums || []) : state.album ? [state.album] : [];
+      if (!items.length) { setStatus("Choose an artist or album before selecting media", "error"); return; }
       if (mode === "filtered" && !$("artistSearch").value.trim() && !$("albumSearch").value.trim() && state.mediaStatuses.size === MEDIA_STATUSES.length && state.libraryMode !== "fallback") {
         setStatus("Select Filtered needs a search, status filter, or Fallback view", "error"); return;
       }
       state.mediaSelected.clear();
       for (const item of items.filter(mediaMatches)) state.mediaSelected.add(item.id);
+      if (state.libraryMode === "artists" && state.mediaSelected.size) state.mediaSelected.add(state.artist.id);
     }
     renderLibrary(); setStatus("Selected " + state.mediaSelected.size + " library items for review · scan queue not connected");
   });
@@ -629,7 +722,7 @@ for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums
   $(buttonId).addEventListener("click", () => {
     if (state.libraryMode === mode) return;
     ++state.selectionRequest; ++state.searchRequest;
-    state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null;
+    state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.mediaSelected.clear();
     state.editorMode = "artist"; state.workspace = "find";
     clearFocusCandidates(); resetFocusAdjustments(); renderAll();
     loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value);
@@ -648,7 +741,7 @@ $("compareButton").addEventListener("click", () => {
 });
 $("upscaleButton").addEventListener("click", () => { state.workspace = "enhance"; renderWorkspace(); setStatus("Enhancement layout preview · no upscale processing"); });
 $("embedBatchButton").addEventListener("click", stageAlbum);
-$("removeAllStaged").addEventListener("click", () => { state.embedQueue = []; renderQueue(); setStatus("Preview queue cleared"); });
+$("removeAllStaged").addEventListener("click", () => { state.embedQueue = []; renderQueue(); renderHero(); setStatus("Preview queue cleared"); });
 $("collapseLibrary").addEventListener("click", () => { const collapsed = document.querySelector(".workspace").classList.toggle("library-collapsed"); $("collapseLibrary").textContent = collapsed ? "+" : "−"; $("collapseLibrary").title = collapsed ? "Expand Media Library" : "Collapse Media Library"; });
 for (const [buttonId, panelId, otherId] of [["mediaFilterToggle", "mediaFilter", "candidateFilter"], ["candidateFilterToggle", "candidateFilter", "mediaFilter"]]) {
   $(buttonId).addEventListener("click", () => { const open = $(panelId).hidden; $(panelId).hidden = !open; $(otherId).hidden = true; for (const [id, panel] of [["mediaFilterToggle", "mediaFilter"], ["candidateFilterToggle", "candidateFilter"]]) { const active = !$(panel).hidden; $(id).classList.toggle("active", active); $(id).setAttribute("aria-expanded", String(active)); $(id).querySelector("b").textContent = active ? "−" : "+"; } });
@@ -677,6 +770,10 @@ $("bannerRadio").addEventListener("click", () => { state.radioBanner = !state.ra
 $("useArtist").addEventListener("click", () => { state.radioArtist = true; state.radioBanner = false; state.radioCurrent = false; renderPanes(); renderReview(); });
 $("useBanner").addEventListener("click", () => { state.radioBanner = true; state.radioArtist = false; state.radioCurrent = false; renderPanes(); renderReview(); });
 $("showAllAlbums").addEventListener("click", () => { const expanded = $("albumGrid").classList.toggle("expanded"); $("showAllAlbums").textContent = expanded ? "Show Less" : "Show All"; });
+$("albumStatusHelp").addEventListener("click", () => {
+  const key = $("albumStatusKey"), opening = key.hidden; key.hidden = !opening;
+  $("albumStatusHelp").setAttribute("aria-expanded", String(opening));
+});
 $("compReportButton").addEventListener("click", () => {
   const albums = (state.artist?.albums || []).filter(album => album.compilation);
   showDialog("COMP Report · " + (state.artist?.name || "No artist selected"), albums.length ? albums.map(album => album.name + " · " + album.tracks + " tracks · " + album.status) : ["No compilation albums are indexed for this artist."]);
