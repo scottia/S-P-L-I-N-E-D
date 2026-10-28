@@ -1,6 +1,6 @@
 # SPLINED browser workspace guide
 
-The browser workspace is a local, read-only preview of the artwork workflow. It currently reads an isolated Python SQLite index and copied music files. It does not write artwork, tags, or database rows.
+The browser workspace previews the artwork workflow using an isolated Python SQLite index and copied music files. The index remains read-only. Artist COMP thumbnail repair is the only optional write action; when enabled on the loopback test service, it backs up the original embedded image and records each audio-file change in a separate log.
 
 ## Mouse workflow
 
@@ -17,6 +17,6 @@ Album names, counts, status, and album tracks come from the isolated music index
 
 ## Limits of this test build
 
-Actual upscaling, saved adjustments, image writing, audio tag embedding, MusicBrainz review, and image searches from the other Windows providers are not yet connected. No PostgreSQL connection is used by this local browser preview. The **Settings** dialog shows its current read-only index and artwork paths.
+Saved upscaling, saved adjustments, image writing, blue COMP tag embedding, MusicBrainz review, and image searches from the other Windows providers are not yet connected. Artist COMP Report can group every matching missing-ID album for the selected artist, preview green embedded art, and identify purple thumbnails. REPAIR COMP writes only to the copied music when the loopback test service starts with `--allow-comp-repairs`. No PostgreSQL connection is used by this local browser preview. **Settings** shows the active test paths and repair mode.
 
 For the Windows/browser layout mapping and planned PostgreSQL boundary, see [Browser workspace schematic](browser-workspace-schematic.md). The [function audit](windows-web-function-audit.md) lists the Windows rules, event sequences, and remaining WebUI gaps.

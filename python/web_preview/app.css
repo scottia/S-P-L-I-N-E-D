@@ -131,14 +131,19 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .fallback-toolbar .fallback-preview-radio.active{background:var(--green)}
 .fallback-report-summary{text-align:right;color:var(--cyan);font-size:10px}
 .fallback-report-columns{display:grid;grid-template-columns:min(220px,23%) 1fr;gap:8px;color:var(--muted);font-size:11px;font-weight:800}
-.fallback-report-album,.fallback-track{display:grid;grid-template-columns:min(220px,23%) minmax(0,1fr);align-items:center;width:100%;min-height:25px;gap:8px;padding:3px 7px;border:1px solid #398efa;border-radius:4px;background:#182a38;color:var(--text);text-align:left;cursor:pointer}
+.fallback-report-album,.fallback-track{position:relative;display:grid;grid-template-columns:min(220px,23%) minmax(0,1fr);align-items:center;width:100%;min-height:25px;gap:8px;padding:3px 32px 3px 7px;border:1px solid #398efa;border-radius:4px;background:#182a38;color:var(--text);text-align:left;cursor:pointer}
 .fallback-report-album strong,.fallback-report-album span,.fallback-track-file{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fallback-report-album span{color:var(--cyan);font-size:10px}
 .fallback-track{min-height:24px;background:#171d24;font-size:11px}
 .fallback-track.complete{border-color:var(--green)}
 .fallback-track.complete .fallback-track-file{color:var(--green)}
+.fallback-track.checking{border-color:var(--cyan)}
+.fallback-track.checking .fallback-track-file{color:var(--cyan)}
+.fallback-track.purple{border-color:#9b63db}
+.fallback-track.purple .fallback-track-file{color:#b999f1}
 .fallback-track.pending .fallback-track-file{color:#6ba9ff}
 .fallback-track:hover,.fallback-track.selected{background:#263b4b}
+.fallback-inline-thumb{position:absolute;right:2px;top:2px;width:20px;height:20px;object-fit:cover;border-radius:2px}
 .fallback-library-track{min-height:25px!important;padding-left:22px!important;gap:5px!important;color:var(--green)!important}
 .fallback-library-status{color:var(--green);font-size:10px;flex:none}
 .fallback-library-file{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}

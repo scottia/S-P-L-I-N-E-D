@@ -50,7 +50,7 @@ The browser assets under `python/web_preview/assets/` are copies of `windows/gui
 
 - The local template currently reads the isolated Python SQLite index and copied music files through `python/web_preview.py`. It uses neither the live Windows database nor the new PostgreSQL container yet.
 - Artist biography and similar-artist names are requested read-only from Navidrome when local credentials are available. The interface labels the fallback similar-artist cards as sample data and does not invent a biography. Navidrome metadata is not an image-search provider in this build.
-- Candidate searches may request remote art. The template holds image bytes in memory for preview; it does not write artwork, thumbnails, tags, or a persistent candidate cache.
+- Candidate searches may request remote art. The template holds image bytes in memory for preview and does not write a persistent candidate cache. The loopback test service may optionally repair Artist COMP embedded thumbnails in copied music; those writes have original-image backups and a separate log.
 - The proposed PostgreSQL catalog should index the same mounted `/music` library, with artist, album, track, embedded-art status, and source references. Music files and approved `artist.*`, `banner.*`, and `cover.*` remain on mounted storage. PostgreSQL stores identity and indexing metadata, not duplicate image blobs.
 - Before enabling WRITE or embedding in a deployed build, add authenticated mutating endpoints, recheck the live file and image identity at write time, and record the affected artist/album/track paths in separate Python logs. The Windows app must continue to own its existing database and write behavior independently.
 
@@ -72,4 +72,4 @@ In the supplied Compose environment, correct `DB_PASS: ${SPLLINED_POSTGRESQL_PAS
 
 ## Windows follow-up
 
-The Windows Artist Art search handler clears candidates at search start. The reported case where Fallback LAUNCH can retain earlier embedded MusicBrainz candidates or show them in the next preview is a separate Windows flow to reproduce and fix; this browser preview does not implement Fallback LAUNCH or MusicBrainz candidate review yet.
+The Windows Artist Art search handler clears candidates at search start. The reported case where Fallback LAUNCH can retain earlier embedded MusicBrainz candidates or show them in the next preview is a separate Windows flow to reproduce and fix. The browser Fallback and Artist COMP reports step through pending track previews, but MusicBrainz candidate review and blue-track embedding are not connected yet.

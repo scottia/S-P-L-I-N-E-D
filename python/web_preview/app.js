@@ -8,6 +8,9 @@ const state = {
   upscalePreview: null,
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
   fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
+  compGroups: [], compReportVisible: false, compPreviewMode: false, compCollapsed: new Set(),
+  compTrack: null, compTrackRequest: 0, compStatusRequest: 0, compRunIndex: -1,
+  compRepairEnabled: false, compBusy: false,
   activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
   mediaStatuses: new Set(["unprocessed", "incomplete", "processed", "bypassed", "partial", "artistComplete", "artistBypass"]),
   mediaSelected: new Set(), candidateFilters: new Map(), mediaFilterLocked: false, candidateFilterLocked: false,
@@ -50,6 +53,9 @@ function clearFocusCandidates() {
   state.upscalePreview = null; state.fallbackTracks = []; state.fallbackTrack = null;
   state.fallbackPreviewOnly = false; state.fallbackRun = false; ++state.fallbackTrackRequest;
   state.fallbackPreviewMode = false; state.fallbackReportExpanded = true; state.fallbackHelpExpanded = false;
+  state.compGroups = []; state.compReportVisible = false; state.compPreviewMode = false;
+  state.compCollapsed.clear(); state.compTrack = null; state.compRunIndex = -1;
+  ++state.compTrackRequest; ++state.compStatusRequest;
   state.compare.clear();
   if (!state.candidateFilterLocked) { state.activeSource = ""; state.candidateFilters.clear(); $("candidateSearch").value = ""; }
 }
@@ -347,13 +353,20 @@ function renderHero() {
   $("artistArtEntry").setAttribute("aria-label", "Open Artist Art Enhancements");
   $("artistArtEntry").classList.toggle("active", !!artist && state.editorMode === "artist");
   const grid = $("albumGrid"); clear(grid);
-  const albums = [...(artist?.albums || [])].sort((a, b) =>
+  const compIds = new Set(state.compGroups.map(group => group.id));
+  const projected = state.compGroups.filter(group => !(artist?.albums || []).some(album => album.id === group.id)).map(group => ({
+    id: group.id, name: group.name, year: group.year, cover: group.cover, cover_found: !!group.cover,
+    album_mbid: "", compilation: true, tracks: group.tracks.length,
+    embedded: group.tracks.filter(track => track.completed).length,
+    status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
+  }));
+  const albums = [...(artist?.albums || []).filter(album => album.album_mbid || compIds.has(album.id)), ...projected].sort((a, b) =>
     albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
     || (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
     || a.name.localeCompare(b.name));
   $("albumCount").textContent = albums.length + " shown";
   renderAlbumStatusKey(albums, artist);
-  if (!albums.length) { grid.append(node("p", "empty-copy", "Choose an artist to view albums.")); return; }
+  if (!albums.length) { grid.append(node("p", "empty-copy", "Choose an artist to view albums.")); renderArtistCompReport(); return; }
   for (const album of albums) {
     const button = node("button", "album-card windows-card"); button.type = "button";
     const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
@@ -367,8 +380,9 @@ function renderHero() {
     if (state.embedQueue.some(item => item.id === album.id)) { const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding"; picture.append(staged); }
     body.append(picture, node("strong", "", album.name), node("span", "album-card-foot", (album.year || "—") + "   ☆☆☆☆☆"));
     button.append(bannerNode, body);
-    button.addEventListener("click", () => chooseAlbum(album.id)); grid.append(button);
+    button.addEventListener("click", () => compIds.has(album.id) ? openArtistCompReport(album.id) : chooseAlbum(album.id)); grid.append(button);
   }
+  renderArtistCompReport();
 }
 
 function renderFallbackOverview() {
@@ -430,6 +444,134 @@ function renderFallbackOverview() {
   }
   if (!total) report.append(node("p", "empty-copy", "No indexed audio tracks in this fallback album."));
   $("topSongs").textContent = "";
+}
+
+function renderArtistCompReport() {
+  const report = $("fallbackReport");
+  if (state.editorMode !== "artist" || !state.compReportVisible || !state.compGroups.length) {
+    report.hidden = true; return;
+  }
+  clear(report); report.hidden = false;
+  const tracks = state.compGroups.flatMap(group => group.tracks.map(track => ({...track, albumId: group.id})));
+  const green = tracks.filter(track => track.status === "green").length;
+  const purple = tracks.filter(track => track.status === "purple").length;
+  const blue = tracks.filter(track => track.status === "blue").length;
+  const checking = tracks.filter(track => track.status === "checking").length;
+  const toolbar = node("div", "fallback-toolbar");
+  const preview = node("button", "fallback-preview-radio" + (state.compPreviewMode ? " active" : ""));
+  preview.type = "button"; preview.title = "Preview existing embedded track art";
+  preview.setAttribute("aria-label", "Preview existing embedded track art");
+  preview.setAttribute("aria-pressed", String(state.compPreviewMode));
+  preview.addEventListener("click", () => { state.compPreviewMode = !state.compPreviewMode; renderArtistCompReport(); setStatus(state.compPreviewMode ? "COMP preview on · choose any green track" : "COMP preview off"); });
+  const heading = node("strong", "", "COMP Report · " + (state.artist?.name || "Artist"));
+  const repair = node("button", "fallback-repair", "REPAIR COMP"); repair.type = "button";
+  repair.disabled = state.compBusy || !state.compRepairEnabled || !tracks.some(track => track.status === "purple" && track.repairable);
+  repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails across this Artist's COMP albums" : "No purple thumbnails identified";
+  repair.addEventListener("click", repairArtistComp);
+  const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
+  launch.disabled = !blue || state.compPreviewMode || state.compBusy; launch.addEventListener("click", launchArtistComp);
+  const close = node("button", "fallback-close", "Close"); close.type = "button";
+  close.addEventListener("click", () => { if (state.compBusy) return; state.compReportVisible = false; state.compTrack = null; state.upscalePreview = null; state.candidates = state.artist?.local_candidates || []; renderHero(); renderCandidates(); renderReview(); });
+  toolbar.append(preview, heading, repair, launch, close); report.append(toolbar);
+  report.append(node("div", "fallback-report-summary", `${state.compGroups.length} albums · ${tracks.length} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}`));
+  const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
+  for (const group of state.compGroups) {
+    const collapsed = state.compCollapsed.has(group.id);
+    const groupComplete = group.tracks.filter(track => track.completed).length;
+    const albumRow = node("button", "fallback-report-album"); albumRow.type = "button";
+    albumRow.append(node("strong", "", (collapsed ? "▸  " : "▾  ") + group.name),
+      node("span", "", `${group.tracks.length} tracks · ${groupComplete} recorded, ${group.tracks.length - groupComplete} need artwork`));
+    albumRow.addEventListener("click", () => { if (collapsed) state.compCollapsed.delete(group.id); else state.compCollapsed.add(group.id); renderArtistCompReport(); });
+    report.append(albumRow);
+    if (collapsed) continue;
+    for (const item of group.tracks) {
+      const selected = state.compTrack?.key === item.key && state.compTrack?.albumId === group.id;
+      const row = node("button", "fallback-track" + (selected ? " selected" : "")); row.type = "button";
+      row.classList.add(item.status === "purple" ? "purple" : item.status === "checking" ? "checking" : item.completed ? "complete" : "pending");
+      row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file));
+      if (selected && state.compTrack?.image) row.append(image(state.compTrack.image, "fallback-inline-thumb", "Existing track art"));
+      row.addEventListener("click", () => selectArtistCompTrack(group.id, item.key)); report.append(row);
+    }
+  }
+}
+
+function openArtistCompReport(albumId = "") {
+  if (!state.compGroups.length) { setStatus("This Artist has no indexed COMP tracks", "error"); return; }
+  state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
+  if (albumId) state.compCollapsed.delete(albumId);
+  state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();
+  const report = $("fallbackReport");
+  $("hero").scrollTop = Math.max(0, report.offsetTop - $("hero").offsetTop - 12);
+  setStatus(`COMP report ready · ${state.compGroups.length} albums · ${state.compGroups.reduce((count, group) => count + group.tracks.length, 0)} matching tracks`);
+  probeArtistCompStatuses();
+}
+
+async function probeArtistCompStatuses() {
+  const request = ++state.compStatusRequest, artistId = state.artist?.id;
+  const targets = state.compGroups.flatMap(group => group.tracks.filter(track => track.completed)
+    .map(track => ({group, track})));
+  for (let offset = 0; offset < targets.length; offset += 3) {
+    const batch = targets.slice(offset, offset + 3);
+    const results = await Promise.allSettled(batch.map(({group, track}) =>
+      api("/api/fallback/track-status?id=" + encodeURIComponent(group.id) + "&key=" + encodeURIComponent(track.key))));
+    if (request !== state.compStatusRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") Object.assign(batch[index].track, result.value);
+      else batch[index].track.status = "purple";
+    });
+    renderArtistCompReport();
+  }
+}
+
+async function selectArtistCompTrack(albumId, key) {
+  const request = ++state.compTrackRequest, artistId = state.artist?.id;
+  state.upscalePreview = null;
+  setStatus("Loading existing COMP track artwork…", "busy");
+  try {
+    const track = await api("/api/fallback/track?id=" + encodeURIComponent(albumId) + "&key=" + encodeURIComponent(key));
+    if (request !== state.compTrackRequest || artistId !== state.artist?.id) return;
+    state.compTrack = {...track, albumId};
+    renderArtistCompReport(); renderReview();
+    setStatus(`${track.completed ? "Recorded" : "Blue"} COMP track · ${track.file}${track.image ? " · existing art available" : " · artwork needed"}`);
+  } catch (error) { if (request === state.compTrackRequest) setStatus(error.message, "error"); }
+}
+
+async function launchArtistComp() {
+  const pending = state.compGroups.flatMap(group => group.tracks.filter(track => track.status === "blue")
+    .map(track => ({albumId: group.id, key: track.key})));
+  if (!pending.length) { setStatus("No blue COMP tracks in this Artist report"); return; }
+  state.compRunIndex = (state.compRunIndex + 1) % pending.length;
+  const target = pending[state.compRunIndex];
+  const artistId = state.artist?.id;
+  await selectArtistCompTrack(target.albumId, target.key);
+  if (artistId === state.artist?.id && state.compReportVisible && state.compTrack?.key === target.key)
+    setStatus(`Blue COMP track ${state.compRunIndex + 1}/${pending.length} · candidate search and embedding are not connected yet`);
+}
+
+async function repairArtistComp() {
+  if (state.compBusy || !state.compRepairEnabled || !state.artist) return;
+  const artistId = state.artist.id;
+  const targets = state.compGroups.flatMap(group => group.tracks.filter(track => track.status === "purple" && track.repairable)
+    .map(track => ({group, track})));
+  if (!targets.length) { setStatus("No readable purple COMP thumbnails need repair"); return; }
+  if (!window.confirm(`Repair ${targets.length} purple COMP thumbnail${targets.length === 1 ? "" : "s"} in the isolated music copy? Original embedded images will be backed up.`)) return;
+  state.compBusy = true; renderArtistCompReport();
+  let repaired = 0, failed = 0;
+  for (const [index, {group, track}] of targets.entries()) {
+    if (artistId !== state.artist?.id) break;
+    setStatus(`Repairing COMP thumbnail ${index + 1}/${targets.length} · ${track.file}`, "busy");
+    try {
+      const result = await api("/api/artist/comp-repair", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({artist_id: artistId, album_id: group.id, track_key: track.key})});
+      Object.assign(track, result, {status: "green", completed: true, repairable: false});
+      repaired++;
+      if (state.compTrack?.albumId === group.id && state.compTrack?.key === track.key)
+        await selectArtistCompTrack(group.id, track.key);
+    } catch (error) { failed++; track.repairable = false; track.repairError = error.message; }
+    renderArtistCompReport();
+  }
+  state.compBusy = false; renderArtistCompReport();
+  setStatus(`COMP repair complete · ${repaired} green${failed ? ` · ${failed} failed` : ""}`, failed ? "error" : "ready");
 }
 
 function renderSources() {
@@ -533,6 +675,11 @@ function selectedImage() {
     source = state.upscalePreview ? "Upscale preview" : state.fallbackTrack ? "Embedded track" : "Local";
     quality = state.upscalePreview ? "Upscale Preview" : "Current";
     if (url) frame.append(image(url, "selected-image", state.fallbackTrack?.file + " embedded artwork"));
+  } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack) {
+    url = state.upscalePreview?.image || state.compTrack.image;
+    type = "COMP Track"; source = state.upscalePreview ? "Upscale preview" : "Embedded track";
+    quality = state.upscalePreview ? "Upscale Preview" : "Existing";
+    if (url) frame.append(image(url, "selected-image", state.compTrack.file + " embedded artwork"));
   } else if ((state.workspace === "enhance" && state.radioCurrent) || (!state.radioCurrent && state.radioArtist && state.radioBanner)) {
     const banner = state.radioCurrent ? state.artist?.banner : state.selectedBanner?.image || state.artist?.banner;
     const portrait = state.radioCurrent ? state.artist?.portrait : state.selectedPortrait?.image || state.artist?.portrait;
@@ -549,9 +696,12 @@ function selectedImage() {
     if (url && bannerOnly) frame.append(image(url, "selected-image", type));
     else if (url) { const mask = node("span", "portrait-viewport"); mask.append(image(url, "selected-image portrait", type)); frame.append(mask); }
   }
-  if (!frame.childElementCount && state.editorMode !== "fallback") frame.append(image("/assets/set-your-imagination-tv.jpg", "", "Set your imagination now"));
+  if (!frame.childElementCount && state.editorMode !== "fallback" && !(state.compReportVisible && state.compTrack))
+    frame.append(image("/assets/set-your-imagination-tv.jpg", "", "Set your imagination now"));
   $("selectedType").textContent = type; $("selectedSource").textContent = source;
-  const existing = state.editorMode === "album" ? state.album?.cover_meta : state.editorMode === "fallback" ? state.fallbackTrack : state.radioBanner && !state.radioArtist ? state.artist?.banner_meta : state.artist?.portrait_meta;
+  const existing = state.editorMode === "album" ? state.album?.cover_meta : state.editorMode === "fallback" ? state.fallbackTrack
+    : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? state.compTrack
+    : state.radioBanner && !state.radioArtist ? state.artist?.banner_meta : state.artist?.portrait_meta;
   const metadata = state.upscalePreview || candidate || existing;
   $("selectedDimensions").textContent = metadata ? metadata.width + " × " + metadata.height : "—";
   $("selectedSize").textContent = metadata ? size(metadata.bytes) : "—";
@@ -561,6 +711,9 @@ function selectedImage() {
   if (state.editorMode === "fallback") {
     if (state.fallbackTrack) extra.append(node("span", "", state.fallbackTrack.file), node("span", "", state.fallbackTrack.completed ? "Completed track" : "Pending track"));
     else extra.append(node("span", "", "Track(s) " + state.fallbackTracks.length), node("span", "", "Embedded Track(s) " + state.fallbackTracks.filter(item => item.completed).length));
+    ribbon.hidden = true;
+  } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack) {
+    extra.append(node("span", "", state.compTrack.file), node("span", "", state.compTrack.completed ? "Recorded COMP artwork" : "Blue · artwork needed"));
     ribbon.hidden = true;
   } else if (state.editorMode === "album" && state.album) {
     extra.append(node("span", "", "Tracks " + state.album.tracks), node("span", "", "Embedded " + state.album.embedded + "/" + state.album.tracks));
@@ -574,19 +727,23 @@ function selectedImage() {
   applyPreviewEffects();
 }
 function renderReview() {
-  const artistEntry = state.editorMode === "artist" && !state.selectedPortrait && !state.selectedBanner;
+  const artistEntry = state.editorMode === "artist" && !state.compReportVisible && !state.selectedPortrait && !state.selectedBanner;
   const packageReady = state.editorMode === "artist" && state.workspace === "enhance" && state.radioArtist && state.radioBanner;
   if (!packageReady) state.themedPackaging = false;
   $("themedPackaging").disabled = !packageReady;
   $("themedPackaging").hidden = !packageReady;
   $("themedPackaging").classList.toggle("active", state.themedPackaging);
   $("themedPackaging").setAttribute("aria-pressed", String(state.themedPackaging));
-  $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" ? "WRITE Artist Art" : state.editorMode === "fallback" ? "EMBED Comp" : "WRITE Cover";
+  $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? "EMBED Comp"
+    : state.editorMode === "artist" ? "WRITE Artist Art" : state.editorMode === "fallback" ? "EMBED Comp" : "WRITE Cover";
   $("writeButton").disabled = !(artistEntry && state.artist);
   $("upscaleButton").disabled = state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
-    : state.editorMode === "fallback" ? !state.fallbackTrack?.image : false;
+    : state.editorMode === "fallback" ? !state.fallbackTrack?.image
+    : state.editorMode === "artist" && state.compReportVisible ? !state.compTrack?.image : false;
   $("embedBatchButton").disabled = !(state.editorMode === "album" && state.album && (state.selectedCover?.image || state.album.cover));
-  $("writeNotice").textContent = state.editorMode === "fallback" ? "COMP preview only. Track candidate search and tag embedding are not connected in this test build."
+  $("writeNotice").textContent = state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible
+    ? (state.compRepairEnabled ? "Purple COMP thumbnail repair writes to the isolated music copy. Blue track search and embedding are not connected yet."
+      : "COMP preview only. Track candidate search and tag embedding are not connected in this test build.")
     : "Preview only. Artwork and tags are not written by this template.";
   $("reviewChoice").hidden = state.editorMode !== "artist" || !(state.selectedPortrait || state.selectedBanner);
   $("useArtist").classList.toggle("active", !state.radioBanner || state.radioArtist);
@@ -703,9 +860,12 @@ async function chooseArtist(id, select = true) {
   renderAll();
   setStatus("Loading artist and existing artwork…", "busy");
   try {
-    const artist = await api("/api/artist?id=" + encodeURIComponent(id));
+    const [artist, compGroups] = await Promise.all([
+      api("/api/artist?id=" + encodeURIComponent(id)),
+      api("/api/artist/comp-report?id=" + encodeURIComponent(id)),
+    ]);
     if (request !== state.selectionRequest) return;
-    state.artist = artist; state.artistMetadata = null;
+    state.artist = artist; state.artistMetadata = null; state.compGroups = compGroups;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
     if (select) markSelectedArtist(artist);
     state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
@@ -886,17 +1046,22 @@ $("compareButton").addEventListener("click", () => {
   showDialog("Candidate comparison", choices.map(candidate => candidate.source + " · " + candidate.name + " · " + candidate.width + " × " + candidate.height));
 });
 $("upscaleButton").addEventListener("click", async () => {
-  if (state.editorMode === "artist") {
+  if (state.editorMode === "artist" && !state.compReportVisible) {
     state.workspace = "enhance"; renderWorkspace(); setStatus("Enhancement layout preview · no upscale processing"); return;
   }
-  const source = state.editorMode === "fallback" ? state.fallbackTrack?.image : state.selectedCover?.image || state.album?.cover;
+  const source = state.editorMode === "fallback" ? state.fallbackTrack?.image
+    : state.editorMode === "artist" && state.compReportVisible ? state.compTrack?.image
+    : state.selectedCover?.image || state.album?.cover;
   if (!source) { setStatus("Choose artwork to preview", "error"); return; }
   const request = state.selectionRequest, albumId = state.album?.id, trackKey = state.fallbackTrack?.key;
+  const compTrackKey = state.compTrack?.key;
   $("upscaleButton").disabled = true;
   setStatus("Preparing upscale preview…", "busy");
   try {
     const preview = await api("/api/preview/upscale", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({image: source})});
-    if (request !== state.selectionRequest || albumId !== state.album?.id || (state.editorMode === "fallback" && trackKey !== state.fallbackTrack?.key)) return;
+    if (request !== state.selectionRequest || albumId !== state.album?.id
+      || (state.editorMode === "fallback" && trackKey !== state.fallbackTrack?.key)
+      || (state.editorMode === "artist" && state.compReportVisible && compTrackKey !== state.compTrack?.key)) return;
     state.upscalePreview = preview;
     renderReview();
     setStatus("Upscale preview · " + preview.width + " × " + preview.height + " · " + preview.reason);
@@ -959,8 +1124,7 @@ document.addEventListener("pointerdown", event => {
   if (!$("albumStatusKey").hidden && !event.target.closest("#albumStatusKey, #albumStatusHelp")) closeAlbumStatusKey();
 });
 $("compReportButton").addEventListener("click", () => {
-  const albums = (state.artist?.albums || []).filter(album => album.compilation);
-  showDialog("COMP Report · " + (state.artist?.name || "No artist selected"), albums.length ? albums.map(album => album.name + " · " + album.tracks + " tracks · " + album.status) : ["No compilation albums are indexed for this artist."]);
+  openArtistCompReport();
 });
 $("themeButton").addEventListener("click", () => {
   showDialog("Theme", ["Choose the Windows inspired workspace palette. Your choice is kept in this browser."]);
@@ -974,11 +1138,11 @@ $("themeButton").addEventListener("click", () => {
 $("settingsButton").addEventListener("click", async () => {
   try {
     const status = await api("/api/status");
-    showDialog("Settings · browser review", ["Mode: " + status.mode, "Index: " + status.database, "Music: " + status.music, "Artist images: " + status.artist_art, "Artist search: Fanart.tv and Deezer; other Windows providers are pending browser integration.", "All artwork edits in this preview stay in memory. PostgreSQL and writes are not connected."]);
+    showDialog("Settings · browser review", ["Mode: " + status.mode, "Index: " + status.database, "Music: " + status.music, "Artist images: " + status.artist_art, "Artist search: Fanart.tv and Deezer; other Windows providers are pending browser integration.", status.comp_repair ? "Artist COMP purple thumbnail repair writes only to the copied music. Other artwork edits stay in memory." : "Artwork edits stay in memory. Artist COMP repair is disabled.", "PostgreSQL is not connected in this local test."]);
   } catch (error) { showDialog("Settings", [error.message]); }
 });
 $("helpButton").addEventListener("click", () => {
-  showDialog("About SPLINED WebUI", ["Use the mouse to choose an artist, album, candidate image, or banner. Drag pane dividers to resize; wheel over Candidate Artwork to browse horizontally.", "Filters, Fitment, and Detailed adjust only the in-memory browser preview. WRITE, Bypass, MusicBrainz and tag embedding require the service backend.", "Current test index: isolated Python SQLite. PostgreSQL is planned for the separate web container."]);
+  showDialog("About SPLINED WebUI", ["Use the mouse to choose an artist, album, candidate image, or banner. Drag pane dividers to resize; wheel over Candidate Artwork to browse horizontally.", "Filters, Fitment, and Detailed adjust only the in-memory browser preview. Artist COMP purple thumbnail repair can write to the isolated music copy when enabled. Cover, Artist Art, blue COMP embedding, Bypass, and MusicBrainz review remain unavailable.", "Current test index: isolated Python SQLite. PostgreSQL is planned for the separate web container."]);
   const link = node("a", "guide-link", "Open WebUI guide"); link.href = "/guide"; link.target = "_blank"; link.rel = "noopener noreferrer"; $("dialogBody").append(link);
   $("dialogBody").append(node("p", "", "The same guide is staged for docs/browser-workspace-guide.md on dev after this parity review."));
 });
@@ -1094,4 +1258,8 @@ for (const id of ["selectedFrame", "artistPane", "bannerPane"]) {
 }
 try { const theme = localStorage.getItem("splined.browser-preview.theme"); if (["dark", "chalk", "light"].includes(theme)) { state.theme = theme; document.documentElement.dataset.theme = theme; } } catch {}
 
+api("/api/status").then(status => {
+  state.compRepairEnabled = !!status.comp_repair;
+  if (state.compReportVisible) { renderArtistCompReport(); renderReview(); }
+}).catch(() => {});
 loadLibrary();

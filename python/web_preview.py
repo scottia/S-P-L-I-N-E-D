@@ -1,4 +1,4 @@
-"""Read-only browser workspace for the isolated SPLINED Python test library."""
+"""Browser workspace for the isolated SPLINED Python test library."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from mutagen.flac import Picture
 import requests
 
 from splined_artist_art import ArtistAlbum, artist_targets, local_candidates, saved_package
+from splined_compilation_authority_policy import replace_embedded_artwork
 from tui.artist_search import discover_artist_images
 
 
@@ -55,7 +56,7 @@ def image_metadata(path: Path) -> dict[str, object]:
     }
 
 
-def embedded_track_image(path: Path) -> bytes | None:
+def embedded_track_artwork_bytes(path: Path) -> bytes | None:
     """Read one track's embedded cover; never substitute the album folder cover."""
     artwork: bytes | None = None
     try:
@@ -78,6 +79,11 @@ def embedded_track_image(path: Path) -> bytes | None:
                         artwork = Picture(base64.b64decode(raw)).data
     except (OSError, ValueError, ID3NoHeaderError):
         return None
+    return artwork
+
+
+def embedded_track_image(path: Path) -> bytes | None:
+    artwork = embedded_track_artwork_bytes(path)
     if not artwork:
         return None
     try:
@@ -97,6 +103,8 @@ class PreviewApp:
     database: Path
     artist_art: Path
     credentials: Path
+    comp_thumbnail_side: int = 1200
+    allow_comp_repairs: bool = False
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
@@ -356,6 +364,148 @@ class PreviewApp:
                             "height": opened.height, "bytes": len(artwork)}
         return {**track, **metadata}
 
+    def artist_comp_report(self, artist_id: str) -> list[dict[str, object]]:
+        """Project only a focused artist's tracks from missing-ID COMP albums."""
+        with closing(self.connect()) as db:
+            artist = db.execute("SELECT artist_name FROM artists WHERE artist_key=?", (artist_id,)).fetchone()
+            if artist is None:
+                raise KeyError("Artist not found")
+            name = str(artist["artist_name"]).strip()
+            rows = db.execute(
+                "SELECT albums.album_key, albums.album_name, albums.path AS album_path, "
+                "albums.cover_path, albums.release_year, albums.artist_key, tracks.track_key, tracks.path, "
+                "tracks.title, tracks.artist_name FROM albums "
+                "JOIN tracks ON tracks.album_key=albums.album_key "
+                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
+                "AND (instr(lower(COALESCE(tracks.artist_name,'')), lower(?))>0 "
+                "OR (albums.artist_key=? AND TRIM(COALESCE(tracks.artist_name,''))='')) "
+                "ORDER BY albums.album_name COLLATE NOCASE, tracks.path COLLATE NOCASE",
+                (name, artist_id),
+            ).fetchall()
+            has_ledger = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'"
+            ).fetchone() is not None
+            completed = {str(row[0]).casefold() for row in db.execute(
+                "SELECT track_path FROM compilation_track_artwork "
+                "WHERE outcome IN ('embedded-replaced','embedded-existing')",
+            )} if has_ledger else set()
+        groups: dict[str, dict[str, object]] = {}
+        seen: set[str] = set()
+        for row in rows:
+            credits = str(row["artist_name"] or "").replace("\0", ";")
+            if not (any(credit.strip().casefold() == name.casefold() for credit in credits.split(";"))
+                    or not credits.strip() and row["artist_key"] == artist_id):
+                continue
+            folder, track_path = Path(row["album_path"]), Path(row["path"])
+            if not inside(folder, self.music) or not inside(track_path, folder) or not track_path.is_file():
+                continue
+            path_key = str(track_path).casefold()
+            if path_key in seen:
+                continue
+            seen.add(path_key)
+            key = str(row["album_key"])
+            if key not in groups:
+                cover = Path(row["cover_path"]) if row["cover_path"] else None
+                groups[key] = {
+                    "id": key, "name": row["album_name"], "year": row["release_year"] or "",
+                    "cover": self.image(cover) if cover and inside(cover, self.music) else None,
+                    "compilation": True, "album_mbid": "", "tracks": [],
+                }
+            groups[key]["tracks"].append({
+                "key": row["track_key"], "file": track_path.name, "title": row["title"],
+                "completed": str(track_path).casefold() in completed,
+                "status": "checking" if str(track_path).casefold() in completed else "blue",
+            })
+        return list(groups.values())
+
+    def comp_track_status(self, album_id: str, track_key: str) -> dict[str, object]:
+        """Check one COMP thumbnail lazily so a large Artist report opens quickly."""
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT albums.path AS album_path, albums.musicbrainz_albumid, tracks.path "
+                "FROM albums JOIN tracks ON tracks.album_key=albums.album_key "
+                "WHERE albums.album_key=? AND tracks.track_key=?", (album_id, track_key),
+            ).fetchone()
+            if row is None or str(row["musicbrainz_albumid"] or "").strip():
+                raise KeyError("COMP track not found")
+            path, folder = Path(row["path"]), Path(row["album_path"])
+            if not inside(folder, self.music) or not inside(path, folder) or not path.is_file():
+                raise ValueError("COMP track is outside the isolated music copy")
+            has_ledger = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'"
+            ).fetchone() is not None
+            recorded = has_ledger and db.execute(
+                "SELECT 1 FROM compilation_track_artwork WHERE track_path=? COLLATE NOCASE "
+                "AND outcome IN ('embedded-replaced','embedded-existing')", (str(path),),
+            ).fetchone() is not None
+        if not recorded:
+            return {"status": "blue", "repairable": False, "width": 0, "height": 0,
+                    "side": self.comp_thumbnail_side}
+        artwork = embedded_track_artwork_bytes(path)
+        if not artwork:
+            return {"status": "purple", "repairable": False, "width": 0, "height": 0,
+                    "side": self.comp_thumbnail_side}
+        try:
+            with Image.open(BytesIO(artwork)) as opened:
+                width, height = opened.size
+        except (OSError, ValueError):
+            return {"status": "purple", "repairable": False, "width": 0, "height": 0,
+                    "side": self.comp_thumbnail_side}
+        return {"status": "green" if width == height == self.comp_thumbnail_side else "purple",
+                "repairable": width != self.comp_thumbnail_side or height != self.comp_thumbnail_side,
+                "width": width, "height": height, "side": self.comp_thumbnail_side}
+
+    def repair_artist_comp_track(self, artist_id: str, album_id: str, track_key: str) -> dict[str, object]:
+        """Repair one recorded, readable purple thumbnail in the isolated music copy."""
+        if not self.allow_comp_repairs:
+            raise ValueError("COMP repair is disabled for this browser service")
+        allowed = any(group["id"] == album_id and any(track["key"] == track_key for track in group["tracks"])
+                      for group in self.artist_comp_report(artist_id))
+        if not allowed:
+            raise ValueError("Track is not in this Artist's COMP report")
+        current = self.comp_track_status(album_id, track_key)
+        if current["status"] != "purple" or not current["repairable"]:
+            raise ValueError("Only readable purple COMP thumbnails can be repaired")
+        with closing(self.connect()) as db:
+            row = db.execute("SELECT path FROM tracks WHERE album_key=? AND track_key=?",
+                             (album_id, track_key)).fetchone()
+        if row is None:
+            raise KeyError("COMP track not found")
+        path = Path(row["path"])
+        if not inside(path, self.music):
+            raise ValueError("COMP track is outside the isolated music copy")
+        artwork = embedded_track_artwork_bytes(path)
+        if not artwork:
+            raise ValueError("The completed COMP track has no readable embedded art")
+        with Image.open(BytesIO(artwork)) as opened:
+            image_format = "png" if opened.format == "PNG" else "jpeg"
+            thumbnail = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"),
+                                     (self.comp_thumbnail_side, self.comp_thumbnail_side),
+                                     method=Image.Resampling.LANCZOS)
+            output = BytesIO()
+            thumbnail.save(output, format=image_format.upper(), **({"quality": 92, "optimize": True} if image_format == "jpeg" else {"optimize": True}))
+        backup_dir = self.database.parent / "web-comp-repair-backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_id = sha256(str(path).casefold().encode("utf-8")).hexdigest()[:20]
+        backup = backup_dir / f"{backup_id}.original-image"
+        if not backup.exists():
+            backup.write_bytes(artwork)
+        replace_embedded_artwork(path, output.getvalue(), image_format,
+                                 {"width": self.comp_thumbnail_side, "height": self.comp_thumbnail_side})
+        verified = self.comp_track_status(album_id, track_key)
+        if verified["status"] != "green":
+            raise ValueError("Repaired COMP thumbnail did not verify at the requested size")
+        log = self.database.parent / "web-comp-repair.log"
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"artist_id": artist_id, "album_id": album_id,
+                                     "track_key": track_key, "path": str(path),
+                                     "original_width": current["width"],
+                                     "original_height": current["height"],
+                                     "repaired_side": self.comp_thumbnail_side,
+                                     "original_image_backup": str(backup)}) + "\n")
+        return {"status": "green", "width": self.comp_thumbnail_side,
+                "height": self.comp_thumbnail_side, "backup": str(backup)}
+
     def artist_metadata(self, artist_id: str) -> dict[str, object]:
         with self.lock:
             cached = self.metadata_cache.get(artist_id)
@@ -472,7 +622,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise KeyError("Asset not found")
                 self.send_bytes(asset.read_bytes(), mime)
             elif url.path == "/api/status":
-                self.send_json({"mode": "read-only", "database": "isolated Python index",
+                self.send_json({"mode": "isolated COMP repair" if self.app.allow_comp_repairs else "read-only",
+                                "comp_repair": self.app.allow_comp_repairs,
+                                "database": "isolated Python index",
                                 "artists": len(self.app.artists("")),
                                 "music": str(self.app.music), "artist_art": str(self.app.artist_art)})
             elif url.path == "/api/artists":
@@ -486,6 +638,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(self.app.artist(parse_qs(url.query).get("id", [""])[0]))
             elif url.path == "/api/artist/metadata":
                 self.send_json(self.app.artist_metadata(parse_qs(url.query).get("id", [""])[0]))
+            elif url.path == "/api/artist/comp-report":
+                self.send_json(self.app.artist_comp_report(parse_qs(url.query).get("id", [""])[0]))
             elif url.path == "/api/album":
                 self.send_json(self.app.album(parse_qs(url.query).get("id", [""])[0]))
             elif url.path == "/api/fallback/tracks":
@@ -493,6 +647,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/fallback/track":
                 params = parse_qs(url.query)
                 self.send_json(self.app.fallback_track_preview(params.get("id", [""])[0], params.get("key", [""])[0]))
+            elif url.path == "/api/fallback/track-status":
+                params = parse_qs(url.query)
+                self.send_json(self.app.comp_track_status(params.get("id", [""])[0], params.get("key", [""])[0]))
             elif url.path.startswith("/api/image/"):
                 token = url.path.removeprefix("/api/image/")
                 with self.app.lock:
@@ -520,7 +677,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlsplit(self.path).path
-        if path not in {"/api/search/artist", "/api/preview/upscale"}:
+        if path not in {"/api/search/artist", "/api/preview/upscale", "/api/artist/comp-repair"}:
             self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
             return
         try:
@@ -536,6 +693,11 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.app.search_artist(payload["id"])
             elif path == "/api/preview/upscale":
                 result = self.app.upscale_preview(str(payload.get("image") or ""))
+            elif path == "/api/artist/comp-repair":
+                result = self.app.repair_artist_comp_track(
+                    str(payload.get("artist_id") or ""), str(payload.get("album_id") or ""),
+                    str(payload.get("track_key") or ""),
+                )
             self.send_json(result)
         except (ValueError, KeyError, OSError, sqlite3.Error) as error:
             self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
@@ -553,15 +715,21 @@ def main() -> None:
     parser.add_argument("--database", type=Path, default=base / "state/cache-python-local-index-20261027/splined.db")
     parser.add_argument("--artist-art", type=Path, default=base / "state/artist-art")
     parser.add_argument("--credentials", type=Path, default=base / "state/credentials")
+    parser.add_argument("--allow-comp-repairs", action="store_true",
+                        help="Allow only Artist COMP purple-thumbnail repairs in the isolated music copy")
     args = parser.parse_args()
     if not args.music.is_dir() or not args.database.is_file():
         parser.error("The isolated music directory and Python index must exist")
+    if args.allow_comp_repairs and args.host not in {"127.0.0.1", "::1", "localhost"}:
+        parser.error("COMP repair can only be enabled on a loopback test service")
     app = PreviewApp(args.music.resolve(), args.database.resolve(),
-                     args.artist_art.resolve(), args.credentials.resolve())
+                     args.artist_art.resolve(), args.credentials.resolve(),
+                     allow_comp_repairs=args.allow_comp_repairs)
     Handler.app = app
     with ThreadingHTTPServer((args.host, args.port), Handler) as server:
         print(f"SPLINED browser preview: http://{args.host}:{args.port}/")
-        print("Read-only: no artwork, tags, or database rows can be written.")
+        print("COMP thumbnail repair enabled for isolated music." if args.allow_comp_repairs
+              else "Read-only: no artwork, tags, or database rows can be written.")
         server.serve_forever()
 
 

@@ -14,6 +14,65 @@ from web_preview import PreviewApp
 
 
 class BrowserFallbackTests(unittest.TestCase):
+    def test_artist_report_combines_matching_tracks_across_comp_albums(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            folders = [root / "comp-one", root / "comp-two", root / "identified"]
+            for folder in folders:
+                folder.mkdir()
+            paths = [folder / "01 Track.mp3" for folder in folders]
+            third = folders[1] / "02 Blue.mp3"
+            uncredited = folders[1] / "03 Untagged.mp3"
+            other_artist = folders[1] / "04 Other.mp3"
+            for path in paths:
+                path.touch()
+            third.touch()
+            uncredited.touch()
+            other_artist.touch()
+            for path, side in [(paths[0], 1200), (paths[1], 400)]:
+                picture = BytesIO()
+                Image.new("RGB", (side, side), "blue").save(picture, "PNG")
+                tags = ID3()
+                tags.add(APIC(encoding=3, mime="image/png", type=3, desc="Cover", data=picture.getvalue()))
+                tags.save(path)
+            with closing(connect(database)) as db:
+                db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
+                db.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY, album_name TEXT, "
+                           "path TEXT, cover_path TEXT, release_year TEXT, musicbrainz_albumid TEXT, artist_key TEXT)")
+                db.execute("CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, "
+                           "path TEXT, title TEXT, artist_name TEXT)")
+                db.execute("CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)")
+                db.execute("INSERT INTO artists VALUES ('target', '3 Doors Down')")
+                db.executemany("INSERT INTO albums VALUES (?, ?, ?, NULL, '2003', ?, ?)", [
+                    ("one", "COMP One", str(folders[0]), "", "various"),
+                    ("two", "COMP Two", str(folders[1]), None, "target"),
+                    ("identified", "Has Release ID", str(folders[2]), "release-id", "target"),
+                ])
+                db.executemany("INSERT INTO tracks VALUES (?, ?, ?, 'Track', ?)", [
+                    ("first", "one", str(paths[0]), "3 Doors Down; Guest"),
+                    ("second", "two", str(paths[1]), "3 Doors Down"),
+                    ("blue", "two", str(third), "3 Doors Down"),
+                    ("untagged", "two", str(uncredited), ""),
+                    ("other", "two", str(other_artist), "3 Doors Downward"),
+                    ("excluded", "identified", str(paths[2]), "3 Doors Down"),
+                ])
+                db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[0]),))
+                db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[1]),))
+                db.commit()
+            app = PreviewApp(root, database, root, root, allow_comp_repairs=True)
+            report = app.artist_comp_report("target")
+            self.assertEqual([group["id"] for group in report], ["one", "two"])
+            self.assertEqual([group["tracks"][0]["completed"] for group in report], [True, True])
+            self.assertFalse(report[1]["tracks"][1]["completed"])
+            self.assertEqual({track["key"] for track in report[1]["tracks"]}, {"second", "blue", "untagged"})
+            self.assertEqual(app.comp_track_status("one", "first")["status"], "green")
+            self.assertEqual(app.comp_track_status("two", "second")["status"], "purple")
+            self.assertEqual(app.comp_track_status("two", "blue")["status"], "blue")
+            app.repair_artist_comp_track("target", "two", "second")
+            self.assertEqual(app.comp_track_status("two", "second")["status"], "green")
+            self.assertEqual(len(list((root / "web-comp-repair-backups").glob("*.original-image"))), 1)
+
     def test_only_missing_musicbrainz_album_ids_appear_in_fallback(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
