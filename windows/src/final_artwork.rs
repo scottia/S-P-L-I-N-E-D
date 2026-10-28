@@ -330,13 +330,7 @@ fn prepare_configured_artwork_inner(
             image = image.crop_imm(left, top, side, side);
         }
         if profile_applied {
-            quality = assess_dynamic_image_quality(&image);
-            if !output.upscale_adaptive_defaults {
-                quality.brightness_adjustment = 0.0;
-                quality.contrast_adjustment = 0.0;
-            }
-            quality.brightness_adjustment += output.upscale_brightness_percent as f32 / 100.0;
-            quality.contrast_adjustment += output.upscale_contrast_percent as f32 / 100.0;
+            quality = edit_profile_quality(&image, output);
         }
         if image.width() != target_width || image.height() != target_height {
             let resized_output = resize_output_image(image, target_width, target_height);
@@ -540,6 +534,9 @@ fn apply_upscale_corrections(
         && output.upscale_softness_percent == 0
         && output.upscale_gamma_percent == 0
         && output.upscale_color_temperature == 0
+        && output.upscale_hue_degrees == 0
+        && output.upscale_darkness_percent == 0
+        && output.upscale_tint_percent == 0
     {
         return image;
     }
@@ -556,10 +553,23 @@ fn apply_upscale_corrections(
     } else {
         1.0 - gamma_adjustment
     };
+    let tint = output.upscale_tint_color.trim_start_matches('#');
+    let tint_rgb = if tint.len() == 6 {
+        [0, 2, 4].map(|offset| {
+            tint.get(offset..offset + 2)
+                .and_then(|part| u8::from_str_radix(part, 16).ok())
+                .unwrap_or(255) as f32
+                / 255.0
+        })
+    } else {
+        [1.0, 1.0, 1.0]
+    };
+    let tint_strength = output.upscale_tint_percent.clamp(-100, 100).unsigned_abs() as f32 / 100.0;
+    let lightness = 1.0 - output.upscale_darkness_percent.clamp(0, 100) as f32 / 100.0;
     for pixel in pixels.pixels_mut() {
         let mut corrected_channels = [0.0_f32; 3];
-        for (index, channel) in pixel.0[..3].iter().enumerate() {
-            let normalized = f32::from(*channel) / 255.0;
+        for index in 0..3 {
+            let normalized = f32::from(pixel.0[index]) / 255.0;
             let temperature_scale = match index {
                 0 => red_scale,
                 2 => blue_scale,
@@ -574,10 +584,21 @@ fn apply_upscale_corrections(
         let luminance = 0.2126 * corrected_channels[0]
             + 0.7152 * corrected_channels[1]
             + 0.0722 * corrected_channels[2];
-        for (index, channel) in pixel.0[..3].iter_mut().enumerate() {
+        let mut adjusted = [0.0_f32; 3];
+        for index in 0..3 {
             let saturated =
                 (luminance + (corrected_channels[index] - luminance) * saturation).clamp(0.0, 1.0);
-            *channel = (saturated.powf(gamma_exponent) * 255.0).round() as u8;
+            adjusted[index] = saturated.powf(gamma_exponent);
+        }
+        adjusted = rotate_rgb_hue(adjusted, output.upscale_hue_degrees);
+        let adjusted_luminance = 0.2126 * adjusted[0] + 0.7152 * adjusted[1] + 0.0722 * adjusted[2];
+        for (index, channel) in pixel.0[..3].iter_mut().enumerate() {
+            // Left of center reduces the photo's color intensity; right of
+            // center strengthens its derived dominant color. Neither side
+            // introduces an unrelated complementary hue.
+            let tint_channel = if output.upscale_tint_percent < 0 { adjusted_luminance } else { tint_rgb[index] };
+            let blended = adjusted[index] * (1.0 - tint_strength) + tint_channel * tint_strength;
+            *channel = (blended * lightness * 255.0).clamp(0.0, 255.0).round() as u8;
         }
     }
     if output.upscale_softness_percent > 0 {
@@ -587,6 +608,58 @@ fn apply_upscale_corrections(
         pixels = sharpen_rgba(&pixels, output.upscale_sharpen_percent as f32 / 100.0);
     }
     DynamicImage::ImageRgba8(pixels)
+}
+
+fn rotate_rgb_hue(rgb: [f32; 3], degrees: i32) -> [f32; 3] {
+    if degrees == 0 {
+        return rgb;
+    }
+    let maximum = rgb.iter().copied().fold(0.0_f32, f32::max);
+    let minimum = rgb.iter().copied().fold(1.0_f32, f32::min);
+    let chroma = maximum - minimum;
+    if chroma < f32::EPSILON {
+        return rgb;
+    }
+    let hue = if maximum == rgb[0] {
+        ((rgb[1] - rgb[2]) / chroma).rem_euclid(6.0)
+    } else if maximum == rgb[1] {
+        (rgb[2] - rgb[0]) / chroma + 2.0
+    } else {
+        (rgb[0] - rgb[1]) / chroma + 4.0
+    };
+    let shifted = (hue + degrees as f32 / 60.0).rem_euclid(6.0);
+    let secondary = chroma * (1.0 - ((shifted % 2.0) - 1.0).abs());
+    let base = match shifted as u32 {
+        0 => [chroma, secondary, 0.0],
+        1 => [secondary, chroma, 0.0],
+        2 => [0.0, chroma, secondary],
+        3 => [0.0, secondary, chroma],
+        4 => [secondary, 0.0, chroma],
+        _ => [chroma, 0.0, secondary],
+    };
+    base.map(|value| value + minimum)
+}
+
+/// Apply the same manual enhancement profile used by cover writes without
+/// changing dimensions. Artist portraits and fitted banners use this path so
+/// their saved pixels match the interactive preview.
+pub fn apply_selected_image_adjustments(
+    image: DynamicImage,
+    output: &OutputConfig,
+) -> DynamicImage {
+    let quality = edit_profile_quality(&image, output);
+    apply_upscale_corrections(image, quality, output)
+}
+
+fn edit_profile_quality(image: &DynamicImage, output: &OutputConfig) -> ArtworkQualityAssessment {
+    let mut quality = assess_dynamic_image_quality(image);
+    if !output.upscale_adaptive_defaults {
+        quality.brightness_adjustment = 0.0;
+        quality.contrast_adjustment = 0.0;
+    }
+    quality.brightness_adjustment += output.upscale_brightness_percent as f32 / 100.0;
+    quality.contrast_adjustment += output.upscale_contrast_percent as f32 / 100.0;
+    quality
 }
 
 fn soften_rgba(source: &RgbaImage, amount: f32) -> RgbaImage {
@@ -1080,8 +1153,40 @@ fn static_format(format: ImageFormat) -> Result<StaticFormat, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageBuffer, Rgb};
+    use image::{ImageBuffer, Rgb, Rgba};
     use tempfile::TempDir;
+
+    #[test]
+    fn hue_darkness_and_selected_tint_change_pixels_without_losing_alpha() {
+        let source =
+            DynamicImage::ImageRgba8(ImageBuffer::from_pixel(2, 2, Rgba([210, 100, 30, 180])));
+        let mut output = OutputConfig {
+            upscale_adaptive_defaults: false,
+            upscale_picture_percent: 0,
+            upscale_sharpen_percent: 0,
+            upscale_contrast_percent: 0,
+            upscale_exposure_percent: 0,
+            upscale_brightness_percent: 0,
+            upscale_gamma_percent: 0,
+            ..OutputConfig::default()
+        };
+        let original = apply_selected_image_adjustments(source.clone(), &output).to_rgba8();
+        output.upscale_hue_degrees = 90;
+        let hue = apply_selected_image_adjustments(source.clone(), &output).to_rgba8();
+        assert_ne!(hue.get_pixel(0, 0), original.get_pixel(0, 0));
+        output.upscale_hue_degrees = 0;
+        output.upscale_tint_percent = 100;
+        output.upscale_tint_color = "#104080".to_string();
+        let tinted = apply_selected_image_adjustments(source.clone(), &output).to_rgba8();
+        assert_eq!(tinted.get_pixel(0, 0).0, [16, 64, 128, 180]);
+        output.upscale_tint_percent = -100;
+        let desaturated = apply_selected_image_adjustments(source.clone(), &output).to_rgba8();
+        assert_eq!(desaturated.get_pixel(0, 0).0, [118, 118, 118, 180]);
+        output.upscale_tint_percent = 0;
+        output.upscale_darkness_percent = 100;
+        let dark = apply_selected_image_adjustments(source, &output).to_rgba8();
+        assert_eq!(dark.get_pixel(0, 0).0, [0, 0, 0, 180]);
+    }
 
     fn test_range() -> Range {
         Range {

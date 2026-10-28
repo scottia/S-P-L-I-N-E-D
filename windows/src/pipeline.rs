@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Semaphore;
 
 static CLEANED_PERSISTENT_CACHE_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
@@ -285,6 +285,115 @@ pub fn cleanup_run_cache_files(cache_dir: &Path) {
             let _ = fs::remove_file(path);
         }
     }
+}
+
+/// Prune only known disposable Windows artwork from the configured run cache.
+/// A grace period protects another client actively reading the same shared
+/// cache; SQLite, saved samples, and the persistent Artist images directory
+/// are outside this filename-and-directory contract.
+pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64), String> {
+    if cache_dir.as_os_str().is_empty() || cache_dir.file_name().is_none() {
+        return Err(format!(
+            "Refusing unsafe cache cleanup path: {}",
+            cache_dir.display()
+        ));
+    }
+    if !cache_dir.exists() {
+        return Ok((0, 0));
+    }
+    if !cache_dir.is_dir()
+        || fs::symlink_metadata(cache_dir).is_ok_and(|meta| meta.file_type().is_symlink())
+    {
+        return Err(format!(
+            "Refusing non-directory or linked cache path: {}",
+            cache_dir.display()
+        ));
+    }
+    let cutoff = SystemTime::now() - Duration::from_secs(24 * 60 * 60);
+    let mut removed = 0usize;
+    let mut bytes = 0u64;
+    let locations = [
+        (cache_dir.to_path_buf(), "root"),
+        (cache_dir.join("artist-art-candidates"), "candidates"),
+        (
+            cache_dir.join("navidrome-thumbnails").join("artists"),
+            "navidrome",
+        ),
+        (
+            cache_dir.join("navidrome-thumbnails").join("albums"),
+            "navidrome",
+        ),
+        (
+            cache_dir
+                .join("navidrome-thumbnails")
+                .join("similar-artists"),
+            "navidrome",
+        ),
+        (
+            cache_dir
+                .join("navidrome-thumbnails")
+                .join("artist-banners"),
+            "navidrome",
+        ),
+    ];
+    for (directory, kind) in locations {
+        if !directory.exists() {
+            continue;
+        }
+        if !directory.is_dir()
+            || fs::symlink_metadata(&directory).is_ok_and(|meta| meta.file_type().is_symlink())
+        {
+            continue;
+        }
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("Unable to inspect cache {}: {error}", directory.display()))?
+        {
+            let entry = entry.map_err(|error| format!("Unable to inspect cache entry: {error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("Unable to inspect cache file type: {error}"))?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let managed = match kind {
+                "root" => {
+                    name.starts_with("splined-candidate-") || name.starts_with("splined-local-")
+                }
+                "candidates" => name.starts_with("splined-candidate-"),
+                _ => {
+                    name.ends_with(".img")
+                        || ((name.starts_with("circle-v1-")
+                            || name.starts_with("banner-v2-")
+                            || name.starts_with("banner-v3-")
+                            || name.starts_with("banner-v4-")
+                            || name.starts_with("banner-v5-"))
+                            && name.ends_with(".png"))
+                }
+            };
+            if !managed {
+                continue;
+            }
+            let metadata = entry.metadata().map_err(|error| {
+                format!(
+                    "Unable to inspect cache file {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+            if !metadata.modified().is_ok_and(|modified| modified <= cutoff) {
+                continue;
+            }
+            fs::remove_file(entry.path()).map_err(|error| {
+                format!(
+                    "Unable to remove stale cache file {}: {error}",
+                    entry.path().display()
+                )
+            })?;
+            removed += 1;
+            bytes = bytes.saturating_add(metadata.len());
+        }
+    }
+    Ok((removed, bytes))
 }
 
 pub async fn run_registry_pipeline_with_cache_dir(
@@ -744,5 +853,42 @@ mod tests {
     #[test]
     fn persistent_cache_cleanup_rejects_root_like_path() {
         assert!(prepare_persistent_cache_dir(Path::new("")).is_err());
+    }
+
+    #[test]
+    fn startup_cleanup_prunes_only_old_known_artwork_and_preserves_database_and_samples() {
+        let root = tempfile::TempDir::new().unwrap();
+        let cache = root.path().join("_cache");
+        let candidates = cache.join("artist-art-candidates");
+        let navidrome = cache.join("navidrome-thumbnails").join("artist-banners");
+        fs::create_dir_all(&candidates).unwrap();
+        fs::create_dir_all(&navidrome).unwrap();
+        fs::create_dir_all(cache.join("samples")).unwrap();
+        let old_candidate = candidates.join("splined-candidate-old.jpg");
+        let old_banner = navidrome.join("banner-v2-old.png");
+        let recent_candidate = candidates.join("splined-candidate-recent.png");
+        let database = cache.join("splined.db");
+        for path in [&old_candidate, &old_banner, &recent_candidate, &database] {
+            fs::write(path, b"fixture").unwrap();
+        }
+        fs::write(candidates.join("Thumbs.db"), b"keep").unwrap();
+        fs::write(cache.join("samples").join("sample.jpg"), b"keep").unwrap();
+        let old_time = SystemTime::now() - Duration::from_secs(48 * 60 * 60);
+        for path in [&old_candidate, &old_banner] {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(old_time))
+                .unwrap();
+        }
+        let (removed, bytes) = cleanup_stale_artwork_on_startup(&cache).unwrap();
+        assert_eq!((removed, bytes), (2, 14));
+        assert!(!old_candidate.exists());
+        assert!(!old_banner.exists());
+        assert!(recent_candidate.exists());
+        assert!(database.exists());
+        assert!(candidates.join("Thumbs.db").exists());
+        assert!(cache.join("samples").join("sample.jpg").exists());
     }
 }

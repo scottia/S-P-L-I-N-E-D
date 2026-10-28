@@ -231,7 +231,7 @@ pub fn progress(path: &Path, id: i64, completed: usize, total: usize) -> Result<
 pub fn finish(path: &Path, id: i64, error: Option<&str>) -> Result<(), String> {
     let (state, detail) = match error {
         Some(error) => ("failed", error),
-        None => ("done", "All album tracks embedded."),
+        None => ("done", "All album track thumbnails replaced."),
     };
     open(path)?
         .execute(

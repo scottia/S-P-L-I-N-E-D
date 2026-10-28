@@ -73,6 +73,9 @@ pub struct ScanConfig {
     #[serde(default)]
     pub scan_mode_timeout: ScanTimeout,
     pub cache_dir: String,
+    /// Persistent, per-artist images for Various Artists and soundtrack folders.
+    #[serde(default)]
+    pub shared_artist_art_dir: String,
     /// Disposable downloaded and derived artwork used only during an active run.
     /// Older Config v5 files omit this field and continue to use `cache_dir`.
     #[serde(default)]
@@ -219,6 +222,10 @@ pub struct OutputConfig {
     pub upscale_brightness_percent: i32,
     pub upscale_gamma_percent: i32,
     pub upscale_color_temperature: i32,
+    pub upscale_hue_degrees: i32,
+    pub upscale_darkness_percent: i32,
+    pub upscale_tint_percent: i32,
+    pub upscale_tint_color: String,
     pub evaluate_final_image: bool,
 }
 
@@ -341,6 +348,7 @@ impl Default for ScanConfig {
             library_scan: false,
             scan_mode_timeout: ScanTimeout::default(),
             cache_dir: DEFAULT_CACHE_DIR.to_string(),
+            shared_artist_art_dir: String::new(),
             temporary_cache_dir: DEFAULT_CACHE_DIR.to_string(),
             sqlite_shared: false,
             windows_client_lock: false,
@@ -404,6 +412,10 @@ impl Default for OutputConfig {
             upscale_brightness_percent: -1,
             upscale_gamma_percent: -6,
             upscale_color_temperature: 0,
+            upscale_hue_degrees: 0,
+            upscale_darkness_percent: 0,
+            upscale_tint_percent: 0,
+            upscale_tint_color: "#FFB36B".to_string(),
             evaluate_final_image: true,
         }
     }
@@ -612,6 +624,22 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             "SPLINED output upscale_color_temperature must be between -100 and 100.".to_string(),
         );
     }
+    if !(-180..=180).contains(&config.output.upscale_hue_degrees) {
+        return Err("SPLINED output upscale_hue_degrees must be between -180 and 180.".to_string());
+    }
+    if !(0..=100).contains(&config.output.upscale_darkness_percent) {
+        return Err("SPLINED output upscale_darkness_percent must be between 0 and 100.".to_string());
+    }
+    if !(-100..=100).contains(&config.output.upscale_tint_percent) {
+        return Err("SPLINED output upscale_tint_percent must be between -100 and 100.".to_string());
+    }
+    let tint = config.output.upscale_tint_color.trim();
+    if tint.len() != 7
+        || !tint.starts_with('#')
+        || !tint[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("SPLINED output upscale_tint_color must be a #RRGGBB color.".to_string());
+    }
 
     if config.scan.scan_mode_timeout.0 < 0.0 || !config.scan.scan_mode_timeout.0.is_finite() {
         return Err("SPLINED scan_mode_timeout must be finite and non-negative.".to_string());
@@ -620,6 +648,17 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     config.library.music_library = normalize_optional_directory(&config.library.music_library);
     config.scan.scan_library_dir = normalize_optional_directory(&config.scan.scan_library_dir);
     config.scan.cache_dir = normalize_required_directory(&config.scan.cache_dir, "scan.cache_dir")?;
+    config.scan.shared_artist_art_dir = if config.scan.shared_artist_art_dir.trim().is_empty() {
+        PathBuf::from(&config.scan.cache_dir)
+            .join("artist-art")
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        normalize_required_directory(
+            &config.scan.shared_artist_art_dir,
+            "scan.shared_artist_art_dir",
+        )?
+    };
     config.scan.temporary_cache_dir = if config.scan.temporary_cache_dir.trim().is_empty() {
         config.scan.cache_dir.clone()
     } else {
@@ -780,10 +819,21 @@ pub fn configured_samples_dir(config: &Config) -> PathBuf {
     }
 }
 
+pub fn configured_shared_artist_art_dir(config: &Config) -> PathBuf {
+    let configured = config.scan.shared_artist_art_dir.trim();
+    if configured.is_empty() {
+        PathBuf::from(&config.scan.cache_dir).join("artist-art")
+    } else {
+        PathBuf::from(configured)
+    }
+}
+
 fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.library.music_library = resolve_runtime_directory(root, &config.library.music_library);
     config.scan.scan_library_dir = resolve_runtime_directory(root, &config.scan.scan_library_dir);
     config.scan.cache_dir = resolve_runtime_directory(root, &config.scan.cache_dir);
+    config.scan.shared_artist_art_dir =
+        resolve_runtime_directory(root, &config.scan.shared_artist_art_dir);
     config.scan.temporary_cache_dir =
         resolve_runtime_directory(root, &config.scan.temporary_cache_dir);
     config.scan.log_dir = resolve_runtime_directory(root, &config.scan.log_dir);

@@ -13,7 +13,7 @@ use sha2_legacy::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::config::Config;
+use crate::config::{Config, configured_shared_artist_art_dir};
 use crate::media_database::claim_shared_database;
 use crate::safe_write::{replace_binary_file, replace_file_from, replace_text_file};
 use crate::settings::{config_text, save_config_text, ui_preferences_path};
@@ -176,6 +176,16 @@ pub fn export_backup(
 /// is used instead of copying the live database bytes while another runtime may
 /// be updating them.
 pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<PathBuf, String> {
+    export_database_backup_with_artist_art(requested_path, config, false)
+}
+
+/// Include managed V/A and soundtrack Artist Art inside the standalone SQLite
+/// artifact, without adding backup-only rows to the live library database.
+pub fn export_database_backup_with_artist_art(
+    requested_path: &Path,
+    config: &Config,
+    include_artist_images: bool,
+) -> Result<PathBuf, String> {
     let path = with_extension(requested_path, "sqlite");
     let source_path = Path::new(&config.scan.cache_dir).join("splined.db");
     let _shared_lock = (config.scan.sqlite_shared && config.scan.windows_client_lock)
@@ -188,6 +198,12 @@ pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<
         ));
     }
     let (_temporary, snapshot_path) = create_sqlite_snapshot(&source_path)?;
+    if include_artist_images {
+        insert_artist_images_into_snapshot(
+            &snapshot_path,
+            &configured_shared_artist_art_dir(config),
+        )?;
+    }
     replace_file_from(
         &path,
         &snapshot_path,
@@ -195,6 +211,81 @@ pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<
         validate_sqlite_backup,
     )?;
     Ok(path)
+}
+
+const ARTIST_IMAGES_BACKUP_TABLE: &str = "__splined_backup_artist_images_v1";
+const MAX_BACKED_UP_ARTIST_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
+
+fn valid_managed_artist_image_name(name: &str) -> bool {
+    (name.starts_with("artist-") || name.starts_with("banner-"))
+        && name.ends_with(".png")
+        && name.len() > "banner-.png".len()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && Path::new(name).file_name().and_then(|part| part.to_str()) == Some(name)
+}
+
+fn insert_artist_images_into_snapshot(snapshot: &Path, directory: &Path) -> Result<(), String> {
+    let mut connection = Connection::open(snapshot)
+        .map_err(|error| format!("Unable to open SQLite snapshot for Artist images: {error}"))?;
+    connection.execute_batch(&format!(
+        "CREATE TABLE {ARTIST_IMAGES_BACKUP_TABLE}(filename TEXT PRIMARY KEY, image BLOB NOT NULL);"
+    )).map_err(|error| format!("Unable to prepare Artist images backup: {error}"))?;
+    if !directory.is_dir() {
+        return Err(format!(
+            "The configured Artist images directory is unavailable: {}",
+            directory.display()
+        ));
+    }
+    let entries = std::fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Unable to read Artist images directory {}: {error}",
+            directory.display()
+        )
+    })?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("Unable to begin Artist images backup: {error}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Unable to read Artist image entry: {error}"))?;
+        let kind = entry
+            .file_type()
+            .map_err(|error| format!("Unable to inspect Artist image entry: {error}"))?;
+        if !kind.is_file() {
+            continue;
+        }
+        let filename = entry.file_name().to_string_lossy().into_owned();
+        if !valid_managed_artist_image_name(&filename) {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|error| format!("Unable to inspect Artist image {filename}: {error}"))?;
+        if metadata.len() > MAX_BACKED_UP_ARTIST_IMAGE_BYTES {
+            return Err(format!(
+                "Artist image {filename} exceeds the 100 MiB backup limit."
+            ));
+        }
+        let bytes = std::fs::read(entry.path())
+            .map_err(|error| format!("Unable to back up Artist image {filename}: {error}"))?;
+        if bytes.len() as u64 > MAX_BACKED_UP_ARTIST_IMAGE_BYTES {
+            return Err(format!(
+                "Artist image {filename} exceeds the 100 MiB backup limit."
+            ));
+        }
+        image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .map_err(|error| format!("Invalid Artist image {filename}: {error}"))?;
+        transaction
+            .execute(
+                &format!("INSERT INTO {ARTIST_IMAGES_BACKUP_TABLE}(filename,image) VALUES (?1,?2)"),
+                rusqlite::params![filename, bytes],
+            )
+            .map_err(|error| format!("Unable to add Artist image to SQLite backup: {error}"))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Unable to finish Artist images backup: {error}"))
 }
 
 fn create_sqlite_snapshot(source_path: &Path) -> Result<(tempfile::TempDir, PathBuf), String> {
@@ -217,13 +308,118 @@ fn create_sqlite_snapshot(source_path: &Path) -> Result<(tempfile::TempDir, Path
 
 /// Restore a standalone SQLite snapshot to the configured database location.
 pub fn restore_database_backup(path: &Path, config: &Config) -> Result<PathBuf, String> {
+    restore_database_backup_with_artist_art(path, config, false)
+}
+
+pub fn restore_database_backup_with_artist_art(
+    path: &Path,
+    config: &Config,
+    restore_artist_images: bool,
+) -> Result<PathBuf, String> {
     validate_sqlite_backup(path)?;
+    let (clean_copy, images) = prepare_artist_images_restore(path, restore_artist_images)?;
     let destination = Path::new(&config.scan.cache_dir).join("splined.db");
     let _shared_lock = (config.scan.sqlite_shared && config.scan.windows_client_lock)
         .then(|| claim_shared_database(&destination))
         .transpose()?;
-    restore_sqlite_snapshot(path, &destination)?;
+    restore_sqlite_snapshot(
+        clean_copy
+            .as_ref()
+            .map_or(path, |(_, clean)| clean.as_path()),
+        &destination,
+    )?;
+    if restore_artist_images {
+        let directory = configured_shared_artist_art_dir(config);
+        let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("Unable to reopen Artist images backup: {error}"))?;
+        for filename in images {
+            let bytes: Vec<u8> = source
+                .query_row(
+                    &format!("SELECT image FROM {ARTIST_IMAGES_BACKUP_TABLE} WHERE filename=?1"),
+                    [&filename],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    format!("Unable to restore backed-up Artist image {filename}: {error}")
+                })?;
+            if bytes.len() as u64 > MAX_BACKED_UP_ARTIST_IMAGE_BYTES {
+                return Err(format!(
+                    "Artist image {filename} exceeds the 100 MiB restore limit."
+                ));
+            }
+            replace_binary_file(
+                &directory.join(filename),
+                &bytes,
+                "Artist image restore",
+                |candidate| {
+                    let bytes = std::fs::read(candidate).map_err(|error| {
+                        format!("Unable to verify restored Artist image: {error}")
+                    })?;
+                    image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                        .map(|_| ())
+                        .map_err(|error| format!("Invalid restored Artist image: {error}"))
+                },
+            )?;
+        }
+    }
     Ok(destination)
+}
+
+fn prepare_artist_images_restore(
+    path: &Path,
+    requested: bool,
+) -> Result<(Option<(tempfile::TempDir, PathBuf)>, Vec<String>), String> {
+    let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Unable to open SQLite backup: {error}"))?;
+    let has_images: bool = source
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [ARTIST_IMAGES_BACKUP_TABLE],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Unable to inspect Artist images backup: {error}"))?;
+    if requested && !has_images {
+        return Err("This SQLite backup does not contain V/A / OST Artist images; turn off their restore option or select a backup that includes them.".to_string());
+    }
+    if !has_images {
+        return Ok((None, Vec::new()));
+    }
+    let mut images = Vec::new();
+    if requested {
+        let mut statement = source
+            .prepare(&format!(
+                "SELECT filename,image FROM {ARTIST_IMAGES_BACKUP_TABLE} ORDER BY filename"
+            ))
+            .map_err(|error| format!("Unable to inspect backed-up Artist images: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(|error| format!("Unable to read backed-up Artist images: {error}"))?;
+        for row in rows {
+            let (filename, bytes) =
+                row.map_err(|error| format!("Unable to read Artist image backup row: {error}"))?;
+            if !valid_managed_artist_image_name(&filename)
+                || bytes.len() as u64 > MAX_BACKED_UP_ARTIST_IMAGE_BYTES
+            {
+                return Err(format!(
+                    "Unsafe or oversized Artist image in backup: {filename}"
+                ));
+            }
+            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .map_err(|error| format!("Invalid backed-up Artist image {filename}: {error}"))?;
+            images.push(filename);
+        }
+    }
+    drop(source);
+    let (temporary, clean_path) = create_sqlite_snapshot(path)?;
+    let clean = Connection::open(&clean_path)
+        .map_err(|error| format!("Unable to open clean SQLite restore copy: {error}"))?;
+    clean
+        .execute_batch(&format!("DROP TABLE {ARTIST_IMAGES_BACKUP_TABLE}; VACUUM;"))
+        .map_err(|error| format!("Unable to prepare clean SQLite restore copy: {error}"))?;
+    drop(clean);
+    Ok((Some((temporary, clean_path)), images))
 }
 
 fn restore_sqlite_snapshot(source_path: &Path, destination: &Path) -> Result<(), String> {
@@ -589,6 +785,112 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn sqlite_artist_images_are_optional_and_never_added_to_live_database() {
+        let root = TempDir::new().unwrap();
+        let database_dir = root.path().join("database");
+        let artist_dir = root.path().join("artist-images");
+        std::fs::create_dir_all(&database_dir).unwrap();
+        std::fs::create_dir_all(&artist_dir).unwrap();
+        let database = database_dir.join("splined.db");
+        Connection::open(&database)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE library(value TEXT); INSERT INTO library VALUES ('before');",
+            )
+            .unwrap();
+        let image_path = artist_dir.join("artist-mbid-abc.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([20, 40, 60]))
+            .save_with_format(&image_path, image::ImageFormat::Png)
+            .unwrap();
+        let original = std::fs::read(&image_path).unwrap();
+        let mut config = Config::default();
+        config.scan.cache_dir = database_dir.to_string_lossy().into_owned();
+        config.scan.shared_artist_art_dir = artist_dir.to_string_lossy().into_owned();
+
+        let plain = export_database_backup(&root.path().join("plain"), &config).unwrap();
+        assert!(!backup_has_artist_images(&plain));
+        assert!(restore_database_backup_with_artist_art(&plain, &config, true).is_err());
+
+        let backup =
+            export_database_backup_with_artist_art(&root.path().join("with-images"), &config, true)
+                .unwrap();
+        assert!(backup_has_artist_images(&backup));
+        let backed_up: Vec<u8> = Connection::open(&backup).unwrap().query_row(
+            &format!("SELECT image FROM {ARTIST_IMAGES_BACKUP_TABLE} WHERE filename='artist-mbid-abc.png'"),
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(backed_up, original);
+        assert!(!backup_has_artist_images(&database));
+
+        std::fs::remove_file(&image_path).unwrap();
+        restore_database_backup(&backup, &config).unwrap();
+        assert!(!image_path.exists());
+        assert!(!backup_has_artist_images(&database));
+        restore_database_backup_with_artist_art(&backup, &config, true).unwrap();
+        assert_eq!(std::fs::read(&image_path).unwrap(), original);
+        assert!(!backup_has_artist_images(&database));
+    }
+
+    fn backup_has_artist_images(path: &Path) -> bool {
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [ARTIST_IMAGES_BACKUP_TABLE],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn missing_artist_directory_or_unsafe_backup_row_fails_without_restoring_database() {
+        let root = TempDir::new().unwrap();
+        let database_dir = root.path().join("database");
+        std::fs::create_dir_all(&database_dir).unwrap();
+        let database = database_dir.join("splined.db");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE library(value TEXT); INSERT INTO library VALUES ('before');",
+            )
+            .unwrap();
+        drop(connection);
+        let mut config = Config::default();
+        config.scan.cache_dir = database_dir.to_string_lossy().into_owned();
+        config.scan.shared_artist_art_dir = root
+            .path()
+            .join("missing-images")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            export_database_backup_with_artist_art(&root.path().join("missing"), &config, true)
+                .is_err()
+        );
+
+        std::fs::create_dir_all(&config.scan.shared_artist_art_dir).unwrap();
+        let backup =
+            export_database_backup_with_artist_art(&root.path().join("unsafe"), &config, true)
+                .unwrap();
+        Connection::open(&backup)
+            .unwrap()
+            .execute(
+                &format!("INSERT INTO {ARTIST_IMAGES_BACKUP_TABLE}(filename,image) VALUES (?1,?2)"),
+                rusqlite::params!["../unsafe.png", vec![0u8; 8]],
+            )
+            .unwrap();
+        Connection::open(&database)
+            .unwrap()
+            .execute("UPDATE library SET value='after'", [])
+            .unwrap();
+        assert!(restore_database_backup_with_artist_art(&backup, &config, true).is_err());
+        let value: String = Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT value FROM library", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "after");
+    }
+
+    #[test]
     fn protected_and_plain_envelopes_round_trip() {
         for password in ["", "correct horse battery staple"] {
             let envelope = protect(b"SPLINED fixture", password).unwrap();
@@ -638,7 +940,7 @@ mod tests {
             ..crate::settings::UiPreferences::default()
         };
         preferences.adjustment_presets[1].name = "Warm".to_string();
-        preferences.adjustment_presets[1].values = [3, 2, 1, -1, 4, 5, 0, 8];
+        preferences.adjustment_presets[1].values = [3, 2, 1, -1, 4, 5, 0, 8, 0, 0, 0];
         preferences.adjustment_presets[1].saved = true;
         preferences.banner_theme_baseline_styles = preferences.banner_theme_styles.clone();
         preferences.album_frame_theme_baseline_styles =

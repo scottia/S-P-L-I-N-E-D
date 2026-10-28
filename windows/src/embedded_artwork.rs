@@ -1,10 +1,10 @@
-//! Safe per-track front-cover replacement used only by curated compilations.
+//! Safe per-track front-cover replacement for album queues and compilations.
 //!
 //! Normal Album processing remains folder-artwork based. This module stages a
 //! complete audio-file copy beside the source, changes only the front picture,
 //! verifies the staged tag, and then uses SPLINED's recoverable replacement.
 
-use crate::safe_write::transform_existing_file;
+use crate::safe_write::{transform_existing_file, transform_existing_file_with_trace};
 use lofty::config::WriteOptions;
 use lofty::file::TaggedFileExt;
 use lofty::picture::{MimeType, Picture, PictureType};
@@ -12,6 +12,7 @@ use lofty::tag::{ItemKey, Tag, TagExt};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::path::Path;
+use std::time::Duration;
 
 pub fn embedded_front_sha256s(track_path: &Path) -> Result<Vec<String>, String> {
     let tagged = lofty::read_from_path(track_path).map_err(|error| {
@@ -76,6 +77,14 @@ fn sha256_hex(value: &[u8]) -> String {
 }
 
 pub fn replace_embedded_front(track_path: &Path, artwork: &[u8]) -> Result<(), String> {
+    replace_embedded_front_with_trace(track_path, artwork, &mut |_, _| {})
+}
+
+pub fn replace_embedded_front_with_trace(
+    track_path: &Path,
+    artwork: &[u8],
+    trace: &mut dyn FnMut(&'static str, Duration),
+) -> Result<(), String> {
     let mut reader = Cursor::new(artwork);
     let mut picture = Picture::from_reader(&mut reader)
         .map_err(|error| format!("Embedded artwork is not a supported image: {error}"))?;
@@ -86,7 +95,7 @@ pub fn replace_embedded_front(track_path: &Path, artwork: &[u8]) -> Result<(), S
     picture.set_pic_type(PictureType::CoverFront);
     let expected_hash = Sha256::digest(artwork).to_vec();
 
-    transform_existing_file(
+    transform_existing_file_with_trace(
         track_path,
         "compilation embedded artwork",
         move |staged| {
@@ -131,6 +140,7 @@ pub fn replace_embedded_front(track_path: &Path, artwork: &[u8]) -> Result<(), S
                 Err("Staged audio file did not retain the selected front artwork.".to_string())
             }
         },
+        trace,
     )
 }
 

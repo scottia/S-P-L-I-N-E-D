@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tempfile::{Builder, NamedTempFile};
 
 static CREDENTIAL_PROTECTION_WARNING: AtomicBool = AtomicBool::new(false);
@@ -369,10 +369,9 @@ where
     install_staged_file(path, staged, label)
 }
 
-/// Copy an existing file to a same-directory staging file, mutate and
-/// validate the staged copy, then atomically replace the original. This keeps
-/// audio-tag updates recoverable without reading an entire media file into
-/// memory.
+/// Prepare remote audio files locally, then validate a same-directory staged
+/// copy before replacing the original. Local audio files use the same-directory
+/// stage directly. Neither route reads the entire file into memory.
 pub fn transform_existing_file<M, V>(
     path: &Path,
     label: &str,
@@ -383,7 +382,21 @@ where
     M: FnOnce(&Path) -> Result<(), String>,
     V: Fn(&Path) -> Result<(), String>,
 {
-    transform_existing_file_with_staging(path, label, mutate, validate, is_remote_path(path))
+    transform_existing_file_with_trace(path, label, mutate, validate, &mut |_, _| {})
+}
+
+pub fn transform_existing_file_with_trace<M, V>(
+    path: &Path,
+    label: &str,
+    mutate: M,
+    validate: V,
+    trace: &mut dyn FnMut(&'static str, Duration),
+) -> Result<(), String>
+where
+    M: FnOnce(&Path) -> Result<(), String>,
+    V: Fn(&Path) -> Result<(), String>,
+{
+    transform_existing_file_with_staging(path, label, mutate, validate, is_remote_path(path), trace)
 }
 
 fn transform_existing_file_with_staging<M, V>(
@@ -392,18 +405,30 @@ fn transform_existing_file_with_staging<M, V>(
     mutate: M,
     validate: V,
     stage_locally: bool,
+    trace: &mut dyn FnMut(&'static str, Duration),
 ) -> Result<(), String>
 where
     M: FnOnce(&Path) -> Result<(), String>,
     V: Fn(&Path) -> Result<(), String>,
 {
+    trace(
+        if stage_locally {
+            "route_local_stage"
+        } else {
+            "route_album_stage"
+        },
+        Duration::ZERO,
+    );
     if !path.is_file() {
         return Err(format!(
             "Unable to update {label}; file does not exist: {}",
             path.display()
         ));
     }
-    recover_backup_if_needed(path, label)?;
+    let started = Instant::now();
+    let recovered = recover_backup_if_needed(path, label);
+    trace("recover_backup", started.elapsed());
+    recovered?;
     let parent = path.parent().ok_or_else(|| {
         format!(
             "Unable to determine parent directory for {label}: {}",
@@ -419,38 +444,69 @@ where
         // Tag libraries perform several seeks and rewrites. On an SMB share,
         // do that work in the user's local temp directory, then make one
         // validated same-directory copy for recoverable replacement.
+        let started = Instant::now();
         let local_stage = Builder::new()
             .prefix(".splined-local-stage-")
             .suffix(&staged_suffix)
             .tempfile_in(std::env::temp_dir())
-            .map_err(|error| format!("Unable to create local {label} stage: {error}"))?;
-        fs::copy(path, local_stage.path()).map_err(|error| {
+            .map_err(|error| format!("Unable to create local {label} stage: {error}"));
+        trace("create_local_stage", started.elapsed());
+        let local_stage = local_stage?;
+        let started = Instant::now();
+        let copied = fs::copy(path, local_stage.path()).map_err(|error| {
             format!(
                 "Unable to copy {label} file {} to local stage: {error}",
                 path.display()
             )
-        })?;
-        mutate(local_stage.path())?;
-        validate(local_stage.path())?;
-        let mut staged = Builder::new()
+        });
+        trace("copy_to_local", started.elapsed());
+        copied?;
+        let started = Instant::now();
+        let mutated = mutate(local_stage.path());
+        trace("mutate_local", started.elapsed());
+        mutated?;
+        let started = Instant::now();
+        let validated = validate(local_stage.path());
+        trace("validate_local", started.elapsed());
+        validated?;
+        let started = Instant::now();
+        let staged = Builder::new()
             .prefix(".splined-stage-")
             .suffix(&staged_suffix)
             .tempfile_in(parent)
-            .map_err(|error| format!("Unable to create staged {label} file: {error}"))?;
+            .map_err(|error| format!("Unable to create staged {label} file: {error}"));
+        trace("create_share_stage", started.elapsed());
+        let mut staged = staged?;
         let mut input = fs::File::open(local_stage.path())
             .map_err(|error| format!("Unable to open local {label} stage: {error}"))?;
-        std::io::copy(&mut input, &mut staged)
-            .map_err(|error| format!("Unable to copy prepared {label} to the library: {error}"))?;
-        staged
+        let started = Instant::now();
+        let copied = std::io::copy(&mut input, &mut staged)
+            .map_err(|error| format!("Unable to copy prepared {label} to the library: {error}"));
+        trace("copy_to_share", started.elapsed());
+        copied?;
+        let started = Instant::now();
+        let flushed = staged
             .flush()
-            .map_err(|error| format!("Unable to flush staged {label} file: {error}"))?;
-        staged
+            .map_err(|error| format!("Unable to flush staged {label} file: {error}"));
+        trace("flush_share", started.elapsed());
+        flushed?;
+        let started = Instant::now();
+        let synced = staged
             .as_file()
             .sync_all()
-            .map_err(|error| format!("Unable to sync staged {label} file: {error}"))?;
-        validate(staged.path())?;
-        return install_staged_file(path, staged, label);
+            .map_err(|error| format!("Unable to sync staged {label} file: {error}"));
+        trace("sync_share", started.elapsed());
+        synced?;
+        let started = Instant::now();
+        let validated = validate(staged.path());
+        trace("validate_share", started.elapsed());
+        validated?;
+        let started = Instant::now();
+        let installed = install_staged_file(path, staged, label);
+        trace("replace_share", started.elapsed());
+        return installed;
     }
+    let started = Instant::now();
     let staged = Builder::new()
         .prefix(".splined-stage-")
         .suffix(&staged_suffix)
@@ -460,20 +516,37 @@ where
                 "Unable to create staged {label} file in {}: {error}",
                 parent.display()
             )
-        })?;
-    fs::copy(path, staged.path()).map_err(|error| {
+        });
+    trace("create_album_stage", started.elapsed());
+    let staged = staged?;
+    let started = Instant::now();
+    let copied = fs::copy(path, staged.path()).map_err(|error| {
         format!(
             "Unable to copy staged {label} file {}: {error}",
             path.display()
         )
-    })?;
-    mutate(staged.path())?;
-    staged
+    });
+    trace("copy_to_album_stage", started.elapsed());
+    copied?;
+    let started = Instant::now();
+    let mutated = mutate(staged.path());
+    trace("mutate_album_stage", started.elapsed());
+    mutated?;
+    let started = Instant::now();
+    let synced = staged
         .as_file()
         .sync_all()
-        .map_err(|error| format!("Unable to sync staged {label} file: {error}"))?;
-    validate(staged.path())?;
-    install_staged_file(path, staged, label)
+        .map_err(|error| format!("Unable to sync staged {label} file: {error}"));
+    trace("sync_album_stage", started.elapsed());
+    synced?;
+    let started = Instant::now();
+    let validated = validate(staged.path());
+    trace("validate_album_stage", started.elapsed());
+    validated?;
+    let started = Instant::now();
+    let installed = install_staged_file(path, staged, label);
+    trace("replace_album_stage", started.elapsed());
+    installed
 }
 
 #[cfg(windows)]
@@ -785,6 +858,7 @@ mod tests {
         let dir = TempDir::new().expect("temporary directory");
         let track = dir.path().join("song.mp3");
         fs::write(&track, b"original").expect("original track");
+        let mut phases = Vec::new();
         transform_existing_file_with_staging(
             &track,
             "audio tag",
@@ -801,8 +875,26 @@ mod tests {
                     .ok_or_else(|| "invalid stage".to_string())
             },
             true,
+            &mut |phase, _| phases.push(phase),
         )
         .expect("local preparation should install");
+        assert_eq!(
+            phases,
+            [
+                "route_local_stage",
+                "recover_backup",
+                "create_local_stage",
+                "copy_to_local",
+                "mutate_local",
+                "validate_local",
+                "create_share_stage",
+                "copy_to_share",
+                "flush_share",
+                "sync_share",
+                "validate_share",
+                "replace_share",
+            ]
+        );
         assert_eq!(fs::read(&track).unwrap(), b"updated");
         assert!(!backup_path(&track).exists());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);

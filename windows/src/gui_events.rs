@@ -193,6 +193,9 @@ pub struct UpscaleOverrides {
     pub brightness_percent: i32,
     pub gamma_percent: i32,
     pub color_temperature: i32,
+    pub hue_degrees: i32,
+    pub darkness_percent: i32,
+    pub tint_percent: i32,
     pub apply_edit_profile: bool,
     pub edit_existing_cover: bool,
     pub embed_thumbnails: bool,
@@ -406,6 +409,9 @@ fn parse_upscale_overrides(value: &Value) -> UpscaleOverrides {
         brightness_percent: decision_i32(value, "upscale_brightness_percent"),
         gamma_percent: decision_i32(value, "upscale_gamma_percent"),
         color_temperature: decision_i32(value, "upscale_color_temperature"),
+        hue_degrees: decision_i32(value, "upscale_hue_degrees"),
+        darkness_percent: decision_i32(value, "upscale_darkness_percent"),
+        tint_percent: decision_i32(value, "upscale_tint_percent"),
         apply_edit_profile: value
             .get("apply_edit_profile")
             .and_then(Value::as_bool)

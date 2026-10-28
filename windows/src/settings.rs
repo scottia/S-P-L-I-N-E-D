@@ -10,8 +10,30 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdjustmentPreset {
     pub name: String,
-    pub values: [i32; 8],
+    #[serde(deserialize_with = "deserialize_adjustment_values")]
+    pub values: [i32; 11],
+    #[serde(default = "default_tint_color")]
+    pub tint_color: String,
     pub saved: bool,
+}
+
+fn default_tint_color() -> String {
+    "#FFB36B".to_string()
+}
+
+fn deserialize_adjustment_values<'de, D>(deserializer: D) -> Result<[i32; 11], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<i32>::deserialize(deserializer)?;
+    if values.len() != 8 && values.len() != 11 {
+        return Err(serde::de::Error::custom(
+            "adjustment preset needs 8 or 11 values",
+        ));
+    }
+    let mut migrated = [0; 11];
+    migrated[..values.len()].copy_from_slice(&values);
+    Ok(migrated)
 }
 
 pub fn default_adjustment_presets() -> Vec<AdjustmentPreset> {
@@ -21,10 +43,11 @@ pub fn default_adjustment_presets() -> Vec<AdjustmentPreset> {
         .map(|(index, name)| AdjustmentPreset {
             name: name.to_string(),
             values: if index == 0 {
-                [2, 4, 0, 10, -5, -1, -6, 0]
+                [2, 4, 0, 10, -5, -1, -6, 0, 0, 0, 0]
             } else {
-                [0; 8]
+                [0; 11]
             },
+            tint_color: default_tint_color(),
             saved: index == 0,
         })
         .collect()
@@ -137,6 +160,10 @@ pub struct UiPreferences {
     pub backup_settings: bool,
     pub backup_credentials: bool,
     pub backup_database: bool,
+    #[serde(default)]
+    pub backup_artist_images: bool,
+    #[serde(default)]
+    pub restore_artist_images: bool,
     pub backup_interface: bool,
     pub backup_diagnostics: bool,
     pub artist_filter: String,
@@ -227,6 +254,8 @@ impl Default for UiPreferences {
             backup_settings: true,
             backup_credentials: true,
             backup_database: false,
+            backup_artist_images: false,
+            restore_artist_images: false,
             backup_interface: true,
             backup_diagnostics: false,
             artist_filter: String::new(),
@@ -249,6 +278,9 @@ impl Default for UiPreferences {
                 "Brightness".to_string(),
                 "Gamma".to_string(),
                 "Color".to_string(),
+                "Hue".to_string(),
+                "Darkness".to_string(),
+                "Tint".to_string(),
             ],
             adjustment_presets: default_adjustment_presets(),
             banner_theme_styles: default_banner_theme_styles(),
@@ -640,6 +672,7 @@ pub fn save_config_at_root(config: &Config, root: &Path) -> Result<Config, Strin
     portable.library.music_library = portable_path(root, &portable.library.music_library);
     portable.scan.scan_library_dir = portable_path(root, &portable.scan.scan_library_dir);
     portable.scan.cache_dir = portable_path(root, &portable.scan.cache_dir);
+    portable.scan.shared_artist_art_dir = portable_path(root, &portable.scan.shared_artist_art_dir);
     portable.scan.temporary_cache_dir = portable_path(root, &portable.scan.temporary_cache_dir);
     portable.scan.log_dir = portable_path(root, &portable.scan.log_dir);
     portable.credentials.credential_dir = portable_path(root, &portable.credentials.credential_dir);
@@ -655,6 +688,10 @@ pub fn validate_operational_config(config: &Config) -> Result<(), String> {
     for (label, value) in [
         ("Music Library", config.library.music_library.as_str()),
         ("SQLite/database directory", config.scan.cache_dir.as_str()),
+        (
+            "V/A / OST Artist images database",
+            config.scan.shared_artist_art_dir.as_str(),
+        ),
         (
             "Temporary cache directory",
             config.scan.temporary_cache_dir.as_str(),
@@ -695,6 +732,10 @@ fn create_configured_runtime_directories(config: &Config) -> Result<(), String> 
         .into_owned();
     let mut directories = vec![
         ("SQLite/database", config.scan.cache_dir.as_str()),
+        (
+            "V/A / OST Artist images database",
+            config.scan.shared_artist_art_dir.as_str(),
+        ),
         ("temporary cache", config.scan.temporary_cache_dir.as_str()),
         ("log", config.scan.log_dir.as_str()),
         ("credential", config.credentials.credential_dir.as_str()),
@@ -845,6 +886,16 @@ mod tests {
     }
 
     #[test]
+    fn legacy_eight_value_adjustment_preset_loads_with_new_controls_off() {
+        let preset: AdjustmentPreset = toml::from_str(
+            "name = 'Legacy'\nvalues = [2, 4, 0, 10, -5, -1, -6, 0]\nsaved = true\n",
+        )
+        .unwrap();
+        assert_eq!(preset.values, [2, 4, 0, 10, -5, -1, -6, 0, 0, 0, 0]);
+        assert_eq!(preset.tint_color, "#FFB36B");
+    }
+
+    #[test]
     fn mature_interface_preferences_round_trip_without_a_second_authority() {
         let mut preferences = UiPreferences {
             appearance: "Light".to_string(),
@@ -886,7 +937,8 @@ mod tests {
             ..UiPreferences::default()
         };
         preferences.adjustment_presets[2].name = "Warm Artwork".to_string();
-        preferences.adjustment_presets[2].values = [6, 2, 1, -3, 4, 5, -2, 16];
+        preferences.adjustment_presets[2].values = [6, 2, 1, -3, 4, 5, -2, 16, 0, 0, 0];
+        preferences.adjustment_presets[2].tint_color = "#F46D92".to_string();
         preferences.adjustment_presets[2].saved = true;
         preferences.banner_theme_baseline_styles = preferences.banner_theme_styles.clone();
         preferences.album_frame_theme_baseline_styles =
@@ -936,7 +988,7 @@ window_height = 700
             CURRENT_WORKSPACE_LAYOUT_REVISION
         );
         assert!(restored.media_selector_expanded);
-        assert_eq!(restored.primary_adjustments.len(), 8);
+        assert_eq!(restored.primary_adjustments.len(), 11);
         assert!(!restored.migrate_workspace_layout());
     }
 

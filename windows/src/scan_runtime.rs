@@ -2845,6 +2845,7 @@ async fn run_compilation_album(
         );
 
         let (recording_mbid, artist_mbids) = resolved_track_authority(config, track);
+        let mut existing_release_ids = std::collections::HashMap::<PathBuf, String>::new();
         let artist_album_covers = match recording_mbid.as_deref() {
             Some(recording) => match find_local_compilation_artworks(
                 config,
@@ -2858,6 +2859,8 @@ async fn run_compilation_album(
                 Ok(found) => found
                     .into_iter()
                     .map(|item| {
+                        existing_release_ids
+                            .insert(item.track_path.clone(), item.release_mbid.clone());
                         let kind = if item.recording_match {
                             "artist-album-cover"
                         } else {
@@ -3022,6 +3025,7 @@ async fn run_compilation_album(
                         focused_artist_mbid: focused_artist_mbid.as_deref(),
                         focused_artist: &search_artist,
                         existing_sources: &existing_sources,
+                        existing_release_ids: &existing_release_ids,
                     },
                 );
                 match gui_events::wait_for_musicbrainz_match_decision()? {
@@ -3631,6 +3635,7 @@ struct MusicBrainzIdentityDisplay<'a> {
     focused_artist_mbid: Option<&'a str>,
     focused_artist: &'a str,
     existing_sources: &'a [(PathBuf, PathBuf, &'static str)],
+    existing_release_ids: &'a std::collections::HashMap<PathBuf, String>,
 }
 
 fn emit_musicbrainz_matches(
@@ -3678,6 +3683,7 @@ fn emit_musicbrainz_matches(
         "existing_artwork_title": identity.existing_sources.first().and_then(|(track, _, _)| track.parent()).and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).unwrap_or(""),
         "existing_artwork_items": identity.existing_sources.iter().map(|(track, cover, kind)| json!({
             "track_path": track, "artwork_path": cover, "kind": kind,
+            "release_mbid": identity.existing_release_ids.get(track).map(String::as_str).unwrap_or(""),
             "title": track.parent().and_then(|folder| folder.file_name()).and_then(|name| name.to_str()).unwrap_or("")
         })).collect::<Vec<_>>(),
         "notice": if matches.is_empty() && identity.status != "valid" {
@@ -4132,6 +4138,9 @@ fn apply_upscale_overrides(
         output.upscale_brightness_percent = 0;
         output.upscale_gamma_percent = 0;
         output.upscale_color_temperature = 0;
+        output.upscale_hue_degrees = 0;
+        output.upscale_darkness_percent = 0;
+        output.upscale_tint_percent = 0;
         return Ok(());
     }
     for (name, value) in [
@@ -4158,6 +4167,12 @@ fn apply_upscale_overrides(
     if !(-100..=100).contains(&overrides.color_temperature) {
         return Err("Upscale color correction override must be between -100 and 100.".to_string());
     }
+    if !(-180..=180).contains(&overrides.hue_degrees)
+        || !(0..=100).contains(&overrides.darkness_percent)
+        || !(0..=100).contains(&overrides.tint_percent)
+    {
+        return Err("Upscale hue, darkness, or tint override is out of range.".to_string());
+    }
     output.upscale_adaptive_defaults = overrides.adaptive_defaults;
     output.upscale_picture_percent = overrides.picture_percent;
     output.upscale_sharpen_percent = overrides.sharpen_percent;
@@ -4167,6 +4182,9 @@ fn apply_upscale_overrides(
     output.upscale_brightness_percent = overrides.brightness_percent;
     output.upscale_gamma_percent = overrides.gamma_percent;
     output.upscale_color_temperature = overrides.color_temperature;
+    output.upscale_hue_degrees = overrides.hue_degrees;
+    output.upscale_darkness_percent = overrides.darkness_percent;
+    output.upscale_tint_percent = overrides.tint_percent;
     Ok(())
 }
 
@@ -5131,6 +5149,9 @@ mod tests {
             brightness_percent: 5,
             gamma_percent: -2,
             color_temperature: -25,
+            hue_degrees: 0,
+            darkness_percent: 0,
+            tint_percent: 0,
             apply_edit_profile: true,
             edit_existing_cover: true,
             embed_thumbnails: false,
@@ -5195,6 +5216,9 @@ mod tests {
             brightness_percent: 0,
             gamma_percent: 0,
             color_temperature: 0,
+            hue_degrees: 0,
+            darkness_percent: 0,
+            tint_percent: 0,
             apply_edit_profile: true,
             edit_existing_cover: false,
             embed_thumbnails: true,
@@ -5300,6 +5324,9 @@ mod tests {
             brightness_percent: 1,
             gamma_percent: -1,
             color_temperature: 20,
+            hue_degrees: 0,
+            darkness_percent: 0,
+            tint_percent: 0,
             apply_edit_profile: false,
             edit_existing_cover: false,
             embed_thumbnails: false,

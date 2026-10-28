@@ -2124,6 +2124,7 @@ pub struct MusicBrainzExistingArtwork {
     pub artwork_path: String,
     pub kind: String,
     pub title: String,
+    pub release_mbid: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2147,12 +2148,16 @@ pub struct AdjustmentState {
     pub brightness_percent: i32,
     pub gamma_percent: i32,
     pub color_temperature: i32,
+    pub hue_degrees: i32,
+    pub darkness_percent: i32,
+    pub tint_percent: i32,
+    pub tint_color: String,
     pub apply_edit_profile: bool,
     pub edit_existing_cover: bool,
 }
 
 impl AdjustmentState {
-    pub fn slider_values(&self) -> [i32; 8] {
+    pub fn slider_values(&self) -> [i32; 11] {
         [
             self.picture_percent,
             self.sharpen_percent,
@@ -2162,10 +2167,13 @@ impl AdjustmentState {
             self.brightness_percent,
             self.gamma_percent,
             self.color_temperature,
+            self.hue_degrees,
+            self.darkness_percent,
+            self.tint_percent,
         ]
     }
 
-    pub fn apply_slider_values(&mut self, values: [i32; 8]) {
+    pub fn apply_slider_values(&mut self, values: [i32; 11]) {
         [
             self.picture_percent,
             self.sharpen_percent,
@@ -2175,6 +2183,9 @@ impl AdjustmentState {
             self.brightness_percent,
             self.gamma_percent,
             self.color_temperature,
+            self.hue_degrees,
+            self.darkness_percent,
+            self.tint_percent,
         ] = values;
     }
     pub fn from_config(config: &Config) -> Self {
@@ -2189,6 +2200,10 @@ impl AdjustmentState {
             brightness_percent: config.output.upscale_brightness_percent,
             gamma_percent: config.output.upscale_gamma_percent,
             color_temperature: config.output.upscale_color_temperature,
+            hue_degrees: config.output.upscale_hue_degrees,
+            darkness_percent: config.output.upscale_darkness_percent,
+            tint_percent: config.output.upscale_tint_percent,
+            tint_color: config.output.upscale_tint_color.clone(),
             apply_edit_profile: true,
             edit_existing_cover: false,
         }
@@ -2206,6 +2221,9 @@ impl AdjustmentState {
             "upscale_brightness_percent": self.brightness_percent,
             "upscale_gamma_percent": self.gamma_percent,
             "upscale_color_temperature": self.color_temperature,
+            "upscale_hue_degrees": self.hue_degrees,
+            "upscale_darkness_percent": self.darkness_percent,
+            "upscale_tint_percent": self.tint_percent,
             "apply_edit_profile": self.apply_edit_profile,
             "edit_existing_cover": self.edit_existing_cover,
         })
@@ -2218,6 +2236,7 @@ pub struct ArtistOverviewCacheEntry {
     pub external_url: String,
     pub musicbrainz_id: String,
     pub banner_path: String,
+    pub banner_uses_artist_art: bool,
     pub similar_artists: Vec<(String, String)>,
     pub genres: Vec<String>,
     pub roles: Vec<String>,
@@ -2286,6 +2305,32 @@ pub struct ApplicationState {
     /// User-selected artist image waiting for an explicit Navidrome WRITE.
     /// This is transient UI state and is never treated as an album candidate.
     pub artist_artwork_draft_path: String,
+    /// Independent candidate preview; selecting a banner must not replace it.
+    pub artist_portrait_preview_candidate_index: Option<usize>,
+    pub artist_portrait_preview_path: String,
+    /// The editable pane is independent of the two preview radio buttons.
+    pub artist_preview_focus: String,
+    pub artist_last_individual_focus: String,
+    pub artist_current_radio_active: bool,
+    pub artist_portrait_radio_active: bool,
+    pub artist_banner_radio_active: bool,
+    pub artist_package_overview_enabled: bool,
+    pub artist_theme_art_enabled: bool,
+    pub artist_theme_portrait_preview_path: String,
+    pub artist_theme_banner_preview_path: String,
+    pub artist_portrait_adjustments: AdjustmentState,
+    pub artist_banner_adjustments: AdjustmentState,
+    pub artist_theme_adjustments: AdjustmentState,
+    /// In-memory banner framing preview; never a WRITE Artist Art target.
+    pub artist_banner_preview_path: String,
+    pub artist_banner_source_path: String,
+    pub artist_banner_preview_candidate_index: Option<usize>,
+    pub artist_banner_zoom: f32,
+    pub artist_banner_horizontal: f32,
+    pub artist_banner_vertical: f32,
+    pub artist_portrait_zoom: f32,
+    pub artist_portrait_horizontal: f32,
+    pub artist_portrait_vertical: f32,
     /// Descriptive metadata projected from the currently focused Navidrome
     /// artist. These fields are transient and never become library authority.
     pub artist_overview_biography: String,
@@ -2370,6 +2415,13 @@ pub struct ApplicationState {
     pub musicbrainz_friendly_title: String,
     pub musicbrainz_used_fuzzy_search: bool,
     pub adjustments: AdjustmentState,
+    /// Active image's derived Tint color. Session-only; never written to config or the library.
+    pub tint_palette_source: String,
+    /// Session-only filter intensities, kept separate for album, portrait, banner, and package.
+    pub album_filter_levels: [i32; 14],
+    pub artist_portrait_filter_levels: [i32; 14],
+    pub artist_banner_filter_levels: [i32; 14],
+    pub artist_theme_filter_levels: [i32; 14],
     pub primary_adjustments: Vec<String>,
     pub adjustment_presets: Vec<AdjustmentPreset>,
     pub banner_theme_styles: Vec<BannerThemeStyle>,
@@ -2490,6 +2542,29 @@ impl ApplicationState {
             musicbrainz_missing_cover: HashSet::new(),
             musicbrainz_preview_inflight: HashSet::new(),
             artist_artwork_draft_path: String::new(),
+            artist_portrait_preview_candidate_index: None,
+            artist_portrait_preview_path: String::new(),
+            artist_preview_focus: "portrait".to_string(),
+            artist_last_individual_focus: "portrait".to_string(),
+            artist_current_radio_active: false,
+            artist_portrait_radio_active: false,
+            artist_banner_radio_active: false,
+            artist_package_overview_enabled: false,
+            artist_theme_art_enabled: false,
+            artist_theme_portrait_preview_path: String::new(),
+            artist_theme_banner_preview_path: String::new(),
+            artist_portrait_adjustments: adjustments.clone(),
+            artist_banner_adjustments: adjustments.clone(),
+            artist_theme_adjustments: adjustments.clone(),
+            artist_banner_preview_path: String::new(),
+            artist_banner_source_path: String::new(),
+            artist_banner_preview_candidate_index: None,
+            artist_banner_zoom: 1.0,
+            artist_banner_horizontal: 0.0,
+            artist_banner_vertical: 0.0,
+            artist_portrait_zoom: 1.0,
+            artist_portrait_horizontal: 0.0,
+            artist_portrait_vertical: 0.0,
             artist_overview_biography: String::new(),
             artist_overview_external_url: String::new(),
             artist_overview_musicbrainz_id: String::new(),
@@ -2556,6 +2631,11 @@ impl ApplicationState {
             musicbrainz_friendly_title: String::new(),
             musicbrainz_used_fuzzy_search: false,
             adjustments,
+            tint_palette_source: String::new(),
+            album_filter_levels: [0; 14],
+            artist_portrait_filter_levels: [0; 14],
+            artist_banner_filter_levels: [0; 14],
+            artist_theme_filter_levels: [0; 14],
             primary_adjustments: default_primary_adjustments(),
             adjustment_presets: default_adjustment_presets(),
             banner_theme_styles: default_banner_theme_styles(),
@@ -3551,6 +3631,14 @@ impl ApplicationState {
         self.config.output.upscale_brightness_percent = self.adjustments.brightness_percent;
         self.config.output.upscale_gamma_percent = self.adjustments.gamma_percent;
         self.config.output.upscale_color_temperature = self.adjustments.color_temperature;
+        self.config.output.upscale_hue_degrees = self.adjustments.hue_degrees;
+        self.config.output.upscale_darkness_percent = self.adjustments.darkness_percent;
+        // A color sampled from a photo is part of that edit, never a global
+        // enhancement default for the rest of the library.
+        if self.tint_palette_source.is_empty() {
+            self.config.output.upscale_tint_percent = self.adjustments.tint_percent;
+            self.config.output.upscale_tint_color = self.adjustments.tint_color.clone();
+        }
     }
 
     pub fn set_primary_adjustments(&mut self, requested: &[String]) {
@@ -3563,6 +3651,9 @@ impl ApplicationState {
             "Brightness",
             "Gamma",
             "Color",
+            "Hue",
+            "Darkness",
+            "Tint",
         ];
         let mut normalized = Vec::new();
         for value in requested {
@@ -3578,6 +3669,34 @@ impl ApplicationState {
         }
         if normalized.is_empty() {
             normalized.extend(catalog.into_iter().map(str::to_string));
+        } else if normalized.len() == 8
+            && [
+                "Picture",
+                "Sharpen",
+                "Softness",
+                "Contrast",
+                "Exposure",
+                "Brightness",
+                "Gamma",
+                "Color",
+            ]
+            .iter()
+            .all(|name| {
+                normalized
+                    .iter()
+                    .any(|value| value.eq_ignore_ascii_case(name))
+            })
+        {
+            // A pre-11-slider preference with every legacy control active should
+            // expose the newly added controls without changing custom subsets.
+            for name in ["Hue", "Darkness", "Tint"] {
+                if !normalized
+                    .iter()
+                    .any(|value| value.eq_ignore_ascii_case(name))
+                {
+                    normalized.push(name.to_string());
+                }
+            }
         }
         self.primary_adjustments = normalized;
     }
@@ -3614,6 +3733,9 @@ impl ApplicationState {
             "Brightness",
             "Gamma",
             "Color",
+            "Hue",
+            "Darkness",
+            "Tint",
         ];
         let Some(canonical) = catalog
             .iter()
@@ -3900,10 +4022,23 @@ impl ApplicationState {
                     self.current_album = album.snapshot.title.clone();
                     self.current_cover_path = album.snapshot.cover_path.clone();
                 }
-                self.operation_status = format!(
-                    "Processing {} — {}",
-                    self.current_artist, self.current_album
-                );
+                self.operation_status = if self.library.albums.iter().any(|album| {
+                    album
+                        .snapshot
+                        .path
+                        .eq_ignore_ascii_case(&self.current_album_path)
+                        && album.snapshot.album_mbid.trim().is_empty()
+                }) {
+                    format!(
+                        "Loading COMP tracks for {} — {} · matching recordings and releases…",
+                        self.current_artist, self.current_album
+                    )
+                } else {
+                    format!(
+                        "Processing {} — {}",
+                        self.current_artist, self.current_album
+                    )
+                };
                 self.push_log(format!("Processing {}", self.current_album_path));
             }
             "release_resolved" => {
@@ -3928,7 +4063,7 @@ impl ApplicationState {
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let total = event.get("total").and_then(Value::as_u64).unwrap_or(0);
                 self.operation_status = format!(
-                    "Processing fallback track {index} of {total} · {}",
+                    "Matching COMP track {index} of {total} · {} · checking recording and releases…",
                     Path::new(&track_path)
                         .file_name()
                         .and_then(|value| value.to_str())
@@ -4200,6 +4335,7 @@ impl ApplicationState {
                         artwork_path: string_field(item, "artwork_path"),
                         kind: string_field(item, "kind"),
                         title: string_field(item, "title"),
+                        release_mbid: string_field(item, "release_mbid"),
                     })
                     .filter(|item| !item.artwork_path.is_empty())
                     .collect()
@@ -4214,6 +4350,7 @@ impl ApplicationState {
                     artwork_path: self.musicbrainz_existing_artwork_path.clone(),
                     kind: self.musicbrainz_existing_artwork_kind.clone(),
                     title: self.musicbrainz_existing_artwork_title.clone(),
+                    release_mbid: String::new(),
                 });
         }
         self.selected_musicbrainz_existing =
@@ -4323,27 +4460,35 @@ impl ApplicationState {
                 })
             })
             .collect();
-        let fuzzy_results = self.musicbrainz_used_fuzzy_search;
+        // Rank whole release families by their best match. Sorting editions
+        // independently can split one family into several visible groups.
+        let mut family_rank = HashMap::<String, (u16, bool, u8)>::new();
+        for item in &self.musicbrainz_results {
+            let rank = family_rank
+                .entry(musicbrainz_release_family_id(item))
+                .or_insert((0, false, u8::MAX));
+            rank.0 = rank.0.max(item.score);
+            rank.1 |= musicbrainz_artist_album_preferred(item);
+            rank.2 = rank.2.min(musicbrainz_release_class_rank(item));
+        }
         self.musicbrainz_results.sort_by(|left, right| {
-            musicbrainz_artist_album_preferred(right)
-                .cmp(&musicbrainz_artist_album_preferred(left))
-                .then_with(|| {
-                    if fuzzy_results {
-                        right.score.cmp(&left.score)
-                    } else {
-                        std::cmp::Ordering::Equal
-                    }
-                })
-                .then_with(|| {
-                    musicbrainz_release_class_rank(left).cmp(&musicbrainz_release_class_rank(right))
-                })
+            let left_family = musicbrainz_release_family_id(left);
+            let right_family = musicbrainz_release_family_id(right);
+            let left_rank = family_rank[&left_family];
+            let right_rank = family_rank[&right_family];
+            let left_section = musicbrainz_match_section(left_rank.0, left_rank.1);
+            let right_section = musicbrainz_match_section(right_rank.0, right_rank.1);
+            left_section
+                .cmp(&right_section)
+                .then_with(|| right_rank.0.cmp(&left_rank.0))
+                .then_with(|| right_rank.1.cmp(&left_rank.1))
+                .then_with(|| left_rank.2.cmp(&right_rank.2))
                 .then_with(|| {
                     musicbrainz_release_family_title(left)
                         .cmp(&musicbrainz_release_family_title(right))
                 })
-                .then_with(|| {
-                    musicbrainz_release_family_id(left).cmp(&musicbrainz_release_family_id(right))
-                })
+                .then_with(|| left_family.cmp(&right_family))
+                .then_with(|| right.score.cmp(&left.score))
                 .then_with(|| country_rank(&left.country).cmp(&country_rank(&right.country)))
                 .then_with(|| left.release_date.cmp(&right.release_date))
                 .then_with(|| left.release_mbid.cmp(&right.release_mbid))
@@ -4500,6 +4645,9 @@ fn default_primary_adjustments() -> Vec<String> {
         "Brightness",
         "Gamma",
         "Color",
+        "Hue",
+        "Darkness",
+        "Tint",
     ]
     .into_iter()
     .map(str::to_string)
@@ -4559,7 +4707,7 @@ fn musicbrainz_release_class_rank(item: &MusicBrainzResult) -> u8 {
     }
 }
 
-fn musicbrainz_artist_album_preferred(item: &MusicBrainzResult) -> bool {
+pub fn musicbrainz_artist_album_preferred(item: &MusicBrainzResult) -> bool {
     fn artist_key(value: &str) -> String {
         let compact = value
             .replace('&', "and")
@@ -4573,6 +4721,16 @@ fn musicbrainz_artist_album_preferred(item: &MusicBrainzResult) -> bool {
         || item.release_class.eq_ignore_ascii_case("compilation"))
         && !item.release_artist.trim().is_empty()
         && artist_key(&item.release_artist) == artist_key(&item.recording_artist)
+}
+
+pub fn musicbrainz_match_section(score: u16, artist_priority: bool) -> u8 {
+    if score >= 90 {
+        0
+    } else if artist_priority {
+        1
+    } else {
+        2
+    }
 }
 
 fn musicbrainz_release_family_id(item: &MusicBrainzResult) -> String {
@@ -6869,7 +7027,7 @@ mod tests {
     }
 
     #[test]
-    fn musicbrainz_panel_keeps_same_artist_albums_above_exact_compilations() {
+    fn musicbrainz_panel_puts_top_matches_above_artist_priority() {
         let mut state = application_state();
         state.apply_runtime_event(&json!({
             "event": "musicbrainz_matches",
@@ -6890,9 +7048,34 @@ mod tests {
                 }
             ]
         }));
+        assert_eq!(state.musicbrainz_results[0].release_mbid, "comp");
+    }
+
+    #[test]
+    fn musicbrainz_sections_sort_families_by_match_even_without_fuzzy_search() {
+        let mut state = application_state();
+        state.apply_runtime_event(&json!({
+            "event": "musicbrainz_matches",
+            "used_fuzzy_search": false,
+            "items": [
+                {"index": 1, "recording_artist": "Aaliyah", "release_artist": "Various Artists", "release_class": "soundtrack", "release_title": "Other Exact", "release_mbid": "other-exact", "score": 100},
+                {"index": 2, "recording_artist": "Aaliyah", "release_artist": "Aaliyah", "release_class": "album", "release_title": "Artist Lower", "release_mbid": "artist-lower", "score": 72},
+                {"index": 3, "recording_artist": "Aaliyah", "release_artist": "Various Artists", "release_class": "compilation", "release_title": "Other Lower", "release_mbid": "other-lower", "score": 88},
+                {"index": 4, "recording_artist": "Aaliyah", "release_artist": "Aaliyah", "release_class": "album", "release_title": "Artist Higher", "release_mbid": "artist-higher", "score": 98}
+            ]
+        }));
         assert_eq!(
-            state.musicbrainz_results[0].release_mbid,
-            "db5caf84-8053-4ab8-a7f5-eb1cd8c954d6"
+            state
+                .musicbrainz_results
+                .iter()
+                .map(|item| item.release_mbid.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "other-exact",
+                "artist-higher",
+                "artist-lower",
+                "other-lower"
+            ]
         );
     }
 
@@ -7374,7 +7557,7 @@ mod tests {
     }
 
     #[test]
-    fn all_eight_adjustments_can_be_activated_toggled_and_reordered() {
+    fn all_adjustments_can_be_activated_toggled_and_reordered() {
         let snapshot = MediaSnapshot {
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
@@ -7397,7 +7580,7 @@ mod tests {
         assert!(state.promote_primary_adjustment("Brightness"));
         assert_eq!(state.primary_adjustments.len(), 2);
         state.activate_all_adjustments();
-        assert_eq!(state.primary_adjustments.len(), 8);
+        assert_eq!(state.primary_adjustments.len(), 11);
         assert!(
             state
                 .primary_adjustments

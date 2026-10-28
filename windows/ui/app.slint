@@ -2,7 +2,7 @@ import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } f
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool, queue-locked: bool }
 export struct UiAlbumStatusBullet { color: color, tip: string }
-export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool }
+export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool }
 export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
 export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color, at-baseline: bool }
 export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
@@ -11,9 +11,9 @@ export struct UiSimilarArtistRow { name: string, artwork: image, available: bool
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
 export struct UiCompilationReportRow { album-key: string, album-title: string, path: string, file-name: string, status: string, album-header: bool, expanded: bool }
 export struct UiSourceRow { name: string, label: string, icon: string, count: int, status: string, enabled: bool }
-export struct UiCandidateRow { index: int, source: string, dimensions: string, range-class: string, policy: string, image-type: string, selected: bool, recommended: bool, compared: bool, preview: image }
+export struct UiCandidateRow { index: int, source: string, dimensions: string, range-class: string, policy: string, image-type: string, selected: bool, recommended: bool, compared: bool, portrait-available: bool, portrait-active: bool, banner-available: bool, banner-active: bool, preview: image }
 export struct UiEmbedQueueRow { id: int, label: string, status: string, detail: string, progress: string, cover-resolution: string, preview: image, retryable: bool, preferred-size: bool }
-export struct UiMusicBrainzRow { index: int, title: string, artist: string, detail: string, group: string, group-start: bool, current: bool, visited: bool, selected: bool, score: int }
+export struct UiMusicBrainzRow { index: int, title: string, artist: string, detail: string, section: string, group: string, group-start: bool, current: bool, visited: bool, selected: bool, score: int }
 export struct UiExistingArtworkRow { index: int, title: string, detail: string, source-path: string, preview: image, loaded: bool, selected: bool }
 export struct UiAdjustmentRow { name: string, value: int, minimum: int, maximum: int, unit: string, primary: bool }
 export struct UiCandidateFilterRow { dimension: string, key: string, label: string, count: int, state: string }
@@ -62,7 +62,9 @@ component NeonAction inherits Rectangle {
     in property <bool> danger: false;
     in property <string> tone: "default";
     in property <bool> enabled: true;
+    in property <bool> horizontal-wheel: false;
     callback clicked();
+    callback wheel-scrolled(length);
     height: 38px;
     clip: true;
     border-radius: 6px;
@@ -87,7 +89,7 @@ component NeonAction inherits Rectangle {
         font-weight: root.emphasized ? 700 : 500;
         font-size: root.label-font-size; overflow: elide;
     }
-    action := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => root.clicked(); }
+    action := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => root.clicked(); scroll-event(event) => { if (root.horizontal-wheel) { root.wheel-scrolled(event.delta-y); accept } else { reject } } }
 }
 component LaunchAction inherits Rectangle {
     in property <string> label;
@@ -368,7 +370,7 @@ component ArtistAlbumCard inherits Rectangle {
             clip: true;
             border-radius: 7px;
             border-width: self.mixed-embedded-outline ? 0px : 2px;
-            border-color: root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)));
+            border-color: root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)));
             background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
             if self.mixed-embedded-outline: Rectangle {
                 x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
@@ -391,6 +393,11 @@ component ArtistAlbumCard inherits Rectangle {
                             Rectangle { x: 2px; width: parent.width - 4px; height: parent.height; background: AppTheme.image-surface; border-radius: 5px; clip: true;
                                 Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: contain; visible: !root.preview-mode; }
                                 Image { source: @image-url("../gui/splined-watermark.png"); width: parent.width; height: parent.height; image-fit: contain; visible: root.preview-mode; }
+                                if root.item.comp-loading: Rectangle {
+                                    x: 1px; y: parent.height - 26px; width: parent.width - 2px; height: 25px;
+                                    background: AppTheme.card; border-color: AppTheme.cyan; border-width: 1px; border-radius: 4px;
+                                    Text { text: "MATCHING COMP…"; color: AppTheme.cyan; font-size: 10px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                                }
                             }
                         }
                         Rectangle { vertical-stretch: 1; background: transparent; clip: true;
@@ -771,9 +778,13 @@ component SourceCard inherits Rectangle {
 }
 component CandidateCard inherits Rectangle {
     in property <UiCandidateRow> candidate;
+    in property <bool> artist-mode: false;
     callback chosen(int);
+    callback portrait-preview(int);
+    callback banner-preview(int);
     callback comparison(int);
     callback hovered(int, bool);
+    callback wheel-scrolled(length);
     width: 150px;
     border-radius: 7px;
     border-width: 1px;
@@ -790,10 +801,26 @@ component CandidateCard inherits Rectangle {
             Rectangle { x: 4px; y: parent.height - 24px; width: min(parent.width - 8px, 118px); height: 20px; border-radius: 4px; background: #e20b1731;
                 Text { text: root.candidate.source; color: #ffffff; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
             }
-            if root.candidate.selected: Rectangle { x: 5px; y: 5px; width: 23px; height: 23px; border-radius: 12px; background: AppTheme.green;
+            if root.candidate.selected || root.candidate.recommended: Rectangle { x: (parent.width - 23px) / 2; y: 5px; width: 23px; height: 23px; border-radius: 12px; background: AppTheme.green;
                 Text { text: "●"; color: #00151c; font-size: 20px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
             }
-            candidate-touch := TouchArea { mouse-cursor: pointer; clicked => root.chosen(root.candidate.index); }
+            candidate-touch := TouchArea { mouse-cursor: pointer; clicked => root.chosen(root.candidate.index); scroll-event(event) => { root.wheel-scrolled(event.delta-y); accept } }
+            if root.artist-mode && root.candidate.portrait-available: Rectangle {
+                x: 4px; y: 5px; width: 23px; height: 23px;
+                border-radius: 12px; border-width: 2px;
+                border-color: root.candidate.portrait-active ? AppTheme.green : AppTheme.blue;
+                background: #020913;
+                Text { text: root.candidate.portrait-active ? "●" : ""; color: AppTheme.green; font-size: 17px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { mouse-cursor: pointer; clicked => root.portrait-preview(root.candidate.index); }
+            }
+            if root.artist-mode && root.candidate.banner-available: Rectangle {
+                x: parent.width - 28px; y: 5px; width: 23px; height: 23px;
+                border-radius: 12px; border-width: 2px;
+                border-color: root.candidate.banner-active ? AppTheme.green : AppTheme.magenta;
+                background: #020913;
+                Text { text: root.candidate.banner-active ? "●" : ""; color: AppTheme.green; font-size: 17px; horizontal-alignment: center; vertical-alignment: center; }
+                TouchArea { mouse-cursor: pointer; clicked => root.banner-preview(root.candidate.index); }
+            }
         }
         HorizontalLayout { height: 17px;
             Text { text: root.candidate.recommended ? "Recommended" : root.candidate.range-class; color: root.candidate.recommended ? AppTheme.yellow : AppTheme.secondary-foreground; font-size: 14px; overflow: elide; }
@@ -806,37 +833,253 @@ component CandidateCard inherits Rectangle {
 }
 component AdjustmentTile inherits Rectangle {
     in property <UiAdjustmentRow> adjustment;
+    in property <bool> tint-picker-open: false;
     callback step(string, int);
     callback set-value(string, float);
     callback reset(string);
     callback promote(string);
+    callback wheel-scrolled(length);
+    callback choose-tint-color();
     width: 190px;
-    height: 104px;
-    border-radius: 7px;
-    border-width: 1px;
-    border-color: root.adjustment.primary ? #493575 : #315878;
-    background: AppTheme.card;
-    VerticalLayout { padding: 7px; spacing: 5px;
-        HorizontalLayout { height: 24px; spacing: 5px;
-            Text { text: root.adjustment.primary ? "●" : "○"; color: root.adjustment.primary ? AppTheme.green : AppTheme.danger; font-size: 26px; font-weight: 800; }
-            Text { text: root.adjustment.name; color: AppTheme.foreground; font-weight: 700; font-size: 14px; horizontal-stretch: 1; }
-            if !root.adjustment.primary: InlineGlyph { glyph: "+"; width: 24px; height: 22px; clicked => root.promote(root.adjustment.name); }
-        }
-        slider-tile := Rectangle { height: 22px; background: transparent;
-            Rectangle { y: 7px; width: parent.width; height: 8px; border-radius: 4px; background: AppTheme.recessed-surface;
-                Rectangle { width: max(4px, min(parent.width, parent.width * (root.adjustment.value - root.adjustment.minimum) / max(1, root.adjustment.maximum - root.adjustment.minimum))); height: parent.height; border-radius: 4px; background: @linear-gradient(90deg, AppTheme.cyan, AppTheme.violet, AppTheme.magenta); }
+    height: 88px;
+    border-radius: 9px;
+    border-width: 0px;
+    border-color: transparent;
+    background: transparent;
+    VerticalLayout { padding: 7px; spacing: 4px;
+        HorizontalLayout { height: 18px; spacing: 5px;
+            Text { text: root.adjustment.name; color: AppTheme.foreground; font-weight: 700; font-size: 12px; horizontal-stretch: root.adjustment.name == "Tint" ? 0 : 1; overflow: elide; }
+            if root.adjustment.name == "Tint": Rectangle {
+                width: 14px; height: 14px; border-radius: 7px; border-width: 2px;
+                border-color: root.tint-picker-open ? AppTheme.green : AppTheme.magenta;
+                background: root.tint-picker-open ? AppTheme.green : #05070c;
+                TouchArea { mouse-cursor: pointer; clicked => root.choose-tint-color(); }
             }
+            if root.adjustment.name == "Tint": Rectangle { horizontal-stretch: 1; background: transparent; }
+            if !root.adjustment.primary: InlineGlyph { glyph: "+"; width: 18px; height: 18px; clicked => root.promote(root.adjustment.name); }
+            Text { text: (root.adjustment.value > 0 ? "+" : "") + root.adjustment.value + root.adjustment.unit; color: AppTheme.cyan; font-size: 12px; font-weight: 800; vertical-alignment: center; horizontal-alignment: right; }
+        }
+        slider-tile := Rectangle { height: 20px; background: transparent;
+            Rectangle { y: 6px; width: parent.width; height: 9px; border-radius: 5px; background: AppTheme.recessed-surface;
+                Rectangle { width: max(4px, min(parent.width, parent.width * (root.adjustment.value - root.adjustment.minimum) / max(1, root.adjustment.maximum - root.adjustment.minimum))); height: parent.height; border-radius: 5px; background: root.adjustment.name == "Hue" || root.adjustment.name == "Tint" || root.adjustment.name == "Color" ? @linear-gradient(90deg, #2ec9ed, #7968e8, #e365b8, #f0ad42) : @linear-gradient(90deg, AppTheme.cyan, AppTheme.violet, AppTheme.magenta); }
+            }
+            Rectangle { x: max(0px, min(parent.width - 14px, parent.width * (root.adjustment.value - root.adjustment.minimum) / max(1, root.adjustment.maximum - root.adjustment.minimum) - 7px)); y: 3px; width: 14px; height: 14px; border-radius: 7px; border-width: 2px; border-color: AppTheme.foreground; background: root.adjustment.name == "Hue" || root.adjustment.name == "Tint" ? AppTheme.magenta : AppTheme.cyan; }
             TouchArea {
                 mouse-cursor: pointer;
                 clicked => root.set-value(root.adjustment.name, max(0, min(1, self.mouse-x / slider-tile.width)));
                 moved => { if (self.pressed) { root.set-value(root.adjustment.name, max(0, min(1, self.mouse-x / slider-tile.width))); } }
+                scroll-event(event) => { root.wheel-scrolled(event.delta-y); accept }
             }
         }
-        HorizontalLayout { spacing: 5px;
-            InlineGlyph { glyph: "−"; tone: "magenta"; width: 31px; height: 27px; clicked => root.step(root.adjustment.name, -1); }
-            Text { text: (root.adjustment.value >= 0 ? "+" : "") + root.adjustment.value + root.adjustment.unit; color: AppTheme.foreground; horizontal-stretch: 1; horizontal-alignment: center; vertical-alignment: center; font-weight: 700; }
-            InlineGlyph { glyph: "+"; width: 31px; height: 27px; clicked => root.step(root.adjustment.name, 1); }
-            NeonAction { label: "↻"; width: 31px; height: 27px; clicked => root.reset(root.adjustment.name); }
+        HorizontalLayout { spacing: 5px; height: 20px;
+            InlineGlyph { glyph: "−"; tone: "magenta"; width: 24px; height: 20px; clicked => root.step(root.adjustment.name, -1); }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+            InlineGlyph { glyph: "+"; width: 24px; height: 20px; clicked => root.step(root.adjustment.name, 1); }
+            NeonAction { label: "↻"; width: 26px; height: 20px; label-font-size: 12px; clicked => root.reset(root.adjustment.name); }
+        }
+    }
+}
+component AdjustmentGroup inherits Rectangle {
+    in property <string> title;
+    in property <[UiAdjustmentRow]> rows;
+    in property <length> tile-width: 170px;
+    in property <bool> compact: false;
+    in-out property <bool> tint-picker-open: false;
+    in property <string> tint-color: "#FFB36B";
+    callback step(string, int);
+    callback set-value(string, float);
+    callback reset(string);
+    callback promote(string);
+    callback tint-color-changed(string);
+    callback wheel-scrolled(length);
+    width: root.compact ? 600px : root.rows.length * (root.tile-width + 7px) + 14px;
+    height: 112px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: AppTheme.border;
+    background: AppTheme.card;
+    TouchArea { scroll-event(event) => { root.wheel-scrolled(event.delta-y); accept } }
+    VerticalLayout { padding: 6px; spacing: 2px;
+        Text { text: root.title; color: AppTheme.cyan; font-size: 12px; font-weight: 800; height: 16px; }
+        HorizontalLayout { spacing: 7px;
+            for adjustment in root.rows: AdjustmentTile {
+                width: root.compact ? (600px - 14px - (root.rows.length - 1) * 7px) / root.rows.length : root.tile-width;
+                adjustment: adjustment;
+                tint-picker-open: root.tint-picker-open;
+                step(name, delta) => root.step(name, delta);
+                set-value(name, position) => root.set-value(name, position);
+                reset(name) => root.reset(name);
+                promote(name) => root.promote(name);
+                wheel-scrolled(delta) => root.wheel-scrolled(delta);
+                choose-tint-color() => { root.tint-picker-open = !root.tint-picker-open; }
+            }
+        }
+    }
+    if root.title == "COLOR" && root.tint-picker-open: Rectangle {
+        x: 8px; y: 33px; width: parent.width - 16px; height: 47px;
+        border-radius: 7px; border-width: 1px; border-color: AppTheme.magenta;
+        background: AppTheme.panel-background;
+        HorizontalLayout { padding: 7px; spacing: 6px;
+            Text { text: "Tint"; color: AppTheme.foreground; font-size: 11px; vertical-alignment: center; }
+            for shade[i] in [#FFB36B, #F46D92, #DE78EA, #806FF5, #4E9BFF, #35C9C5, #67D585, #F2D65B]: Rectangle {
+                width: 25px; height: 25px; border-radius: 13px; border-width: 2px;
+                border-color: root.tint-color == (i == 0 ? "#FFB36B" : i == 1 ? "#F46D92" : i == 2 ? "#DE78EA" : i == 3 ? "#806FF5" : i == 4 ? "#4E9BFF" : i == 5 ? "#35C9C5" : i == 6 ? "#67D585" : "#F2D65B") ? AppTheme.green : AppTheme.border;
+                background: shade;
+                TouchArea { mouse-cursor: pointer; clicked => {
+                    root.tint-color-changed(i == 0 ? "#FFB36B" : i == 1 ? "#F46D92" : i == 2 ? "#DE78EA" : i == 3 ? "#806FF5" : i == 4 ? "#4E9BFF" : i == 5 ? "#35C9C5" : i == 6 ? "#67D585" : "#F2D65B");
+                    root.tint-picker-open = false;
+                } }
+            }
+            Text { text: root.tint-color; color: AppTheme.secondary-foreground; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: right; }
+        }
+    }
+}
+
+component EnhancementMenuSlider inherits Rectangle {
+    in property <UiAdjustmentRow> item;
+    in property <bool> active: true;
+    in property <color> tint-palette-color: #808080;
+    in property <bool> tint-palette-ready: false;
+    callback step(string, int);
+    callback set-value(string, float);
+    callback open-default-settings();
+    height: 70px;
+    border-color: AppTheme.border; border-width: 1px; border-radius: 5px;
+    background: AppTheme.card; opacity: root.active ? 1.0 : 0.55;
+    VerticalLayout { padding: 5px; spacing: 3px;
+        HorizontalLayout { height: 24px; spacing: 5px;
+            Text { text: root.item.name; color: AppTheme.foreground; font-size: 12px; font-weight: 700; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+            if root.item.name == "Default": Rectangle { width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: AppTheme.cyan; background: AppTheme.image-surface;
+                TouchArea { mouse-cursor: pointer; clicked => root.open-default-settings(); }
+            }
+            if root.item.name == "Tint": Rectangle { width: 15px; height: 15px; border-radius: 8px; border-width: 2px; border-color: root.tint-palette-ready ? AppTheme.green : AppTheme.border; background: root.tint-palette-color;
+            }
+            Text { text: root.item.value + root.item.unit; color: AppTheme.cyan; font-size: 11px; width: 47px; horizontal-alignment: right; vertical-alignment: center; }
+            NeonAction { label: "−"; width: 23px; height: 23px; enabled: root.active; clicked => root.step(root.item.name, -1); }
+            NeonAction { label: "+"; width: 23px; height: 23px; enabled: root.active; clicked => root.step(root.item.name, 1); }
+        }
+        HorizontalLayout { height: 23px; spacing: 6px;
+            value-track := Rectangle { horizontal-stretch: 1; height: 12px; border-radius: 6px; background: root.item.name == "Tint" ? @linear-gradient(90deg, #777777, root.tint-palette-color, root.tint-palette-color) : AppTheme.recessed-surface;
+                Rectangle { width: max(0px, min(parent.width, parent.width * (root.item.value - root.item.minimum) / max(1, root.item.maximum - root.item.minimum))); height: parent.height; border-radius: 6px; background: root.item.name == "Tint" ? transparent : @linear-gradient(90deg, AppTheme.cyan, AppTheme.violet, AppTheme.magenta); }
+                Rectangle { x: max(0px, min(parent.width - 14px, parent.width * (root.item.value - root.item.minimum) / max(1, root.item.maximum - root.item.minimum) - 7px)); y: -2px; width: 14px; height: 16px; background: AppTheme.foreground; border-radius: 7px; }
+                TouchArea { enabled: root.active; mouse-cursor: pointer;
+                    clicked => root.set-value(root.item.name, max(0.0, min(1.0, self.mouse-x / value-track.width)));
+                    double-clicked => root.set-value(root.item.name, 0.5);
+                    moved => { if (self.pressed) { root.set-value(root.item.name, max(0.0, min(1.0, self.mouse-x / value-track.width))); } }
+                }
+            }
+            NeonAction { label: "↺ Reset"; width: 68px; height: 22px; label-font-size: 10px; enabled: root.active; clicked => root.set-value(root.item.name, 0.5); }
+        }
+    }
+}
+component CompactFitMenuRow inherits Rectangle {
+    in property <string> label;
+    in property <float> zoom: 1.0;
+    in property <float> horizontal: 0.0;
+    in property <float> vertical: 0.0;
+    in property <bool> active: false;
+    callback changed(float, float, float);
+    callback reset();
+    height: 70px; border-width: 1px; border-color: AppTheme.border; border-radius: 5px; background: AppTheme.card;
+    VerticalLayout { padding: 5px; spacing: 3px;
+        HorizontalLayout { height: 23px; spacing: 5px;
+            Text { text: root.label; color: root.active ? AppTheme.foreground : AppTheme.secondary-foreground; font-size: 12px; font-weight: 700; horizontal-stretch: 1; vertical-alignment: center; }
+            Text { text: root.zoom + "×"; color: AppTheme.cyan; font-size: 11px; width: 52px; horizontal-alignment: right; vertical-alignment: center; }
+            NeonAction { label: root.label + " Default"; width: 97px; height: 23px; label-font-size: 10px; tone: "active"; enabled: root.active; clicked => root.reset(); }
+        }
+        HorizontalLayout { height: 23px; spacing: 5px;
+            NeonAction { label: "−"; width: 23px; height: 22px; enabled: root.active; clicked => root.changed(max(1.0, root.zoom - 0.1), root.horizontal, root.vertical); }
+            fit-track := Rectangle { horizontal-stretch: 1; height: 12px; border-radius: 6px; background: AppTheme.recessed-surface;
+                Rectangle { width: max(0px, min(parent.width, parent.width * (root.zoom - 1.0) / 7.0)); height: parent.height; border-radius: 6px; background: @linear-gradient(90deg, AppTheme.cyan, AppTheme.magenta); }
+                Rectangle { x: max(0px, min(parent.width - 15px, parent.width * (root.zoom - 1.0) / 7.0 - 7px)); y: -2px; width: 15px; height: 16px; border-radius: 8px; background: AppTheme.foreground; }
+                TouchArea { enabled: root.active; mouse-cursor: pointer;
+                    clicked => root.changed(1.0 + max(0.0, min(1.0, self.mouse-x / fit-track.width)) * 7.0, root.horizontal, root.vertical);
+                    double-clicked => root.reset();
+                    moved => { if (self.pressed) { root.changed(1.0 + max(0.0, min(1.0, self.mouse-x / fit-track.width)) * 7.0, root.horizontal, root.vertical); } }
+                }
+            }
+            NeonAction { label: "+"; width: 23px; height: 22px; enabled: root.active; clicked => root.changed(min(8.0, root.zoom + 0.1), root.horizontal, root.vertical); }
+        }
+    }
+}
+component EnhancementSidebar inherits Rectangle {
+    in property <bool> expanded: true;
+    in property <bool> artist-mode: false;
+    in property <bool> artist-controls-enabled: true;
+    in property <bool> reset-flash: false;
+    in property <[UiAdjustmentRow]> filter-rows;
+    in property <[UiAdjustmentRow]> advanced-rows;
+    in property <float> portrait-zoom: 1.0;
+    in property <float> portrait-horizontal: 0.0;
+    in property <float> portrait-vertical: 0.0;
+    in property <float> banner-zoom: 1.0;
+    in property <float> banner-horizontal: 0.0;
+    in property <float> banner-vertical: 0.0;
+    in property <bool> portrait-active: false;
+    in property <bool> banner-active: false;
+    in property <color> tint-palette-color: #808080;
+    in property <bool> tint-palette-ready: false;
+    in-out property <int> open-menu: 0;
+    callback toggle-expanded(); callback reset-preview();
+    callback filter-step(string, int); callback filter-set(string, float);
+    callback adjustment-step(string, int); callback adjustment-set(string, float);
+    callback portrait-fit(float, float, float); callback banner-fit(float, float, float);
+    callback reset-portrait-fit(); callback reset-banner-fit(); callback activate-detailed();
+    callback open-default-settings();
+    width: root.expanded ? 185px : 34px;
+    background: AppTheme.panel-background; border-color: AppTheme.border; border-width: 1px; border-radius: 7px;
+    HorizontalLayout { x: 5px; y: 5px; width: parent.width - 10px; height: 28px; spacing: 4px;
+        if root.expanded: Text { text: "Enhancements"; color: AppTheme.foreground; font-size: 15px; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; }
+        if root.expanded: Rectangle { width: 14px; height: 28px; background: transparent;
+            Rectangle { y: 8px; width: 13px; height: 13px; border-radius: 7px; border-width: 2px; border-color: root.reset-flash ? AppTheme.green : AppTheme.secondary-foreground; background: root.reset-flash ? AppTheme.green : AppTheme.image-surface;
+                TouchArea { mouse-cursor: pointer; clicked => root.reset-preview(); }
+            }
+        }
+        ExpansionGlyph { expanded: root.expanded; width: 27px; height: 27px; clicked => root.toggle-expanded(); }
+    }
+    if root.expanded: VerticalLayout { x: 5px; y: 42px; width: parent.width - 10px; spacing: 7px;
+        for label[i] in ["🎛 Filters", "🖼 Fitment", "✨ Advanced"]: Rectangle { height: 39px; border-color: root.open-menu == i + 1 ? AppTheme.cyan : AppTheme.border; border-width: 1px; border-radius: 5px; background: root.open-menu == i + 1 ? AppTheme.card-hover : AppTheme.card;
+            HorizontalLayout { padding-left: 7px; padding-right: 5px;
+                Text { text: label; color: AppTheme.foreground; font-size: 13px; horizontal-stretch: 1; vertical-alignment: center; }
+                Text { text: "+"; color: AppTheme.cyan; font-size: 18px; width: 17px; vertical-alignment: center; }
+            }
+            TouchArea { mouse-cursor: pointer; moved => { root.open-menu = i + 1; } clicked => { root.open-menu = i + 1; } }
+        }
+    }
+    if root.expanded && root.open-menu != 0: Rectangle { x: parent.width - 1px; y: 40px; width: 330px; height: min(root.height - 44px, 480px); border-color: AppTheme.cyan; border-width: 1px; border-radius: 6px; background: AppTheme.panel-background;
+        VerticalLayout { padding: 7px; spacing: 5px;
+            HorizontalLayout { height: 24px; spacing: 5px;
+                Text { text: root.open-menu == 1 ? "Filters" : (root.open-menu == 2 ? (root.artist-mode ? "Artist Imaging Fitment" : "Fitment") : "Detailed"); color: AppTheme.cyan; font-size: 14px; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; }
+                if root.open-menu == 3: NeonAction { label: "Activate All 6"; width: 112px; height: 23px; label-font-size: 10px; tone: "active"; clicked => root.activate-detailed(); }
+                InlineGlyph { glyph: "×"; width: 22px; height: 22px; clicked => { root.open-menu = 0; } }
+            }
+            if root.artist-mode && !root.artist-controls-enabled: Text { text: "Select one Artist radio, or enable Themed Packaging to edit both."; color: AppTheme.secondary-foreground; font-size: 12px; wrap: word-wrap; height: 49px; }
+            if root.open-menu == 1: ScrollView { vertical-stretch: 1; content-width: self.visible-width; mouse-drag-pan-enabled: false;
+                VerticalLayout { spacing: 5px;
+                    for row in root.filter-rows: EnhancementMenuSlider { item: row; active: !root.artist-mode || root.artist-controls-enabled;
+                        step(name, delta) => root.filter-step(name, delta); set-value(name, position) => root.filter-set(name, position);
+                        open-default-settings => root.open-default-settings();
+                    }
+                }
+            }
+            if root.open-menu == 2: ScrollView { vertical-stretch: 1; content-width: self.visible-width; mouse-drag-pan-enabled: false;
+                VerticalLayout { spacing: 5px;
+                    if root.artist-mode: Text { text: "Wheel over the image to zoom; click and drag the image to position it."; color: AppTheme.secondary-foreground; font-size: 12px; wrap: word-wrap; height: 38px; }
+                    if root.artist-mode: CompactFitMenuRow { label: "Artist"; zoom: root.portrait-zoom; horizontal: root.portrait-horizontal; vertical: root.portrait-vertical; active: root.portrait-active && root.artist-controls-enabled; changed(z, x, y) => root.portrait-fit(z, x, y); reset => root.reset-portrait-fit(); }
+                    if root.artist-mode: CompactFitMenuRow { label: "Banner"; zoom: root.banner-zoom; horizontal: root.banner-horizontal; vertical: root.banner-vertical; active: root.banner-active && root.artist-controls-enabled; changed(z, x, y) => root.banner-fit(z, x, y); reset => root.reset-banner-fit(); }
+                    if !root.artist-mode: Text { text: "Artist and banner fitment is available when editing Artist Art."; color: AppTheme.secondary-foreground; font-size: 12px; wrap: word-wrap; height: 55px; }
+                }
+            }
+            if root.open-menu == 3: ScrollView { vertical-stretch: 1; content-width: self.visible-width; mouse-drag-pan-enabled: false;
+                VerticalLayout { spacing: 5px;
+                    for row in root.advanced-rows: EnhancementMenuSlider { item: row; active: !root.artist-mode || root.artist-controls-enabled; tint-palette-color: root.tint-palette-color; tint-palette-ready: root.tint-palette-ready;
+                        step(name, delta) => { if name == "Default" { root.filter-step("Detailed Default", delta); } else { root.adjustment-step(name, delta); } }
+                        set-value(name, position) => { if name == "Default" { root.filter-set("Detailed Default", position); } else { root.adjustment-set(name, position); } }
+                        open-default-settings => root.open-default-settings();
+                    }
+                }
+            }
+            if root.open-menu == 1 || root.open-menu == 3: Text { text: "↓ Scroll for more"; color: AppTheme.cyan; font-size: 11px; font-weight: 700; height: 20px; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
 }
@@ -892,10 +1135,11 @@ component SettingField {
     in property <string> label;
     in-out property <string> value;
     in property <string> hint;
+    callback edited(string);
     height: 34px;
     HorizontalLayout { spacing: 8px;
         Label { text: root.label; width: 230px; }
-        LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; }
+        LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; edited(value) => root.edited(value); }
     }
 }
 component PathSettingField {
@@ -1106,6 +1350,15 @@ export component AppWindow inherits Window {
     in property <[string]> musicbrainz-artist-options: ["All"];
     in property <[string]> musicbrainz-release-type-options: ["All"];
     in property <[UiAdjustmentRow]> adjustment-rows;
+    in property <[UiAdjustmentRow]> detail-adjustment-rows;
+    in property <[UiAdjustmentRow]> light-adjustment-rows;
+    in property <[UiAdjustmentRow]> color-adjustment-rows;
+    in property <[UiAdjustmentRow]> filter-menu-rows;
+    in property <[UiAdjustmentRow]> advanced-menu-rows;
+    in property <color> tint-palette-color: #808080;
+    in property <bool> tint-palette-ready: false;
+    in-out property <bool> enhancement-panel-expanded: true;
+    in-out property <bool> enhancement-reset-active: false;
     in property <int> selected-count;
     in property <string> library-view-label: "Artists";
     in property <string> database-label;
@@ -1146,6 +1399,29 @@ export component AppWindow inherits Window {
     in property <string> artist-overview-external-url;
     in property <string> artist-overview-musicbrainz-id;
     in property <image> artist-overview-banner;
+    in property <image> artist-banner-preview;
+    in property <image> artist-portrait-preview;
+    in property <image> artist-selected-banner-preview;
+    in property <image> artist-selected-portrait-preview;
+    in property <bool> artist-selected-banner-rendered: false;
+    in property <bool> artist-portrait-preview-active: false;
+    in property <bool> artist-portrait-radio-active: false;
+    in property <bool> artist-banner-radio-active: false;
+    in property <bool> artist-current-radio-active: false;
+    in-out property <bool> artist-preview-reset-active: false;
+    in property <bool> artist-package-preview-active: false;
+    in property <bool> artist-theme-art-enabled: false;
+    in property <string> artist-preview-focus: "portrait";
+    in property <bool> artist-banner-preview-active: false;
+    in property <float> artist-banner-zoom: 1.0;
+    in property <float> artist-banner-horizontal: 0.0;
+    in property <float> artist-banner-vertical: 0.0;
+    in property <float> artist-portrait-zoom: 1.0;
+    in property <float> artist-portrait-horizontal: 0.0;
+    in property <float> artist-portrait-vertical: 0.0;
+    in property <bool> artist-banner-preview-rendered: false;
+    in property <bool> artist-portrait-preview-rendered: false;
+    in property <bool> artist-selected-portrait-rendered: false;
     in property <[UiSimilarArtistRow]> artist-overview-similar-artists;
     in property <string> artist-overview-genres;
     in property <string> artist-overview-roles;
@@ -1283,6 +1559,18 @@ export component AppWindow inherits Window {
     in-out property <bool> media-refresh-running: false;
     in-out property <int> help-return-page: 0;
     in-out property <int> workspace-mode: 0;
+    in property <[UiEmbedQueueRow]> embed-panel-jobs;
+    in property <string> embed-panel-current-label;
+    in property <string> embed-panel-current-summary;
+    in property <image> embed-panel-current-preview;
+    in property <string> embed-panel-message;
+    in property <string> embed-panel-status;
+    in property <bool> embed-panel-ready: false;
+    in property <bool> embed-panel-paused: false;
+    in property <bool> embed-panel-pause-all: false;
+    in property <bool> embed-panel-running: false;
+    in property <int> embed-panel-staged-count: 0;
+    in property <int> embed-panel-staging-count: 0;
     in-out property <string> selected-source-name: "All";
     in-out property <bool> setup-required: false;
     in-out property <bool> setup-saving: false;
@@ -1292,6 +1580,9 @@ export component AppWindow inherits Window {
     in-out property <string> settings-music-library;
     in-out property <string> settings-scan-library;
     in-out property <string> settings-database-dir;
+    in-out property <string> settings-shared-artist-art-dir;
+    in-out property <string> storage-cache-usage: "Calculating…";
+    in-out property <string> storage-database-usage: "Calculating…";
     in-out property <string> settings-temporary-cache-dir;
     in-out property <string> settings-log-dir;
     in-out property <string> settings-credential-dir;
@@ -1327,6 +1618,10 @@ export component AppWindow inherits Window {
     in-out property <string> settings-upscale-brightness: "0";
     in-out property <string> settings-upscale-gamma: "0";
     in-out property <string> settings-upscale-color: "0";
+    in-out property <string> settings-upscale-hue: "0";
+    in-out property <string> settings-upscale-darkness: "0";
+    in-out property <string> settings-upscale-tint: "0";
+    in-out property <string> settings-upscale-tint-color: "#FFB36B";
     in-out property <bool> settings-evaluate-final: true;
     in-out property <string> settings-range-min: "1200";
     in-out property <string> settings-range-ideal: "1800";
@@ -1384,6 +1679,8 @@ export component AppWindow inherits Window {
     in-out property <bool> backup-settings: true;
     in-out property <bool> backup-credentials: true;
     in-out property <bool> backup-database: false;
+    in-out property <bool> backup-artist-images: false;
+    in-out property <bool> restore-artist-images: false;
     in-out property <bool> backup-interface: true;
     in-out property <bool> backup-diagnostics: false;
     in property <string> service-status;
@@ -1410,7 +1707,7 @@ export component AppWindow inherits Window {
     callback artist-overview-similar-selected(string);
     callback artist-overview-navigate(int);
     callback open-artist-external(); callback open-artist-musicbrainz();
-    callback browse-artist-artwork(); callback write-artist-artwork();
+    callback browse-artist-artwork(); callback write-artist-artwork(); callback approve-banner();
     callback prepare-artist-embed(); callback confirm-artist-embed-action(bool);
     callback queue-artist-albums();
     callback prepare-compilation-repair(string); callback confirm-compilation-repair-action(bool);
@@ -1425,6 +1722,14 @@ export component AppWindow inherits Window {
     callback select-filtered(); callback select-none(); callback refresh-library(bool);
     callback set-scan-scope(bool); callback set-launch-mode(bool); callback launch(); callback stop();
     callback candidate-selected(int); callback candidate-action(string); callback candidate-source-filter(string);
+    callback candidate-portrait-preview(int);
+    callback artist-preview-pane-selected(string);
+    callback artist-current-package-selected();
+    callback artist-theme-art-toggle();
+    callback candidate-banner-preview(int); callback banner-framing(float, float);
+    callback banner-framing-pan(float, float, float);
+    callback portrait-framing(float, float, float);
+    callback reset-artist-preview();
     callback clear-current-bypass();
     callback candidate-range-filter(string); callback source-action(string, string);
     callback settings-source-step(string, string);
@@ -1437,12 +1742,20 @@ export component AppWindow inherits Window {
     callback fallback-retry(string, string);
     callback musicbrainz-selected(int); callback musicbrainz-hovered(int, bool); callback musicbrainz-use-selected(); callback musicbrainz-use-existing(); callback musicbrainz-existing-selected(int); callback musicbrainz-existing-hovered(int, bool); callback musicbrainz-apply-authority(string, string); callback musicbrainz-leave-unchanged(); callback musicbrainz-filter(string, string); callback open-musicbrainz-page(int); callback open-musicbrainz-info(); callback adjustment-step(string, int); callback adjustment-set(string, float); callback adjustment-reset(string);
     callback primary-adjustment-move(string, int); callback primary-adjustment-promote(string); callback activate-all-adjustments();
+    callback filter-intensity-step(string, int); callback filter-intensity-set(string, float); callback adjustment-relative-set(string, float);
+    callback reset-enhancement-preview(); callback activate-detailed-adjustments();
     callback apply-built-in-filter(int); callback adjustment-preset-pressed(int); callback adjustment-preset-confirmed(int, string);
+    callback request-artist-compilation-repair(); callback launch-artist-compilation-report(bool);
+    callback tint-color-changed(string);
     callback adjustment-preset-name-changed(int, string); callback adjustment-preset-save(int); callback adjustment-preset-apply(int);
     callback settings-preset-select(int);
     callback theme-color-target-changed(string); callback theme-color-picked(float, float, float, bool); callback theme-wheel-range-changed(string, float, bool); callback banner-theme-name-changed(string, string); callback banner-theme-sync-changed(bool); callback banner-theme-random-changed(bool); callback theme-style-reset(string);
     callback set-upscale-preview(bool); callback save-adjustments(); callback edit-existing-cover(bool);
+    callback auto-banner-framing();
     callback prepare-embedded-thumbnail(); callback open-embed-queue();
+    callback show-embed-queue();
+    callback embed-panel-start-staged(); callback embed-panel-set-paused(bool); callback embed-panel-set-pause-all(bool);
+    callback embed-panel-retry(int); callback embed-panel-remove(int); callback embed-panel-remove-all();
     callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory();
     callback browse-backup-directory(); callback browse-restore-file(); callback browse-setup-settings-file(); callback load-setup-settings-file();
     callback refresh-archived-backups();
@@ -1513,6 +1826,7 @@ export component AppWindow inherits Window {
                 PathSettingField { label: "Media Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC music directory"; browse => root.browse-setting-directory("music"); }
                 PathSettingField { label: "Scan Library (optional)"; value <=> root.settings-scan-library; hint: "Defaults to Media Library when blank"; browse => root.browse-setting-directory("scan"); }
                 PathSettingField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Directory that owns splined.db"; browse => root.browse-setting-directory("database"); }
+                PathSettingField { label: "V/A / OST Artist images database *"; value <=> root.settings-shared-artist-art-dir; hint: "Persistent per-artist images for shared album folders"; browse => root.browse-setting-directory("artist-art"); }
                 PathSettingField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; browse => root.browse-setting-directory("temporary"); }
                 PathSettingField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; browse => root.browse-setting-directory("logs"); }
                 PathSettingField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
@@ -1580,7 +1894,7 @@ export component AppWindow inherits Window {
                     select-all => root.select-all();
                     select-filtered => root.select-filtered();
                     select-none => root.select-none();
-                    library-row-activated(key, include-bypassed) => root.library-row-activated(key, include-bypassed);
+                    library-row-activated(key, include-bypassed) => { root.workspace-mode = 0; root.library-row-activated(key, include-bypassed); }
                     library-row-selection-activated(key, include-bypassed) => root.library-row-selection-activated(key, include-bypassed);
                     library-row-expansion-activated(key) => root.library-row-expansion-activated(key);
                     thumbnail-needed(key, kind) => root.library-thumbnail-needed(key, kind);
@@ -1611,10 +1925,10 @@ export component AppWindow inherits Window {
                                 HorizontalLayout { padding: 4px; spacing: 1px;
                                     if !root.media-selector-expanded: ExpansionGlyph { expanded: false; clicked => root.set-region-expanded("media", true); }
                                     WorkspaceButton { label: "Find & Match Artwork"; selected: root.workspace-mode == 0; enabled: !root.intro-active; activated => { root.workspace-mode = 0; } }
-                                    WorkspaceButton { label: "Upscale / Enhance"; selected: root.workspace-mode == 2; enabled: !root.intro-active; activated => { root.workspace-mode = 2; } }
+                                    WorkspaceButton { label: root.artist-artwork-mode ? "Artists Art Enhancements" : "Album Art Enhancements"; selected: root.workspace-mode == 2; enabled: !root.intro-active; activated => { root.workspace-mode = 2; } }
+                                    WorkspaceButton { label: "Album Track Embedding"; selected: root.workspace-mode == 3; enabled: !root.intro-active; activated => { root.workspace-mode = 3; root.show-embed-queue(); } }
                                 }
                             }
-
                             if root.awaiting-musicbrainz: VerticalLayout {
                                 spacing: 6px; vertical-stretch: 1;
                                 HorizontalLayout { height: 42px; spacing: 8px;
@@ -1698,11 +2012,14 @@ export component AppWindow inherits Window {
                                             }
                                         }
                                         HorizontalLayout { height: 34px; spacing: 7px;
-                                            Text { text: "MusicBrainz Results · grouped by release family"; color: AppTheme.foreground; font-size: 15px; font-weight: 700; horizontal-stretch: 1; vertical-alignment: center; }
+                                            Text { text: "MusicBrainz Results · Best Match, Artist, then Other · % by family"; color: AppTheme.foreground; font-size: 15px; font-weight: 700; horizontal-stretch: 1; vertical-alignment: center; }
                                             Text { text: "Artist"; color: AppTheme.secondary-foreground; vertical-alignment: center; }
                                             ComboBox { width: 150px; model: root.musicbrainz-artist-options; current-value <=> root.selected-musicbrainz-artist; selected(value) => root.musicbrainz-filter(value, root.selected-musicbrainz-release-type); }
                                             Text { text: "Release Type"; color: AppTheme.secondary-foreground; vertical-alignment: center; }
                                             ComboBox { width: 130px; model: root.musicbrainz-release-type-options; current-value <=> root.selected-musicbrainz-release-type; selected(value) => root.musicbrainz-filter(root.selected-musicbrainz-artist, value); }
+                                        }
+                                        if root.musicbrainz-existing-rows.length > 0: Rectangle { height: 31px; border-radius: 5px; border-width: 1px; border-color: AppTheme.cyan; background: AppTheme.selected-surface;
+                                            Text { x: 9px; width: parent.width - 18px; height: parent.height; text: "BEST MATCH · Existing artwork and 90–100% releases"; color: AppTheme.cyan; font-size: 14px; font-weight: 900; vertical-alignment: center; }
                                         }
                                         for existing in root.musicbrainz-existing-rows: Rectangle {
                                             height: 76px; border-radius: 7px; border-width: 1px; border-color: existing.selected ? AppTheme.cyan : AppTheme.green;
@@ -1721,10 +2038,13 @@ export component AppWindow inherits Window {
                                         }
                                         VerticalLayout { spacing: 4px;
                                             for result in root.musicbrainz-rows: Rectangle {
-                                                height: (result.group-start ? 91px : 65px) + (result.selected && root.musicbrainz-selected-different ? 80px : 0px) + (result.selected && root.musicbrainz-selected-cover-missing ? 22px : 0px);
+                                                height: (result.group-start ? 91px : 65px) + (result.section != "" ? 35px : 0px) + (result.selected && root.musicbrainz-selected-different ? 80px : 0px) + (result.selected && root.musicbrainz-selected-cover-missing ? 22px : 0px);
                                                 background: transparent;
                                                 VerticalLayout { spacing: 4px;
-                                                    if result.group-start: Text { text: (root.musicbrainz-used-fuzzy-search ? result.score + "% match  ·  " : "") + result.group; color: root.musicbrainz-used-fuzzy-search ? (result.score >= 90 ? AppTheme.green : (result.score >= 75 ? AppTheme.yellow : (result.score >= 60 ? #ff9738 : AppTheme.danger))) : AppTheme.cyan; font-size: 14px; font-weight: 800; height: 22px; vertical-alignment: center; }
+                                                    if result.section != "": Rectangle { height: 31px; border-radius: 5px; border-width: 1px; border-color: AppTheme.cyan; background: AppTheme.selected-surface;
+                                                        Text { x: 9px; width: parent.width - 18px; height: parent.height; text: result.section; color: AppTheme.cyan; font-size: 14px; font-weight: 900; vertical-alignment: center; }
+                                                    }
+                                                    if result.group-start: Text { text: result.score + "% match  ·  " + result.group; color: result.score >= 90 ? AppTheme.green : (result.score >= 75 ? AppTheme.yellow : (result.score >= 60 ? #ff9738 : AppTheme.danger)); font-size: 14px; font-weight: 800; height: 22px; vertical-alignment: center; }
                                                     Rectangle { vertical-stretch: 1; border-radius: 6px;
                                                         background: result.selected ? AppTheme.selected-surface : (result.current ? (AppTheme.chalk ? #34392f : (AppTheme.light ? #b5c9ab : #23301e)) : (result.visited ? (AppTheme.chalk ? #37303a : (AppTheme.light ? #cbb9d2 : #28174f)) : AppTheme.card));
                                                         border-color: result.current ? AppTheme.yellow : (result.selected ? AppTheme.violet : (result.visited ? AppTheme.magenta : AppTheme.border));
@@ -1732,7 +2052,7 @@ export component AppWindow inherits Window {
                                                         HorizontalLayout { padding: 7px; spacing: 8px;
                                                             Text { text: result.selected ? "●" : "○"; color: result.selected ? AppTheme.green : AppTheme.danger; width: 30px; font-size: 26px; vertical-alignment: center; horizontal-alignment: center; }
                                                             VerticalLayout { spacing: 2px;
-                                                                Text { text: result.title; color: root.musicbrainz-used-fuzzy-search ? (result.score >= 90 ? AppTheme.green : (result.score >= 75 ? AppTheme.yellow : (result.score >= 60 ? #ff9738 : AppTheme.danger))) : AppTheme.yellow; font-size: 16px; font-weight: 700; overflow: elide; }
+                                                                Text { text: result.title; color: result.score >= 90 ? AppTheme.green : (result.score >= 75 ? AppTheme.yellow : (result.score >= 60 ? #ff9738 : AppTheme.danger)); font-size: 16px; font-weight: 700; overflow: elide; }
                                                                 Text { text: result.artist + "  ·  " + result.detail; color: AppTheme.secondary-foreground; font-size: 15px; overflow: elide; }
                                                             }
                                                             Text { text: result.current ? "CURRENT" : (result.visited ? "VISITED" : ""); color: result.current ? AppTheme.yellow : AppTheme.magenta; font-size: 14px; font-weight: 800; vertical-alignment: center; }
@@ -1800,13 +2120,21 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                             if root.artist-overview-active: overview-panel := Rectangle {
-                                                property <bool> biography-overflows: root.artist-overview-biography != "" && biography-measure.preferred-height > 88px;
+                                                property <bool> biography-overflows: root.artist-overview-biography != "" && biography-measure.preferred-height > 110px;
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: 10000px; clip: true; border-radius: 8px; background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: 1px;
-                                                Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback" && !root.artist-overview-loading; width: parent.width; height: parent.height; image-fit: cover; opacity: 0.46; }
+                                                Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback"; width: parent.width; height: parent.height; image-fit: cover; opacity: root.artist-banner-preview-active ? 0.18 : 0.46; }
+                                                if root.artist-banner-preview-active: Image {
+                                                    source: root.artist-banner-preview;
+                                                    width: parent.width * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom);
+                                                    height: parent.height * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom);
+                                                    x: (parent.width - self.width) / 2 + parent.width * (root.artist-banner-preview-rendered ? 0.0 : root.artist-banner-horizontal);
+                                                    y: (parent.height - self.height) / 2 + parent.height * (root.artist-banner-preview-rendered ? 0.0 : root.artist-banner-vertical);
+                                                    image-fit: contain; opacity: 0.66;
+                                                }
                                                 Image { source: @image-url("../gui/splined-watermark.png"); visible: root.overview-mode == "Fallback"; width: min(parent.width * 0.7, 640px); height: min(parent.height * 0.7, 480px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; image-fit: contain; opacity: 0.16; }
                                                 Rectangle { width: parent.width; height: parent.height; background: AppTheme.chalk ? @linear-gradient(180deg, #7a1b1d1f 0%, #c81b1d1f 64%, #f41b1d1f 100%) : (AppTheme.light ? @linear-gradient(180deg, #7a28343d 0%, #c828343d 64%, #f428343d 100%) : @linear-gradient(180deg, #7a061426 0%, #c8061426 64%, #f4061426 100%)); }
                                                 biography-measure := Text {
-                                                    visible: false; width: max(1px, artist-scroll.visible-width - 24px); height: self.preferred-height;
+                                                    visible: false; width: max(1px, artist-scroll.visible-width - 152px); height: self.preferred-height;
                                                     text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
                                                     font-size: 18px; wrap: word-wrap;
                                                 }
@@ -1839,16 +2167,23 @@ export component AppWindow inherits Window {
                                                         Text { text: "A COMP fallback album has no MusicBrainz Album ID. Its tracks are reviewed and embedded individually; the folder's cover.* is never used as track artwork. Blue tracks need artwork, purple tracks need thumbnail repair, and green tracks are complete. SPLINED validates Recording and Artist IDs, tries exact MusicBrainz releases first, then artist-restricted title matches when identity is missing or invalid. Choose a track below to review candidates, or LAUNCH COMP to process pending tracks in sequence."; color: AppTheme.foreground; font-size: 14px; wrap: word-wrap; overflow: elide; height: root.fallback-overview-help-expanded ? 118px : 69px; }
                                                         Text { text: root.fallback-overview-help-expanded ? "(less…)" : "(…more)"; color: AppTheme.yellow; font-size: 14px; font-weight: 800; horizontal-alignment: right; height: 20px; TouchArea { mouse-cursor: pointer; clicked => { root.fallback-overview-help-expanded = !root.fallback-overview-help-expanded; } } }
                                                     }
-                                                    if root.overview-mode != "Fallback": HorizontalLayout { height: 108px; vertical-stretch: 0; spacing: 12px; max-width: 10000px;
-                                                        Rectangle { width: 104px; height: 104px; border-radius: 52px; clip: true; background: transparent; border-color: AppTheme.cyan; border-width: 2px;
-                                                            MissingArtistArt { visible: !root.artist-overview-draft-selected && !root.artist-overview-has-artwork; width: parent.width; height: parent.height; }
-                                                            Image { visible: root.artist-overview-draft-selected || root.artist-overview-has-artwork; source: root.artist-overview-draft-selected ? root.artist-overview-draft-artwork : root.artist-overview-artwork; width: parent.width; height: parent.height; image-fit: cover; }
+                                                    if root.overview-mode != "Fallback": HorizontalLayout {
+                                                        height: root.artist-biography-expanded && overview-panel.biography-overflows ? max(145px, biography-measure.preferred-height + 41px) : 145px;
+                                                        vertical-stretch: 0; spacing: 12px; max-width: 10000px;
+                                                        Rectangle { width: root.overview-mode == "Album" ? 116px : 104px; height: 108px; background: transparent;
+                                                            Rectangle { x: root.overview-mode == "Album" ? 8px : 0px; width: 104px; height: 104px; border-radius: 52px; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
+                                                                MissingArtistArt { visible: !root.artist-overview-draft-selected && !root.artist-overview-has-artwork; x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; }
+                                                                Image { visible: root.artist-overview-draft-selected || root.artist-overview-has-artwork; source: root.artist-overview-draft-selected ? root.artist-overview-draft-artwork : root.artist-overview-artwork; x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; image-fit: cover; }
+                                                            }
+                                                            if root.overview-mode == "Album": Rectangle { x: 0px; y: 91px; width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: AppTheme.green; background: root.artist-artwork-mode ? AppTheme.green : AppTheme.image-surface;
+                                                                TouchArea { enabled: !root.operation-busy; mouse-cursor: pointer; clicked => { root.browse-artist-artwork(); root.workspace-mode = 2; } }
+                                                            }
                                                         }
-                                                        VerticalLayout { spacing: 6px; horizontal-stretch: 1; vertical-stretch: 0; max-width: 10000px; alignment: center;
+                                                        VerticalLayout { spacing: 4px; horizontal-stretch: 1; max-width: 10000px; alignment: start;
                                                             HorizontalLayout { height: 30px; spacing: 8px;
                                                                 Heading { text: root.artist-overview-name; font-size: 23px; color: AppTheme.yellow; overflow: elide; }
                                                                 if root.artist-edit-available: Rectangle { width: 64px; background: transparent;
-                                                                    Text { text: "(..edit)"; color: #f5a5c4; font-size: 16px; font-weight: 800; vertical-alignment: center; }
+                                                                    Text { text: "(..edit)"; color: AppTheme.magenta; font-size: 16px; font-weight: 800; vertical-alignment: center; }
                                                                     TouchArea { mouse-cursor: pointer; clicked => {
                                                                         root.artist-edit-name = root.artist-edit-saved-name == "" ? root.artist-overview-name : root.artist-edit-saved-name;
                                                                         root.artist-edit-id = root.artist-edit-saved-id == "" ? root.artist-edit-indexed-id : root.artist-edit-saved-id;
@@ -1856,7 +2191,22 @@ export component AppWindow inherits Window {
                                                                     } }
                                                                 }
                                                             }
-                                                            Text { text: "Artist Biography"; color: AppTheme.magenta; font-size: 16px; font-weight: 800; }
+                                                            biography-area := Rectangle {
+                                                                height: root.artist-biography-expanded && overview-panel.biography-overflows ? biography-measure.preferred-height + 6px : 110px;
+                                                                horizontal-stretch: 1; background: transparent;
+                                                                Text {
+                                                                    width: parent.width; height: parent.height;
+                                                                    text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
+                                                                    color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
+                                                                    font-size: 18px; wrap: word-wrap; overflow: root.artist-biography-expanded ? clip : elide;
+                                                                }
+                                                                if overview-panel.biography-overflows: Rectangle {
+                                                                    x: max(0px, parent.width - 104px); y: max(0px, parent.height - 27px); width: 104px; height: 27px;
+                                                                    background: AppTheme.quiet-surface; opacity: 0.92;
+                                                                    Text { text: root.artist-biography-expanded ? "(less…)" : "… (…more)"; color: AppTheme.yellow; font-size: 17px; font-weight: 800; horizontal-alignment: right; vertical-alignment: center; }
+                                                                    TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                     if root.overview-mode != "Fallback" && root.artist-edit-visible: Rectangle { height: 151px; background: AppTheme.card; border-color: #f5a5c4; border-width: 1px; border-radius: 6px;
@@ -1874,42 +2224,6 @@ export component AppWindow inherits Window {
                                                             HorizontalLayout { height: 28px; alignment: end; spacing: 8px;
                                                                 Button { text: "Cancel"; clicked => { root.artist-edit-visible = false; } }
                                                                 Button { text: "Save & Refresh"; clicked => { root.save-artist-lookup(root.artist-edit-name, root.artist-edit-id); root.artist-edit-visible = false; } }
-                                                            }
-                                                        }
-                                                    }
-                                                    if root.overview-mode != "Fallback" && (!root.artist-biography-expanded || !overview-panel.biography-overflows): VerticalLayout {
-                                                        height: min(88px, biography-measure.preferred-height) + (overview-panel.biography-overflows ? 30px : 0px); horizontal-stretch: 1; spacing: 2px;
-                                                        Text {
-                                                            height: min(88px, biography-measure.preferred-height);
-                                                            text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
-                                                            color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
-                                                            font-size: 18px; wrap: word-wrap; overflow: elide; vertical-stretch: 0;
-                                                        }
-                                                        if overview-panel.biography-overflows: HorizontalLayout {
-                                                            height: 28px; spacing: 0px;
-                                                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                                                            Rectangle {
-                                                                width: 104px; background: transparent;
-                                                                Text { text: "(…more)"; color: AppTheme.yellow; font-size: 17px; font-weight: 800; horizontal-alignment: right; vertical-alignment: center; }
-                                                                TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = true; } }
-                                                            }
-                                                        }
-                                                    }
-                                                    if root.overview-mode != "Fallback" && root.artist-biography-expanded && overview-panel.biography-overflows: VerticalLayout {
-                                                        horizontal-stretch: 1; spacing: 4px;
-                                                        expanded-biography := Text {
-                                                            height: self.preferred-height;
-                                                            text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
-                                                            color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
-                                                            font-size: 18px; wrap: word-wrap; vertical-stretch: 0;
-                                                        }
-                                                        if root.artist-overview-biography != "": HorizontalLayout {
-                                                            height: 28px; spacing: 0px;
-                                                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                                                            Rectangle {
-                                                                width: 92px; background: transparent;
-                                                                Text { text: "(less…)"; color: AppTheme.yellow; font-size: 17px; font-weight: 800; horizontal-alignment: right; vertical-alignment: center; }
-                                                                TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = false; } }
                                                             }
                                                         }
                                                     }
@@ -2048,11 +2362,11 @@ export component AppWindow inherits Window {
                                                             background: AppTheme.chalk ? #dd282b2d : (AppTheme.light ? #ddbbcbd4 : #dd09273b); border-radius: 6px; border-color: AppTheme.cyan; border-width: 2px;
                                                             VerticalLayout { padding: 7px; spacing: 4px;
                                                                 HorizontalLayout { height: 28px; spacing: 7px;
-                                                                    Text { text: "Compilation Validation and MusicBrainz Search Considerations"; color: AppTheme.cyan; font-size: 15px; font-weight: 800; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                                                                     Rectangle { width: 25px; height: 25px; border-radius: 13px; background: root.compilation-help-visible ? AppTheme.selected-surface : AppTheme.recessed-surface; border-color: AppTheme.cyan; border-width: 2px;
                                                                         Text { text: "?"; color: AppTheme.cyan; font-size: 17px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
                                                                         TouchArea { mouse-cursor: pointer; clicked => { root.compilation-help-visible = !root.compilation-help-visible; } }
                                                                     }
+                                                                    Text { text: "Compilation Validation and MusicBrainz Search Considerations"; color: AppTheme.cyan; font-size: 15px; font-weight: 800; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                                                                     if !root.compilation-report-visible && root.confirm-compilation-repair: NeonAction { label: "NO"; width: 48px; height: 28px; clicked => { root.confirm-compilation-repair-action(false); root.confirm-compilation-repair = false; } }
                                                                     NeonAction { label: root.confirm-compilation-repair && !root.compilation-report-visible ? "YES, Repair" : "REPAIR COMP"; width: 130px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode;
                                                                         clicked => {
@@ -2097,6 +2411,18 @@ export component AppWindow inherits Window {
                                                                 Text { text: "COMP Report · " + (root.overview-mode == "Fallback" ? root.current-album : root.artist-overview-name); color: AppTheme.cyan; font-size: 16px; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
                                                                 if root.overview-mode == "Fallback": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.prepare-compilation-repair(root.overview-album-key); }
                                                                 if root.overview-mode == "Fallback": NeonAction { label: "LAUNCH COMP"; width: 112px; height: 28px; tone: "cyan"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.compilation-album-launch(root.overview-album-key, root.include-bypassed); }
+                                                                if root.overview-mode == "Artist": Rectangle { width: 258px; height: 28px; border-radius: 6px; border-width: 1px; border-color: AppTheme.violet; background: AppTheme.card; clip: true;
+                                                                    HorizontalLayout { spacing: 0px;
+                                                                        Rectangle { width: 129px; height: 28px; background: AppTheme.chalk ? #463a50 : #211444;
+                                                                            Text { text: "REPAIR COMP"; color: AppTheme.violet; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode; mouse-cursor: pointer; clicked => root.request-artist-compilation-repair(); }
+                                                                        }
+                                                                        Rectangle { width: 129px; height: 28px; border-width: 1px; border-color: AppTheme.cyan; background: AppTheme.chalk ? #303638 : #082b46;
+                                                                            Text { text: "LAUNCH COMP"; color: AppTheme.cyan; font-size: 12px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode; mouse-cursor: pointer; clicked => root.launch-artist-compilation-report(root.include-bypassed); }
+                                                                        }
+                                                                    }
+                                                                }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "NO"; width: 48px; height: 28px; clicked => { root.confirm-compilation-repair-action(false); root.confirm-compilation-repair = false; } }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "YES, Repair"; width: 130px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => { root.confirm-compilation-repair-action(true); root.confirm-compilation-repair = false; } }
                                                                 if root.overview-mode != "Fallback": NeonAction { label: "Close"; width: 68px; height: 28px; clicked => root.close-compilation-report(); }
@@ -2141,7 +2467,7 @@ export component AppWindow inherits Window {
                                                     Rectangle { vertical-stretch: 1; min-height: 14px; background: transparent; }
                                                     if root.confirm-artist-art-write: Rectangle { height: 48px; border-radius: 6px; background: #3d2810; border-color: #ff9738; border-width: 1px;
                                                         HorizontalLayout { padding-left: 9px; padding-right: 6px; spacing: 7px;
-                                                            Text { text: "Write artist.* into the Artist folder? The chosen art remains available to Navidrome after its next scan."; color: AppTheme.foreground; font-size: 14px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                                                            Text { text: "Save selected Artist image and/or banner into the Artist folder as artist.* and banner.*?"; color: AppTheme.foreground; font-size: 14px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
                                                             NeonAction { label: "WRITE Artist Art"; width: 142px; height: 32px; tone: "orange"; clicked => { root.write-artist-artwork(); root.confirm-artist-art-write = false; } }
                                                             NeonAction { label: "Cancel"; width: 76px; height: 32px; clicked => { root.confirm-artist-art-write = false; } }
                                                         }
@@ -2154,23 +2480,14 @@ export component AppWindow inherits Window {
                                                         }
                                                     }
                                                     if !root.confirm-artist-art-write && !root.confirm-artist-embed: GridLayout { height: 36px; spacing: 7px;
-                                                            NeonAction { row: 0; col: 0; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 10px : 12px; label: root.artist-overview-show-all ? "Use Library Status" : "Show All"; height: 34px; tone: root.artist-overview-show-all ? "yellow" : "cyan"; enabled: root.overview-mode == "Artist"; clicked => root.set-artist-overview-show-all(!root.artist-overview-show-all); }
-                                                            NeonAction { row: 0; col: 1; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 10px : 12px; label: "Navidrome / Apple Info"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-external-url != ""; clicked => root.open-artist-external(); }
-                                                            NeonAction { row: 0; col: 2; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 10px : 12px; label: "MusicBrainz Artist"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-musicbrainz-id != ""; clicked => root.open-artist-musicbrainz(); }
-                                                            NeonAction { row: 0; col: 3; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 10px : 12px; label: "Find Artist Art"; height: 34px; enabled: root.overview-mode != "Fallback" && !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.browse-artist-artwork(); }
-                                                            NeonAction { row: 0; col: 4; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 10px : 12px; label: root.overview-mode == "Fallback" ? "REPAIR COMP" : "REPAIR ALL Comps"; height: 34px; tone: "purple"; enabled: root.overview-mode != "Album" && !root.operation-busy && !root.running && !root.compilation-report-preview-mode; clicked => { if (root.overview-mode == "Fallback") { root.prepare-compilation-repair(root.overview-album-key); } else { root.prepare-artist-compilation-repair(); } } }
-                                                            NeonAction { row: 0; col: 5; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 10px : 12px;
+                                                            NeonAction { row: 0; col: 0; width: (parent.width - 28px) / 5; label-font-size: parent.width < 900px ? 10px : 12px; label: root.artist-overview-show-all ? "Use Library Status" : "Show All"; height: 34px; tone: root.artist-overview-show-all ? "yellow" : "cyan"; enabled: root.overview-mode == "Artist"; clicked => root.set-artist-overview-show-all(!root.artist-overview-show-all); }
+                                                            NeonAction { row: 0; col: 1; width: (parent.width - 28px) / 5; label-font-size: parent.width < 900px ? 10px : 12px; label: "Navidrome / Apple Info"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-external-url != ""; clicked => root.open-artist-external(); }
+                                                            NeonAction { row: 0; col: 2; width: (parent.width - 28px) / 5; label-font-size: parent.width < 900px ? 10px : 12px; label: "MusicBrainz Artist"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-musicbrainz-id != ""; clicked => root.open-artist-musicbrainz(); }
+                                                            NeonAction { row: 0; col: 3; width: (parent.width - 28px) / 5; label-font-size: parent.width < 900px ? 10px : 12px; label: root.overview-mode == "Fallback" ? "REPAIR COMP" : "COMP Report"; height: 34px; tone: "purple"; enabled: root.overview-mode != "Album" && !root.operation-busy && !root.running && !root.compilation-report-preview-mode; clicked => { if (root.overview-mode == "Fallback") { root.prepare-compilation-repair(root.overview-album-key); } else { root.prepare-artist-compilation-repair(); } } }
+                                                            NeonAction { row: 0; col: 4; width: (parent.width - 28px) / 5; label-font-size: parent.width < 900px ? 10px : 12px;
                                                                 label: root.overview-mode == "Album" ? "EMBED Album" : "EMBED All Albums"; height: 34px; tone: "orange";
                                                                 enabled: root.artist-overview-embed-ready && !root.operation-busy && !root.compilation-report-preview-mode;
                                                                 clicked => root.queue-artist-albums();
-                                                            }
-                                                            NeonAction { row: 0; col: 6; width: (parent.width - 42px) / 7; label-font-size: parent.width < 900px ? 10px : 12px;
-                                                                label: "WRITE Artist Art"; height: 34px; tone: "orange";
-                                                                enabled: root.overview-mode != "Fallback" && root.artist-overview-draft-selected && !root.operation-busy && !root.compilation-report-preview-mode;
-                                                                clicked => {
-                                                                    if (root.confirmation-messages-disabled) { root.write-artist-artwork(); }
-                                                                    else { root.confirm-artist-art-write = true; }
-                                                                }
                                                             }
                                                     }
                                                     }
@@ -2194,33 +2511,65 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            if !root.awaiting-musicbrainz && root.workspace-mode == 2: VerticalLayout {
-                                spacing: 6px; vertical-stretch: 1;
-                                HorizontalLayout { height: 49px; spacing: 8px;
-                                    Text { text: "▧"; color: AppTheme.cyan; font-size: 29px; vertical-alignment: center; }
-                                    VerticalLayout { spacing: 0px;
-                                        Heading { text: "Upscale / Enhance Artwork"; font-size: 18px; }
-                                        Text { text: "Increase resolution, enhance detail, and restore artwork quality."; color: AppTheme.secondary-foreground; font-size: 14px; }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                }
-                                HorizontalLayout { spacing: 7px; vertical-stretch: 1;
+                            if !root.awaiting-musicbrainz && root.workspace-mode == 2: Rectangle { vertical-stretch: 1; horizontal-stretch: 1; background: transparent;
+                                HorizontalLayout { spacing: 7px;
+                                    Rectangle { width: root.enhancement-panel-expanded ? 185px : 34px; background: transparent; }
                                     NeonPanel { horizontal-stretch: 1;
                                         VerticalLayout { padding: 9px; spacing: 6px;
                                             HorizontalLayout { height: 29px; spacing: 8px;
                                                 Heading { text: "Enhancement Preview"; font-size: 15px; horizontal-stretch: 1; }
-                                                NeonAction { label: "Activate All 8"; width: 116px; height: 27px; label-font-size: 11px; tone: "active"; clicked => root.activate-all-adjustments(); }
+                                            }                                            if root.artist-artwork-mode: Rectangle { vertical-stretch: 1; background: transparent;
+                                                    Rectangle { x: 0px; y: 0px; width: (parent.width - 6px) / 2; height: (parent.height - 6px) / 2; background: AppTheme.image-surface; border-width: 1px; border-color: AppTheme.border; border-radius: 7px; clip: true;
+                                                        Image { source: root.artist-overview-banner; width: parent.width; height: parent.height; image-fit: cover; opacity: 0.55; }
+                                                        Rectangle { width: min(96px, parent.width / 3); height: self.width; x: 12px; y: 40px; border-radius: self.width / 2; border-width: 2px; border-color: AppTheme.green; background: AppTheme.image-surface; clip: true;
+                                                            Image { source: root.artist-overview-artwork; width: parent.width; height: parent.height; image-fit: cover; }
+                                                        }
+                                                        Text { x: 9px; y: 8px; width: parent.width - 18px; height: 25px; text: "1  CURRENT PACKAGE"; color: AppTheme.green; font-size: 13px; font-weight: 800; }
+                                                        Rectangle { x: parent.width - 33px; y: 7px; width: 23px; height: 23px; border-radius: 12px; border-width: 2px; border-color: AppTheme.green; background: root.artist-current-radio-active ? AppTheme.green : AppTheme.image-surface;
+                                                            TouchArea { mouse-cursor: pointer; clicked => root.artist-current-package-selected(); }
+                                                        }
+                                                    }
+                                                    Rectangle { x: (parent.width + 6px) / 2; y: 0px; width: (parent.width - 6px) / 2; height: (parent.height - 6px) / 2; background: AppTheme.image-surface; border-width: 1px; border-color: root.artist-portrait-radio-active ? AppTheme.green : AppTheme.border; border-radius: 7px; clip: true;
+                                                        Image { source: root.artist-portrait-preview; width: parent.width * (root.artist-portrait-preview-rendered ? 1.0 : root.artist-portrait-zoom); height: parent.height * (root.artist-portrait-preview-rendered ? 1.0 : root.artist-portrait-zoom); x: (parent.width - self.width) / 2 + parent.width * (root.artist-portrait-preview-rendered ? 0.0 : root.artist-portrait-horizontal); y: (parent.height - self.height) / 2 + parent.height * (root.artist-portrait-preview-rendered ? 0.0 : root.artist-portrait-vertical); image-fit: contain; }
+                                                        TouchArea { enabled: root.artist-portrait-radio-active; mouse-cursor: pointer;
+                                                            private property <float> origin-x: 0.0; private property <float> origin-y: 0.0;
+                                                            pointer-event(event) => { if (event.kind == PointerEventKind.down) { self.origin-x = root.artist-portrait-horizontal; self.origin-y = root.artist-portrait-vertical; } }
+                                                            moved => { if (self.pressed) { root.portrait-framing(root.artist-portrait-zoom, self.origin-x + (self.mouse-x - self.pressed-x) / self.width, self.origin-y + (self.mouse-y - self.pressed-y) / self.height); } }
+                                                            scroll-event(event) => { root.portrait-framing(event.delta-y > 0px ? max(1.0, root.artist-portrait-zoom - 0.1) : min(8.0, root.artist-portrait-zoom + 0.1), root.artist-portrait-horizontal, root.artist-portrait-vertical); accept }
+                                                        }
+                                                        Text { x: 9px; y: 8px; width: parent.width - 18px; height: 25px; text: "2  ARTIST IMAGE"; color: root.artist-portrait-preview-active ? AppTheme.green : AppTheme.blue; font-size: 13px; font-weight: 800; }
+                                                        Rectangle { x: parent.width - 33px; y: 7px; width: 23px; height: 23px; border-radius: 12px; border-width: 2px; border-color: root.artist-portrait-radio-active ? AppTheme.green : AppTheme.blue; background: AppTheme.image-surface;
+                                                            if root.artist-portrait-radio-active: Rectangle { x: 5px; y: 5px; width: 9px; height: 9px; border-radius: 5px; background: AppTheme.green; }
+                                                            TouchArea { mouse-cursor: pointer; clicked => root.artist-preview-pane-selected("portrait"); }
+                                                        }
+                                                    }
+                                                Rectangle { x: 0px; y: (parent.height + 6px) / 2; width: parent.width; height: (parent.height - 6px) / 2; background: AppTheme.image-surface; border-width: 1px; border-color: root.artist-banner-radio-active ? AppTheme.green : AppTheme.border; border-radius: 7px; clip: true;
+                                                    Rectangle { width: min(parent.width, parent.height * 1400 / 600); height: self.width * 600 / 1400; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; background: AppTheme.image-surface; clip: true;
+                                                        Image { source: root.artist-banner-preview; width: parent.width * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom); height: parent.height * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom); x: (parent.width - self.width) / 2 + parent.width * (root.artist-banner-preview-rendered ? 0.0 : root.artist-banner-horizontal); y: (parent.height - self.height) / 2 + parent.height * (root.artist-banner-preview-rendered ? 0.0 : root.artist-banner-vertical); image-fit: contain; }
+                                                    }
+                                                    TouchArea { enabled: root.artist-banner-radio-active; mouse-cursor: pointer;
+                                                        private property <float> origin-x: 0.0; private property <float> origin-y: 0.0;
+                                                        pointer-event(event) => { if (event.kind == PointerEventKind.down) { self.origin-x = root.artist-banner-horizontal; self.origin-y = root.artist-banner-vertical; } }
+                                                        moved => { if (self.pressed) { root.banner-framing-pan(root.artist-banner-zoom, self.origin-x + (self.mouse-x - self.pressed-x) / self.width, self.origin-y + (self.mouse-y - self.pressed-y) / self.height); } }
+                                                        scroll-event(event) => { root.banner-framing-pan(event.delta-y > 0px ? max(1.0, root.artist-banner-zoom - 0.1) : min(8.0, root.artist-banner-zoom + 0.1), root.artist-banner-horizontal, root.artist-banner-vertical); accept }
+                                                    }
+                                                    Text { x: 9px; y: 8px; width: parent.width - 18px; height: 25px; text: "3  ARTIST BANNER"; color: root.artist-banner-preview-active ? AppTheme.green : AppTheme.magenta; font-size: 13px; font-weight: 800; }
+                                                    Rectangle { x: parent.width - 33px; y: 7px; width: 23px; height: 23px; border-radius: 12px; border-width: 2px; border-color: root.artist-banner-radio-active ? AppTheme.green : AppTheme.magenta; background: AppTheme.image-surface;
+                                                        if root.artist-banner-radio-active: Rectangle { x: 5px; y: 5px; width: 9px; height: 9px; border-radius: 5px; background: AppTheme.green; }
+                                                        TouchArea { mouse-cursor: pointer; clicked => root.artist-preview-pane-selected("banner"); }
+                                                    }
+                                                }
                                             }
-                                            HorizontalLayout { spacing: 0px; vertical-stretch: 1;
-                                                Rectangle { width: root.enhancement-original-width * 1px; background: #020913; clip: true;
+                                            if !root.artist-artwork-mode: HorizontalLayout { spacing: 0px; vertical-stretch: 1;
+                                                Rectangle { width: root.enhancement-original-width * 1px; background: AppTheme.image-surface; clip: true;
                                                     Rectangle {
-                                                        width: min(parent.width, parent.height); height: self.width;
+                                                        width: root.artist-banner-preview-active ? parent.width : min(parent.width, parent.height); height: root.artist-banner-preview-active ? parent.height : self.width;
                                                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                                                        background: #01050a;
+                                                        background: AppTheme.image-surface;
                                                         Image { source: root.original-preview; width: parent.width; height: parent.height; image-fit: contain; }
                                                     }
-                                                    Rectangle { x: 8px; y: 8px; width: 116px; height: 32px; border-radius: 6px; background: #c90b1527;
-                                                        Text { text: "ORIGINAL"; color: #eef8ff; horizontal-alignment: center; vertical-alignment: center; font-size: 14px; font-weight: 800; }
+                                                    Rectangle { x: 8px; y: 8px; width: 116px; height: 32px; border-radius: 6px; background: AppTheme.card;
+                                                        Text { text: "ORIGINAL"; color: AppTheme.foreground; horizontal-alignment: center; vertical-alignment: center; font-size: 14px; font-weight: 800; }
                                                     }
                                                 }
                                                 ColumnSplitter {
@@ -2229,55 +2578,96 @@ export component AppWindow inherits Window {
                                                     maximum: max(180, root.width / 1px - root.media-pane-width - root.artwork-pane-width - 230);
                                                     resized(value) => { root.enhancement-original-width = value; }
                                                 }
-                                                Rectangle { horizontal-stretch: 1; background: #020913; clip: true;
+                                                Rectangle { horizontal-stretch: 1; background: AppTheme.image-surface; clip: true;
                                                     Rectangle {
-                                                        width: min(parent.width, parent.height); height: self.width;
+                                                        // Show the unrendered source in the same 1400:600 frame
+                                                        // used by the enhancement renderer. Otherwise touching a
+                                                        // slider appears to reset the banner's chosen fitment.
+                                                        width: root.artist-banner-preview-active ? min(parent.width, parent.height * 1400 / 600) : min(parent.width, parent.height);
+                                                        height: root.artist-banner-preview-active ? self.width * 600 / 1400 : self.width;
                                                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                                                        background: #01050a;
-                                                        Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
+                                                        background: AppTheme.image-surface; clip: true;
+                                                        if root.artist-banner-preview-active: Image {
+                                                            source: root.artist-banner-preview-rendered ? root.current-preview : root.artist-banner-preview;
+                                                            width: parent.width * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom);
+                                                            height: parent.height * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom);
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2 + parent.height * (root.artist-banner-preview-rendered ? 0.0 : root.artist-banner-vertical);
+                                                            image-fit: contain;
+                                                        }
+                                                        if !root.artist-banner-preview-active: Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
                                                     }
                                                     Text { x: max(9px, parent.width - 194px); y: 9px; width: min(184px, parent.width - self.x - 9px); height: 30px; text: root.upscale-preview-only ? "UPSCALE PREVIEW" : "UPSCALE"; color: AppTheme.danger; font-size: 16px; font-weight: 900; vertical-alignment: center; horizontal-alignment: right; overflow: elide; }
                                                 }
                                             }
-                                            if root.enhancement-help-visible: Rectangle { height: 100px; border-width: 1px; border-radius: 6px; border-color: AppTheme.cyan; background: AppTheme.card;
-                                                VerticalLayout { padding: 9px; spacing: 3px;
-                                                    Text { text: "Enhancement Sliders · Quick Filters"; color: AppTheme.cyan; font-weight: 800; font-size: 15px; }
-                                                    Text { text: "Five built-in filters change the eight sliders for a preview; they do not write artwork. Default and Custom A–D are your saved slider sets. Select a saved set to Apply it or confirm Overwrite with current values. Rename and review saved sets in Settings → Enhancement. WRITE/EMBED remains a separate action."; color: AppTheme.foreground; font-size: 13px; wrap: word-wrap; }
-                                                }
-                                            }
-                                            NeonPanel { height: root.preset-confirm-index >= 0 ? 250px : 214px;
-                                                VerticalLayout { padding: 7px; spacing: 5px;
-                                                    HorizontalLayout { height: 30px;
-                                            NeonAction { label: "?"; width: 28px; height: 27px; tone: "cyan"; clicked => { root.enhancement-help-visible = !root.enhancement-help-visible; } }
-                                                        Heading { text: "Enhancement Sliders"; font-size: 15px; horizontal-stretch: 1; }
-                                                    }
-                                                    HorizontalLayout { spacing: 8px; vertical-stretch: 1;
-                                                    ScrollView { horizontal-stretch: 1;
-                                                        HorizontalLayout { spacing: 7px;
-                                                            for adjustment in root.adjustment-rows: AdjustmentTile {
-                                                                width: 190px;
-                                                                adjustment: adjustment;
-                                                                step(name, delta) => root.adjustment-step(name, delta);
-                                                                set-value(name, position) => root.adjustment-set(name, position);
-                                                                reset(name) => root.adjustment-reset(name);
-                                                                promote(name) => root.primary-adjustment-promote(name);
-                                                            }
-                                                        }
-                                                    }
-                                                    GridLayout { width: 246px; spacing: 4px;
-                                                        for label[i] in ["Clarity", "Soft Portrait", "Warmth", "Vivid", "Low Light"]: NeonAction { row: i; col: 0; width: 116px; height: 27px; label: label; label-font-size: 12px; tone: "cyan"; clicked => root.apply-built-in-filter(i); }
-                                                        for preset in root.adjustment-preset-rows: NeonAction { row: preset.index; col: 1; width: 116px; height: 27px; label: preset.name; label-font-size: 12px; tone: preset.saved ? "active" : "purple"; clicked => root.adjustment-preset-pressed(preset.index); }
-                                                    }
-                                                    }
-                                                    if root.preset-confirm-index >= 0: HorizontalLayout { height: 28px; spacing: 5px;
-                                                        Text { text: "Saved filter: Apply or replace with current sliders?"; color: AppTheme.cyan; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; }
-                                                        NeonAction { label: "Apply"; width: 62px; height: 26px; label-font-size: 11px; clicked => { root.adjustment-preset-confirmed(root.preset-confirm-index, "apply"); root.preset-confirm-index = -1; } }
-                                                        NeonAction { label: "Overwrite"; width: 75px; height: 26px; label-font-size: 11px; tone: "orange"; clicked => { root.adjustment-preset-confirmed(root.preset-confirm-index, "overwrite"); root.preset-confirm-index = -1; } }
-                                                        NeonAction { label: "Cancel"; width: 62px; height: 26px; label-font-size: 11px; clicked => { root.preset-confirm-index = -1; } }
-                                                    }
+                                        }
+                                    }
+                                }
+                                EnhancementSidebar {
+                                    x: 0px; y: 0px; height: parent.height;
+                                    expanded: root.enhancement-panel-expanded;
+                                    artist-mode: root.artist-artwork-mode;
+                                    artist-controls-enabled: !root.artist-artwork-mode || root.artist-current-radio-active || root.artist-theme-art-enabled || (root.artist-portrait-radio-active != root.artist-banner-radio-active);
+                                    reset-flash: root.enhancement-reset-active;
+                                    filter-rows: root.filter-menu-rows; advanced-rows: root.advanced-menu-rows;
+                                    portrait-zoom: root.artist-portrait-zoom; portrait-horizontal: root.artist-portrait-horizontal; portrait-vertical: root.artist-portrait-vertical;
+                                    banner-zoom: root.artist-banner-zoom; banner-horizontal: root.artist-banner-horizontal; banner-vertical: root.artist-banner-vertical;
+                                    portrait-active: root.artist-portrait-radio-active; banner-active: root.artist-banner-radio-active;
+                                    tint-palette-color: root.tint-palette-color;
+                                    tint-palette-ready: root.tint-palette-ready;
+                                    toggle-expanded => { root.enhancement-panel-expanded = !root.enhancement-panel-expanded; }
+                                    reset-preview => { root.enhancement-reset-active = true; root.reset-enhancement-preview(); }
+                                    filter-step(name, delta) => root.filter-intensity-step(name, delta);
+                                    filter-set(name, position) => root.filter-intensity-set(name, position);
+                                    adjustment-step(name, delta) => root.adjustment-step(name, delta * (name == "Hue" || name == "Tint" ? 5 : 2));
+                                    adjustment-set(name, position) => root.adjustment-relative-set(name, position);
+                                    portrait-fit(z, x, y) => root.portrait-framing(z, x, y);
+                                    banner-fit(z, x, y) => root.banner-framing-pan(z, x, y);
+                                    reset-portrait-fit => root.portrait-framing(1.0, 0.0, 0.0);
+                                    reset-banner-fit => root.auto-banner-framing();
+                                    activate-detailed => root.activate-detailed-adjustments();
+                                    open-default-settings => { root.settings-section = "Enhancement"; root.page-index = 1; }
+                                }
+                            }
+                            if !root.awaiting-musicbrainz && root.workspace-mode == 3: NeonPanel { vertical-stretch: 1; horizontal-stretch: 1;
+                                VerticalLayout { padding: 12px; spacing: 9px;
+                                    Heading { text: "Album Track Embedding"; font-size: 18px; height: 30px; }
+                                    Text { text: "Stage album covers, then embed prepared thumbnails into tracks. The queue stays available while you move between artists and albums."; color: AppTheme.secondary-foreground; font-size: 13px; height: 28px; wrap: word-wrap; }
+                                    Rectangle { height: 92px; background: AppTheme.card; border-color: AppTheme.border; border-width: 1px; border-radius: 7px;
+                                        HorizontalLayout { padding: 9px; spacing: 12px;
+                                            VerticalLayout { spacing: 5px; horizontal-stretch: 1;
+                                                Text { text: "Embedding queue"; color: AppTheme.foreground; font-size: 15px; font-weight: 700; }
+                                                Text { text: "Albums appear here after EMBED Batch is pressed. Starting a staged job replaces its track thumbnails."; color: AppTheme.secondary-foreground; font-size: 12px; overflow: elide; }
+                                                HorizontalLayout { spacing: 7px; height: 31px;
+                                                    NeonAction { label: root.embed-panel-staging-count > 0 ? "Staging " + root.embed-panel-staging-count + "…" : "Start All Staged"; width: 145px; height: 29px; label-font-size: 11px; tone: "green"; enabled: root.embed-panel-staging-count == 0 && root.embed-panel-staged-count > 0; clicked => root.embed-panel-start-staged(); }
+                                                    NeonAction { label: root.embed-panel-paused ? "Resume Queue" : "Pause After Album"; width: 145px; height: 29px; label-font-size: 11px; clicked => root.embed-panel-set-paused(!root.embed-panel-paused); }
+                                                    NeonAction { label: root.embed-panel-pause-all ? "Resume All Albums" : "Pause ALL Albums"; width: 145px; height: 29px; label-font-size: 11px; clicked => root.embed-panel-set-pause-all(!root.embed-panel-pause-all); }
                                                 }
                                             }
                                         }
+                                    }
+                                    if root.embed-panel-message != "": Text { text: root.embed-panel-message; color: AppTheme.yellow; font-size: 13px; height: 30px; wrap: word-wrap; }
+                                    Text { text: root.embed-panel-jobs.length == 0 ? "No albums staged yet." : "Staged, queued and recent albums"; color: AppTheme.cyan; font-size: 15px; font-weight: 700; height: 24px; }
+                                    ScrollView { vertical-stretch: 1; content-width: self.visible-width;
+                                        VerticalLayout { spacing: 7px;
+                                            for job in root.embed-panel-jobs: Rectangle { height: 96px; border-radius: 6px; border-width: 2px; background: job.status == "running" ? #33251d : (job.status == "failed" ? #321c24 : (job.status == "done" ? #18352c : (job.preferred-size ? #1b2935 : #2b2041))); border-color: job.status == "running" ? #ff7935 : (job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.preferred-size ? AppTheme.blue : AppTheme.violet)));
+                                                HorizontalLayout { padding: 7px; spacing: 9px;
+                                                    Text { text: "●"; width: 16px; color: job.status == "running" ? #ff7935 : (job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); font-size: 20px; vertical-alignment: center; }
+                                                    Image { source: job.preview; width: 72px; height: 72px; image-fit: contain; }
+                                                    VerticalLayout { spacing: 3px; horizontal-stretch: 1;
+                                                        Text { text: job.label; color: AppTheme.foreground; font-size: 14px; font-weight: 700; overflow: elide; }
+                                                        Text { text: job.status + " · " + job.progress; color: job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.status == "running" ? #ff7935 : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); font-size: 12px; }
+                                                        Text { text: job.cover-resolution + " · " + job.detail; color: AppTheme.secondary-foreground; font-size: 11px; overflow: elide; }
+                                                    }
+                                                    NeonAction { label: "Retry"; width: 65px; height: 28px; enabled: job.retryable; clicked => root.embed-panel-retry(job.id); }
+                                                    NeonAction { label: "Remove"; width: 75px; height: 28px; enabled: job.status != "running"; clicked => root.embed-panel-remove(job.id); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    HorizontalLayout { height: 30px; spacing: 8px;
+                                        Text { text: root.embed-panel-status; color: AppTheme.cyan; font-size: 13px; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                                        NeonAction { label: "Remove All"; width: 110px; height: 28px; tone: "red"; enabled: !root.embed-panel-running && root.embed-panel-staging-count == 0; clicked => root.embed-panel-remove-all(); }
                                     }
                                 }
                             }
@@ -2285,7 +2675,7 @@ export component AppWindow inherits Window {
                         }
 
                         ColumnSplitter {
-                            visible: root.show-artwork; width: root.show-artwork ? 6px : 0px; reverse: true;
+                            visible: root.show-artwork && root.workspace-mode != 3; width: self.visible ? 6px : 0px; reverse: true;
                             position: root.artwork-pane-width; minimum: 280;
                             maximum: max(280, root.width / 1px - root.media-pane-width - 600);
                             resized(value) => {
@@ -2295,8 +2685,8 @@ export component AppWindow inherits Window {
                         }
 
                         NeonPanel {
-                            width: root.show-artwork ? root.artwork-pane-width * 1px : 0px;
-                            visible: root.show-artwork;
+                            width: root.show-artwork && root.workspace-mode != 3 ? root.artwork-pane-width * 1px : 0px;
+                            visible: root.show-artwork && root.workspace-mode != 3;
                             VerticalLayout { padding: 10px; spacing: 8px;
                                 HorizontalLayout { height: 35px; spacing: 7px;
                                     Text { text: "●"; color: AppTheme.green; font-size: 20px; vertical-alignment: center; }
@@ -2313,29 +2703,62 @@ export component AppWindow inherits Window {
                                         x: (parent.width - self.width) / 2;
                                         y: (parent.height - self.height) / 2;
                                         background: root.artwork-placeholder-visible ? transparent : #01050a;
-                                        visible: !root.artwork-placeholder-visible && !root.selected-artwork-artist-overview;
+                                        visible: !root.artist-artwork-mode && !root.artwork-placeholder-visible && !root.selected-artwork-artist-overview;
                                         Image { source: root.animated-webp-active ? root.animated-webp-frame : root.current-preview; width: parent.width; height: parent.height; image-fit: contain; }
                                     }
-                                    if root.selected-artwork-artist-overview && root.selected-artwork-artist-has-art: Image {
+                                    if root.artist-artwork-mode && root.artist-banner-radio-active: Rectangle {
+                                        width: min(max(0px, parent.width - 20px), max(0px, parent.height - 20px) * 1400 / 600);
+                                        height: self.width * 600 / 1400;
+                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                        background: #01050a; clip: true;
+                                        Image { source: root.artist-selected-banner-preview; width: parent.width * (root.artist-selected-banner-rendered ? 1.0 : root.artist-banner-zoom); height: parent.height * (root.artist-selected-banner-rendered ? 1.0 : root.artist-banner-zoom); x: (parent.width - self.width) / 2 + parent.width * (root.artist-selected-banner-rendered ? 0.0 : root.artist-banner-horizontal); y: (parent.height - self.height) / 2 + parent.height * (root.artist-selected-banner-rendered ? 0.0 : root.artist-banner-vertical); image-fit: contain; }
+                                        TouchArea { enabled: root.artist-banner-radio-active; mouse-cursor: pointer;
+                                            private property <float> origin-x: 0.0; private property <float> origin-y: 0.0;
+                                            pointer-event(event) => { if (event.kind == PointerEventKind.down) { self.origin-x = root.artist-banner-horizontal; self.origin-y = root.artist-banner-vertical; } }
+                                            moved => { if (self.pressed) { root.banner-framing-pan(root.artist-banner-zoom, self.origin-x + (self.mouse-x - self.pressed-x) / self.width, self.origin-y + (self.mouse-y - self.pressed-y) / self.height); } }
+                                            scroll-event(event) => { root.banner-framing-pan(event.delta-y > 0px ? max(1.0, root.artist-banner-zoom - 0.1) : min(8.0, root.artist-banner-zoom + 0.1), root.artist-banner-horizontal, root.artist-banner-vertical); accept }
+                                        }
+                                    }
+                                    if root.artist-artwork-mode && root.artist-portrait-radio-active: Rectangle {
+                                        width: root.artist-package-preview-active ? min(130px, parent.width / 3) : min(parent.width - 30px, parent.height - 30px);
+                                        height: self.width; x: root.artist-package-preview-active ? 18px : (parent.width - self.width) / 2;
+                                        y: root.artist-package-preview-active ? (parent.height - self.height) / 2 : (parent.height - self.height) / 2;
+                                        border-radius: root.artist-package-preview-active ? self.width / 2 : 5px;
+                                        border-width: root.artist-package-preview-active ? 2px : 0px;
+                                        border-color: AppTheme.green; background: #020913; clip: true;
+                                        Image { source: root.artist-selected-portrait-preview; width: parent.width * (root.artist-selected-portrait-rendered ? 1.0 : root.artist-portrait-zoom); height: parent.height * (root.artist-selected-portrait-rendered ? 1.0 : root.artist-portrait-zoom); x: (parent.width - self.width) / 2 + parent.width * (root.artist-selected-portrait-rendered ? 0.0 : root.artist-portrait-horizontal); y: (parent.height - self.height) / 2 + parent.height * (root.artist-selected-portrait-rendered ? 0.0 : root.artist-portrait-vertical); image-fit: contain; }
+                                        TouchArea { enabled: root.artist-portrait-radio-active; mouse-cursor: pointer;
+                                            private property <float> origin-x: 0.0; private property <float> origin-y: 0.0;
+                                            pointer-event(event) => { if (event.kind == PointerEventKind.down) { self.origin-x = root.artist-portrait-horizontal; self.origin-y = root.artist-portrait-vertical; } }
+                                            moved => { if (self.pressed) { root.portrait-framing(root.artist-portrait-zoom, self.origin-x + (self.mouse-x - self.pressed-x) / self.width, self.origin-y + (self.mouse-y - self.pressed-y) / self.height); } }
+                                            scroll-event(event) => { root.portrait-framing(event.delta-y > 0px ? max(1.0, root.artist-portrait-zoom - 0.1) : min(8.0, root.artist-portrait-zoom + 0.1), root.artist-portrait-horizontal, root.artist-portrait-vertical); accept }
+                                        }
+                                    }
+                                    if root.artist-package-preview-active: Rectangle { x: 8px; y: 8px; width: 153px; height: 26px; border-radius: 5px; background: root.artist-theme-art-enabled ? #d1061f1b : AppTheme.card; border-width: 1px; border-color: root.artist-theme-art-enabled ? AppTheme.green : AppTheme.border;
+                                        Text { text: "Themed Packaging"; color: root.artist-theme-art-enabled ? AppTheme.green : AppTheme.secondary-foreground; font-size: 11px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                                        TouchArea { mouse-cursor: pointer; clicked => root.artist-theme-art-toggle(); }
+                                    }
+                                    if root.selected-artwork-artist-overview && root.selected-artwork-artist-has-art && !root.artist-banner-preview-active && !root.artist-artwork-mode: Image {
                                         source: root.selected-artwork-artist-art;
                                         width: min(max(0px, parent.width - 40px), max(0px, parent.height - 40px));
                                         height: self.width;
                                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                         image-fit: contain;
                                     }
-                                    if root.selected-artwork-artist-overview && !root.selected-artwork-artist-has-art: Rectangle {
+                                    if root.selected-artwork-artist-overview && !root.selected-artwork-artist-has-art && !root.artist-banner-preview-active && !root.artist-artwork-mode: Rectangle {
                                         width: min(220px, min(max(0px, parent.width - 40px), max(0px, parent.height - 40px)));
                                         height: self.width; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                         border-radius: self.width / 2; border-color: AppTheme.violet; border-width: 3px; background: #090720; clip: true;
                                         MissingArtistArt { width: parent.width; height: parent.height; }
                                     }
-                                    if root.artwork-placeholder-visible: Image {
+                                    if root.artwork-placeholder-visible && !root.artist-artwork-mode: Image {
                                         source: @image-url("../gui/set-your-imagination-tv.jpg");
                                         width: min(max(0px, parent.width - 40px), max(0px, parent.height - 40px));
                                         height: self.width;
                                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                                         image-fit: contain;
                                     }
+                                    if root.artist-artwork-mode && root.workspace-mode == 0: Rectangle { width: parent.width; height: parent.height; background: AppTheme.image-surface; }
                                     if root.selected-artwork-is-sample && !root.artwork-placeholder-visible && !root.selected-artwork-artist-overview: Rectangle { x: (parent.width - 150px) / 2; y: 12px; width: 150px; height: 38px; border-radius: 6px; background: #d51d21;
                                         Text { text: "SAMPLE"; color: #ffffff; font-size: 21px; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
                                     }
@@ -2351,14 +2774,15 @@ export component AppWindow inherits Window {
                                 HorizontalLayout { height: 38px; spacing: 6px;
                                     NeonAction {
                                         label: "Upscale Preview"; width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: "active"; emphasized: true;
-                                        enabled: !root.operation-busy && !root.intro-active && !root.selected-artwork-queue-locked && !root.compilation-report-preview-mode && root.current-path != "";
+                                        enabled: !root.operation-busy && !root.intro-active && !root.selected-artwork-queue-locked && !root.compilation-report-preview-mode && (!root.artist-artwork-mode || root.workspace-mode == 2) && (root.artist-artwork-mode ? (root.artist-portrait-radio-active || root.artist-banner-radio-active) : root.current-path != "") && (!root.artist-artwork-mode || root.artist-theme-art-enabled || (root.artist-portrait-radio-active != root.artist-banner-radio-active));
                                         clicked => root.set-upscale-preview(true);
                                     }
                                     NeonAction {
-                                        label: root.selected-artwork-write-label; width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: root.selected-artwork-comp ? "embed" : (root.selected-artwork-existing ? "green" : "orange");
-                                        enabled: !root.operation-busy && !root.intro-active && !root.compilation-report-preview-mode && root.selected-artwork-write-ready;
+                                        label: root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback" ? "Artist Art" : root.selected-artwork-write-label; width: (parent.width - 12px) / 3; height: 34px; label-font-size: parent.width < 340px ? 10px : 13px; tone: root.selected-artwork-comp ? "embed" : (root.selected-artwork-existing ? "green" : "orange");
+                                        enabled: !root.operation-busy && !root.intro-active && !root.compilation-report-preview-mode && (!root.artist-artwork-mode || root.workspace-mode == 2) && (root.selected-artwork-write-ready || (root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback"));
                                         clicked => {
-                                            if (root.artist-artwork-mode) {
+                                            if (root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback") { root.browse-artist-artwork(); root.workspace-mode = 2; }
+                                            else if (root.artist-artwork-mode) {
                                                 if (root.confirmation-messages-disabled) { root.write-artist-artwork(); }
                                                 else { root.confirm-artist-art-write = true; }
                                             }
@@ -2410,8 +2834,8 @@ export component AppWindow inherits Window {
                     }
 
                     RowSplitter {
-                        visible: !root.awaiting-musicbrainz;
-                        height: root.awaiting-musicbrainz ? 0px : 6px;
+                        visible: !root.awaiting-musicbrainz && root.workspace-mode != 3;
+                        height: self.visible ? 6px : 0px;
                         reverse: true; position: root.activity-pane-height; minimum: 150;
                         maximum: max(150, root.height / 1px - 390);
                         resized(value) => {
@@ -2420,7 +2844,7 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    NeonPanel { visible: !root.awaiting-musicbrainz; height: root.awaiting-musicbrainz ? 0px : root.activity-pane-height * 1px; clip: true;
+                    NeonPanel { visible: !root.awaiting-musicbrainz && root.workspace-mode != 3; height: self.visible ? root.activity-pane-height * 1px : 0px; clip: true;
                         Image { source: @image-url("../gui/splined-watermark.png"); width: min(420px, parent.width * 0.34); height: parent.height - 12px; x: max(0px, parent.width - self.width - 18px); y: 6px; image-fit: contain; opacity: 0.10; }
                         VerticalLayout { padding: 8px; spacing: 6px;
                             HorizontalLayout { height: 29px; spacing: 4px;
@@ -2437,12 +2861,12 @@ export component AppWindow inherits Window {
                                         else { root.launch(); }
                                     }
                                 }
-                                Rectangle { width: 94px; height: 27px; border-radius: 6px; background: AppTheme.chalk ? #403343 : (AppTheme.light ? #c9b9cf : #28174f); border-color: AppTheme.magenta; border-width: 1px;
-                                    Text { x: 3px; width: parent.width - 6px; height: parent.height; text: root.candidate-rows.length + " candidates"; color: AppTheme.magenta; horizontal-alignment: center; vertical-alignment: center; font-size: 11px; font-weight: 800; overflow: elide; }
+                                Rectangle { width: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? 164px : 94px; height: 27px; border-radius: 6px; background: AppTheme.chalk ? #403343 : (AppTheme.light ? #c9b9cf : #28174f); border-color: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? AppTheme.cyan : AppTheme.magenta; border-width: 1px;
+                                    Text { x: 3px; width: parent.width - 6px; height: parent.height; text: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? "● Loading Artist Art…" : (root.artist-artwork-mode && root.workspace-mode == 0 ? 0 : root.candidate-rows.length) + " candidates"; color: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? AppTheme.cyan : AppTheme.magenta; horizontal-alignment: center; vertical-alignment: center; font-size: 11px; font-weight: 800; overflow: elide; }
                                 }
                                 Rectangle { width: 24px; background: transparent; }
                                 NeonAction { label: "MusicBrainz"; width: 92px; height: 27px; label-font-size: 12px; enabled: !root.intro-active && !root.compilation-report-preview-mode; clicked => root.candidate-action(root.musicbrainz-back-available ? "back_to_musicbrainz" : "retry_musicbrainz"); }
-                                NeonAction { label: "Compare"; width: 75px; height: 27px; label-font-size: 12px; enabled: root.candidate-rows.length > 0 && !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.open-candidate-compare(); }
+                                NeonAction { label: "Compare"; width: 75px; height: 27px; label-font-size: 12px; enabled: root.candidate-rows.length > 0 && (!root.artist-artwork-mode || root.workspace-mode == 2) && !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.open-candidate-compare(); }
                                 NeonAction {
                                     label: root.current-album-bypassed ? "Bypassed" : "Bypass";
                                     width: 75px; height: 27px; label-font-size: 12px;
@@ -2473,17 +2897,23 @@ export component AppWindow inherits Window {
                                     NeonAction { label: "Cancel"; width: 76px; height: 32px; clicked => { root.confirm-sample-apply = false; } }
                                 }
                             }
-                            ScrollView { vertical-stretch: 1;
+                            candidate-artwork-scroll := ScrollView { vertical-stretch: 1; content-width: max(self.visible-width, root.candidate-rows.length * 158px); mouse-drag-pan-enabled: true;
+                                TouchArea { width: candidate-artwork-scroll.content-width; height: candidate-artwork-scroll.visible-height; scroll-event(event) => { candidate-artwork-scroll.content-x = max(candidate-artwork-scroll.visible-width - candidate-artwork-scroll.content-width, min(0px, candidate-artwork-scroll.content-x + event.delta-y)); accept } }
                                 HorizontalLayout { spacing: 8px;
                                     for candidate in root.candidate-rows: CandidateCard {
-                                        height: 128px; candidate: candidate;
+                                        visible: !root.artist-artwork-mode || root.workspace-mode == 2;
+                                        width: self.visible ? 150px : 0px;
+                                        height: 128px; candidate: candidate; artist-mode: root.artist-artwork-mode;
                                         chosen(index) => root.candidate-selected(index);
+                                        portrait-preview(index) => root.candidate-portrait-preview(index);
+                                        banner-preview(index) => root.candidate-banner-preview(index);
                                         comparison(index) => root.candidate-compare-toggle(index);
                                         hovered(index, active) => root.candidate-hover(index, active);
+                                        wheel-scrolled(delta) => { candidate-artwork-scroll.content-x = max(candidate-artwork-scroll.visible-width - candidate-artwork-scroll.content-width, min(0px, candidate-artwork-scroll.content-x + delta)); }
                                     }
-                                    if root.candidate-rows.length == 0: Rectangle {
+                                    if root.candidate-rows.length == 0 || (root.artist-artwork-mode && root.workspace-mode == 0): Rectangle {
                                         width: 250px; background: transparent;
-                                        Text { text: "No candidate artwork is loaded for the current album."; color: AppTheme.secondary-foreground; vertical-alignment: center; horizontal-alignment: center; wrap: word-wrap; }
+                                        Text { text: root.artist-artwork-mode && root.workspace-mode == 0 ? "Artist Art preview is paused. Return to Artists Art Enhancements to continue." : "No candidate artwork is loaded for the current album."; color: AppTheme.secondary-foreground; vertical-alignment: center; horizontal-alignment: center; wrap: word-wrap; }
                                     }
                                 }
                             }
@@ -2545,6 +2975,17 @@ export component AppWindow inherits Window {
                                 Heading { text: "Confirmation Messages"; height: 27px; }
                                 SettingToggle { label: "Disable Intro Message"; value <=> root.settings-disable-intro-message; }
                                 SettingToggle { label: "Disable Confirmation Messages"; value <=> root.settings-disable-confirmation-messages; }
+                                Rectangle { height: 1px; background: AppTheme.border; }
+                                Heading { text: "SPLINED File Storage"; height: 27px; color: AppTheme.cyan; }
+                                HorizontalLayout { height: 28px; spacing: 8px;
+                                    Text { text: "Temporary _cache"; color: AppTheme.foreground; font-size: 14px; horizontal-stretch: 1; vertical-alignment: center; }
+                                    Text { text: root.storage-cache-usage; color: AppTheme.yellow; font-size: 14px; vertical-alignment: center; }
+                                }
+                                HorizontalLayout { height: 28px; spacing: 8px;
+                                    Text { text: "SQLite .db + journal"; color: AppTheme.foreground; font-size: 14px; horizontal-stretch: 1; vertical-alignment: center; }
+                                    Text { text: root.storage-database-usage; color: AppTheme.yellow; font-size: 14px; vertical-alignment: center; }
+                                }
+                                SettingsHelpTip { summary: "What is included in storage usage?"; detail: "Temporary _cache includes disposable candidate and preview files. SQLite shows splined.db and its current journal sidecars. The values refresh while this page is open; cache cleanup removes only stale SPLINED-generated artwork, not the database, saved samples, or Artist images database."; }
                                 Rectangle { height: 1px; background: AppTheme.border; }
                                 Heading { text: "Runtime"; height: 27px; color: AppTheme.violet; }
                                 Text { text: root.version-label; color: AppTheme.foreground; font-size: 14px; height: 24px; }
@@ -2661,6 +3102,12 @@ export component AppWindow inherits Window {
                                 SettingField { label: "Square Round-To"; value <=> root.settings-square-round-to; hint: "16"; }
                                 SettingField { label: "Embedded Thumbnail Preference"; value <=> root.settings-embedded-thumbnail-size; hint: "1200 px (300–4000)"; }
                                 SettingsHelpTip { summary: "Will the thumbnail preference shrink cover.*?"; detail: "No. The preference sets the square embedded image size for audio tracks; the saved cover.* retains its full resolution. EMBED Batch writes a chosen or upscaled cover.* while staging; track embedding waits for Start All Staged."; }
+                                Heading { text: "V/A / OST Artist images database"; height: 27px; }
+                                HorizontalLayout { height: 36px; spacing: 7px;
+                                    Label { text: "Artist Images Directory"; width: 230px; }
+                                    LineEdit { text <=> root.settings-shared-artist-art-dir; placeholder-text: "Persistent Artist Art for shared album folders"; horizontal-stretch: 1; }
+                                    Button { text: "Browse…"; clicked => root.browse-setting-directory("artist-art"); }
+                                }
                                 Heading { text: "Sample Images"; height: 27px; }
                                 SettingToggle { label: "Write Sample Cover Images"; value <=> root.settings-sample-write; }
                                 if root.settings-sample-write: HorizontalLayout { height: 36px; spacing: 7px;
@@ -2783,15 +3230,26 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
-                                ScrollView { height: 116px;
-                                    HorizontalLayout { spacing: 7px;
-                                        for adjustment in root.adjustment-rows: AdjustmentTile {
-                                            width: 138px;
-                                            adjustment: adjustment;
-                                            step(name, delta) => root.adjustment-step(name, delta);
-                                            set-value(name, position) => root.adjustment-set(name, position);
-                                            reset(name) => root.adjustment-reset(name);
-                                            promote(name) => root.primary-adjustment-promote(name);
+                                HorizontalLayout { height: 26px; spacing: 6px;
+                                    Text { text: "Adjustment categories · wheel or drag ↔"; color: AppTheme.cyan; font-size: 12px; horizontal-stretch: 1; vertical-alignment: center; }
+                                    NeonAction { label: "‹"; width: 28px; height: 24px; clicked => { settings-slider-scroll.content-x = min(0px, settings-slider-scroll.content-x + 340px); } }
+                                    NeonAction { label: "›"; width: 28px; height: 24px; clicked => { settings-slider-scroll.content-x = max(settings-slider-scroll.visible-width - settings-slider-scroll.content-width, settings-slider-scroll.content-x - 340px); } }
+                                }
+                                settings-slider-scroll := ScrollView { height: 116px; content-width: max(self.visible-width, 1800px); mouse-drag-pan-enabled: true;
+                                    TouchArea { width: settings-slider-scroll.content-width; height: settings-slider-scroll.visible-height; scroll-event(event) => { settings-slider-scroll.content-x = max(settings-slider-scroll.visible-width - settings-slider-scroll.content-width, min(0px, settings-slider-scroll.content-x + event.delta-y)); accept } }
+                                    HorizontalLayout { spacing: 8px;
+                                        AdjustmentGroup { title: "DETAIL"; rows: root.detail-adjustment-rows; tile-width: 138px;
+                                            step(name, delta) => root.adjustment-step(name, delta); set-value(name, position) => root.adjustment-set(name, position); reset(name) => root.adjustment-reset(name); promote(name) => root.primary-adjustment-promote(name);
+                                            wheel-scrolled(delta) => { settings-slider-scroll.content-x = max(settings-slider-scroll.visible-width - settings-slider-scroll.content-width, min(0px, settings-slider-scroll.content-x + delta)); }
+                                        }
+                                        AdjustmentGroup { title: "LIGHT"; rows: root.light-adjustment-rows; tile-width: 138px;
+                                            step(name, delta) => root.adjustment-step(name, delta); set-value(name, position) => root.adjustment-set(name, position); reset(name) => root.adjustment-reset(name); promote(name) => root.primary-adjustment-promote(name);
+                                            wheel-scrolled(delta) => { settings-slider-scroll.content-x = max(settings-slider-scroll.visible-width - settings-slider-scroll.content-width, min(0px, settings-slider-scroll.content-x + delta)); }
+                                        }
+                                        AdjustmentGroup { title: "COLOR"; rows: root.color-adjustment-rows; tile-width: 138px; tint-color: root.settings-upscale-tint-color;
+                                            step(name, delta) => root.adjustment-step(name, delta); set-value(name, position) => root.adjustment-set(name, position); reset(name) => root.adjustment-reset(name); promote(name) => root.primary-adjustment-promote(name);
+                                            tint-color-changed(color) => root.tint-color-changed(color);
+                                            wheel-scrolled(delta) => { settings-slider-scroll.content-x = max(settings-slider-scroll.visible-width - settings-slider-scroll.content-width, min(0px, settings-slider-scroll.content-x + delta)); }
                                         }
                                     }
                                 }
@@ -2803,7 +3261,8 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 if root.settings-enhancement-changed && root.settings-preview-preset-index == 0: Text { text: "Default Enhancement Values Changed; Use Suggested Slider Values to Return to the Safe Starting Point."; color: AppTheme.yellow; font-size: 14px; wrap: word-wrap; height: 42px; }
-                                SettingsHelpTip { summary: "Do adjustment controls write artwork now?"; detail: "No. The current/adjusted preview and the eight image controls change enhancement defaults. Artwork files are changed only by a later explicit WRITE or EMBED action in the workspace."; }
+                                SettingsHelpTip { summary: "Do adjustment controls write artwork now?"; detail: "No. The current/adjusted preview and the eleven image controls change enhancement defaults. Artwork files are changed only by a later explicit WRITE or EMBED action in the workspace."; }
+                                SettingField { label: "Tint Color (#RRGGBB)"; value <=> root.settings-upscale-tint-color; hint: "#FFB36B"; edited(value) => root.tint-color-changed(value); }
                                 SettingsHelpTip { summary: "What do these resolution values mean?"; detail: "Minimum, Ideal, Maximum, and Ladder classify candidate image quality. Upscale below Ideal permits an optional larger preview, bounded by Max upscale percent. Existing native art above Ideal is preserved instead of being reduced."; }
                                 Heading { text: "Resolution Range"; height: 27px; }
                                 SettingField { label: "Minimum"; value <=> root.settings-range-min; hint: "1200"; }
@@ -2977,6 +3436,7 @@ export component AppWindow inherits Window {
                         }
                         if root.backup-selected-type == "SQLite Database": VerticalLayout { spacing: 7px;
                             Heading { text: "SQLite Database Snapshot (.sqlite)"; height: 28px; }
+                            RadioToggle { label: "Include V/A / OST Artist images (manual and scheduled)"; checked <=> root.backup-artist-images; }
                             NeonAction { label: "Back Up SQLite .sqlite"; height: 36px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-database", root.backup-directory, "", false, false, true, false, false); }
                         }
                         if root.backup-selected-type == "Diagnostic Summary" && root.settings-advanced-visible: VerticalLayout { spacing: 7px;
@@ -2998,6 +3458,7 @@ export component AppWindow inherits Window {
                         RadioToggle { label: "Provider Credentials"; checked <=> root.backup-credentials; }
                         RadioToggle { label: "Interface Settings"; checked <=> root.backup-interface; }
                         RadioToggle { label: "SQLite Database Backup"; checked <=> root.backup-database; }
+                        RadioToggle { label: "Restore V/A / OST Artist images from .sqlite when present"; checked <=> root.restore-artist-images; }
                         NeonAction { label: "Restore Selected File"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("restore", root.restore-path, root.backup-password, root.backup-settings, root.backup-credentials, root.backup-database, root.backup-interface, false); }
                         HorizontalLayout { height: 38px; spacing: 8px;
                             Label { text: "Archived Backup File"; width: 210px; }

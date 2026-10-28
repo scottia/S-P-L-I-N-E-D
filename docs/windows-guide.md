@@ -152,19 +152,39 @@ never treated as physical pixels.
 
 - **Find & Match Artwork** combines the Config v5 source strip, tri-state
   filters, adjustment preview, Selected Artwork, and the candidate tray.
-- **Edit Artwork** provides candidate source selection, a current-image canvas,
-  all eight independently selectable adjustment controls, an **Activate All 8**
-  action, and the existing preview/apply actions.
-- **Upscale / Enhance** presents the real configured upscaler and opens the
-  dedicated Custom Upscale before/after window; no model names or capabilities
-  are invented by the interface.
+- **Album Art Enhancements** shows the original and adjusted album cover beside
+  a collapsible **Enhancements** sidebar. Its Filters, Fitment, and Advanced
+  menus open over the preview rather than shifting its layout. Filter intensity
+  sliders can be dragged and adjusted repeatedly; the Advanced menu contains
+  the detailed sliders, including Hue and Tint. Tint derives its starting color
+  from the current image and does not persist a palette per photo. Settings →
+  Enhancement accepts an exact `#RRGGBB` color for saved defaults and presets.
+- **Artists Art Enhancements** opens from the orange **Artist Art** action. The
+  central preview shows the saved artist image and banner in pane 1, the proposed
+  artist image in pane 2, and the proposed banner in pane 3. Pane 4 is the
+  existing **Selected Artwork** area on the right. The radios on panes 2 and 3
+  select separate adjustments; selecting both shows the combined package, with
+  **Themed Packaging** enabling combined edits. Pane 1's green radio loads the
+  saved package for editing. Fitment provides independent artist and banner
+  zoom and positioning, including mouse wheel zoom and image dragging. The
+  **Enhancements** sidebar occupies the left edge without shortening the panes.
+- **Album Track Embedding** shows only explicitly staged and recent jobs. A
+  current review album does not appear as a pending job merely because this tab
+  is open. **EMBED Batch** stages the selected album; **Start All Staged** is
+  available only when staged jobs exist.
 - **Advanced** keeps source-priority controls, launch/stop actions, and live
   Scan Activity and Decisions accessible without displacing the main artwork
   workflow.
 
 MusicBrainz Results temporarily occupies the central mode workspace while an
-authority decision is pending. Results are grouped by release family and Album
-Artist. Hovering a release previews its Cover Art Archive front image; clicking
+authority decision is pending. Verified **Existing** artwork always appears in
+Best Match, followed there by 90–100% release families; lower-scoring
+same-artist albums and other releases have separate sections. Each release
+family appears in one section, sorted by match percentage within it. A
+MusicBrainz release already offered as Existing is not repeated in the two
+lower sections when its release ID is known; a Best Match release remains
+available as an alternative artwork source. Every family shows its percentage, including
+exact-ID results. Hovering a release previews its Cover Art Archive front image; clicking
 locks the preview. The selected preview can be written directly from **Selected
 Artwork**, with or without an **Upscale Preview**, without first returning to
 the Candidate Artwork strip. The collapsible **Advanced IDs** editor exposes
@@ -196,6 +216,33 @@ the prior album focus. The Albums tab uses the Artist Overview layout for the
 selected album's artist, but shows only that album card; its EMBED Album action
 stages only that album.
 
+Artist Art is tied to an indexed Artist, not to a Soundtracks or Various Artists
+folder. SPLINED still uses `artist.*` in a dedicated Artist folder. For an
+Artist whose albums live in a shared folder, it saves a distinct image per
+stable Artist ID under the configured **V/A / OST Artist images database** directory
+(or uses a name key when no single Artist ID is available). It ignores any old
+shared-folder `artist.*` for these Artists without deleting that file. Albums with
+no MusicBrainz Album ID remain COMP fallback and do not participate in this
+Artist Art lookup; their artwork stays track-scoped. Setup requires this persistent
+directory; existing configurations default to `<scan.cache_dir>/artist-art`.
+In Backup / Restore, select **Include V/A / OST Artist images** for manual and
+scheduled SQLite snapshots. The resulting single `.sqlite` file includes managed
+per-artist portrait and approved background PNGs; the live database does not. Select the separate image option
+when restoring if those images should be restored too. A `.spl` Settings Archive
+does not contain the images. Back up the directory separately if you leave the
+SQLite image option off.
+Artist Art search shows blue portrait and pink banner preview radios on
+candidates. Saved local `artist.*` and `banner.*` appear as Local candidates
+for reuse or replacement. **WRITE Artist Art** writes the selected portrait,
+banner, or both as `artist.*` and `banner.*`; the saved package remains unchanged
+until the write succeeds. For Artists represented only in a shared
+Soundtracks/Various Artists folder, the write uses Artist-specific files in the
+configured V/A / OST Artist images directory. A saved local banner takes
+precedence over Navidrome; without one, the Navidrome banner or a landscape
+expansion of artist art remains the overview fallback. Changing `artist.*` does
+not replace a dedicated banner. Back up a dedicated Artist folder's `banner.*`
+along with its other media files.
+
 In Artist Overview, a fallback compilation has a vertical **COMPILED** strip. Its
 matching tracks appear directly beneath the selected card. **LAUNCH** can
 process that artist's pending compilation tracks in sequence; changing the
@@ -217,7 +264,7 @@ track verifies green, the list closes after two seconds; a new selection takes
 priority. Tracks still missing art or failing verification keep their album's
 attention state and the list remains available.
 
-**REPAIR ALL Comps**, beside **EMBED Artist Art**, compiles an Artist-wide
+**COMP Report** in the Artist Overview footer compiles an Artist-wide
 two-column COMP report (Album and full Track File name) with green completed,
 purple off-preference/unreadable, and blue unfinished rows. Duplicate album
 names are grouped under album headers: click a header to collapse or expand
@@ -226,7 +273,10 @@ track, even in a large report; the lower workspace pane need not be resized.
 Click a track row to review artwork with the normal candidate and MusicBrainz
 flow. Only completed tracks with readable off-size embedded art are offered
 for one Artist-wide bulk repair, with a separate confirmation before any audio
-file changes. The report has a **Close** button, and a report opened while the
+file changes. The split control beside the report title has **REPAIR COMP**
+for purple-only thumbnail repair and **LAUNCH COMP** to repair purple tracks
+first, then process any tracks still non-green across the Artist's reported albums; green
+tracks are skipped. The report has a **Close** button, and a report opened while the
 Artist still needs work closes automatically two seconds after every shown
 album verifies complete. A new selection during those two seconds keeps the
 report open. The circled help tip in the COMP heading explains the repair
@@ -407,7 +457,10 @@ Artists tag—is the fallback criterion.
 For an Artist Album, **EMBED Batch** immediately stages its selected cover or
 Upscale Preview, saving the full-resolution `cover.jpg`/`cover.png` first. No
 separate **WRITE Cover** press is needed. **Start All Staged** then embeds the
-prepared preference-sized thumbnail in every supported track. **EMBED All
+prepared preference-sized thumbnail in every supported track, replacing
+existing embedded thumbnails even if they are already at the preferred size.
+The embedding tab lists only jobs actually staged by an embedding action;
+opening it does not stage the current review album. **EMBED All
 Albums** stages the focused artist's visible regular and featured albums with
 saved covers; COMP fallback albums remain track-scoped. Queue rows use purple
 for staged, orange for running, red for failure, green for completed, and blue
@@ -419,22 +472,24 @@ embeds the chosen cover. Set **Embedded Thumbnail Preference** in Settings
 ## Artwork editing and upscale
 
 The editing area exposes Picture, Sharpen, Softness, Contrast, Exposure,
-Brightness, Gamma, and Color/temperature. Values are application state, not
-widget-local state. Saving defaults writes the established Config v5 output
-fields atomically.
+Brightness, Gamma, Color/temperature, Hue, Darkness, and Tint. Values are
+application state, not widget-local state. Saving defaults writes the Config v5
+output fields atomically. The default intensity draws from saved Settings;
+other detailed sliders begin at their neutral center.
 
-**Upscale Preview** renders the adjusted image without changing album files and
-then changes in place to **Apply Upscale**. Applying follows the same selected
-candidate path as **Apply to Selected**, so the user does not return to Find &
-Match Artwork or press a second save button. Any slider change returns the
-action to **Upscale Preview**. The real final-artwork code continues to preserve
-native artwork above Ideal resolution, apply square/crop policy, and enforce
-`upscale_max_percent`.
+**Upscale Preview** renders the adjusted image without changing album files.
+**WRITE Cover** saves the previewed album cover; **WRITE Artist Art** saves the
+active Artist image, banner, or package. **EMBED Batch** stages the selected
+album cover and prepared thumbnail for the queue. Further slider changes
+invalidate the rendered preview until it is regenerated. The final-artwork
+code preserves native artwork above Ideal resolution, applies square/crop
+policy, and enforces `upscale_max_percent`.
 
-The resizable Original/Upscale comparison remains in the main Upscale / Enhance
-workspace. All eight controls provide increment, decrement, and reset, update
-the Upscale and Selected Artwork previews live, and never alter the Original
-preview. Adaptive defaults remain Config v5 backed.
+The resizable Original/Upscale comparison remains in Album Art Enhancements.
+The detailed controls update the adjusted and Selected Artwork previews while
+leaving Original unchanged. Artist image, banner, and combined-package edits
+retain separate adjustments and fitment. Adaptive defaults remain Config v5
+backed.
 
 Existing-cover editing requires LIVE WRITE and a current local cover. It uses
 the same validated final-artwork pipeline and safe replacement behavior.
@@ -464,7 +519,9 @@ The header **Help** button is available from Home as well as Settings and opens
 a two-item menu. **Get Help** opens the
 Windows guide on GitHub's `main` branch; **About** opens a themed card with
 version, license, technology, project and release links, the Microsoft Store
-listing, and update controls. Library & Files ends with the current runtime
+listing, and update controls. Library & Files shows **SPLINED File Storage**
+above Runtime: the configured temporary cache usage and `splined.db` plus
+current journal usage refresh while the pane is open. Runtime then shows the
 version, database location, and run state.
 **Processing & Logs** is split into Processing and Logging panes. Processing
 Mode is the saved Read/Write default. Processing Override Delay ranges from
@@ -475,7 +532,12 @@ of History, without changing an existing user's choice. Logging offers Current
 debug/trace events), and Error (session errors plus the latest Diagnostic
 Summary JSON). Verbose and Debugger file capture begins on the next launch
 after saving. Log Retention (Days) applies to Windows UI diagnostic files on
-startup; zero keeps them all.
+startup; zero keeps them all. Windows UI debug files are named
+`[<machine>]-Windows-ui-<timestamp>-<pid>.debug.log` under the configured log
+directory's `run` folder. PCs may share settings and a log directory: each PC
+creates and prunes only its own named logs. The previous
+`windows-ui-[<machine>]-<timestamp>-<pid>.debug.log` filenames also remain subject to that
+machine's retention; older unnamed logs remain available for manual review.
 **Processing & Logs > Status Bar** appears in Advanced mode and offers Aggressive, Full, Mild, or Off intensity;
 Top, Middle, or Bottom position; and Small, Medium, or Large size. Middle is
 wider and taller. The rainbow strip is static, so intensity changes primarily
@@ -506,13 +568,13 @@ In **Enhancement**, **Theme Enhancements** comes first, followed by
 **Enhancement Defaults** and **Artwork Slider Filtering**, with **Resolution
 Range** last. Enhancement Defaults defines the renameable Default quick
 filter. Artwork Slider Filtering holds Custom A–D.
-Each saved slot records all eight sliders; select its radio circle to load its
+Each saved slot records all eleven sliders; select its radio circle to load its
 values into the shared current/adjusted comparison, then choose Save Current
 to replace that slot or Apply to preview it again. Selecting a Custom slot for
 comparison does not replace global enhancement defaults when the section is
-saved. The Upscale / Enhance workspace has five built-in starting filters and
-five saved-slot buttons; a saved-slot button asks whether to Apply or
-Overwrite. These preview actions never write artwork.
+saved. The Enhancements sidebar offers built-in filters and saved Custom A–D
+slots with adjustable intensity. Repeated positive clicks increase a filter's
+effect. These preview actions never write artwork.
 
 **Theme Enhancements** shows all banner and album-frame rows without a nested
 scroll pane. Its live sample is the same album-card component used in Artist
@@ -558,9 +620,20 @@ the music library to render the list. Missing thumbnails refresh in the
 background at startup and the selected Artist is retried immediately. Album
 rows temporarily project a newly processed local cover until Navidrome's
 read-only thumbnail projection catches up.
+At startup, SPLINED prunes its known disposable candidate and thumbnail-cache
+files older than 24 hours from the configured temporary cache, including files
+left after an interrupted run. This does not remove saved samples, SQLite data,
+or the persistent V/A / OST Artist images database; the age guard protects
+another client using a shared cache.
 
 When Config v5 uses debug or trace logging, the Windows UI run log records
 startup config, database projection, application-model, and UI creation times.
+Album Embed Queue entries record one line per track with the local-stage or
+album-stage route and timings for copy, tag mutation, validation, share sync,
+replacement, and queue progress. These timings distinguish local TEMP work
+from SMB writes without changing the embedding route; they do not include the
+asynchronous UI redraw. The log header includes the machine, executable path,
+and TEMP directory used by that run.
 Navidrome catalog reads report memory-cache hit/miss, item count, and elapsed
 time; focused thumbnail work reports disk-artwork cache hits and misses. These
 timings help distinguish database startup delay from the first cold Navidrome
