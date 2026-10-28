@@ -366,6 +366,10 @@ class TuiState:
     local_cover_path: str = ""
     local_cover_rect: tuple[int, int, int, int] | None = None
     local_cover_drawn_rect: tuple[int, int, int, int] | None = None
+    workspace_overlay_cache: dict[tuple[str, int, int, int, int], Any] = field(default_factory=dict)
+    workspace_overlay_pending: dict[int, tuple[tuple[str, int, int, int, int], Any, tuple[int, int, int, int]]] = field(default_factory=dict)
+    workspace_overlay_drawn: dict[int, tuple[tuple[str, int, int, int, int], tuple[int, int, int, int]]] = field(default_factory=dict)
+    workspace_overlay_kind: str = ""
     hover_target: str = ""
     hover_index: int = -1
     status_loading: bool = False
@@ -5383,6 +5387,83 @@ def _render_track_overlay(
     )
 
 
+def _render_workspace_image(
+    frame: Any, area: Rect, state: TuiState, theme: Theme,
+    path: Path, title: str, slot: int,
+) -> None:
+    """Use the same native image path as the selected album thumbnail."""
+    width = max(1, int(area.width) - 2)
+    height = max(1, int(area.height) - 2)
+    native_images = str(state.image_protocol).casefold() not in {
+        "unknown", "halfblocks", "half-blocks", "halfblocks protocol",
+    }
+    if native_images and native_prepare_image_overlay is not None and path.is_file() and not path.is_symlink():
+        try:
+            stat = path.stat()
+            key = (str(path), int(stat.st_size), int(stat.st_mtime_ns), width, height)
+            overlay = state.workspace_overlay_cache.get(key)
+            if overlay is None:
+                overlay = native_prepare_image_overlay(path.read_bytes(), width, height, 4096)
+                if len(state.workspace_overlay_cache) >= 8:
+                    state.workspace_overlay_cache.pop(next(iter(state.workspace_overlay_cache)))
+                state.workspace_overlay_cache[key] = overlay
+            image_width = min(width, int(getattr(overlay, "width", width)))
+            image_height = min(height, int(getattr(overlay, "height", height)))
+            rect = (
+                int(area.x) + 1 + (width - image_width) // 2,
+                int(area.y) + 1 + (height - image_height) // 2,
+                image_width,
+                image_height,
+            )
+            state.workspace_overlay_pending[slot] = (key, overlay, rect)
+            frame.render_widget(
+                Paragraph.from_string("").block(card(theme, title, Semantic.ACTIVE)), area,
+            )
+            return
+        except (OSError, ValueError, RuntimeError):
+            pass
+    preview = _path_preview(state, str(path), width, height, mode="quadrant")
+    if preview is None:
+        frame.render_widget(
+            Paragraph.from_string("No image selected").centered().block(
+                card(theme, title, Semantic.MUTED)
+            ), area,
+        )
+    else:
+        _render_prepared_preview(frame, area, preview, theme, title=title)
+
+
+def _clear_workspace_overlays(state: TuiState) -> None:
+    for _key, rect in state.workspace_overlay_drawn.values():
+        if native_clear_image_area is not None:
+            try:
+                native_clear_image_area(*rect)
+            except Exception:
+                pass
+    state.workspace_overlay_drawn.clear()
+    state.workspace_overlay_kind = ""
+
+
+def _draw_workspace_overlays(state: TuiState) -> None:
+    for slot, drawn in tuple(state.workspace_overlay_drawn.items()):
+        pending = state.workspace_overlay_pending.get(slot)
+        if pending is None or (pending[0], pending[2]) != drawn:
+            if native_clear_image_area is not None:
+                try:
+                    native_clear_image_area(*drawn[1])
+                except Exception:
+                    pass
+            del state.workspace_overlay_drawn[slot]
+    for slot, (key, overlay, rect) in state.workspace_overlay_pending.items():
+        if state.workspace_overlay_drawn.get(slot) == (key, rect):
+            continue
+        try:
+            overlay.draw(rect[0], rect[1])
+            state.workspace_overlay_drawn[slot] = (key, rect)
+        except Exception:
+            state.workspace_overlay_drawn.pop(slot, None)
+
+
 def _render_artist_workspace(frame: Any, area: Rect, state: TuiState, theme: Theme) -> None:
     session = state.artist_workspace
     if session is None or session.preview_dir is None:
@@ -5415,18 +5496,14 @@ def _render_artist_workspace(frame: Any, area: Rect, state: TuiState, theme: The
     top, banner_area = _split_vertical(left, [Constraint.percentage(53), Constraint.fill(1)])
     current_area, portrait_area = _split_horizontal(top, [Constraint.percentage(50), Constraint.fill(1)])
 
-    def image_panel(rect: Rect, path: Path, title: str) -> None:
-        preview = _path_preview(state, str(path), max(1, int(rect.width) - 2), max(1, int(rect.height) - 2))
-        if preview is None:
-            frame.render_widget(Paragraph.from_string("No image selected").centered().block(card(theme, title, Semantic.MUTED)), rect)
-        else:
-            _render_prepared_preview(frame, rect, preview, theme, title=title)
+    def image_panel(rect: Rect, path: Path, title: str, slot: int) -> None:
+        _render_workspace_image(frame, rect, state, theme, path, title, slot)
 
-    image_panel(current_area, session.preview_dir / "current.png", "1  CURRENT PACKAGE  ●")
-    image_panel(portrait_area, session.preview_dir / "portrait.png", "2  ARTIST IMAGE  ◯" if not session.portrait_active else "2  ARTIST IMAGE  ●")
-    image_panel(banner_area, session.preview_dir / "banner.png", "3  ARTIST BANNER  ◯" if not session.banner_active else "3  ARTIST BANNER  ●")
+    image_panel(current_area, session.preview_dir / "current.png", "1  CURRENT PACKAGE  ●", 1)
+    image_panel(portrait_area, session.preview_dir / "portrait.png", "2  ARTIST IMAGE  ◯" if not session.portrait_active else "2  ARTIST IMAGE  ●", 2)
+    image_panel(banner_area, session.preview_dir / "banner.png", "3  ARTIST BANNER  ◯" if not session.banner_active else "3  ARTIST BANNER  ●", 3)
     selected = session.selected_path
-    image_panel(selected_area, selected or session.preview_dir / "missing.png", "4  SELECTED ARTWORK")
+    image_panel(selected_area, selected or session.preview_dir / "missing.png", "4  SELECTED ARTWORK", 4)
 
     candidate_lines = []
     if session.candidates:
@@ -5474,16 +5551,12 @@ def _render_album_workspace(frame: Any, area: Rect, state: TuiState, theme: Them
     center, selected_area = _split_horizontal(body, [Constraint.percentage(70), Constraint.fill(1)])
     original_area, enhanced_area = _split_horizontal(center, [Constraint.percentage(50), Constraint.fill(1)])
 
-    def image_panel(rect: Rect, name: str, title: str) -> None:
-        preview = _path_preview(state, str(session.preview_dir / name), max(1, int(rect.width) - 2), max(1, int(rect.height) - 2))
-        if preview is None:
-            frame.render_widget(Paragraph.from_string("No image selected").centered().block(card(theme, title, Semantic.MUTED)), rect)
-        else:
-            _render_prepared_preview(frame, rect, preview, theme, title=title)
+    def image_panel(rect: Rect, name: str, title: str, slot: int) -> None:
+        _render_workspace_image(frame, rect, state, theme, session.preview_dir / name, title, slot)
 
-    image_panel(original_area, "original.png", "ORIGINAL")
-    image_panel(enhanced_area, "enhanced.png", "ENHANCED PREVIEW")
-    image_panel(selected_area, "enhanced.png", "SELECTED ARTWORK")
+    image_panel(original_area, "original.png", "ORIGINAL", 1)
+    image_panel(enhanced_area, "enhanced.png", "ENHANCED PREVIEW", 2)
+    image_panel(selected_area, "enhanced.png", "SELECTED ARTWORK", 4)
     actions = "W WRITE Cover · Esc return to Select Media"
     if session.confirm_write:
         actions = "CONFIRM WRITE: press W again · Esc cancels"
@@ -5492,6 +5565,7 @@ def _render_album_workspace(frame: Any, area: Rect, state: TuiState, theme: Them
 
 def render(frame: Any, state: TuiState, theme: Theme) -> None:
     area = frame.area
+    state.workspace_overlay_pending.clear()
     state.hit_regions.clear()
     spec = layout_spec(area.width, area.height)
     frame.render_widget(_background(theme), area)
@@ -7529,6 +7603,17 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         dirty = True
                     last_animation_step = current_animation_step
                     if dirty:
+                        workspace_kind = (
+                            state.workspace
+                            if state.tab == "main"
+                            and state.workflow == "library"
+                            and state.workspace in {"artist-art", "album-art"}
+                            else ""
+                        )
+                        if state.workspace_overlay_kind != workspace_kind:
+                            _clear_workspace_overlays(state)
+                            state.workspace_overlay_cache.clear()
+                        state.workspace_overlay_kind = workspace_kind
                         _clear_stale_remote_overlay(state)
                         _clear_local_cover_overlay(state)
                         terminal.draw(lambda frame: render(frame, state, theme))
@@ -7547,6 +7632,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                             _start_preferred_preview(state, adapter)
                         _draw_remote_hover_overlay(state)
                         _draw_local_cover_overlay(state)
+                        _draw_workspace_overlays(state)
                         writer = getattr(sys, "__stdout__", None)
                         if writer is not None:
                             write_terminal_links(state, writer, theme)
@@ -7559,6 +7645,7 @@ def run_tui(worker: Callable[[], int], theme_name: str = "OLED") -> int:
                         elif event_kind == "key":
                             handle_key(state, adapter, event)
                         elif event_kind == "resize":
+                            _clear_workspace_overlays(state)
                             if state.remote_drawn_rect is not None:
                                 _clear_stale_remote_overlay(
                                     state

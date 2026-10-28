@@ -5,13 +5,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 from PIL import Image
 
 from splined_media_database import connect
 from tui.artist_workspace import ArtistWorkspace
 from tui.library import LibraryModel
-from tui.splined_tui import InputRequest, TuiAdapter, TuiState, handle_key, render
+from tui.splined_tui import (
+    InputRequest, TuiAdapter, TuiState, _clear_workspace_overlays,
+    _draw_workspace_overlays, handle_key, render,
+)
 from tui.theme import select_theme
 from pyratatui import Rect
 
@@ -92,6 +96,7 @@ class ArtistWorkspaceTests(unittest.TestCase):
             album = root / "music" / "Air" / "Moon Safari"
             album.mkdir(parents=True)
             (album.parent / "artist.png").write_bytes(_png("red"))
+            (album.parent / "banner.png").write_bytes(_png("blue"))
             database = cache / "splined.db"
             connection = connect(database, "test")
             with connection:
@@ -109,6 +114,7 @@ class ArtistWorkspaceTests(unittest.TestCase):
                 )
             connection.close()
             state = TuiState(started_at=0.0, workflow="library")
+            state.image_protocol = "Sixel"
             state.library = LibraryModel.from_payload({
                 "root": str(root / "music"),
                 "albums": [{"path": str(album), "artist": "Air", "album": "Moon Safari", "status": "processed"}],
@@ -131,7 +137,38 @@ class ArtistWorkspaceTests(unittest.TestCase):
                 def render_widget(self, _widget, _area):
                     self.rendered += 1
             frame = Frame()
-            render(frame, state, select_theme("OLED"))
+            overlays = []
+            class Overlay:
+                def __init__(self, width, height):
+                    self.width, self.height = width, height
+                    self.draws = []
+                def draw(self, x, y):
+                    self.draws.append((x, y))
+            def prepare(_body, width, height, _limit):
+                overlay = Overlay(width, height)
+                overlays.append(overlay)
+                return overlay
+            with mock.patch("tui.splined_tui.native_prepare_image_overlay", side_effect=prepare), mock.patch("tui.splined_tui.native_clear_image_area") as clear:
+                render(frame, state, select_theme("OLED"))
+                self.assertEqual(len(state.workspace_overlay_pending), 4)
+                _draw_workspace_overlays(state)
+                self.assertEqual(sum(len(item.draws) for item in overlays), 4)
+                render(frame, state, select_theme("OLED"))
+                _draw_workspace_overlays(state)
+                self.assertEqual(len(overlays), 4)
+                self.assertEqual(sum(len(item.draws) for item in overlays), 4)
+                state.artist_workspace.adjust(10)
+                render(frame, state, select_theme("OLED"))
+                _draw_workspace_overlays(state)
+                self.assertGreater(sum(len(item.draws) for item in overlays), 4)
+                _clear_workspace_overlays(state)
+                self.assertTrue(clear.called)
+                self.assertFalse(state.workspace_overlay_drawn)
+                prepared_count = len(overlays)
+                state.image_protocol = "Halfblocks"
+                render(frame, state, select_theme("OLED"))
+                self.assertFalse(state.workspace_overlay_pending)
+                self.assertEqual(len(overlays), prepared_count)
             self.assertGreater(frame.rendered, 4)
             handle_key(state, adapter, key("esc"))
             self.assertEqual(state.workspace, "library")

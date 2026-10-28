@@ -29,7 +29,9 @@ stop the run before writing images or audio tags.
 ## Artwork checks
 
 1. Focus **3 Doors Down** and press `G`. Check that the saved package, artist
-   image, banner, and Selected Artwork appear. There should be local Artist and
+   image, banner, and Selected Artwork appear as smooth native images, like the
+   selected Album thumbnail in Select Media, rather than large terminal pixels.
+   There should be local Artist and
    Banner candidates. Press `2` or `3` to edit one component; use `[`/`]` to
    choose a control and `+`/`-` to change it. The chosen pane and Selected
    Artwork should visibly change, while the current package remains unchanged.
