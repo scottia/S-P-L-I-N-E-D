@@ -5,7 +5,7 @@ const state = {
   artists: [], albumsIndex: [], artist: null, album: null,
   libraryMode: "artists", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null,
-  activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false,
+  activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
   embedQueue: [], listRequest: 0,
 };
 const SOURCES = [
@@ -201,6 +201,11 @@ function selectedImage() {
 }
 function renderReview() {
   const artistEntry = state.editorMode === "artist" && !state.selectedPortrait && !state.selectedBanner;
+  const packageReady = state.editorMode === "artist" && state.workspace === "enhance" && state.radioArtist && state.radioBanner;
+  if (!packageReady) state.themedPackaging = false;
+  $("themedPackaging").disabled = !packageReady;
+  $("themedPackaging").classList.toggle("active", state.themedPackaging);
+  $("themedPackaging").setAttribute("aria-pressed", String(state.themedPackaging));
   $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" ? "WRITE Artist Art" : "WRITE Cover";
   $("writeButton").disabled = !artistEntry || !state.artist;
   $("embedBatchButton").disabled = !(state.editorMode === "album" && state.album && (state.selectedCover?.image || state.album.cover));
@@ -319,6 +324,7 @@ for (const [buttonId, name] of [["findTab", "find"], ["enhanceTab", "enhance"], 
 $("searchButton").addEventListener("click", () => state.editorMode === "artist" ? searchArtist() : (renderCandidates(), setStatus("Showing images in the selected album folder")));
 $("artistArtEntry").addEventListener("click", enterArtistArt);
 $("writeButton").addEventListener("click", enterArtistArt);
+$("themedPackaging").addEventListener("click", () => { state.themedPackaging = !state.themedPackaging; renderReview(); setStatus(state.themedPackaging ? "Themed Packaging preview active · processing not connected" : "Themed Packaging preview off"); });
 $("upscaleButton").addEventListener("click", () => { state.workspace = "enhance"; renderWorkspace(); setStatus("Enhancement layout preview · no upscale processing"); });
 $("embedBatchButton").addEventListener("click", stageAlbum);
 $("removeAllStaged").addEventListener("click", () => { state.embedQueue = []; renderQueue(); setStatus("Preview queue cleared"); });
