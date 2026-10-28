@@ -100,6 +100,8 @@ function renderHero() {
   const portrait = $("heroPortrait");
   const replacement = artist?.portrait ? image(artist.portrait, "hero-portrait", artist.name + " artist image") : node("div", "hero-portrait placeholder", "♪");
   replacement.id = "heroPortrait"; portrait.replaceWith(replacement);
+  $("artistArtEntry").disabled = !artist;
+  $("artistArtEntry").classList.toggle("active", !!artist && state.editorMode === "artist");
   const grid = $("albumGrid"); clear(grid);
   const albums = artist?.albums || []; $("albumCount").textContent = albums.length + " shown";
   if (!albums.length) { grid.append(node("p", "empty-copy", "Choose an artist to view albums.")); return; }
@@ -198,7 +200,9 @@ function selectedImage() {
   $("selectedQuality").textContent = quality;
 }
 function renderReview() {
-  $("writeButton").textContent = state.editorMode === "artist" ? "WRITE Artist Art" : "WRITE Cover";
+  const artistEntry = state.editorMode === "artist" && !state.selectedPortrait && !state.selectedBanner;
+  $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" ? "WRITE Artist Art" : "WRITE Cover";
+  $("writeButton").disabled = !artistEntry || !state.artist;
   $("embedBatchButton").disabled = !(state.editorMode === "album" && state.album && (state.selectedCover?.image || state.album.cover));
   $("reviewChoice").hidden = state.editorMode !== "artist" || !(state.selectedPortrait || state.selectedBanner);
   $("useArtist").classList.toggle("active", !state.radioBanner || state.radioArtist);
@@ -255,7 +259,7 @@ async function searchArtist() {
   setStatus("Searching Fanart.tv and Deezer for " + state.artist.name + "…", "busy");
   try {
     const result = await api("/api/search/artist", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id})});
-    if (state.artist?.id !== id) return;
+    if (state.artist?.id !== id || state.editorMode !== "artist") return;
     state.candidates = [...(state.artist.local_candidates || []), ...result.candidates];
     state.selectedPortrait = null; state.selectedBanner = null;
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
@@ -263,6 +267,20 @@ async function searchArtist() {
     setStatus(result.candidates.length + " online candidates found" + (result.warnings.length ? " · " + result.warnings.length + " source warnings" : ""));
   } catch (error) { setStatus(error.message, "error"); }
   finally { $("searchButton").disabled = !state.artist; }
+}
+function enterArtistArt() {
+  if (!state.artist) return;
+  const changedContext = state.editorMode !== "artist";
+  state.editorMode = "artist";
+  state.workspace = "enhance";
+  if (changedContext) {
+    state.candidates = state.artist.local_candidates || [];
+    state.selectedPortrait = null; state.selectedBanner = null;
+    state.activeSource = "";
+    state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
+  }
+  renderAll();
+  searchArtist();
 }
 function renderQueue() {
   const queue = $("embedQueue"); clear(queue);
@@ -299,6 +317,8 @@ for (const [buttonId, name] of [["findTab", "find"], ["enhanceTab", "enhance"], 
   $(buttonId).addEventListener("click", () => { state.workspace = name; renderWorkspace(); if (name === "embed") renderQueue(); setStatus(name === "embed" ? "Embedding queue preview · no tags changed" : name === "enhance" ? "Enhancement layout preview · no image processing" : "Find & Match Artwork ready"); });
 }
 $("searchButton").addEventListener("click", () => state.editorMode === "artist" ? searchArtist() : (renderCandidates(), setStatus("Showing images in the selected album folder")));
+$("artistArtEntry").addEventListener("click", enterArtistArt);
+$("writeButton").addEventListener("click", enterArtistArt);
 $("upscaleButton").addEventListener("click", () => { state.workspace = "enhance"; renderWorkspace(); setStatus("Enhancement layout preview · no upscale processing"); });
 $("embedBatchButton").addEventListener("click", stageAlbum);
 $("removeAllStaged").addEventListener("click", () => { state.embedQueue = []; renderQueue(); setStatus("Preview queue cleared"); });
@@ -322,5 +342,75 @@ $("themeButton").addEventListener("click", () => showDialog("Theme", ["This temp
 $("settingsButton").addEventListener("click", () => showDialog("Settings", ["Browser settings are represented by this panel. The local template reads the isolated Python index and copied music files.", "The dedicated PostgreSQL catalog and container settings will be connected in the image build. No settings are changed here."]));
 $("helpButton").addEventListener("click", () => showDialog("Workspace Help", ["Choose an artist or album in Media Library, then press LAUNCH to search artist art or review folder cover candidates.", "Click candidate images to preview them. The enhancement pane radios choose current, artist, banner, or a combined package.", "EMBED Batch stages the selected album only in this browser preview. WRITE and processing actions remain unavailable."]));
 $("closeDialog").addEventListener("click", () => $("workspaceDialog").close());
+
+const workspaceElement = document.querySelector(".workspace");
+const layoutStorageKey = "splined.browser-preview.layout";
+function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(value, Math.max(minimum, maximum))); }
+function setDockSize(value) {
+  workspaceElement.style.setProperty("--dock-height", value + "px");
+  workspaceElement.style.setProperty("--candidate-card-width", clamp(Math.round(value * 0.69), 114, 240) + "px");
+}
+function saveLayout() {
+  try {
+    const previous = JSON.parse(localStorage.getItem(layoutStorageKey) || "{}") || {};
+    localStorage.setItem(layoutStorageKey, JSON.stringify({
+      library: Math.round($("libraryBody").parentElement.getBoundingClientRect().width),
+      review: $("review").hidden ? previous.review || 400 : Math.round($("review").getBoundingClientRect().width),
+      candidates: $("candidateDock").hidden ? previous.candidates || 220 : Math.round($("candidateDock").getBoundingClientRect().height),
+    }));
+  } catch { /* The layout still works if browser storage is unavailable. */ }
+}
+function restoreLayout() {
+  try {
+    const values = JSON.parse(localStorage.getItem(layoutStorageKey) || "null");
+    if (!values || typeof values !== "object") return;
+    if (Number.isFinite(values.library)) workspaceElement.style.setProperty("--library-width", clamp(values.library, 200, 480) + "px");
+    if (Number.isFinite(values.review)) workspaceElement.style.setProperty("--review-width", clamp(values.review, 250, 700) + "px");
+    if (Number.isFinite(values.candidates)) setDockSize(clamp(values.candidates, 160, Math.min(620, workspaceElement.clientHeight - 280)));
+  } catch { /* Ignore invalid or unavailable saved layout. */ }
+}
+function installSplitter(id, axis, direction, measure, limit, apply) {
+  const handle = $(id);
+  let drag = null;
+  handle.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    drag = {coordinate: axis === "x" ? event.clientX : event.clientY, size: measure()};
+    handle.setPointerCapture(event.pointerId);
+    handle.classList.add("dragging");
+    event.preventDefault();
+  });
+  handle.addEventListener("pointermove", event => {
+    if (!drag) return;
+    const coordinate = axis === "x" ? event.clientX : event.clientY;
+    apply(clamp(drag.size + direction * (coordinate - drag.coordinate), ...limit()));
+  });
+  function finish() { if (!drag) return; drag = null; handle.classList.remove("dragging"); saveLayout(); }
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+  handle.addEventListener("keydown", event => {
+    const step = event.shiftKey ? 40 : 15;
+    const delta = axis === "x" ? (event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0) : (event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0);
+    if (!delta) return;
+    apply(clamp(measure() + direction * delta * step, ...limit())); saveLayout(); event.preventDefault();
+  });
+}
+restoreLayout();
+installSplitter("librarySplitter", "x", 1,
+  () => $("libraryBody").parentElement.getBoundingClientRect().width,
+  () => [200, Math.min(480, workspaceElement.clientWidth - $("review").getBoundingClientRect().width - 380)],
+  value => workspaceElement.style.setProperty("--library-width", value + "px"));
+installSplitter("reviewSplitter", "x", -1,
+  () => $("review").getBoundingClientRect().width,
+  () => [250, Math.min(700, workspaceElement.clientWidth - $("libraryBody").parentElement.getBoundingClientRect().width - 380)],
+  value => workspaceElement.style.setProperty("--review-width", value + "px"));
+installSplitter("candidateSplitter", "y", -1,
+  () => $("candidateDock").getBoundingClientRect().height,
+  () => [160, Math.min(620, workspaceElement.clientHeight - 280)],
+  setDockSize);
+$("candidateGrid").addEventListener("wheel", event => {
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+  $("candidateGrid").scrollLeft += event.deltaY;
+  event.preventDefault();
+}, {passive: false});
 
 loadLibrary();
