@@ -9,19 +9,23 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import hashlib
 from hashlib import sha256
+from html import unescape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 from threading import Lock
 from urllib.parse import parse_qs, urlsplit
 
 from PIL import Image, ImageOps
+import requests
 
 from splined_artist_art import ArtistAlbum, artist_targets, local_candidates, saved_package
 from tui.artist_search import discover_artist_images
@@ -57,6 +61,7 @@ class PreviewApp:
     artist_art: Path
     credentials: Path
     images: dict[str, Path | bytes] = field(default_factory=dict)
+    metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
 
     def connect(self) -> sqlite3.Connection:
@@ -142,6 +147,10 @@ class PreviewApp:
                 "FROM albums WHERE artist_key=? ORDER BY album_name COLLATE NOCASE",
                 (artist_id,),
             ).fetchall()
+            top_tracks = [item["title"] for item in db.execute(
+                "SELECT tracks.title FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
+                "WHERE albums.artist_key=? ORDER BY tracks.title COLLATE NOCASE LIMIT 10", (artist_id,),
+            ).fetchall()]
         targets = artist_targets(
             [ArtistAlbum(artist["artist_name"], Path(row["path"]),
                          row["musicbrainz_albumid"] or "", artist["musicbrainz_artistid"] or "")
@@ -173,8 +182,11 @@ class PreviewApp:
             "id": artist_id, "name": artist["artist_name"],
             "mbid": artist["musicbrainz_artistid"] or "",
             "status": artist["status"], "albums": albums,
+            "top_tracks": top_tracks,
             "portrait": self.image(package.portrait),
             "banner": self.image(package.banner),
+            "portrait_meta": image_metadata(package.portrait) if package.portrait and package.portrait.is_file() else None,
+            "banner_meta": image_metadata(package.banner) if package.banner and package.banner.is_file() else None,
             "local_candidates": candidates,
         }
 
@@ -188,6 +200,9 @@ class PreviewApp:
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE albums.album_key=?", (album_id,),
             ).fetchone()
+            track_titles = [item["title"] for item in db.execute(
+                "SELECT title FROM tracks WHERE album_key=? ORDER BY path LIMIT 12", (album_id,),
+            ).fetchall()]
         if row is None:
             raise KeyError("Album not found")
         folder = Path(row["path"])
@@ -209,8 +224,72 @@ class PreviewApp:
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
             "embedded": int(row["artwork_jpeg"] or 0) + int(row["artwork_png"] or 0) + int(row["artwork_webp"] or 0),
-            "cover": self.image(cover), "candidates": candidates,
+            "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover and cover.is_file() else None,
+            "candidates": candidates, "track_titles": track_titles,
         }
+
+    def artist_metadata(self, artist_id: str) -> dict[str, object]:
+        with self.lock:
+            cached = self.metadata_cache.get(artist_id)
+        if cached is not None:
+            return cached
+        artist = self.artist(artist_id)
+        result: dict[str, object] = {"source": "sample", "biography": "", "similar": [], "top_songs": artist["top_tracks"]}
+        credential_path = self.credentials / "navidrome.json"
+        if not credential_path.is_file():
+            result["reason"] = "Navidrome credentials are not present in this test bed"
+            return result
+        try:
+            credential = json.loads(credential_path.read_text(encoding="utf-8"))
+            base = str(credential.get("server_url") or "").rstrip("/")
+            if urlsplit(base).scheme not in {"http", "https"}:
+                raise ValueError("Invalid Navidrome URL")
+            def call(method: str, parameters: dict[str, str]) -> dict[str, object]:
+                query = {"v": "1.16.1", "c": "SPLINED-web-preview", "f": "json", **parameters}
+                if credential.get("auth_method") == "api_key" and credential.get("api_key"):
+                    query["apiKey"] = credential["api_key"]
+                else:
+                    salt = secrets.token_hex(6)
+                    query.update({"u": credential["username"], "s": salt,
+                                  "t": hashlib.md5((credential["password"] + salt).encode(), usedforsecurity=False).hexdigest()})
+                response = requests.get(base + "/rest/" + method + ".view", params=query,
+                                        timeout=10, allow_redirects=False)
+                if response.status_code != 200:
+                    raise ValueError("Navidrome did not return artist metadata")
+                envelope = response.json().get("subsonic-response", {})
+                if envelope.get("status") != "ok":
+                    raise ValueError("Navidrome did not return artist metadata")
+                return envelope
+            search = call("search3", {"query": str(artist["name"]), "artistCount": "20", "albumCount": "0", "songCount": "0"})
+            matches = search.get("searchResult3", {}).get("artist", [])
+            if isinstance(matches, dict):
+                matches = [matches]
+            match = next((item for item in matches if str(item.get("name", "")).casefold() == str(artist["name"]).casefold()), None)
+            if match:
+                info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
+                biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
+                result["biography"] = " ".join(unescape(biography).split())
+                similar = info.get("similarArtist", [])
+                if isinstance(similar, dict):
+                    similar = [similar]
+                result["similar"] = [str(item.get("name")) for item in similar if isinstance(item, dict) and item.get("name")][:10]
+                result["source"] = "Navidrome"
+                try:
+                    top = call("getTopSongs", {"artist": str(artist["name"]), "count": "10"}).get("topSongs", {}).get("song", [])
+                    if isinstance(top, dict):
+                        top = [top]
+                    songs = [str(item.get("title")) for item in top if isinstance(item, dict) and item.get("title")]
+                    if songs:
+                        result["top_songs"] = list(dict((song.casefold(), song) for song in songs).values())[:10]
+                except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
+                    pass  # Biography and similar artists remain useful without top songs.
+            else:
+                result["reason"] = "Artist was not found in Navidrome"
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
+            result["reason"] = "Navidrome metadata is unavailable for this artist"
+        with self.lock:
+            self.metadata_cache[artist_id] = result
+        return result
 
     def search_artist(self, artist_id: str) -> dict[str, object]:
         artist = self.artist(artist_id)
@@ -250,8 +329,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         url = urlsplit(self.path)
         try:
-            if url.path in {"/", "/app.css", "/app.js"}:
-                name = "index.html" if url.path == "/" else url.path.lstrip("/")
+            if url.path in {"/", "/guide", "/app.css", "/app.js"}:
+                name = "index.html" if url.path == "/" else "guide.html" if url.path == "/guide" else url.path.lstrip("/")
                 mime = "text/html; charset=utf-8" if name.endswith(".html") else (
                     "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
                 )
@@ -266,7 +345,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_bytes(asset.read_bytes(), mime)
             elif url.path == "/api/status":
                 self.send_json({"mode": "read-only", "database": "isolated Python index",
-                                "artists": len(self.app.artists(""))})
+                                "artists": len(self.app.artists("")),
+                                "music": str(self.app.music), "artist_art": str(self.app.artist_art)})
             elif url.path == "/api/artists":
                 query = parse_qs(url.query).get("q", [""])[0][:100]
                 self.send_json(self.app.artists(query))
@@ -276,6 +356,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(self.app.albums(query, params.get("view", [""])[0] == "fallback"))
             elif url.path == "/api/artist":
                 self.send_json(self.app.artist(parse_qs(url.query).get("id", [""])[0]))
+            elif url.path == "/api/artist/metadata":
+                self.send_json(self.app.artist_metadata(parse_qs(url.query).get("id", [""])[0]))
             elif url.path == "/api/album":
                 self.send_json(self.app.album(parse_qs(url.query).get("id", [""])[0]))
             elif url.path.startswith("/api/image/"):

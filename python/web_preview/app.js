@@ -2,11 +2,14 @@
 
 const $ = id => document.getElementById(id);
 const state = {
-  artists: [], albumsIndex: [], artist: null, album: null,
+  artists: [], albumsIndex: [], artist: null, artistMetadata: null, album: null,
   libraryMode: "artists", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null,
   activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
-  embedQueue: [], listRequest: 0,
+  candidateType: "all", mediaStatus: "all", mediaFilterLocked: false, candidateFilterLocked: false,
+  fx: {artist: {}, banner: {}, album: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
+  theme: "dark", compare: new Set(),
+  embedQueue: [], listRequest: 0, selectionRequest: 0, searchRequest: 0,
 };
 const SOURCES = [
   ["Samples", "", "⊘"], ["Local Files", "local", "local"],
@@ -37,6 +40,17 @@ function image(src, className = "", alt = "") {
   const element = node("img", className); element.src = src; element.alt = alt; element.loading = "lazy"; return element;
 }
 function clear(element) { element.replaceChildren(); }
+function clearFocusCandidates() {
+  state.candidates = [];
+  state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null;
+  state.activeSource = ""; state.candidateType = "all"; state.compare.clear();
+  $("candidateSearch").value = "";
+}
+function resetFocusAdjustments() {
+  state.fx = {artist: {}, banner: {}, album: {}, current: {}, package: {}};
+  state.fit = {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}};
+  state.themedPackaging = false;
+}
 function size(bytes) {
   if (!bytes) return "—";
   return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + " MB" : Math.round(bytes / 1024) + " KB";
@@ -51,6 +65,16 @@ function sourceKey(value) {
 function candidateKind(candidate) {
   return String(candidate.kind || "").toLowerCase().includes("banner") ? "banner" : state.editorMode === "album" ? "cover" : "artist";
 }
+function candidateBanner(candidate) {
+  if (candidateKind(candidate) === "banner") return candidate;
+  return state.candidates.find(item => item !== candidate && candidateKind(item) === "banner" && sourceKey(item.source) === sourceKey(candidate.source)) || null;
+}
+function activeFxTarget() {
+  if (state.editorMode === "album") return "album";
+  if (state.radioCurrent) return "current";
+  if (state.radioArtist && state.radioBanner) return state.themedPackaging ? "package" : null;
+  return state.radioBanner ? "banner" : "artist";
+}
 function currentCandidate() {
   return state.editorMode === "album" ? state.selectedCover : (state.radioBanner && !state.radioArtist ? state.selectedBanner : state.selectedPortrait);
 }
@@ -63,7 +87,7 @@ function renderLibrary() {
   const list = $("artistList"); clear(list);
   if (state.libraryMode === "artists") {
     $("artistCount").textContent = state.artists.length + " shown";
-    for (const artist of state.artists) {
+    for (const artist of state.artists.filter(item => state.mediaStatus === "all" || String(item.status || "Unprocessed") === state.mediaStatus)) {
       const button = node("button", "library-row" + (state.artist?.id === artist.id ? " active" : "")); button.type = "button";
       button.append(node("span", "status-orbit", state.artist?.id === artist.id ? "●" : "○"));
       const thumb = state.artist?.id === artist.id && state.artist.portrait ? image(state.artist.portrait, "library-thumb", "") : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
@@ -79,9 +103,30 @@ function renderLibrary() {
     }
   } else {
     $("artistCount").textContent = state.albumsIndex.length + " shown";
-    for (const album of state.albumsIndex) list.append(albumRow(album, false));
+    for (const album of state.albumsIndex.filter(item => state.mediaStatus === "all" || String(item.status || "Unprocessed") === state.mediaStatus)) list.append(albumRow(album, false));
   }
   if (!list.childElementCount) list.append(node("p", "empty-copy", "No items match this filter."));
+  renderMediaStatusChips();
+}
+function renderMediaStatusChips() {
+  const items = state.libraryMode === "artists" ? state.artists : state.albumsIndex;
+  const counts = new Map();
+  for (const item of items) { const key = String(item.status || "Unprocessed"); counts.set(key, (counts.get(key) || 0) + 1); }
+  const host = $("mediaStatusChips"); clear(host);
+  for (const [key, count] of [["all", items.length], ...counts]) {
+    const button = node("button", "filter-chip" + (state.mediaStatus === key ? " active" : ""), (state.mediaStatus === key ? "● " : "○ ") + (key === "all" ? "All" : key) + " " + count);
+    button.type = "button"; button.disabled = state.mediaFilterLocked;
+    button.addEventListener("click", () => { state.mediaStatus = key; renderLibrary(); }); host.append(button);
+  }
+}
+function renderCandidateTypeChips() {
+  const host = $("candidateTypeChips"); clear(host);
+  for (const [key, label] of [["all", "All"], ["artist", "Artist"], ["banner", "Banner"]]) {
+    const count = key === "all" ? state.candidates.length : state.candidates.filter(item => (candidateKind(item) === "banner") === (key === "banner")).length;
+    const button = node("button", "filter-chip" + (state.candidateType === key ? " active" : ""), (state.candidateType === key ? "● " : "○ ") + label + " " + count);
+    button.type = "button"; button.disabled = state.candidateFilterLocked;
+    button.addEventListener("click", () => { state.candidateType = key; renderCandidates(); }); host.append(button);
+  }
 }
 function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "") + (state.album?.id === album.id ? " active" : "")); button.type = "button";
@@ -93,9 +138,23 @@ function albumRow(album, child) {
 
 function renderHero() {
   const artist = state.artist;
+  const metadata = state.artistMetadata;
   $("artistName").textContent = artist?.name || "Select an artist";
   $("overviewArtist").textContent = artist?.name || "";
   $("artistSummary").textContent = artist ? artist.albums.length + " albums · " + (artist.status || "indexed") : "Browse your music library to begin.";
+  $("artistBiography").textContent = !artist ? "" : metadata?.biography ? metadata.biography : "No Navidrome biography available for " + artist.name + ".";
+  $("similarSource").textContent = metadata?.similar?.length ? "· Navidrome" : "· sample layout";
+  const similar = $("similarArtists"); clear(similar);
+  const names = !artist ? [] : metadata?.similar?.length ? metadata.similar : state.artists.filter(item => item.id !== artist.id).slice(0, 6).map(item => item.name);
+  for (const name of names) {
+    const card = node("span", "similar-card");
+    card.append(node("span", "similar-avatar", name.slice(0, 1).toUpperCase()), node("span", "similar-name", name), node("span", "similar-status", "●"));
+    similar.append(card);
+  }
+  const facts = $("albumOverviewFacts"); clear(facts);
+  if (state.album) facts.append(node("strong", "", state.album.name), node("span", "status-indicator", "● " + (state.album.status || "unprocessed")), node("span", "", state.album.tracks + " tracks · " + state.album.embedded + " embedded"));
+  const songs = state.album ? state.album.track_titles || [] : metadata?.top_songs?.length ? metadata.top_songs : artist?.top_tracks || [];
+  $("topSongs").textContent = state.album && !songs.length ? "Album track titles unavailable in this test index" : songs.length ? (state.album ? "Album tracks: " : metadata?.top_songs?.length ? "Navidrome top songs: " : "Indexed songs: ") + songs.slice(0, 10).map((song, index) => (index + 1) + ". " + song).join("  ·  ") : "";
   $("hero").style.backgroundImage = artist?.banner ? `url("${artist.banner}")` : artist?.portrait ? `url("${artist.portrait}")` : "none";
   const portrait = $("heroPortrait");
   const replacement = artist?.portrait ? image(artist.portrait, "hero-portrait", artist.name + " artist image") : node("div", "hero-portrait placeholder", "♪");
@@ -108,7 +167,7 @@ function renderHero() {
   for (const album of albums) {
     const button = node("button", "album-card" + (state.album?.id === album.id ? " active" : "")); button.type = "button";
     button.append(album.cover ? image(album.cover, "", album.name + " cover") : node("span", "album-placeholder", "♫"));
-    button.append(node("strong", "", album.name), node("small", "", album.tracks + " tracks"));
+    button.append(node("span", "album-card-status " + (album.status || "unprocessed").toLowerCase().replace(/[^a-z]+/g, "-"), "●"), node("strong", "", album.name), node("small", "", album.tracks + " tracks"));
     button.addEventListener("click", () => chooseAlbum(album.id)); grid.append(button);
   }
 }
@@ -117,34 +176,56 @@ function renderSources() {
   const strip = $("sourceStrip"); clear(strip);
   for (const [label, key, icon] of SOURCES) {
     const count = state.candidates.filter(candidate => sourceKey(candidate.source) === key).length;
-    const available = !!key && count > 0;
-    const button = node("button", "source-card" + (!available ? " unavailable" : "") + (state.activeSource === key && key ? " active" : "")); button.type = "button"; button.disabled = !available;
-    button.title = available ? "Show " + label + " candidates" : label + " · no candidates in this preview";
+    const navidromeMetadata = key === "navidrome" && state.artistMetadata?.source === "Navidrome";
+    const searchable = ["local", "fanart", "deezer"].includes(key) || navidromeMetadata;
+    const button = node("button", "source-card" + (state.activeSource === key && key ? " active" : "")); button.type = "button";
+    button.title = count ? "Show " + label + " candidates" : label + (searchable ? " · ready for artist search" : " · artist search connection pending");
     button.append(icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + icon + ".svg", "", ""));
-    button.append(node("strong", "", label), node("small", "", available ? count + " found" : "0 found"), node("span", "source-state", available ? "● Ready" : "○ —"));
+    button.append(node("strong", "", label), node("small", "", count + " found"), node("span", "source-state" + (searchable ? "" : " pending"), count ? "● Results" : navidromeMetadata ? "● Metadata" : searchable ? "● Ready" : "○ Pending"));
     button.addEventListener("click", () => { state.activeSource = state.activeSource === key ? "" : key; renderSources(); renderCandidates(); }); strip.append(button);
   }
 }
 function renderCandidates() {
   const grid = $("candidateGrid"); clear(grid);
   const query = $("candidateSearch").value.trim().toLowerCase();
-  const visible = state.candidates.filter(candidate => (!state.activeSource || sourceKey(candidate.source) === state.activeSource) && (!query || (candidate.name + " " + candidate.source).toLowerCase().includes(query)));
+  const visible = state.candidates.filter(candidate => (!state.activeSource || sourceKey(candidate.source) === state.activeSource) && (state.candidateType === "all" || (state.candidateType === "banner") === (candidateKind(candidate) === "banner")) && (!query || (candidate.name + " " + candidate.source).toLowerCase().includes(query)));
   $("candidateCount").textContent = state.candidates.length + (state.candidates.length === 1 ? " candidate" : " candidates");
-  $("candidateHint").textContent = state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue = artist · pink = banner";
+  $("compareButton").disabled = state.compare.size < 2;
+  $("candidateHint").textContent = state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
+  renderCandidateTypeChips();
   if (!visible.length) { grid.append(node("p", "empty-copy", state.candidates.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
   for (const candidate of visible) {
     const kind = candidateKind(candidate);
     const active = state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate;
-    const button = node("button", "candidate-card" + (kind === "banner" ? " banner" : "") + (active ? " active" : "")); button.type = "button";
-    button.append(image(candidate.image, "", candidate.name), node("strong", "", candidate.name), node("small", "", candidate.source + " · " + candidate.width + " × " + candidate.height));
-    button.append(node("span", "candidate-type"));
-    button.addEventListener("click", () => {
-      if (state.editorMode === "album") state.selectedCover = candidate;
-      else if (kind === "banner") { state.selectedBanner = candidate; state.radioCurrent = false; state.radioBanner = true; }
-      else { state.selectedPortrait = candidate; state.radioCurrent = false; state.radioArtist = true; }
-      renderCandidates(); renderPanes(); renderReview(); setStatus(candidate.name + " selected for preview");
-    }); grid.append(button);
+    const card = node("div", "candidate-card" + (kind === "banner" ? " banner" : "") + (active ? " active" : ""));
+    const picture = node("div", "candidate-picture");
+    const main = node("button", "candidate-image-button"); main.type = "button"; main.setAttribute("aria-label", "Preview " + candidate.name);
+    main.append(image(candidate.image, "", candidate.name), node("span", "candidate-source-label", candidate.source));
+    main.addEventListener("click", () => selectCandidate(candidate, kind === "banner" ? "banner" : "artist")); picture.append(main);
+    if (state.editorMode === "artist") {
+      if (kind !== "banner") {
+        const portrait = node("button", "candidate-radio artist" + (state.selectedPortrait === candidate ? " active" : "")); portrait.type = "button"; portrait.setAttribute("aria-label", "Preview as artist image: " + candidate.name);
+        portrait.addEventListener("click", () => selectCandidate(candidate, "artist")); picture.append(portrait);
+      }
+      const bannerCandidate = candidateBanner(candidate);
+      if (bannerCandidate) {
+        const banner = node("button", "candidate-radio banner" + (state.selectedBanner === bannerCandidate ? " active" : "")); banner.type = "button"; banner.setAttribute("aria-label", "Preview banner: " + bannerCandidate.name);
+        banner.addEventListener("click", () => selectCandidate(bannerCandidate, "banner")); picture.append(banner);
+      }
+    }
+    if (active) picture.append(node("span", "candidate-recommended", "●"));
+    card.append(picture);
+    const line = node("div", "candidate-card-line"); line.append(node("strong", "", candidate.recommended ? "Recommended" : candidate.name));
+    const compare = node("button", "candidate-compare" + (state.compare.has(candidate.image) ? " active" : ""), state.compare.has(candidate.image) ? "Compare ●" : "Compare ○"); compare.type = "button";
+    compare.addEventListener("click", () => { state.compare.has(candidate.image) ? state.compare.delete(candidate.image) : state.compare.add(candidate.image); renderCandidates(); });
+    line.append(compare); card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
   }
+}
+function selectCandidate(candidate, target) {
+  if (state.editorMode === "album") state.selectedCover = candidate;
+  else if (target === "banner") { state.selectedBanner = candidate; state.radioCurrent = false; state.radioBanner = true; }
+  else { state.selectedPortrait = candidate; state.radioCurrent = false; state.radioArtist = true; }
+  renderCandidates(); renderPanes(); renderReview(); renderEnhancementMenus(); setStatus(candidate.name + " selected for " + (target === "banner" ? "banner" : "artist") + " preview");
 }
 
 function packageFrame(frame, banner, portrait) {
@@ -195,15 +276,30 @@ function selectedImage() {
   }
   if (!frame.childElementCount) frame.append(image("/assets/set-your-imagination-tv.jpg", "", "Set your imagination now"));
   $("selectedType").textContent = type; $("selectedSource").textContent = source;
-  $("selectedDimensions").textContent = candidate ? candidate.width + " × " + candidate.height : "—";
-  $("selectedSize").textContent = candidate ? size(candidate.bytes) : "—";
+  const existing = state.editorMode === "album" ? state.album?.cover_meta : state.radioBanner && !state.radioArtist ? state.artist?.banner_meta : state.artist?.portrait_meta;
+  const metadata = candidate || existing;
+  $("selectedDimensions").textContent = metadata ? metadata.width + " × " + metadata.height : "—";
+  $("selectedSize").textContent = metadata ? size(metadata.bytes) : "—";
   $("selectedQuality").textContent = quality;
+  const extra = $("reviewExtra"); clear(extra);
+  const ribbon = $("embeddedRibbon");
+  if (state.editorMode === "album" && state.album) {
+    extra.append(node("span", "", "Tracks " + state.album.tracks), node("span", "", "Embedded " + state.album.embedded + "/" + state.album.tracks));
+    if (state.album.cover_meta) extra.append(node("span", "", "Existing cover " + state.album.cover_meta.width + " × " + state.album.cover_meta.height + " · " + size(state.album.cover_meta.bytes)));
+    ribbon.hidden = !state.album.embedded; ribbon.textContent = "Embedded artwork on " + state.album.embedded + " of " + state.album.tracks + " tracks";
+  } else {
+    if (state.artist?.portrait_meta) extra.append(node("span", "", "Artist " + state.artist.portrait_meta.width + " × " + state.artist.portrait_meta.height + " · " + size(state.artist.portrait_meta.bytes)));
+    if (state.artist?.banner_meta) extra.append(node("span", "", "Banner " + state.artist.banner_meta.width + " × " + state.artist.banner_meta.height + " · " + size(state.artist.banner_meta.bytes)));
+    ribbon.hidden = true;
+  }
+  applyPreviewEffects();
 }
 function renderReview() {
   const artistEntry = state.editorMode === "artist" && !state.selectedPortrait && !state.selectedBanner;
   const packageReady = state.editorMode === "artist" && state.workspace === "enhance" && state.radioArtist && state.radioBanner;
   if (!packageReady) state.themedPackaging = false;
   $("themedPackaging").disabled = !packageReady;
+  $("themedPackaging").hidden = !packageReady;
   $("themedPackaging").classList.toggle("active", state.themedPackaging);
   $("themedPackaging").setAttribute("aria-pressed", String(state.themedPackaging));
   $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" ? "WRITE Artist Art" : "WRITE Cover";
@@ -213,6 +309,73 @@ function renderReview() {
   $("useArtist").classList.toggle("active", !state.radioBanner || state.radioArtist);
   $("useBanner").classList.toggle("active", state.radioBanner);
   selectedImage();
+  renderEnhancementMenus();
+}
+const FILTER_ROWS = ["Default", "Clarity", "Vivid Color", "Warm/Cool Color", "Low/Dark Light", "Soft/Sharper", "High/Low Contrast", "Portrait Mode", "Blur Background", "Custom A", "Custom B", "Custom C"];
+const DETAIL_ROWS = ["Default", "Hue", "Tint", "Gamma", "Picture", "Exposure", "Brightness"];
+function effectFilter(values = {}) {
+  const v = name => Number(values[name] || 0);
+  const brightness = Math.max(0.35, 1 + (v("Low/Dark Light") + v("Exposure") + v("Brightness") + v("Default") * .4 + v("Gamma") * .35) / 220);
+  const contrast = Math.max(.35, 1 + (v("Clarity") + v("High/Low Contrast") + v("Picture") * .4 + v("Custom A") * .3) / 190);
+  const saturation = Math.max(0, 1 + (v("Vivid Color") + v("Portrait Mode") * .25 + v("Custom B") * .4) / 120);
+  const hue = v("Hue") * 1.8 + v("Warm/Cool Color") * .2;
+  const sepia = Math.max(0, Math.min(.8, Math.abs(v("Tint")) / 140 + Math.max(0, v("Warm/Cool Color")) / 450));
+  const blur = Math.max(0, (v("Blur Background") + Math.max(0, -v("Soft/Sharper"))) / 32);
+  return `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) hue-rotate(${hue}deg) sepia(${sepia}) blur(${blur}px)`;
+}
+function transformFor(target) {
+  const fit = state.fit[target];
+  return fit ? `translate(${fit.x}%, ${fit.y}%) scale(${fit.zoom})` : "";
+}
+function styleImage(element, target, additional = null) {
+  if (!element) return;
+  element.style.filter = effectFilter(state.fx[target]) + (additional ? " " + effectFilter(state.fx[additional]) : "");
+  element.style.transform = transformFor(target);
+}
+function applyPreviewEffects() {
+  styleImage($("artistPane").querySelector("img"), "artist");
+  styleImage($("bannerPane").querySelector("img"), "banner");
+  styleImage($("albumPane").querySelector("img"), "album");
+  const frame = $("selectedFrame");
+  if (state.editorMode === "album") styleImage(frame.querySelector(".selected-image"), "album");
+  else if (state.radioCurrent) {
+    for (const element of frame.querySelectorAll(".selected-package img")) styleImage(element, "current");
+  } else if (state.radioArtist && state.radioBanner) {
+    styleImage(frame.querySelector(".banner-art"), "banner", state.themedPackaging ? "package" : null);
+    styleImage(frame.querySelector(".portrait-art"), "artist", state.themedPackaging ? "package" : null);
+  } else styleImage(frame.querySelector(".selected-image"), state.radioBanner ? "banner" : "artist");
+}
+function sliderRow(host, label, target, field, minimum = -100, maximum = 100, initial = 0) {
+  const row = node("label", "adjustment-row");
+  const top = node("span", "adjustment-label"); top.append(node("strong", "", label), node("span", "adjustment-value", ""));
+  const range = node("input"); range.type = "range"; range.min = String(minimum); range.max = String(maximum); range.value = String(field === "fit" ? Math.round((state.fit[target]?.zoom || 1) * 100) : state.fx[target][label] ?? initial);
+  const value = top.querySelector(".adjustment-value");
+  const updateLabel = () => { value.textContent = field === "fit" ? (Number(range.value) / 100).toFixed(2) + "×" : (Number(range.value) > 0 ? "+" : "") + range.value; };
+  updateLabel();
+  range.addEventListener("input", () => {
+    if (field === "fit") state.fit[target].zoom = Number(range.value) / 100;
+    else state.fx[target][label] = Number(range.value);
+    updateLabel(); applyPreviewEffects();
+  });
+  range.addEventListener("dblclick", () => { range.value = String(initial); range.dispatchEvent(new Event("input")); });
+  row.append(top, range); host.append(row);
+}
+function renderEnhancementMenus() {
+  const target = activeFxTarget();
+  const filters = $("filtersGroup"), detail = $("detailedGroup"), fitment = $("fitmentGroup");
+  clear(filters); clear(detail); clear(fitment);
+  if (!target) {
+    for (const host of [filters, detail, fitment]) host.append(node("p", "menu-note", "Select one pane radio, or enable Themed Packaging for both."));
+    return;
+  }
+  for (const label of FILTER_ROWS) sliderRow(filters, label, target, "fx");
+  for (const label of DETAIL_ROWS) sliderRow(detail, label, target, "fx");
+  if (state.editorMode !== "artist") { fitment.append(node("p", "menu-note", "Artist and banner fitment is available in Artist Art.")); return; }
+  const targets = target === "package" ? ["artist", "banner"] : target === "artist" || target === "banner" ? [target] : [];
+  if (!targets.length) { fitment.append(node("p", "menu-note", "Select Artist Image or Artist Banner to adjust fitment.")); return; }
+  fitment.append(node("p", "menu-note", "Wheel over the preview to zoom; drag the image to position."));
+  for (const component of targets) sliderRow(fitment, component === "artist" ? "Artist" : "Banner", component, "fit", 100, 300, 100);
+  const reset = node("button", "minor-button", "Reset fitment"); reset.type = "button"; reset.addEventListener("click", () => { for (const component of targets) state.fit[component] = {zoom: 1, x: 0, y: 0}; renderEnhancementMenus(); applyPreviewEffects(); }); fitment.append(reset);
 }
 function renderWorkspace() {
   for (const name of ["find", "enhance", "embed"]) {
@@ -238,52 +401,80 @@ async function loadLibrary(query = "") {
   } catch (error) { if (request === state.listRequest) setStatus(error.message, "error"); }
 }
 async function chooseArtist(id) {
+  const request = ++state.selectionRequest;
+  ++state.searchRequest;
+  clearFocusCandidates(); resetFocusAdjustments();
+  state.artist = null; state.artistMetadata = null; state.album = null;
+  state.editorMode = "artist"; state.workspace = "find";
+  renderAll();
   setStatus("Loading artist and existing artwork…", "busy");
   try {
-    state.artist = await api("/api/artist?id=" + encodeURIComponent(id));
+    const artist = await api("/api/artist?id=" + encodeURIComponent(id));
+    if (request !== state.selectionRequest) return;
+    state.artist = artist; state.artistMetadata = null;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
-    state.candidates = state.artist.local_candidates || []; state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null; state.activeSource = "";
+    state.candidates = state.artist.local_candidates || [];
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
-    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
-  } catch (error) { setStatus(error.message, "error"); }
+    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums"); loadArtistMetadata(id);
+  } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
+  const request = ++state.selectionRequest;
+  ++state.searchRequest;
+  clearFocusCandidates(); resetFocusAdjustments();
+  state.album = null; state.editorMode = "album"; state.workspace = "find";
+  renderSources(); renderCandidates(); renderWorkspace();
   setStatus("Loading album and existing cover…", "busy");
   try {
     const album = await api("/api/album?id=" + encodeURIComponent(id));
-    if (state.artist?.id !== album.artist_id) state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    if (request !== state.selectionRequest) return;
+    if (state.artist?.id !== album.artist_id) {
+      const artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+      if (request !== state.selectionRequest) return;
+      state.artist = artist; state.artistMetadata = null; loadArtistMetadata(album.artist_id);
+    }
     state.album = album; state.editorMode = "album"; state.workspace = "find";
-    state.candidates = album.candidates || []; state.selectedCover = null; state.activeSource = "";
+    state.candidates = album.candidates || [];
     renderAll(); setStatus("Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
-  } catch (error) { setStatus(error.message, "error"); }
+  } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
+}
+async function loadArtistMetadata(id) {
+  try {
+    const metadata = await api("/api/artist/metadata?id=" + encodeURIComponent(id));
+    if (state.artist?.id !== id) return;
+    state.artistMetadata = metadata; renderHero(); renderSources();
+  } catch { /* The labeled sample layout remains available when Navidrome is offline. */ }
 }
 async function searchArtist() {
   if (!state.artist) return;
   const id = state.artist.id;
+  const request = ++state.searchRequest;
   $("searchButton").disabled = true;
   setStatus("Searching Fanart.tv and Deezer for " + state.artist.name + "…", "busy");
   try {
     const result = await api("/api/search/artist", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id})});
-    if (state.artist?.id !== id || state.editorMode !== "artist") return;
+    if (request !== state.searchRequest || state.artist?.id !== id || state.editorMode !== "artist") return;
     state.candidates = [...(state.artist.local_candidates || []), ...result.candidates];
-    state.selectedPortrait = null; state.selectedBanner = null;
-    state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
-    state.activeSource = ""; renderSources(); renderCandidates(); renderPanes(); renderReview();
+    renderSources(); renderCandidates(); renderPanes(); renderReview();
     setStatus(result.candidates.length + " online candidates found" + (result.warnings.length ? " · " + result.warnings.length + " source warnings" : ""));
-  } catch (error) { setStatus(error.message, "error"); }
-  finally { $("searchButton").disabled = !state.artist; }
+  } catch (error) {
+    if (request !== state.searchRequest) return;
+    state.candidates = state.artist?.local_candidates || [];
+    renderSources(); renderCandidates();
+    setStatus("Online artist search failed · local art remains available", "error");
+  }
+  finally { if (request === state.searchRequest) $("searchButton").disabled = !state.artist; }
 }
 function enterArtistArt() {
   if (!state.artist) return;
-  const changedContext = state.editorMode !== "artist";
+  ++state.selectionRequest;
+  ++state.searchRequest;
+  $("artistArtEntry").classList.add("flash");
+  setTimeout(() => $("artistArtEntry").classList.remove("flash"), 350);
   state.editorMode = "artist";
   state.workspace = "enhance";
-  if (changedContext) {
-    state.candidates = state.artist.local_candidates || [];
-    state.selectedPortrait = null; state.selectedBanner = null;
-    state.activeSource = "";
-    state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
-  }
+  clearFocusCandidates(); resetFocusAdjustments();
+  state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false; state.themedPackaging = false;
   renderAll();
   searchArtist();
 }
@@ -314,7 +505,15 @@ function showDialog(title, lines) {
 $("artistSearch").addEventListener("input", event => { if (state.libraryMode === "artists") loadLibrary(event.target.value); });
 $("albumSearch").addEventListener("input", event => { if (state.libraryMode === "artists") renderLibrary(); else loadLibrary(event.target.value); });
 $("candidateSearch").addEventListener("input", renderCandidates);
-$("clearCandidateFilter").addEventListener("click", () => { $("candidateSearch").value = ""; state.activeSource = ""; renderSources(); renderCandidates(); });
+$("clearCandidateFilter").addEventListener("click", () => { $("candidateSearch").value = ""; state.activeSource = ""; state.candidateType = "all"; renderSources(); renderCandidates(); });
+for (const [kind, id] of [["media", "mediaFilterLock"], ["candidate", "candidateFilterLock"]]) {
+  $(id).addEventListener("click", () => {
+    const key = kind === "media" ? "mediaFilterLocked" : "candidateFilterLocked";
+    state[key] = !state[key]; $(id).textContent = state[key] ? "🔒" : "🔓"; $(id).setAttribute("aria-pressed", String(state[key]));
+    for (const field of (kind === "media" ? ["artistSearch", "albumSearch"] : ["candidateSearch", "clearCandidateFilter"])) $(field).disabled = state[key];
+    renderMediaStatusChips(); renderCandidateTypeChips();
+  });
+}
 for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums"], ["fallbackTab", "fallback"]]) {
   $(buttonId).addEventListener("click", () => { state.libraryMode = mode; loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value); renderLibrary(); });
 }
@@ -325,6 +524,10 @@ $("searchButton").addEventListener("click", () => state.editorMode === "artist" 
 $("artistArtEntry").addEventListener("click", enterArtistArt);
 $("writeButton").addEventListener("click", enterArtistArt);
 $("themedPackaging").addEventListener("click", () => { state.themedPackaging = !state.themedPackaging; renderReview(); setStatus(state.themedPackaging ? "Themed Packaging preview active · processing not connected" : "Themed Packaging preview off"); });
+$("compareButton").addEventListener("click", () => {
+  const choices = state.candidates.filter(candidate => state.compare.has(candidate.image));
+  showDialog("Candidate comparison", choices.map(candidate => candidate.source + " · " + candidate.name + " · " + candidate.width + " × " + candidate.height));
+});
 $("upscaleButton").addEventListener("click", () => { state.workspace = "enhance"; renderWorkspace(); setStatus("Enhancement layout preview · no upscale processing"); });
 $("embedBatchButton").addEventListener("click", stageAlbum);
 $("removeAllStaged").addEventListener("click", () => { state.embedQueue = []; renderQueue(); setStatus("Preview queue cleared"); });
@@ -332,8 +535,24 @@ $("collapseLibrary").addEventListener("click", () => { const collapsed = documen
 for (const [buttonId, panelId, otherId] of [["mediaFilterToggle", "mediaFilter", "candidateFilter"], ["candidateFilterToggle", "candidateFilter", "mediaFilter"]]) {
   $(buttonId).addEventListener("click", () => { const open = $(panelId).hidden; $(panelId).hidden = !open; $(otherId).hidden = true; for (const [id, panel] of [["mediaFilterToggle", "mediaFilter"], ["candidateFilterToggle", "candidateFilter"]]) { const active = !$(panel).hidden; $(id).classList.toggle("active", active); $(id).setAttribute("aria-expanded", String(active)); $(id).querySelector("b").textContent = active ? "−" : "+"; } });
 }
-for (const button of document.querySelectorAll(".group-toggle")) button.addEventListener("click", () => { const panel = $(button.dataset.group + "Group"); panel.hidden = !panel.hidden; button.querySelector("b").textContent = panel.hidden ? "+" : "−"; });
-$("resetEnhancements").addEventListener("click", () => { state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null; state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false; renderCandidates(); renderPanes(); renderReview(); setStatus("Preview selection reset · current files unchanged"); });
+for (const button of document.querySelectorAll(".group-toggle")) button.addEventListener("click", () => {
+  const panel = $(button.dataset.group + "Group"), opening = panel.hidden;
+  for (const other of document.querySelectorAll(".group-toggle")) { $(other.dataset.group + "Group").hidden = true; other.querySelector("b").textContent = "+"; }
+  panel.hidden = !opening; button.querySelector("b").textContent = opening ? "−" : "+";
+});
+$("collapseEnhancements").addEventListener("click", () => {
+  const collapsed = document.querySelector(".enhance-layout").classList.toggle("collapsed");
+  $("collapseEnhancements").textContent = collapsed ? "+" : "−"; $("collapseEnhancements").setAttribute("aria-expanded", String(!collapsed));
+  for (const button of document.querySelectorAll(".group-toggle")) { $(button.dataset.group + "Group").hidden = true; button.querySelector("b").textContent = "+"; }
+});
+$("resetEnhancements").addEventListener("click", () => {
+  const target = activeFxTarget(); if (target) state.fx[target] = {};
+  if (target === "artist" || target === "banner") state.fit[target] = {zoom: 1, x: 0, y: 0};
+  if (target === "package") { state.fit.artist = {zoom: 1, x: 0, y: 0}; state.fit.banner = {zoom: 1, x: 0, y: 0}; }
+  renderEnhancementMenus(); applyPreviewEffects();
+  $("resetEnhancements").classList.add("flash"); setTimeout(() => $("resetEnhancements").classList.remove("flash"), 350);
+  setStatus("Preview adjustments reset · current files unchanged");
+});
 $("currentRadio").addEventListener("click", () => { state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false; renderPanes(); renderReview(); });
 $("artistRadio").addEventListener("click", () => { state.radioArtist = !state.radioArtist; state.radioCurrent = !state.radioArtist && !state.radioBanner; renderPanes(); renderReview(); });
 $("bannerRadio").addEventListener("click", () => { state.radioBanner = !state.radioBanner; state.radioCurrent = !state.radioArtist && !state.radioBanner; renderPanes(); renderReview(); });
@@ -344,9 +563,26 @@ $("compReportButton").addEventListener("click", () => {
   const albums = (state.artist?.albums || []).filter(album => album.compilation);
   showDialog("COMP Report · " + (state.artist?.name || "No artist selected"), albums.length ? albums.map(album => album.name + " · " + album.tracks + " tracks · " + album.status) : ["No compilation albums are indexed for this artist."]);
 });
-$("themeButton").addEventListener("click", () => showDialog("Theme", ["This template uses the Windows dark theme colors and SPLINED branding assets.", "Additional Windows themes can be mapped here after the browser workspace behavior is established."]));
-$("settingsButton").addEventListener("click", () => showDialog("Settings", ["Browser settings are represented by this panel. The local template reads the isolated Python index and copied music files.", "The dedicated PostgreSQL catalog and container settings will be connected in the image build. No settings are changed here."]));
-$("helpButton").addEventListener("click", () => showDialog("Workspace Help", ["Choose an artist or album in Media Library, then press LAUNCH to search artist art or review folder cover candidates.", "Click candidate images to preview them. The enhancement pane radios choose current, artist, banner, or a combined package.", "EMBED Batch stages the selected album only in this browser preview. WRITE and processing actions remain unavailable."]));
+$("themeButton").addEventListener("click", () => {
+  showDialog("Theme", ["Choose the Windows inspired workspace palette. Your choice is kept in this browser."]);
+  const options = node("div", "theme-options");
+  for (const [key, label] of [["dark", "Dark"], ["chalk", "Chalk"], ["light", "Light"]]) {
+    const button = node("button", "minor-button" + (state.theme === key ? " active" : ""), label); button.type = "button";
+    button.addEventListener("click", () => { state.theme = key; document.documentElement.dataset.theme = key; try { localStorage.setItem("splined.browser-preview.theme", key); } catch {} $("workspaceDialog").close(); setStatus(label + " theme selected"); }); options.append(button);
+  }
+  $("dialogBody").append(options);
+});
+$("settingsButton").addEventListener("click", async () => {
+  try {
+    const status = await api("/api/status");
+    showDialog("Settings · browser review", ["Mode: " + status.mode, "Index: " + status.database, "Music: " + status.music, "Artist images: " + status.artist_art, "Artist search: Fanart.tv and Deezer; other Windows providers are pending browser integration.", "All artwork edits in this preview stay in memory. PostgreSQL and writes are not connected."]);
+  } catch (error) { showDialog("Settings", [error.message]); }
+});
+$("helpButton").addEventListener("click", () => {
+  showDialog("About SPLINED WebUI", ["Use the mouse to choose an artist, album, candidate image, or banner. Drag pane dividers to resize; wheel over Candidate Artwork to browse horizontally.", "Filters, Fitment, and Detailed adjust only the in-memory browser preview. WRITE, Bypass, MusicBrainz and tag embedding require the service backend.", "Current test index: isolated Python SQLite. PostgreSQL is planned for the separate web container."]);
+  const link = node("a", "guide-link", "Open WebUI guide"); link.href = "/guide"; link.target = "_blank"; link.rel = "noopener noreferrer"; $("dialogBody").append(link);
+  $("dialogBody").append(node("p", "", "The same guide is staged for docs/browser-workspace-guide.md on dev after this parity review."));
+});
 $("closeDialog").addEventListener("click", () => $("workspaceDialog").close());
 
 const workspaceElement = document.querySelector(".workspace");
@@ -418,5 +654,29 @@ $("candidateGrid").addEventListener("wheel", event => {
   $("candidateGrid").scrollLeft += event.deltaY;
   event.preventDefault();
 }, {passive: false});
+
+$("selectedFrame").addEventListener("wheel", event => {
+  if (state.editorMode !== "artist" || state.radioCurrent) return;
+  const target = state.radioArtist && state.radioBanner ? (event.target.closest(".portrait-art") ? "artist" : "banner") : state.radioBanner ? "banner" : "artist";
+  state.fit[target].zoom = clamp(state.fit[target].zoom + (event.deltaY < 0 ? .08 : -.08), 1, 3);
+  renderEnhancementMenus(); applyPreviewEffects(); event.preventDefault();
+}, {passive: false});
+let imageDrag = null;
+$("selectedFrame").addEventListener("pointerdown", event => {
+  if (state.editorMode !== "artist" || state.radioCurrent || event.button !== 0 || !event.target.closest("img")) return;
+  const target = state.radioArtist && state.radioBanner ? (event.target.closest(".portrait-art") ? "artist" : "banner") : state.radioBanner ? "banner" : "artist";
+  imageDrag = {target, x: event.clientX, y: event.clientY, startX: state.fit[target].x, startY: state.fit[target].y};
+  $("selectedFrame").setPointerCapture(event.pointerId); event.preventDefault();
+});
+$("selectedFrame").addEventListener("pointermove", event => {
+  if (!imageDrag) return;
+  const box = $("selectedFrame").getBoundingClientRect();
+  state.fit[imageDrag.target].x = clamp(imageDrag.startX + (event.clientX - imageDrag.x) / box.width * 100, -100, 100);
+  state.fit[imageDrag.target].y = clamp(imageDrag.startY + (event.clientY - imageDrag.y) / box.height * 100, -100, 100);
+  applyPreviewEffects();
+});
+$("selectedFrame").addEventListener("pointerup", () => { imageDrag = null; });
+$("selectedFrame").addEventListener("pointercancel", () => { imageDrag = null; });
+try { const theme = localStorage.getItem("splined.browser-preview.theme"); if (["dark", "chalk", "light"].includes(theme)) { state.theme = theme; document.documentElement.dataset.theme = theme; } } catch {}
 
 loadLibrary();

@@ -26,7 +26,7 @@ At narrower widths, the browser stacks these regions while keeping the same read
 | `BrandMark`, `AppTheme`, and header actions near `app.slint:172`, `app.slint:22`, and `app.slint:1830` | `.app-header`, `.brand`, `.header-actions`, CSS tokens | Use the real SPLINED icon and slogan assets; preserve centered status and right aligned Theme, Settings, Help. |
 | `MediaSelector` near `app.slint:561` | `.library`, `#artistList`, filter buttons | Artists, Albums, Fallback; expandable artist albums; filter controls and collapse affordance. |
 | Workspace buttons near `app.slint:1927` | `#findTab`, `#enhanceTab`, `#embedTab` | Art Enhancements label changes with artist/album context. |
-| `Candidate Findings` near `app.slint:2095` | `#sourceStrip` | Source icon cards, counts, and statuses. Only sources with returned candidates are selectable in the template. |
+| `Candidate Findings` near `app.slint:2095` | `#sourceStrip` | Source icon cards, counts, and truthful Ready/Results/Pending states. Clicking a source filters the candidate strip. |
 | `Artist Overview & Album Selection` near `app.slint:2114` | `#hero`, `#artistArtEntry`, `#albumGrid`, `.overview-actions` | Wide banner behind artist detail, round artist image with a small lower-left Artist Art entry radio, album cards and overview actions along the lower edge. |
 | Artist/album enhancement workspace near `app.slint:2520` | `#enhanceView`, `.enhancements`, `#paneGrid` | Left vertical controls; current package, proposed artist, proposed banner; one album cover pane in album context. |
 | `Album Track Embedding` near `app.slint:2634` | `#embedView`, `#embedQueue` | Queue starts empty and receives an album only after EMBED Batch is pressed. |
@@ -37,16 +37,17 @@ The browser assets under `python/web_preview/assets/` are copies of `windows/gui
 
 ## Mouse workflow and state
 
-1. Click an artist or album in Media Library. The artist overview, selected art, album cards, and local candidate strip update together. A new artist clears the prior selection.
+1. Click an artist or album in Media Library. The prior candidate strip and selected preview clear immediately while the next selection loads. The artist overview, selected art, album cards, and local candidates then update together. A late search response from the old focus is ignored.
 2. Press LAUNCH for an artist to fetch Fanart.tv and Deezer candidates. From a selected album, click the small radio at the lower-left of the artist thumbnail to open Artists Art Enhancements and start the same search. The orange action reads **Artist Art** while the artist search entry is available, then **WRITE Artist Art** once a proposed artist component is selected. A candidate click selects its artist image or banner independently. A source card with results filters the candidate strip; click again to clear that source filter.
 3. Press Upscale Preview or the Art Enhancements tab to inspect the enhancement layout. Artist mode shows current package, proposed artist image, and proposed banner. The three pane radios choose current, artist, banner, or both. Both proposed radios show the combined package in Selected Artwork and enable the Themed Packaging preview control. Album mode shows its cover pane.
-4. The vertical Filters, Fitment, and Detailed groups expand by mouse. Their controls are a layout reference in this template. Image processing, fitment writes, and WRITE Artist Art/Cover require the backend implementation and are disabled here. The header Theme, Settings, and Help actions open local template dialogs.
+4. The vertical Filters, Fitment, and Detailed groups expand by mouse. Their sliders and fitment gestures change the in-memory browser preview. Image processing, fitment writes, and WRITE Artist Art/Cover require the backend implementation and are disabled here. Theme selects Dark, Chalk, or Light. Settings reviews the current test paths; Help opens the [WebUI guide](browser-workspace-guide.md).
 5. With an album selected, press EMBED Batch to place it in the **browser's in-memory preview queue** and open Album Track Embedding. Queue removal is mouse driven. Start/Pause actions are disabled until a real embedding service is connected. No track tag changes occur in this template. Merely opening Album Track Embedding never stages an album.
 6. Drag the divider beside Media Library or Selected Artwork to resize either side pane. Drag the handle above Candidate Artwork upward to enlarge the candidate strip and its image cards. The candidate strip scrolls horizontally with the mouse wheel. Divider positions persist in browser storage and can also be changed with arrow keys when a divider has focus.
 
 ## Data and write boundaries
 
 - The local template currently reads the isolated Python SQLite index and copied music files through `python/web_preview.py`. It uses neither the live Windows database nor the new PostgreSQL container yet.
+- Artist biography and similar-artist names are requested read-only from Navidrome when local credentials are available. The interface labels the fallback similar-artist cards as sample data and does not invent a biography. Navidrome metadata is not an image-search provider in this build.
 - Candidate searches may request remote art. The template holds image bytes in memory for preview; it does not write artwork, thumbnails, tags, or a persistent candidate cache.
 - The proposed PostgreSQL catalog should index the same mounted `/music` library, with artist, album, track, embedded-art status, and source references. Music files and approved `artist.*`, `banner.*`, and `cover.*` remain on mounted storage. PostgreSQL stores identity and indexing metadata, not duplicate image blobs.
 - Before enabling WRITE or embedding in a deployed build, add authenticated mutating endpoints, recheck the live file and image identity at write time, and record the affected artist/album/track paths in separate Python logs. The Windows app must continue to own its existing database and write behavior independently.
@@ -66,3 +67,7 @@ In the supplied Compose environment, correct `DB_PASS: ${SPLLINED_POSTGRESQL_PAS
 - The artist shortcut starts its candidate search from a selected album. Resizing Candidate Artwork increases image visibility while leaving the library and selected preview in place.
 - EMBED Batch is the only staging entry point; opening the queue alone leaves it empty.
 - A Windows UI change updates this schematic, browser markup, and any copied assets in the same review.
+
+## Windows follow-up
+
+The Windows Artist Art search handler clears candidates at search start. The reported case where Fallback LAUNCH can retain earlier embedded MusicBrainz candidates or show them in the next preview is a separate Windows flow to reproduce and fix; this browser preview does not implement Fallback LAUNCH or MusicBrainz candidate review yet.
