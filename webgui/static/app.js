@@ -21,7 +21,7 @@ const state = {
   libraryLoading: false,
 };
 const scrollPositions = new Map(), scrollSurfaceKeys = new Map(), restoringScroll = new Set();
-const SCROLL_SURFACES = ["artistList", "overviewContent", "albumGrid", "findView"];
+const SCROLL_SURFACES = ["artistList", "hero", "albumGrid", "findView"];
 function rememberScroll(id) {
   const element = $(id), key = scrollSurfaceKeys.get(id);
   if (!key || restoringScroll.has(id) || !element.getClientRects().length) return;
@@ -401,7 +401,7 @@ function renderArtistBiography(artist, metadata) {
 function renderHero() {
   const context = state.editorMode === "fallback" ? (state.album ? "fallback:" + state.album.id : "")
     : state.artist ? "artist:" + state.artist.id : "";
-  renderWithScrollMemory(["overviewContent", "albumGrid", "findView"], context, renderHeroContents);
+  renderWithScrollMemory(["hero", "albumGrid", "findView"], context, renderHeroContents);
 }
 function renderHeroContents() {
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
@@ -606,11 +606,7 @@ function openArtistCompReport(albumId = "") {
   if (albumId) state.compCollapsed.delete(albumId);
   state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();
   const report = $("fallbackReport");
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (!state.compReportVisible) return;
-    const viewport = $("overviewContent");
-    viewport.scrollTop += report.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12;
-  }));
+  $("hero").scrollTop = Math.max(0, report.offsetTop - $("hero").offsetTop - 12);
   setStatus(`COMP report ready · ${state.compGroups.length} albums · ${state.compGroups.reduce((count, group) => count + group.tracks.length, 0)} matching tracks`);
   probeArtistCompStatuses();
 }
