@@ -48,15 +48,29 @@ jobs:
       - if: always()
         run: docker logs splined-webgui-test || true
   native:
+    name: native (${{ matrix.os }})
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            toolchain: stable
+          - os: windows-latest
+            toolchain: '1.99.0'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --no-self-update
+        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --no-self-update
+      - name: Install Windows Rust quality components
+        if: runner.os == 'Windows'
+        run: rustup component add rustfmt clippy --toolchain ${{ matrix.toolchain }}
+      - name: Check Windows Rust formatting
+        if: runner.os == 'Windows'
+        run: cargo +${{ matrix.toolchain }} fmt --manifest-path windows/Cargo.toml -- --check
+      - name: Check Windows Rust lints
+        if: runner.os == 'Windows'
+        run: cargo +${{ matrix.toolchain }} clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
       - if: runner.os == 'Linux'
-        run: cargo +stable test --locked
+        run: cargo +${{ matrix.toolchain }} test --locked
       - if: runner.os == 'Windows'
-        run: cargo +stable test --manifest-path windows/Cargo.toml --lib --bin splined --locked
+        run: cargo +${{ matrix.toolchain }} test --manifest-path windows/Cargo.toml --lib --bin splined --locked --target x86_64-pc-windows-msvc

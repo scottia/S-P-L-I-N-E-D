@@ -26,6 +26,13 @@ Windows Rust formatting, Clippy, and library test checks. The standard Windows
 build always compiles the Rust/Slint executable; the checkbox adds strict
 validation rather than enabling Slint compilation.
 
+Regular pull-request and branch validation also runs the Windows formatting,
+Clippy (`-D warnings`), library, and application tests with Rust 1.99.0, matching
+the release toolchain and x64 Windows target. Keep that validation toolchain in
+sync with workflows 01 and 02 when updating Rust. For a Windows release, enable
+extended validation to repeat the quality checks against the exact versioned
+release source before packaging.
+
 The two Store options are both off by default and mutually exclusive:
 
 - **Submit Update/No Draft:** build and validate the Store MSIX, stage it with
