@@ -4169,7 +4169,7 @@ fn apply_upscale_overrides(
     }
     if !(-180..=180).contains(&overrides.hue_degrees)
         || !(0..=100).contains(&overrides.darkness_percent)
-        || !(0..=100).contains(&overrides.tint_percent)
+        || !(-100..=100).contains(&overrides.tint_percent)
     {
         return Err("Upscale hue, darkness, or tint override is out of range.".to_string());
     }
@@ -5167,6 +5167,13 @@ mod tests {
         assert_eq!(output.upscale_brightness_percent, 5);
         assert_eq!(output.upscale_gamma_percent, -2);
         assert_eq!(output.upscale_color_temperature, -25);
+
+        let negative_tint = gui_events::UpscaleOverrides {
+            tint_percent: -35,
+            ..overrides.clone()
+        };
+        apply_upscale_overrides(&mut output, &negative_tint).unwrap();
+        assert_eq!(output.upscale_tint_percent, -35);
 
         let invalid = gui_events::UpscaleOverrides {
             sharpen_percent: 21,

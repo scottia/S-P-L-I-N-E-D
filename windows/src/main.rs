@@ -1061,6 +1061,37 @@ fn schedule_main_maximize_repairs(weak: slint::Weak<AppWindow>, guard: MaximizeG
     }
 }
 
+fn schedule_main_reactivation_repaints(
+    weak: slint::Weak<AppWindow>,
+    ui_debug_log: Option<UiDebugLog>,
+) {
+    let Some(ui) = weak.upgrade() else {
+        return;
+    };
+    let (width, height) = app_logical_window_size(&ui);
+    if let Some(log) = ui_debug_log.as_ref() {
+        log.record(format!(
+            "main-reactivated repaint-requested size={width}x{height} maximized={} retries=2",
+            ui.window().is_maximized()
+        ));
+    }
+    ui.window().request_redraw();
+    drop(ui);
+
+    // The Windows compositor can restore an occluded software-rendered surface
+    // over more than one event-loop turn. Repaint only on a real foreground
+    // transition, with two short retries, rather than continuously redrawing
+    // the large main window while it is idle.
+    for delay in [80, 240] {
+        let weak = weak.clone();
+        Timer::single_shot(Duration::from_millis(delay), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().request_redraw();
+            }
+        });
+    }
+}
+
 fn capture_ui_preferences(
     ui: &AppWindow,
     state: &Arc<Mutex<ApplicationState>>,
@@ -2578,15 +2609,44 @@ fn prepare_artist_art_png_with_fit(
     let decoded = image::load_from_memory(source)
         .map_err(|error| format!("Unable to decode selected Artist Art: {error}"))?;
     let source_side = decoded.width().min(decoded.height());
-    let crop_side = ((source_side as f32 / zoom.clamp(1.0, 8.0)).round() as u32).max(1);
-    let crop_x = ((decoded.width() - crop_side) as f32 / 2.0
-        - horizontal.clamp(-0.4, 0.4) * decoded.width() as f32)
-        .clamp(0.0, (decoded.width() - crop_side) as f32).round() as u32;
-    let crop_y = ((decoded.height() - crop_side) as f32 / 2.0
-        - vertical.clamp(-0.4, 0.4) * decoded.height() as f32)
-        .clamp(0.0, (decoded.height() - crop_side) as f32).round() as u32;
-    let framed = image::imageops::crop_imm(&decoded, crop_x, crop_y, crop_side, crop_side).to_image();
-    let mut thumbnail = image::imageops::resize(&framed, SIZE, SIZE, image::imageops::FilterType::Lanczos3);
+    let zoom = zoom.clamp(0.5, 8.0);
+    let mut thumbnail = if zoom < 1.0 {
+        let framed = image::imageops::crop_imm(
+            &decoded,
+            (decoded.width() - source_side) / 2,
+            (decoded.height() - source_side) / 2,
+            source_side,
+            source_side,
+        )
+        .to_image();
+        let reduced_side = ((SIZE as f32 * zoom).round() as u32).clamp(1, SIZE);
+        let reduced = image::imageops::resize(
+            &framed,
+            reduced_side,
+            reduced_side,
+            image::imageops::FilterType::Lanczos3,
+        );
+        let mut canvas = image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([0, 0, 0, 255]));
+        let x = ((SIZE - reduced_side) as f32 / 2.0 + horizontal.clamp(-0.4, 0.4) * SIZE as f32)
+            .round() as i64;
+        let y = ((SIZE - reduced_side) as f32 / 2.0 + vertical.clamp(-0.4, 0.4) * SIZE as f32)
+            .round() as i64;
+        image::imageops::overlay(&mut canvas, &reduced, x, y);
+        canvas
+    } else {
+        let crop_side = ((source_side as f32 / zoom).round() as u32).max(1);
+        let crop_x = ((decoded.width() - crop_side) as f32 / 2.0
+            - horizontal.clamp(-0.4, 0.4) * decoded.width() as f32)
+            .clamp(0.0, (decoded.width() - crop_side) as f32)
+            .round() as u32;
+        let crop_y = ((decoded.height() - crop_side) as f32 / 2.0
+            - vertical.clamp(-0.4, 0.4) * decoded.height() as f32)
+            .clamp(0.0, (decoded.height() - crop_side) as f32)
+            .round() as u32;
+        let framed =
+            image::imageops::crop_imm(&decoded, crop_x, crop_y, crop_side, crop_side).to_image();
+        image::imageops::resize(&framed, SIZE, SIZE, image::imageops::FilterType::Lanczos3)
+    };
     if let Some(output) = output {
         thumbnail =
             apply_selected_image_adjustments(image::DynamicImage::ImageRgba8(thumbnail), output)
@@ -2815,7 +2875,7 @@ fn compose_artist_banner_with_position(
         .blur(5.0)
         .resize_exact(WIDTH, HEIGHT, image::imageops::FilterType::Triangle)
         .to_rgba8();
-    let zoom = zoom.clamp(1.0, 8.0);
+    let zoom = zoom.clamp(0.5, 8.0);
     let foreground = decoded
         .resize(
             ((WIDTH as f32 * zoom).round() as u32).max(1),
@@ -2850,7 +2910,9 @@ fn enhanced_artist_banner_with_position(
     let decoded = image::load_from_memory(source)
         .map_err(|error| format!("Unable to decode banner source: {error}"))?;
     Ok(apply_selected_image_adjustments(
-        image::DynamicImage::ImageRgba8(compose_artist_banner_with_position(&decoded, zoom, horizontal, vertical)),
+        image::DynamicImage::ImageRgba8(compose_artist_banner_with_position(
+            &decoded, zoom, horizontal, vertical,
+        )),
         output,
     ))
 }
@@ -3401,7 +3463,9 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Ok(mut app) = timer_state.lock()
                 && app.phase == RunPhase::Idle
                 && overview_artist_name(&app).is_some_and(|artist| {
-                    !artist.trim().eq_ignore_ascii_case(app.current_artist.trim())
+                    !artist
+                        .trim()
+                        .eq_ignore_ascii_case(app.current_artist.trim())
                 })
             {
                 if app.library.view == LibraryView::Artists {
@@ -3485,10 +3549,21 @@ fn main() -> Result<(), slint::PlatformError> {
     let geometry_state = Arc::clone(&state);
     let geometry_layout = Rc::clone(&workspace_layout);
     let geometry_maximize_guard = main_window_guard.clone();
+    let geometry_was_foreground = Rc::new(Cell::new(process_owns_foreground_window()));
+    let geometry_foreground_state = Rc::clone(&geometry_was_foreground);
+    let geometry_repaint_log = ui_debug_log.clone();
     geometry_timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
         let Some(ui) = geometry_weak.upgrade() else {
             return;
         };
+        let process_is_foreground = process_owns_foreground_window();
+        let was_foreground = geometry_foreground_state.replace(process_is_foreground);
+        if process_is_foreground && !was_foreground {
+            schedule_main_reactivation_repaints(
+                geometry_weak.clone(),
+                geometry_repaint_log.clone(),
+            );
+        }
         let (window_width, window_height) = app_logical_window_size(&ui);
         let maximized = ui.window().is_maximized();
         if repair_main_maximized_rect(&ui, &geometry_maximize_guard) {
@@ -6374,7 +6449,10 @@ fn sync_embed_queue_window(
                     embedded_artwork_footer(&infos, app.config.output.embedded_thumbnail_size);
                 format!(
                     "{} · {} tracks · Before: {} / {} · After: {} × {} each",
-                    if ready.as_ref().is_some_and(|(_, source)| source.starts_with("memory-preview://")) {
+                    if ready
+                        .as_ref()
+                        .is_some_and(|(_, source)| source.starts_with("memory-preview://"))
+                    {
                         "Edited preview"
                     } else {
                         "Selected cover"
@@ -7172,7 +7250,9 @@ fn bind_embed_queue(
             if let Err(error) = sync_embed_queue_window(&window, &state, &database) {
                 window.set_queue_status(format!("Embed queue error: {error}").into());
             }
-            if let Some(main) = main_weak.upgrade() { main.set_workspace_mode(3); }
+            if let Some(main) = main_weak.upgrade() {
+                main.set_workspace_mode(3);
+            }
             if window.get_current_ready() {
                 window.invoke_queue_current();
             }
@@ -7242,7 +7322,9 @@ fn bind_embed_queue(
                 Ok(targets) => targets,
                 Err(error) => {
                     window.set_queue_message(error.into());
-                    if let Some(main) = main_weak.upgrade() { main.set_workspace_mode(3); }
+                    if let Some(main) = main_weak.upgrade() {
+                        main.set_workspace_mode(3);
+                    }
                     let _ = sync_embed_queue_window(&window, &state, &database);
                     return;
                 }
@@ -7257,7 +7339,9 @@ fn bind_embed_queue(
                 .into(),
             );
             window.set_staging_count(staging_count.fetch_add(1, Ordering::Relaxed) as i32 + 1);
-            if let Some(main) = main_weak.upgrade() { main.set_workspace_mode(3); }
+            if let Some(main) = main_weak.upgrade() {
+                main.set_workspace_mode(3);
+            }
             let _ = sync_embed_queue_window(&window, &state, &database);
             let state = Arc::clone(&state);
             let database = database.clone();
@@ -8677,7 +8761,9 @@ fn bind_callbacks(
             });
             if let Some(artist) = artist.as_deref()
                 && let Ok(mut app) = state.lock()
-                && !prior_artist.as_deref().is_some_and(|prior| prior.eq_ignore_ascii_case(artist))
+                && !prior_artist
+                    .as_deref()
+                    .is_some_and(|prior| prior.eq_ignore_ascii_case(artist))
             {
                 clear_staged_candidate_review(&mut app);
                 app.musicbrainz_cover_preview_path.clear();
@@ -8693,8 +8779,11 @@ fn bind_callbacks(
                 app.artist_artwork_mode = false;
             }
             if prior_artist.as_deref().is_some_and(|prior| {
-                artist.as_deref().is_some_and(|current| !prior.eq_ignore_ascii_case(current))
-            }) && controller.is_running() {
+                artist
+                    .as_deref()
+                    .is_some_and(|current| !prior.eq_ignore_ascii_case(current))
+            }) && controller.is_running()
+            {
                 controller.stop();
             }
             if let Some(artist) = artist {
@@ -9284,6 +9373,21 @@ fn bind_callbacks(
                 }
                 let (plan, report) = artist_compilation_thumb_repair_plan(&app)?;
                 app.operation_busy = true;
+                app.compilation_report_collapsed_albums.clear();
+                app.compilation_report_preview_mode = false;
+                app.compilation_report_preview_album_key.clear();
+                app.compilation_report_preview_track_path.clear();
+                app.compilation_report_auto_close_armed = false;
+                app.compilation_report_close_pending = false;
+                app.compilation_report_generation = app.compilation_report_generation.wrapping_add(1);
+                app.compilation_report_artist = plan.artist.clone();
+                app.compilation_report_checking = true;
+                app.compilation_report_summary = format!(
+                    "{} album{} · {} tracks · checking embedded thumbnails…",
+                    plan.album_paths.len(),
+                    if plan.album_paths.len() == 1 { "" } else { "s" },
+                    report.len(),
+                );
                 app.operation_status = format!(
                     "Compiling {} COMP report · checking {} track{} across {} album{}…",
                     plan.artist,
@@ -9293,9 +9397,9 @@ fn bind_callbacks(
                     if plan.album_paths.len() == 1 { "" } else { "s" }
                 );
                 app.operation_tone = "violet".into();
-                Ok::<_, String>((plan, report))
+                Ok::<_, String>((plan, report, app.compilation_report_generation))
             })();
-            let (mut plan, report) = match prepared {
+            let (mut plan, report, generation) = match prepared {
                 Ok(value) => value,
                 Err(error) => {
                     record_action_result(&state_for_report, Err(error));
@@ -9342,22 +9446,18 @@ fn bind_callbacks(
                         app.operation_busy = false;
                         let same = app.library.selection_epoch == plan.selection_epoch
                             && app.library.focused_artist.as_deref()
-                                == Some(plan.artist.as_str());
+                                == Some(plan.artist.as_str())
+                            && app.compilation_report_artist == plan.artist
+                            && app.compilation_report_generation == generation;
                         if same {
+                            app.compilation_report_checking = false;
                             let albums = artist_overview_ui_model(&app);
                             let unfinished_album = (0..albums.row_count()).any(|index| {
                                 albums.row_data(index).is_some_and(|album| !album.fully_complete)
                             });
-                            app.compilation_report_collapsed_albums.clear();
-                            app.compilation_report_preview_mode = false;
-                            app.compilation_report_preview_album_key.clear();
-                            app.compilation_report_preview_track_path.clear();
                             app.compilation_report_auto_close_armed = unfinished_album
                                 || purple > 0 || blue > 0 || missing > 0;
                             app.compilation_report_close_pending = false;
-                            app.compilation_report_generation =
-                                app.compilation_report_generation.wrapping_add(1);
-                            app.compilation_report_artist = plan.artist.clone();
                             app.compilation_report_summary = format!(
                                 "{} album{} · {} tracks: {green} green, {purple} repairable, {blue} need artwork, {missing} unreadable",
                                 plan.album_paths.len(),
@@ -9950,7 +10050,13 @@ fn bind_callbacks(
                 let result = (|| -> Result<PathBuf, String> {
                     let source_bytes = fs::read(&source)
                         .map_err(|error| format!("Unable to read banner source: {error}"))?;
-                    let composed = enhanced_artist_banner_with_position(&source_bytes, zoom, horizontal, vertical, &output)?;
+                    let composed = enhanced_artist_banner_with_position(
+                        &source_bytes,
+                        zoom,
+                        horizontal,
+                        vertical,
+                        &output,
+                    )?;
                     let composed = if let Some(theme) = &theme_output {
                         apply_selected_image_adjustments(composed, theme)
                     } else {
@@ -10555,7 +10661,9 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_candidate_portrait_preview(move |index| {
-            if let Some(ui) = weak.upgrade() { ui.set_artist_preview_reset_active(false); }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_artist_preview_reset_active(false);
+            }
             if let Ok(mut app) = state.lock()
                 && app.artist_artwork_mode
             {
@@ -10719,7 +10827,9 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_candidate_banner_preview(move |index| {
-            if let Some(ui) = weak.upgrade() { ui.set_artist_preview_reset_active(false); }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_artist_preview_reset_active(false);
+            }
             if let Ok(mut app) = state.lock() {
                 let candidate = app
                     .candidates
@@ -10781,7 +10891,7 @@ fn bind_callbacks(
             if let Ok(mut app) = state.lock()
                 && !app.artist_banner_source_path.is_empty()
             {
-                app.artist_banner_zoom = zoom.clamp(1.0, 8.0);
+                app.artist_banner_zoom = zoom.clamp(0.5, 8.0);
                 app.artist_banner_vertical = vertical.clamp(-0.4, 0.4);
                 app.artist_theme_banner_preview_path.clear();
                 // The adjusted frame is a preview only; clicking Upscale Preview
@@ -10810,9 +10920,13 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_banner_framing_pan(move |zoom, horizontal, vertical| {
-            if let Some(ui) = weak.upgrade() { ui.set_artist_preview_reset_active(false); }
-            if let Ok(mut app) = state.lock() && !app.artist_banner_source_path.is_empty() {
-                app.artist_banner_zoom = zoom.clamp(1.0, 8.0);
+            if let Some(ui) = weak.upgrade() {
+                ui.set_artist_preview_reset_active(false);
+            }
+            if let Ok(mut app) = state.lock()
+                && !app.artist_banner_source_path.is_empty()
+            {
+                app.artist_banner_zoom = zoom.clamp(0.5, 8.0);
                 app.artist_banner_horizontal = horizontal.clamp(-0.4, 0.4);
                 app.artist_banner_vertical = vertical.clamp(-0.4, 0.4);
                 app.artist_banner_preview_path = app.artist_banner_source_path.clone();
@@ -10826,9 +10940,13 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_portrait_framing(move |zoom, horizontal, vertical| {
-            if let Some(ui) = weak.upgrade() { ui.set_artist_preview_reset_active(false); }
-            if let Ok(mut app) = state.lock() && !app.artist_artwork_draft_path.is_empty() {
-                app.artist_portrait_zoom = zoom.clamp(1.0, 8.0);
+            if let Some(ui) = weak.upgrade() {
+                ui.set_artist_preview_reset_active(false);
+            }
+            if let Ok(mut app) = state.lock()
+                && !app.artist_artwork_draft_path.is_empty()
+            {
+                app.artist_portrait_zoom = zoom.clamp(0.5, 8.0);
                 app.artist_portrait_horizontal = horizontal.clamp(-0.4, 0.4);
                 app.artist_portrait_vertical = vertical.clamp(-0.4, 0.4);
                 app.artist_portrait_preview_path = app.artist_artwork_draft_path.clone();
@@ -10842,7 +10960,9 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_reset_artist_preview(move || {
-            if let Ok(mut app) = state.lock() && app.artist_artwork_mode {
+            if let Ok(mut app) = state.lock()
+                && app.artist_artwork_mode
+            {
                 reset_enhancement_preview_state(&mut app);
             }
             refresh_weak(&weak, &state);
@@ -11431,7 +11551,9 @@ fn bind_callbacks(
         let revision = Arc::clone(&adjustment_preview_revision);
         let gate = Arc::clone(&adjustment_preview_gate);
         ui.on_adjustment_step(move |name, delta| {
-            if let Some(ui) = weak.upgrade() { ui.set_artist_preview_reset_active(false); }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_artist_preview_reset_active(false);
+            }
             if let Ok(mut app) = state.lock() {
                 if name == "Tint" && weak.upgrade().is_some_and(|ui| ui.get_page_index() == 1) {
                     app.tint_palette_source.clear();
@@ -11474,14 +11596,18 @@ fn bind_callbacks(
         let gate = Arc::clone(&adjustment_preview_gate);
         ui.on_filter_intensity_step(move |name, delta| {
             let result = state.lock().ok().and_then(|mut app| {
-                let index = FILTER_MENU_NAMES.iter().position(|label| *label == name.as_str())?;
+                let index = FILTER_MENU_NAMES
+                    .iter()
+                    .position(|label| *label == name.as_str())?;
                 let target = active_filter_levels(&app)[index] + delta;
                 change_filter_level(&mut app, name.as_str(), target)
                     .then(|| app.adjustments.slider_values())
             });
             if let Some(values) = result {
                 apply_adjustment_values(&state, &weak, &revision, &gate, values, None);
-            } else { refresh_weak(&weak, &state); }
+            } else {
+                refresh_weak(&weak, &state);
+            }
         });
     }
     {
@@ -11490,14 +11616,20 @@ fn bind_callbacks(
         let revision = Arc::clone(&adjustment_preview_revision);
         let gate = Arc::clone(&adjustment_preview_gate);
         ui.on_filter_intensity_set(move |name, position| {
-            let target = if position.is_finite() { (-5.0 + position.clamp(0.0, 1.0) * 10.0).round() as i32 } else { 0 };
+            let target = if position.is_finite() {
+                (-5.0 + position.clamp(0.0, 1.0) * 10.0).round() as i32
+            } else {
+                0
+            };
             let result = state.lock().ok().and_then(|mut app| {
                 change_filter_level(&mut app, name.as_str(), target)
                     .then(|| app.adjustments.slider_values())
             });
             if let Some(values) = result {
                 apply_adjustment_values(&state, &weak, &revision, &gate, values, None);
-            } else { refresh_weak(&weak, &state); }
+            } else {
+                refresh_weak(&weak, &state);
+            }
         });
     }
     {
@@ -11509,14 +11641,39 @@ fn bind_callbacks(
             let values = state.lock().ok().map(|mut app| {
                 ensure_active_tint_palette(&mut app);
                 let saved = AdjustmentState::from_config(&app.config).slider_values();
-                for (name, amount) in [("Hue", 5), ("Tint", 5), ("Gamma", 2), ("Picture", 2), ("Exposure", 2), ("Brightness", 2)] {
-                    let index = ["Picture", "Sharpen", "Softness", "Contrast", "Exposure", "Brightness", "Gamma", "Color", "Hue", "Darkness", "Tint"]
-                        .iter().position(|candidate| *candidate == name).unwrap_or_default();
-                    if app.adjustments.slider_values()[index] == saved[index] { step_adjustment(&mut app, name, amount); }
+                for (name, amount) in [
+                    ("Hue", 5),
+                    ("Tint", 5),
+                    ("Gamma", 2),
+                    ("Picture", 2),
+                    ("Exposure", 2),
+                    ("Brightness", 2),
+                ] {
+                    let index = [
+                        "Picture",
+                        "Sharpen",
+                        "Softness",
+                        "Contrast",
+                        "Exposure",
+                        "Brightness",
+                        "Gamma",
+                        "Color",
+                        "Hue",
+                        "Darkness",
+                        "Tint",
+                    ]
+                    .iter()
+                    .position(|candidate| *candidate == name)
+                    .unwrap_or_default();
+                    if app.adjustments.slider_values()[index] == saved[index] {
+                        step_adjustment(&mut app, name, amount);
+                    }
                 }
                 app.adjustments.slider_values()
             });
-            if let Some(values) = values { apply_adjustment_values(&state, &weak, &revision, &gate, values, None); }
+            if let Some(values) = values {
+                apply_adjustment_values(&state, &weak, &revision, &gate, values, None);
+            }
         });
     }
     {
@@ -11524,12 +11681,16 @@ fn bind_callbacks(
         let weak = ui.as_weak();
         let revision = Arc::clone(&adjustment_preview_revision);
         ui.on_reset_enhancement_preview(move || {
-            if let Ok(mut app) = state.lock() { reset_enhancement_preview_state(&mut app); }
+            if let Ok(mut app) = state.lock() {
+                reset_enhancement_preview_state(&mut app);
+            }
             revision.fetch_add(1, Ordering::SeqCst);
             refresh_weak(&weak, &state);
             let weak_reset = weak.clone();
             slint::Timer::single_shot(std::time::Duration::from_millis(550), move || {
-                if let Some(ui) = weak_reset.upgrade() { ui.set_enhancement_reset_active(false); }
+                if let Some(ui) = weak_reset.upgrade() {
+                    ui.set_enhancement_reset_active(false);
+                }
             });
         });
     }
@@ -11539,7 +11700,9 @@ fn bind_callbacks(
         let revision = Arc::clone(&adjustment_preview_revision);
         let gate = Arc::clone(&adjustment_preview_gate);
         ui.on_adjustment_set(move |name, position| {
-            if let Some(ui) = weak.upgrade() { ui.set_artist_preview_reset_active(false); }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_artist_preview_reset_active(false);
+            }
             if let Ok(mut app) = state.lock() {
                 if name == "Tint" && weak.upgrade().is_some_and(|ui| ui.get_page_index() == 1) {
                     app.tint_palette_source.clear();
@@ -11579,9 +11742,10 @@ fn bind_callbacks(
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
         ui.on_adjustment_relative_set(move |name, position| {
-            let absolute = state.lock().ok().map(|app| {
-                relative_adjustment_position(&app, name.as_str(), position)
-            });
+            let absolute = state
+                .lock()
+                .ok()
+                .map(|app| relative_adjustment_position(&app, name.as_str(), position));
             if let (Some(ui), Some(absolute)) = (weak.upgrade(), absolute) {
                 ui.invoke_adjustment_set(name, absolute);
             }
@@ -13443,7 +13607,9 @@ fn apply_adjustment_values(
     values: [i32; 11],
     tint_color: Option<String>,
 ) {
-    if let Some(ui) = weak.upgrade() { ui.set_artist_preview_reset_active(false); }
+    if let Some(ui) = weak.upgrade() {
+        ui.set_artist_preview_reset_active(false);
+    }
     if let Ok(mut app) = state.lock() {
         app.adjustments.apply_slider_values(values);
         if let Some(tint_color) = tint_color {
@@ -13481,24 +13647,55 @@ fn apply_adjustment_values(
 }
 
 fn stack_adjustment_values(current: [i32; 11], increment: [i32; 11]) -> [i32; 11] {
-    let names = ["Picture", "Sharpen", "Softness", "Contrast", "Exposure", "Brightness", "Gamma", "Color", "Hue", "Darkness", "Tint"];
+    let names = [
+        "Picture",
+        "Sharpen",
+        "Softness",
+        "Contrast",
+        "Exposure",
+        "Brightness",
+        "Gamma",
+        "Color",
+        "Hue",
+        "Darkness",
+        "Tint",
+    ];
     std::array::from_fn(|index| {
         let (minimum, maximum) = adjustment_bounds(names[index]);
-        current[index].saturating_add(increment[index]).clamp(minimum, maximum)
+        current[index]
+            .saturating_add(increment[index])
+            .clamp(minimum, maximum)
     })
 }
 
 const FILTER_MENU_NAMES: [&str; 14] = [
-    "Default", "Clarity", "Vivid Color", "Warm/Cool Color", "Low/Dark Light",
-    "Soft/Sharper", "High/Low Contrast", "Portrait Mode", "Blur Background",
-    "Custom A", "Custom B", "Custom C", "Custom D", "Detailed Default",
+    "Default",
+    "Clarity",
+    "Vivid Color",
+    "Warm/Cool Color",
+    "Low/Dark Light",
+    "Soft/Sharper",
+    "High/Low Contrast",
+    "Portrait Mode",
+    "Blur Background",
+    "Custom A",
+    "Custom B",
+    "Custom C",
+    "Custom D",
+    "Detailed Default",
 ];
 
 fn filter_increment(app: &ApplicationState, index: usize) -> [i32; 11] {
     let saved_default = || {
-        AdjustmentState::from_config(&app.config).slider_values().map(|value| {
-            if value == 0 { 0 } else { value.signum() * (value.abs() / 5).max(1) }
-        })
+        AdjustmentState::from_config(&app.config)
+            .slider_values()
+            .map(|value| {
+                if value == 0 {
+                    0
+                } else {
+                    value.signum() * (value.abs() / 5).max(1)
+                }
+            })
     };
     match index {
         0 => saved_default(),
@@ -13510,12 +13707,25 @@ fn filter_increment(app: &ApplicationState, index: usize) -> [i32; 11] {
         6 => [0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0],
         7 => [3, 0, 4, -2, 0, 2, 0, 0, 0, 0, 0],
         8 => [0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0],
-        9..=12 => app.adjustment_presets.get(index - 8).filter(|preset| preset.saved)
-            .map(|preset| preset.values.map(|value| if value == 0 { 0 } else { value.signum() * (value.abs() / 5).max(1) }))
+        9..=12 => app
+            .adjustment_presets
+            .get(index - 8)
+            .filter(|preset| preset.saved)
+            .map(|preset| {
+                preset.values.map(|value| {
+                    if value == 0 {
+                        0
+                    } else {
+                        value.signum() * (value.abs() / 5).max(1)
+                    }
+                })
+            })
             .unwrap_or([0; 11]),
         13 => {
             let mut values = saved_default();
-            for index in [1, 2, 3, 7, 9] { values[index] = 0; }
+            for index in [1, 2, 3, 7, 9] {
+                values[index] = 0;
+            }
             values
         }
         _ => [0; 11],
@@ -13523,7 +13733,9 @@ fn filter_increment(app: &ApplicationState, index: usize) -> [i32; 11] {
 }
 
 fn active_filter_levels(app: &ApplicationState) -> [i32; 14] {
-    if !app.artist_artwork_mode { return app.album_filter_levels; }
+    if !app.artist_artwork_mode {
+        return app.album_filter_levels;
+    }
     match app.artist_preview_focus.as_str() {
         "banner" => app.artist_banner_filter_levels,
         "theme" => app.artist_theme_filter_levels,
@@ -13532,7 +13744,10 @@ fn active_filter_levels(app: &ApplicationState) -> [i32; 14] {
 }
 
 fn set_active_filter_levels(app: &mut ApplicationState, levels: [i32; 14]) {
-    if !app.artist_artwork_mode { app.album_filter_levels = levels; return; }
+    if !app.artist_artwork_mode {
+        app.album_filter_levels = levels;
+        return;
+    }
     match app.artist_preview_focus.as_str() {
         "banner" => app.artist_banner_filter_levels = levels,
         "theme" => app.artist_theme_filter_levels = levels,
@@ -13541,11 +13756,15 @@ fn set_active_filter_levels(app: &mut ApplicationState, levels: [i32; 14]) {
 }
 
 fn change_filter_level(app: &mut ApplicationState, name: &str, target: i32) -> bool {
-    let Some(index) = FILTER_MENU_NAMES.iter().position(|label| *label == name) else { return false; };
+    let Some(index) = FILTER_MENU_NAMES.iter().position(|label| *label == name) else {
+        return false;
+    };
     let target = target.clamp(-5, 5);
     let mut levels = active_filter_levels(app);
     let difference = target - levels[index];
-    if difference == 0 { return false; }
+    if difference == 0 {
+        return false;
+    }
     let increment = filter_increment(app, index).map(|value| value.saturating_mul(difference));
     if increment == [0; 11] && (9..=12).contains(&index) {
         app.operation_status = format!("Save {} in Settings before adjusting its intensity", name);
@@ -13553,7 +13772,8 @@ fn change_filter_level(app: &mut ApplicationState, name: &str, target: i32) -> b
         return false;
     }
     if increment == [0; 11] && (index == 0 || index == 13) {
-        app.operation_status = "Set enhancement defaults in Settings before changing Default intensity".to_string();
+        app.operation_status =
+            "Set enhancement defaults in Settings before changing Default intensity".to_string();
         app.operation_tone = "orange".to_string();
         return false;
     }
@@ -13566,7 +13786,10 @@ fn change_filter_level(app: &mut ApplicationState, name: &str, target: i32) -> b
     true
 }
 
-fn sync_enhancement_menu_rows(existing: ModelRc<UiAdjustmentRow>, rows: Vec<UiAdjustmentRow>) -> bool {
+fn sync_enhancement_menu_rows(
+    existing: ModelRc<UiAdjustmentRow>,
+    rows: Vec<UiAdjustmentRow>,
+) -> bool {
     if existing.row_count() != rows.len() {
         return false;
     }
@@ -13591,12 +13814,18 @@ fn active_tint_source(app: &ApplicationState) -> Option<&str> {
     app.selected_candidate()
         .map(|candidate| candidate.cache_path.as_str())
         .filter(|path| !path.trim().is_empty())
-        .or_else(|| (!app.musicbrainz_cover_preview_path.is_empty()).then_some(app.musicbrainz_cover_preview_path.as_str()))
+        .or_else(|| {
+            (!app.musicbrainz_cover_preview_path.is_empty())
+                .then_some(app.musicbrainz_cover_preview_path.as_str())
+        })
         .or_else(|| (!app.current_cover_path.is_empty()).then_some(app.current_cover_path.as_str()))
 }
 
 fn image_derived_tint_color(bytes: &[u8]) -> Option<String> {
-    let pixels = image::load_from_memory(bytes).ok()?.thumbnail(96, 96).to_rgb8();
+    let pixels = image::load_from_memory(bytes)
+        .ok()?
+        .thumbnail(96, 96)
+        .to_rgb8();
     let mut bins = [(0.0_f32, [0.0_f32; 3]); 24];
     for pixel in pixels.pixels() {
         let rgb = pixel.0.map(|value| f32::from(value) / 255.0);
@@ -13620,16 +13849,21 @@ fn image_derived_tint_color(bytes: &[u8]) -> Option<String> {
             bins[index].1[channel] += rgb[channel] * weight;
         }
     }
-    let (weight, totals) = bins.into_iter().max_by(|left, right| left.0.total_cmp(&right.0))?;
+    let (weight, totals) = bins
+        .into_iter()
+        .max_by(|left, right| left.0.total_cmp(&right.0))?;
     if weight <= f32::EPSILON {
         return None;
     }
-    let [red, green, blue] = totals.map(|sum| (sum / weight * 255.0).round().clamp(0.0, 255.0) as u8);
+    let [red, green, blue] =
+        totals.map(|sum| (sum / weight * 255.0).round().clamp(0.0, 255.0) as u8);
     Some(format!("#{red:02X}{green:02X}{blue:02X}"))
 }
 
 fn ensure_active_tint_palette(app: &mut ApplicationState) {
-    let Some(source) = active_tint_source(app).map(str::to_owned) else { return; };
+    let Some(source) = active_tint_source(app).map(str::to_owned) else {
+        return;
+    };
     if app.tint_palette_source == source {
         return;
     }
@@ -13639,8 +13873,8 @@ fn ensure_active_tint_palette(app: &mut ApplicationState) {
         fs::read(&source).ok()
     };
     if let Some(bytes) = bytes {
-        app.adjustments.tint_color = image_derived_tint_color(&bytes)
-            .unwrap_or_else(|| "#808080".to_string());
+        app.adjustments.tint_color =
+            image_derived_tint_color(&bytes).unwrap_or_else(|| "#808080".to_string());
         app.tint_palette_source = source;
     }
 }
@@ -14251,9 +14485,29 @@ fn active_window_handle() -> usize {
     handle.0 as usize
 }
 
+#[cfg(windows)]
+fn process_owns_foreground_window() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0.is_null() {
+        return false;
+    }
+    let mut process_id = 0;
+    unsafe { GetWindowThreadProcessId(foreground, Some(&mut process_id)) };
+    process_id == std::process::id()
+}
+
 #[cfg(not(windows))]
 fn active_window_handle() -> usize {
     0
+}
+
+#[cfg(not(windows))]
+fn process_owns_foreground_window() -> bool {
+    false
 }
 
 fn bind_simple_library_action(
@@ -14341,12 +14595,30 @@ fn set_adjustment_position(app: &mut ApplicationState, name: &str, position: f32
 }
 
 fn relative_adjustment_position(app: &ApplicationState, name: &str, position: f32) -> f32 {
-    let names = ["Picture", "Sharpen", "Softness", "Contrast", "Exposure", "Brightness", "Gamma", "Color", "Hue", "Darkness", "Tint"];
-    let Some(index) = names.iter().position(|candidate| *candidate == name) else { return 0.5; };
+    let names = [
+        "Picture",
+        "Sharpen",
+        "Softness",
+        "Contrast",
+        "Exposure",
+        "Brightness",
+        "Gamma",
+        "Color",
+        "Hue",
+        "Darkness",
+        "Tint",
+    ];
+    let Some(index) = names.iter().position(|candidate| *candidate == name) else {
+        return 0.5;
+    };
     let (minimum, maximum) = adjustment_bounds(name);
     let span = minimum.abs().max(maximum.abs());
     let baseline = AdjustmentState::from_config(&app.config).slider_values()[index];
-    let position = if position.is_finite() { position.clamp(0.0, 1.0) } else { 0.5 };
+    let position = if position.is_finite() {
+        position.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
     let offset = ((position * 2.0 - 1.0) * span as f32).round() as i32;
     let target = (baseline + offset).clamp(minimum, maximum);
     (target - minimum) as f32 / (maximum - minimum) as f32
@@ -14387,12 +14659,19 @@ fn reset_enhancement_preview_state(app: &mut ApplicationState) {
             app.artist_banner_adjustments = baseline.clone();
             app.artist_banner_filter_levels = [0; 14];
             app.artist_banner_preview_path = app.artist_banner_source_path.clone();
-            app.artist_banner_zoom = auto_artist_banner_zoom(Path::new(&app.artist_banner_source_path));
+            app.artist_banner_zoom =
+                auto_artist_banner_zoom(Path::new(&app.artist_banner_source_path));
             app.artist_banner_horizontal = 0.0;
             app.artist_banner_vertical = 0.0;
         }
-        if reset_both { app.artist_theme_adjustments = baseline.clone(); app.artist_theme_filter_levels = [0; 14]; app.artist_theme_portrait_preview_path.clear(); app.artist_theme_banner_preview_path.clear(); }
-        app.operation_status = "Artist Art preview reset; current saved package is unchanged".to_string();
+        if reset_both {
+            app.artist_theme_adjustments = baseline.clone();
+            app.artist_theme_filter_levels = [0; 14];
+            app.artist_theme_portrait_preview_path.clear();
+            app.artist_theme_banner_preview_path.clear();
+        }
+        app.operation_status =
+            "Artist Art preview reset; current saved package is unchanged".to_string();
     } else {
         app.album_filter_levels = [0; 14];
         app.operation_status = "Album Art enhancement preview reset".to_string();
@@ -14858,7 +15137,16 @@ fn preview_artist_theme_package(
     state: &Arc<Mutex<ApplicationState>>,
     guard: Option<(&AtomicU64, u64)>,
 ) -> Result<(), String> {
-    let (portrait, banner, portrait_output, banner_output, theme_output, portrait_fit, banner_fit, context) = {
+    let (
+        portrait,
+        banner,
+        portrait_output,
+        banner_output,
+        theme_output,
+        portrait_fit,
+        banner_fit,
+        context,
+    ) = {
         let app = state
             .lock()
             .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
@@ -14877,8 +15165,16 @@ fn preview_artist_theme_package(
             portrait_config.output,
             banner_config.output,
             theme_config.output,
-            (app.artist_portrait_zoom, app.artist_portrait_horizontal, app.artist_portrait_vertical),
-            (app.artist_banner_zoom, app.artist_banner_horizontal, app.artist_banner_vertical),
+            (
+                app.artist_portrait_zoom,
+                app.artist_portrait_horizontal,
+                app.artist_portrait_vertical,
+            ),
+            (
+                app.artist_banner_zoom,
+                app.artist_banner_horizontal,
+                app.artist_banner_vertical,
+            ),
             preview_context(&app),
         )
     };
@@ -14889,11 +15185,23 @@ fn preview_artist_theme_package(
         fs::read(&portrait).map_err(|error| format!("Unable to read Artist image: {error}"))?;
     let banner_bytes =
         fs::read(&banner).map_err(|error| format!("Unable to read Artist banner: {error}"))?;
-    let portrait_base = prepare_artist_art_png_with_fit(&portrait_bytes, Some(&portrait_output), portrait_fit.0, portrait_fit.1, portrait_fit.2)?;
+    let portrait_base = prepare_artist_art_png_with_fit(
+        &portrait_bytes,
+        Some(&portrait_output),
+        portrait_fit.0,
+        portrait_fit.1,
+        portrait_fit.2,
+    )?;
     let portrait_image = image::load_from_memory(&portrait_base)
         .map_err(|error| format!("Unable to decode Artist image: {error}"))?;
     let portrait_image = apply_selected_image_adjustments(portrait_image, &theme_output);
-    let banner_image = enhanced_artist_banner_with_position(&banner_bytes, banner_fit.0, banner_fit.1, banner_fit.2, &banner_output)?;
+    let banner_image = enhanced_artist_banner_with_position(
+        &banner_bytes,
+        banner_fit.0,
+        banner_fit.1,
+        banner_fit.2,
+        &banner_output,
+    )?;
     let banner_image = apply_selected_image_adjustments(banner_image, &theme_output);
     let mut portrait_encoded = Cursor::new(Vec::new());
     portrait_image
@@ -14936,7 +15244,16 @@ fn preview_selected_candidate(
     state: &Arc<Mutex<ApplicationState>>,
     guard: Option<(&AtomicU64, u64)>,
 ) -> Result<(), String> {
-    let (index, source, source_path, config, context, banner_framing, portrait_framing, artist_artwork_mode) = {
+    let (
+        index,
+        source,
+        source_path,
+        config,
+        context,
+        banner_framing,
+        portrait_framing,
+        artist_artwork_mode,
+    ) = {
         let app = state
             .lock()
             .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
@@ -14951,7 +15268,11 @@ fn preview_selected_candidate(
                         .unwrap_or_default(),
                     "ArtistBanner".to_string(),
                     app.artist_banner_source_path.clone(),
-                    Some((app.artist_banner_zoom, app.artist_banner_horizontal, app.artist_banner_vertical)),
+                    Some((
+                        app.artist_banner_zoom,
+                        app.artist_banner_horizontal,
+                        app.artist_banner_vertical,
+                    )),
                 )
             } else {
                 if app.artist_artwork_draft_path.is_empty() {
@@ -14991,9 +15312,19 @@ fn preview_selected_candidate(
             banner_framing.or_else(|| {
                 selected
                     .filter(|selected| selected.image_type == "ArtistBanner")
-                    .map(|_| (app.artist_banner_zoom, app.artist_banner_horizontal, app.artist_banner_vertical))
+                    .map(|_| {
+                        (
+                            app.artist_banner_zoom,
+                            app.artist_banner_horizontal,
+                            app.artist_banner_vertical,
+                        )
+                    })
             }),
-            (app.artist_portrait_zoom, app.artist_portrait_horizontal, app.artist_portrait_vertical),
+            (
+                app.artist_portrait_zoom,
+                app.artist_portrait_horizontal,
+                app.artist_portrait_vertical,
+            ),
             app.artist_artwork_mode,
         )
     };
@@ -15005,9 +15336,15 @@ fn preview_selected_candidate(
         let source_bytes = fs::read(source_path)
             .map_err(|error| format!("Unable to read the banner preview: {error}"))?;
         let mut encoded = Cursor::new(Vec::new());
-        enhanced_artist_banner_with_position(&source_bytes, zoom, horizontal, vertical, &config.output)?
-            .write_to(&mut encoded, image::ImageFormat::Png)
-            .map_err(|error| format!("Unable to render the banner preview: {error}"))?;
+        enhanced_artist_banner_with_position(
+            &source_bytes,
+            zoom,
+            horizontal,
+            vertical,
+            &config.output,
+        )?
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .map_err(|error| format!("Unable to render the banner preview: {error}"))?;
         let bytes = encoded.into_inner();
         let render = PREVIEW_RENDER_REVISION.fetch_add(1, Ordering::SeqCst) + 1;
         let preview_key = format!("memory-preview://artist-banner/{index}/{render}");
@@ -15032,7 +15369,13 @@ fn preview_selected_candidate(
     if artist_artwork_mode {
         let source_bytes = fs::read(source_path)
             .map_err(|error| format!("Unable to read Artist Art preview: {error}"))?;
-        let bytes = prepare_artist_art_png_with_fit(&source_bytes, Some(&config.output), portrait_framing.0, portrait_framing.1, portrait_framing.2)?;
+        let bytes = prepare_artist_art_png_with_fit(
+            &source_bytes,
+            Some(&config.output),
+            portrait_framing.0,
+            portrait_framing.1,
+            portrait_framing.2,
+        )?;
         let render = PREVIEW_RENDER_REVISION.fetch_add(1, Ordering::SeqCst) + 1;
         let preview_key = format!("memory-preview://artist-art/{index}/{render}");
         if !preload_scaled_image_bytes(&preview_key, &bytes, PREVIEW_CACHE_DIMENSION) {
@@ -15482,10 +15825,11 @@ fn project_adjustments(app: &ApplicationState, config: &mut Config) {
 }
 
 fn project_adjustment_state(adjustments: &AdjustmentState, config: &mut Config) {
+    let (sharpen, softness) = adjustments.effective_sharpness();
     config.output.upscale_adaptive_defaults = adjustments.adaptive_defaults;
     config.output.upscale_picture_percent = adjustments.picture_percent;
-    config.output.upscale_sharpen_percent = adjustments.sharpen_percent;
-    config.output.upscale_softness_percent = adjustments.softness_percent;
+    config.output.upscale_sharpen_percent = sharpen;
+    config.output.upscale_softness_percent = softness;
     config.output.upscale_contrast_percent = adjustments.contrast_percent;
     config.output.upscale_exposure_percent = adjustments.exposure_percent;
     config.output.upscale_brightness_percent = adjustments.brightness_percent;
@@ -16288,10 +16632,14 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             .starts_with("memory-preview://"),
     );
     ui.set_artist_portrait_preview_rendered(
-        state.artist_portrait_preview_path.starts_with("memory-preview://"),
+        state
+            .artist_portrait_preview_path
+            .starts_with("memory-preview://"),
     );
     ui.set_artist_selected_banner_rendered(banner_preview_path.starts_with("memory-preview://"));
-    ui.set_artist_selected_portrait_rendered(portrait_preview_path.starts_with("memory-preview://"));
+    ui.set_artist_selected_portrait_rendered(
+        portrait_preview_path.starts_with("memory-preview://"),
+    );
     ui.set_artist_banner_zoom(state.artist_banner_zoom);
     ui.set_artist_banner_horizontal(state.artist_banner_horizontal);
     ui.set_artist_banner_vertical(state.artist_banner_vertical);
@@ -16822,16 +17170,28 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         adjustment_rows[10].clone(),
     ]));
     let filter_levels = active_filter_levels(&state);
-    let filter_menu_rows = FILTER_MENU_NAMES[..13].iter().enumerate().map(|(index, name)| UiAdjustmentRow {
-            name: (*name).into(), value: filter_levels[index], minimum: -5, maximum: 5,
-            unit: "".into(), primary: false,
-        }).collect::<Vec<_>>();
+    let filter_menu_rows = FILTER_MENU_NAMES[..13]
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UiAdjustmentRow {
+            name: (*name).into(),
+            value: filter_levels[index],
+            minimum: -5,
+            maximum: 5,
+            unit: "".into(),
+            primary: false,
+        })
+        .collect::<Vec<_>>();
     if !sync_enhancement_menu_rows(ui.get_filter_menu_rows(), filter_menu_rows.clone()) {
         ui.set_filter_menu_rows(model(filter_menu_rows));
     }
     let mut advanced_menu_rows = vec![UiAdjustmentRow {
-        name: "Default".into(), value: filter_levels[13], minimum: -5, maximum: 5,
-        unit: "".into(), primary: false,
+        name: "Default".into(),
+        value: filter_levels[13],
+        minimum: -5,
+        maximum: 5,
+        unit: "".into(),
+        primary: false,
     }];
     let saved_values = AdjustmentState::from_config(&state.config).slider_values();
     advanced_menu_rows.extend([8, 10, 6, 0, 4, 5].into_iter().map(|index| {
@@ -16846,12 +17206,15 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     if !sync_enhancement_menu_rows(ui.get_advanced_menu_rows(), advanced_menu_rows.clone()) {
         ui.set_advanced_menu_rows(model(advanced_menu_rows));
     }
-    let tint_palette_ready = active_tint_source(&state)
-        .is_some_and(|source| source == state.tint_palette_source);
+    let tint_palette_ready =
+        active_tint_source(&state).is_some_and(|source| source == state.tint_palette_source);
     let tint_hex = state.adjustments.tint_color.trim_start_matches('#');
     let tint_bytes = if tint_hex.len() == 6 {
-        [0, 2, 4].map(|offset| tint_hex.get(offset..offset + 2)
-            .and_then(|part| u8::from_str_radix(part, 16).ok()))
+        [0, 2, 4].map(|offset| {
+            tint_hex
+                .get(offset..offset + 2)
+                .and_then(|part| u8::from_str_radix(part, 16).ok())
+        })
     } else {
         [None; 3]
     };
@@ -16876,7 +17239,9 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     let focus_changed_during_review = state.phase != RunPhase::Idle
         && overview_artist.is_some_and(|artist| {
             !state.current_artist.trim().is_empty()
-                && !artist.trim().eq_ignore_ascii_case(state.current_artist.trim())
+                && !artist
+                    .trim()
+                    .eq_ignore_ascii_case(state.current_artist.trim())
         });
     let preview_candidate = if report_previewing {
         None
@@ -16928,14 +17293,12 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_selected_artwork_artist_has_art(!artist_artwork_path.trim().is_empty());
     let suppress_fallback_cover =
         fallback_compilation_cover_suppressed(&state, artist_overview_fallback_album);
-    let current_cover_path = if suppress_fallback_cover
-        || report_previewing
-        || focus_changed_during_review
-    {
-        ""
-    } else {
-        state.current_cover_path.as_str()
-    };
+    let current_cover_path =
+        if suppress_fallback_cover || report_previewing || focus_changed_during_review {
+            ""
+        } else {
+            state.current_cover_path.as_str()
+        };
     let musicbrainz_preview_source = (state.phase == RunPhase::AwaitingMusicBrainz
         && active_musicbrainz_hover_preview)
         .then_some(state.musicbrainz_hover_preview_path.as_str())
@@ -18968,6 +19331,8 @@ fn artist_compilation_report_track_ui_rows(app: &ApplicationState) -> Vec<UiComp
             });
             let status = if !track.completed {
                 "Blue"
+            } else if app.compilation_report_checking && recorded.is_none() {
+                "Checking"
             } else if recorded.is_some_and(|dimensions| {
                 dimensions.is_some_and(|(width, height, _)| width == side && height == side)
             }) {
@@ -19069,16 +19434,20 @@ fn group_compilation_report_rows(
             .iter()
             .filter(|row| row.status.as_str() == "Blue")
             .count();
+        let checking = group
+            .iter()
+            .filter(|row| row.status.as_str() == "Checking")
+            .count();
         let expanded = !collapsed_albums.contains(&album_key.to_ascii_lowercase());
         rows.push(UiCompilationReportRow {
             album_key: album_key.clone(),
             album_title: group[0].album_title.clone(),
             path: SharedString::default(),
             file_name: format!(
-                "{} track{} · {} green{}{}",
+                "{} track{} · {} green{}{}{}",
                 group.len(),
                 if group.len() == 1 { "" } else { "s" },
-                group.len() - purple - blue,
+                group.len() - purple - blue - checking,
                 if purple > 0 {
                     format!(", {purple} thumb check")
                 } else {
@@ -19089,10 +19458,17 @@ fn group_compilation_report_rows(
                 } else {
                     String::new()
                 },
+                if checking > 0 {
+                    format!(", {checking} checking")
+                } else {
+                    String::new()
+                },
             )
             .into(),
             status: if purple > 0 {
                 "Purple"
+            } else if checking > 0 {
+                "Checking"
             } else if blue > 0 {
                 "Blue"
             } else {
@@ -19116,6 +19492,7 @@ fn group_compilation_report_rows(
 fn close_artist_compilation_report(app: &mut ApplicationState) {
     app.compilation_report_artist.clear();
     app.compilation_report_summary.clear();
+    app.compilation_report_checking = false;
     app.compilation_report_preview_mode = false;
     app.compilation_report_preview_album_key.clear();
     app.compilation_report_preview_track_path.clear();
@@ -20074,11 +20451,11 @@ mod tests {
         embedded_artwork_footer, embedded_artwork_size_comparison, embedded_thumbnail_owner_key,
         embedded_thumbnail_ready, ensure_webp_album_still, fallback_compilation_cover_suppressed,
         format_existing_embedded_info, group_compilation_report_rows, include_artwork_source,
-        is_sqlite_backup_path, is_valid_mbid, load_scaled_image, local_album_art_file,
-        load_artist_art_candidates, local_artist_art_candidates, local_artist_art_file,
-        local_artist_art_for_albums,
-        logical_dimension, match_artist_overview_album, merge_artist_art_candidates, model,
-        musicbrainz_existing_preview_path, musicbrainz_failed_url, musicbrainz_ui_rows_equal,
+        is_sqlite_backup_path, is_valid_mbid, load_artist_art_candidates, load_scaled_image,
+        local_album_art_file, local_artist_art_candidates, local_artist_art_file,
+        local_artist_art_for_albums, logical_dimension, match_artist_overview_album,
+        merge_artist_art_candidates, model, musicbrainz_existing_preview_path,
+        musicbrainz_failed_url, musicbrainz_ui_rows_equal,
         musicbrainz_visible_deduplicated_results, navidrome_artist_for_lookup,
         normalize_backup_schedule, normalize_status_bar_intensity, normalize_status_bar_position,
         normalize_status_bar_size, overview_artist_name, plan_artist_album_embeds,
@@ -20099,15 +20476,28 @@ mod tests {
     fn tint_palette_follows_each_image_without_persistent_storage() {
         fn png(rgb: [u8; 3]) -> Vec<u8> {
             let image = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
-                8, 8, image::Rgba([rgb[0], rgb[1], rgb[2], 255]),
+                8,
+                8,
+                image::Rgba([rgb[0], rgb[1], rgb[2], 255]),
             ));
             let mut output = std::io::Cursor::new(Vec::new());
-            image.write_to(&mut output, image::ImageFormat::Png).unwrap();
+            image
+                .write_to(&mut output, image::ImageFormat::Png)
+                .unwrap();
             output.into_inner()
         }
-        assert_eq!(super::image_derived_tint_color(&png([20, 40, 210])).as_deref(), Some("#1428D2"));
-        assert_eq!(super::image_derived_tint_color(&png([0, 0, 255])).as_deref(), Some("#0000FF"));
-        assert_eq!(super::image_derived_tint_color(&png([210, 30, 40])).as_deref(), Some("#D21E28"));
+        assert_eq!(
+            super::image_derived_tint_color(&png([20, 40, 210])).as_deref(),
+            Some("#1428D2")
+        );
+        assert_eq!(
+            super::image_derived_tint_color(&png([0, 0, 255])).as_deref(),
+            Some("#0000FF")
+        );
+        assert_eq!(
+            super::image_derived_tint_color(&png([210, 30, 40])).as_deref(),
+            Some("#D21E28")
+        );
     }
 
     #[test]
@@ -20118,8 +20508,10 @@ mod tests {
         config.output.upscale_hue_degrees = -20;
         let snapshot = MediaSnapshot {
             schema_version: splined_core::media_database::SCHEMA_VERSION,
-            database_path: String::new(), canonical_root: String::new(),
-            local_root: String::new(), albums: Vec::new(),
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
         };
         let app = ApplicationState::new(config, snapshot).unwrap();
         let filter = super::filter_increment(&app, 0);
@@ -20138,8 +20530,10 @@ mod tests {
         config.output.upscale_gamma_percent = -6;
         let snapshot = MediaSnapshot {
             schema_version: splined_core::media_database::SCHEMA_VERSION,
-            database_path: String::new(), canonical_root: String::new(),
-            local_root: String::new(), albums: Vec::new(),
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
         };
         let mut app = ApplicationState::new(config, snapshot).unwrap();
         let position = super::relative_adjustment_position(&app, "Gamma", 0.5);
@@ -20204,11 +20598,14 @@ mod tests {
         let directory = tempfile::TempDir::new().unwrap();
         let cover = directory.path().join("cover.png");
         image::RgbaImage::from_pixel(32, 32, image::Rgba([30, 80, 170, 255]))
-            .save_with_format(&cover, image::ImageFormat::Png).unwrap();
+            .save_with_format(&cover, image::ImageFormat::Png)
+            .unwrap();
         let snapshot = MediaSnapshot {
             schema_version: splined_core::media_database::SCHEMA_VERSION,
-            database_path: String::new(), canonical_root: String::new(),
-            local_root: String::new(), albums: Vec::new(),
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
         };
         let mut config = Config::default();
         config.range.min = 16;
@@ -20231,8 +20628,10 @@ mod tests {
         edit_existing_cover(&state, false, None).unwrap();
         let second_path = state.lock().unwrap().edit_preview_path.clone();
         let second = super::full_edit_preview_bytes(&second_path).unwrap();
-        assert_ne!(image::load_from_memory(&first).unwrap().to_rgba8(),
-                   image::load_from_memory(&second).unwrap().to_rgba8());
+        assert_ne!(
+            image::load_from_memory(&first).unwrap().to_rgba8(),
+            image::load_from_memory(&second).unwrap().to_rgba8()
+        );
     }
 
     #[test]
@@ -20849,6 +21248,11 @@ mod tests {
         assert_eq!(report.len(), 3);
         assert_eq!(report.iter().filter(|track| !track.completed).count(), 1);
         app.compilation_report_artist = "98°".into();
+        app.compilation_report_checking = true;
+        let checking = super::artist_compilation_report_track_ui_rows(&app);
+        assert_eq!(checking.iter().filter(|row| row.status.as_str() == "Checking").count(), 2);
+        assert_eq!(checking.iter().filter(|row| row.status.as_str() == "Blue").count(), 1);
+        app.compilation_report_checking = false;
         app.library.albums[1].snapshot.compilation_tracks[0].embedded_artwork_recorded = false;
         assert_eq!(
             select_pending_artist_compilation_report_tracks(&mut app, false),
@@ -20900,6 +21304,23 @@ mod tests {
         assert!(collapsed[0].album_header && !collapsed[0].expanded);
         assert_eq!(collapsed[1].album_title.as_str(), "Second Album");
         assert_eq!(collapsed[2].file_name.as_str(), "three.mp3");
+    }
+
+    #[test]
+    fn compilation_report_shows_completed_tracks_as_checking_before_thumbnail_validation() {
+        let tracks = vec![UiCompilationReportRow {
+            album_key: "comp".into(),
+            album_title: "COMP Album".into(),
+            path: "C:/Music/COMP/one.mp3".into(),
+            file_name: "one.mp3".into(),
+            status: "Checking".into(),
+            album_header: false,
+            expanded: false,
+        }];
+        let rows = group_compilation_report_rows(&tracks, &HashSet::new());
+        assert_eq!(rows[0].file_name.as_str(), "1 track · 0 green, 1 checking");
+        assert_eq!(rows[0].status.as_str(), "Checking");
+        assert_eq!(rows[1].status.as_str(), "Checking");
     }
 
     #[test]
@@ -23050,15 +23471,49 @@ mod tests {
     fn artist_fitment_moves_the_written_round_portrait_without_changing_saved_source() {
         let mut source = image::RgbaImage::new(128, 128);
         for (x, _, pixel) in source.enumerate_pixels_mut() {
-            *pixel = if x < 64 { image::Rgba([240, 20, 20, 255]) } else { image::Rgba([20, 40, 240, 255]) };
+            *pixel = if x < 64 {
+                image::Rgba([240, 20, 20, 255])
+            } else {
+                image::Rgba([20, 40, 240, 255])
+            };
         }
         let mut encoded = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(source).write_to(&mut encoded, image::ImageFormat::Png).unwrap();
-        let left = image::load_from_memory(&super::prepare_artist_art_png_with_fit(encoded.get_ref(), None, 2.0, 0.4, 0.0).unwrap()).unwrap().to_rgba8();
-        let right = image::load_from_memory(&super::prepare_artist_art_png_with_fit(encoded.get_ref(), None, 2.0, -0.4, 0.0).unwrap()).unwrap().to_rgba8();
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let left = image::load_from_memory(
+            &super::prepare_artist_art_png_with_fit(encoded.get_ref(), None, 2.0, 0.4, 0.0)
+                .unwrap(),
+        )
+        .unwrap()
+        .to_rgba8();
+        let right = image::load_from_memory(
+            &super::prepare_artist_art_png_with_fit(encoded.get_ref(), None, 2.0, -0.4, 0.0)
+                .unwrap(),
+        )
+        .unwrap()
+        .to_rgba8();
         assert!(left.get_pixel(512, 512).0[0] > left.get_pixel(512, 512).0[2]);
         assert!(right.get_pixel(512, 512).0[2] > right.get_pixel(512, 512).0[0]);
         assert_eq!(left.get_pixel(0, 0).0[3], 0);
+    }
+
+    #[test]
+    fn artist_fitment_can_shrink_inside_the_round_output() {
+        let source = image::RgbaImage::from_pixel(128, 128, image::Rgba([240, 20, 20, 255]));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let shrunk = image::load_from_memory(
+            &super::prepare_artist_art_png_with_fit(encoded.get_ref(), None, 0.5, 0.0, 0.0)
+                .unwrap(),
+        )
+        .unwrap()
+        .to_rgba8();
+        assert_eq!(shrunk.get_pixel(512, 512).0[0], 240);
+        assert_eq!(shrunk.get_pixel(150, 512).0, [0, 0, 0, 255]);
+        assert_eq!(shrunk.get_pixel(0, 0).0[3], 0);
     }
 
     #[test]
@@ -23074,7 +23529,9 @@ mod tests {
     fn enhancement_filter_intensity_is_separate_for_album_portrait_and_banner() {
         let snapshot = MediaSnapshot {
             schema_version: splined_core::media_database::SCHEMA_VERSION,
-            database_path: String::new(), canonical_root: String::new(), local_root: String::new(),
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
             albums: Vec::new(),
         };
         let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
