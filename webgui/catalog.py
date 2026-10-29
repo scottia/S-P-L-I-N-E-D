@@ -407,8 +407,15 @@ class Catalog:
                             "height": opened.height, "bytes": len(artwork)}
         return {**track, **metadata}
 
+    def artist_comp_albums(self, artist_id: str) -> list[dict[str, object]]:
+        """Return indexed COMP cards without touching every track on disk."""
+        return self._artist_comp_groups(artist_id, verify_tracks=False)
+
     def artist_comp_report(self, artist_id: str) -> list[dict[str, object]]:
-        """Project only a focused artist's tracks from missing-ID COMP albums."""
+        """Project a focused artist's verified tracks for an opened COMP report."""
+        return self._artist_comp_groups(artist_id, verify_tracks=True)
+
+    def _artist_comp_groups(self, artist_id: str, *, verify_tracks: bool) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
             artist = db.execute("SELECT artist_name FROM artists WHERE artist_key=?", (artist_id,)).fetchone()
             if artist is None:
@@ -440,7 +447,11 @@ class Catalog:
                     or not credits.strip() and row["artist_key"] == artist_id):
                 continue
             folder, track_path = Path(row["album_path"]), Path(row["path"])
-            if not inside(folder, self.music) or not inside(track_path, folder) or not track_path.is_file():
+            if verify_tracks and (
+                not inside(folder, self.music)
+                or not inside(track_path, folder)
+                or not track_path.is_file()
+            ):
                 continue
             path_key = str(track_path).casefold()
             if path_key in seen:

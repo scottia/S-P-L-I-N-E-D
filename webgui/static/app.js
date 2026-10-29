@@ -10,7 +10,7 @@ const state = {
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
   fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
   compGroups: [], compReportVisible: false, compPreviewMode: false, compCollapsed: new Set(),
-  compTrack: null, compTrackRequest: 0, compStatusRequest: 0, compRunIndex: -1,
+  compTrack: null, compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0, compRunIndex: -1,
   compRepairEnabled: false, compBusy: false,
   activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
   mediaStatuses: new Set(["unprocessed", "incomplete", "processed", "bypassed", "partial", "artistComplete", "artistBypass"]),
@@ -97,7 +97,7 @@ function clearFocusCandidates() {
   state.fallbackPreviewMode = false; state.fallbackReportExpanded = true; state.fallbackHelpExpanded = false;
   state.compGroups = []; state.compReportVisible = false; state.compPreviewMode = false;
   state.compCollapsed.clear(); state.compTrack = null; state.compRunIndex = -1;
-  ++state.compTrackRequest; ++state.compStatusRequest;
+  ++state.compTrackRequest; ++state.compStatusRequest; ++state.compReportRequest;
   state.compare.clear();
   if (!state.candidateFilterLocked) { state.activeSource = ""; state.candidateFilters.clear(); $("candidateSearch").value = ""; }
 }
@@ -602,19 +602,32 @@ function renderArtistCompReport() {
   }
 }
 
-function openArtistCompReport(albumId = "") {
-  if (!state.compGroups.length) { setStatus("This Artist has no indexed COMP tracks", "error"); return; }
-  state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
-  if (albumId) state.compCollapsed.delete(albumId);
-  state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();
-  const report = $("fallbackReport");
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    if (!state.compReportVisible) return;
-    const viewport = $("overviewContent");
-    viewport.scrollTop += report.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12;
-  }));
-  setStatus(`COMP report ready · ${state.compGroups.length} albums · ${state.compGroups.reduce((count, group) => count + group.tracks.length, 0)} matching tracks`);
-  probeArtistCompStatuses();
+async function openArtistCompReport(albumId = "") {
+  if (!state.artist) { setStatus("Choose an Artist before opening COMP Report", "error"); return; }
+  const request = ++state.compReportRequest, artistId = state.artist.id;
+  $("compReportButton").disabled = true;
+  setStatus("Loading COMP report…", "busy");
+  try {
+    const compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(artistId));
+    if (request !== state.compReportRequest || artistId !== state.artist?.id) return;
+    state.compGroups = compGroups;
+    if (!state.compGroups.length) { setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
+    state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
+    if (albumId) state.compCollapsed.delete(albumId);
+    state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();
+    const report = $("fallbackReport");
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!state.compReportVisible) return;
+      const viewport = $("overviewContent");
+      viewport.scrollTop += report.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12;
+    }));
+    setStatus(`COMP report ready · ${state.compGroups.length} albums · ${state.compGroups.reduce((count, group) => count + group.tracks.length, 0)} matching tracks`);
+    probeArtistCompStatuses();
+  } catch (error) {
+    if (request === state.compReportRequest) setStatus(error.message, "error");
+  } finally {
+    if (request === state.compReportRequest) $("compReportButton").disabled = false;
+  }
 }
 
 async function probeArtistCompStatuses() {
@@ -964,7 +977,7 @@ async function chooseArtist(id, select = true) {
   try {
     const [artist, compGroups] = await Promise.all([
       api("/api/artist?id=" + encodeURIComponent(id)),
-      api("/api/artist/comp-report?id=" + encodeURIComponent(id)),
+      api("/api/artist/comp-albums?id=" + encodeURIComponent(id)),
     ]);
     if (request !== state.selectionRequest) return;
     state.artist = artist; state.artistMetadata = null; state.compGroups = compGroups;

@@ -14,6 +14,23 @@ from webgui.catalog import PreviewApp
 
 
 class BrowserFallbackTests(unittest.TestCase):
+    def test_artist_selection_uses_summary_and_settings_hide_native_sqlite(self) -> None:
+        static = Path(__file__).parents[1] / "static"
+        application = (static / "app.js").read_text(encoding="utf-8")
+        choose_artist = application.split("async function chooseArtist", 1)[1].split(
+            "async function chooseAlbum", 1
+        )[0]
+        open_report = application.split("async function openArtistCompReport", 1)[1].split(
+            "async function probeArtistCompStatuses", 1
+        )[0]
+        self.assertIn("/api/artist/comp-albums", choose_artist)
+        self.assertNotIn("/api/artist/comp-report", choose_artist)
+        self.assertIn("/api/artist/comp-report", open_report)
+
+        operations = (static / "operations.js").read_text(encoding="utf-8")
+        self.assertIn('cfg.scan.shared_artist_art_dir ??= ""', operations)
+        self.assertIn('keys.join(".") === "scan.sqlite_shared"', operations)
+
     def test_artist_report_combines_matching_tracks_across_comp_albums(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -61,7 +78,10 @@ class BrowserFallbackTests(unittest.TestCase):
                 db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[1]),))
                 db.commit()
             app = PreviewApp(root, database, root, root, allow_comp_repairs=True)
+            summary = app.artist_comp_albums("target")
             report = app.artist_comp_report("target")
+            self.assertEqual([group["id"] for group in summary], ["one", "two"])
+            self.assertEqual([len(group["tracks"]) for group in summary], [1, 3])
             self.assertEqual([group["id"] for group in report], ["one", "two"])
             self.assertEqual([group["tracks"][0]["completed"] for group in report], [True, True])
             self.assertFalse(report[1]["tracks"][1]["completed"])

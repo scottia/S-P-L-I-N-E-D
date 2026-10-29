@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import logging
 from dataclasses import asdict
 from functools import wraps
 from io import BytesIO
@@ -32,6 +33,9 @@ from webgui.catalog import (
 )
 from webgui.runtime import Runtime
 from webgui import imaging
+
+
+LOGGER = logging.getLogger("uvicorn.error")
 
 NAME_INVENTORY_PREFIX = "names-v1:"
 TRACK_INVENTORY_PREFIX = "tracks-v1:"
@@ -317,6 +321,11 @@ class Services:
                     artist.pop("status", None)
                 self._upsert(db, "artists", artist, "artist_key")
                 self._upsert(db, "albums", row, "album_key")
+            # Missing-ID COMP albums need every track identity in PostgreSQL.
+            # Build that detail during an explicit index refresh so ordinary
+            # artist navigation never turns into a library-wide filesystem scan.
+            if not str(row["musicbrainz_albumid"] or "").strip():
+                self.hydrate_tracks(row["album_key"])
             if progress:
                 progress(
                     {
@@ -413,12 +422,32 @@ class Services:
         with closing(self.runtime.database.connect()) as db:
             albums = list(
                 db.execute(
-                    "SELECT album_key FROM albums WHERE trim(coalesce(musicbrainz_albumid,''))=''"
+                    "SELECT albums.album_key,albums.track_count,count(tracks.track_key) AS indexed_track_count "
+                    "FROM albums LEFT JOIN tracks ON tracks.album_key=albums.album_key "
+                    "WHERE trim(coalesce(albums.musicbrainz_albumid,''))='' "
+                    "GROUP BY albums.album_key,albums.track_count"
                 )
             )
-        for row in albums:
+        pending = [
+            row for row in albums
+            if int(row["indexed_track_count"] or 0) < int(row["track_count"] or 0)
+        ]
+        LOGGER.info(
+            "COMP report requested for artist %s; %d of %d fallback albums require track indexing",
+            artist_id,
+            len(pending),
+            len(albums),
+        )
+        for row in pending:
             self.hydrate_tracks(row["album_key"])
-        return self.catalog.artist_comp_report(artist_id)
+        report = self.catalog.artist_comp_report(artist_id)
+        LOGGER.info(
+            "COMP report ready for artist %s: %d albums, %d matching tracks",
+            artist_id,
+            len(report),
+            sum(len(group["tracks"]) for group in report),
+        )
+        return report
 
     def refresh_album(self, album_id, *, source=None):
         row = self.album_row(album_id)

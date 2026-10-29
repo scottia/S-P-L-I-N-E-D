@@ -344,6 +344,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def comp_report(id: str):
         return context.require().comp_report(id)
 
+    @app.get("/api/artist/comp-albums")
+    def comp_albums(id: str):
+        return context.require().catalog.artist_comp_albums(id)
+
     @app.get("/api/album")
     def album(id: str):
         services = context.require()

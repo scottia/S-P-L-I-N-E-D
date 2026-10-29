@@ -219,11 +219,17 @@ function renderJob(job) {
 async function openSettings() {
   state.reviewJobId = null;
   const saved = await api("/api/settings"), cfg = saved.config, body = dialog("Settings · Python / PostgreSQL");
+  cfg.scan ||= {};
+  cfg.scan.shared_artist_art_dir ??= "";
+  // This switch controls shared SQLite files in native clients. WebGUI owns
+  // a PostgreSQL catalog, so never carry the native-only mode into a save.
+  cfg.scan.sqlite_shared = false;
   body.append(node("p", "", "Set paths on the server. Live Write permits artwork and track-tag writes. Secrets already saved are retained when left blank."));
   const inputs = [];
   function section(parent, object, path = []) {
     for (const [name, value] of Object.entries(object)) {
       const keys = [...path, name];
+      if (keys.join(".") === "scan.sqlite_shared") continue;
       if (value && typeof value === "object" && !Array.isArray(value)) {
         const details = node("details", "settings-section"); details.open = ["library", "database", "output"].includes(name);
         details.append(node("summary", "", name.replaceAll("_", " "))); parent.append(details); section(details, value, keys);
@@ -231,8 +237,13 @@ async function openSettings() {
         const type = name === "mode" && !path.length ? "mode" : typeof value === "boolean" ? "checkbox" : typeof value === "number" ? "number" : name === "url" && path[0] === "database" ? "password" : "text";
         const settingName = keys.join(".") === "scan.shared_artist_art_dir"
           ? "V/A / OST Artist Images Directory"
+          : keys.join(".") === "scan.cache_dir" ? "Cache Directory"
           : name === "mode" ? "Mode: read or write (Live Write)" : name.replaceAll("_", " ");
         const input = field(parent, settingName, Array.isArray(value) ? JSON.stringify(value) : value, type);
+        if (keys.join(".") === "scan.shared_artist_art_dir") {
+          input.placeholder = "Blank uses <Cache Directory>/artist-art";
+          input.title = "Persistent portraits and banners for V/A, OST, and other shared artist folders";
+        }
         if (type === "checkbox") input.checked = value;
         if (saved.database_managed && path[0] === "database") { input.disabled = true; input.placeholder = "Managed by server environment"; }
         inputs.push({input, keys, original: value});

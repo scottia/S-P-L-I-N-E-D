@@ -319,6 +319,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             row = db.execute(
                 "SELECT * FROM albums WHERE path=?", (str(folder),)
             ).fetchone()
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?",
+                    (row["album_key"],),
+                ).fetchone()[0],
+                1,
+            )
+        with patch.object(self.services, "hydrate_tracks", wraps=self.services.hydrate_tracks) as hydrate:
+            report = self.services.comp_report(row["artist_key"])
+            self.assertFalse(hydrate.called)
+        self.assertEqual([group["id"] for group in report], [row["album_key"]])
         tracks = self.services.hydrate_tracks(row["album_key"])
         self.queue = JobQueue(self.services)
         job = self.queue.enqueue(
