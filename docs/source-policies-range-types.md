@@ -139,7 +139,7 @@ so an operator may still select one explicitly. Auto additionally requires an
 Ideal, acceptable result with no upscale or crop. This is intentionally more
 conservative than interactive Preferred selection.
 
-Python/Ratatui and Windows use the same strict states and eligibility rules.
+Python backend and Windows use the same strict states and eligibility rules.
 Windows displays an unverified strict candidate as **Manual only** and exposes
 the decoded-content decision in its tooltip and Activity diagnostics.
 
@@ -347,10 +347,10 @@ The compilation branch is explicit and per track:
    immediately. A later scan validates the saved Recording/Artist IDs
    and skips that track instead of repeating local or remote discovery.
 9. The operator reviews the merged results in the MusicBrainz Matches surface
-   (`M` in Ratatui or **MusicBrainz Matches...** on Windows). Release-first
+   (**MusicBrainz matches** in WebGUI or **MusicBrainz Matches...** on Windows). Release-first
    discovery prevents the first 100 Recording-search hits from hiding a valid
    Album edition, while the exact and supplemental Recording branches retain
-   Various Artists compilations. Ratatui and Windows use the same deterministic
+   Various Artists compilations. WebGUI and Windows use the same deterministic
    result families without decade grouping: named Artists A–Z first, followed
    by Soundtrack, Compilation, Various Artists, and blank-artist results, with
    newest releases leading within each family. Artist and Release Type filters
@@ -360,7 +360,7 @@ The compilation branch is explicit and per track:
    the exact-release endpoint when no group MBID is available. Selecting a
    match makes its Recording/Artist/Release IDs session authority and performs
    the normal local/provider artwork search. The current source-result release
-   is green. Previously inspected releases are blue in Ratatui and orange in
+   is green. Previously inspected releases are marked as visited in WebGUI and orange in
    Windows. Re-selecting either restores its
    candidates and diagnostics without repeating provider discovery or image
    downloads. Escape from artwork sources returns to the same cached match
@@ -368,7 +368,7 @@ The compilation branch is explicit and per track:
    Preview and Resolution deliberately describe different evidence: preview
    uses release-group authority, while Resolution is cached against the exact
    Release MBID and summarizes the best inspected result from all enabled
-   artwork sources. Ratatui Escape or Windows **Back to MB Matches** returns
+   artwork sources. WebGUI **Leave unchanged** or Windows **Back to MB Matches** returns
    from artwork sources to the same cached list. Multiple editions may
    therefore share a preview but retain
    different resolution/source results. Higher resolution is useful comparison
@@ -386,7 +386,7 @@ The compilation branch is explicit and per track:
    surface while active and uses the existing right-side Artwork panel. Its `[URL]` hover is active
    during MusicBrainz review even when ordinary candidate hover is disabled;
    it is a bounded visual authority check and does not rerun artwork providers.
-10. The three `[E]` controls in Ratatui `FALLBACK ARTIST / ALBUM INFO` accept
+10. The WebGUI **Find by MusicBrainz authority** fields accept
    session-only MBID corrections. Applying validates the UUID and performs a
    fresh authority/artwork query. Editing Artist or
    Recording invalidates the previously derived Release; editing Release
@@ -394,7 +394,7 @@ The compilation branch is explicit and per track:
    Recording and Artist. An exact operator-selected release may be any
    MusicBrainz release type, including a Single or EP; the automatic
    Album, Soundtrack, Compilation restriction in step 5 does not apply.
-   Ratatui `M` reopens the active Artist/Title result list. The initial bounded
+   WebGUI **MusicBrainz matches** reopens the active Artist/Title result list. The initial bounded
    search is reused for the active run unless the authority/search identity
    changes. The Windows Artist/Release/Recording fields describe only its
    separate current-Album authority row. **Apply IDs** updates that row and its
@@ -419,7 +419,7 @@ work. Text-discovery choices are cached only for the active run and contain no
 credentials or tokens.
 Starting LIVE WRITE persists the Album as `incomplete`, including 0/N when
 the operator leaves before the first approval, and its picker name is blue.
-Ratatui Escape or the corresponding Windows Back/Stop action leaves the current
+WebGUI **Leave unchanged** or the corresponding Windows Back/Stop action leaves the current
 compilation and returns to the retained Album list; it does not exit SPLINED.
 The Album becomes
 `processed` only when the verified ledger reaches the full track count.
@@ -427,7 +427,7 @@ Retagging a completed track to different Recording/Artist IDs invalidates that
 track's resume entry.
 
 Every other Album uses the same Candidate Decision concept with a folder-art
-output target. Ratatui `M` or Windows **MusicBrainz Matches...** opens the
+output target. WebGUI **MusicBrainz matches** or Windows **MusicBrainz Matches...** opens the
 integrated release list even when the original Album ID was valid. Selecting an unseen release runs source discovery;
 selecting a green current or blue inspected release restores the per-Album
 cached source results. Escape from artwork results returns to the cached release
@@ -613,4 +613,4 @@ Exact serialized Config v5 keys/defaults are listed in the Config v5 reference a
 - [Windows guide](windows-guide.md)
 - [Credentials and provider setup](credentials-providers.md)
 - [Select Media and status colors](media-filter-status-colors.md)
-- [Python Ratatui TUI](ratatui-tui.md)
+- [WebGUI guide](browser-workspace-guide.md)

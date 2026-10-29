@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: splined
+      POSTGRES_USER: splined
+      POSTGRES_PASSWORD: ${SPLINED_POSTGRES_PASSWORD:?Set the PostgreSQL password}
+    volumes:
+      - catalog:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U splined -d splined"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  webgui:
+    build:
+      context: ..
+      dockerfile: webgui/Dockerfile
+    image: splined-webgui:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: splined
+      PGUSER: splined
+      PGPASSWORD: ${SPLINED_POSTGRES_PASSWORD:?Set the PostgreSQL password}
+      SPLINED_WEB_TOKEN: ${SPLINED_WEB_TOKEN:?Set a WebGUI access token}
+    ports:
+      - "${SPLINED_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    volumes:
+      - config:/config
+      - cache:/_cache
+      - logs:/_logs
+      - credentials:/credentials
+      - ${SPLINED_MUSIC_DIRECTORY:?Set the host music directory}:/music
+volumes:
+  catalog:
+  config:
+  cache:
+  logs:
+  credentials:

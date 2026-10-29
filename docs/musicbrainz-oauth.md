@@ -59,7 +59,6 @@ Supported non-Windows login entry points are:
 
 ```text
 ./splined --mb-oauth-login          # Linux/macOS native
-splined --mb-oauth-login            # Python/Docker
 ```
 
 ## Windows login
@@ -71,13 +70,9 @@ approve the browser request, paste the authorization code, and choose
 
 ## Credential validation and renewal
 
-Python/Docker also exposes:
+WebGUI uses **Settings → Provider Credentials → MusicBrainz**. Save client fields, choose **Authorize MusicBrainz**, open the authorization link, approve access, and paste the returned code into **Complete authorization**. The PKCE verifier and state stay in the server session and expire after ten minutes. **Test Connection** checks and refreshes the saved credential. No terminal login command is installed.
 
-```text
-splined --oauth-validation
-```
-
-For MusicBrainz, this command compares `expires_at_unix` with the current time,
+For MusicBrainz, the saved-credential test compares `expires_at_unix` with the current time,
 refreshes an expired access token, validates the resulting bearer token against
 `/oauth2/userinfo`, then performs one normal release metadata lookup using a
 curated public release. If MusicBrainz rejects a nominally current token, the

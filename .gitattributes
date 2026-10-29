@@ -1,0 +1,3 @@
+webgui/** text eol=lf
+schema/*.sql text eol=lf
+docker/*.yaml text eol=lf
