@@ -8,7 +8,11 @@ import unittest
 
 from PIL import Image
 
-from interaction.artist_search import _allowed_image_url, discover_artist_images
+from interaction.artist_search import (
+    _allowed_image_url,
+    discover_artist_images,
+    discover_artist_profile,
+)
 
 
 def _png(color: str) -> bytes:
@@ -53,6 +57,28 @@ class _Http:
         raise AssertionError(f"Unexpected request: {url}")
 
 
+class _ProfileHttp:
+    def __init__(self):
+        self.headers = {}
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if url.endswith("/artist"):
+            return _Response({"artists": [{
+                "id": "0330a83d-f61e-4989-adb3-afce3943c3ba",
+                "name": ".38 Special",
+                "score": 100,
+            }]})
+        if url == "https://ws.audioscrobbler.com/2.0/":
+            return _Response({"artist": {
+                "name": ".38 Special",
+                "url": "https://www.last.fm/music/.38+Special",
+                "bio": {"content": "Southern &amp; classic rock. <a>Read more</a>"},
+            }})
+        raise AssertionError(f"Unexpected request: {url}")
+
+
 class ArtistSearchTests(unittest.TestCase):
     def test_image_downloads_are_limited_to_provider_hosts(self):
         self.assertTrue(_allowed_image_url("https://assets.fanart.tv/art.png"))
@@ -91,3 +117,26 @@ class ArtistSearchTests(unittest.TestCase):
             self.assertEqual([label for label, _ in found], ["Deezer portrait"])
             self.assertEqual(len(warnings), 1)
             self.assertTrue(warnings[0].startswith("Fanart.tv:"))
+
+    def test_profile_matches_musicbrainz_then_uses_lastfm_when_navidrome_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            credentials = Path(temporary)
+            (credentials / "lastfm.json").write_text(
+                json.dumps({"api_key": "fixture-key"}), encoding="utf-8"
+            )
+            http = _ProfileHttp()
+            profile = discover_artist_profile(
+                "38 Special", "", credentials, http=http
+            )
+            self.assertEqual(profile["lookup_name"], ".38 Special")
+            self.assertEqual(
+                profile["musicbrainz_id"],
+                "0330a83d-f61e-4989-adb3-afce3943c3ba",
+            )
+            self.assertEqual(
+                profile["biography"], "Southern & classic rock. Read more"
+            )
+            self.assertEqual(
+                http.calls[-1][1]["params"]["mbid"],
+                "0330a83d-f61e-4989-adb3-afce3943c3ba",
+            )

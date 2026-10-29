@@ -230,7 +230,9 @@ class JobQueue:
                             )
                         elif kind == "index":
                             result = self.services.refresh_index(
-                                adapter.progress, adapter.cancelled
+                                adapter.progress,
+                                adapter.cancelled,
+                                str(payload.get("mode", "full")),
                             )
                         elif kind == "comp":
                             result = self.services.run_comp(payload, adapter)

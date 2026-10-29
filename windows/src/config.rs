@@ -36,6 +36,7 @@ pub const SUPPORTED_SOURCE_POLICIES: [&str; 9] = [
 // the compiled application.
 pub const DEFAULT_MUSIC_LIBRARY: &str = "";
 pub const DEFAULT_SCAN_LIBRARY_DIR: &str = "";
+pub const DEFAULT_DATABASE_DIR: &str = "_db";
 pub const DEFAULT_CACHE_DIR: &str = "_cache";
 pub const DEFAULT_SAMPLE_DIR: &str = DEFAULT_CACHE_DIR;
 pub const DEFAULT_CREDENTIAL_DIR: &str = "credentials";
@@ -83,7 +84,7 @@ pub struct ScanConfig {
     /// Use rollback journaling for an intentionally shared/network SQLite file.
     #[serde(default)]
     pub sqlite_shared: bool,
-    /// Optional Windows-side coordination with Python's shared client lock.
+    /// Optional coordination between Windows clients sharing one SQLite file.
     /// SQLite's own locking remains active when this is disabled.
     #[serde(default)]
     pub windows_client_lock: bool,
@@ -347,7 +348,7 @@ impl Default for ScanConfig {
             scan_mode: true,
             library_scan: false,
             scan_mode_timeout: ScanTimeout::default(),
-            cache_dir: DEFAULT_CACHE_DIR.to_string(),
+            cache_dir: DEFAULT_DATABASE_DIR.to_string(),
             shared_artist_art_dir: String::new(),
             temporary_cache_dir: DEFAULT_CACHE_DIR.to_string(),
             sqlite_shared: false,
@@ -990,7 +991,7 @@ mod tests {
         assert!(config.scan.scan_mode);
         assert!(!config.scan.library_scan);
         assert!(!config.scan.windows_client_lock);
-        assert_eq!(config.scan.cache_dir, "_cache");
+        assert_eq!(config.scan.cache_dir, "_db");
         assert_eq!(config.scan.temporary_cache_dir, "_cache");
         assert!(config.scan.scan_library_dir.is_empty());
         assert!(config.library.music_library.is_empty());
@@ -1063,7 +1064,7 @@ mod tests {
         assert!(!text.contains("credential_file"));
         assert!(!text.contains("token_file"));
         assert!(text.contains("[aisplined]"));
-        assert_eq!(parsed.scan.cache_dir, "_cache");
+        assert_eq!(parsed.scan.cache_dir, "_db");
         assert_eq!(parsed.scan.temporary_cache_dir, "_cache");
         assert_eq!(parsed.credentials.credential_dir, "credentials");
         assert!(!parsed.aisplined.enabled);
@@ -1206,7 +1207,7 @@ mod tests {
 
         resolve_runtime_paths(&mut config, root);
 
-        assert_eq!(config.scan.cache_dir, root.join("_cache").to_string_lossy());
+        assert_eq!(config.scan.cache_dir, root.join("_db").to_string_lossy());
         assert_eq!(
             config.scan.temporary_cache_dir,
             root.join("_cache").to_string_lossy()
@@ -1230,8 +1231,8 @@ mod tests {
         let text = default_toml().unwrap();
         let first = load_config_text_at_root(&text, Path::new(r"C:\Portable\One")).unwrap();
         let second = load_config_text_at_root(&text, Path::new(r"D:\Portable\Two")).unwrap();
-        assert_eq!(first.scan.cache_dir, r"C:\Portable\One\_cache");
-        assert_eq!(second.scan.cache_dir, r"D:\Portable\Two\_cache");
+        assert_eq!(first.scan.cache_dir, r"C:\Portable\One\_db");
+        assert_eq!(second.scan.cache_dir, r"D:\Portable\Two\_db");
 
         let mut explicit = parse_config(&text).unwrap();
         explicit.library.music_library = r"\\server\music".into();
@@ -1279,7 +1280,7 @@ mod tests {
         resolve_runtime_paths(&mut before, &resolved_root);
         resolve_runtime_paths(&mut after, &resolved_root);
         assert_eq!(before, after);
-        let expected_database = portable_root.join("_cache").join("splined.db");
+        let expected_database = portable_root.join("_db").join("splined.db");
         assert_eq!(database_path(&before.scan.cache_dir), expected_database);
         assert_eq!(database_path(&after.scan.cache_dir), expected_database);
 
@@ -1332,7 +1333,7 @@ mod tests {
             .filter(|line| !line.trim_start().starts_with("temporary_cache_dir ="))
             .collect::<Vec<_>>()
             .join("\n")
-            .replace("cache_dir = \"_cache\"", "cache_dir = \"custom-database\"");
+            .replace("cache_dir = \"_db\"", "cache_dir = \"custom-database\"");
         let parsed = parse_config(&text).expect("legacy Config v5 should remain compatible");
         assert_eq!(parsed.scan.cache_dir, "custom-database");
         assert_eq!(parsed.scan.temporary_cache_dir, "custom-database");

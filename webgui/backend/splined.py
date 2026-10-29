@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+"""Shared provider, imaging, configuration, and processing engine for WebGUI."""
+
 from __future__ import annotations
 
 import atexit

@@ -1,6 +1,6 @@
 # SPLINED WebGUI and PostgreSQL
 
-The container starts the Python WebGUI server. All normal operations, configuration, provider credentials, and work review take place in a browser. The retired Python terminal interface and its native input extension are not included.
+The container starts the Python WebGUI server. All normal operations, configuration, provider credentials, and work review take place in a browser.
 
 The checked-in [Compose stack](compose.yaml) builds the current source and starts PostgreSQL 17 alongside it. Published `2.0.4` images predate this migration; merging source does not replace an existing registry image. The numbered release workflow builds the new WebGUI image from `webgui/Dockerfile` when a future release is explicitly published.
 

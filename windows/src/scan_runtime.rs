@@ -22,13 +22,13 @@ use crate::local_artwork::{
     embedded_candidate, embedded_preview_cache_dir, inspect_local_preflight,
 };
 use crate::media_database::{
-    CompilationArtworkApplication, RuntimeArtworkMaterial, cached_artist_musicbrainz_identity,
-    cached_track_musicbrainz_identity, clear_album_bypass_from_runtime, compilation_resume_track,
-    completed_compilation_track_paths, find_existing_compilation_artwork,
-    find_local_compilation_artwork, find_local_compilation_artworks,
-    persist_track_musicbrainz_identity, record_album_outcome_from_runtime,
-    record_compilation_artwork_application, record_compilation_progress,
-    record_compilation_resume_track,
+    CompilationArtworkApplication, CompilationLocalArtwork, RuntimeArtworkMaterial,
+    cached_artist_musicbrainz_identity, cached_track_musicbrainz_identity,
+    clear_album_bypass_from_runtime, compilation_resume_track, completed_compilation_track_paths,
+    find_existing_compilation_artwork, find_local_compilation_artwork,
+    find_local_compilation_artworks, persist_track_musicbrainz_identity,
+    record_album_outcome_from_runtime, record_compilation_artwork_application,
+    record_compilation_progress, record_compilation_resume_track,
 };
 use crate::musicbrainz::MusicBrainzClient;
 use crate::pipeline::{
@@ -2227,6 +2227,65 @@ fn resolved_track_authority(
     (recording_mbid, artist_mbids)
 }
 
+type CompilationExistingSource = (PathBuf, PathBuf, &'static str);
+
+fn merge_local_compilation_artworks(
+    sources: &mut Vec<CompilationExistingSource>,
+    release_ids: &mut std::collections::HashMap<PathBuf, String>,
+    found: Vec<CompilationLocalArtwork>,
+) -> bool {
+    let mut changed = false;
+    for item in found {
+        let kind = if item.recording_match {
+            "artist-album-cover"
+        } else {
+            "artist-album-cover-title"
+        };
+        release_ids.insert(item.track_path.clone(), item.release_mbid);
+        if let Some(index) = sources.iter().position(|(track, _, _)| {
+            track
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&item.track_path.to_string_lossy())
+        }) {
+            let current = &sources[index];
+            if !current
+                .1
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&item.cover_path.to_string_lossy())
+                || current.2 != kind
+            {
+                sources[index] = (item.track_path, item.cover_path, kind);
+                changed = true;
+            }
+        } else {
+            sources.push((item.track_path, item.cover_path, kind));
+            changed = true;
+        }
+    }
+    sources.sort_by_key(|(_, _, kind)| match *kind {
+        "artist-album-cover" => 0,
+        "artist-album-cover-title" => 1,
+        _ => 2,
+    });
+    changed
+}
+
+fn emit_compilation_existing_artwork(
+    track: &LocalTrackEvidence,
+    source: &CompilationExistingSource,
+) {
+    let (source_track, _, kind) = source;
+    gui_events::emit(json!({"event": "compilation_existing_artwork",
+    "track_path": track.path, "source_track_path": source_track,
+    "message": if *kind == "artist-album-cover" {
+        "Existing Artist Album cover verified for the same Recording and Artist IDs."
+    } else if *kind == "artist-album-cover-title" {
+        "Existing Artist Album cover found by Artist ID and exact song title; Recording ID differs."
+    } else {
+        "Existing embedded art verified for the same Recording and Artist IDs."
+    }}));
+}
+
 fn persist_validated_track_identity(
     config: &Config,
     track: &LocalTrackEvidence,
@@ -2846,8 +2905,9 @@ async fn run_compilation_album(
 
         let (recording_mbid, artist_mbids) = resolved_track_authority(config, track);
         let mut existing_release_ids = std::collections::HashMap::<PathBuf, String>::new();
-        let artist_album_covers = match recording_mbid.as_deref() {
-            Some(recording) => match find_local_compilation_artworks(
+        let mut existing_sources = Vec::<CompilationExistingSource>::new();
+        if let Some(recording) = recording_mbid.as_deref() {
+            match find_local_compilation_artworks(
                 config,
                 recording,
                 &artist_mbids,
@@ -2856,27 +2916,19 @@ async fn run_compilation_album(
                 &track.title,
                 None,
             ) {
-                Ok(found) => found
-                    .into_iter()
-                    .map(|item| {
-                        existing_release_ids
-                            .insert(item.track_path.clone(), item.release_mbid.clone());
-                        let kind = if item.recording_match {
-                            "artist-album-cover"
-                        } else {
-                            "artist-album-cover-title"
-                        };
-                        (item.track_path, item.cover_path, kind)
-                    })
-                    .collect::<Vec<_>>(),
+                Ok(found) => {
+                    merge_local_compilation_artworks(
+                        &mut existing_sources,
+                        &mut existing_release_ids,
+                        found,
+                    );
+                }
                 Err(error) => {
                     gui_events::emit(json!({"event": "compilation_lookup_warning",
                         "track_path": track.path, "message": format!("Artist Album cover lookup unavailable: {error}")}));
-                    Vec::new()
                 }
-            },
-            None => Vec::new(),
-        };
+            }
+        }
         let embedded_existing = match recording_mbid.as_deref() {
             Some(recording) => match find_existing_compilation_artwork(
                 config,
@@ -2915,7 +2967,6 @@ async fn run_compilation_album(
             },
             None => None,
         };
-        let mut existing_sources = artist_album_covers;
         if let Some(source) = embedded_existing
             && !existing_sources.iter().any(|item| {
                 item.0
@@ -2926,16 +2977,8 @@ async fn run_compilation_album(
             existing_sources.push(source);
         }
         let mut existing_source = existing_sources.first().cloned();
-        if let Some((source_track, _, kind)) = &existing_source {
-            gui_events::emit(json!({"event": "compilation_existing_artwork",
-            "track_path": track.path, "source_track_path": source_track,
-            "message": if *kind == "artist-album-cover" {
-                "Existing Artist Album cover verified for the same Recording and Artist IDs."
-            } else if *kind == "artist-album-cover-title" {
-                "Existing Artist Album cover found by Artist ID and exact song title; Recording ID differs."
-            } else {
-                "Existing embedded art verified for the same Recording and Artist IDs."
-            }}));
+        if let Some(source) = &existing_source {
+            emit_compilation_existing_artwork(track, source);
         }
         let mut use_existing = false;
         let mut lookup_pending = true;
@@ -2983,6 +3026,66 @@ async fn run_compilation_album(
                         &track.title,
                     )
                     .await;
+                // The initial local lookup can run only with identity already
+                // present in tags or SQLite. MusicBrainz may establish a usable
+                // Recording after that point, so repeat the Artist Album lookup
+                // before rendering the result page. Prefer the Recording tied to
+                // an already discovered local release; otherwise the best
+                // artist-restricted result is sufficient to discover exact-title
+                // local albums without assigning an Album ID to the COMP track.
+                let matched_local_release = resolution.matches.iter().find(|item| {
+                    existing_release_ids
+                        .values()
+                        .any(|release| release.eq_ignore_ascii_case(&item.release_mbid))
+                });
+                let resolved_lookup = matched_local_release
+                    .or_else(|| resolution.matches.first())
+                    .map(|item| {
+                        (
+                            item.recording_mbid.clone(),
+                            matched_local_release.map(|_| item.release_mbid.clone()),
+                        )
+                    });
+                let resolved_artist_ids = resolution
+                    .focused_artist_mbid
+                    .as_ref()
+                    .map(|artist| vec![artist.clone()])
+                    .unwrap_or_else(|| artist_mbids.clone());
+                let needs_resolved_local_lookup = !existing_sources
+                    .iter()
+                    .any(|(_, _, kind)| *kind == "artist-album-cover");
+                if needs_resolved_local_lookup
+                    && let Some((resolved_recording, release_filter)) = resolved_lookup
+                    && !resolved_artist_ids.is_empty()
+                {
+                    match find_local_compilation_artworks(
+                        config,
+                        &resolved_recording,
+                        &resolved_artist_ids,
+                        &album.path,
+                        &search_artist,
+                        &track.title,
+                        release_filter.as_deref(),
+                    ) {
+                        Ok(found) => {
+                            if merge_local_compilation_artworks(
+                                &mut existing_sources,
+                                &mut existing_release_ids,
+                                found,
+                            ) {
+                                existing_source = existing_sources.first().cloned();
+                                if let Some(source) = &existing_source {
+                                    emit_compilation_existing_artwork(track, source);
+                                }
+                            }
+                        }
+                        Err(error) => gui_events::emit(json!({
+                            "event": "compilation_lookup_warning",
+                            "track_path": track.path,
+                            "message": format!("Resolved Artist Album cover lookup unavailable: {error}")
+                        })),
+                    }
+                }
                 matches = resolution.matches;
                 identity_status = resolution.identity_status;
                 identity_message = resolution.identity_message;
@@ -4664,6 +4767,45 @@ fn projected_range_class(short_side: u32, range: &Range) -> &'static str {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn resolved_local_compilation_match_promotes_the_existing_title_choice() {
+        let track = PathBuf::from(r"C:\Music\The Outfield\Play Deep\02 - Your Love.mp3");
+        let cover = PathBuf::from(r"C:\Music\The Outfield\Play Deep\cover.jpg");
+        let artwork = |recording_match| CompilationLocalArtwork {
+            track_path: track.clone(),
+            album_path: track.parent().unwrap().to_path_buf(),
+            album_title: "Play Deep".to_string(),
+            album_artist: "The Outfield".to_string(),
+            release_mbid: "21588dcc-2b03-4956-afb0-c6014773efef".to_string(),
+            release_group_mbid: String::new(),
+            cover_path: cover.clone(),
+            cover_format: "jpeg".to_string(),
+            cover_width: 1200,
+            cover_height: 1200,
+            recording_match,
+        };
+        let mut sources = Vec::new();
+        let mut release_ids = std::collections::HashMap::new();
+
+        assert!(merge_local_compilation_artworks(
+            &mut sources,
+            &mut release_ids,
+            vec![artwork(false)],
+        ));
+        assert_eq!(sources[0].2, "artist-album-cover-title");
+        assert!(merge_local_compilation_artworks(
+            &mut sources,
+            &mut release_ids,
+            vec![artwork(true)],
+        ));
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].2, "artist-album-cover");
+        assert_eq!(
+            release_ids.get(&track).map(String::as_str),
+            Some("21588dcc-2b03-4956-afb0-c6014773efef")
+        );
+    }
 
     #[test]
     fn webp_still_is_recommended_as_second_visible_local_candidate() {

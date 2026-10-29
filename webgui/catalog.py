@@ -28,7 +28,7 @@ import requests
 
 from splined_artist_art import ArtistAlbum, artist_targets, local_candidates, saved_package
 from splined_compilation_authority_policy import replace_embedded_artwork
-from interaction.artist_search import discover_artist_images
+from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 
 
@@ -141,14 +141,22 @@ class Catalog:
             with Image.open(BytesIO(source)) as opened:
                 suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(opened.format)
                 if not suffix: raise ValueError('Unsupported artwork image format')
-            directory=self.cache/'web-images';directory.mkdir(parents=True,exist_ok=True)
+            directory=self.cache/'web-images'
             path=directory/(sha256(source).hexdigest()+suffix)
-            if not path.is_file():
-                descriptor,temporary=tempfile.mkstemp(prefix='.prepared-',suffix=suffix,dir=directory)
-                try:
-                    with os.fdopen(descriptor,'wb') as handle: handle.write(source)
-                    os.replace(temporary,path)
-                finally: Path(temporary).unlink(missing_ok=True)
+            try:
+                # A preview is immutable once published. Serialize the existence
+                # check and publication so concurrent requests cannot replace a
+                # file that Windows is already serving to the browser.
+                with self.lock:
+                    directory.mkdir(parents=True,exist_ok=True)
+                    if not path.is_file():
+                        descriptor,temporary=tempfile.mkstemp(prefix='.prepared-',suffix=suffix,dir=directory)
+                        try:
+                            with os.fdopen(descriptor,'wb') as handle: handle.write(source)
+                            os.replace(temporary,path)
+                        finally: Path(temporary).unlink(missing_ok=True)
+            except OSError as error:
+                raise ValueError('Unable to prepare the artwork preview. Check write access to the preview cache and try again.') from error
             return self.image(path)
         token = secrets.token_urlsafe(18)
         with self.lock:
@@ -542,65 +550,114 @@ class Catalog:
         return {"status": "green", "width": self.comp_thumbnail_side,
                 "height": self.comp_thumbnail_side, "backup": str(backup)}
 
+    def _stored_artist_profile(self, artist_id: str) -> dict[str, str] | None:
+        if not isinstance(self.database, Database):
+            return None
+        with closing(self.database.connect()) as db:
+            row = db.execute(
+                "SELECT lookup_name,musicbrainz_artistid,biography,external_url,source "
+                "FROM artist_profiles WHERE artist_key=?",
+                (artist_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def _save_artist_profile(self, artist_id: str, profile: dict[str, str]) -> None:
+        if not isinstance(self.database, Database):
+            return
+        with closing(self.database.connect()) as db, db:
+            db.execute(
+                "INSERT INTO artist_profiles(artist_key,lookup_name,musicbrainz_artistid,biography,external_url,source) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(artist_key) DO UPDATE SET "
+                "lookup_name=excluded.lookup_name,musicbrainz_artistid=excluded.musicbrainz_artistid,"
+                "biography=excluded.biography,external_url=excluded.external_url,source=excluded.source,updated_at=now()",
+                (
+                    artist_id,
+                    profile.get("lookup_name", ""),
+                    profile.get("musicbrainz_id", ""),
+                    profile.get("biography", ""),
+                    profile.get("external_url", ""),
+                    profile.get("source", ""),
+                ),
+            )
+
     def artist_metadata(self, artist_id: str) -> dict[str, object]:
         with self.lock:
             cached = self.metadata_cache.get(artist_id)
         if cached is not None:
             return cached
         artist = self.artist(artist_id)
+        stored_profile = self._stored_artist_profile(artist_id)
         result: dict[str, object] = {"source": "sample", "biography": "", "similar": [], "top_songs": artist["top_tracks"]}
         credential_path = self.credentials / "navidrome.json"
         if not credential_path.is_file():
             result["reason"] = "Navidrome credentials are not present in this test bed"
-            return result
-        try:
-            credential = json.loads(credential_path.read_text(encoding="utf-8"))
-            base = str(credential.get("server_url") or "").rstrip("/")
-            if urlsplit(base).scheme not in {"http", "https"}:
-                raise ValueError("Invalid Navidrome URL")
-            def call(method: str, parameters: dict[str, str]) -> dict[str, object]:
-                query = {"v": "1.16.1", "c": "SPLINED-web-preview", "f": "json", **parameters}
-                if credential.get("auth_method") == "api_key" and credential.get("api_key"):
-                    query["apiKey"] = credential["api_key"]
+        else:
+            try:
+                credential = json.loads(credential_path.read_text(encoding="utf-8"))
+                base = str(credential.get("server_url") or "").rstrip("/")
+                if urlsplit(base).scheme not in {"http", "https"}:
+                    raise ValueError("Invalid Navidrome URL")
+
+                def call(method: str, parameters: dict[str, str]) -> dict[str, object]:
+                    query = {"v": "1.16.1", "c": "SPLINED-web-preview", "f": "json", **parameters}
+                    if credential.get("auth_method") == "api_key" and credential.get("api_key"):
+                        query["apiKey"] = credential["api_key"]
+                    else:
+                        salt = secrets.token_hex(6)
+                        query.update({"u": credential["username"], "s": salt,
+                                      "t": hashlib.md5((credential["password"] + salt).encode(), usedforsecurity=False).hexdigest()})
+                    response = requests.get(base + "/rest/" + method + ".view", params=query,
+                                            timeout=10, allow_redirects=False)
+                    if response.status_code != 200:
+                        raise ValueError("Navidrome did not return artist metadata")
+                    envelope = response.json().get("subsonic-response", {})
+                    if envelope.get("status") != "ok":
+                        raise ValueError("Navidrome did not return artist metadata")
+                    return envelope
+
+                search = call("search3", {"query": str(artist["name"]), "artistCount": "20", "albumCount": "0", "songCount": "0"})
+                matches = search.get("searchResult3", {}).get("artist", [])
+                if isinstance(matches, dict):
+                    matches = [matches]
+                match = next((item for item in matches if str(item.get("name", "")).casefold() == str(artist["name"]).casefold()), None)
+                if match:
+                    info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
+                    biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
+                    result["biography"] = " ".join(unescape(biography).split())
+                    similar = info.get("similarArtist", [])
+                    if isinstance(similar, dict):
+                        similar = [similar]
+                    result["similar"] = [str(item.get("name")) for item in similar if isinstance(item, dict) and item.get("name")][:10]
+                    result["source"] = "Navidrome"
+                    try:
+                        top = call("getTopSongs", {"artist": str(artist["name"]), "count": "10"}).get("topSongs", {}).get("song", [])
+                        if isinstance(top, dict):
+                            top = [top]
+                        songs = [str(item.get("title")) for item in top if isinstance(item, dict) and item.get("title")]
+                        if songs:
+                            result["top_songs"] = list(dict((song.casefold(), song) for song in songs).values())[:10]
+                    except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
+                        pass  # Biography and similar artists remain useful without top songs.
                 else:
-                    salt = secrets.token_hex(6)
-                    query.update({"u": credential["username"], "s": salt,
-                                  "t": hashlib.md5((credential["password"] + salt).encode(), usedforsecurity=False).hexdigest()})
-                response = requests.get(base + "/rest/" + method + ".view", params=query,
-                                        timeout=10, allow_redirects=False)
-                if response.status_code != 200:
-                    raise ValueError("Navidrome did not return artist metadata")
-                envelope = response.json().get("subsonic-response", {})
-                if envelope.get("status") != "ok":
-                    raise ValueError("Navidrome did not return artist metadata")
-                return envelope
-            search = call("search3", {"query": str(artist["name"]), "artistCount": "20", "albumCount": "0", "songCount": "0"})
-            matches = search.get("searchResult3", {}).get("artist", [])
-            if isinstance(matches, dict):
-                matches = [matches]
-            match = next((item for item in matches if str(item.get("name", "")).casefold() == str(artist["name"]).casefold()), None)
-            if match:
-                info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
-                biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
-                result["biography"] = " ".join(unescape(biography).split())
-                similar = info.get("similarArtist", [])
-                if isinstance(similar, dict):
-                    similar = [similar]
-                result["similar"] = [str(item.get("name")) for item in similar if isinstance(item, dict) and item.get("name")][:10]
-                result["source"] = "Navidrome"
-                try:
-                    top = call("getTopSongs", {"artist": str(artist["name"]), "count": "10"}).get("topSongs", {}).get("song", [])
-                    if isinstance(top, dict):
-                        top = [top]
-                    songs = [str(item.get("title")) for item in top if isinstance(item, dict) and item.get("title")]
-                    if songs:
-                        result["top_songs"] = list(dict((song.casefold(), song) for song in songs).values())[:10]
-                except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
-                    pass  # Biography and similar artists remain useful without top songs.
-            else:
-                result["reason"] = "Artist was not found in Navidrome"
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
-            result["reason"] = "Navidrome metadata is unavailable for this artist"
+                    result["reason"] = "Artist was not found in Navidrome"
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
+                result["reason"] = "Navidrome metadata is unavailable for this artist"
+        if not str(result.get("biography") or "").strip() and stored_profile:
+            result.update(stored_profile)
+            result.pop("reason", None)
+        if not str(result.get("biography") or "").strip():
+            try:
+                profile = discover_artist_profile(
+                    str(artist["name"]),
+                    str(artist["mbid"]),
+                    self.credentials,
+                )
+            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                profile = None
+            if profile:
+                result.update(profile)
+                result.pop("reason", None)
+                self._save_artist_profile(artist_id, profile)
         with self.lock:
             self.metadata_cache[artist_id] = result
         return result

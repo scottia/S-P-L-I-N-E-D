@@ -1,6 +1,6 @@
 # API/OAuth validation
 
-WebGUI exposes **Settings → Provider Credentials → Test Connection** for each saved provider. Configuration and credential editing take place in the browser; the Python terminal validation command is retired. Connection tests load credentials from the configured directory, mask saved secrets, and report success or failure. MusicBrainz tests can refresh saved OAuth tokens automatically.
+WebGUI exposes **Settings → Provider Credentials → Test Connection** for each saved provider. Configuration and credential editing take place in the browser. Connection tests load credentials from the configured directory, mask saved secrets, and report success or failure. MusicBrainz tests can refresh saved OAuth tokens automatically.
 
 `/credentials` is the existing Docker Config v5 default, not a validator
 override. Relative `credential_dir` values are resolved from the directory
@@ -32,4 +32,4 @@ The browser reports PASS, FAIL, or SKIP for the selected provider. Missing crede
 
 For Discogs, save a personal token in Settings and test it. For Fanart.tv, save the API key and optional client key; the live v3.2 check determines success even if an old file has no API version marker. For Last.fm, save the API key; normal artwork lookup does not require a user session. For MusicBrainz, save the client fields and choose **Authorize MusicBrainz**, approve in the provider's browser page, paste the returned code, and complete authorization. Test Connection renews saved refreshable tokens.
 
-If a connection fails, check server network access and the saved provider fields, then test again. Reauthorize MusicBrainz when its refresh grant is no longer usable. The retired Python terminal commands are not required or installed.
+If a connection fails, check server network access and the saved provider fields, then test again. Reauthorize MusicBrainz when its refresh grant is no longer usable.

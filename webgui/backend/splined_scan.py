@@ -1,12 +1,11 @@
-#!/usr/bin/env python3
-from __future__ import annotations
-
 """SPLINED operational scan entrypoint.
 
 The core provider/authority engine remains in splined.py.  This module owns the
 operational album scan surface so local artwork can be evaluated before remote
 artwork discovery without coupling the provider engine to filesystem policy.
 """
+
+from __future__ import annotations
 
 import hashlib
 import io
