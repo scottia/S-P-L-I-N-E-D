@@ -22,6 +22,8 @@ Normal and COMP embedding write exact square JPEG thumbnails at `output.embedded
 
 ## Browsing and display
 
+The workspace fills the browser width, including ultrawide monitors such as 3440×1440. Resize its panels with the pane splitters; the main workspace stays aligned with the full-width header.
+
 Artists, Albums, and Fallback remember separate scroll positions during the browser session. Returning to the same artist or album restores the overview position; expanded album grids retain expansion and scroll. Biographies collapse to five lines, with same-size themed more/less text at the end of the final visible line. Dark, Chalk, and Light persist in the browser. Browser extensions that force colors can override the selected theme.
 
 Media Filter retains the existing selected-item counter behavior. Status toggles narrow the list; this change does not introduce album-total status counters. Candidate Filter controls result visibility. Locked filters remain in place across selections.
