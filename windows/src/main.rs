@@ -10602,6 +10602,15 @@ fn bind_callbacks(
         let controller = Arc::clone(&controller);
         let workspace_layout = Rc::clone(&workspace_layout);
         ui.on_launch(move || {
+            if let Some(ui) = weak.upgrade()
+                && ui.get_compilation_report_visible()
+                && ui.get_overview_mode().as_str() == "Artist"
+            {
+                // Both launch buttons in an open Artist report use its full
+                // non-green track queue and the same optional repair path.
+                ui.invoke_launch_artist_compilation_report(ui.get_include_bypassed());
+                return;
+            }
             if let Some(ui) = weak.upgrade() {
                 let (media_expanded, artwork_visible, candidate_filter_expanded) = state
                     .lock()
@@ -17670,7 +17679,15 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             && !intro_active
             && !state.operation_busy
             && !report_preview_active
-            && state.can_launch(),
+            && if artist_report_visible {
+                state.phase == RunPhase::Idle
+                    && !state.compilation_report_checking
+                    && artist_compilation_report_track_ui_rows(&state)
+                        .iter()
+                        .any(|row| row.status.as_str() != "Green")
+            } else {
+                state.can_launch()
+            },
     );
     ui.set_running(state.phase != RunPhase::Idle);
     ui.set_auto_scan_enabled(state.auto_scan_enabled);
