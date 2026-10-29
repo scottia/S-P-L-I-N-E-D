@@ -25,10 +25,10 @@ jobs:
       PYTHONPATH: .:webgui/backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
       - run: pip install -r webgui/requirements-test.txt
@@ -54,8 +54,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
       - if: runner.os == 'Linux'
-        run: cargo test --locked
+        run: cargo +stable test --locked
       - if: runner.os == 'Windows'
-        run: cargo test --manifest-path windows/Cargo.toml --lib --bin splined --locked
+        run: cargo +stable test --manifest-path windows/Cargo.toml --lib --bin splined --locked
