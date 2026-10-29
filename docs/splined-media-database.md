@@ -1,6 +1,8 @@
 # SPLINED media database
 
-The Python/Docker Ratatui and Windows implementations store their persistent
+WebGUI now uses PostgreSQL, with its own catalog and persistent queue. The SQLite lifecycle and shared-file instructions below apply to native clients and legacy snapshots. See the [WebGUI data guide](browser-workspace-guide.md#data-recovery-and-deployment) for server setup, explicit import, and backup. Windows does not connect to the live PostgreSQL store.
+
+The native Windows implementation stores its persistent
 Select Media read model in:
 
 ```text
@@ -412,7 +414,7 @@ Stop/error ended the previous run. The cursor advances only as the runtime
 reaches each next track and is cleared after a normal pass reaches the end;
 completed-track skipping remains authoritative throughout.
 
-A targeted Windows or Python/Ratatui edit passes explicitly checked compilation
+A targeted Windows or Python backend edit passes explicitly checked compilation
 tracks to the runtime. Highlighting or clicking a track is preview focus only and never sets
 the target environment value, so an ordinary Album launch still reads the
 ledger and interruption cursor. Checking the Album clears any explicit track
@@ -557,10 +559,7 @@ transactions are included; database restores validate the snapshot and use the
 same API. Settings and credential files are replaced atomically per file, not
 as one all-or-nothing transaction across every selected category:
 
-```text
-splined --backup-export state.spl --backup-components settings,interface,credentials,database
-splined --backup-restore state.spl --backup-components settings,credentials
-```
+WebGUI backups require a consistent PostgreSQL dump and its persistent volumes. Use Windows Backup / Restore for native SQLite snapshots; terminal Python `.spl` commands are retired.
 
 The WAL/SHM sidecars may exist while SPLINED is running. Stop SPLINED before
 copying the database if a consistent filesystem-level backup is required.

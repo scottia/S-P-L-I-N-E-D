@@ -1,0 +1,6 @@
+webgui/** text eol=lf
+schema/*.sql text eol=lf
+docker/*.yaml text eol=lf
+webgui/**/*.png binary
+webgui/**/*.jpg binary
+webgui/**/*.webp binary

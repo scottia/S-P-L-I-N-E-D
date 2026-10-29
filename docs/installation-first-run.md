@@ -146,24 +146,17 @@ Extract the archive, keep `splined` executable, and run it from a terminal.
 If downloaded-file quarantine applies, review the file and clear quarantine
 according to local policy before execution.
 
-## Python
+## WebGUI / Python
 
-Install the dependencies declared by the supported Python package or use the
-published container image. Python and native implementations share Config v5
-and SQLite authority. Do not run concurrent writers against one database.
+Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), open its browser
+address, and complete Settings. Save the server music paths, configure provider
+credentials, and refresh the library index. All artwork review and writes take
+place in the browser. The Python terminal client has been retired.
 
-Python's semantic-version update check is notification-only, and selective
-unprotected `.spl` archives provide cross-platform state transfer:
-
-```text
-splined --check-for-updates
-splined --backup-export state.spl --backup-components settings,interface,credentials,database
-splined --backup-restore state.spl --backup-components settings,credentials
-```
-
-The Ratatui `E` settings surface saves validated Config v5 values; `A` opens
-runtime diagnostics. See the Python Ratatui guide for candidate filters,
-MusicBrainz filters, comparison, and explicit compilation-track reopen.
+PostgreSQL owns the WebGUI catalog and persistent queue. Windows continues to
+use its native SQLite store. Import a named SQLite snapshot into an empty
+PostgreSQL catalog only when its stored music paths match the server; otherwise
+build a fresh index. See the [WebGUI guide](browser-workspace-guide.md).
 
 ## Safe validation
 

@@ -17,7 +17,7 @@
     "Bypass",
     "Bypassed",
     "Candidate Artwork",
-    "Activate All 8",
+    "Activate All 6",
     "MusicBrainz Results",
     "VISITED"
   ],
@@ -25,7 +25,7 @@
     "CheckBox",
     "Show Tracks / Embedded Art",
     "MUSIC LOOKS BETTER HERE",
-    "MANAGE · ENHANCE · PRESERVE · MUSIC FOREVER"
+    "MANAGE \u00b7 ENHANCE \u00b7 PRESERVE \u00b7 MUSIC FOREVER"
   ],
   "required_diagnostic_proofs": [
     "artist_click_kept_view",

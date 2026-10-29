@@ -279,7 +279,7 @@ jobs:
               raise SystemExit("App Installer template versions were not updated exactly twice")
           appinstaller_path.write_text(appinstaller, encoding="utf-8")
 
-          python_path = Path("python/splined.py")
+          python_path = Path("webgui/backend/splined.py")
           source = python_path.read_text(encoding="utf-8")
           source, version_count = re.subn(
               r'^VERSION = "[^"]+"$',
@@ -308,14 +308,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mapfile -t changed < <(git diff --name-only | sort)
-          expected=("Cargo.lock" "Cargo.toml" "python/splined.py" "windows/Cargo.lock" "windows/Cargo.toml" "windows/gui/app.manifest" "windows/package/Package.appxmanifest" "windows/package/SPLINED.appinstaller.template")
+          expected=("Cargo.lock" "Cargo.toml" "webgui/backend/splined.py" "windows/Cargo.lock" "windows/Cargo.toml" "windows/gui/app.manifest" "windows/package/Package.appxmanifest" "windows/package/SPLINED.appinstaller.template")
           if [ "${changed[*]}" != "${expected[*]}" ]; then
             echo "ERROR: Release provisioning changed unexpected files."
             printf '  %s\n' "${changed[@]}"
             exit 1
           fi
 
-          git add Cargo.toml Cargo.lock python/splined.py windows/Cargo.toml windows/Cargo.lock windows/gui/app.manifest windows/package/Package.appxmanifest windows/package/SPLINED.appinstaller.template
+          git add Cargo.toml Cargo.lock webgui/backend/splined.py windows/Cargo.toml windows/Cargo.lock windows/gui/app.manifest windows/package/Package.appxmanifest windows/package/SPLINED.appinstaller.template
           git commit -m "release: prepare ${RELEASE_VERSION}"
 
           RELEASE_COMMIT=$(git rev-parse HEAD)
@@ -954,7 +954,7 @@ jobs:
             --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.commit }}" \
             --tag "$IMAGE_NAME:$VERSION_TAG" \
             --tag "$IMAGE_NAME:latest" \
-            ./python
+            --file webgui/Dockerfile .
 
       - name: Log in to GHCR
         shell: bash

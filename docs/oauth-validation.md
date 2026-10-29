@@ -1,19 +1,6 @@
 # API/OAuth validation
 
-Python/Docker exposes a single credential validation command:
-
-```text
-splined --oauth-validation
-```
-
-The command loads the active SPLINED Config v5 file normally. In Docker that
-file defaults to `/config/config.toml`. SPLINED then resolves the credential
-directory exclusively from:
-
-```toml
-[credentials]
-credential_dir = "/credentials"
-```
+WebGUI exposes **Settings → Provider Credentials → Test Connection** for each saved provider. Configuration and credential editing take place in the browser; the Python terminal validation command is retired. Connection tests load credentials from the configured directory, mask saved secrets, and report success or failure. MusicBrainz tests can refresh saved OAuth tokens automatically.
 
 `/credentials` is the existing Docker Config v5 default, not a validator
 override. Relative `credential_dir` values are resolved from the directory
@@ -39,101 +26,10 @@ from an authentication failure and may try another curated target internally.
 An accepted credential is not reported as failed merely because a provider
 lacks a particular test album.
 
-## Output and exit status
+## Results and recovery
 
-Each provider ends in one of these states:
+The browser reports PASS, FAIL, or SKIP for the selected provider. Missing credentials are SKIP; a rejected saved credential is FAIL. Secret values are not returned by the editor or included in the test result. Blank secret fields retain saved values.
 
-- `PASS` — the configured credential was accepted and the provider validation completed. This also covers an accepted credential when every curated target is absent from that provider.
-- `FAIL` — the configured credential was rejected, malformed, unreachable, or the provider test could not complete.
-- `SKIP` — the provider credential file is not configured.
+For Discogs, save a personal token in Settings and test it. For Fanart.tv, save the API key and optional client key; the live v3.2 check determines success even if an old file has no API version marker. For Last.fm, save the API key; normal artwork lookup does not require a user session. For MusicBrainz, save the client fields and choose **Authorize MusicBrainz**, approve in the provider's browser page, paste the returned code, and complete authorization. Test Connection renews saved refreshable tokens.
 
-`WARN` is advisory and does not itself change the provider result. For example,
-a Fanart.tv credential with a missing or stale `api_version` marker is warned
-about, then tested against the live v3.2 endpoint.
-
-When a configured provider fails, the command prints `Next steps:` immediately
-under that failure. Recovery guidance is provider-specific so a user does not
-need external documentation to determine which command or credential must be
-repaired.
-
-The final summary returns exit code `0` when every configured provider passes, or when no provider credentials are configured. It returns exit code `1` when one or more configured providers fail validation.
-
-## Provider recovery guidance
-
-### Discogs
-
-A rejected or malformed Discogs token tells the user to replace or repair the
-configured `discogs.json` personal access token, shows the credential path, and
-then rerun:
-
-```text
-splined --oauth-validation
-```
-
-Discogs does not require an application OAuth exchange.
-
-### Fanart.tv
-
-A rejected or malformed Fanart.tv credential tells the user to run:
-
-```text
-splined --fanarttv-credentials
-splined --oauth-validation
-```
-
-The API key is required and the client key remains optional.
-
-### MusicBrainz
-
-A rejected or malformed MusicBrainz OAuth credential tells the user to run:
-
-```text
-splined --mb-oauth-login
-splined --oauth-validation
-```
-
-After successful reauthorization, the validation command participates in the
-automatic refresh lifecycle. Once the short-lived access token expires, run:
-
-```text
-splined --oauth-validation
-```
-
-The validator refreshes the token, atomically updates `musicbrainz.json`,
-advances `expires_at_unix`, and tests the new bearer token. If the provider
-rejects a nominally current token, the validator forces one refresh and retry.
-If renewal still fails, reauthorize with `splined --mb-oauth-login` and rerun
-the validator.
-
-### Last.fm
-
-A rejected or malformed Last.fm API credential tells the user to run:
-
-```text
-splined --lastfm-credentials
-splined --oauth-validation
-```
-
-If user-account authorization is also required for that user's workflow, the
-recovery text additionally points to:
-
-```text
-splined --lastfm-login
-```
-
-A Last.fm user session is still not required for normal artwork reads.
-
-For transport failures or provider-side HTTP failures, SPLINED first tells the
-user to check network connectivity and provider availability and rerun the
-validator before replacing credentials.
-
-## Secret handling
-
-The validation command never prints API keys, OAuth bearer tokens, refresh
-tokens, shared secrets, Fanart.tv client keys, or Discogs personal tokens. It
-prints only credential-file status, recovery commands, configured file paths,
-and public provider-result metadata or artwork URLs.
-
-Discogs, Fanart.tv, and Last.fm validation remains read-only. MusicBrainz may
-atomically rewrite `musicbrainz.json` only when it renews an expired or rejected
-access token. Other credential fields and unknown future fields are preserved.
+If a connection fails, check server network access and the saved provider fields, then test again. Reauthorize MusicBrainz when its refresh grant is no longer usable. The retired Python terminal commands are not required or installed.

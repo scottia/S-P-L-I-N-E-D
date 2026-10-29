@@ -34,6 +34,65 @@ struct TargetRunRequest<'a> {
     auto_ideal: bool,
 }
 
+struct CompilationQueueGuard {
+    selection_epoch: u64,
+    artist_report: Option<(String, u64)>,
+}
+
+impl CompilationQueueGuard {
+    fn capture(app: &ApplicationState) -> Self {
+        let artist_report =
+            (app.library.view == crate::application::LibraryView::Artists
+                && !app.library.show_tracks
+                && !app.compilation_report_artist.is_empty()
+                && app.library.focused_artist.as_deref().is_some_and(|artist| {
+                    artist.eq_ignore_ascii_case(&app.compilation_report_artist)
+                }))
+            .then(|| {
+                (
+                    app.compilation_report_artist.clone(),
+                    app.compilation_report_generation,
+                )
+            });
+        Self {
+            selection_epoch: app.library.selection_epoch,
+            artist_report,
+        }
+    }
+
+    fn allows(&self, app: &ApplicationState, target: &ScanTarget) -> bool {
+        let Some(track) = target.compilation_track_path.as_deref() else {
+            return true;
+        };
+        if app.library.selection_epoch != self.selection_epoch
+            || !app
+                .library
+                .selected_compilation_track_paths
+                .contains(&track.to_ascii_lowercase())
+        {
+            return false;
+        }
+        if let Some((artist, generation)) = self.artist_report.as_ref() {
+            // A report queues several albums without focusing one album card.
+            // Keep its Artist and generation as the authority for the whole run.
+            app.library.view == crate::application::LibraryView::Artists
+                && !app.library.show_tracks
+                && app
+                    .library
+                    .focused_artist
+                    .as_deref()
+                    .is_some_and(|focused| focused.eq_ignore_ascii_case(artist))
+                && app.compilation_report_artist.eq_ignore_ascii_case(artist)
+                && app.compilation_report_generation == *generation
+        } else {
+            app.library
+                .focused_album_key
+                .as_deref()
+                .is_some_and(|key| key.eq_ignore_ascii_case(&target.album_key))
+        }
+    }
+}
+
 fn musicbrainz_review_target(state: &ApplicationState) -> Result<ScanTarget, String> {
     let album_key = state
         .library
@@ -165,7 +224,7 @@ impl ScanController {
             return Err("Wait for Refresh DB to finish before starting a run.".to_string());
         }
 
-        let (base_config, queue, launch_mode, auto_ideal, selection_epoch) = {
+        let (base_config, queue, launch_mode, auto_ideal, compilation_guard) = {
             let mut state = self
                 .state
                 .lock()
@@ -218,7 +277,7 @@ impl ScanController {
                 queue,
                 state.launch_mode,
                 !open_musicbrainz && state.auto_scan_enabled,
-                state.library.selection_epoch,
+                CompilationQueueGuard::capture(&state),
             )
         };
         self.musicbrainz_requested
@@ -264,17 +323,9 @@ impl ScanController {
                     break;
                 }
                 if let Some(track_path) = target.compilation_track_path.as_deref() {
-                    let still_selected = state.lock().is_ok_and(|app| {
-                        app.library
-                            .selected_compilation_track_paths
-                            .contains(&track_path.to_ascii_lowercase())
-                            && app.library.selection_epoch == selection_epoch
-                            && app
-                                .library
-                                .focused_album_key
-                                .as_deref()
-                                .is_some_and(|key| key.eq_ignore_ascii_case(&target.album_key))
-                    });
+                    let still_selected = state
+                        .lock()
+                        .is_ok_and(|app| compilation_guard.allows(&app, &target));
                     if !still_selected {
                         debug_record(
                             &debug,
@@ -799,6 +850,97 @@ mod tests {
         let error = controller.start().unwrap_err();
         assert!(error.contains("Select at least one"));
         assert!(!controller.is_running());
+    }
+
+    #[test]
+    fn artist_report_queue_can_cross_albums_and_still_cancels_on_navigation() {
+        let mut app = state_without_selection();
+        app.library.view = crate::application::LibraryView::Artists;
+        app.library.focused_artist = Some("Alan Jackson".into());
+        app.library.focused_album_key = None;
+        app.compilation_report_artist = "Alan Jackson".into();
+        app.compilation_report_generation = 7;
+        let target = |key: &str, track: &str| ScanTarget {
+            album_key: key.into(),
+            artist: "Various Artists".into(),
+            album: key.into(),
+            path: format!("C:/missing/{key}"),
+            compilation_track_path: Some(track.into()),
+            bypass_override: false,
+        };
+        let first = target("first", "C:/missing/first/one.mp3");
+        let second = target("second", "C:/missing/second/two.mp3");
+        for target in [&first, &second] {
+            app.library.selected_compilation_track_paths.insert(
+                target
+                    .compilation_track_path
+                    .as_ref()
+                    .unwrap()
+                    .to_ascii_lowercase(),
+            );
+        }
+        let guard = CompilationQueueGuard::capture(&app);
+        assert!(guard.allows(&app, &first));
+        app.library.mark_target_completed(&first);
+        assert!(guard.allows(&app, &second));
+        app.library.selection_epoch += 1;
+        assert!(!guard.allows(&app, &second));
+        app.library.selection_epoch -= 1;
+        app.compilation_report_generation += 1;
+        assert!(!guard.allows(&app, &second));
+        app.compilation_report_generation -= 1;
+        app.library.focused_artist = Some("Aerosmith".into());
+        assert!(!guard.allows(&app, &second));
+        app.compilation_report_artist.clear();
+        app.library.focused_album_key = Some("first".into());
+        let single_album = CompilationQueueGuard::capture(&app);
+        assert!(!single_album.allows(&app, &second));
+        app.library.focused_album_key = Some("second".into());
+        assert!(single_album.allows(&app, &second));
+    }
+
+    #[test]
+    fn artist_report_launch_reaches_processing_without_a_focused_album() {
+        let mut app = state_without_selection();
+        let track = "C:/missing/album/one.mp3";
+        app.library.albums[0].snapshot.album_mbid.clear();
+        app.library.albums[0].snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: track.into(),
+            title: "One".into(),
+            artist: "Alan Jackson".into(),
+            embedded_artwork_recorded: false,
+        }];
+        app.library.albums[0].selected = true;
+        app.library.focused_artist = Some("Alan Jackson".into());
+        app.library.focused_album_key = None;
+        app.compilation_report_artist = "Alan Jackson".into();
+        app.library
+            .selected_compilation_track_paths
+            .insert(track.to_ascii_lowercase());
+        let state = Arc::new(Mutex::new(app));
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let captured = Arc::clone(&events);
+        let (controller, notices) = ScanController::new_with_debug(
+            Arc::clone(&state),
+            Some(Arc::new(move |event| captured.lock().unwrap().push(event))),
+        );
+        controller.start().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while controller.is_running() && std::time::Instant::now() < deadline {
+            let _ = notices.recv_timeout(std::time::Duration::from_millis(100));
+        }
+        assert!(!controller.is_running());
+        let events = events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.contains("processing-target-start"))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.contains("processing-comp-queue-aborted"))
+        );
     }
 
     #[test]
