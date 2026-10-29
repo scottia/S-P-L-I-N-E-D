@@ -75,6 +75,7 @@ static NEW_MEDIA_CHECK_REVISION: AtomicU64 = AtomicU64::new(0);
 thread_local! {
     static EMBED_QUEUE_WINDOW: RefCell<Option<slint::Weak<EmbedQueueWindow>>> = const { RefCell::new(None) };
     static EMBED_MAIN_WINDOW: RefCell<Option<slint::Weak<AppWindow>>> = const { RefCell::new(None) };
+    static WORKSPACE_SCROLL_POSITIONS: RefCell<HashMap<String, f32>> = RefCell::new(HashMap::new());
 }
 
 struct DecodedWebpFrame {
@@ -6484,6 +6485,7 @@ fn sync_embed_queue_window(
         window.set_current_ready(ready.is_some());
     }
     let jobs = embed_queue::list(database)?;
+    let has_work = jobs.iter().any(|job| job.state != "done");
     window.set_has_running(jobs.iter().any(|job| job.state == "running"));
     let staged_count = jobs.iter().filter(|job| job.state == "staged").count();
     let rows = jobs
@@ -6558,6 +6560,7 @@ fn sync_embed_queue_window(
             main.set_embed_panel_pause_all(window.get_pause_all());
             main.set_embed_panel_running(window.get_has_running());
             main.set_embed_panel_staged_count(staged_count as i32);
+            main.set_embed_panel_has_work(has_work);
             main.set_embed_panel_staging_count(window.get_staging_count());
         }
     });
@@ -7244,15 +7247,11 @@ fn bind_embed_queue(
         let window = window.clone();
         let state = Arc::clone(&state);
         let database = database.clone();
-        let main_weak = main_weak.clone();
         ui.on_open_embed_queue(move || {
             window.set_current_key(SharedString::default());
             window.set_queue_message(SharedString::default());
             if let Err(error) = sync_embed_queue_window(&window, &state, &database) {
                 window.set_queue_status(format!("Embed queue error: {error}").into());
-            }
-            if let Some(main) = main_weak.upgrade() {
-                main.set_workspace_mode(3);
             }
             if window.get_current_ready() {
                 window.invoke_queue_current();
@@ -16457,10 +16456,69 @@ fn musicbrainz_existing_preview_path(
     .filter(|path| !path.trim().is_empty())
 }
 
+fn switch_scroll_context(
+    positions: &mut HashMap<String, f32>,
+    previous: &str,
+    offset: f32,
+    next: &str,
+) -> f32 {
+    if !previous.is_empty() && offset.is_finite() {
+        positions.insert(previous.to_string(), offset.min(0.0));
+    }
+    positions.get(next).copied().unwrap_or_default()
+}
+
+fn sync_workspace_scroll_context(ui: &AppWindow, state: &ApplicationState) {
+    let library_key = if !state.media_selector_expanded {
+        String::new()
+    } else if state.library.show_tracks {
+        "library:Fallback".to_string()
+    } else {
+        format!("library:{}", state.library.view.label())
+    };
+    let overview_key = if state.library.show_tracks || state.library.view == LibraryView::Albums {
+        state
+            .library
+            .focused_album_key
+            .as_ref()
+            .map(|key| format!("overview:Album:{}", key.to_ascii_lowercase()))
+            .unwrap_or_default()
+    } else {
+        overview_artist_name(state)
+            .map(|artist| format!("overview:Artist:{}", artist.to_lowercase()))
+            .unwrap_or_default()
+    };
+    WORKSPACE_SCROLL_POSITIONS.with(|positions| {
+        let mut positions = positions.borrow_mut();
+        if ui.get_library_scroll_key().as_str() != library_key {
+            let offset = switch_scroll_context(
+                &mut positions,
+                ui.get_library_scroll_key().as_str(),
+                ui.get_library_scroll_y(),
+                &library_key,
+            );
+            ui.set_library_scroll_key(library_key.into());
+            ui.set_library_scroll_y(offset);
+        }
+        if ui.get_overview_scroll_key().as_str() != overview_key {
+            let offset = switch_scroll_context(
+                &mut positions,
+                ui.get_overview_scroll_key().as_str(),
+                ui.get_overview_scroll_y(),
+                &overview_key,
+            );
+            ui.set_overview_scroll_key(overview_key.into());
+            ui.set_overview_scroll_y(offset);
+        }
+    });
+}
+
 fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     let Ok(state) = shared.lock() else {
         return;
     };
+
+    sync_workspace_scroll_context(ui, &state);
 
     ui.set_library_rows(if state.media_selector_expanded {
         library_ui_model(&state)
@@ -20701,6 +20759,64 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn scroll_memory_restores_each_library_and_overview_independently() {
+        let mut positions = HashMap::new();
+        assert_eq!(
+            super::switch_scroll_context(
+                &mut positions,
+                "library:Artists",
+                -820.0,
+                "library:Albums"
+            ),
+            0.0
+        );
+        assert_eq!(
+            super::switch_scroll_context(
+                &mut positions,
+                "library:Albums",
+                -1520.0,
+                "library:Fallback"
+            ),
+            0.0
+        );
+        assert_eq!(
+            super::switch_scroll_context(
+                &mut positions,
+                "library:Fallback",
+                -640.0,
+                "library:Artists"
+            ),
+            -820.0
+        );
+        assert_eq!(
+            super::switch_scroll_context(
+                &mut positions,
+                "overview:Artist:alan jackson",
+                -1250.0,
+                "overview:Album:comp"
+            ),
+            0.0
+        );
+        assert_eq!(
+            super::switch_scroll_context(
+                &mut positions,
+                "overview:Album:comp",
+                -340.0,
+                "library:Fallback"
+            ),
+            -640.0
+        );
+        assert_eq!(
+            super::switch_scroll_context(&mut positions, "", 0.0, "library:Albums"),
+            -1520.0
+        );
+        assert_eq!(
+            super::switch_scroll_context(&mut positions, "", 0.0, "overview:Artist:alan jackson"),
+            -1250.0
+        );
+    }
 
     #[test]
     fn album_view_artist_art_search_loads_downloaded_candidates() {

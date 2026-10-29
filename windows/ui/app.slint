@@ -272,15 +272,16 @@ component WorkspaceButton inherits Rectangle {
     in property <string> label;
     in property <bool> selected: false;
     in property <bool> enabled: true;
+    in property <bool> queued: false;
     callback activated();
     horizontal-stretch: 1;
     border-radius: 7px;
     border-width: 1px;
-    border-color: AppTheme.border;
-    background: !root.enabled ? AppTheme.quiet-surface : (root.selected ? AppTheme.selected-surface : (button-touch.has-hover ? AppTheme.card-hover : AppTheme.card));
+    border-color: root.queued ? AppTheme.violet : AppTheme.border;
+    background: !root.enabled ? AppTheme.quiet-surface : (root.queued ? (AppTheme.light ? #d7cbe5 : (AppTheme.chalk ? #342d3b : #211632)) : (root.selected ? AppTheme.selected-surface : (button-touch.has-hover ? AppTheme.card-hover : AppTheme.card)));
     Text {
         text: root.label;
-        color: root.enabled ? AppTheme.foreground : AppTheme.secondary-foreground;
+        color: !root.enabled ? AppTheme.secondary-foreground : (root.queued ? AppTheme.violet : AppTheme.foreground);
         font-size: 15px;
         font-weight: 700;
         horizontal-alignment: center;
@@ -513,6 +514,7 @@ component MediaLibraryPane inherits NeonPanel {
     in property <bool> expanded: true;
     in-out property <float> pane-width: 350;
     in property <[UiLibraryRow]> library-rows;
+    in-out property <length> list-scroll-y: 0px;
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <[UiStatusFilterRow]> status-filter-rows;
     in property <[UiCandidateFilterRow]> candidate-type-filter-rows;
@@ -652,6 +654,7 @@ component MediaLibraryPane inherits NeonPanel {
                 clear => root.clear-candidate-filters();
             }
             if !root.show-tracks: artist-library-list := ListView {
+                content-y <=> root.list-scroll-y;
                 min-height: 180px;
                 vertical-stretch: 1;
                 for row in root.library-rows: LibraryItem {
@@ -672,6 +675,7 @@ component MediaLibraryPane inherits NeonPanel {
             if root.show-tracks: VerticalLayout { spacing: 6px; vertical-stretch: 1;
                 Text { text: "Fallback Albums"; color: AppTheme.foreground; font-size: 15px; font-weight: 700; height: 24px; }
                 fallback-library-list := ListView {
+                    content-y <=> root.list-scroll-y;
                     min-height: 115px;
                     vertical-stretch: 1;
                     for row in root.library-rows: VerticalLayout {
@@ -1364,6 +1368,10 @@ export component AppWindow inherits Window {
     in-out property <bool> enhancement-reset-active: false;
     in property <int> selected-count;
     in property <string> library-view-label: "Artists";
+    in-out property <string> library-scroll-key;
+    in-out property <length> library-scroll-y: 0px;
+    in-out property <string> overview-scroll-key;
+    in-out property <length> overview-scroll-y: 0px;
     in property <string> media-status-scope-label: "Artists";
     in property <string> database-label;
     in property <string> current-artist;
@@ -1575,6 +1583,7 @@ export component AppWindow inherits Window {
     in property <bool> embed-panel-pause-all: false;
     in property <bool> embed-panel-running: false;
     in property <int> embed-panel-staged-count: 0;
+    in property <bool> embed-panel-has-work: false;
     in property <int> embed-panel-staging-count: 0;
     in-out property <string> selected-source-name: "All";
     in-out property <bool> setup-required: false;
@@ -1875,6 +1884,7 @@ export component AppWindow inherits Window {
                     expanded: root.media-selector-expanded;
                     pane-width <=> root.media-pane-width;
                     library-rows: root.library-rows;
+                    list-scroll-y <=> root.library-scroll-y;
                     compilation-track-rows: root.compilation-track-rows;
                     status-filter-rows: root.status-filter-rows;
                     candidate-type-filter-rows: root.candidate-type-filter-rows;
@@ -1932,7 +1942,7 @@ export component AppWindow inherits Window {
                                     if !root.media-selector-expanded: ExpansionGlyph { expanded: false; clicked => root.set-region-expanded("media", true); }
                                     WorkspaceButton { label: "Find & Match Artwork"; selected: root.workspace-mode == 0; enabled: !root.intro-active; activated => { root.workspace-mode = 0; } }
                                     WorkspaceButton { label: root.artist-artwork-mode ? "Artists Art Enhancements" : "Album Art Enhancements"; selected: root.workspace-mode == 2; enabled: !root.intro-active; activated => { root.workspace-mode = 2; } }
-                                    WorkspaceButton { label: "Album Track Embedding"; selected: root.workspace-mode == 3; enabled: !root.intro-active; activated => { root.workspace-mode = 3; root.show-embed-queue(); } }
+                                    WorkspaceButton { label: "Album Track Embedding"; selected: root.workspace-mode == 3; queued: root.embed-panel-has-work || root.embed-panel-staging-count > 0; enabled: !root.intro-active; activated => { root.workspace-mode = 3; root.show-embed-queue(); } }
                                 }
                             }
                             if root.awaiting-musicbrainz: VerticalLayout {
@@ -2149,6 +2159,7 @@ export component AppWindow inherits Window {
                                                     font-size: 18px; wrap: word-wrap;
                                                 }
                                                 artist-scroll := ScrollView {
+                                                    content-y <=> root.overview-scroll-y;
                                                     content-width: self.visible-width;
                                                     content-height: max(self.visible-height, artist-overview-content.preferred-height);
                                                     mouse-drag-pan-enabled: true;

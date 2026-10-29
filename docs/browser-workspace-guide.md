@@ -8,8 +8,11 @@ The browser workspace previews the artwork workflow using an isolated Python SQL
 2. Press **LAUNCH** to find artist images from Fanart.tv and Deezer. The center status bar reports search progress. Local images are also available as candidates. Blue candidate controls choose artist images; pink controls choose banners.
 3. Select **Artists Art Enhancements** or **Album Art Enhancements**. Pane 1 shows the saved artist package. Pane 2 previews the proposed artist image; pane 3 previews the proposed banner. Pane radios control Selected Artwork. Both proposed radios show the combined package, with **Themed Packaging** at the preview's upper left.
 4. Filters, Fitment, and Detailed apply browser-only preview adjustments. Drag a slider, double-click it to reset, or use the small reset beside Enhancements. Fitment starts at the center (1×): move left to shrink or right to enlarge. Wheel over an artist or banner preview to zoom; click and drag the image to reposition it. The round artist frame stays fixed while its pixels move.
-5. **EMBED Batch** stages the selected album only in the browser's temporary preview queue. Opening Album Track Embedding does not stage an album.
+5. **EMBED Batch** stages the selected album only in the browser's temporary preview queue and keeps the current workspace open. The **Album Track Embedding** tab gains a muted purple background, outline, and text while albums are staged. Open that tab when ready to review the queue; opening it does not stage another album.
+
 6. Media Filter starts with every status category enabled. Each bullet and its matching library-row bullet use the same status color; fill or outline shows selection. Toggle categories to narrow the library and use its lock to keep the chosen set. Candidate Filter fills green for categories found in the current results; click a category to cycle green Included → red Disregarded → outlined Neutral. Only Disregarded hides matching candidates. Its lock keeps the current filter through another search.
+
+The Artists, Albums, and Fallback library lists remember their separate scroll positions during this session. Artist and fallback-album overviews also remember their position when returning from enhancements or the embedding queue. Expanded album grids retain their expansion and scroll position.
 
 ## Overview data
 

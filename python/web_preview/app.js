@@ -18,7 +18,46 @@ const state = {
   fx: {artist: {}, banner: {}, album: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(),
   embedQueue: [], listRequest: 0, selectionRequest: 0, searchRequest: 0,
+  libraryLoading: false,
 };
+const scrollPositions = new Map(), scrollSurfaceKeys = new Map(), restoringScroll = new Set();
+const SCROLL_SURFACES = ["artistList", "hero", "albumGrid", "findView"];
+function rememberScroll(id) {
+  const element = $(id), key = scrollSurfaceKeys.get(id);
+  if (!key || restoringScroll.has(id) || !element.getClientRects().length) return;
+  scrollPositions.set(key, {top: element.scrollTop, left: element.scrollLeft,
+    expanded: id === "albumGrid" && element.classList.contains("expanded")});
+}
+function restoreScroll(ids) {
+  const keys = ids.map(id => scrollSurfaceKeys.get(id));
+  const restore = () => ids.forEach((id, index) => {
+    if (scrollSurfaceKeys.get(id) !== keys[index]) return;
+    const element = $(id), saved = scrollPositions.get(keys[index]);
+    if (!saved || !element.getClientRects().length) return;
+    if (id === "albumGrid") {
+      element.classList.toggle("expanded", saved.expanded);
+      $("showAllAlbums").textContent = saved.expanded ? "Show Less" : "Show All";
+    }
+    element.scrollTop = saved.top; element.scrollLeft = saved.left;
+  });
+  ids.forEach(id => restoringScroll.add(id));
+  restore();
+  requestAnimationFrame(() => {
+    restore();
+    requestAnimationFrame(() => ids.forEach((id, index) => {
+      if (scrollSurfaceKeys.get(id) === keys[index]) restoringScroll.delete(id);
+    }));
+  });
+}
+function renderWithScrollMemory(ids, context, render) {
+  for (const id of ids) {
+    rememberScroll(id);
+    const key = context ? id + ":" + context : "";
+    scrollSurfaceKeys.set(id, key);
+    if (key && !scrollPositions.has(key)) scrollPositions.set(key, {top: 0, left: 0, expanded: false});
+  }
+  try { render(); } finally { restoreScroll(ids); }
+}
 const SOURCES = [
   ["Samples", "", "⊘"], ["Local Files", "local", "local"],
   ["iTunes", "itunes", "itunes"], ["Fanart.tv", "fanart", "fanart"],
@@ -168,6 +207,9 @@ function currentCandidate() {
 }
 
 function renderLibrary() {
+  renderWithScrollMemory(["artistList"], state.libraryLoading ? "" : state.libraryMode, renderLibraryContents);
+}
+function renderLibraryContents() {
   $("artistsTab").classList.toggle("active", state.libraryMode === "artists");
   $("albumsTab").classList.toggle("active", state.libraryMode === "albums");
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
@@ -355,6 +397,11 @@ function renderArtistBiography(artist, metadata) {
   requestAnimationFrame(updateBiographyToggle);
 }
 function renderHero() {
+  const context = state.editorMode === "fallback" ? (state.album ? "fallback:" + state.album.id : "")
+    : state.artist ? "artist:" + state.artist.id : "";
+  renderWithScrollMemory(["hero", "albumGrid", "findView"], context, renderHeroContents);
+}
+function renderHeroContents() {
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
   $("hero").classList.remove("fallback-overview");
   $("fallbackHelp").hidden = true;
@@ -880,6 +927,7 @@ function renderEnhancementMenus() {
   const reset = node("button", "minor-button", "Reset fitment"); reset.type = "button"; reset.addEventListener("click", () => { for (const component of targets) state.fit[component] = {zoom: 1, x: 0, y: 0}; renderEnhancementMenus(); applyPreviewEffects(); }); fitment.append(reset);
 }
 function renderWorkspace() {
+  SCROLL_SURFACES.forEach(rememberScroll);
   for (const name of ["find", "enhance", "embed"]) {
     $(name + "Tab").classList.toggle("active", state.workspace === name);
     $(name + "View").hidden = state.workspace !== name;
@@ -889,6 +937,7 @@ function renderWorkspace() {
   document.querySelector(".workspace").classList.toggle("embed-active", state.workspace === "embed");
   renderPanes(); renderReview();
   requestAnimationFrame(updateBiographyToggle);
+  restoreScroll(SCROLL_SURFACES);
 }
 function renderAll() {
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
@@ -898,14 +947,16 @@ function renderAll() {
 
 async function loadLibrary(query = "") {
   const request = ++state.listRequest;
+  state.libraryLoading = true;
   try {
     if (state.libraryMode === "artists") state.artists = await api("/api/artists?q=" + encodeURIComponent(query));
     else state.albumsIndex = await api("/api/albums?view=" + state.libraryMode + "&q=" + encodeURIComponent(query));
     if (request !== state.listRequest) return;
+    state.libraryLoading = false;
     renderLibrary();
     if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
     else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No missing-ID albums in this test index" : "Library ready · browser layout preview");
-  } catch (error) { if (request === state.listRequest) setStatus(error.message, "error"); }
+  } catch (error) { if (request === state.listRequest) { state.libraryLoading = false; renderLibrary(); setStatus(error.message, "error"); } }
 }
 async function chooseArtist(id, select = true) {
   const request = ++state.selectionRequest;
@@ -1028,11 +1079,12 @@ function renderQueue() {
     const remove = node("button", "", "Remove"); remove.type = "button"; remove.addEventListener("click", () => { state.embedQueue = state.embedQueue.filter(entry => entry.id !== item.id); renderQueue(); renderHero(); setStatus("Removed album from preview queue"); }); card.append(remove); queue.append(card);
   }
   $("removeAllStaged").disabled = !state.embedQueue.length;
+  $("embedTab").classList.toggle("has-queued-albums", !!state.embedQueue.length);
 }
 function stageAlbum() {
   if (!state.album) return;
   if (!state.embedQueue.some(item => item.id === state.album.id)) state.embedQueue.push({id: state.album.id, name: state.album.name, artist: state.album.artist_name, cover: state.selectedCover?.image || state.album.cover, tracks: state.album.tracks});
-  state.workspace = "embed"; renderQueue(); renderHero(); renderWorkspace(); setStatus("Preview staged: " + state.album.name + " · no tracks changed");
+  renderQueue(); renderHero(); renderReview(); setStatus("Preview staged: " + state.album.name + " · no tracks changed");
 }
 
 function showDialog(title, lines) {
@@ -1083,6 +1135,7 @@ for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums
   $(buttonId).addEventListener("click", () => {
     if (state.libraryMode === mode) return;
     ++state.selectionRequest; ++state.searchRequest;
+    state.libraryLoading = true;
     state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.mediaSelected.clear();
     state.editorMode = mode === "fallback" ? "fallback" : "artist"; state.workspace = "find";
     clearFocusCandidates(); resetFocusAdjustments(); renderAll();
@@ -1158,7 +1211,7 @@ $("artistRadio").addEventListener("click", () => { state.radioArtist = !state.ra
 $("bannerRadio").addEventListener("click", () => { state.radioBanner = !state.radioBanner; state.radioCurrent = !state.radioArtist && !state.radioBanner; renderPanes(); renderReview(); });
 $("useArtist").addEventListener("click", () => { state.radioArtist = true; state.radioBanner = false; state.radioCurrent = false; renderPanes(); renderReview(); });
 $("useBanner").addEventListener("click", () => { state.radioBanner = true; state.radioArtist = false; state.radioCurrent = false; renderPanes(); renderReview(); });
-$("showAllAlbums").addEventListener("click", () => { const expanded = $("albumGrid").classList.toggle("expanded"); $("showAllAlbums").textContent = expanded ? "Show Less" : "Show All"; });
+$("showAllAlbums").addEventListener("click", () => { const expanded = $("albumGrid").classList.toggle("expanded"); $("showAllAlbums").textContent = expanded ? "Show Less" : "Show All"; rememberScroll("albumGrid"); });
 $("albumGrid").addEventListener("wheel", event => {
   const grid = $("albumGrid");
   if (grid.classList.contains("expanded") || grid.scrollWidth <= grid.clientWidth) return;
@@ -1317,6 +1370,7 @@ for (const id of ["selectedFrame", "artistPane", "bannerPane"]) {
   });
   for (const end of ["pointerup", "pointercancel", "lostpointercapture"]) host.addEventListener(end, () => { drag = null; });
 }
+for (const id of SCROLL_SURFACES) $(id).addEventListener("scroll", () => rememberScroll(id), {passive: true});
 try { const theme = localStorage.getItem("splined.browser-preview.theme"); if (["dark", "chalk", "light"].includes(theme)) { state.theme = theme; document.documentElement.dataset.theme = theme; } } catch {}
 
 api("/api/status").then(status => {
