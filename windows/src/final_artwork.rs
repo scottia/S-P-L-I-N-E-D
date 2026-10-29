@@ -568,18 +568,17 @@ fn apply_upscale_corrections(
     let lightness = 1.0 - output.upscale_darkness_percent.clamp(0, 100) as f32 / 100.0;
     for pixel in pixels.pixels_mut() {
         let mut corrected_channels = [0.0_f32; 3];
-        for index in 0..3 {
+        for (index, channel) in corrected_channels.iter_mut().enumerate() {
             let normalized = f32::from(pixel.0[index]) / 255.0;
             let temperature_scale = match index {
                 0 => red_scale,
                 2 => blue_scale,
                 _ => 1.0,
             };
-            corrected_channels[index] =
-                (((normalized - 0.5) * contrast + 0.5 + quality.brightness_adjustment)
-                    * exposure
-                    * temperature_scale)
-                    .clamp(0.0, 1.0);
+            *channel = (((normalized - 0.5) * contrast + 0.5 + quality.brightness_adjustment)
+                * exposure
+                * temperature_scale)
+                .clamp(0.0, 1.0);
         }
         let luminance = 0.2126 * corrected_channels[0]
             + 0.7152 * corrected_channels[1]
@@ -596,7 +595,11 @@ fn apply_upscale_corrections(
             // Left of center reduces the photo's color intensity; right of
             // center strengthens its derived dominant color. Neither side
             // introduces an unrelated complementary hue.
-            let tint_channel = if output.upscale_tint_percent < 0 { adjusted_luminance } else { tint_rgb[index] };
+            let tint_channel = if output.upscale_tint_percent < 0 {
+                adjusted_luminance
+            } else {
+                tint_rgb[index]
+            };
             let blended = adjusted[index] * (1.0 - tint_strength) + tint_channel * tint_strength;
             *channel = (blended * lightness * 255.0).clamp(0.0, 255.0).round() as u8;
         }

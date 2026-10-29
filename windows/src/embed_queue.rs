@@ -101,8 +101,7 @@ pub fn enqueue(
     label: &str,
     thumbnail: &[u8],
     side: u32,
-    cover_width: u32,
-    cover_height: u32,
+    cover_dimensions: (u32, u32),
     total: usize,
 ) -> Result<i64, String> {
     if total == 0 || thumbnail.is_empty() || !(300..=4000).contains(&side) {
@@ -110,6 +109,7 @@ pub fn enqueue(
             "A queue job needs audio tracks and a prepared thumbnail at the preferred size.".into(),
         );
     }
+    let (cover_width, cover_height) = cover_dimensions;
     let album_text = album_path.to_string_lossy();
     let connection = open(path)?;
     let existing: Option<i64> = connection
@@ -323,8 +323,7 @@ mod tests {
             "Artist — Album",
             b"thumbnail",
             1200,
-            1600,
-            1600,
+            (1600, 1600),
             2,
         )
         .unwrap();
@@ -335,8 +334,7 @@ mod tests {
                 "duplicate",
                 b"other",
                 1200,
-                1200,
-                1200,
+                (1200, 1200),
                 2
             )
             .unwrap_err()
@@ -383,8 +381,7 @@ mod tests {
             "Done",
             b"a",
             1200,
-            1200,
-            1200,
+            (1200, 1200),
             1,
         )
         .unwrap();
@@ -394,8 +391,7 @@ mod tests {
             "Staged",
             b"b",
             1200,
-            1200,
-            1200,
+            (1200, 1200),
             1,
         )
         .unwrap();
@@ -412,8 +408,7 @@ mod tests {
             "Waiting",
             b"c",
             1200,
-            1200,
-            1200,
+            (1200, 1200),
             1,
         )
         .unwrap();
@@ -440,7 +435,7 @@ mod tests {
         connection.execute_batch("CREATE TABLE embed_jobs (id INTEGER PRIMARY KEY, album_path TEXT NOT NULL, label TEXT NOT NULL, thumbnail BLOB NOT NULL, side INTEGER NOT NULL, total INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'staged', detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);").unwrap();
         drop(connection);
         let album = temp.path().join("Album");
-        enqueue(&database, &album, "Album", b"thumb", 1200, 1500, 900, 1).unwrap();
+        enqueue(&database, &album, "Album", b"thumb", 1200, (1500, 900), 1).unwrap();
         let jobs = list(&database).unwrap();
         assert_eq!((jobs[0].cover_width, jobs[0].cover_height), (1500, 900));
     }

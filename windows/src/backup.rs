@@ -317,7 +317,8 @@ pub fn restore_database_backup_with_artist_art(
     restore_artist_images: bool,
 ) -> Result<PathBuf, String> {
     validate_sqlite_backup(path)?;
-    let (clean_copy, images) = prepare_artist_images_restore(path, restore_artist_images)?;
+    let PreparedArtistImagesRestore { clean_copy, images } =
+        prepare_artist_images_restore(path, restore_artist_images)?;
     let destination = Path::new(&config.scan.cache_dir).join("splined.db");
     let _shared_lock = (config.scan.sqlite_shared && config.scan.windows_client_lock)
         .then(|| claim_shared_database(&destination))
@@ -365,10 +366,15 @@ pub fn restore_database_backup_with_artist_art(
     Ok(destination)
 }
 
+struct PreparedArtistImagesRestore {
+    clean_copy: Option<(tempfile::TempDir, PathBuf)>,
+    images: Vec<String>,
+}
+
 fn prepare_artist_images_restore(
     path: &Path,
     requested: bool,
-) -> Result<(Option<(tempfile::TempDir, PathBuf)>, Vec<String>), String> {
+) -> Result<PreparedArtistImagesRestore, String> {
     let source = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("Unable to open SQLite backup: {error}"))?;
     let has_images: bool = source
@@ -382,7 +388,10 @@ fn prepare_artist_images_restore(
         return Err("This SQLite backup does not contain V/A / OST Artist images; turn off their restore option or select a backup that includes them.".to_string());
     }
     if !has_images {
-        return Ok((None, Vec::new()));
+        return Ok(PreparedArtistImagesRestore {
+            clean_copy: None,
+            images: Vec::new(),
+        });
     }
     let mut images = Vec::new();
     if requested {
@@ -419,7 +428,10 @@ fn prepare_artist_images_restore(
         .execute_batch(&format!("DROP TABLE {ARTIST_IMAGES_BACKUP_TABLE}; VACUUM;"))
         .map_err(|error| format!("Unable to prepare clean SQLite restore copy: {error}"))?;
     drop(clean);
-    Ok((Some((temporary, clean_path)), images))
+    Ok(PreparedArtistImagesRestore {
+        clean_copy: Some((temporary, clean_path)),
+        images,
+    })
 }
 
 fn restore_sqlite_snapshot(source_path: &Path, destination: &Path) -> Result<(), String> {
