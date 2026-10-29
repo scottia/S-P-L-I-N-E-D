@@ -178,6 +178,19 @@ html[data-theme=chalk] .fallback-report,html[data-theme=light] .fallback-report{
 .job-option img{width:100%;height:170px;object-fit:contain}.queue-card .row-copy{flex:1}
 .workspace-dialog{max-width:min(1000px,94vw)}
 
+/* Keep overview actions outside the scrolling artist and album content. */
+.overview-content{position:relative;z-index:1}
+.hero>.overview-actions{position:relative;z-index:1;margin:0;padding:7px 10px 10px;background:var(--panel);border-top:1px solid var(--line)}
+@media(min-width:801px){
+  #findView{display:flex;flex-direction:column;overflow:hidden}
+  #findView>.source-section{flex:none}
+  .overview-section{display:flex;flex-direction:column;flex:1;min-height:0}
+  .overview-section>.section-heading{flex:none}
+  .overview-section>.hero{display:flex;flex-direction:column;flex:1;min-height:0;height:auto;max-height:none;overflow:hidden}
+  .overview-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+  .hero>.overview-actions{flex:none}
+}
+
 .guide-document{max-width:1000px;margin:35px auto;padding:25px;color:var(--text)}.guide-document pre{font:inherit;white-space:pre-wrap;line-height:1.55}.guide-document a{color:var(--cyan)}
 
 .queue-card.state-done{border-color:var(--green);background:color-mix(in srgb,var(--green) 9%,var(--panel,#142230))}.queue-card.state-running{border-color:var(--orange)}.queue-card.state-failed{border-color:var(--pink)}
