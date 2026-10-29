@@ -348,7 +348,7 @@ class Services:
         if not str(row["musicbrainz_albumid"] or "").strip():
             raise ValueError("COMP artwork must be written to individual tracks")
         rendered = self.preview(dict(payload, kind="cover"))
-        source = self.catalog.image_source(rendered["image"])
+        source = self.catalog.image_bytes(rendered["image"])
         fmt = rendered["format"]
         body = source
         stem = str(self.runtime.cfg.get("output", {}).get("file_name", "cover"))
@@ -401,7 +401,7 @@ class Services:
             if kind not in {"artist", "banner"}:
                 raise ValueError("Choose an artist image or banner")
             render = self.preview(dict(component, kind=kind))
-            prepared.append((kind, self.catalog.image_source(render["image"])))
+            prepared.append((kind, self.catalog.image_bytes(render["image"])))
         if not prepared:
             raise ValueError("Choose artwork before writing")
         written = []
@@ -444,7 +444,7 @@ class Services:
                 raise ValueError("Staged artwork failed verification")
         else:
             rendered = self.preview(dict(payload, kind="cover"))
-            source = self.catalog.image_source(rendered["image"])
+            source = self.catalog.image_bytes(rendered["image"])
         with Image.open(BytesIO(source)) as image:
             side = int(
                 self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
@@ -541,10 +541,10 @@ class Services:
         self.runtime.require_write()
         row = self.album_row(str(payload.get("album_id", "")))
         result = self.write_cover(payload)
-        body = self.catalog.image_source(result["image"])
+        body = self.catalog.image_bytes(result["image"])
         directory = self.runtime.cache / "staged-artwork"
         directory.mkdir(parents=True, exist_ok=True)
-        name = uuid4().hex + ".png"
+        name = uuid4().hex + (".jpg" if result["format"] == "jpeg" else ".png")
         self._atomic_artwork(directory / name, body)
         return {
             "album_id": row["album_key"],

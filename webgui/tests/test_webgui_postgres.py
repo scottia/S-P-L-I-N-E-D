@@ -114,7 +114,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
     def test_actual_cover_artist_and_album_embedding_preserve_audio(self):
         result = self.services.write_cover(self.payload())
         with Image.open(
-            BytesIO(self.services.catalog.image_source(result["image"]))
+            BytesIO(self.services.catalog.image_bytes(result["image"]))
         ) as preview:
             with Image.open(self.cover) as saved:
                 self.assertEqual(preview.tobytes(), saved.tobytes())
@@ -354,6 +354,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             catalog.image_source(first[:-1] + ("a" if first[-1] != "a" else "b"))
+
+    def test_candidate_pixels_survive_many_enhancement_previews(self):
+        catalog = self.services.catalog
+        body = BytesIO()
+        Image.new("RGB", (80, 80), "red").save(body, format="PNG")
+        original = catalog.image(body.getvalue())
+        for value in range(110):
+            image = BytesIO()
+            Image.new("RGB", (80, 80), (value, 0, 0)).save(image, format="PNG")
+            catalog.image(image.getvalue())
+        self.assertEqual(catalog.image_source(original).read_bytes(), body.getvalue())
 
     def test_second_worker_cannot_take_over_a_live_catalog(self):
         self.queue = JobQueue(self.services)

@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import tempfile
 import sqlite3
 from threading import Lock
 from urllib.parse import urlsplit
@@ -132,6 +133,23 @@ class Catalog:
             encoded=base64.urlsafe_b64encode(str(source.resolve()).encode('utf-8')).decode().rstrip('=')
             signature=hmac.new(self.image_key,encoded.encode(),hashlib.sha256).hexdigest()
             return '/api/image/p.'+encoded+'.'+signature
+        if self.cache is not None:
+            # Candidate originals must outlive repeated enhancement renders.
+            # Keep generated pixels on disk, independent from the small legacy
+            # fixture cache; staged jobs hold their own verified snapshot.
+            if len(source)>25*1024*1024: raise ValueError('Prepared artwork exceeds the 25 MB image limit')
+            with Image.open(BytesIO(source)) as opened:
+                suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(opened.format)
+                if not suffix: raise ValueError('Unsupported artwork image format')
+            directory=self.cache/'web-images';directory.mkdir(parents=True,exist_ok=True)
+            path=directory/(sha256(source).hexdigest()+suffix)
+            if not path.is_file():
+                descriptor,temporary=tempfile.mkstemp(prefix='.prepared-',suffix=suffix,dir=directory)
+                try:
+                    with os.fdopen(descriptor,'wb') as handle: handle.write(source)
+                    os.replace(temporary,path)
+                finally: Path(temporary).unlink(missing_ok=True)
+            return self.image(path)
         token = secrets.token_urlsafe(18)
         with self.lock:
             self.images[token] = source
@@ -161,6 +179,10 @@ class Catalog:
         if isinstance(source, Path) and not (inside(source, self.music) or inside(source, self.artist_art) or self.cache is not None and inside(source, self.cache)):
             raise ValueError("Image is outside configured artwork locations")
         return source
+
+    def image_bytes(self,image_url: str) -> bytes:
+        source=self.image_source(image_url)
+        return source.read_bytes() if isinstance(source,Path) else source
 
     def upscale_preview(self, image_url: str) -> dict[str, object]:
         source = self.image_source(image_url)
