@@ -1,0 +1,61 @@
+name: Validate supported runtimes
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+permissions:
+  contents: read
+jobs:
+  webgui:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: splined_test
+          POSTGRES_PASSWORD: splined_ci_only
+          POSTGRES_DB: splined_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U splined_test -d splined_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SPLINED_TEST_DATABASE_URL: postgresql://splined_test:splined_ci_only@127.0.0.1:5432/splined_test
+      PYTHONPATH: .:webgui/backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r webgui/requirements-test.txt
+      - run: python -m unittest discover -s webgui/tests -v
+      - run: node --check webgui/static/app.js && node --check webgui/static/operations.js
+      - name: Build and start browser container
+        run: |
+          docker build --file webgui/Dockerfile --tag splined-webgui:test .
+          docker run -d --name splined-webgui-test --network host \
+            -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
+            -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only splined-webgui:test
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/api/status > /tmp/splined-status.json; then break; fi
+            sleep 1
+          done
+          python -c "import json; value=json.load(open('/tmp/splined-status.json')); assert value['database']=='PostgreSQL' and value['auth_required'] and value['database_ready']"
+      - if: always()
+        run: docker logs splined-webgui-test || true
+  native:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: cargo test --locked
+      - if: runner.os == 'Windows'
+        run: cargo test --manifest-path windows/Cargo.toml --lib --bin splined --locked

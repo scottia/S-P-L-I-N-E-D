@@ -1,6 +1,6 @@
 # Browser workspace schematic
 
-This is the comparison baseline for the SPLINED browser workspace and Windows GUI. Review it whenever either interface changes. The Windows implementation is in `windows/ui/app.slint`; the browser template is in `python/web_preview/index.html`, `app.css`, and `app.js`.
+This is the comparison baseline for the SPLINED browser workspace and Windows GUI. Review it whenever either interface changes. The Windows implementation is in `windows/ui/app.slint`; the browser interface is in `webgui/static/index.html`, `app.css`, and `app.js`.
 
 The [function and event-sequence audit](windows-web-function-audit.md) records the Windows rules behind this layout, current browser coverage, and the remaining gaps.
 
@@ -35,7 +35,7 @@ At narrower widths, the browser stacks these regions while keeping the same read
 | `Selected Artwork` near `app.slint:2693` | `#review`, `#selectedFrame`, `#themedPackaging`, `.review-actions` | Current or proposed preview, source metadata, Themed Packaging for the combined artist package, Upscale Preview before WRITE, then EMBED Batch. |
 | `Candidate Artwork` near `app.slint:2852` | `#candidateDock`, `#candidateGrid` | LAUNCH and a horizontally scrolling candidate strip. |
 
-The browser assets under `python/web_preview/assets/` are copies of `windows/gui/splined-app-icon.png`, `windows/gui/splined-watermark.png`, `windows/gui/source-icons/*.svg`, `windows/gui/set-your-imagination-tv.jpg`, and `assets/branding/splined-slogan.svg`. If Windows branding changes, refresh those copies and compare the header and source cards.
+The browser assets under `webgui/static/assets/` are copies of `windows/gui/splined-app-icon.png`, `windows/gui/splined-watermark.png`, `windows/gui/source-icons/*.svg`, `windows/gui/set-your-imagination-tv.jpg`, and `assets/branding/splined-slogan.svg`. If Windows branding changes, refresh those copies and compare the header and source cards.
 
 ## Mouse workflow and state
 
@@ -43,22 +43,14 @@ The browser assets under `python/web_preview/assets/` are copies of `windows/gui
 2. Press LAUNCH for an artist to fetch Fanart.tv and Deezer candidates. From a selected album, click the small radio at the lower-left of the artist thumbnail to open Artists Art Enhancements and start the same search. The orange action reads **Artist Art** while the artist search entry is available, then **WRITE Artist Art** once a proposed artist component is selected. A candidate click selects its artist image or banner independently. A source card with results filters the candidate strip; click again to clear that source filter.
 3. Press Upscale Preview or the Art Enhancements tab to inspect the enhancement layout. Artist mode shows current package, proposed artist image, and proposed banner. The three pane radios choose current, artist, banner, or both. Both proposed radios show the combined package in Selected Artwork and enable the Themed Packaging preview control. Album mode shows its cover pane.
 4. The vertical Filters, Fitment, and Detailed groups expand by mouse. Their sliders and fitment gestures change the in-memory browser preview. Image processing, fitment writes, and WRITE Artist Art/Cover require the backend implementation and are disabled here. Theme selects Dark, Chalk, or Light. Settings reviews the current test paths; Help opens the [WebUI guide](browser-workspace-guide.md).
-5. With an album selected, press EMBED Batch to place it in the **browser's in-memory preview queue** and open Album Track Embedding. Queue removal is mouse driven. Start/Pause actions are disabled until a real embedding service is connected. No track tag changes occur in this template. Merely opening Album Track Embedding never stages an album.
+5. With an album selected, EMBED Batch saves the prepared cover and stages a verified image snapshot in PostgreSQL without changing workspaces. The embedding tab gains a muted purple cue. Start, pause, retry, and removal operate on persistent jobs. Opening the tab never stages another album.
 6. Drag the divider beside Media Library or Selected Artwork to resize either side pane. Drag the handle above Candidate Artwork upward to enlarge the candidate strip and its image cards. The candidate strip scrolls horizontally with the mouse wheel. Divider positions persist in browser storage and can also be changed with arrow keys when a divider has focus.
 
 ## Data and write boundaries
 
-- The local template currently reads the isolated Python SQLite index and copied music files through `python/web_preview.py`. It uses neither the live Windows database nor the new PostgreSQL container yet.
-- Artist biography and similar-artist names are requested read-only from Navidrome when local credentials are available. The interface labels the fallback similar-artist cards as sample data and does not invent a biography. Navidrome metadata is not an image-search provider in this build.
-- Candidate searches may request remote art. The template holds image bytes in memory for preview and does not write a persistent candidate cache. The loopback test service may optionally repair Artist COMP embedded thumbnails in copied music; those writes have original-image backups and a separate log.
-- The proposed PostgreSQL catalog should index the same mounted `/music` library, with artist, album, track, embedded-art status, and source references. Music files and approved `artist.*`, `banner.*`, and `cover.*` remain on mounted storage. PostgreSQL stores identity and indexing metadata, not duplicate image blobs.
-- Before enabling WRITE or embedding in a deployed build, add authenticated mutating endpoints, recheck the live file and image identity at write time, and record the affected artist/album/track paths in separate Python logs. The Windows app must continue to own its existing database and write behavior independently.
+`webgui/server.py` serves the approved static interface and operation endpoints. Python handles providers, image processing and real artwork/tag writes. PostgreSQL owns catalog, completion ledger, audit records and persistent jobs. Read mode blocks music writes. Settings and provider credentials are editable in the browser; MusicBrainz authorization uses a server-side PKCE verifier.
 
-## Container and domain path
-
-The planned container listener is `0.0.0.0:8080`; the Compose service can publish `${SPLINED_PORT:-8080}:8080`. The dedicated `splined-postgresql` service stays separate on the same Compose network. Nginx Proxy Manager can forward `pixelized.ai` to `splined:8080` with TLS and an access policy. The current local test listener is `127.0.0.1:8080` and does not make the app publicly accessible.
-
-In the supplied Compose environment, correct `DB_PASS: ${SPLLINED_POSTGRESQL_PASSWORD}` to `DB_PASS: ${SPLINED_POSTGRESQL_PASSWORD}` before container testing.
+Windows remains native Rust with SQLite. There is no shared live PostgreSQL/Windows database. Explicit SQLite import accepts a read-only snapshot into an empty server catalog. See the [deployment guide](../docker/README.md) and [WebGUI guide](browser-workspace-guide.md).
 
 ## Comparison checklist
 
@@ -70,6 +62,6 @@ In the supplied Compose environment, correct `DB_PASS: ${SPLLINED_POSTGRESQL_PAS
 - EMBED Batch is the only staging entry point; opening the queue alone leaves it empty.
 - A Windows UI change updates this schematic, browser markup, and any copied assets in the same review.
 
-## Windows follow-up
+## Validation
 
-The Windows Artist Art search handler clears candidates at search start. The reported case where Fallback LAUNCH can retain earlier embedded MusicBrainz candidates or show them in the next preview is a separate Windows flow to reproduce and fix. The browser Fallback and Artist COMP reports step through pending track previews, but MusicBrainz candidate review and blue-track embedding are not connected yet.
+The [function audit](windows-web-function-audit.md) records current behavior, generated-audio write tests, browser queue verification, and the remaining Windows compositor reproduction limit.

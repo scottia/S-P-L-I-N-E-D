@@ -1,25 +1,37 @@
-# SPLINED browser workspace guide
+# SPLINED WebGUI
 
-The browser workspace previews the artwork workflow using an isolated Python SQLite index and copied music files. The index remains read-only. Artist COMP thumbnail repair is the only optional write action; when enabled on the loopback test service, it backs up the original embedded image and records each audio-file change in a separate log.
+The supported server interface runs in a browser. Python handles providers, image processing, library and tag writes; PostgreSQL stores the catalog, completion ledger, and persistent work queue. No Python terminal interface or native terminal-input extension is installed. Windows remains a separate native Rust application with its own SQLite store.
 
-## Mouse workflow
+## First run
 
-1. Select an artist or album in Media Library. Previous candidates and the old selected preview clear while the next item loads. Artist Overview shows indexed albums, status, and songs. Select an album card for its cover.
-2. Press **LAUNCH** to find artist images from Fanart.tv and Deezer. The center status bar reports search progress. Local images are also available as candidates. Blue candidate controls choose artist images; pink controls choose banners.
-3. Select **Artists Art Enhancements** or **Album Art Enhancements**. Pane 1 shows the saved artist package. Pane 2 previews the proposed artist image; pane 3 previews the proposed banner. Pane radios control Selected Artwork. Both proposed radios show the combined package, with **Themed Packaging** at the preview's upper left.
-4. Filters, Fitment, and Detailed apply browser-only preview adjustments. Drag a slider, double-click it to reset, or use the small reset beside Enhancements. Fitment starts at the center (1×): move left to shrink or right to enlarge. Wheel over an artist or banner preview to zoom; click and drag the image to reposition it. The round artist frame stays fixed while its pixels move.
-5. **EMBED Batch** stages the selected album only in the browser's temporary preview queue and keeps the current workspace open. The **Album Track Embedding** tab gains a muted purple background, outline, and text while albums are staged. Open that tab when ready to review the queue; opening it does not stage another album.
+Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), then open `http://127.0.0.1:8080` on the server or its configured LAN address. Sign in with the deployment's WebGUI access token. In **Settings**, select the music library path as seen by the server, cache and artist-art paths, output policy, and provider credentials. Save Settings, then choose **Refresh Library Index**. Start in `read` mode; change **mode** to `write` to enable artwork and tag writes.
 
-6. Media Filter starts with every status category enabled. Each bullet and its matching library-row bullet use the same status color; fill or outline shows selection. Toggle categories to narrow the library and use its lock to keep the chosen set. Candidate Filter fills green for categories found in the current results; click a category to cycle green Included → red Disregarded → outlined Neutral. Only Disregarded hides matching candidates. Its lock keeps the current filter through another search.
+Every Config v5 table is editable in Settings. Array fields use JSON lists, for example `["deezer","itunes"]`. Source policy switches and order are saved with the configuration. **Provider Credentials** edits the five supported credential files and tests saved access. Blank secret fields retain their existing values; saved secrets are never sent back to the browser. Container deployments normally supply PostgreSQL credentials through environment variables, so the connection field is managed by the server.
 
-The Artists, Albums, and Fallback library lists remember their separate scroll positions during this session. Artist and fallback-album overviews also remember their position when returning from enhancements or the embedding queue. Expanded album grids retain their expansion and scroll position.
+## Artwork workflow
 
-## Overview data
+1. Select an artist or album. **LAUNCH** on an artist queues review of its selected eligible albums; in an album view it searches that album's configured sources. **Artist Art** opens portrait and banner search. **MusicBrainz** searches alternate releases and lets you choose which release's artwork to inspect.
+2. Choose a candidate or **Upload Art**. In Enhancements, use Filters, Fitment, and Detailed to prepare the image. Wheel to zoom and drag to position artist artwork. Proposed component radios choose what is previewed and written. Both radios allow writing the portrait and banner together; Themed Packaging applies shared adjustments.
+3. **WRITE Cover** saves the prepared cover. **WRITE Artist Art** saves the chosen components. Read mode disables these music writes. **Upscale Preview** prepares a twofold Lanczos resize, not an AI reconstruction; writing remains explicit.
+4. **EMBED Batch** saves the prepared album cover and stages a verified snapshot for track embedding. It keeps the current workspace open. The **Album Track Embedding** button gains muted purple text, outline, and background while unfinished work exists.
+5. Open Album Track Embedding and choose **Start All Staged**. Progress and failures are persisted. **Pause After Album** pauses waiting albums while the current operation finishes; **Pause ALL Albums** requests a pause between atomic track writes. **Resume** retries paused or failed work. A server restart pauses interrupted work until explicitly resumed. Staged artwork survives browser and server restarts.
 
-Album names, counts, status, and album tracks come from the isolated music index. Artist biography, similar artists, and top songs are requested read-only from Navidrome's Subsonic API. Navidrome may return no biography, similar artists, or top songs if its metadata integrations are unavailable. In that case, the interface labels the similar-artist cards as sample layout data; it does not invent a biography. Songs from the local index are shown as **Indexed songs**, since they are not ranked by popularity.
+An album without a MusicBrainz Album ID uses the COMP workflow. Folder cover artwork is never automatically substituted for individual COMP track artwork. **COMP Report** groups the focused artist's tracks across missing-ID albums. Green means recorded artwork has a valid thumbnail; purple means recorded artwork needs repair; blue needs an artwork decision. **LAUNCH COMP** queues blue tracks; **EMBED Comp** queues the selected track for review. Use **Review queued work** to choose candidates and MusicBrainz releases with browser buttons. Authority fields can requery Artist, Release, and Recording IDs. **REPAIR COMP** repairs readable recorded thumbnails and preserves original embedded images in the cache.
 
-## Limits of this test build
+Normal and COMP embedding write exact square JPEG thumbnails at `output.embedded_thumbnail_size` (default 1200). Audio container metadata and non-front artwork are preserved. Failed writes are reported; queued jobs do not report success merely because they were staged.
 
-Saved upscaling, saved adjustments, image writing, blue COMP tag embedding, MusicBrainz review, and image searches from the other Windows providers are not yet connected. Artist COMP Report can group every matching missing-ID album for the selected artist, preview green embedded art, and identify purple thumbnails. REPAIR COMP writes only to the copied music when the loopback test service starts with `--allow-comp-repairs`. No PostgreSQL connection is used by this local browser preview. **Settings** shows the active test paths and repair mode.
+## Browsing and display
 
-For the Windows/browser layout mapping and planned PostgreSQL boundary, see [Browser workspace schematic](browser-workspace-schematic.md). The [function audit](windows-web-function-audit.md) lists the Windows rules, event sequences, and remaining WebUI gaps.
+Artists, Albums, and Fallback remember separate scroll positions during the browser session. Returning to the same artist or album restores the overview position; expanded album grids retain expansion and scroll. Biographies collapse to five lines, with same-size themed more/less text at the end of the final visible line. Dark, Chalk, and Light persist in the browser. Browser extensions that force colors can override the selected theme.
+
+Media Filter retains the existing selected-item counter behavior. Status toggles narrow the list; this change does not introduce album-total status counters. Candidate Filter controls result visibility. Locked filters remain in place across selections.
+
+Navidrome supplies biography, similar artists, and top songs when available. Indexed songs are identified separately from ranked metadata. Artwork counts refer to actual embedded track images, not folder sidecars.
+
+## Data, recovery, and deployment
+
+PostgreSQL is authoritative for WebGUI catalog and jobs. There is no silent SQLite fallback. Settings can explicitly import a read-only SQLite snapshot into an empty PostgreSQL catalog; paths must match the server's library. The source is left unchanged. Windows and WebGUI do not open the same live database; simultaneous writers to the same music library should be avoided.
+
+Back up PostgreSQL using a consistent database dump, plus the config, credential, cache/staged-artwork, and any external artist-art volumes. Track changes require a music-library backup for full recovery. Do not treat a SQLite snapshot or the image cache as a PostgreSQL backup.
+
+Run one WebGUI application process per catalog. Loopback operation may omit an access token; network binding requires one. Use HTTPS through a reverse proxy for remote access. The service rejects cross-origin writes and requires a session request token for mutations.

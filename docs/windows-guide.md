@@ -332,8 +332,10 @@ Artist Overview keeps album-type groups and newest-to-oldest sorting without
 visible group separators. Similar Artists is followed by **Artist & Featured
 Artist Top Genres**, then Albums, then Top Songs. Top Songs loads automatically
 from Navidrome in the background when an artist is selected. The biography's
-More/Less controls appear only when the text exceeds four lines at the current
-pane width.
+More/Less controls appear only when the text exceeds five lines at the current
+pane width. The themed more/less control uses the biography font size and sits at the end of the last visible line.
+
+Artists, Albums, and Fallback retain their own scroll offsets during the session. Returning to the same artist or album overview restores its saved position, including expanded album lists.
 
 ## Running work
 
@@ -456,7 +458,7 @@ Artists tag—is the fallback criterion.
 
 For an Artist Album, **EMBED Batch** immediately stages its selected cover or
 Upscale Preview, saving the full-resolution `cover.jpg`/`cover.png` first. No
-separate **WRITE Cover** press is needed. **Start All Staged** then embeds the
+separate **WRITE Cover** press is needed. Staging keeps the current workspace open; the Album Track Embedding button gains muted purple text, outline, and background while work is staged or unfinished. **Start All Staged** then embeds the
 prepared preference-sized thumbnail in every supported track, replacing
 existing embedded thumbnails even if they are already at the preferred size.
 The embedding tab lists only jobs actually staged by an embedding action;
