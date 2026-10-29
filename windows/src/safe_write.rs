@@ -923,8 +923,8 @@ mod tests {
         assert_eq!(cleaned.removed, 1);
         #[cfg(not(windows))]
         assert_eq!(cleaned.removed, 0);
-        assert_eq!(song.exists(), true);
-        assert_eq!(image.exists(), true);
+        assert!(song.exists());
+        assert!(image.exists());
     }
 
     #[cfg(windows)]

@@ -628,10 +628,14 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
         return Err("SPLINED output upscale_hue_degrees must be between -180 and 180.".to_string());
     }
     if !(0..=100).contains(&config.output.upscale_darkness_percent) {
-        return Err("SPLINED output upscale_darkness_percent must be between 0 and 100.".to_string());
+        return Err(
+            "SPLINED output upscale_darkness_percent must be between 0 and 100.".to_string(),
+        );
     }
     if !(-100..=100).contains(&config.output.upscale_tint_percent) {
-        return Err("SPLINED output upscale_tint_percent must be between -100 and 100.".to_string());
+        return Err(
+            "SPLINED output upscale_tint_percent must be between -100 and 100.".to_string(),
+        );
     }
     let tint = config.output.upscale_tint_color.trim();
     if tint.len() != 7
