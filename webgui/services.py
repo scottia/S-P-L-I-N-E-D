@@ -1,0 +1,689 @@
+"""Web operations use indexed identities, configured paths, and real writes."""
+
+from __future__ import annotations
+
+from contextlib import closing
+from dataclasses import asdict
+from functools import wraps
+from io import BytesIO
+from pathlib import Path
+from uuid import uuid4
+import hashlib
+import os
+import tempfile
+import threading
+
+from PIL import Image, ImageOps
+from psycopg import sql
+from psycopg.types.json import Jsonb
+
+import splined as core
+import splined_scan as scan
+import splined_media_database as media
+import splined_media_tags as tags
+import splined_compilation_authority_policy as compilation
+from splined_artist_art import ArtistAlbum, artist_targets, write_image
+
+from webgui.catalog import (
+    Catalog,
+    AUDIO_EXTENSIONS,
+    inside,
+    embedded_track_artwork_bytes,
+)
+from webgui.runtime import Runtime
+from webgui import imaging
+
+
+def serialized(function):
+    @wraps(function)
+    def operation(self, *args, **kwargs):
+        with self.runtime.processing:
+            return function(self, *args, **kwargs)
+
+    return operation
+
+
+class Services:
+    def __init__(self, runtime: Runtime):
+        self.runtime = runtime
+        self.catalog = Catalog(
+            runtime.music,
+            runtime.database,
+            runtime.artist_art,
+            runtime.credentials,
+            comp_thumbnail_side=int(
+                runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
+            ),
+            allow_comp_repairs=runtime.cfg.get("mode") == "write",
+            cache=runtime.cache,
+        )
+        self.catalog.cache = runtime.cache
+        self.catalog.artist_sources = tuple(
+            core.resolve_sources(runtime.cfg, None, None, [])
+        )
+        self.lock = threading.RLock()
+
+    def reload_settings(self):
+        app = self.catalog
+        r = self.runtime
+        app.music = r.music
+        app.artist_art = r.artist_art
+        app.credentials = r.credentials
+        app.cache = r.cache
+        app.comp_thumbnail_side = int(
+            r.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
+        )
+        app.allow_comp_repairs = r.cfg.get("mode") == "write"
+        app.artist_sources = tuple(core.resolve_sources(r.cfg, None, None, []))
+        app.metadata_cache.clear()
+
+    def audit(self, action, subject, details=None):
+        with closing(self.runtime.database.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_audit(action,subject,details) VALUES(%s,%s,%s)",
+                (action, str(subject), Jsonb(details or {})),
+            )
+
+    def album_row(self, key):
+        with closing(self.runtime.database.connect()) as db:
+            row = db.execute(
+                "SELECT albums.*,artists.artist_name,artists.musicbrainz_artistid FROM albums JOIN artists ON artists.artist_key=albums.artist_key WHERE album_key=?",
+                (key,),
+            ).fetchone()
+        if not row:
+            raise KeyError("Album not found")
+        if not inside(Path(row["path"]), self.runtime.music):
+            raise ValueError("Album is outside the configured music library")
+        return row
+
+    def album_files(self, row):
+        folder = Path(row["path"])
+        return sorted(
+            (
+                p
+                for p in folder.iterdir()
+                if p.suffix.lower() in AUDIO_EXTENSIONS
+                and p.is_file()
+                and not p.is_symlink()
+            ),
+            key=lambda p: p.name.casefold(),
+        )
+
+    def _upsert(self, db, table, row, key):
+        columns = list(row)
+        statement = sql.SQL(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}"
+        ).format(
+            sql.Identifier(table),
+            sql.SQL(",").join(map(sql.Identifier, columns)),
+            sql.SQL(",").join(sql.Placeholder() for _ in columns),
+            sql.Identifier(key),
+            sql.SQL(",").join(
+                sql.SQL("{}=excluded.{}").format(sql.Identifier(c), sql.Identifier(c))
+                for c in columns
+                if c != key
+            ),
+        )
+        db.raw.execute(statement, list(row.values()))
+
+    @serialized
+    def refresh_index(self, progress=None, cancelled=None):
+        r = self.runtime
+        root = r.music
+        if not root.is_dir():
+            raise ValueError("Set an existing music library in Settings")
+        albums, _ = core.inventory(
+            root,
+            list(r.cfg.get("library", {}).get("ignored_subs", [])),
+            str(r.cfg.get("output", {}).get("file_name", "cover")),
+            cancelled=cancelled,
+        )
+        with closing(r.database.connect()) as db:
+            old = list(
+                db.execute(
+                    "SELECT albums.*,artists.artist_name,artists.artist_sort,artists.musicbrainz_artistid,artists.primary_path FROM albums JOIN artists ON artists.artist_key=albums.artist_key"
+                )
+            )
+        old_keys = {row["album_key"]: row for row in old}
+        old_paths = {row["path"]: row for row in old}
+        used = {}
+        seen = set()
+        now = tags.utc_now()
+        for number, album in enumerate(albums, 1):
+            if cancelled and cancelled():
+                raise core.InteractionCancelled()
+            if not album.audio_files:
+                continue
+            artist, row, _review, _reused = tags.inspect_album(
+                album,
+                root,
+                str(r.cfg.get("output", {}).get("file_name", "cover")),
+                old_keys,
+                old_paths,
+                used,
+            )
+            artist["splined_version"] = core.VERSION
+            row["splined_version"] = core.VERSION
+            row["last_seen_at"] = now
+            seen.add(row["album_key"])
+            with closing(r.database.connect()) as db, db:
+                previous = db.execute(
+                    "SELECT 1 FROM artists WHERE artist_key=?", (artist["artist_key"],)
+                ).fetchone()
+                if previous:
+                    artist.pop("status", None)
+                self._upsert(db, "artists", artist, "artist_key")
+                self._upsert(db, "albums", row, "album_key")
+            if progress:
+                progress(
+                    {
+                        "completed": number,
+                        "total": len(albums),
+                        "message": row["album_name"],
+                    }
+                )
+        with closing(r.database.connect()) as db, db:
+            # Removal happens only after a complete inventory, never after cancellation.
+            db.raw.execute(
+                "DELETE FROM tracks WHERE album_key IN (SELECT album_key FROM albums WHERE last_seen_at<>%s)",
+                (now,),
+            )
+            db.raw.execute("DELETE FROM albums WHERE last_seen_at<>%s", (now,))
+            db.raw.execute(
+                "DELETE FROM artists WHERE NOT EXISTS (SELECT 1 FROM albums WHERE albums.artist_key=artists.artist_key)"
+            )
+            for artist in db.execute("SELECT artist_key FROM artists"):
+                media.update_artist_aggregate(db, artist["artist_key"])
+        self.audit("index-refresh", str(root), {"albums": len(seen)})
+        return {"albums": len(seen)}
+
+    def hydrate_tracks(self, album_id):
+        row = self.album_row(album_id)
+        files = self.album_files(row)
+        with closing(self.runtime.database.connect()) as db:
+            old = {
+                item["path"]: item
+                for item in db.execute(
+                    "SELECT * FROM tracks WHERE album_key=?", (album_id,)
+                )
+            }
+        records, _, _ = tags.inspect_album_tracks(
+            core.AlbumDir(Path(row["path"]), files), album_id, old
+        )
+        with closing(self.runtime.database.connect()) as db, db:
+            for record in records:
+                record["splined_version"] = core.VERSION
+                self._upsert(db, "tracks", record, "track_key")
+            existing = {str(p) for p in files}
+            for path in old:
+                if path not in existing:
+                    db.execute(
+                        "DELETE FROM tracks WHERE album_key=? AND path=?",
+                        (album_id, path),
+                    )
+        self.refresh_embedding_stats(row)
+        return records
+
+    def refresh_embedding_stats(self, row):
+        count = sum(
+            bool(embedded_track_artwork_bytes(path)) for path in self.album_files(row)
+        )
+        with closing(self.runtime.database.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=? WHERE album_key=?",
+                (count, row["album_key"]),
+            )
+        return count
+
+    def comp_report(self, artist_id):
+        with closing(self.runtime.database.connect()) as db:
+            albums = list(
+                db.execute(
+                    "SELECT album_key FROM albums WHERE trim(coalesce(musicbrainz_albumid,''))=''"
+                )
+            )
+        for row in albums:
+            self.hydrate_tracks(row["album_key"])
+        return self.catalog.artist_comp_report(artist_id)
+
+    def refresh_album(self, album_id, *, source=None):
+        row = self.album_row(album_id)
+        folder = Path(row["path"])
+        cover = tags.cover_statistics(
+            core.AlbumDir(folder, self.album_files(row)),
+            str(self.runtime.cfg.get("output", {}).get("file_name", "cover")),
+        )
+        now = tags.utc_now()
+        with closing(self.runtime.database.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET cover_found=?,cover_path=?,cover_width=?,cover_height=?,artwork_jpeg=?,artwork_png=?,artwork_webp=?,artwork_other=?,updated_at=?,status=CASE WHEN CAST(? AS TEXT) IS NOT NULL THEN 'processed' ELSE status END,processed_at=CASE WHEN CAST(? AS TEXT) IS NOT NULL THEN ? ELSE processed_at END,selected_source=coalesce(?,selected_source) WHERE album_key=?",
+                (
+                    int(cover["cover_found"]),
+                    str(cover["cover_path"]),
+                    cover["cover_width"],
+                    cover["cover_height"],
+                    int(cover["artwork"]["JPEG"]),
+                    int(cover["artwork"]["PNG"]),
+                    int(cover["artwork"]["WEBP"]),
+                    int(cover["artwork"]["OTHER"]),
+                    now,
+                    source,
+                    source,
+                    now,
+                    source,
+                    album_id,
+                ),
+            )
+            media.update_artist_aggregate(db, row["artist_key"])
+
+    def preview(self, payload):
+        source = self.catalog.image_source(str(payload.get("image", "")))
+        kind = str(payload.get("kind", "cover"))
+        image = imaging.render(
+            source,
+            values=payload.get("adjustments"),
+            package_values=payload.get("package_adjustments"),
+            fit=payload.get("fit"),
+            kind=kind,
+            upscale=bool(payload.get("upscale")),
+        )
+        target = "png"
+        body = imaging.encode(image)
+        if kind == "cover":
+            target = core.formats(self.runtime.cfg)[0]
+            if target == "webp":
+                target = "jpeg"
+            directory = self.runtime.cache / "prepared-previews"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / (uuid4().hex + ".png")
+            path.write_bytes(body)
+            try:
+                candidate = core.Candidate(
+                    core.Ref("local", "preview", ""),
+                    path,
+                    image.width,
+                    image.height,
+                    "png",
+                    0,
+                )
+                body, info = core.prepare_final(
+                    candidate, self.runtime.cfg, target, allow_out_of_range=True
+                )
+                width, height = info["width"], info["height"]
+            finally:
+                path.unlink(missing_ok=True)
+        else:
+            width, height = image.size
+        return {
+            "image": self.catalog.image(body),
+            "width": width,
+            "height": height,
+            "bytes": len(body),
+            "kind": kind,
+            "format": target,
+        }
+
+    def _atomic_artwork(self, destination, body):
+        with Image.open(BytesIO(body)) as opened:
+            opened.verify()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".splined-artwork-",
+            suffix=destination.suffix,
+            dir=destination.parent,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    @serialized
+    def write_cover(self, payload):
+        self.runtime.require_write()
+        row = self.album_row(str(payload.get("album_id", "")))
+        if not str(row["musicbrainz_albumid"] or "").strip():
+            raise ValueError("COMP artwork must be written to individual tracks")
+        rendered = self.preview(dict(payload, kind="cover"))
+        source = self.catalog.image_bytes(rendered["image"])
+        fmt = rendered["format"]
+        body = source
+        stem = str(self.runtime.cfg.get("output", {}).get("file_name", "cover"))
+        core.validate_filename(stem)
+        destination = Path(row["path"]) / (stem + (".png" if fmt == "png" else ".jpg"))
+        if self.runtime.cfg.get("output", {}).get("preserve_file", True):
+            number = 1
+            while destination.exists() and destination.read_bytes() != body:
+                number += 1
+                destination = Path(row["path"]) / (
+                    f"{stem}-({number})" + destination.suffix
+                )
+        self._atomic_artwork(destination, body)
+        self.refresh_album(row["album_key"], source="webgui")
+        self.audit("write-cover", row["album_key"], {"file": destination.name})
+        return {"written": [destination.name], **rendered}
+
+    @serialized
+    def write_artist(self, payload):
+        self.runtime.require_write()
+        artist_id = str(payload.get("artist_id", ""))
+        with closing(self.runtime.database.connect()) as db:
+            rows = list(
+                db.execute(
+                    "SELECT albums.path,albums.musicbrainz_albumid,artists.artist_name,artists.musicbrainz_artistid FROM albums JOIN artists ON artists.artist_key=albums.artist_key WHERE albums.artist_key=?",
+                    (artist_id,),
+                )
+            )
+        if not rows:
+            raise KeyError("Artist not found")
+        targets = artist_targets(
+            [
+                ArtistAlbum(
+                    row["artist_name"],
+                    Path(row["path"]),
+                    row["musicbrainz_albumid"] or "",
+                    row["musicbrainz_artistid"] or "",
+                )
+                for row in rows
+                if inside(Path(row["path"]), self.runtime.music)
+            ],
+            rows[0]["artist_name"],
+            self.runtime.artist_art,
+        )
+        if not targets:
+            raise ValueError("Artist has no eligible artwork destination")
+        prepared = []
+        for component in payload.get("components", []):
+            kind = str(component.get("kind", ""))
+            if kind not in {"artist", "banner"}:
+                raise ValueError("Choose an artist image or banner")
+            render = self.preview(dict(component, kind=kind))
+            prepared.append((kind, self.catalog.image_bytes(render["image"])))
+        if not prepared:
+            raise ValueError("Choose artwork before writing")
+        written = []
+        for kind, body in prepared:
+            target = targets[0].for_banner() if kind == "banner" else targets[0]
+            path = write_image(
+                target,
+                body,
+                preserve_file=bool(
+                    self.runtime.cfg.get("output", {}).get("preserve_file", True)
+                ),
+            )
+            written.append(path.name)
+        self.audit("write-artist-art", artist_id, {"files": written})
+        self.catalog.metadata_cache.pop(artist_id, None)
+        return {"written": written}
+
+    @serialized
+    def embed_album(self, payload, progress=None, cancelled=None):
+        self.runtime.require_write()
+        row = self.album_row(str(payload.get("album_id", "")))
+        if not str(row["musicbrainz_albumid"] or "").strip():
+            raise ValueError("COMP albums require individual track processing")
+        if payload.get("prepared_file"):
+            if (
+                payload.get("library_root") != str(self.runtime.music)
+                or payload.get("album_path") != row["path"]
+            ):
+                raise ValueError(
+                    "The staged library location has changed; stage this album again"
+                )
+            path = self.runtime.cache / "staged-artwork" / str(payload["prepared_file"])
+            if (
+                not inside(path, self.runtime.cache / "staged-artwork")
+                or path.name != payload["prepared_file"]
+            ):
+                raise ValueError("Staged artwork is unavailable")
+            source = path.read_bytes()
+            if hashlib.sha256(source).hexdigest() != payload.get("sha256"):
+                raise ValueError("Staged artwork failed verification")
+        else:
+            rendered = self.preview(dict(payload, kind="cover"))
+            source = self.catalog.image_bytes(rendered["image"])
+        with Image.open(BytesIO(source)) as image:
+            side = int(
+                self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
+            )
+            image = ImageOps.fit(image, (side, side), method=Image.Resampling.LANCZOS)
+            body = imaging.encode(image, "jpeg")
+        files = self.album_files(row)
+        if not files:
+            raise ValueError("Album has no supported tracks")
+        self.runtime.cache.mkdir(parents=True, exist_ok=True)
+        backup_root = self.runtime.cache / "embedded-backups"
+        backup_root.mkdir(exist_ok=True)
+        for index, path in enumerate(files, 1):
+            if cancelled and cancelled():
+                raise core.InteractionCancelled()
+            original = embedded_track_artwork_bytes(path)
+            if original == body:
+                if progress:
+                    progress(
+                        {"completed": index, "total": len(files), "message": path.name}
+                    )
+                continue
+            backup = backup_root / (
+                hashlib.sha256(
+                    (str(path) + hashlib.sha256(original or b"").hexdigest()).encode()
+                ).hexdigest()
+                + ".image"
+            )
+            if original and not backup.exists():
+                backup.write_bytes(original)
+            compilation.replace_embedded_artwork(
+                path, body, "jpeg", {"width": side, "height": side}
+            )
+            verified = embedded_track_artwork_bytes(path)
+            if (
+                not verified
+                or hashlib.sha256(verified).digest() != hashlib.sha256(body).digest()
+            ):
+                raise ValueError(
+                    "Embedded artwork verification failed for " + path.name
+                )
+            if progress:
+                progress(
+                    {"completed": index, "total": len(files), "message": path.name}
+                )
+        self.refresh_album(row["album_key"], source="webgui-embed")
+        self.refresh_embedding_stats(row)
+        self.audit(
+            "embed-album", row["album_key"], {"tracks": len(files), "side": side}
+        )
+        return {"tracks": len(files), "side": side}
+
+    def search_album(self, album_id, release_id=None):
+        row = self.album_row(album_id)
+        mbid = release_id or str(row["musicbrainz_albumid"] or "")
+        if not core.valid_mbid(mbid):
+            raise ValueError(
+                "Choose a MusicBrainz release before searching album artwork"
+            )
+        http = core.Http()
+        r = self.runtime
+        sources = core.resolve_sources(r.cfg, None, None, [])
+        release = core.lookup_release(http, r.config_file, r.cfg, mbid)
+        refs, warnings = core.discover_all(http, r.config_file, r.cfg, release, sources)
+        cache = r.cache / "web-candidates" / uuid4().hex
+        cache.mkdir(parents=True, exist_ok=True)
+        found, download_warnings = core.download_candidates(
+            http, refs, sources, cache, r.cfg, clean_first=False
+        )
+        warnings.extend(download_warnings)
+        candidates = []
+        for candidate in found:
+            projected = core.project_candidate(candidate, r.cfg, core.formats(r.cfg)[0])
+            candidates.append(
+                {
+                    "name": candidate.path.name,
+                    "source": core.provider_label(candidate.source),
+                    "kind": "cover",
+                    "image": self.catalog.image(candidate.path),
+                    "width": candidate.width,
+                    "height": candidate.height,
+                    "bytes": candidate.path.stat().st_size,
+                    "acceptable": projected["acceptable"],
+                    "range_class": projected["range_type"],
+                }
+            )
+        return {
+            "candidates": candidates,
+            "warnings": [core._redact_log_message(str(item)) for item in warnings],
+        }
+
+    @serialized
+    def stage_album(self, payload):
+        self.runtime.require_write()
+        row = self.album_row(str(payload.get("album_id", "")))
+        result = self.write_cover(payload)
+        body = self.catalog.image_bytes(result["image"])
+        directory = self.runtime.cache / "staged-artwork"
+        directory.mkdir(parents=True, exist_ok=True)
+        name = uuid4().hex + (".jpg" if result["format"] == "jpeg" else ".png")
+        self._atomic_artwork(directory / name, body)
+        return {
+            "album_id": row["album_key"],
+            "album_path": row["path"],
+            "library_root": str(self.runtime.music),
+            "name": row["album_name"],
+            "artist": row["artist_name"],
+            "prepared_file": name,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "tracks": row["track_count"],
+        }
+
+    @serialized
+    def run_comp(self, payload, adapter):
+        self.runtime.require_write()
+        r = self.runtime
+        row = self.album_row(str(payload.get("album_id", "")))
+        if str(row["musicbrainz_albumid"] or "").strip():
+            raise ValueError("This album is not a COMP fallback album")
+        records = self.hydrate_tracks(row["album_key"])
+        allowed = {item["track_key"]: item["path"] for item in records}
+        requested = payload.get("track_keys") or list(allowed)
+        if not isinstance(requested, list) or any(
+            key not in allowed for key in requested
+        ):
+            raise ValueError("Choose indexed COMP tracks")
+        tracks = [core.read_track(path) for path in self.album_files(row)]
+        summary = core.Summary()
+        cache = r.cache / "comp-work" / uuid4().hex
+        cache.mkdir(parents=True, exist_ok=True)
+        scan.run_manual_compilation_album(
+            core.AlbumDir(Path(row["path"]), self.album_files(row)),
+            tracks,
+            http=core.Http(),
+            config_file=r.config_file,
+            cfg=r.cfg,
+            sources=core.resolve_sources(r.cfg, None, None, []),
+            cache=cache,
+            format_order=core.formats(r.cfg),
+            summary=summary,
+            api_queried=set(),
+            unresolved_items=[],
+            state={},
+            target_track_paths={allowed[key] for key in requested},
+        )
+        self.refresh_album(row["album_key"])
+        self.refresh_embedding_stats(row)
+        return asdict(summary)
+
+    def run_scan(self, payload, adapter):
+        album_ids = payload.get("album_ids")
+        if not album_ids and payload.get("artist_id"):
+            with closing(self.runtime.database.connect()) as db:
+                album_ids = [
+                    row["album_key"]
+                    for row in db.execute(
+                        "SELECT album_key FROM albums WHERE artist_key=? AND trim(coalesce(musicbrainz_albumid,''))<>'' AND bypassed=0",
+                        (payload["artist_id"],),
+                    )
+                ]
+        if not isinstance(album_ids, list) or not album_ids:
+            raise ValueError("Choose albums to process")
+        completed = 0
+        for album_id in album_ids:
+            if adapter.cancelled():
+                raise core.InteractionCancelled()
+            row = self.album_row(str(album_id))
+            result = self.search_album(row["album_key"])
+            candidates = result["candidates"]
+            if not candidates:
+                continue
+            items = [dict(item, index=n) for n, item in enumerate(candidates, 1)]
+            adapter.emit("candidates", {"items": items})
+            answer = adapter.read(
+                "Choose album artwork",
+                {
+                    "kind": "normal-picker",
+                    "album": row["album_name"],
+                    "artist": row["artist_name"],
+                    "options": items,
+                },
+            )
+            if answer == "b":
+                self.bypass(row["album_key"], True)
+                continue
+            if answer in {"k", "__batch_return__"}:
+                continue
+            if answer == "__cancel__":
+                raise core.InteractionCancelled()
+            if answer == "s":
+                eligible = [item for item in candidates if item.get("acceptable")]
+                if not eligible:
+                    raise ValueError("No candidate meets the configured policy")
+                candidate = eligible[0]
+            elif answer.isdigit() and 1 <= int(answer) <= len(candidates):
+                candidate = candidates[int(answer) - 1]
+            else:
+                continue
+            if self.runtime.cfg.get("mode") == "write":
+                self.write_cover(
+                    {"album_id": row["album_key"], "image": candidate["image"]}
+                )
+            completed += 1
+            adapter.progress(
+                {
+                    "completed": completed,
+                    "total": len(album_ids),
+                    "message": row["album_name"],
+                }
+            )
+        return {
+            "reviewed": completed,
+            "total": len(album_ids),
+            "mode": self.runtime.cfg.get("mode", "read"),
+        }
+
+    def musicbrainz(self, album_id, artist=None, title=None):
+        row = self.album_row(album_id)
+        r = self.runtime
+        return core.decorate_musicbrainz_results(
+            core.musicbrainz_search_releases(
+                core.Http(),
+                r.config_file,
+                r.cfg,
+                artist or row["artist_name"],
+                title or row["album_name"],
+            ),
+            query_artist=artist or row["artist_name"],
+            query_album=title or row["album_name"],
+        )
+
+    @serialized
+    def bypass(self, album_id, enabled):
+        row = self.album_row(album_id)
+        with closing(self.runtime.database.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET bypassed=?,status=CASE WHEN ?=1 THEN 'bypassed' WHEN processed_at IS NOT NULL THEN 'processed' ELSE 'unprocessed' END,updated_at=? WHERE album_key=?",
+                (int(enabled), int(enabled), tags.utc_now(), album_id),
+            )
+            media.update_artist_aggregate(db, row["artist_key"])
+        self.audit("bypass" if enabled else "unbypass", album_id)
+        return {"bypassed": bool(enabled)}

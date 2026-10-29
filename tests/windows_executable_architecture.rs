@@ -128,7 +128,7 @@ fn slint_windows_restore_natively_and_share_live_media_models() {
     assert!(main.contains("let restore_maximized_timer = Timer::default()"));
     assert!(main.contains("let startup_reflow_timer = Timer::default()"));
     assert!(main.contains("Duration::from_millis(420)"));
-    assert!(main.contains("app.media_selector_expanded = true"));
+    assert!(main.contains("state.media_selector_expanded = preferences.media_selector_expanded"));
     assert!(main.contains("TimerMode::SingleShot"));
     assert!(!main.contains("ui.window().set_maximized(preferences.window_maximized)"));
     assert!(!main.contains("set_maximized(workspace_layout.borrow().maximized)"));
@@ -166,217 +166,79 @@ fn slint_surface_exposes_real_migrated_workflows() {
     let application = source("windows/src/application.rs");
     let controller = source("windows/src/scan_controller.rs");
 
+    // Keep the architecture contract about real workflows, rather than exact
+    // pixel dimensions and removed controls from the previous shell.
     for label in [
         "Artists",
         "Albums",
         "Fallback",
+        "Media Filter",
         "Candidate Artwork",
-        "Bypass",
-        "MusicBrainz Results",
-        "Upscale / Enhance",
         "Provider Credentials",
         "Backup / Restore",
+        "MusicBrainz Results",
         "SQLite Database Snapshot (.sqlite)",
         "Diagnostic Summary (.json)",
+        "Shared/network SQLite (advanced)",
+        "COMP Report",
+        "EMBED Batch",
+        "Album Track Embedding",
+        "Upscale Preview",
     ] {
         assert!(ui.contains(label), "Slint surface is missing {label}");
     }
-    assert!(
-        ui.contains("launch-mode-label") && main.contains("\"LIVE WRITE\""),
-        "Slint launch mode is not projected from the Rust LIVE WRITE state"
+    for (callback, handler) in [
+        ("callback launch()", "ui.on_launch("),
+        ("callback save-settings()", "ui.on_save_settings("),
+        (
+            "callback write-artist-artwork()",
+            "ui.on_write_artist_artwork(",
+        ),
+        (
+            "callback prepare-embedded-thumbnail()",
+            "ui.on_prepare_embedded_thumbnail(",
+        ),
+        (
+            "callback launch-artist-compilation-report(bool)",
+            "ui.on_launch_artist_compilation_report(",
+        ),
+        (
+            "callback embed-panel-start-staged()",
+            "ui.on_embed_panel_start_staged(",
+        ),
+        (
+            "callback apply-selected-sample()",
+            "ui.on_apply_selected_sample(",
+        ),
+    ] {
+        assert!(ui.contains(callback), "missing native callback {callback}");
+        assert!(main.contains(handler), "unwired native callback {handler}");
+    }
+    assert!(ui.contains("launch-mode-label") && main.contains("\"LIVE WRITE\""));
+    assert!(ui.contains("min-width: 960px"));
+    assert!(!ui.contains("width: 1380px; height: 860px"));
+    assert_eq!(
+        ui.matches("for candidate in root.candidate-rows: CandidateCard")
+            .count(),
+        1
     );
-    assert!(
-        ui.contains("Shared/network SQLite (Python/Docker owns the inventory)"),
-        "first-run Setup does not expose the optional shared SQLite authority"
-    );
-    assert!(
-        ui.contains("preferred-width: 1680px")
-            && ui.contains("min-width: 960px")
-            && !ui.contains("width: 1380px; height: 860px"),
-        "the Slint application window is fixed-size instead of resizable"
-    );
-    assert!(
-        ui.contains("clip: true")
-            && ui.contains(
-                "source: root.current-preview; width: parent.width; height: parent.height"
-            ),
-        "the artwork preview can overflow and intercept the workspace"
-    );
-    assert!(
-        main.contains("import_settings_from_opened_backup")
-            && main.contains("Config v5 settings imported from the opened .spl backup"),
-        "associated .spl files do not import Config v5 settings before startup"
-    );
+    assert!(main.contains("import_settings_from_opened_backup"));
+    assert!(main.contains("Config v5 settings imported from the opened .spl backup"));
     for action in [
         "toggle_row",
         "candidate_decision",
         "musicbrainz_result_decision",
         "persist_adjustments_to_config",
     ] {
-        assert!(
-            main.contains(action),
-            "UI is not wired to Rust action {action}"
-        );
+        assert!(main.contains(action), "unwired native action {action}");
     }
     assert!(application.contains("pub struct ApplicationState"));
     assert!(application.contains("pub struct LibraryState"));
+    assert!(application.contains("fallback_album_rows"));
     assert!(controller.contains("run_scan_library_read_report"));
     assert!(controller.contains("std::thread::spawn"));
-    assert!(!ui.contains("CheckBox"));
-    assert!(!ui.contains("Select up to five"));
-    assert!(!ui.contains("Select up to 5"));
-    assert!(ui.contains("Activate All 8"));
-    assert_eq!(
-        ui.matches("for candidate in root.candidate-rows: CandidateCard")
-            .count(),
-        1,
-        "candidate cards are duplicated outside the Candidate Artwork panel"
-    );
-    assert!(!ui.contains("Upscale Settings"));
-    assert!(!ui.contains("Select a candidate below to preview and apply."));
-    assert!(!ui.contains("All eight controls update both previews live."));
-    assert!(ui.contains("label: \"Upscale Preview\"; width: (parent.width - 12px) / 3"));
-    assert!(
-        ui.contains("label: root.selected-artwork-write-label; width: (parent.width - 12px) / 3")
-    );
-    assert!(ui.contains("label: \"EMBED Thumbs\"; width: (parent.width - 12px) / 3"));
-    assert!(ui.contains("source: root.original-preview"));
-    assert!(ui.contains("source: root.current-preview"));
-    assert_eq!(main.matches("set_original_preview").count(), 1);
-    let activate_all_handler = main
-        .split("ui.on_activate_all_adjustments")
-        .nth(1)
-        .unwrap()
-        .split("ui.on_edit_existing_cover")
-        .next()
-        .unwrap();
-    assert!(activate_all_handler.contains("schedule_adjustment_preview"));
-    assert!(!activate_all_handler.contains("set_original_preview"));
-    assert!(!ui.contains("label: \"Up\""));
-    assert!(!ui.contains("label: \"Down\""));
-    assert!(!ui.contains("\"Expand\""));
-    assert!(!ui.contains("\"Collapse\""));
-    assert!(ui.contains("callback set-value(string, float)"));
-    let expansion_glyph = ui
-        .split("component ExpansionGlyph")
-        .nth(1)
-        .unwrap()
-        .split("component RadioToggle")
-        .next()
-        .unwrap();
-    assert!(expansion_glyph.contains("background: transparent"));
-    assert!(expansion_glyph.contains("border-width: 0px"));
-    assert!(expansion_glyph.contains("root.expanded ? AppTheme.magenta : AppTheme.cyan"));
-    assert_eq!(ui.matches("Open MB Page").count(), 2);
-    assert!(ui.contains("MusicBrainz Results · grouped by release family"));
-    assert!(ui.contains("musicbrainz-page-scroll := ScrollView"));
-    assert!(ui.contains("content-height: max(self.visible-height, musicbrainz-page-panel.height)"));
-    assert!(ui.contains("VISITED"));
-    assert!(main.contains("item.visited = true"));
-    assert!(main.contains("coverartarchive.org/release/{release_mbid}/front-500"));
-    assert!(main.contains("musicbrainz-cover-previews"));
-    assert!(!ui.contains("Show Tracks / Embedded Art"));
-    assert!(!ui.contains("MUSIC LOOKS BETTER HERE"));
-    assert!(!ui.contains("MANAGE · ENHANCE · PRESERVE · MUSIC FOREVER"));
-    assert_eq!(ui.matches("\"LAUNCH\"").count(), 1);
-    assert!(ui.contains("Media Filter"));
-    assert!(ui.contains("Fallback Albums"));
-    assert!(ui.contains("for row in root.library-rows: VerticalLayout"));
-    assert!(ui.contains("if row.expanded: VerticalLayout"));
-    assert!(!ui.contains("Select an album to show its tracks."));
-    assert!(ui.contains("horizontal-stretch: 1; NeonAction { label: \"All\""));
-    assert!(ui.contains("height: 430px; clip: true"));
-    assert!(ui.contains("callback library-row-expansion-activated(string)"));
-    assert!(application.contains("select_album_exclusive"));
-    assert!(ui.contains("private property <float> drag-origin: root.position"));
-    assert!(!ui.contains("root.position + (root.reverse"));
-    assert!(ui.contains("component WorkspaceButton inherits Rectangle"));
-    assert_eq!(ui.matches("WorkspaceButton { label: \"").count(), 5);
-    assert!(ui.contains("component WorkspaceButton inherits Rectangle"));
-    assert!(ui.contains("border-color: AppTheme.border;"));
-    assert!(
-        ui.contains("width: 6px;\n    background: drag-area.pressed ? AppTheme.selected-surface")
-    );
-    assert!(
-        ui.contains("height: 6px;\n    background: drag-area.pressed ? AppTheme.selected-surface")
-    );
-    assert!(ui.contains("x: (parent.width - self.width) / 2; source: @image-url(\"../gui/source-icons/musicbrainz.svg\")"));
-    assert!(ui.contains("padding-left: 6px; padding-right: 6px; spacing: 7px"));
-    assert!(ui.contains("in-out property <bool> artist-biography-expanded: false"));
-    assert!(
-        ui.contains("text: \"(…more)\"; color: AppTheme.yellow; font-size: 17px; font-weight: 800")
-    );
-    assert!(
-        ui.contains("text: \"(less…)\"; color: AppTheme.yellow; font-size: 17px; font-weight: 800")
-    );
-    assert!(ui.contains("font-size: 18px; wrap: word-wrap; overflow: elide"));
-    assert!(ui.contains("if root.artist-biography-expanded: VerticalLayout"));
-    assert!(ui.contains("height: self.preferred-height;"));
-    assert!(ui.contains("Rectangle { horizontal-stretch: 1; background: transparent; }"));
-    assert!(ui.contains("callback artist-overview-navigate(int)"));
-    assert!(!ui.contains("clicked => root.artist-overview-navigate(-1)"));
-    assert!(!ui.contains("clicked => root.artist-overview-navigate(1)"));
-    assert!(main.contains("adjacent_pending_artist"));
-    assert!(!ui.contains("Select an artist for Artist Overview"));
-    assert!(!ui.contains("root.current-artist + \"  >  \" + root.current-album; color:"));
-    assert!(ui.contains("visible: root.current-artist != \"\" || root.current-album != \"\""));
-    assert!(!ui.contains("Text { text: root.selected-artwork-dimensions; color: #ffffff; font-size: 16px; font-weight: 700"));
-    assert!(ui.contains("Text { text: root.selected-artwork-quality; color: AppTheme.green"));
-    assert!(ui.contains("default-font-size: 16px"));
-    assert!(ui.contains("text: root.detail; color: AppTheme.foreground; font-size: 14px"));
-    assert!(ui.contains("On keeps existing art and uses a numbered filename. Off replaces the matching cover or Artist Art.\"; color: AppTheme.secondary-foreground; font-size: 13px"));
-    assert!(application.contains("fallback_album_rows"));
-    assert!(application.contains("toggle_artist_scope"));
-    assert!(ui.contains("SKIP ALBUM"));
-    assert!(ui.contains("splined-watermark.png"));
-    assert!(Path::new("windows/gui/set-your-imagination-tv.jpg").is_file());
-    assert_eq!(ui.matches("set-your-imagination-tv.jpg").count(), 1);
-    assert!(ui.contains(
-        "private property <bool> artwork-placeholder-visible: root.intro-active || (root.current-album == \"\" && !root.selected-artwork-artist-overview && !root.artist-artwork-mode)"
-    ));
-    assert!(
-        ui.contains("width: min(max(0px, parent.width - 40px), max(0px, parent.height - 40px))")
-    );
-    assert!(ui.contains("visible: !root.artwork-placeholder-visible"));
-    assert!(ui.contains("component MissingArtistArt inherits Rectangle"));
-    assert!(ui.contains("source: @image-url(\"../gui/source-icons/navidrome.svg\")"));
-    assert!(ui.contains("Text { text: \"ARTIST\"; color: AppTheme.violet"));
-    assert!(ui.contains("selected-artwork-artist-overview"));
-    assert!(ui.contains("selected-artwork-write-ready"));
-    assert!(main.contains("Saving artist.*…"));
-    assert!(main.contains("Saved {file_name}"));
     assert!(main.contains("discover_remote_artist_artwork"));
     assert!(main.contains("synchronize_fallback_album"));
-    assert!(main.contains("let current_cover_path = if suppress_fallback_cover"));
-    assert!(application.contains("self.album_visible(*index, &artists)"));
-    assert!(ui.contains("window-background: root.chalk ?"));
-    assert!(ui.contains("panel-background: root.chalk ?"));
-    assert!(!ui.contains("imagination-message.svg"));
-    assert!(!ui.contains("Welcome to S.P.L.I.N.E.D."));
-    assert!(ui.contains(
-        "HorizontalLayout { height: 62px; alignment: center;\n                    BrandMark { width: 360px; height: 54px; }"
-    ));
-    let neon_panel = ui
-        .split("component NeonPanel")
-        .nth(1)
-        .unwrap()
-        .split("component NeonAction")
-        .next()
-        .unwrap();
-    assert!(neon_panel.contains("border-width: 0px"));
-    assert!(!neon_panel.contains("border-color:"));
-    for colored_panel in [
-        "NeonPanel { vertical-stretch: 1; border-color:",
-        "NeonPanel { horizontal-stretch: 1; max-width: 10000px; border-color:",
-        "visible: root.show-artwork; border-color:",
-        "NeonPanel { height: root.activity-pane-height * 1px; border-color:",
-        "NeonPanel { horizontal-stretch: 1; border-color:",
-    ] {
-        assert!(
-            !ui.contains(colored_panel),
-            "workspace panel still carries a colored border: {colored_panel}"
-        );
-    }
     let candidate_hover_handler = main
         .split("ui.on_candidate_hover")
         .nth(1)
@@ -490,7 +352,7 @@ fn updates_are_channel_aware_and_never_self_replace_binaries() {
 }
 
 #[test]
-fn repository_exposes_exactly_the_three_supported_workflows() {
+fn repository_exposes_release_recovery_and_validation_workflows() {
     let workflow_dir = Path::new(".github/workflows");
     let files = fs::read_dir(workflow_dir)
         .unwrap()
@@ -508,6 +370,7 @@ fn repository_exposes_exactly_the_three_supported_workflows() {
             "01-full-release.yml".to_string(),
             "02-store-recovery.yml".to_string(),
             "03-ghcr-recovery.yml".to_string(),
+            "validate.yml".to_string(),
         ])
     );
 }

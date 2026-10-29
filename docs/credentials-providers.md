@@ -56,7 +56,7 @@ Fanart.tv uses the v3.2 album endpoint. The credential contract is:
 
 `api_version` must be `v3.2` for the canonical saved credential format. `client_key` is optional. The Windows credential editor always saves the v3.2 marker and validates against the v3.2 album endpoint.
 
-Python/Docker `splined --oauth-validation` is intentionally tolerant of legacy or manually created Fanart.tv files whose `api_version` marker is missing or stale. It prints `WARN`, then tests the saved API key and optional client key against the live v3.2 release-group album endpoint. A missing or stale marker alone is not treated as an authentication failure; the live request determines credential `PASS` or `FAIL`. New or rewritten credential files should still use `"api_version": "v3.2"`.
+WebGUI **Test Connection** is intentionally tolerant of legacy or manually created Fanart.tv files whose `api_version` marker is missing or stale. It prints `WARN`, then tests the saved API key and optional client key against the live v3.2 release-group album endpoint. A missing or stale marker alone is not treated as an authentication failure; the live request determines credential `PASS` or `FAIL`. New or rewritten credential files should still use `"api_version": "v3.2"`.
 
 Operational provider discovery also always uses the v3.2 release-group album
 endpoint and its `albums` response shape. A credential-file marker never
@@ -138,7 +138,7 @@ The native Windows runtime also applies `recording_timeout` to MusicBrainz/CAA
 release-group and exact-release artwork discovery. This bounds the external
 CAA redirect chain without changing source priority or candidate ranking.
 
-Python/Docker `splined --oauth-validation` refreshes an expired MusicBrainz
+WebGUI **Test Connection** refreshes an expired MusicBrainz
 access token before checking `/oauth2/userinfo`, then performs one normal
 metadata lookup. If a nominally current bearer token is rejected, it forces one
 refresh and retries once. Successful renewal atomically updates only the
@@ -180,12 +180,7 @@ screenshots.
 
 Windows **Credentials > Navidrome** masks the active secret field and performs
 a live ping/library/artwork capability test. `SAVED` and `TESTED` are distinct:
-only a successful request marks the credential tested. Python/Docker can create
-the same fixed file with:
-
-```text
-splined --navidrome-credentials
-```
+only a successful request marks the credential tested. WebGUI creates the same fixed file through **Settings → Provider Credentials → Navidrome**.
 
 Candidate discovery prefers an exact MusicBrainz Release ID. Without that ID,
 one and only one normalized exact Artist + Album result is accepted. Ambiguous

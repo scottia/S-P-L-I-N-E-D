@@ -36,7 +36,7 @@ use windows_sys::Win32::NetworkManagement::WNet::{
 pub const DB_NAME: &str = "splined.db";
 pub const SCHEMA_VERSION: i64 = 2;
 const INVENTORY_KEY: &str = "splined-media-library";
-const SCHEMA: &str = include_str!("../../python/splined_schema.sql");
+const SCHEMA: &str = include_str!("../../schema/media.sql");
 pub(crate) fn claim_shared_database(path: &Path) -> Result<fs::File, String> {
     let lock_path = path.with_file_name(format!(
         "{}.client-lock",

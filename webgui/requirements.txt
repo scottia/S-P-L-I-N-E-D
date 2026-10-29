@@ -1,0 +1,7 @@
+fastapi==0.162.0
+uvicorn==0.54.0
+psycopg[binary]==3.3.6
+requests==2.34.2
+Pillow==13.0.0
+mutagen==1.48.1
+tomlkit==0.15.2

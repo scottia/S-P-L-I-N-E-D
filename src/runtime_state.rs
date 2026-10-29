@@ -8,7 +8,7 @@ use std::time::Duration;
 
 const DB_NAME: &str = "splined.db";
 const SCHEMA_VERSION: i64 = 2;
-const SCHEMA: &str = include_str!("../python/splined_schema.sql");
+const SCHEMA: &str = include_str!("../schema/media.sql");
 
 pub fn database_path(config: &Config) -> PathBuf {
     Path::new(&config.scan.cache_dir).join(DB_NAME)

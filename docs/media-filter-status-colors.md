@@ -5,7 +5,7 @@ filters, selection controls, scan scope, and Launch all operate on one resident
 Artist/Album model. Filtering changes visibility only; it does not rewrite
 history, bypass, timeout, credentials, or source policy.
 
-The Windows GUI and Python/Docker Ratatui interfaces share the same semantic
+The Windows GUI and WebGUI interfaces share the same semantic
 colors, although their storage and presentation implementations differ.
 
 ## Python/Docker inventory authority
@@ -440,5 +440,5 @@ first media-index build or explicit Refresh completed successfully.
 ## Related documentation
 
 - [SPLINED media database](splined-media-database.md)
-- [Python Ratatui TUI](ratatui-tui.md)
+- [WebGUI guide](browser-workspace-guide.md)
 - [Config v5 reference](config-v5-reference.md)

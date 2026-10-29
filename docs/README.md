@@ -10,7 +10,7 @@ with the current product documentation.
 
 1. [Install and complete the first run](installation-first-run.md).
 2. Choose the interface guide for the runtime you use:
-   [Windows](windows-guide.md) or [Python Ratatui](ratatui-tui.md).
+   [Windows](windows-guide.md) or [WebGUI](browser-workspace-guide.md).
 3. Review [Config v5](config-v5-reference.md) and
    [credentials/provider setup](credentials-providers.md).
 4. Start in Read mode with a small selection before enabling Live Write.
@@ -28,9 +28,7 @@ with the current product documentation.
   — feature-by-feature migration status, validation, and explicit retirements.
 - [Windows replacement GUI validation](windows-gui-redesign-qa.md) — screenshot
   comparison matrix, test coverage, and deliberate reference adaptations.
-- [Python Ratatui guide](ratatui-tui.md) — persistent Select Media, structured
-  settings, candidate filters/comparison, compilation-track reopen,
-  MusicBrainz authority, diagnostics, reports, and terminal cleanup.
+- [WebGUI guide](browser-workspace-guide.md) — Python server, PostgreSQL catalog, browser settings, artwork writes, COMP review, and persistent embedding queue.
 
 ### Configure artwork and providers
 
@@ -79,11 +77,11 @@ with the current product documentation.
 | Runtime | User interface | Configuration | Persistent state |
 | --- | --- | --- | --- |
 | Windows | Cargo-built Rust application + Slint GUI | Auto-discovered portable `data/config.toml`/`data/ui.toml`, or `<LocalState>\SPLINED\data` for MSIX; structured Setup/Settings write Config v5 | `<scan.cache_dir>\splined.db` plus configured credentials |
-| Python/Docker | Ratatui when attached to a terminal; plain CLI when redirected or disabled | File-backed Config v5 | `splined.db` plus separately stored credentials |
+| WebGUI / Python / Docker | Browser | Browser-editable Config v5 | PostgreSQL catalog and jobs; persistent files and separately stored credentials |
 | Linux/macOS native CLI | Command line | File-backed Config v5 | Runtime-selected cache and database paths |
 
 All supported runtimes share Config v5 concepts, source policy language, and
-SQLite Album/status semantics. Interface controls and configuration storage
+Album/status concepts. Windows retains SQLite; WebGUI uses PostgreSQL. Interface controls and configuration storage
 differ by platform; the linked interface guides describe those differences.
 
 ## Documentation boundaries

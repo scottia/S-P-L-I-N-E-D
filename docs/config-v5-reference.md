@@ -63,8 +63,9 @@ normally absolute container paths supplied by bind mounts.
 | `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
 | `cache_dir` | `"_cache"` | Persistent SQL database directory containing `<cache_dir>/splined.db`; the historical key name is retained for compatibility |
+| `shared_artist_art_dir` | empty | Persistent Artist-specific portrait/banner files for shared Soundtracks or Various Artists folders; Python defaults to `<cache_dir>/artist-art` |
 | `temporary_cache_dir` | `"_cache"` | Disposable downloaded/derived artwork and optional review samples; an older Config v5 file that omits it falls back to `cache_dir` |
-| `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; Python owns shared inventory, while rollback journaling and a 30-second busy timeout protect shared writes |
+| `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; native-client shared-file behavior; WebGUI uses PostgreSQL instead |
 | `windows_client_lock` | `false` | Windows-only optional `.client-lock` coordination for shared SQLite. Has no effect unless `sqlite_shared` is true; older Config v5 files default to off |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 
@@ -72,61 +73,25 @@ The `_cache` and `_logs` values above are schema defaults used to describe a
 new Rust Config model. Windows first-run Setup leaves required path choices
 unset and creates nothing until the user explicitly saves valid choices.
 
-### SQLite and temporary run cache
+### Database and temporary run cache
 
-Python/Docker and Windows store the persistent Select Media read model at:
+WebGUI stores its catalog, completion ledger, and queued work in PostgreSQL.
+`SPLINED_DATABASE_URL` or standard PostgreSQL connection environment variables
+supply the connection; browser Settings can save a database URL for a local
+server. Deployment environment values take precedence. Do not place database
+passwords in public example configuration.
 
-```text
-<scan.cache_dir>/splined.db
-```
+The WebGUI cache holds downloaded candidates, prepared images, original embedded
+image backups, and persistent `staged-artwork`. Keep that cache volume when
+upgrading: queued work verifies its staged file before writing. WebGUI does not
+open a live SQLite catalog or share Windows' active database. An explicit import
+can copy a named read-only SQLite snapshot into an empty PostgreSQL catalog.
 
-Candidate downloads and derived local images are written under
-`temporary_cache_dir` and removed when the run completes or is interrupted.
-Optional review samples use its `samples` child only when sample writing is
-enabled. SQLite and its sidecars are never part of run-cache cleanup.
-
-With the Docker compatibility defaults:
-
-```toml
-[scan]
-cache_dir = "/_cache"
-temporary_cache_dir = "/_cache"
-```
-
-SPLINED uses:
-
-```text
-/_cache/splined.db
-```
-
-Windows Setup exposes separate **SQL Database Directory** and **Temporary Run
-Cache** fields plus explicit **Shared/network SQLite** and optional
-**Use extra .client-lock** controls. Both controls also appear under Advanced
-Processing Settings. The database
-field derives the same filename. A local database directory creates an
-independent database; an operator-enabled shared database may expose the same
-physical database as Python/Docker or another installation while the disposable
-run cache remains on fast local storage. The shared setting is optional and is
-never inferred merely because the path is mapped or UNC.
-Raw UNC paths are supported directly through Windows Settings. SPLINED creates an internal,
-provider-aware Windows drive adapter for SQLite because Windows network locking
-can differ between raw UNC and drive-letter paths. An existing connection to
-the same UNC prefix is found dynamically (including NFS, even if its letter
-changes); otherwise a temporary connection is used. The configured path remains
-UNC and never names a drive letter.
-
-For an intentional shared file, set `sqlite_shared = true` in every process
-that can open it. Local databases default to WAL for warm-start performance;
-shared mode uses rollback journaling plus `busy_timeout=30000`. The first
-publisher establishes the canonical path mapping, ignored-folder policy, and
-cover filename. Python/Docker is the normal first publisher for a cross-mounted
-library; Windows can explicitly refresh an existing shared index using that
-published policy. A normal Windows launch reads the index without rebuilding
-it. The Windows `.client-lock` is off by default and does not replace SQLite's
-own locking. Enable it when every client can acquire it on the chosen share;
-otherwise avoid overlapping writes from different hosts.
-
-See [SPLINED media database](splined-media-database.md).
+Windows uses `<scan.cache_dir>/splined.db` and a separate Temporary Run Cache.
+Its optional `sqlite_shared` and `.client-lock` settings apply to intentional
+native shared-file deployments. They do not configure WebGUI's PostgreSQL store.
+See [media database](splined-media-database.md) and the
+[WebGUI guide](browser-workspace-guide.md).
 
 ## `[output]`
 
@@ -138,7 +103,7 @@ See [SPLINED media database](splined-media-database.md).
 | `square` | `true` | Enable square output policy |
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
-| `embedded_thumbnail_size` | `1200` | Windows **Embedded Thumbnail Preference**, a square side in pixels from 300 through 4000. Applies only when **EMBED Thumbs** is chosen; the saved folder `cover.*` retains its full-resolution output. |
+| `embedded_thumbnail_size` | `1200` | Windows **Embedded Thumbnail Preference** and WebGUI album/COMP embedding size, a square side in pixels from 300 through 4000; the saved folder `cover.*` retains its full-resolution output. |
 | `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
 | `upscale_max_percent` | `200` | Hard maximum enlargement relative to the original short side, valid from `100` through `800`; `200` permits 2×. A requested enlargement above this limit is not performed, while artwork already above Ideal remains at native resolution. |
 | `upscale_adaptive_defaults` | `true` | Analyze exposure/contrast and apply only SPLINED's bounded correction when the source demonstrably needs it |
@@ -332,6 +297,7 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `logging.retention_days` | `14` | Retention for ordinary diagnostic files; Windows keeps only its current `<configured log directory>\run` session |
+| `logging.database_audit` | `false` | Python-only per-machine SQLite activity log under `<scan.log_dir>/db-audit`; records database opens, transaction events, and write attempts without SQL values |
 | `history.enabled` | `true` | Enables persistent completion/status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
 
@@ -373,25 +339,15 @@ record, while fatal native interpreter/input-extension failures write a
 one-time thread stack so an abrupt TUI exit is not indistinguishable from an
 external process termination. SIGTERM is recorded explicitly.
 
-SQLite supplies processed, timeout, chosen-source, and bypass authority. The
-shared Python/Docker and Windows `splined.db` materializes those facts for
+Each runtime database supplies processed, timeout, chosen-source, and bypass authority. The
+native Windows `splined.db` materializes those facts for
 Select Media and stores completion, bypass, timeout, and source-selection state
 in that same database.
 
-Python/Docker can export and selectively restore an unprotected, cross-platform
-`.spl` archive containing settings, interface state, credentials, SQLite, or
-diagnostics:
-
-```text
-splined --backup-export state.spl --backup-components settings,interface,credentials,database
-splined --backup-restore state.spl --backup-components settings,credentials
-```
-
-The Python path validates the archive manifest and SHA-256 before an atomic
-restore. Password-protected Windows `.spl` archives remain a Windows-only
-encryption boundary; Python reports them as unsupported instead of guessing a
-password format. Back up Python/Docker Config v5, credentials, and the
-authoritative database.
+WebGUI backups use consistent PostgreSQL dumps plus its config, credential,
+cache/staged-artwork, external artist-art, and music volumes. The Python
+terminal backup commands have been retired. A SQLite snapshot is not a
+PostgreSQL backup. See the [server deployment guide](../docker/README.md).
 On Windows use **Settings > Backup / Restore**. Settings, interface state, and
 credential JSON are stored in `.spl`; SQLite uses a consistent standalone
 `.sqlite` snapshot; and secret-free diagnostic metadata uses a readable `.json`.

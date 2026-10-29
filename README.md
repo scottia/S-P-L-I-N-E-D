@@ -33,13 +33,13 @@ the selected artwork into the Album folder.
 - 👀 **Read mode** evaluates without modifying Album folders
 - ✍️ **Write mode** can install the selected artwork
 - 🧪 **Sample output** writes one selected image per Album for review
-- 🧭 **Persistent history and bypass state** live in the authoritative SQLite database
-- 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and fast warm startup in Python/Docker
+- 🧭 **Persistent history and bypass state** live in PostgreSQL for WebGUI and SQLite for Windows
+- 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and persistent startup state
 - ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
 - 🪟 **Portable Windows settings** — `data/config.toml` and `data/ui.toml` move with the application folder
-- 💾 **Purpose-specific backup files** — Windows separates settings (`.spl`), consistent database snapshots (`.sqlite`), and secret-free diagnostics (`.json`) with independent schedules; Python retains selective unprotected cross-platform `.spl` archives
+- 💾 **Purpose-specific backup files** — Windows separates settings (`.spl`), consistent database snapshots (`.sqlite`), and secret-free diagnostics (`.json`) with independent schedules; WebGUI uses PostgreSQL dumps and persistent volume backups
 - 🐳 **Docker image** provides a Linux/server deployment path
-- 🐀 **Ratatui TUI** provides OLED and CHALK interactive views, structured settings, candidate filtering/comparison, full-size preview, MusicBrainz authority filters, explicit compilation-track reopen, runtime diagnostics, and mouse/touch operation
+- 🌐 **WebGUI** provides browser artwork review, settings, provider credentials, actual artwork/tag writes, and a persistent PostgreSQL queue
 - 📦 **Portable releases** separate replaceable program files from explicitly selected persistent data
 
 ---
@@ -58,7 +58,7 @@ no-install/direct use. Both are current supported Windows distribution channels.
 | **Windows Portable** | No-install/direct Windows distribution with portable-root state | [`release/README-WINDOWS.txt`](release/README-WINDOWS.txt) |
 | **Linux Portable** | Native Linux installation | [`release/README-LINUX.txt`](release/README-LINUX.txt) |
 | **macOS Portable** | Native macOS installation | [`release/README-MACOS.txt`](release/README-MACOS.txt) |
-| **Docker** | Linux servers, NAS, and container deployments | [`docker/README.md`](docker/README.md) · [`python/Dockerfile`](python/Dockerfile) |
+| **Docker** | Linux servers, NAS, and container deployments | [`docker/README.md`](docker/README.md) · [`webgui/Dockerfile`](webgui/Dockerfile) |
 
 Portable users should download the appropriate archive from the
 [latest GitHub release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest),
@@ -88,7 +88,7 @@ Start with:
 - [Installation and first run](docs/installation-first-run.md)
 - [Windows guide](docs/windows-guide.md)
 - [Config v5 reference](docs/config-v5-reference.md)
-- [Python Ratatui TUI](docs/ratatui-tui.md)
+- [WebGUI guide](docs/browser-workspace-guide.md)
 - [SPLINED media database](docs/splined-media-database.md)
 
 Windows opens the [Windows guide](docs/windows-guide.md) from **Help > Help**
@@ -133,29 +133,21 @@ SPLINED keeps its supported implementations separate:
   v5 processing core, and the reproducible Windows build.
 - Root [`Cargo.toml`](Cargo.toml), [`Cargo.lock`](Cargo.lock), and [`src/`](src/)
   remain the native command-line implementation used by Linux and macOS.
-- [`python/`](python/) is the supported Python/Docker Config v5 implementation.
-  Its operational TUI is rendered by Ratatui through `pyratatui`; non-TTY
-  execution remains plain CLI. A packaged crossterm/PyO3 extension supplies
-  mouse/touch input and terminal-image lifecycle handling missing from the
-  published `pyratatui==0.3.0` wheel.
+- [`webgui/`](webgui/) is the supported Python server and browser interface.
+  PostgreSQL owns its catalog and persistent work queue. The Python terminal
+  client, Ratatui dependency, and native input extension have been retired.
 
 The application release and Config v5 schema are separate version concepts.
 
 ---
 
-## 🗃️ SQLite Select Media database
+## 🗃️ Library catalog
 
-Python/Docker and Windows store the persistent Artist/Album read model at:
-
-```text
-<scan.cache_dir>/splined.db
-```
-
-Default Docker path:
-
-```text
-/_cache/splined.db
-```
+WebGUI stores its catalog, completion ledger, and queued work in PostgreSQL.
+Use browser **Settings** to configure paths and refresh the index. Existing
+SQLite snapshots can be explicitly imported into an empty server catalog.
+Windows retains its SQLite database at `<scan.cache_dir>/splined.db`; it does
+not share the live PostgreSQL store. See the [WebGUI guide](docs/browser-workspace-guide.md).
 
 Windows derives the same filename from its browsable **SQL Database
 Directory**. Its separate **Temporary Run Cache** holds downloaded and derived
@@ -164,16 +156,12 @@ Rust core owns SQLite access and supplies the side-by-side GUI with a compact JS
 projection; the GUI does not maintain a second database or recursively rebuild
 Select Media before first paint. Set `[scan].sqlite_shared = true` only when
 the same physical database is intentionally opened through multiple OS or
-network filesystem views. In shared mode Python/Docker owns inventory and
-exclusion policy; Windows reloads that inventory while retaining independent
-local configuration and read/write runtime updates. Raw UNC cache paths are
+network filesystem views. SQLite shared-file settings apply to the native clients. WebGUI owns a separate PostgreSQL catalog. Raw UNC cache paths are
 supported without requiring a persistent mapped drive.
 
-The first interactive launch inventories Artist/Album folders and reads one
+A library refresh inventories Artist/Album folders and reads one
 representative audio file per Album (Mutagen in Python, Lofty in Rust). The
-build saves resumable SQLite checkpoints and publishes the picker only after
-the completed snapshot
-validates.
+native Windows build saves resumable SQLite checkpoints before publishing its picker; WebGUI records its inventory in PostgreSQL.
 
 Artist and Album SQL identity is based on MusicBrainz/tag values; filesystem
 paths are stored only as current locations and are not SQL identity indexes.
@@ -224,7 +212,7 @@ more tracks can be selected without returning to the library root. Folder-level
 The MusicBrainz list uses release-group artwork only as a quick visual preview;
 its Resolution field is separate, Release-MBID-specific evidence from the best
 candidate returned by enabled SPLINED sources. See
-[Ratatui TUI: Reading MusicBrainz match evidence](docs/ratatui-tui.md#reading-musicbrainz-match-evidence).
+[WebGUI MusicBrainz review](docs/browser-workspace-guide.md#artwork-workflow).
 
 MusicBrainz is available in Artwork Source Priority as release authority backed
 by Cover Art Archive image bytes. Amazon Store artwork is also available as an
@@ -337,7 +325,7 @@ absolute paths while preserving the schema.
 
 ---
 
-## ▶️ Basic usage
+## ▶️ Native Linux/macOS command-line usage
 
 Show help and configured directories:
 
@@ -351,18 +339,9 @@ Scan the configured directory:
 splined --scan-dir
 ```
 
-Interactive Python scans use OLED by default. Use `--tui-theme CHALK`, or
-`--no-tui` for plain output. See the
-[Python Ratatui TUI guide](docs/ratatui-tui.md).
-
-Python maintenance commands are notification-only for updates and selective
-for portable state transfer:
-
-```text
-splined --check-for-updates
-splined --backup-export state.spl --backup-components settings,interface,credentials,database
-splined --backup-restore state.spl --backup-components settings,credentials
-```
+WebGUI users open the browser interface and use **Settings**, **LAUNCH**,
+**WRITE**, and the persistent embedding queue. No terminal commands are needed
+for application use. See the [WebGUI guide](docs/browser-workspace-guide.md).
 
 A bare native invocation scans the caller's current directory recursively.
 Windows portable users launch `splined.exe`; its desktop workflow always uses

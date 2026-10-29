@@ -1133,9 +1133,60 @@ impl LibraryState {
             .count()
     }
 
+    /// Count only the item currently being reviewed in the Media Filter.
+    /// The library-wide count remains available to scan and reporting code.
+    pub fn focused_status_count(&self, value: StatusFilter) -> usize {
+        if self.show_tracks {
+            return self
+                .focused_album_key
+                .as_deref()
+                .and_then(|key| {
+                    self.albums.iter().find(|album| {
+                        album.snapshot.album_key.eq_ignore_ascii_case(key)
+                            && Self::is_fallback_album(album)
+                    })
+                })
+                .map_or(0, |album| {
+                    Self::fallback_track_count_for_filter(album, value)
+                });
+        }
+        if let Some(album_key) = self.focused_album_key.as_deref() {
+            return self
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
+                .map_or(0, |album| {
+                    usize::from(
+                        value == StatusFilter::All || Self::album_matches_filter(album, value),
+                    )
+                });
+        }
+        if self.view == LibraryView::Artists {
+            let Some(artist) = self.focused_artist.as_deref() else {
+                return 0;
+            };
+            let indices = self
+                .albums
+                .iter()
+                .enumerate()
+                .filter(|(_, album)| album.snapshot.artist.eq_ignore_ascii_case(artist))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            return usize::from(
+                !indices.is_empty()
+                    && (value == StatusFilter::All || self.artist_matches_filter(&indices, value)),
+            );
+        }
+        0
+    }
+
     pub fn state_scope_label(&self) -> &'static str {
         if self.show_tracks {
             "Fallback"
+        } else if self.focused_album_key.is_some() {
+            "Album"
+        } else if self.view == LibraryView::Artists && self.focused_artist.is_some() {
+            "Artist"
         } else {
             match self.view {
                 LibraryView::Artists => "Artists",
@@ -2157,6 +2208,13 @@ pub struct AdjustmentState {
 }
 
 impl AdjustmentState {
+    pub fn effective_sharpness(&self) -> (i32, i32) {
+        (
+            (self.sharpen_percent.max(0) + (-self.softness_percent).max(0)).clamp(0, 20),
+            (self.softness_percent.max(0) + (-self.sharpen_percent).max(0)).clamp(0, 20),
+        )
+    }
+
     pub fn slider_values(&self) -> [i32; 11] {
         [
             self.picture_percent,
@@ -2210,12 +2268,13 @@ impl AdjustmentState {
     }
 
     pub fn as_decision_fields(&self) -> Value {
+        let (sharpen, softness) = self.effective_sharpness();
         json!({
             "preserve_source_resolution": self.preserve_source_resolution,
             "upscale_adaptive_defaults": self.adaptive_defaults,
             "upscale_picture_percent": self.picture_percent,
-            "upscale_sharpen_percent": self.sharpen_percent,
-            "upscale_softness_percent": self.softness_percent,
+            "upscale_sharpen_percent": sharpen,
+            "upscale_softness_percent": softness,
             "upscale_contrast_percent": self.contrast_percent,
             "upscale_exposure_percent": self.exposure_percent,
             "upscale_brightness_percent": self.brightness_percent,
@@ -2446,6 +2505,7 @@ pub struct ApplicationState {
     pub completion_message: String,
     pub compilation_report_artist: String,
     pub compilation_report_summary: String,
+    pub compilation_report_checking: bool,
     pub compilation_report_preview_mode: bool,
     pub compilation_report_preview_album_key: String,
     pub compilation_report_preview_track_path: String,
@@ -2663,6 +2723,7 @@ impl ApplicationState {
             completion_message: String::new(),
             compilation_report_artist: String::new(),
             compilation_report_summary: String::new(),
+            compilation_report_checking: false,
             compilation_report_preview_mode: false,
             compilation_report_preview_album_key: String::new(),
             compilation_report_preview_track_path: String::new(),
@@ -3622,10 +3683,11 @@ impl ApplicationState {
     }
 
     pub fn persist_adjustments_to_config(&mut self) {
+        let (sharpen, softness) = self.adjustments.effective_sharpness();
         self.config.output.upscale_adaptive_defaults = self.adjustments.adaptive_defaults;
         self.config.output.upscale_picture_percent = self.adjustments.picture_percent;
-        self.config.output.upscale_sharpen_percent = self.adjustments.sharpen_percent;
-        self.config.output.upscale_softness_percent = self.adjustments.softness_percent;
+        self.config.output.upscale_sharpen_percent = sharpen;
+        self.config.output.upscale_softness_percent = softness;
         self.config.output.upscale_contrast_percent = self.adjustments.contrast_percent;
         self.config.output.upscale_exposure_percent = self.adjustments.exposure_percent;
         self.config.output.upscale_brightness_percent = self.adjustments.brightness_percent;
@@ -5415,6 +5477,25 @@ mod tests {
             state.status_label(StatusFilter::ArtistComplete),
             "Fallback Complete"
         );
+    }
+
+    #[test]
+    fn media_filter_counts_follow_the_focused_artist_or_album() {
+        let mut state = artist_library();
+        assert_eq!(state.focused_status_count(StatusFilter::All), 0);
+        state.focused_artist = Some("Alpha".to_string());
+        assert_eq!(state.state_scope_label(), "Artist");
+        assert_eq!(state.focused_status_count(StatusFilter::All), 1);
+        assert_eq!(state.focused_status_count(StatusFilter::Processed), 1);
+        state.focused_album_key = Some("a".to_string());
+        assert_eq!(state.state_scope_label(), "Album");
+        assert_eq!(state.focused_status_count(StatusFilter::Processed), 0);
+        assert_eq!(state.focused_status_count(StatusFilter::Unprocessed), 1);
+        state.set_top_level_view(LibraryView::Albums);
+        state.focused_album_key = Some("b".to_string());
+        assert_eq!(state.focused_status_count(StatusFilter::All), 1);
+        assert_eq!(state.focused_status_count(StatusFilter::Processed), 1);
+        assert_eq!(state.focused_status_count(StatusFilter::Unprocessed), 0);
     }
 
     #[test]
@@ -7315,6 +7396,21 @@ mod tests {
         assert_eq!(apply["apply_edit_profile"], true);
         state.persist_adjustments_to_config();
         assert_eq!(state.config.output.upscale_picture_percent, 7);
+    }
+
+    #[test]
+    fn negative_sharpen_slider_routes_to_valid_softness_for_comp_decisions() {
+        let mut adjustments = AdjustmentState::from_config(&Config::default());
+        adjustments.sharpen_percent = -8;
+        adjustments.softness_percent = 0;
+        assert_eq!(adjustments.effective_sharpness(), (0, 8));
+        let decision = adjustments.as_decision_fields();
+        assert_eq!(decision["upscale_sharpen_percent"], 0);
+        assert_eq!(decision["upscale_softness_percent"], 8);
+
+        adjustments.sharpen_percent = 5;
+        adjustments.softness_percent = -4;
+        assert_eq!(adjustments.effective_sharpness(), (9, 0));
     }
 
     #[test]

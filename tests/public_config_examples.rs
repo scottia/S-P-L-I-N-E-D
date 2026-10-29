@@ -1,6 +1,6 @@
 use std::fs;
 
-use splined::config::{CURRENT_CONFIG_VERSION, parse_config};
+use splined::config::{parse_config, CURRENT_CONFIG_VERSION};
 
 const REQUIRED_SECTIONS: &[&str] = &[
     "library",
@@ -92,7 +92,7 @@ fn load_example(path: &str, expected_credential_dir: &str) -> toml::Value {
 #[test]
 fn all_public_examples_are_config_v5_and_secret_free() {
     assert_eq!(CURRENT_CONFIG_VERSION, 5);
-    let python = fs::read_to_string("python/splined.py").expect("Python runtime source");
+    let python = fs::read_to_string("webgui/backend/splined.py").expect("Python runtime source");
     assert!(python.contains("CONFIG_VERSION = 5"));
     assert!(!python.contains("CONFIG_VERSION = 4"));
     load_example("config.example.toml", "credentials");
@@ -125,7 +125,7 @@ fn windows_and_release_versions_advance_coherently() {
         .expect("release workflow")
         .replace("\r\n", "\n");
     assert!(workflow.contains(
-        "expected=(\"Cargo.lock\" \"Cargo.toml\" \"python/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/gui/app.manifest\" \"windows/package/Package.appxmanifest\" \"windows/package/SPLINED.appinstaller.template\")"
+        "expected=(\"Cargo.lock\" \"Cargo.toml\" \"webgui/backend/splined.py\" \"windows/Cargo.lock\" \"windows/Cargo.toml\" \"windows/gui/app.manifest\" \"windows/package/Package.appxmanifest\" \"windows/package/SPLINED.appinstaller.template\")"
     ));
     assert!(workflow.contains("compatible_versions"));
     assert!(workflow.contains("baseline = max([source_version, *compatible_versions])"));

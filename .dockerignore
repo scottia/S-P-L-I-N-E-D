@@ -1,0 +1,10 @@
+**
+!webgui/
+!webgui/**
+!docker/
+!docker/config.example.toml
+!schema/
+!schema/media.sql
+webgui/tests/
+webgui/**/__pycache__/
+webgui/**/*.pyc
