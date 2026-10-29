@@ -783,6 +783,7 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
             source_track = SimpleNamespace(
                 recording_mbid=RECORDING_ID,
                 artist_mbid=ARTIST_ID,
+                title="Song",
             )
             stat = track_path.stat()
             indexed_rows = [
@@ -829,6 +830,40 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
                     current_album_path=root / "Compilation",
                 )
             self.assertEqual(len(second), 1)
+            self.assertTrue(second[0]["recording_match"])
+
+            with patch.object(
+                policy,
+                "inspect_album_tracks",
+                side_effect=AssertionError("safe title lookup should use the SQL cache"),
+            ):
+                title_match = policy.local_artwork_rows(
+                    core,
+                    root / "config.toml",
+                    {},
+                    SimpleNamespace(
+                        recording_mbid=OTHER_RECORDING_ID,
+                        artist_mbid=ARTIST_ID,
+                        title="Song",
+                    ),
+                    current_album_path=root / "Compilation",
+                )
+            self.assertEqual(len(title_match), 1)
+            self.assertFalse(title_match[0]["recording_match"])
+            self.assertEqual(title_match[0]["album_name"], "Original")
+
+            blocked_variant = policy.local_artwork_rows(
+                core,
+                root / "config.toml",
+                {},
+                SimpleNamespace(
+                    recording_mbid=OTHER_RECORDING_ID,
+                    artist_mbid=ARTIST_ID,
+                    title="Song (Live)",
+                ),
+                current_album_path=root / "Compilation",
+            )
+            self.assertEqual(blocked_variant, [])
 
     def test_manual_local_cache_accepts_multi_artist_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

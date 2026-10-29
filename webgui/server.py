@@ -328,6 +328,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def albums(q: str = "", view: str = "albums"):
         return context.require().catalog.albums(q, view == "fallback")
 
+    @app.get("/api/library/changes")
+    def library_changes():
+        return context.require().index_changes()
+
     @app.get("/api/artist")
     def artist(id: str):
         return context.require().catalog.artist(id)

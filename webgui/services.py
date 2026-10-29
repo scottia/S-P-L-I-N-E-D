@@ -33,6 +33,47 @@ from webgui.catalog import (
 from webgui.runtime import Runtime
 from webgui import imaging
 
+NAME_INVENTORY_PREFIX = "names-v1:"
+TRACK_INVENTORY_PREFIX = "tracks-v1:"
+
+
+def _album_inventory_fingerprint(album, fallback=False):
+    if fallback:
+        return TRACK_INVENTORY_PREFIX + core.album_scan_fingerprint(album)
+    digest = hashlib.sha256()
+    for path in sorted(album.audio_files, key=lambda value: str(value).casefold()):
+        digest.update(path.name.casefold().encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+    return NAME_INVENTORY_PREFIX + digest.hexdigest()
+
+
+def _indexed_album_unchanged(prior, album, fingerprint):
+    if int(prior["track_count"] or 0) != len(album.audio_files):
+        return False
+    representative = sorted(
+        album.audio_files, key=lambda value: str(value).casefold()
+    )[0]
+    try:
+        stat = representative.stat()
+        size = int(stat.st_size)
+        mtime = int(stat.st_mtime_ns)
+    except OSError:
+        size = 0
+        mtime = 0
+    if (
+        str(prior["representative_file"] or "").casefold()
+        != str(representative).casefold()
+        or int(prior["representative_size"] or 0) != size
+        or int(prior["representative_mtime_ns"] or 0) != mtime
+    ):
+        return False
+    saved = str(prior["inventory_fingerprint"] or "")
+    if saved.startswith((NAME_INVENTORY_PREFIX, TRACK_INVENTORY_PREFIX)):
+        return saved == fingerprint
+    if fingerprint.startswith(TRACK_INVENTORY_PREFIX) and saved:
+        return saved == fingerprint.removeprefix(TRACK_INVENTORY_PREFIX)
+    return True
+
 
 def serialized(function):
     @wraps(function)
@@ -127,17 +168,63 @@ class Services:
         db.raw.execute(statement, list(row.values()))
 
     @serialized
-    def refresh_index(self, progress=None, cancelled=None):
+    def index_changes(self, cancelled=None):
         r = self.runtime
         root = r.music
         if not root.is_dir():
             raise ValueError("Set an existing music library in Settings")
+        with closing(r.database.connect()) as db:
+            old = list(
+                db.execute(
+                    "SELECT album_key,path,track_count,inventory_fingerprint,musicbrainz_albumid,representative_file,representative_size,representative_mtime_ns FROM albums"
+                )
+            )
+        old_paths = {str(row["path"]): row for row in old}
         albums, _ = core.inventory(
             root,
             list(r.cfg.get("library", {}).get("ignored_subs", [])),
             str(r.cfg.get("output", {}).get("file_name", "cover")),
             cancelled=cancelled,
         )
+        current_paths = {str(album.path) for album in albums if album.audio_files}
+        added = 0
+        changed = 0
+        examples = []
+        for album in albums:
+            if not album.audio_files:
+                continue
+            path = str(album.path)
+            prior = old_paths.get(path)
+            if prior is None:
+                added += 1
+                if len(examples) < 3:
+                    examples.append(path)
+                continue
+            fingerprint = _album_inventory_fingerprint(
+                album, not str(prior["musicbrainz_albumid"] or "").strip()
+            )
+            if not _indexed_album_unchanged(prior, album, fingerprint):
+                changed += 1
+                if len(examples) < 3:
+                    examples.append(path)
+        removed_paths = sorted(set(old_paths) - current_paths, key=str.casefold)
+        examples.extend(removed_paths[: max(0, 3 - len(examples))])
+        return {
+            "count": added + changed + len(removed_paths),
+            "added": added,
+            "changed": changed,
+            "removed": len(removed_paths),
+            "examples": examples,
+        }
+
+    @serialized
+    def refresh_index(self, progress=None, cancelled=None, mode="full"):
+        r = self.runtime
+        root = r.music
+        if not root.is_dir():
+            raise ValueError("Set an existing music library in Settings")
+        if mode not in {"full", "incremental"}:
+            raise ValueError("Library index mode must be full or incremental")
         with closing(r.database.connect()) as db:
             old = list(
                 db.execute(
@@ -146,14 +233,49 @@ class Services:
             )
         old_keys = {row["album_key"]: row for row in old}
         old_paths = {row["path"]: row for row in old}
-        used = {}
+        albums, _ = core.inventory(
+            root,
+            list(r.cfg.get("library", {}).get("ignored_subs", [])),
+            str(r.cfg.get("output", {}).get("file_name", "cover")),
+            cancelled=cancelled,
+        )
+        for album in albums:
+            if album.audio_files:
+                prior = old_paths.get(str(album.path))
+                fallback = prior is not None and not str(
+                    prior["musicbrainz_albumid"] or ""
+                ).strip()
+                album.inventory_fingerprint = _album_inventory_fingerprint(
+                    album, fallback
+                )
+        current_paths = {
+            str(album.path) for album in albums if album.audio_files
+        }
+        used = (
+            {
+                str(row["album_key"]): str(row["path"])
+                for row in old
+                if str(row["path"]) in current_paths
+            }
+            if mode == "incremental"
+            else {}
+        )
         seen = set()
+        touched_artists = set()
+        changed_albums = 0
         now = tags.utc_now()
         for number, album in enumerate(albums, 1):
             if cancelled and cancelled():
                 raise core.InteractionCancelled()
             if not album.audio_files:
                 continue
+            prior_at_path = old_paths.get(str(album.path))
+            if mode == "incremental" and prior_at_path is not None:
+                if _indexed_album_unchanged(
+                    prior_at_path, album, str(album.inventory_fingerprint or "")
+                ):
+                    seen.add(str(prior_at_path["album_key"]))
+                    continue
             artist, row, _review, _reused = tags.inspect_album(
                 album,
                 root,
@@ -165,8 +287,29 @@ class Services:
             artist["splined_version"] = core.VERSION
             row["splined_version"] = core.VERSION
             row["last_seen_at"] = now
+            if not str(row["musicbrainz_albumid"] or "").strip():
+                album.inventory_fingerprint = _album_inventory_fingerprint(
+                    album, True
+                )
+                row["inventory_fingerprint"] = album.inventory_fingerprint
             seen.add(row["album_key"])
+            changed_albums += 1
+            touched_artists.add(str(artist["artist_key"]))
             with closing(r.database.connect()) as db, db:
+                if (
+                    mode == "incremental"
+                    and prior_at_path is not None
+                    and str(prior_at_path["album_key"]) != str(row["album_key"])
+                ):
+                    touched_artists.add(str(prior_at_path["artist_key"]))
+                    db.execute(
+                        "DELETE FROM tracks WHERE album_key=?",
+                        (prior_at_path["album_key"],),
+                    )
+                    db.execute(
+                        "DELETE FROM albums WHERE album_key=?",
+                        (prior_at_path["album_key"],),
+                    )
                 previous = db.execute(
                     "SELECT 1 FROM artists WHERE artist_key=?", (artist["artist_key"],)
                 ).fetchone()
@@ -184,18 +327,49 @@ class Services:
                 )
         with closing(r.database.connect()) as db, db:
             # Removal happens only after a complete inventory, never after cancellation.
-            db.raw.execute(
-                "DELETE FROM tracks WHERE album_key IN (SELECT album_key FROM albums WHERE last_seen_at<>%s)",
-                (now,),
-            )
-            db.raw.execute("DELETE FROM albums WHERE last_seen_at<>%s", (now,))
+            if mode == "full":
+                stale = list(
+                    db.execute(
+                        "SELECT album_key,artist_key FROM albums WHERE last_seen_at<>?",
+                        (now,),
+                    )
+                )
+            else:
+                stale = [
+                    row for row in old if str(row["path"]) not in current_paths
+                ]
+            for row in stale:
+                touched_artists.add(str(row["artist_key"]))
+                db.execute(
+                    "DELETE FROM tracks WHERE album_key=?", (row["album_key"],)
+                )
+                db.execute(
+                    "DELETE FROM albums WHERE album_key=?", (row["album_key"],)
+                )
             db.raw.execute(
                 "DELETE FROM artists WHERE NOT EXISTS (SELECT 1 FROM albums WHERE albums.artist_key=artists.artist_key)"
             )
-            for artist in db.execute("SELECT artist_key FROM artists"):
+            artists = (
+                list(db.execute("SELECT artist_key FROM artists"))
+                if mode == "full"
+                else [
+                    {"artist_key": artist_key}
+                    for artist_key in touched_artists
+                    if db.execute(
+                        "SELECT 1 FROM artists WHERE artist_key=?", (artist_key,)
+                    ).fetchone()
+                ]
+            )
+            for artist in artists:
                 media.update_artist_aggregate(db, artist["artist_key"])
-        self.audit("index-refresh", str(root), {"albums": len(seen)})
-        return {"albums": len(seen)}
+        result = {
+            "mode": mode,
+            "albums": len(current_paths),
+            "changed_albums": changed_albums,
+            "removed_albums": len(stale),
+        }
+        self.audit("index-refresh", str(root), result)
+        return result
 
     def hydrate_tracks(self, album_id):
         row = self.album_row(album_id)
@@ -249,14 +423,21 @@ class Services:
     def refresh_album(self, album_id, *, source=None):
         row = self.album_row(album_id)
         folder = Path(row["path"])
+        files = self.album_files(row)
+        album = core.AlbumDir(folder, files)
         cover = tags.cover_statistics(
-            core.AlbumDir(folder, self.album_files(row)),
+            album,
             str(self.runtime.cfg.get("output", {}).get("file_name", "cover")),
+        )
+        representative = sorted(files, key=lambda value: str(value).casefold())[0]
+        representative_stat = representative.stat()
+        fingerprint = _album_inventory_fingerprint(
+            album, not str(row["musicbrainz_albumid"] or "").strip()
         )
         now = tags.utc_now()
         with closing(self.runtime.database.connect()) as db, db:
             db.execute(
-                "UPDATE albums SET cover_found=?,cover_path=?,cover_width=?,cover_height=?,artwork_jpeg=?,artwork_png=?,artwork_webp=?,artwork_other=?,updated_at=?,status=CASE WHEN CAST(? AS TEXT) IS NOT NULL THEN 'processed' ELSE status END,processed_at=CASE WHEN CAST(? AS TEXT) IS NOT NULL THEN ? ELSE processed_at END,selected_source=coalesce(?,selected_source) WHERE album_key=?",
+                "UPDATE albums SET cover_found=?,cover_path=?,cover_width=?,cover_height=?,artwork_jpeg=?,artwork_png=?,artwork_webp=?,artwork_other=?,representative_file=?,representative_size=?,representative_mtime_ns=?,track_count=?,inventory_fingerprint=?,updated_at=?,status=CASE WHEN CAST(? AS TEXT) IS NOT NULL THEN 'processed' ELSE status END,processed_at=CASE WHEN CAST(? AS TEXT) IS NOT NULL THEN ? ELSE processed_at END,selected_source=coalesce(?,selected_source) WHERE album_key=?",
                 (
                     int(cover["cover_found"]),
                     str(cover["cover_path"]),
@@ -266,6 +447,11 @@ class Services:
                     int(cover["artwork"]["PNG"]),
                     int(cover["artwork"]["WEBP"]),
                     int(cover["artwork"]["OTHER"]),
+                    str(representative),
+                    int(representative_stat.st_size),
+                    int(representative_stat.st_mtime_ns),
+                    len(files),
+                    fingerprint,
                     now,
                     source,
                     source,
@@ -274,6 +460,19 @@ class Services:
                     album_id,
                 ),
             )
+            for path in files:
+                stat = path.stat()
+                db.execute(
+                    "UPDATE tracks SET file_size=?,file_mtime_ns=?,updated_at=? "
+                    "WHERE album_key=? AND path=?",
+                    (
+                        int(stat.st_size),
+                        int(stat.st_mtime_ns),
+                        now,
+                        album_id,
+                        str(path),
+                    ),
+                )
             media.update_artist_aggregate(db, row["artist_key"])
 
     def preview(self, payload):

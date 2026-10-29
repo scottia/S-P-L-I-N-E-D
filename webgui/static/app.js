@@ -21,7 +21,7 @@ const state = {
   libraryLoading: false,
 };
 const scrollPositions = new Map(), scrollSurfaceKeys = new Map(), restoringScroll = new Set();
-const SCROLL_SURFACES = ["artistList", "hero", "albumGrid", "findView"];
+const SCROLL_SURFACES = ["artistList", "overviewContent", "albumGrid", "findView"];
 function rememberScroll(id) {
   const element = $(id), key = scrollSurfaceKeys.get(id);
   if (!key || restoringScroll.has(id) || !element.getClientRects().length) return;
@@ -394,14 +394,15 @@ function renderArtistBiography(artist, metadata) {
     state.biographyArtistId = artistId;
     state.biographyExpanded = false;
   }
-  state.biographyText = !artist ? "" : metadata?.biography || "No Navidrome biography available for " + artist.name + ".";
+  state.biographyText = !artist ? "" : metadata?.biography || "No Artist biography available for " + artist.name + ".";
   $("biographyText").textContent = state.biographyText;
   requestAnimationFrame(updateBiographyToggle);
 }
 function renderHero() {
   const context = state.editorMode === "fallback" ? (state.album ? "fallback:" + state.album.id : "")
+    : state.editorMode === "album" && state.album ? "album:" + state.album.id
     : state.artist ? "artist:" + state.artist.id : "";
-  renderWithScrollMemory(["hero", "albumGrid", "findView"], context, renderHeroContents);
+  renderWithScrollMemory(["overviewContent", "albumGrid", "findView"], context, renderHeroContents);
 }
 function renderHeroContents() {
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
@@ -418,7 +419,8 @@ function renderHeroContents() {
   $("overviewArtist").textContent = artist?.name || "";
   $("artistSummary").textContent = artist ? artist.albums.length + " albums · " + (artist.status || "indexed") : "Browse your music library to begin.";
   renderArtistBiography(artist, metadata);
-  $("similarSource").textContent = metadata?.similar?.length ? "· Navidrome" : "· sample layout";
+  $("similarSource").textContent = metadata?.similar?.length ? "· Navidrome"
+    : metadata?.source && metadata.source !== "sample" ? "· " + metadata.source : "· sample layout";
   const similar = $("similarArtists"); clear(similar);
   const names = !artist ? [] : metadata?.similar?.length ? metadata.similar : state.artists.filter(item => item.id !== artist.id).slice(0, 6).map(item => item.name);
   for (const name of names) {
@@ -606,7 +608,11 @@ function openArtistCompReport(albumId = "") {
   if (albumId) state.compCollapsed.delete(albumId);
   state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();
   const report = $("fallbackReport");
-  $("hero").scrollTop = Math.max(0, report.offsetTop - $("hero").offsetTop - 12);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (!state.compReportVisible) return;
+    const viewport = $("overviewContent");
+    viewport.scrollTop += report.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12;
+  }));
   setStatus(`COMP report ready · ${state.compGroups.length} albums · ${state.compGroups.reduce((count, group) => count + group.tracks.length, 0)} matching tracks`);
   probeArtistCompStatuses();
 }
@@ -925,7 +931,7 @@ function renderWorkspace() {
   $("review").hidden = state.workspace === "embed";
   document.querySelector(".workspace").classList.toggle("embed-active", state.workspace === "embed");
   renderPanes(); renderReview();
-  requestAnimationFrame(updateBiographyToggle);
+  requestAnimationFrame(() => { fitReviewToViewport(); updateBiographyToggle(); });
   restoreScroll(SCROLL_SURFACES);
 }
 function renderAll() {
@@ -1147,7 +1153,7 @@ $("upscaleButton").addEventListener("click", async () => {
 });
 $("embedBatchButton").addEventListener("click", () => runAction(stageAlbum));
 $("removeAllStaged").addEventListener("click", () => runAction(() => queueAction("clear")));
-$("collapseLibrary").addEventListener("click", () => { const collapsed = document.querySelector(".workspace").classList.toggle("library-collapsed"); $("collapseLibrary").textContent = collapsed ? "+" : "−"; $("collapseLibrary").title = collapsed ? "Expand Media Library" : "Collapse Media Library"; });
+$("collapseLibrary").addEventListener("click", () => { const collapsed = document.querySelector(".workspace").classList.toggle("library-collapsed"); $("collapseLibrary").textContent = collapsed ? "+" : "−"; $("collapseLibrary").title = collapsed ? "Expand Media Library" : "Collapse Media Library"; fitReviewToViewport(); });
 for (const [buttonId, panelId, otherId] of [["mediaFilterToggle", "mediaFilter", "candidateFilter"], ["candidateFilterToggle", "candidateFilter", "mediaFilter"]]) {
   $(buttonId).addEventListener("click", () => { const open = $(panelId).hidden; $(panelId).hidden = !open; $(otherId).hidden = true; for (const [id, panel] of [["mediaFilterToggle", "mediaFilter"], ["candidateFilterToggle", "candidateFilter"]]) { const active = !$(panel).hidden; $(id).classList.toggle("active", active); $(id).setAttribute("aria-expanded", String(active)); $(id).querySelector("b").textContent = active ? "−" : "+"; } });
 }
@@ -1226,6 +1232,19 @@ function setDockSize(value) {
   workspaceElement.style.setProperty("--dock-height", value + "px");
   workspaceElement.style.setProperty("--candidate-card-width", clamp(Math.round(value * 0.69), 114, 240) + "px");
 }
+function availablePaneWidth() {
+  const style = getComputedStyle(workspaceElement);
+  return workspaceElement.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2 * parseFloat(style.columnGap);
+}
+function reviewWidthLimits() {
+  return [250, availablePaneWidth() - $("libraryBody").parentElement.getBoundingClientRect().width - 380];
+}
+function fitReviewToViewport() {
+  if (window.innerWidth <= 800 || workspaceElement.classList.contains("embed-active")) return;
+  const width = $("review").getBoundingClientRect().width;
+  const fitted = clamp(width, ...reviewWidthLimits());
+  if (Math.abs(fitted - width) > 0.5) workspaceElement.style.setProperty("--review-width", fitted + "px");
+}
 function saveLayout() {
   try {
     const previous = JSON.parse(localStorage.getItem(layoutStorageKey) || "{}") || {};
@@ -1240,8 +1259,8 @@ function restoreLayout() {
   try {
     const values = JSON.parse(localStorage.getItem(layoutStorageKey) || "null");
     if (!values || typeof values !== "object") return;
-    if (Number.isFinite(values.library)) workspaceElement.style.setProperty("--library-width", clamp(values.library, 200, 480) + "px");
-    if (Number.isFinite(values.review)) workspaceElement.style.setProperty("--review-width", clamp(values.review, 250, 700) + "px");
+    if (Number.isFinite(values.library)) workspaceElement.style.setProperty("--library-width", clamp(values.library, 200, Math.min(480, availablePaneWidth() - 250 - 380)) + "px");
+    if (Number.isFinite(values.review)) workspaceElement.style.setProperty("--review-width", clamp(values.review, ...reviewWidthLimits()) + "px");
     if (Number.isFinite(values.candidates)) setDockSize(clamp(values.candidates, 160, Math.min(620, workspaceElement.clientHeight - 280)));
   } catch { /* Ignore invalid or unavailable saved layout. */ }
 }
@@ -1273,16 +1292,17 @@ function installSplitter(id, axis, direction, measure, limit, apply) {
 restoreLayout();
 installSplitter("librarySplitter", "x", 1,
   () => $("libraryBody").parentElement.getBoundingClientRect().width,
-  () => [200, Math.min(480, workspaceElement.clientWidth - $("review").getBoundingClientRect().width - 380)],
+  () => [200, Math.min(480, availablePaneWidth() - $("review").getBoundingClientRect().width - 380)],
   value => workspaceElement.style.setProperty("--library-width", value + "px"));
 installSplitter("reviewSplitter", "x", -1,
   () => $("review").getBoundingClientRect().width,
-  () => [250, Math.min(700, workspaceElement.clientWidth - $("libraryBody").parentElement.getBoundingClientRect().width - 380)],
+  reviewWidthLimits,
   value => workspaceElement.style.setProperty("--review-width", value + "px"));
 installSplitter("candidateSplitter", "y", -1,
   () => $("candidateDock").getBoundingClientRect().height,
   () => [160, Math.min(620, workspaceElement.clientHeight - 280)],
   setDockSize);
+window.addEventListener("resize", () => requestAnimationFrame(fitReviewToViewport));
 $("candidateGrid").addEventListener("wheel", event => {
   if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
   $("candidateGrid").scrollLeft += event.deltaY;

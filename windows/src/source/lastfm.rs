@@ -47,7 +47,19 @@ struct ArtistResponse {
 struct Artist {
     name: String,
     #[serde(default)]
+    url: String,
+    #[serde(default)]
+    bio: Option<ArtistBio>,
+    #[serde(default)]
     image: Vec<AlbumImage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistBio {
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +93,13 @@ pub struct LastFmAuthorization {
 pub struct LastFmSessionIdentity {
     pub username: String,
     pub subscriber: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastFmArtistProfile {
+    pub name: String,
+    pub biography: String,
+    pub external_url: String,
 }
 
 pub struct LastFm {
@@ -347,39 +366,48 @@ impl LastFm {
         references
     }
 
-    pub async fn discover_artist(&self, artist: &str) -> Result<Vec<ArtworkReference>, String> {
+    async fn request_artist(
+        &self,
+        artist: &str,
+        musicbrainz_id: &str,
+    ) -> Result<Option<Artist>, String> {
         let artist = artist.trim();
-        if artist.is_empty() {
-            return Ok(Vec::new());
+        let musicbrainz_id = musicbrainz_id.trim();
+        if artist.is_empty() && musicbrainz_id.is_empty() {
+            return Ok(None);
         }
         let api_key = self.api_key()?;
+        let mut query = vec![
+            ("method", "artist.getinfo"),
+            ("api_key", api_key.as_str()),
+            ("format", "json"),
+            ("autocorrect", "1"),
+        ];
+        if musicbrainz_id.is_empty() {
+            query.push(("artist", artist));
+        } else {
+            query.push(("mbid", musicbrainz_id));
+        }
         let response = self
             .client
             .get(API_URL)
-            .query(&[
-                ("method", "artist.getinfo"),
-                ("api_key", api_key.as_str()),
-                ("format", "json"),
-                ("autocorrect", "1"),
-                ("artist", artist),
-            ])
+            .query(&query)
             .send()
             .await
-            .map_err(|error| format!("Unable to query Last.fm Artist Art for {artist}: {error}"))?;
+            .map_err(|error| format!("Unable to query Last.fm Artist profile: {error}"))?;
         let status = response.status();
         let final_url = response.url().clone();
         let body = response.text().await.map_err(|error| {
-            format!("Unable to read Last.fm Artist Art from {final_url}: {error}")
+            format!("Unable to read Last.fm Artist profile from {final_url}: {error}")
         })?;
-        let payload = serde_json::from_str::<ArtistResponse>(&body).map_err(|error| {
-            format!("Invalid Last.fm Artist Art JSON from {final_url}: {error}")
-        })?;
+        let payload = serde_json::from_str::<ArtistResponse>(&body)
+            .map_err(|error| format!("Invalid Last.fm Artist profile JSON: {error}"))?;
         if let Some(code) = payload.error {
             if code == 6 || code == 7 {
-                return Ok(Vec::new());
+                return Ok(None);
             }
             return Err(format!(
-                "Last.fm Artist Art lookup failed with API error {code}: {}",
+                "Last.fm Artist profile lookup failed with API error {code}: {}",
                 payload
                     .message
                     .unwrap_or_else(|| "unknown error".to_string())
@@ -387,10 +415,46 @@ impl LastFm {
         }
         if status != StatusCode::OK {
             return Err(format!(
-                "Last.fm Artist Art lookup returned HTTP {status} from {final_url}"
+                "Last.fm Artist profile lookup returned HTTP {status} from {final_url}"
             ));
         }
-        let Some(found) = payload.artist else {
+        Ok(payload.artist)
+    }
+
+    pub async fn artist_profile(
+        &self,
+        artist: &str,
+        musicbrainz_id: &str,
+    ) -> Result<Option<LastFmArtistProfile>, String> {
+        Ok(self
+            .request_artist(artist, musicbrainz_id)
+            .await?
+            .map(|found| {
+                let biography = found
+                    .bio
+                    .map(|bio| {
+                        let content = plain_lastfm_text(&bio.content);
+                        if content.is_empty() {
+                            plain_lastfm_text(&bio.summary)
+                        } else {
+                            content
+                        }
+                    })
+                    .unwrap_or_default();
+                LastFmArtistProfile {
+                    name: found.name,
+                    biography,
+                    external_url: found.url,
+                }
+            }))
+    }
+
+    pub async fn discover_artist(&self, artist: &str) -> Result<Vec<ArtworkReference>, String> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(found) = self.request_artist(artist, "").await? else {
             return Ok(Vec::new());
         };
         let mut seen = HashSet::new();
@@ -475,6 +539,30 @@ impl LastFm {
 
         Ok(Vec::new())
     }
+}
+
+fn plain_lastfm_text(value: &str) -> String {
+    let mut text = String::with_capacity(value.len());
+    let mut in_tag = false;
+    for character in value.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(character),
+            _ => {}
+        }
+    }
+    let text = text
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">");
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 impl ArtworkProvider for LastFm {
@@ -673,6 +761,14 @@ mod tests {
     fn matching_ignores_case_space_and_punctuation() {
         assert!(same_text("Bruno Mars", "BRUNO MARS"));
         assert!(same_text("AC/DC", "ACDC"));
+    }
+
+    #[test]
+    fn artist_biography_is_plain_text() {
+        assert_eq!(
+            plain_lastfm_text("Southern &amp; classic rock. <a href=\"x\">Read more</a>"),
+            "Southern & classic rock. Read more"
+        );
     }
 
     #[test]

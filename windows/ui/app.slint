@@ -248,24 +248,35 @@ component OperationStatusBanner inherits Rectangle {
     in property <string> intensity: "Full";
     in property <string> bar-size: "Small";
     in property <bool> middle-position: false;
-    height: root.middle-position ? (root.bar-size == "Large" ? 88px : (root.bar-size == "Medium" ? 76px : 64px)) : (root.bar-size == "Large" ? 68px : (root.bar-size == "Medium" ? 56px : 44px));
+    in property <bool> header-aligned: false;
+    in property <bool> active: false;
+    private property <int> activity-phase: 0;
+    private property <color> status-color: root.active ? AppTheme.yellow : (root.tone == "red" ? AppTheme.danger : (root.tone == "orange" ? #ff9b2f : (root.tone == "green" ? AppTheme.green : (root.tone == "violet" ? AppTheme.violet : (root.tone == "magenta" ? AppTheme.magenta : AppTheme.cyan)))));
+    height: root.header-aligned ? 54px : (root.middle-position ? (root.bar-size == "Large" ? 88px : (root.bar-size == "Medium" ? 76px : 64px)) : (root.bar-size == "Large" ? 68px : (root.bar-size == "Medium" ? 56px : 44px)));
     border-radius: 8px;
-    background: root.intensity == "Off" ? AppTheme.header-background : (root.intensity == "Aggressive" ? (AppTheme.chalk ? #354444 : (AppTheme.light ? #90b4c2 : #123b55)) : (AppTheme.chalk ? AppTheme.quiet-surface : (AppTheme.light ? #c5d7db : #06172dee)));
+    clip: true;
+    background: root.intensity == "Off" ? AppTheme.header-background : (root.active ? (AppTheme.chalk ? #574728 : (AppTheme.light ? #e4cc77 : #4a3608)) : (root.intensity == "Aggressive" ? (AppTheme.chalk ? #354444 : (AppTheme.light ? #90b4c2 : #123b55)) : (AppTheme.chalk ? AppTheme.quiet-surface : (AppTheme.light ? #c5d7db : #06172dee))));
     border-width: root.intensity == "Off" ? 0px : (root.intensity == "Mild" ? 1px : (root.intensity == "Aggressive" ? 3px : 2px));
-    border-color: root.tone == "red" ? AppTheme.danger : (root.tone == "orange" ? #ff9b2f : (root.tone == "green" ? AppTheme.green : (root.tone == "violet" ? AppTheme.violet : (root.tone == "magenta" ? AppTheme.magenta : AppTheme.cyan))));
+    border-color: root.status-color;
+    activity-clock := Timer {
+        interval: 70ms;
+        running: root.active && root.intensity != "Off";
+        triggered => { root.activity-phase = Math.mod(root.activity-phase + 4, 136); }
+    }
+    if root.active && root.intensity != "Off": Rectangle {
+        x: -self.width + (parent.width + self.width) * root.activity-phase / 136;
+        width: max(120px, parent.width / 3);
+        height: parent.height;
+        background: AppTheme.light ? @linear-gradient(90deg, #fff1a000, #fff1a0a8, #fff1a000) : @linear-gradient(90deg, #ffd16b00, #ffd16b78, #ffd16b00);
+    }
     Text {
-        x: 12px; y: 3px; width: parent.width - 24px; height: parent.height - (root.intensity == "Off" ? 6px : 15px);
+        x: 12px; width: parent.width - 24px; height: parent.height;
         text: root.status;
-        color: root.intensity == "Off" ? AppTheme.foreground : parent.border-color;
+        // The message has no fill of its own: the themed activity bar remains
+        // visible behind the glyphs, like the WebGUI status treatment.
+        color: root.active ? AppTheme.foreground : (root.intensity == "Off" ? AppTheme.foreground : parent.border-color);
         font-size: root.middle-position ? (root.bar-size == "Large" ? 24px : (root.bar-size == "Medium" ? 21px : 18px)) : (root.bar-size == "Large" ? 20px : (root.bar-size == "Medium" ? 17px : 15px)); font-weight: 800;
         horizontal-alignment: center; vertical-alignment: center; overflow: elide;
-    }
-    if root.intensity != "Off": Rectangle {
-        x: 10px; y: parent.height - (root.intensity == "Aggressive" ? 14px : (root.intensity == "Mild" ? 8px : 12px));
-        width: parent.width - 20px;
-        height: root.intensity == "Aggressive" ? 10px : (root.intensity == "Mild" ? 3px : 7px);
-        border-radius: 4px;
-        background: root.intensity == "Mild" ? @linear-gradient(90deg, #2c7686, #675593, #934e7d, #9c8338, #468465) : @linear-gradient(90deg, AppTheme.cyan, AppTheme.violet, AppTheme.magenta, AppTheme.yellow, AppTheme.green);
     }
 }
 component WorkspaceButton inherits Rectangle {
@@ -1372,6 +1383,8 @@ export component AppWindow inherits Window {
     in-out property <length> library-scroll-y: 0px;
     in-out property <string> overview-scroll-key;
     in-out property <length> overview-scroll-y: 0px;
+    in-out property <string> musicbrainz-scroll-key;
+    in-out property <length> musicbrainz-scroll-y: 0px;
     in property <string> media-status-scope-label: "Artists";
     in property <string> database-label;
     in property <string> current-artist;
@@ -1790,18 +1803,30 @@ export component AppWindow inherits Window {
         if (root.appearance-mode == "Dark" || root.appearance-mode == "Chalk") { Palette.color-scheme = ColorScheme.dark; }
     }
     changed artist-overview-name => { root.artist-biography-expanded = false; root.artist-edit-visible = false; }
-    property <bool> operation-visible: root.operation-busy || root.artist-overview-loading || root.running || root.awaiting-candidate || root.awaiting-musicbrainz || root.artist-overview-compilation-index >= 0 || root.compilation-track-rows.length > 0 || root.compilation-report-visible;
-
+    property <bool> operation-active: root.operation-busy || root.artist-overview-loading || root.running || root.awaiting-candidate || root.awaiting-musicbrainz || root.artist-overview-compilation-index >= 0;
+    property <bool> operation-visible: root.operation-active || root.compilation-track-rows.length > 0 || root.compilation-report-visible;
     main-layout := VerticalLayout {
         width: root.width; height: root.height;
         min-height: root.viewport-height * 1px;
         max-height: root.viewport-height * 1px;
-        padding: 8px; spacing: 7px;
+        padding-left: 8px; padding-right: 8px; padding-top: 17px; padding-bottom: 8px; spacing: 2px;
         Rectangle {
-            height: root.status-bar-position == "Top" && root.operation-visible ? (root.status-bar-size == "Large" ? 84px : (root.status-bar-size == "Medium" ? 72px : 62px)) : 62px; background: AppTheme.header-background; border-color: AppTheme.border; border-width: 1px; border-radius: 9px; clip: true;
+            // The top workspace never changes height when status appears.
+            // Brand, frame, and status share one fixed 54px geometry.
+            height: 54px;
+            background: transparent;
+            clip: true;
+            Rectangle {
+                width: parent.width;
+                height: 54px;
+                background: AppTheme.header-background;
+                border-color: AppTheme.border;
+                border-width: 1px;
+                border-radius: 9px;
+            }
             HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 12px;
                 BrandMark { compact: true; width: 300px; }
-                if root.operation-visible && root.status-bar-position == "Top": OperationStatusBanner { horizontal-stretch: 1; status: root.operation-status; tone: root.operation-tone; intensity: root.status-bar-intensity; bar-size: root.status-bar-size; }
+                if root.operation-visible && root.status-bar-position == "Top": OperationStatusBanner { horizontal-stretch: 1; status: root.operation-status; tone: root.operation-tone; intensity: root.status-bar-intensity; bar-size: root.status-bar-size; header-aligned: true; active: root.operation-active; }
                 if !root.operation-visible || root.status-bar-position != "Top": Rectangle { horizontal-stretch: 1; background: transparent; }
                 if root.page-index == 1 || root.page-index == 2 || root.page-index == 4: HeaderAction { label: "⌂  Home"; width: 88px; enabled: !root.setup-required; clicked => { root.help-menu-visible = false; root.theme-menu-visible = false; root.page-index = 0; root.workspace-mode = 0; } }
                 HeaderAction { label: "🎬 Theme ▾"; width: 112px; emphasized: root.theme-menu-visible; clicked => { root.help-menu-visible = false; root.theme-menu-visible = !root.theme-menu-visible; } }
@@ -1840,7 +1865,7 @@ export component AppWindow inherits Window {
                 PathSettingField { label: "Media Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC music directory"; browse => root.browse-setting-directory("music"); }
                 PathSettingField { label: "Scan Library (optional)"; value <=> root.settings-scan-library; hint: "Defaults to Media Library when blank"; browse => root.browse-setting-directory("scan"); }
                 PathSettingField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Directory that owns splined.db"; browse => root.browse-setting-directory("database"); }
-                PathSettingField { label: "V/A / OST Artist images database *"; value <=> root.settings-shared-artist-art-dir; hint: "Persistent per-artist images for shared album folders"; browse => root.browse-setting-directory("artist-art"); }
+                PathSettingField { label: "V/A / OST Artist Images Directory *"; value <=> root.settings-shared-artist-art-dir; hint: "Materialized portrait/banner files for artists in shared album folders"; browse => root.browse-setting-directory("artist-art"); }
                 PathSettingField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; browse => root.browse-setting-directory("temporary"); }
                 PathSettingField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; browse => root.browse-setting-directory("logs"); }
                 PathSettingField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
@@ -1866,7 +1891,7 @@ export component AppWindow inherits Window {
             border-width: 1px; border-color: AppTheme.yellow; border-radius: 7px;
             HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 12px;
                 Text { text: root.new-media-warning-text; color: AppTheme.yellow; font-size: 15px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                NeonAction { width: 238px; height: 34px; label: root.media-refresh-running ? "Refreshing Music Library…" : "Refresh Music Library Now"; tone: "yellow"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => root.refresh-library(true); }
+                NeonAction { width: 238px; height: 34px; label: root.media-refresh-running ? "Applying Library Changes…" : "Apply Library Changes"; tone: "yellow"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => root.refresh-library(false); }
             }
         }
         workspace-page := Rectangle {
@@ -1967,6 +1992,7 @@ export component AppWindow inherits Window {
                                 }
                                 musicbrainz-page-scroll := ScrollView {
                                     vertical-stretch: 1;
+                                    content-y <=> root.musicbrainz-scroll-y;
                                     content-width: self.visible-width;
                                     content-height: max(self.visible-height, musicbrainz-page-panel.height);
                                     musicbrainz-page-panel := NeonPanel {
@@ -2237,11 +2263,11 @@ export component AppWindow inherits Window {
                                                     }
                                                     if root.overview-mode != "Fallback" && root.artist-edit-visible: Rectangle { height: 151px; background: AppTheme.card; border-color: #f5a5c4; border-width: 1px; border-radius: 6px;
                                                         VerticalLayout { padding: 8px; spacing: 5px;
-                                                            Text { text: "Artist match preview · " + root.artist-overview-name + " (from album tags). Adjust the Navidrome lookup only; music files are unchanged."; color: #f5a5c4; font-size: 13px; overflow: elide; }
+                                                            Text { text: "Artist match · " + root.artist-overview-name + " (from album tags). Match MusicBrainz identity and save the Artist Overview profile; music files are unchanged."; color: #f5a5c4; font-size: 13px; overflow: elide; }
                                                             Text { text: root.artist-edit-album-hint; color: AppTheme.cyan; font-size: 12px; overflow: elide; }
                                                             HorizontalLayout { height: 30px; spacing: 8px;
                                                                 Text { text: "Lookup name"; width: 110px; color: AppTheme.foreground; vertical-alignment: center; }
-                                                                LineEdit { text <=> root.artist-edit-name; horizontal-stretch: 1; placeholder-text: "Artist name in Navidrome"; }
+                                                                LineEdit { text <=> root.artist-edit-name; horizontal-stretch: 1; placeholder-text: "Artist name to match"; }
                                                             }
                                                             HorizontalLayout { height: 30px; spacing: 8px;
                                                                 Text { text: "Artist ID"; width: 110px; color: AppTheme.foreground; vertical-alignment: center; }
@@ -2249,7 +2275,7 @@ export component AppWindow inherits Window {
                                                             }
                                                             HorizontalLayout { height: 28px; alignment: end; spacing: 8px;
                                                                 Button { text: "Cancel"; clicked => { root.artist-edit-visible = false; } }
-                                                                Button { text: "Save & Refresh"; clicked => { root.save-artist-lookup(root.artist-edit-name, root.artist-edit-id); root.artist-edit-visible = false; } }
+                                                                Button { text: "Match & Save"; clicked => { root.save-artist-lookup(root.artist-edit-name, root.artist-edit-id); root.artist-edit-visible = false; } }
                                                             }
                                                         }
                                                     }
@@ -2808,10 +2834,7 @@ export component AppWindow inherits Window {
                                         enabled: !root.operation-busy && !root.intro-active && !root.compilation-report-preview-mode && (!root.artist-artwork-mode || root.workspace-mode == 2) && (root.selected-artwork-write-ready || (root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback"));
                                         clicked => {
                                             if (root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback") { root.browse-artist-artwork(); root.workspace-mode = 2; }
-                                            else if (root.artist-artwork-mode) {
-                                                if (root.confirmation-messages-disabled) { root.write-artist-artwork(); }
-                                                else { root.confirm-artist-art-write = true; }
-                                            }
+                                            else if (root.artist-artwork-mode) { root.write-artist-artwork(); }
                                             else if (root.selected-artwork-is-sample) {
                                                 if (root.confirmation-messages-disabled) {
                                                     if (root.awaiting-candidate) { root.candidate-action("write"); }
@@ -2993,7 +3016,7 @@ export component AppWindow inherits Window {
                                     Text { text: "Library Index"; color: AppTheme.foreground; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
                                     NeonAction { width: 128px; height: 32px; label: "Refresh DB"; tone: "yellow"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => root.refresh-library(true); }
                                 }
-                                SettingsHelpTip { summary: "What does Refresh DB do?"; detail: "Find audio-containing folders, read one representative track's tags per new or changed album, and update the shared library index. It does not modify music files. The other SPLINED client must close the shared database first."; }
+                                SettingsHelpTip { summary: "What does Refresh DB do?"; detail: "Perform a deliberate full SQLite index rebuild. One representative track defines each normal Album; unchanged tag evidence is reused and full tags are read for changed COMP/Fallback tracks. The yellow Home notice uses a separate added/changed/removed incremental update. Neither action inspects embedded art or modifies music files. Another Windows client must close the shared database first."; }
                                 PathSettingField { label: "Temporary Cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
                                 PathSettingField { label: "Log Directory *"; value <=> root.settings-log-dir; hint: "Diagnostics"; browse => root.browse-setting-directory("logs"); }
                                 PathSettingField { label: "Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
@@ -3011,7 +3034,7 @@ export component AppWindow inherits Window {
                                     Text { text: "SQLite .db + journal"; color: AppTheme.foreground; font-size: 14px; horizontal-stretch: 1; vertical-alignment: center; }
                                     Text { text: root.storage-database-usage; color: AppTheme.yellow; font-size: 14px; vertical-alignment: center; }
                                 }
-                                SettingsHelpTip { summary: "What is included in storage usage?"; detail: "Temporary _cache includes disposable candidate and preview files. SQLite shows splined.db and its current journal sidecars. The values refresh while this page is open; cache cleanup removes only stale SPLINED-generated artwork, not the database, saved samples, or Artist images database."; }
+                                SettingsHelpTip { summary: "What is included in storage usage?"; detail: "Temporary _cache includes disposable candidate and preview files. SQLite shows splined.db and its current journal sidecars. The values refresh while this page is open; cache cleanup removes only stale SPLINED-generated artwork, not the database, saved samples, or Artist image files."; }
                                 Rectangle { height: 1px; background: AppTheme.border; }
                                 Heading { text: "Runtime"; height: 27px; color: AppTheme.violet; }
                                 Text { text: root.version-label; color: AppTheme.foreground; font-size: 14px; height: 24px; }
@@ -3057,7 +3080,7 @@ export component AppWindow inherits Window {
                                         SettingsHelpTip { summary: "What must I check before sharing SQLite?"; detail: "Advanced: every client must point to the same database on a share with reliable cross-host locking. Shared mode uses SQLite rollback journaling and a 30-second busy timeout. The extra .client-lock is recommended only when every client participates and can acquire it; otherwise coordinate writes yourself. Read the Shared DB Guide before enabling."; }
                                         NeonAction { label: "Shared DB Guide ↗"; clicked => root.open-about-link("shared-db"); }
                                         Heading { text: "Status Bar"; height: 29px; color: AppTheme.cyan; }
-                                        SettingsHelpTip { summary: "Will Mild or Off improve performance?"; detail: "The colored strip is static, not animated. Mild and Off simplify its appearance but are not expected to materially reduce CPU or memory use."; }
+                                        SettingsHelpTip { summary: "How does the status bar show activity?"; detail: "Active work fills the bar with the theme's yellow activity color and a moving highlight. Ready, success and error messages return to their semantic theme color. The status text has no separate background, so the themed bar remains visible through it. Mild and Off reduce or hide the activity treatment."; }
                                         HorizontalLayout { height: 38px; spacing: 8px;
                                             Label { text: "Intensity"; width: 208px; }
                                             ComboBox { horizontal-stretch: 1; model: ["Aggressive", "Full", "Mild", "Off"]; current-value <=> root.settings-status-bar-intensity; }
@@ -3070,7 +3093,7 @@ export component AppWindow inherits Window {
                                             Label { text: "Size"; width: 208px; }
                                             ComboBox { horizontal-stretch: 1; model: ["Small", "Medium", "Large"]; current-value <=> root.settings-status-bar-size; }
                                         }
-                                        OperationStatusBanner { horizontal-stretch: 1; status: "Artwork Search Ready · Status Preview"; tone: "cyan"; intensity: root.settings-status-bar-intensity; bar-size: root.settings-status-bar-size; middle-position: root.settings-status-bar-position == "Middle"; }
+                                        OperationStatusBanner { horizontal-stretch: 1; status: "Working · Artwork Search Status Preview"; tone: "cyan"; intensity: root.settings-status-bar-intensity; bar-size: root.settings-status-bar-size; middle-position: root.settings-status-bar-position == "Middle"; header-aligned: root.settings-status-bar-position == "Top"; active: true; }
                                         Heading { text: "Reset Operational Settings"; height: 29px; color: AppTheme.danger; }
                                         SettingsHelpTip { summary: "What would Reset / Validate / Save change?"; detail: "This restores output, enhancement, source, scan, logging and history settings to safe defaults. Processing Mode becomes READ. It preserves the database, music, credentials, interface preferences and backup schedules. A timestamped config backup is made first."; }
                                         NeonAction { width: 220px; label: "Reset / Validate / Save"; danger: true; enabled: !root.running; clicked => { root.reset-settings-preview-visible = true; root.reset-settings-confirm-visible = false; root.reset-settings-confirmation-text = ""; } }
@@ -3128,7 +3151,7 @@ export component AppWindow inherits Window {
                                 SettingField { label: "Square Round-To"; value <=> root.settings-square-round-to; hint: "16"; }
                                 SettingField { label: "Embedded Thumbnail Preference"; value <=> root.settings-embedded-thumbnail-size; hint: "1200 px (300–4000)"; }
                                 SettingsHelpTip { summary: "Will the thumbnail preference shrink cover.*?"; detail: "No. The preference sets the square embedded image size for audio tracks; the saved cover.* retains its full resolution. EMBED Batch writes a chosen or upscaled cover.* while staging; track embedding waits for Start All Staged."; }
-                                Heading { text: "V/A / OST Artist images database"; height: 27px; }
+                                Heading { text: "V/A / OST Artist Images Directory"; height: 27px; }
                                 HorizontalLayout { height: 36px; spacing: 7px;
                                     Label { text: "Artist Images Directory"; width: 230px; }
                                     LineEdit { text <=> root.settings-shared-artist-art-dir; placeholder-text: "Persistent Artist Art for shared album folders"; horizontal-stretch: 1; }
@@ -3554,7 +3577,7 @@ export component AppWindow inherits Window {
         width: root.status-bar-position == "Middle" ? min(1500px, root.width - 40px) : min(root.status-bar-size == "Large" ? 1400px : (root.status-bar-size == "Medium" ? 1250px : 1100px), root.width - 40px);
         x: (root.width - self.width) / 2;
         y: root.status-bar-position == "Middle" ? (root.height - self.height) / 2 : root.height - self.height - 12px;
-        status: root.operation-status; tone: root.operation-tone; intensity: root.status-bar-intensity; bar-size: root.status-bar-size; middle-position: root.status-bar-position == "Middle";
+        status: root.operation-status; tone: root.operation-tone; intensity: root.status-bar-intensity; bar-size: root.status-bar-size; middle-position: root.status-bar-position == "Middle"; active: root.operation-active;
     }
 
     if root.theme-menu-visible: Rectangle {

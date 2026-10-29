@@ -689,7 +689,7 @@ pub fn validate_operational_config(config: &Config) -> Result<(), String> {
         ("Music Library", config.library.music_library.as_str()),
         ("SQLite/database directory", config.scan.cache_dir.as_str()),
         (
-            "V/A / OST Artist images database",
+            "V/A / OST Artist Images directory",
             config.scan.shared_artist_art_dir.as_str(),
         ),
         (
@@ -733,7 +733,7 @@ fn create_configured_runtime_directories(config: &Config) -> Result<(), String> 
     let mut directories = vec![
         ("SQLite/database", config.scan.cache_dir.as_str()),
         (
-            "V/A / OST Artist images database",
+            "V/A / OST Artist Images directory",
             config.scan.shared_artist_art_dir.as_str(),
         ),
         ("temporary cache", config.scan.temporary_cache_dir.as_str()),

@@ -26,6 +26,42 @@ The release executable is:
 windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
+### Production-equivalent local MEDIAPC test build
+
+For routine local iterations, close SPLINED and double-click
+`E:\apps\SPLINED\Apply Quick Local Update.cmd`, or run:
+
+```powershell
+.\windows\scripts\Install-LocalTestBuild.ps1 -Quick
+```
+
+Quick mode reuses unchanged optimized Cargo objects, verifies and replaces the
+complete executable, then reopens SPLINED. It does not patch a running process
+or produce a release artifact.
+
+Before repository promotion or Microsoft Store preparation, close SPLINED and
+double-click `E:\apps\SPLINED\Apply Local Test Build.cmd`, or run:
+
+```powershell
+.\windows\scripts\Install-LocalTestBuild.ps1
+```
+
+The production-equivalent path clears the target-specific release output, disables Cargo incremental
+code generation, and uses the same locked optimized build command as the
+GitHub Windows release. It verifies the resulting PE and SHA-256, installs it at
+`E:\apps\SPLINED\splined.exe`, and reopens the app. It does not commit, push,
+tag, run a GitHub workflow, or touch Microsoft Store state. The clean build is
+slower than an incremental compile, but makes the local runtime representative
+of the executable produced by the release workflow. The optimization is
+required because the real 3,884-album library makes an unoptimized Windows UI
+too slow for valid testing. This local executable is not a release candidate.
+
+After the local build is approved, promote the tested source through `dev` and
+`main`. Pull-request validation runs the strict Windows formatting, Clippy, and
+test suite. Workflow 01 then performs a fresh optimized Windows build from the
+versioned `main` source and uses that same release executable for portable and
+Store packaging.
+
 `windows/build.rs` compiles `windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `windows/src`.
 
