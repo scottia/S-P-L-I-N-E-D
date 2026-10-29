@@ -1468,8 +1468,9 @@ export component AppWindow inherits Window {
     in property <bool> artist-artwork-mode: false;
     in property <bool> selected-artwork-artist-overview: false;
     in property <bool> selected-artwork-artist-has-art: false;
+    in property <bool> selected-artwork-has-track-preview: false;
     in property <image> selected-artwork-artist-art;
-    private property <bool> artwork-placeholder-visible: root.intro-active || (root.current-album == "" && !root.selected-artwork-artist-overview && !root.artist-artwork-mode);
+    private property <bool> artwork-placeholder-visible: root.intro-active || (root.current-album == "" && !root.selected-artwork-artist-overview && !root.artist-artwork-mode && !root.selected-artwork-has-track-preview);
     in property <string> log-text;
     in property <string> error-text;
     in property <bool> can-launch;
@@ -2125,7 +2126,9 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                             if root.artist-overview-active: overview-panel := Rectangle {
-                                                property <bool> biography-overflows: root.artist-overview-biography != "" && biography-measure.preferred-height > 110px;
+                                                property <length> biography-line-height: biography-line-measure.preferred-height;
+                                                property <length> biography-collapsed-height: self.biography-line-height * 5;
+                                                property <bool> biography-overflows: root.artist-overview-biography != "" && biography-measure.preferred-height > self.biography-collapsed-height;
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: 10000px; clip: true; border-radius: 8px; background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: 1px;
                                                 Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback"; width: parent.width; height: parent.height; image-fit: cover; opacity: root.artist-banner-preview-active ? 0.18 : 0.46; }
                                                 if root.artist-banner-preview-active: Image {
@@ -2138,6 +2141,8 @@ export component AppWindow inherits Window {
                                                 }
                                                 Image { source: @image-url("../gui/splined-watermark.png"); visible: root.overview-mode == "Fallback"; width: min(parent.width * 0.7, 640px); height: min(parent.height * 0.7, 480px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; image-fit: contain; opacity: 0.16; }
                                                 Rectangle { width: parent.width; height: parent.height; background: AppTheme.chalk ? @linear-gradient(180deg, #7a1b1d1f 0%, #c81b1d1f 64%, #f41b1d1f 100%) : (AppTheme.light ? @linear-gradient(180deg, #7a28343d 0%, #c828343d 64%, #f428343d 100%) : @linear-gradient(180deg, #7a061426 0%, #c8061426 64%, #f4061426 100%)); }
+                                                biography-line-measure := Text { visible: false; text: "Ag"; font-size: 18px; }
+                                                biography-link-measure := Text { visible: false; text: root.artist-biography-expanded ? "(less…)" : "(…more)"; font-size: 18px; }
                                                 biography-measure := Text {
                                                     visible: false; width: max(1px, artist-scroll.visible-width - 152px); height: self.preferred-height;
                                                     text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
@@ -2170,10 +2175,10 @@ export component AppWindow inherits Window {
                                                     padding: 12px; spacing: 8px; max-width: 10000px;
                                                     if root.overview-mode == "Fallback": VerticalLayout { height: root.fallback-overview-help-expanded ? 150px : 96px; spacing: 5px;
                                                         Text { text: "A COMP fallback album has no MusicBrainz Album ID. Its tracks are reviewed and embedded individually; the folder's cover.* is never used as track artwork. Blue tracks need artwork, purple tracks need thumbnail repair, and green tracks are complete. SPLINED validates Recording and Artist IDs, tries exact MusicBrainz releases first, then artist-restricted title matches when identity is missing or invalid. Choose a track below to review candidates, or LAUNCH COMP to process pending tracks in sequence."; color: AppTheme.foreground; font-size: 14px; wrap: word-wrap; overflow: elide; height: root.fallback-overview-help-expanded ? 118px : 69px; }
-                                                        Text { text: root.fallback-overview-help-expanded ? "(less…)" : "(…more)"; color: AppTheme.yellow; font-size: 14px; font-weight: 800; horizontal-alignment: right; height: 20px; TouchArea { mouse-cursor: pointer; clicked => { root.fallback-overview-help-expanded = !root.fallback-overview-help-expanded; } } }
+                                                        Text { text: root.fallback-overview-help-expanded ? "(less…)" : "(…more)"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; horizontal-alignment: right; height: 20px; TouchArea { mouse-cursor: pointer; clicked => { root.fallback-overview-help-expanded = !root.fallback-overview-help-expanded; } } }
                                                     }
                                                     if root.overview-mode != "Fallback": HorizontalLayout {
-                                                        height: root.artist-biography-expanded && overview-panel.biography-overflows ? max(145px, biography-measure.preferred-height + 41px) : 145px;
+                                                        height: max(145px, biography-area.height + 35px);
                                                         vertical-stretch: 0; spacing: 12px; max-width: 10000px;
                                                         Rectangle { width: root.overview-mode == "Album" ? 116px : 104px; height: 108px; background: transparent;
                                                             Rectangle { x: root.overview-mode == "Album" ? 8px : 0px; width: 104px; height: 104px; border-radius: 52px; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
@@ -2197,19 +2202,24 @@ export component AppWindow inherits Window {
                                                                 }
                                                             }
                                                             biography-area := Rectangle {
-                                                                height: root.artist-biography-expanded && overview-panel.biography-overflows ? biography-measure.preferred-height + 6px : 110px;
+                                                                height: root.artist-biography-expanded && overview-panel.biography-overflows ? biography-render-measure.preferred-height : overview-panel.biography-collapsed-height;
                                                                 horizontal-stretch: 1; background: transparent;
-                                                                Text {
-                                                                    width: parent.width; height: parent.height;
+                                                                biography-render-measure := Text {
+                                                                    visible: false; width: biography-copy.width;
+                                                                    text: biography-copy.text; font-size: 18px; wrap: word-wrap;
+                                                                }
+                                                                biography-copy := Text {
+                                                                    // Reserve the link's width so the final line never runs underneath it.
+                                                                    width: max(1px, parent.width - (overview-panel.biography-overflows ? biography-link-measure.preferred-width + 6px : 0px)); height: parent.height;
                                                                     text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
                                                                     color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
                                                                     font-size: 18px; wrap: word-wrap; overflow: root.artist-biography-expanded ? clip : elide;
                                                                 }
                                                                 if overview-panel.biography-overflows: Rectangle {
-                                                                    x: max(0px, parent.width - 104px); y: max(0px, parent.height - 27px); width: 104px; height: 27px;
-                                                                    background: AppTheme.quiet-surface; opacity: 0.92;
-                                                                    Text { text: root.artist-biography-expanded ? "(less…)" : "… (…more)"; color: AppTheme.yellow; font-size: 17px; font-weight: 800; horizontal-alignment: right; vertical-alignment: center; }
-                                                                    TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
+                                                                    x: max(0px, parent.width - self.width); y: max(0px, parent.height - self.height); width: biography-link-measure.preferred-width; height: overview-panel.biography-line-height;
+                                                                    background: transparent;
+                                                                    Text { text: biography-link-measure.text; color: AppTheme.cyan; font-size: 18px; }
+                                                                    biography-toggle := TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
                                                                 }
                                                             }
                                                         }

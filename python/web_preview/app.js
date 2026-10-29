@@ -3,6 +3,7 @@
 const $ = id => document.getElementById(id);
 const state = {
   artists: [], albumsIndex: [], artist: null, artistMetadata: null, album: null,
+  biographyArtistId: null, biographyExpanded: false, biographyText: "",
   libraryMode: "artists", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null,
   upscalePreview: null,
@@ -316,6 +317,43 @@ function renderAlbumStatusKey(albums, artist) {
   host.append(columns, node("p", "album-key-note", "Counts use this test index. Embedded thumbnail size validation and Featured credit classification are not indexed here."));
 }
 
+function updateBiographyToggle() {
+  const biography = $("artistBiography"), text = $("biographyText"), toggle = $("biographyToggle");
+  if (!biography.clientWidth) return;
+  const lineHeight = parseFloat(getComputedStyle(biography).lineHeight);
+  const maximumHeight = lineHeight * 5 + 1;
+  text.textContent = state.biographyText;
+  toggle.hidden = true;
+  const overflows = biography.getBoundingClientRect().height > maximumHeight;
+  toggle.hidden = !overflows;
+  toggle.textContent = state.biographyExpanded ? "(less…)" : "(…more)";
+  toggle.setAttribute("aria-expanded", String(state.biographyExpanded));
+  if (!overflows) return;
+  if (state.biographyExpanded) { text.textContent += " "; return; }
+
+  // Fit the inline link with the text, including its width, within five lines.
+  // Whole-word prefixes preserve readable endings and never cover biography text.
+  const characters = Array.from(state.biographyText);
+  const prefix = count => characters.slice(0, count).join("").replace(/\s+\S*$/, "").trimEnd();
+  let low = 0, high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    text.textContent = prefix(middle) + " ";
+    if (biography.getBoundingClientRect().height <= maximumHeight) low = middle;
+    else high = middle - 1;
+  }
+  text.textContent = prefix(low) + " ";
+}
+function renderArtistBiography(artist, metadata) {
+  const artistId = artist?.id || null;
+  if (artistId !== state.biographyArtistId) {
+    state.biographyArtistId = artistId;
+    state.biographyExpanded = false;
+  }
+  state.biographyText = !artist ? "" : metadata?.biography || "No Navidrome biography available for " + artist.name + ".";
+  $("biographyText").textContent = state.biographyText;
+  requestAnimationFrame(updateBiographyToggle);
+}
 function renderHero() {
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
   $("hero").classList.remove("fallback-overview");
@@ -330,7 +368,7 @@ function renderHero() {
   $("artistName").textContent = artist?.name || "Select an artist";
   $("overviewArtist").textContent = artist?.name || "";
   $("artistSummary").textContent = artist ? artist.albums.length + " albums · " + (artist.status || "indexed") : "Browse your music library to begin.";
-  $("artistBiography").textContent = !artist ? "" : metadata?.biography ? metadata.biography : "No Navidrome biography available for " + artist.name + ".";
+  renderArtistBiography(artist, metadata);
   $("similarSource").textContent = metadata?.similar?.length ? "· Navidrome" : "· sample layout";
   const similar = $("similarArtists"); clear(similar);
   const names = !artist ? [] : metadata?.similar?.length ? metadata.similar : state.artists.filter(item => item.id !== artist.id).slice(0, 6).map(item => item.name);
@@ -850,6 +888,7 @@ function renderWorkspace() {
   $("review").hidden = state.workspace === "embed";
   document.querySelector(".workspace").classList.toggle("embed-active", state.workspace === "embed");
   renderPanes(); renderReview();
+  requestAnimationFrame(updateBiographyToggle);
 }
 function renderAll() {
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
@@ -1004,6 +1043,11 @@ function showDialog(title, lines) {
 }
 
 $("artistSearch").addEventListener("input", event => { if (state.libraryMode === "artists") loadLibrary(event.target.value); });
+$("biographyToggle").addEventListener("click", () => {
+  state.biographyExpanded = !state.biographyExpanded;
+  updateBiographyToggle();
+});
+window.addEventListener("resize", () => requestAnimationFrame(updateBiographyToggle));
 $("albumSearch").addEventListener("input", event => { if (state.libraryMode === "artists") renderLibrary(); else loadLibrary(event.target.value); });
 $("candidateSearch").addEventListener("input", renderCandidates);
 $("clearCandidateFilter").addEventListener("click", () => { $("candidateSearch").value = ""; state.activeSource = ""; resetCandidateFilters(); renderSources(); renderCandidates(); });

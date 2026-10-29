@@ -17262,6 +17262,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         thumbnail_ready.then_some(state.embedded_thumbnail_preview_path.as_str());
     let compilation_track_preview = state.active_compilation_track_preview();
     let has_compilation_track_preview = compilation_track_preview.is_some();
+    ui.set_selected_artwork_has_track_preview(has_compilation_track_preview);
     let active_musicbrainz_hover_preview = state
         .hovered_musicbrainz_result
         .filter(|index| state.musicbrainz_hover_preview_index == Some(*index))
@@ -17461,7 +17462,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_selected_artwork_is_sample(
         preview_candidate.is_some_and(|candidate| candidate.source.eq_ignore_ascii_case("samples")),
     );
-    ui.set_artist_artwork_mode(state.artist_artwork_mode);
+    ui.set_artist_artwork_mode(state.artist_artwork_mode && !report_preview_active);
     let compilation_context = !state.artist_artwork_mode && compilation_artwork_context(&state);
     let current_album_queue_locked = state
         .embed_locked_album_paths
