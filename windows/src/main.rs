@@ -2248,6 +2248,7 @@ fn newest_local_artwork_file(directory: &Path, stems: &[&str], webp: bool) -> Op
         })
 }
 
+#[cfg(test)]
 fn local_artist_art_file(directory: &Path) -> Option<PathBuf> {
     newest_local_artwork_file(directory, &["artist"], true)
 }
@@ -2258,6 +2259,19 @@ struct ArtistArtTarget {
     stem: String,
     album_count: usize,
     managed: bool,
+}
+
+struct ArtistArtWriteRequest {
+    artist: String,
+    selected: String,
+    artist_target: ArtistArtTarget,
+    preserve_file: bool,
+    banner_cache: PathBuf,
+    refresh_fallback_banner: bool,
+    write_banner_after: bool,
+    output: splined_core::config::OutputConfig,
+    theme_output: Option<splined_core::config::OutputConfig>,
+    portrait_fit: (f32, f32, f32),
 }
 
 fn artist_art_targets_for_albums<'a>(
@@ -2589,10 +2603,12 @@ fn cached_circular_artist_thumbnail(
     Ok(path)
 }
 
+#[cfg(test)]
 fn circular_artist_art_png(source: &[u8]) -> Result<Vec<u8>, String> {
     prepare_artist_art_png(source, None)
 }
 
+#[cfg(test)]
 fn prepare_artist_art_png(
     source: &[u8],
     output: Option<&splined_core::config::OutputConfig>,
@@ -2748,6 +2764,7 @@ fn remove_superseded_artist_art(directory: &Path, stem: &str, keep: &Path) -> Ve
     warnings
 }
 
+#[cfg(test)]
 fn write_artist_art_file(
     directory: &Path,
     source: &[u8],
@@ -2756,6 +2773,7 @@ fn write_artist_art_file(
     write_artist_art_file_with_stem(directory, "artist", source, preserve_file)
 }
 
+#[cfg(test)]
 fn write_artist_art_file_with_stem(
     directory: &Path,
     stem: &str,
@@ -2778,9 +2796,9 @@ fn write_prepared_artist_art_file_with_stem(
             directory.display()
         )
     })?;
-    let (target, unchanged) = artist_art_destination(directory, stem, &bytes, preserve_file)?;
+    let (target, unchanged) = artist_art_destination(directory, stem, bytes, preserve_file)?;
     if !unchanged {
-        replace_binary_file(&target, &bytes, "artist artwork", |staged| {
+        replace_binary_file(&target, bytes, "artist artwork", |staged| {
             inspect_image(staged).map(|_| ())
         })?;
     }
@@ -2893,6 +2911,7 @@ fn compose_artist_banner_with_position(
     banner
 }
 
+#[cfg(test)]
 fn enhanced_artist_banner(
     source: &[u8],
     zoom: f32,
@@ -3306,14 +3325,16 @@ fn main() -> Result<(), slint::PlatformError> {
         &ui,
         Arc::clone(&state),
         Arc::clone(&controller),
-        Rc::clone(&workspace_layout),
-        Rc::clone(&appearance),
-        custom_window_state.clone(),
-        UiWindowDiagnostics {
-            maximize_guard: main_window_guard.clone(),
-            ui_debug_log: ui_debug_log.clone(),
+        WindowCallbackContext {
+            workspace_layout: Rc::clone(&workspace_layout),
+            appearance: Rc::clone(&appearance),
+            custom_window_state: custom_window_state.clone(),
+            diagnostics: UiWindowDiagnostics {
+                maximize_guard: main_window_guard.clone(),
+                ui_debug_log: ui_debug_log.clone(),
+            },
+            interface_restore_pending_restart: Arc::clone(&interface_restore_pending_restart),
         },
-        Arc::clone(&interface_restore_pending_restart),
     );
     let embed_queue_stop = match bind_embed_queue(&ui, Arc::clone(&state), Arc::clone(&controller))
     {
@@ -5564,14 +5585,16 @@ fn run_slint_library_diagnostics() -> Result<String, String> {
         &ui,
         Arc::clone(&state),
         Arc::new(controller),
-        Rc::clone(&workspace_layout),
-        appearance,
-        CustomWindowState::from_preferences(&preferences),
-        UiWindowDiagnostics {
-            maximize_guard: main_window_guard.clone(),
-            ui_debug_log: None,
+        WindowCallbackContext {
+            workspace_layout: Rc::clone(&workspace_layout),
+            appearance,
+            custom_window_state: CustomWindowState::from_preferences(&preferences),
+            diagnostics: UiWindowDiagnostics {
+                maximize_guard: main_window_guard.clone(),
+                ui_debug_log: None,
+            },
+            interface_restore_pending_restart: Arc::new(AtomicBool::new(false)),
         },
-        Arc::new(AtomicBool::new(false)),
     );
 
     ui.invoke_adjustment_set(SharedString::from("Picture"), 1.0);
@@ -6896,10 +6919,10 @@ fn queue_saved_album(
     }
     let (thumbnail, cover_width, cover_height, cover_to_write) = match &target.source {
         EmbedQueueSource::File(cover) => {
-            let source = fs::read(&cover).map_err(|error| {
+            let source = fs::read(cover).map_err(|error| {
                 format!("Unable to read the album cover for the queue: {error}")
             })?;
-            let (width, height) = image::image_dimensions(&cover)
+            let (width, height) = image::image_dimensions(cover)
                 .map_err(|error| format!("Unable to inspect the album cover: {error}"))?;
             (
                 prepare_embedded_thumbnail(&source, target.side, StaticFormat::Jpeg)?,
@@ -6914,17 +6937,17 @@ fn queue_saved_album(
             )
         }
         EmbedQueueSource::Preview(source) => {
-            let preview = image::load_from_memory(&source)
+            let preview = image::load_from_memory(source)
                 .map_err(|error| format!("Unable to inspect the upscale preview: {error}"))?;
             (
-                prepare_embedded_thumbnail(&source, target.side, StaticFormat::Jpeg)?,
+                prepare_embedded_thumbnail(source, target.side, StaticFormat::Jpeg)?,
                 preview.width(),
                 preview.height(),
                 Some(source.clone()),
             )
         }
         EmbedQueueSource::PreparedThumbnail(bytes) => {
-            let image = image::load_from_memory(&bytes)
+            let image = image::load_from_memory(bytes)
                 .map_err(|error| format!("Unable to decode prepared thumbnail: {error}"))?;
             if image.width() != target.side || image.height() != target.side {
                 return Err("The prepared thumbnail no longer matches the preferred size.".into());
@@ -6938,8 +6961,7 @@ fn queue_saved_album(
         &target.label,
         &thumbnail,
         target.side,
-        cover_width,
-        cover_height,
+        (cover_width, cover_height),
         tracks,
     )?;
     let (written_cover, snapshot) = match (cover_to_write, target.cover_config) {
@@ -7722,18 +7744,15 @@ fn bind_embed_queue(
                     let database = database.clone();
                     let weak = weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
-                        if let Ok(count) = result {
-                            if count > 0
-                                && let Some(window) = queue_weak.upgrade()
-                            {
-                                window.set_queue_status(
-                                    format!(
-                                        "Removed {count} completed album(s) after artist change."
-                                    )
+                        if let Ok(count) = result
+                            && count > 0
+                            && let Some(window) = queue_weak.upgrade()
+                        {
+                            window.set_queue_status(
+                                format!("Removed {count} completed album(s) after artist change.")
                                     .into(),
-                                );
-                                let _ = sync_embed_queue_window(&window, &state, &database);
-                            }
+                            );
+                            let _ = sync_embed_queue_window(&window, &state, &database);
                         }
                         refresh_weak(&weak, &state);
                     });
@@ -7816,16 +7835,27 @@ fn bind_embed_queue(
     Ok(stopped)
 }
 
-fn bind_callbacks(
-    ui: &AppWindow,
-    state: Arc<Mutex<ApplicationState>>,
-    controller: Arc<ScanController>,
+struct WindowCallbackContext {
     workspace_layout: Rc<RefCell<WorkspaceLayout>>,
     appearance: Rc<RefCell<String>>,
     custom_window_state: CustomWindowState,
     diagnostics: UiWindowDiagnostics,
     interface_restore_pending_restart: Arc<AtomicBool>,
+}
+
+fn bind_callbacks(
+    ui: &AppWindow,
+    state: Arc<Mutex<ApplicationState>>,
+    controller: Arc<ScanController>,
+    context: WindowCallbackContext,
 ) {
+    let WindowCallbackContext {
+        workspace_layout,
+        appearance,
+        custom_window_state,
+        diagnostics,
+        interface_restore_pending_restart,
+    } = context;
     let UiWindowDiagnostics {
         maximize_guard,
         ui_debug_log,
@@ -10158,7 +10188,7 @@ fn bind_callbacks(
                 }
                 return;
             }
-            let prepared = (|| -> Result<(String, String, ArtistArtTarget, bool, PathBuf, bool, bool, splined_core::config::OutputConfig, Option<splined_core::config::OutputConfig>, (f32, f32, f32)), String> {
+            let prepared = (|| -> Result<ArtistArtWriteRequest, String> {
                 let mut app = state
                     .lock()
                     .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
@@ -10208,9 +10238,35 @@ fn bind_callbacks(
                 app.operation_status = "Saving artist.*…".to_string();
                 app.operation_tone = "orange".to_string();
                 app.last_error = None;
-                Ok((artist, selected, artist_target, preserve_file, banner_cache, refresh_fallback_banner, write_banner_after, config.output, theme_output, (app.artist_portrait_zoom, app.artist_portrait_horizontal, app.artist_portrait_vertical)))
+                Ok(ArtistArtWriteRequest {
+                    artist,
+                    selected,
+                    artist_target,
+                    preserve_file,
+                    banner_cache,
+                    refresh_fallback_banner,
+                    write_banner_after,
+                    output: config.output,
+                    theme_output,
+                    portrait_fit: (
+                        app.artist_portrait_zoom,
+                        app.artist_portrait_horizontal,
+                        app.artist_portrait_vertical,
+                    ),
+                })
             })();
-            let (artist, selected, artist_target, preserve_file, banner_cache, refresh_fallback_banner, write_banner_after, output, theme_output, portrait_fit) = match prepared {
+            let ArtistArtWriteRequest {
+                artist,
+                selected,
+                artist_target,
+                preserve_file,
+                banner_cache,
+                refresh_fallback_banner,
+                write_banner_after,
+                output,
+                theme_output,
+                portrait_fit,
+            } = match prepared {
                 Ok(value) => value,
                 Err(error) => {
                     record_action_result(&state, Err(error));
@@ -12038,11 +12094,11 @@ fn bind_callbacks(
             if trimmed.is_empty() {
                 return;
             }
-            if let Ok(mut app) = state.lock() {
-                if let Some(preset) = app.adjustment_presets.get_mut(index as usize) {
-                    preset.name = trimmed;
-                    app.enhancement_settings_dirty = true;
-                }
+            if let Ok(mut app) = state.lock()
+                && let Some(preset) = app.adjustment_presets.get_mut(index as usize)
+            {
+                preset.name = trimmed;
+                app.enhancement_settings_dirty = true;
             }
             refresh_weak(&weak, &state);
         });
@@ -12231,15 +12287,14 @@ fn bind_callbacks(
             if trimmed.is_empty() {
                 return;
             }
-            if let Ok(mut app) = state.lock() {
-                if let Some(style) = app
+            if let Ok(mut app) = state.lock()
+                && let Some(style) = app
                     .banner_theme_styles
                     .iter_mut()
                     .find(|style| style.key == key.as_str())
-                {
-                    style.name = trimmed;
-                    app.enhancement_settings_dirty = true;
-                }
+            {
+                style.name = trimmed;
+                app.enhancement_settings_dirty = true;
             }
             refresh_weak(&weak, &state);
         });
@@ -13854,8 +13909,8 @@ fn image_derived_tint_color(bytes: &[u8]) -> Option<String> {
         let index = ((hue * 4.0).floor() as usize).min(23);
         let weight = chroma * maximum;
         bins[index].0 += weight;
-        for channel in 0..3 {
-            bins[index].1[channel] += rgb[channel] * weight;
+        for (total, channel) in bins[index].1.iter_mut().zip(rgb) {
+            *total += channel * weight;
         }
     }
     let (weight, totals) = bins
@@ -19571,7 +19626,7 @@ fn fallback_album_report_track_ui_rows(app: &ApplicationState) -> Vec<UiCompilat
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .ok();
-    let tracks = album
+    album
         .snapshot
         .compilation_tracks
         .iter()
@@ -19602,8 +19657,7 @@ fn fallback_album_report_track_ui_rows(app: &ApplicationState) -> Vec<UiCompilat
                 expanded: false,
             }
         })
-        .collect::<Vec<_>>();
-    tracks
+        .collect::<Vec<_>>()
 }
 
 fn group_compilation_report_rows(
@@ -22241,7 +22295,7 @@ mod tests {
             ..NavidromeArtist::default()
         };
         assert_eq!(
-            navidrome_artist_for_lookup(&[dotted.clone()], "38 Special", None)
+            navidrome_artist_for_lookup(std::slice::from_ref(&dotted), "38 Special", None)
                 .map(|artist| artist.id.as_str()),
             Some("dotted")
         );
@@ -23839,9 +23893,11 @@ mod tests {
         let zoom = super::auto_artist_banner_zoom(&source);
         assert!(zoom > 3.0);
         let bytes = std::fs::read(&source).unwrap();
-        let mut output = splined_core::config::OutputConfig::default();
-        output.upscale_adaptive_defaults = false;
-        output.upscale_hue_degrees = 90;
+        let mut output = splined_core::config::OutputConfig {
+            upscale_adaptive_defaults: false,
+            upscale_hue_degrees: 90,
+            ..Default::default()
+        };
         let enhanced = super::enhanced_artist_banner(&bytes, zoom, 0.0, &output)
             .unwrap()
             .to_rgba8();
@@ -24456,9 +24512,15 @@ thread_local! {
 }
 
 static RAW_IMAGE_CACHE: OnceLock<Mutex<HashMap<String, CachedPixels>>> = OnceLock::new();
+
+struct EditPreviewBytes {
+    key: String,
+    bytes: Vec<u8>,
+}
+
 // Keep the exact full-resolution edit result, not only its 1600px UI bitmap.
 // Staging an album freezes these bytes into the durable embed queue.
-static EDIT_PREVIEW_BYTES: OnceLock<Mutex<Option<(String, Vec<u8>)>>> = OnceLock::new();
+static EDIT_PREVIEW_BYTES: OnceLock<Mutex<Option<EditPreviewBytes>>> = OnceLock::new();
 static PREVIEW_IMAGE_LOADS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static ACTIVE_PREVIEW_CACHE_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -24468,7 +24530,10 @@ fn raw_image_cache() -> &'static Mutex<HashMap<String, CachedPixels>> {
 
 fn store_edit_preview_bytes(key: &str, bytes: &[u8]) {
     if let Ok(mut cached) = EDIT_PREVIEW_BYTES.get_or_init(|| Mutex::new(None)).lock() {
-        *cached = Some((key.to_string(), bytes.to_vec()));
+        *cached = Some(EditPreviewBytes {
+            key: key.to_string(),
+            bytes: bytes.to_vec(),
+        });
     }
 }
 
@@ -24480,8 +24545,8 @@ fn full_edit_preview_bytes(key: &str) -> Option<Vec<u8>> {
         .and_then(|cached| {
             cached
                 .as_ref()
-                .filter(|(cached_key, _)| cached_key == key)
-                .map(|(_, bytes)| bytes.clone())
+                .filter(|preview| preview.key == key)
+                .map(|preview| preview.bytes.clone())
         })
 }
 
@@ -24489,11 +24554,7 @@ fn has_edit_preview_bytes(key: &str) -> bool {
     EDIT_PREVIEW_BYTES
         .get_or_init(|| Mutex::new(None))
         .lock()
-        .is_ok_and(|cached| {
-            cached
-                .as_ref()
-                .is_some_and(|(cached_key, _)| cached_key == key)
-        })
+        .is_ok_and(|cached| cached.as_ref().is_some_and(|preview| preview.key == key))
 }
 
 fn preview_image_loads() -> &'static Mutex<HashSet<String>> {
