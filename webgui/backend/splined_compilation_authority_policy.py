@@ -178,6 +178,15 @@ def _database_path(core: Any, config_file: Path, cfg: dict[str, Any]) -> Path:
     return core.runtime_cache_dir(config_file, cfg) / "splined.db"
 
 
+def _local_title_reuse_allowed(title: str) -> bool:
+    """Keep same-title local reuse explicit and reject edition variants."""
+    value = str(title or "").strip()
+    if not value or "(" in value or ")" in value:
+        return False
+    words = re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+    return not any(word in {"live", "remix"} for word in words)
+
+
 def local_artwork_rows(
     core: Any,
     config_file: Path,
@@ -187,7 +196,7 @@ def local_artwork_rows(
     current_album_path: Path,
     release_mbid: str = "",
 ) -> list[dict[str, Any]]:
-    """Resolve exact local IDs lazily, only inside compilation track-art work.
+    """Resolve local Recording or safe Artist/title artwork lazily.
 
     The normal media index must remain representative-track based. This helper
     first checks its persistent SQL cache, then limits tag reads to albums
@@ -195,12 +204,13 @@ def local_artwork_rows(
     """
     recordings = _mbids(getattr(track, "recording_mbid", None))
     artists = _mbids(getattr(track, "artist_mbid", None))
-    if len(recordings) != 1 or not artists:
+    target_title = str(getattr(track, "title", "") or "").strip()
+    if not artists:
         return []
     database = _database_path(core, config_file, cfg)
     if not database.is_file():
         return []
-    recording_mbid = next(iter(recordings))
+    recording_mbid = next(iter(recordings), "")
     artist_mbids = sorted(artists)
     artist_mbids_key = _artist_key(artist_mbids)
     release_ids = _mbids(release_mbid)
@@ -215,7 +225,7 @@ def local_artwork_rows(
             if exact_release_mbid
             else ""
         )
-        base_select = (
+        select_columns = (
             "SELECT t.path AS track_path, t.title AS track_title, "
             "t.artist_name AS track_artist, al.album_key, al.album_name, "
             "al.musicbrainz_albumid, al.musicbrainz_releasegroupid, "
@@ -225,7 +235,8 @@ def local_artwork_rows(
             "FROM tracks t "
             "JOIN albums al ON al.album_key=t.album_key "
             "JOIN artists ar ON ar.artist_key=al.artist_key "
-            "WHERE lower(t.musicbrainz_recordingid)=? "
+        )
+        common_where = (
             "AND lower(t.musicbrainz_artistid)=? "
             f"AND lower(ar.musicbrainz_artistid) IN ({artist_placeholders}) "
             "AND trim(al.musicbrainz_albumid)<>'' "
@@ -235,15 +246,30 @@ def local_artwork_rows(
             "ORDER BY al.compilation ASC, al.release_year ASC, "
             "al.album_name COLLATE NOCASE, al.path COLLATE NOCASE"
         )
-        params = (
-            recording_mbid,
+        exact_select = (
+            select_columns
+            + "WHERE lower(t.musicbrainz_recordingid)=? "
+            + common_where
+        )
+        title_select = (
+            select_columns
+            + "WHERE lower(trim(t.title))=lower(trim(?)) "
+            + common_where
+        )
+        common_params = (
             artist_mbids_key,
             *artist_mbids,
             *((exact_release_mbid,) if exact_release_mbid else ()),
             str(current_album_path),
         )
+        exact_params = (
+            recording_mbid,
+            *common_params,
+        )
 
-        def usable(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
+        def usable(
+            rows: Iterable[sqlite3.Row], *, recording_match: bool
+        ) -> list[dict[str, Any]]:
             found: list[dict[str, Any]] = []
             for row in rows:
                 track_path = Path(str(row["track_path"] or ""))
@@ -258,12 +284,23 @@ def local_artwork_rows(
                     or not cover_path.is_file()
                 ):
                     continue
-                found.append(dict(row))
+                found.append(dict(row, recording_match=recording_match))
             return found
 
-        cached = usable(connection.execute(base_select, params))
-        if cached:
-            return cached[:1]
+        if recording_mbid:
+            cached = usable(
+                connection.execute(exact_select, exact_params),
+                recording_match=True,
+            )
+            if cached:
+                return cached[:1]
+        if _local_title_reuse_allowed(target_title):
+            cached_title = usable(
+                connection.execute(title_select, (target_title, *common_params)),
+                recording_match=False,
+            )
+            if cached_title:
+                return cached_title[:1]
 
         candidate_albums = list(
             connection.execute(
@@ -348,12 +385,24 @@ def local_artwork_rows(
                         for row in track_rows
                     ],
                 )
-            matches = [
+            exact_matches = [
                 row
                 for row in track_rows
-                if row["musicbrainz_recordingid"] == recording_mbid
+                if recording_mbid
+                and row["musicbrainz_recordingid"] == recording_mbid
                 and row["musicbrainz_artistid"] == artist_mbids_key
             ]
+            title_matches = [
+                row
+                for row in track_rows
+                if not exact_matches
+                and _local_title_reuse_allowed(target_title)
+                and _local_title_reuse_allowed(str(row.get("title") or ""))
+                and str(row.get("title") or "").strip().casefold()
+                == target_title.casefold()
+                and row["musicbrainz_artistid"] == artist_mbids_key
+            ]
+            matches = exact_matches or title_matches
             if matches:
                 result = dict(album_row)
                 result.update(
@@ -362,6 +411,7 @@ def local_artwork_rows(
                     track_artist=matches[0]["artist_name"],
                     file_size=matches[0]["file_size"],
                     file_mtime_ns=matches[0]["file_mtime_ns"],
+                    recording_match=bool(exact_matches),
                 )
                 return [result]
         return []

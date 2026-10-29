@@ -28,6 +28,7 @@ does not ask for a configuration filename. Portable files are:
 <splined.exe directory>\data\ui.toml           interface preferences
 <configured credential directory>\*.json       provider credentials
 <scan.cache_dir>\splined.db                     media/workflow database
+<scan.temporary_cache_dir>\...                  disposable previews/cache
 ```
 
 The packaged equivalents are
@@ -59,6 +60,10 @@ paths need correction on a moved PC, the archive values are staged in Setup.
 With an existing Config v5, startup opens `<scan.cache_dir>\splined.db`
 automatically and reports the active state root, Config path, SQLite path, and
 loaded Album/Artist/Folder counts without logging credentials.
+
+New Windows configurations default the persistent database directory to `_db`
+and the disposable runtime cache to `_cache`. Existing absolute Config-v5 paths
+are preserved and are never relocated silently.
 
 Release builds also provide opt-in, read-only support diagnostics. Because the
 Windows GUI subsystem does not attach stdout, pass an output filename:
@@ -219,12 +224,15 @@ stages only that album.
 Artist Art is tied to an indexed Artist, not to a Soundtracks or Various Artists
 folder. SPLINED still uses `artist.*` in a dedicated Artist folder. For an
 Artist whose albums live in a shared folder, it saves a distinct image per
-stable Artist ID under the configured **V/A / OST Artist images database** directory
+stable Artist ID under the configured **V/A / OST Artist Images Directory**
 (or uses a name key when no single Artist ID is available). It ignores any old
 shared-folder `artist.*` for these Artists without deleting that file. Albums with
 no MusicBrainz Album ID remain COMP fallback and do not participate in this
 Artist Art lookup; their artwork stays track-scoped. Setup requires this persistent
 directory; existing configurations default to `<scan.cache_dir>/artist-art`.
+The Artist match editor separately confirms MusicBrainz identity and saves its
+lookup name, biography, and external profile URL in `splined.db`; it does not
+change music-file tags. This profile record is not the V/A / OST image setting.
 In Backup / Restore, select **Include V/A / OST Artist images** for manual and
 scheduled SQLite snapshots. The resulting single `.sqlite` file includes managed
 per-artist portrait and approved background PNGs; the live database does not. Select the separate image option
@@ -625,7 +633,7 @@ read-only thumbnail projection catches up.
 At startup, SPLINED prunes its known disposable candidate and thumbnail-cache
 files older than 24 hours from the configured temporary cache, including files
 left after an interrupted run. This does not remove saved samples, SQLite data,
-or the persistent V/A / OST Artist images database; the age guard protects
+or the persistent V/A / OST Artist Images Directory; the age guard protects
 another client using a shared cache.
 
 When Config v5 uses debug or trace logging, the Windows UI run log records

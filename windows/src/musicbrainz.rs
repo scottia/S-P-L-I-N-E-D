@@ -162,6 +162,14 @@ pub struct ArtistLookup {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistSearchHit {
+    pub id: String,
+    pub score: u16,
+    pub name: String,
+    pub disambiguation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingRelease {
     pub id: String,
     pub title: String,
@@ -254,9 +262,17 @@ struct ApiArtist {
     #[serde(default)]
     id: String,
     #[serde(default)]
+    score: u16,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     disambiguation: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiArtistSearch {
+    #[serde(default)]
+    artists: Vec<ApiArtist>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -645,6 +661,79 @@ impl MusicBrainzClient {
                 name: artist.name,
                 disambiguation: nonempty(artist.disambiguation),
             });
+        }
+
+        unreachable!("MusicBrainz retry loop always performs at least one attempt")
+    }
+
+    pub async fn search_artists(
+        &self,
+        query: &str,
+        limit: u8,
+    ) -> Result<Vec<ArtistSearchHit>, String> {
+        self.ensure_enabled()?;
+        let query = query.trim();
+        if query.is_empty() {
+            return Err("MusicBrainz Artist search requires a name.".to_string());
+        }
+        let url = format!("{API_BASE_URL}/artist");
+        let access_token = if self.config.oauth {
+            Some(self.valid_access_token().await?)
+        } else {
+            None
+        };
+        let attempts = self.config.retry_max.max(1);
+        let limit = limit.clamp(1, 25).to_string();
+
+        for attempt in 0..attempts {
+            self.wait_for_rate_limit().await;
+            let mut request = self
+                .client
+                .get(&url)
+                .timeout(self.recording_timeout())
+                .query(&[("query", query), ("fmt", "json"), ("limit", limit.as_str())]);
+            if let Some(token) = access_token.as_deref() {
+                request = request.bearer_auth(token);
+            }
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(_) if attempt + 1 < attempts => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "Unable to search MusicBrainz artists for {query} after {} attempt(s): {error}",
+                        attempt + 1
+                    ));
+                }
+            };
+            match response.status() {
+                StatusCode::OK => {}
+                StatusCode::UNAUTHORIZED => {
+                    return Err("MusicBrainz OAuth authentication was rejected.".to_string());
+                }
+                status if is_retryable_status(status) && attempt + 1 < attempts => continue,
+                status => {
+                    return Err(format!(
+                        "MusicBrainz Artist search for {query} returned HTTP {status} after {} attempt(s)",
+                        attempt + 1
+                    ));
+                }
+            }
+            let final_url = response.url().clone();
+            let body = response.text().await.map_err(|error| {
+                format!("Unable to read MusicBrainz Artist search for {query}: {error}")
+            })?;
+            let search: ApiArtistSearch = serde_json::from_str(&body).map_err(|error| {
+                let preview: String = body.chars().take(500).collect();
+                format!(
+                    "Invalid MusicBrainz Artist search JSON from {final_url}: {error}\nResponse preview: {preview}"
+                )
+            })?;
+            return Ok(search
+                .artists
+                .into_iter()
+                .filter(|artist| !artist.id.trim().is_empty() && !artist.name.trim().is_empty())
+                .map(artist_search_hit_from_api)
+                .collect());
         }
 
         unreachable!("MusicBrainz retry loop always performs at least one attempt")
@@ -1268,6 +1357,15 @@ fn recording_lookup_from_api(recording: ApiRecording) -> RecordingLookup {
             .into_iter()
             .map(recording_release_from_api)
             .collect(),
+    }
+}
+
+fn artist_search_hit_from_api(artist: ApiArtist) -> ArtistSearchHit {
+    ArtistSearchHit {
+        id: artist.id.to_ascii_lowercase(),
+        score: artist.score.min(100),
+        name: artist.name,
+        disambiguation: nonempty(artist.disambiguation),
     }
 }
 

@@ -40,6 +40,19 @@ async function initialize() {
   const settings = await api("/api/settings");
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll(); await loadLibrary(); await pollJobs();
+  void runAction(checkLibraryChanges);
+}
+async function checkLibraryChanges() {
+  const changes = await api("/api/library/changes");
+  state.libraryChanges = changes;
+  const button = $("applyLibraryChanges");
+  button.hidden = !changes.count;
+  button.textContent = changes.count
+    ? `Apply Library Changes (${changes.count})`
+    : "Apply Library Changes";
+  if (changes.count) {
+    setStatus(`Music library changes · ${changes.added} added · ${changes.changed} changed · ${changes.removed} removed`);
+  }
 }
 function componentPayload(kind, imageURL, extra = {}) {
   const target = kind === "cover" ? "album" : kind;
@@ -216,7 +229,10 @@ async function openSettings() {
         details.append(node("summary", "", name.replaceAll("_", " "))); parent.append(details); section(details, value, keys);
       } else {
         const type = name === "mode" && !path.length ? "mode" : typeof value === "boolean" ? "checkbox" : typeof value === "number" ? "number" : name === "url" && path[0] === "database" ? "password" : "text";
-        const input = field(parent, name === "mode" ? "Mode: read or write (Live Write)" : name.replaceAll("_", " "), Array.isArray(value) ? JSON.stringify(value) : value, type);
+        const settingName = keys.join(".") === "scan.shared_artist_art_dir"
+          ? "V/A / OST Artist Images Directory"
+          : name === "mode" ? "Mode: read or write (Live Write)" : name.replaceAll("_", " ");
+        const input = field(parent, settingName, Array.isArray(value) ? JSON.stringify(value) : value, type);
         if (type === "checkbox") input.checked = value;
         if (saved.database_managed && path[0] === "database") { input.disabled = true; input.placeholder = "Managed by server environment"; }
         inputs.push({input, keys, original: value});
@@ -232,7 +248,7 @@ async function openSettings() {
     await post("/api/settings", {config: cfg}); await sessionStatus();
     state.enabledSources = (cfg.sources?.cover_sources || []).filter(key=>!cfg.sources?.exclude_cover_sources?.includes(key) && cfg.source_policies?.[key]?.enabled!==false); renderAll(); setStatus("Settings saved");
   });
-  actionButton("Refresh Library Index", async () => { const job = await post("/api/jobs", {kind: "index"}); await reviewJob(job.id); });
+  actionButton("Full Refresh Library Index", async () => { const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); });
   actionButton("Provider Credentials", credentialsMenu);
   const migration = node("details", "settings-section"); migration.append(node("summary", "", "Import an existing SQLite catalog")); body.append(migration);
   migration.append(node("p", "", "Imports a server-side snapshot into an empty PostgreSQL catalog. Paths must match the configured server library. The source remains unchanged."));
@@ -290,6 +306,11 @@ $("startStaged").addEventListener("click", () => runAction(() => queueAction("st
 $("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction("pause-after")));
 $("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction("pause")));
 $("reviewWork").addEventListener("click", () => runAction(() => reviewJob(state.jobs.find(job => job.state === "waiting").id)));
+$("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
+  $("applyLibraryChanges").hidden = true;
+  const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});
+  await reviewJob(job.id);
+}));
 $("closeDialog").addEventListener("click", () => { state.reviewJobId = null; });
 $("workspaceDialog").addEventListener("cancel", () => { state.reviewJobId = null; });
 $("musicbrainzButton").addEventListener("click", () => runAction(chooseMusicBrainz));

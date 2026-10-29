@@ -2,34 +2,28 @@
 
 WebGUI now uses PostgreSQL, with its own catalog and persistent queue. The SQLite lifecycle and shared-file instructions below apply to native clients and legacy snapshots. See the [WebGUI data guide](browser-workspace-guide.md#data-recovery-and-deployment) for server setup, explicit import, and backup. Windows does not connect to the live PostgreSQL store.
 
-The native Windows implementation stores its persistent
-Select Media read model in:
+The native Windows implementation stores its persistent Select Media model in:
 
 ```text
 <scan.cache_dir>/splined.db
 ```
 
-With the standard Docker configuration:
+For a new portable Windows configuration the default separation is:
 
 ```text
-/_cache/splined.db
-```
-
-If the host bind mount is:
-
-```yaml
-- /mnt/splined/_cache:/_cache:rw
-```
-
-then the host file is:
-
-```text
-/mnt/splined/_cache/splined.db
+_db/splined.db       persistent SQLite
+_cache/...           disposable previews and candidates
 ```
 
 This database is persistent. Candidate downloads and optional samples belong
 to the independently configurable temporary run cache; `splined.db` is never
 part of normal run-cache cleanup.
+
+The `artist_art_profiles` table stores a manually confirmed MusicBrainz Artist
+match plus its saved biography and external profile URL. Artist portraits and
+banners remain ordinary image files: normal Artists use their Artist folder,
+while Soundtracks and Various Artists use the configured V/A / OST Artist
+Images Directory. There is no separate `artist-art.db`.
 
 Windows derives the file from the browsable **SQL Database Directory** field;
 its **Temporary Run Cache** is independent and may remain local.
@@ -47,7 +41,7 @@ including credentials. If Config v5 is missing, invalid, or operationally
 incomplete, structured Setup opens before any database or runtime directory is
 created.
 
-## Shared Windows/Linux database
+## Shared Windows database
 
 Two installations use the same physical database by selecting cache
 directories that resolve to the same file. No database server or synchronization
@@ -59,17 +53,17 @@ sqlite_shared = true
 ```
 
 TOML keys are section-scoped: `sqlite_shared` must appear after the `[scan]`
-header and before the next table header. Placing the same text elsewhere in the
-Python/Docker file does not configure `scan.sqlite_shared`. On Windows, enable
+header and before the next table header. Placing the same text elsewhere does
+not configure `scan.sqlite_shared`. On Windows, enable
 **Shared/Network SQLite** in Setup or Advanced Processing Settings; the GUI
 stores the same Config v5 field internally.
 
-The first index publication establishes the shared database's canonical path
-namespace, ignored-folder policy, and cover filename. After that, either the
-Python or Windows client can explicitly refresh its Artist and Album inventory.
-Windows maps saved canonical paths onto its own `library.music_library` and
+The first Windows index publication establishes the shared database's canonical
+path namespace, ignored-folder policy, and cover filename. Later Windows clients
+can explicitly refresh its Artist, Album, and complete track inventory. Each
+client maps saved canonical paths onto its own `library.music_library` and
 uses the published ignored-folder and cover-name policy instead of silently
-substituting its local settings. The two runtime configurations resolve
+substituting its local settings. The Windows runtime configurations resolve
 `scan.cache_dir` to the same physical `splined.db` and enable `sqlite_shared`.
 
 ### Before enabling shared mode
@@ -90,53 +84,49 @@ acquire the extra lock on the chosen share, leave it disabled and avoid
 overlapping writers. SQLite's own locks still apply either way. Setup and
 Advanced Settings link to this guide before shared mode is saved.
 
-Local/default mode retains WAL and `synchronous=NORMAL`. Shared mode uses the
-rollback `DELETE` journal, `synchronous=FULL`, foreign keys, and a 30-second
-busy timeout. This prevents Linux from repeatedly forcing WAL while Windows
-opens the same file through a UNC/network share.
+Local/default mode retains WAL and `synchronous=NORMAL`. Shared Windows mode
+uses the rollback `DELETE` journal, `synchronous=FULL`, foreign keys, and a
+30-second busy timeout for UNC/network storage.
 
-Python/Docker continues to hold an OS-managed lock on the
-`splined.db.client-lock` sidecar during shared-database operations. Windows can
-participate by enabling `scan.windows_client_lock` in Setup or Advanced
-Processing Settings; this extra lock is off by default, including for older
-Windows Config v5 files without the key. An abandoned sidecar file does not
-itself hold a lock. If Windows does not participate, the sidecar does not
-coordinate Windows with Python, so avoid overlapping cross-host writes.
+Windows clients can also hold an OS-managed lock on the
+`splined.db.client-lock` sidecar by enabling `scan.windows_client_lock` in
+Setup or Advanced Processing Settings. This extra lock is off by default. An
+abandoned sidecar file does not itself hold a lock; the OS lock exists only
+while a client is connected.
 SQLite's rollback journal and 30-second busy timeout still apply. The optional
 sidecar depends on the shared filesystem honoring cross-host file locks; do not
 assume that a timeout substitutes for verified coordination.
 
-Python's configured `ignored_subs` patterns control which folders are excluded.
+The first Windows publisher's configured `ignored_subs` patterns control which folders are excluded.
 A leading period alone is not an exclusion: `.38 Special` and
 `...Baby One More Time` are valid music-folder names. Explicitly list service
 folders such as `.nomifo` or `.animatedartworkdownloader` when they should be
-ignored. A shared refresh preserves the representative-track indexing policy:
-one track supplies an Album's index tags, rather than opening every track.
+ignored. One representative track supplies an Album's identity tags. The same
+explicit refresh also reconciles complete `tracks` rows. It reads full per-track
+tags only for new or changed COMP/Fallback files and reuses unchanged metadata.
 
 An existing database establishes its canonical path namespace in
-`picker_inventory.signature_json`. For a cross-mounted shared database, build
-the initial index from the Python/Docker view so that its canonical namespace
-(normally `/music`) is recorded before Windows opens it. A brand-new independent
-Windows database naturally records the configured Windows library root.
-Windows treats its configured
+`picker_inventory.signature_json`. The first Windows client that publishes a
+new shared database records its configured library root as that namespace.
+Later Windows clients treat their configured
 `library.music_library` as the local filesystem root, strips the saved canonical
 root from database paths, preserves the relative Artist/Album/file location,
 and joins that location to the Windows root for I/O. Writes are translated back
-before SQL is updated. A Python-created `/music/...` value therefore remains
-`/music/...` in SQLite while Windows opens the corresponding UNC path.
+before SQL is updated.
 
 Windows normal startup opens an established, usable index read-only. It does
 not reapply the schema or request a journal-mode transition. A background
-startup check enumerates audio-containing folders without reading their tags
-or changing the database. If folders are missing from the index, the GUI shows
-a yellow **Refresh Music Library Now** action. The explicit **Refresh DB**
-action walks those folders, inventories their audio filenames, reads or reuses
-one representative track's tags per Album, and publishes refreshed Artist and
-Album rows. It does not require Python or modify music files. This works for
-local databases and an established shared index. The initial shared index
-still needs a canonical namespace chosen before a cross-mounted Windows
-refresh, normally the Python/Docker `/music` view. Windows LIVE WRITE and
-status actions still update their applicable shared SQL rows.
+startup check enumerates Album folders and sorted track filenames, checks one
+representative file per normal Album, and compares full path/size/mtime
+fingerprints only for COMP/Fallback Albums. It does not open tags or change the
+database. When Album folders were added, changed, or removed, the GUI reports
+each count and offers **Apply Library Changes**. That action updates only the
+Album delta in one transaction; untouched Artist, Album, and track rows remain
+in place. It reads one representative track for a changed Album identity and
+reads per-track tags only for changed COMP/Fallback files. It neither inspects
+embedded art nor modifies music files. **Settings → Refresh DB** remains the
+deliberate complete index rebuild. A new local or shared index can be published
+entirely by Windows; Python is not an index authority.
 
 Raw UNC cache paths are supported and are preferred when mapped drive letters
 are not stable across devices or sessions. On Windows, SPLINED internally
@@ -213,7 +203,7 @@ MusicBrainz Album / Release ID
 hash of tagged Artist identity + ALBUM + release-group ID + year + compilation
 ```
 
-Representative tags are read with Mutagen. Any standards-compliant tag writer
+Representative tags are read by the native Rust tag reader. Any standards-compliant tag writer
 may supply those values; SPLINED does not require or query another
 application's database.
 
@@ -261,42 +251,34 @@ folder ownership is a presentation and processing boundary.
 
 ## First build
 
-When no compatible database exists, the TUI performs a one-time index build:
+When no compatible database exists, Windows **Refresh DB** performs a one-time
+index publication:
 
 ```text
 inventory Artist / Album folders
         ↓
 choose one representative audio file per Album
         ↓
-read Album identity tags with Mutagen
+read one representative track for Album identity
+        ↓
+read COMP/Fallback track identities and record all path/size/mtime manifests
         ↓
 inspect configured cover.* and materialized statistics
         ↓
-save resumable per-Album SQLite checkpoints
-        ↓
-validate and promote the completed active snapshot in batches
-        ↓
-publish picker_inventory last, then consolidate the WAL
+publish Artist, Album, and complete track rows in one transaction
         ↓
 load Select Media from SQLite
 ```
 
-SPLINED does not parse every track merely to populate the picker. Full
-track-level validation remains part of the actual READ or LIVE WRITE processing
-pipeline.
-
-This is a performance invariant: normal build and Refresh remain Album-oriented
-and retain one representative audio path per Album. They must not become a
-whole-library per-track tag-reading pass.
-
-If the first build is interrupted, matching completed checkpoints are reused on
-the next launch. A partially promoted snapshot is never advertised as ready:
-the `picker_inventory` marker is written only after all Artist/Album rows have
-been promoted and validated. An explicit Refresh of an already usable snapshot
-continues to replace that snapshot atomically.
-
-A corrupt or incompatible database is renamed with a timestamp and rebuilt.
-The build does not alter music-library files.
+The initial publication reads each track once to establish Windows authority.
+Incremental reconciliation leaves unchanged rows untouched and reads full tags
+only for changed COMP/Fallback files. A Settings **Refresh DB** rebuild still
+reuses unchanged track metadata by path, size, and modification time while
+republishing the complete model. Normal Artist overview remains Album-oriented
+and validates only one representative track; full embedded-art inspection
+remains lazy. A partially built model is never published because either
+transaction commits only after every affected row is ready. Neither operation
+alters music-library files.
 
 ## Warm startup
 
@@ -346,24 +328,25 @@ SPLINED actions, such as processing an Album or adding/removing a bypass.
 
 ## Explicit Refresh
 
-`R` / Refresh is the external-library reconciliation boundary for Python.
-Windows can explicitly refresh an existing shared index or build and refresh an
-independent local index. In a shared configuration, agree on one refresh
-publisher at a time; a normal Windows launch reads the published index rather
-than rebuilding it.
+**Refresh DB** is the Windows external-library reconciliation boundary. Windows
+can publish a new local/shared index or refresh an existing one. In a shared
+configuration, use one refresh publisher at a time; normal startup reads the
+published index rather than rebuilding it.
 
 An explicit refresh:
 
 1. inventories the complete Artist/Album topology;
 2. reuses stored tags when the same representative file has unchanged size and
    modification time;
-3. reads Mutagen tags for new or changed Albums;
+3. reads native tag evidence for new or changed Album representatives and
+   new or changed COMP/Fallback track files;
 4. identifies rows by tagged Artist/Album keys rather than paths;
 5. refreshes `cover.*`, resolution, format, file counts, and WebP information
    for identified Albums; missing-ID Fallback Albums exclude `cover.*` from
    those projections;
-6. commits the replacement model in one SQLite transaction;
-7. swaps the resident TUI model only after the transaction completes.
+6. reconciles the complete `tracks` inventory and removes stale track rows;
+7. commits the replacement model in one SQLite transaction;
+8. swaps the resident GUI model only after the transaction completes.
 
 The previous stable picker remains visible while Refresh runs. Rows and colors
 do not progressively change as individual Artists are reached.
@@ -375,10 +358,10 @@ actions update the affected database rows immediately.
 ## Fallback track-art caches
 
 Missing-ID Album artwork recovery uses the following persistent surfaces without
-changing normal index cost:
+opening every track during normal overview loading:
 
-- `tracks` stores exact local Recording-ID/Artist-ID relationships discovered
-  lazily during the compilation branch;
+- `tracks` stores the complete Windows-published track inventory and any exact
+  local Recording-ID/Artist-ID relationships;
 - `recording_release_lookups` and `recording_release_candidates` cache positive,
   bounded MusicBrainz Recording-ID results;
 - `compilation_track_artwork` records approved per-track artwork outcomes, the
@@ -391,16 +374,15 @@ changing normal index cost:
   of the track active during an interruptible normal Album run. It contains no
   image bytes or MusicBrainz/tag authority.
 
-The Fallback branch first queries the exact `tracks` cache, then Windows may
-enumerate only the selected Album folder to fill missing filenames without
-opening tags. Folder-level `cover.*` is never a candidate or count; release
+The Fallback branch first queries the exact `tracks` inventory. Folder-level
+`cover.*` is never a candidate or count; release
 artwork comes from the current track's embedded image and remote providers.
 The Windows warm snapshot projects cached fallback track paths from `tracks`
 and joins the track-artwork ledger only to mark completed embedded-art writes in
 **● Embedded Art**. This is SQLite-only: it does not walk the music share or
-reopen audio tags. For an older compilation whose full filename list was not cached,
-Windows fills the list only when that Album is expanded by enumerating that one
-folder non-recursively; no tag data is read. The compilation runtime reads the
+reopen audio tags. For a legacy database not yet refreshed by Windows, the
+selected Album can still be hydrated non-recursively until **Refresh DB**
+publishes its complete track rows. The compilation runtime reads the
 same progress and track-artwork tables when an eligible compilation starts.
 Normal discovery continues to
 inspect one representative track per Album.
@@ -414,7 +396,7 @@ Stop/error ended the previous run. The cursor advances only as the runtime
 reaches each next track and is cleared after a normal pass reaches the end;
 completed-track skipping remains authoritative throughout.
 
-A targeted Windows or Python backend edit passes explicitly checked compilation
+A targeted Windows edit passes explicitly checked compilation
 tracks to the runtime. Highlighting or clicking a track is preview focus only and never sets
 the target environment value, so an ordinary Album launch still reads the
 ledger and interruption cursor. Checking the Album clears any explicit track
@@ -480,7 +462,7 @@ Completion history, bypass history, timeout policy, and actual local artwork
 remain operational authority. SQLite is the persistent, indexed Select Media
 read model for those facts; it is not a replacement provider/ranking engine.
 The authority-oriented `artists.status` value may cover Albums located in more
-than one physical folder; the TUI therefore recomputes its displayed
+than one physical folder; the Windows GUI therefore recomputes its displayed
 folder-level aggregate from the projected Album rows.
 
 `incomplete` is specific to a started but unfinished compilation Album. It does not
@@ -545,21 +527,11 @@ Processed, so operator-added or third-party `cover.*` remains Unprocessed.
 
 ## Backup and deletion
 
-For Python/Docker installations, back up:
-
-```text
-/config
-/credentials
-/_cache/splined.db
-```
-
-The Python CLI can also create a selective `.spl` archive and restore chosen
-categories. Database exports use SQLite's online backup API so committed WAL
-transactions are included; database restores validate the snapshot and use the
-same API. Settings and credential files are replaced atomically per file, not
-as one all-or-nothing transaction across every selected category:
-
-WebGUI backups require a consistent PostgreSQL dump and its persistent volumes. Use Windows Backup / Restore for native SQLite snapshots; terminal Python `.spl` commands are retired.
+Use Windows Backup / Restore for native SQLite snapshots. Database exports use
+SQLite's online backup API so committed WAL transactions are included, and
+restores validate the snapshot before replacement. WebGUI backups instead
+require a consistent PostgreSQL dump and its persistent volumes; terminal
+Python `.spl` commands are retired.
 
 The WAL/SHM sidecars may exist while SPLINED is running. Stop SPLINED before
 copying the database if a consistent filesystem-level backup is required.
@@ -572,24 +544,24 @@ Candidate files, review samples, temporary run-cache images, and diagnostic
 logs are disposable and do not need to be included in a state backup.
 
 Deleting `splined.db` is safe for music files, but also removes the durable
-index and runtime state. The next Python interactive launch performs the
-complete one-time Mutagen/index build again.
+index and runtime state. The next Windows **Refresh DB** performs the complete
+one-time native index build again.
 
 ## Inspection
 
-Useful read-only checks inside the container:
+Useful read-only checks on a copied Windows database:
 
-```bash
-sqlite3 /_cache/splined.db '.tables'
-sqlite3 /_cache/splined.db 'PRAGMA user_version;'
-sqlite3 /_cache/splined.db \
+```powershell
+sqlite3 N:\path\to\_db\splined.db '.tables'
+sqlite3 N:\path\to\_db\splined.db 'PRAGMA user_version;'
+sqlite3 N:\path\to\_db\splined.db `
   'SELECT status, COUNT(*) FROM albums GROUP BY status ORDER BY status;'
-sqlite3 /_cache/splined.db \
+sqlite3 N:\path\to\_db\splined.db `
   'SELECT status, COUNT(*) FROM artists GROUP BY status ORDER BY status;'
 ```
 
-The runtime image does not require the `sqlite3` CLI; these commands are for
-hosts or diagnostic containers where it is installed.
+SPLINED does not require the `sqlite3` CLI; these commands are optional
+diagnostics when it is installed.
 
 In debug logs, keep the count domains distinct:
 

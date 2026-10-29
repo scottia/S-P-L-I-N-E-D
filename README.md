@@ -134,8 +134,7 @@ SPLINED keeps its supported implementations separate:
 - Root [`Cargo.toml`](Cargo.toml), [`Cargo.lock`](Cargo.lock), and [`src/`](src/)
   remain the native command-line implementation used by Linux and macOS.
 - [`webgui/`](webgui/) is the supported Python server and browser interface.
-  PostgreSQL owns its catalog and persistent work queue. The Python terminal
-  client, Ratatui dependency, and native input extension have been retired.
+  PostgreSQL owns its catalog and persistent work queue.
 
 The application release and Config v5 schema are separate version concepts.
 

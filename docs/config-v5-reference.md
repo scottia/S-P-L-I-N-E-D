@@ -62,14 +62,14 @@ normally absolute container paths supplied by bind mounts.
 | `scan_mode` | `true` | Enables configured scan-directory behavior |
 | `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
-| `cache_dir` | `"_cache"` | Persistent SQL database directory containing `<cache_dir>/splined.db`; the historical key name is retained for compatibility |
-| `shared_artist_art_dir` | empty | Persistent Artist-specific portrait/banner files for shared Soundtracks or Various Artists folders; Python defaults to `<cache_dir>/artist-art` |
+| `cache_dir` | `"_db"` | Persistent Windows SQLite directory containing `<cache_dir>/splined.db`; the historical key name is retained for compatibility |
+| `shared_artist_art_dir` | empty | Persistent Artist-specific portrait/banner files for shared Soundtracks or Various Artists folders; Windows Setup defaults to `<temporary_cache_dir>/artist-art` |
 | `temporary_cache_dir` | `"_cache"` | Disposable downloaded/derived artwork and optional review samples; an older Config v5 file that omits it falls back to `cache_dir` |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; native-client shared-file behavior; WebGUI uses PostgreSQL instead |
 | `windows_client_lock` | `false` | Windows-only optional `.client-lock` coordination for shared SQLite. Has no effect unless `sqlite_shared` is true; older Config v5 files default to off |
 | `log_dir` | `"_logs"` | Diagnostic log location |
 
-The `_cache` and `_logs` values above are schema defaults used to describe a
+The `_db`, `_cache`, and `_logs` values above are schema defaults used to describe a
 new Rust Config model. Windows first-run Setup leaves required path choices
 unset and creates nothing until the user explicitly saves valid choices.
 

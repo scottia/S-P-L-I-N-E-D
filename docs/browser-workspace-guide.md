@@ -1,10 +1,12 @@
 # SPLINED WebGUI
 
-The supported server interface runs in a browser. Python handles providers, image processing, library and tag writes; PostgreSQL stores the catalog, completion ledger, and persistent work queue. No Python terminal interface or native terminal-input extension is installed. Windows remains a separate native Rust application with its own SQLite store.
+The supported server interface runs in a browser. Python handles providers, image processing, library and tag writes; PostgreSQL stores the catalog, completion ledger, and persistent work queue. Windows remains a separate native Rust application with its own SQLite store.
 
 ## First run
 
-Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), then open `http://127.0.0.1:8080` on the server or its configured LAN address. Sign in with the deployment's WebGUI access token. In **Settings**, select the music library path as seen by the server, cache and artist-art paths, output policy, and provider credentials. Save Settings, then choose **Refresh Library Index**. Start in `read` mode; change **mode** to `write` to enable artwork and tag writes.
+Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), then open `http://127.0.0.1:8080` on the server or its configured LAN address. Sign in with the deployment's WebGUI access token. In **Settings**, select the music library path as seen by the server, cache and V/A / OST Artist Images Directory, output policy, and provider credentials. Save Settings, then choose **Full Refresh Library Index** for the first publication. Start in `read` mode; change **mode** to `write` to enable artwork and tag writes.
+
+On later launches WebGUI checks Album folders and filenames without opening every normal track. A header action reports separate added, changed, and removed counts and applies only that delta. Normal Albums require at most one representative-file check; COMP/Fallback Albums retain full track fingerprinting. **Settings → Full Refresh Library Index** remains available when the entire PostgreSQL catalog must be deliberately republished.
 
 Every Config v5 table is editable in Settings. Array fields use JSON lists, for example `["deezer","itunes"]`. Source policy switches and order are saved with the configuration. **Provider Credentials** edits the five supported credential files and tests saved access. Blank secret fields retain their existing values; saved secrets are never sent back to the browser. Container deployments normally supply PostgreSQL credentials through environment variables, so the connection field is managed by the server.
 
@@ -22,11 +24,13 @@ Normal and COMP embedding write exact square JPEG thumbnails at `output.embedded
 
 ## Browsing and display
 
+The workspace fills the browser width, including ultrawide monitors such as 3440×1440. Resize its panels with the pane splitters; the main workspace stays aligned with the full-width header. On desktop, overview buttons follow the bottom of the resized pane while its content scrolls above them. Artist, album, and fallback views retain their separate scroll positions when you return.
+
 Artists, Albums, and Fallback remember separate scroll positions during the browser session. Returning to the same artist or album restores the overview position; expanded album grids retain expansion and scroll. Biographies collapse to five lines, with same-size themed more/less text at the end of the final visible line. Dark, Chalk, and Light persist in the browser. Browser extensions that force colors can override the selected theme.
 
 Media Filter retains the existing selected-item counter behavior. Status toggles narrow the list; this change does not introduce album-total status counters. Candidate Filter controls result visibility. Locked filters remain in place across selections.
 
-Navidrome supplies biography, similar artists, and top songs when available. Indexed songs are identified separately from ranked metadata. Artwork counts refer to actual embedded track images, not folder sidecars.
+Navidrome supplies biography, similar artists, and top songs when available. If Navidrome has no matching Artist or biography, WebGUI confirms MusicBrainz identity and obtains biography text from Last.fm; that fallback profile is retained in PostgreSQL. Indexed songs are identified separately from ranked metadata. Artwork counts refer to actual embedded track images, not folder sidecars.
 
 ## Data, recovery, and deployment
 

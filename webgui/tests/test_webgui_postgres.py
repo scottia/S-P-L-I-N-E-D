@@ -5,11 +5,13 @@ from contextlib import closing
 from io import BytesIO
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import time
 import tomllib
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode, quote
 from uuid import uuid4
 
@@ -21,6 +23,7 @@ import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC
 import tomlkit
+import splined as core
 
 from webgui.database import Database
 from webgui.runtime import Runtime
@@ -111,6 +114,22 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "adjustments": {"Brightness": 40},
         }
 
+    def test_comp_existing_title_match_uses_the_postgres_catalog(self):
+        rows = core.compilation_local_artwork_rows(
+            self.config,
+            self.cfg,
+            SimpleNamespace(
+                recording_mbid="55555555-5555-4555-8555-555555555555",
+                artist_mbid="22222222-2222-4222-8222-222222222222",
+                title="Track 1",
+            ),
+            current_album_path=self.root / "music" / "Various Artists" / "Billboard",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["album_name"], "Test Album")
+        self.assertFalse(rows[0]["recording_match"])
+        self.assertEqual(Path(rows[0]["cover_path"]), self.cover)
+
     def test_actual_cover_artist_and_album_embedding_preserve_audio(self):
         result = self.services.write_cover(self.payload())
         with Image.open(
@@ -118,17 +137,28 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         ) as preview:
             with Image.open(self.cover) as saved:
                 self.assertEqual(preview.tobytes(), saved.tobytes())
+        banner_component = {
+            "kind": "banner",
+            "image": result["image"],
+            "adjustments": {"Brightness": -35, "Vivid Color": 20},
+            "fit": {"zoom": 1.4, "x": 20, "y": -10},
+        }
+        expected_banner = self.services.preview(banner_component)
         self.services.write_artist(
             {
                 "artist_id": self.row["artist_key"],
                 "components": [
                     {"kind": "artist", "image": result["image"]},
-                    {"kind": "banner", "image": result["image"]},
+                    banner_component,
                 ],
             }
         )
         self.assertTrue(list(self.root.rglob("artist.png")))
-        self.assertTrue(list(self.root.rglob("banner.png")))
+        banner = list(self.root.rglob("banner.png"))[0]
+        with Image.open(BytesIO(self.services.catalog.image_bytes(expected_banner["image"]))) as preview:
+            with Image.open(banner) as saved:
+                self.assertEqual(preview.size, saved.size)
+                self.assertEqual(preview.tobytes(), saved.tobytes())
         staged = self.services.stage_album(self.payload())
         self.services.embed_album(staged)
         for path in self.files:
@@ -141,6 +171,18 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(
             self.services.catalog.album(self.row["album_key"])["embedded"], 2
         )
+        self.assertEqual(self.services.index_changes()["count"], 0)
+
+        # WebGUI-owned writes advance the saved inventory baseline, while a
+        # later external change to the same Album still requires review.
+        stat = self.files[0].stat()
+        os.utime(
+            self.files[0],
+            ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000),
+        )
+        changes = self.services.index_changes()
+        self.assertEqual(changes["count"], 1)
+        self.assertEqual(changes["changed"], 1)
 
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
@@ -388,6 +430,52 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(
                 db.execute("SELECT representative_mtime_ns FROM albums").fetchone()[0],
                 1777777777777777777,
+            )
+
+    def test_incremental_index_refresh_preserves_unchanged_album_rows(self):
+        with closing(self.db.connect()) as db:
+            original_updated_at = db.execute(
+                "SELECT updated_at FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()[0]
+        added = self.root / "music" / "Other Artist" / "New Album"
+        added.mkdir(parents=True)
+        added_track = added / "1.flac"
+        shutil.copy2(self.files[0], added_track)
+        audio = FLAC(added_track)
+        audio["artist"] = "Other Artist"
+        audio["albumartist"] = "Other Artist"
+        audio["album"] = "New Album"
+        audio["musicbrainz_albumid"] = "55555555-5555-4555-8555-555555555555"
+        audio["musicbrainz_artistid"] = "66666666-6666-4666-8666-666666666666"
+        audio.save()
+
+        changes = self.services.index_changes()
+        self.assertEqual(changes["added"], 1)
+        self.assertEqual(changes["changed"], 0)
+        self.assertEqual(changes["removed"], 0)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 1)
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM albums").fetchone()[0], 2
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT updated_at FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()[0],
+                original_updated_at,
+            )
+
+        shutil.rmtree(added)
+        changes = self.services.index_changes()
+        self.assertEqual(changes["removed"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["removed_albums"], 1)
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
 
 

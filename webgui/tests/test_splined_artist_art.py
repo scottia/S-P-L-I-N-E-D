@@ -11,6 +11,7 @@ from splined_artist_art import (
     ArtistAlbum, artist_targets, choose_banner, local_candidates,
     prepare_banner, prepare_portrait, saved_package, write_image,
 )
+from webgui import imaging
 
 
 ARTIST_ID = "e0bba708-bdd3-478d-84ea-c706413bedab"
@@ -87,6 +88,28 @@ class ArtistArtStorageTests(unittest.TestCase):
             new = write_image(target, prepare_portrait(image_bytes("blue"), 64))
             self.assertTrue(new.exists())
             self.assertFalse(old.exists())
+
+    def test_webgui_writes_the_adjusted_banner_preview_pixels(self) -> None:
+        with TemporaryDirectory() as temporary:
+            target = artist_targets(
+                [ArtistAlbum("Air", Path(temporary) / "Air" / "Album", ALBUM_ID, ARTIST_ID)],
+                "Air", Path(temporary) / "artist-art",
+            )[0].for_banner()
+            source = BytesIO()
+            image = Image.new("RGB", (240, 100), "red")
+            image.paste("blue", (120, 0, 240, 100))
+            image.save(source, format="PNG")
+            preview = imaging.render(
+                source.getvalue(),
+                values={"Brightness": -35, "Vivid Color": 20},
+                fit={"zoom": 1.4, "x": 20, "y": -10},
+                kind="banner",
+            )
+            prepared = imaging.encode(preview)
+            written = write_image(target, prepared)
+            with Image.open(BytesIO(prepared)) as expected, Image.open(written) as actual:
+                self.assertEqual(expected.size, actual.size)
+                self.assertEqual(expected.tobytes(), actual.tobytes())
 
 
 if __name__ == "__main__":

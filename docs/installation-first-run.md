@@ -45,7 +45,8 @@ Setup displays the real error instead of silently continuing with defaults.
 ### Windows first-run checklist
 
 1. In Setup, choose the Music Library.
-2. Choose the SQLite/database directory; it owns `splined.db`.
+2. Choose the SQLite/database directory; it owns `splined.db` and should be a
+   persistent `_db` location separate from the disposable `_cache` directory.
 3. Enable **Shared/network SQLite** only after reading the
    [shared-database guide](splined-media-database.md#before-enabling-shared-mode)
    and confirming every client uses the same physical database and reliable
@@ -151,7 +152,7 @@ according to local policy before execution.
 Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), open its browser
 address, and complete Settings. Save the server music paths, configure provider
 credentials, and refresh the library index. All artwork review and writes take
-place in the browser. The Python terminal client has been retired.
+place in the browser.
 
 PostgreSQL owns the WebGUI catalog and persistent queue. Windows continues to
 use its native SQLite store. Import a named SQLite snapshot into an empty

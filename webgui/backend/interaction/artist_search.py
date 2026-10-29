@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from html import unescape
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
@@ -14,8 +15,101 @@ import requests
 import splined as core
 
 
+MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
+LASTFM_API = "https://ws.audioscrobbler.com/2.0/"
+
+
 def _same_artist(left: str, right: str) -> bool:
     return re.sub(r"[^\w]+", "", left.casefold()) == re.sub(r"[^\w]+", "", right.casefold())
+
+
+def _plain_text(value: object) -> str:
+    return " ".join(unescape(re.sub(r"<[^>]+>", " ", str(value or ""))).split())
+
+
+def _musicbrainz_artist_match(
+    artist: str, artist_mbid: str, http: requests.Session
+) -> tuple[str, str]:
+    try:
+        return artist, str(UUID(artist_mbid.strip()))
+    except (ValueError, AttributeError):
+        pass
+    response = http.get(
+        f"{MUSICBRAINZ_API}/artist",
+        params={"query": f'artist:"{artist}"', "fmt": "json", "limit": "10"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    values = payload.get("artists", []) if isinstance(payload, dict) else []
+    if not isinstance(values, list):
+        return artist, ""
+    exact = [
+        value
+        for value in values
+        if isinstance(value, dict)
+        and _same_artist(str(value.get("name", "")), artist)
+        and str(value.get("id", ""))
+    ]
+    choices = exact or [
+        value
+        for value in values
+        if isinstance(value, dict)
+        and int(value.get("score", 0) or 0) >= 95
+        and str(value.get("id", ""))
+    ]
+    if not choices:
+        return artist, ""
+    selected = max(choices, key=lambda value: int(value.get("score", 0) or 0))
+    try:
+        matched_id = str(UUID(str(selected["id"])))
+    except (ValueError, KeyError):
+        return artist, ""
+    return str(selected.get("name") or artist), matched_id
+
+
+def discover_artist_profile(
+    artist: str,
+    artist_mbid: str,
+    credential_dir: Path,
+    *,
+    http: requests.Session | None = None,
+) -> dict[str, str] | None:
+    """Resolve MusicBrainz identity, then obtain biography text from Last.fm."""
+    path = credential_dir / "lastfm.json"
+    if not path.is_file():
+        return None
+    credential = json.loads(path.read_text(encoding="utf-8"))
+    api_key = str(credential.get("api_key", "") if isinstance(credential, dict) else "").strip()
+    if not api_key:
+        return None
+    session = http or requests.Session()
+    session.headers.update({"User-Agent": core.USER_AGENT})
+    matched_name, matched_id = _musicbrainz_artist_match(artist.strip(), artist_mbid, session)
+    parameters = {
+        "method": "artist.getinfo",
+        "api_key": api_key,
+        "format": "json",
+        "autocorrect": "1",
+    }
+    parameters["mbid" if matched_id else "artist"] = matched_id or matched_name
+    response = session.get(LASTFM_API, params=parameters, timeout=15)
+    response.raise_for_status()
+    payload = response.json()
+    found = payload.get("artist") if isinstance(payload, dict) else None
+    if not isinstance(found, dict):
+        return None
+    bio = found.get("bio") if isinstance(found.get("bio"), dict) else {}
+    biography = _plain_text(bio.get("content")) or _plain_text(bio.get("summary"))
+    if not biography:
+        return None
+    return {
+        "lookup_name": str(found.get("name") or matched_name),
+        "musicbrainz_id": matched_id,
+        "biography": biography,
+        "external_url": str(found.get("url") or ""),
+        "source": "MusicBrainz + Last.fm",
+    }
 
 
 def _allowed_image_url(url: str) -> bool:

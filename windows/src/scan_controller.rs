@@ -3,7 +3,7 @@
 use crate::application::{ApplicationState, RunPhase, ScanTarget};
 use crate::config::resolve_sources;
 use crate::gui_events::{self, ScanContext};
-use crate::media_database::media_snapshot;
+use crate::media_database::{media_snapshot, media_snapshot_incremental};
 use crate::scan_runtime::run_scan_library_read_report;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -542,7 +542,7 @@ impl ScanController {
         self.submit_decision(decision)
     }
 
-    pub fn refresh_library(&self, refresh: bool) -> Result<(), String> {
+    pub fn refresh_library(&self, full_refresh: bool) -> Result<(), String> {
         if self
             .refreshing
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -560,7 +560,11 @@ impl ScanController {
                 .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
                 .config
                 .clone();
-            let snapshot = media_snapshot(&config, refresh)?;
+            let snapshot = if full_refresh {
+                media_snapshot(&config, true)?
+            } else {
+                media_snapshot_incremental(&config)?
+            };
             self.state
                 .lock()
                 .map_err(|_| "The SPLINED application state is unavailable.".to_string())?

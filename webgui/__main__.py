@@ -1,4 +1,4 @@
-"""Start the browser server; no terminal interface is installed."""
+"""Start the browser server."""
 
 import os
 import sys

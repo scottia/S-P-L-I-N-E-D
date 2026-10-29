@@ -18,6 +18,20 @@ CREATE TABLE IF NOT EXISTS artists (
     splined_version TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS artist_art_profiles (
+    artist_name TEXT PRIMARY KEY COLLATE NOCASE,
+    lookup_name TEXT NOT NULL DEFAULT '',
+    musicbrainz_artistid TEXT NOT NULL DEFAULT '',
+    biography TEXT NOT NULL DEFAULT '',
+    external_url TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_artist_art_profiles_mbid
+    ON artist_art_profiles(musicbrainz_artistid)
+    WHERE trim(musicbrainz_artistid) <> '';
+
 CREATE TABLE IF NOT EXISTS albums (
     album_key TEXT PRIMARY KEY COLLATE NOCASE,
     artist_key TEXT NOT NULL,
