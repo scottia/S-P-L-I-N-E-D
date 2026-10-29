@@ -119,6 +119,7 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .fallback-help.expanded p{display:block}
 .fallback-help button{display:block;margin:4px 0 0 auto;border:0;background:transparent;color:var(--yellow);font-weight:800;cursor:pointer}
 .hero.fallback-overview .hero-lower{margin-top:3px}
+.fallback-empty-copy{position:relative;z-index:1;max-width:620px;margin:18px 8px;padding:12px 14px;border:1px solid var(--cyan);border-radius:6px;background:var(--card);color:var(--text);font-size:13px;line-height:1.5}
 .fallback-album-card{cursor:default!important}
 .fallback-report{position:relative;z-index:1;display:flex;flex-direction:column;gap:4px;margin:9px 0;padding:7px;border:2px solid var(--violet,#9b59b6);border-radius:6px;background:#381821c9}
 .fallback-report[hidden]{display:none}

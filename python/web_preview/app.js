@@ -205,7 +205,10 @@ function renderLibrary() {
       }
     }
   }
-  if (!list.childElementCount) list.append(node("p", "empty-copy", "No items match this filter."));
+  if (!list.childElementCount) list.append(node("p", "empty-copy",
+    state.libraryMode === "fallback" && !state.albumsIndex.length
+      ? "No missing-ID COMP albums in this test index."
+      : "No items match this filter."));
   renderMediaStatusChips();
 }
 function renderMediaStatusChips() {
@@ -394,6 +397,20 @@ function renderFallbackOverview() {
   hero.style.backgroundImage = "none";
   $("overviewHeading").textContent = "COMPILATION Fallback Track Embedding";
   $("overviewArtist").textContent = album ? `COMP · ${total} tracks below ↓  ${album.artist_name} > ${album.name}` : "";
+  if (!album) {
+    $("fallbackHelp").hidden = true;
+    $("albumStatusHelp").hidden = true;
+    $("albumStatusKey").hidden = true;
+    document.querySelector(".overview-actions").hidden = true;
+    document.querySelector(".meta-heading").textContent = "COMP Albums";
+    $("albumCount").textContent = "0 shown";
+    const grid = $("albumGrid"); clear(grid);
+    grid.append(node("p", "empty-copy fallback-empty-copy",
+      "No missing-ID COMP albums in this isolated test index. Select an artist to open the artist-wide COMP Report when eligible albums are available."));
+    const report = $("fallbackReport"); clear(report); report.hidden = true;
+    $("topSongs").textContent = "";
+    return;
+  }
   $("fallbackHelp").hidden = false;
   $("fallbackHelp").classList.toggle("expanded", state.fallbackHelpExpanded);
   $("fallbackHelpToggle").textContent = state.fallbackHelpExpanded ? "(less…)" : "(…more)";
@@ -1023,7 +1040,7 @@ for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums
     if (state.libraryMode === mode) return;
     ++state.selectionRequest; ++state.searchRequest;
     state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.mediaSelected.clear();
-    state.editorMode = "artist"; state.workspace = "find";
+    state.editorMode = mode === "fallback" ? "fallback" : "artist"; state.workspace = "find";
     clearFocusCandidates(); resetFocusAdjustments(); renderAll();
     loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value);
   });
