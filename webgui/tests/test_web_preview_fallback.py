@@ -30,6 +30,9 @@ class BrowserFallbackTests(unittest.TestCase):
         operations = (static / "operations.js").read_text(encoding="utf-8")
         self.assertIn('cfg.scan.shared_artist_art_dir ??= ""', operations)
         self.assertIn('keys.join(".") === "scan.sqlite_shared"', operations)
+        self.assertIn("presentQueuedCandidates(job, prompt, options)", operations)
+        self.assertIn("submitQueuedDecision(candidate.queueValue)", application)
+        self.assertIn("cover: group.cover || null", application)
 
     def test_artist_report_combines_matching_tracks_across_comp_albums(self) -> None:
         with TemporaryDirectory() as directory:
@@ -78,10 +81,18 @@ class BrowserFallbackTests(unittest.TestCase):
                 db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[1]),))
                 db.commit()
             app = PreviewApp(root, database, root, root, allow_comp_repairs=True)
+            with closing(app.connect()) as db:
+                self.assertEqual(
+                    app.fallback_thumbnail_keys(db),
+                    {"one": "first", "two": "second"},
+                )
             summary = app.artist_comp_albums("target")
             report = app.artist_comp_report("target")
             self.assertEqual([group["id"] for group in summary], ["one", "two"])
             self.assertEqual([len(group["tracks"]) for group in summary], [1, 3])
+            self.assertTrue(summary[0]["cover"].startswith("/api/fallback/thumbnail?"))
+            with Image.open(BytesIO(app.fallback_thumbnail("one", "first"))) as thumbnail:
+                self.assertEqual(thumbnail.size, (1200, 1200))
             self.assertEqual([group["id"] for group in report], ["one", "two"])
             self.assertEqual([group["tracks"][0]["completed"] for group in report], [True, True])
             self.assertFalse(report[1]["tracks"][1]["completed"])

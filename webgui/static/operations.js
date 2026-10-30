@@ -98,6 +98,12 @@ renderReview = function () {
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
+  if (state.queuedDecision) {
+    $("upscaleButton").disabled = true;
+    $("writeButton").disabled = true;
+    $("embedBatchButton").disabled = true;
+    $("writeNotice").textContent = "Queued review · preview a Candidate Artwork card, then press its Choose button.";
+  }
 };
 async function searchAlbum(releaseId = null) {
   if (!state.album) return;
@@ -139,6 +145,64 @@ async function stageAlbum() {
 async function queueAction(action, id = null, value = null, nonce = null) {
   const result = await post("/api/jobs/action", {action, id, value, nonce}); await pollJobs(); return result;
 }
+function queuedCandidate(option, index) {
+  const dimensions = String(option.resolution || "").match(/(\d+)\D+(\d+)/);
+  return {
+    ...option,
+    name: option.title || option.name || option.source || "Candidate " + (index + 1),
+    source: option.source || "Queued review",
+    kind: "cover",
+    width: Number(option.width) || Number(dimensions?.[1]) || 0,
+    height: Number(option.height) || Number(dimensions?.[2]) || 0,
+    queueNumber: index + 1,
+    queueValue: option.number ?? option.index ?? index + 1,
+  };
+}
+function clearQueuedDecision() {
+  const previous = state.queuedDecision?.previousCandidates || [];
+  state.queuedDecision = null;
+  state.candidates = previous;
+  state.compare.clear();
+  resetCandidateFilters();
+  renderSources(); renderCandidates(); renderReview();
+}
+async function submitQueuedDecision(value) {
+  const decision = state.queuedDecision;
+  if (!decision) throw new Error("This queued decision is no longer current");
+  await post("/api/jobs/action", {
+    action: "decision", id: decision.jobId, value: String(value), nonce: decision.nonce,
+  });
+  const label = decision.selected?.queueNumber || value;
+  clearQueuedDecision();
+  setStatus("Queued choice " + label + " submitted · waiting for the next decision", "busy");
+  await pollJobs();
+}
+function renderQueuedDecisionActions(host) {
+  const decision = state.queuedDecision;
+  if (!decision) return;
+  const actions = node("div", "queued-decision-actions");
+  actions.append(node("strong", "", [decision.context.artist, decision.context.album].filter(Boolean).join(" — ") || "Queued artwork review"));
+  if (decision.kind !== "musicbrainz-results") actionButton("Use suggested", () => submitQueuedDecision("s"), actions);
+  if (["normal-picker", "local-comparison"].includes(decision.kind)) actionButton("Keep / skip album", () => submitQueuedDecision("k"), actions);
+  if (decision.kind === "fallback-picker" || decision.context.musicbrainz) actionButton("MusicBrainz matches", () => submitQueuedDecision("m"), actions);
+  actionButton(decision.kind === "normal-picker" ? "Bypass album" : "Leave unchanged", () => submitQueuedDecision("b"), actions);
+  actionButton("Pause work", async () => { await queueAction("pause", decision.jobId); clearQueuedDecision(); }, actions);
+  host.append(actions);
+}
+function presentQueuedCandidates(job, prompt, options) {
+  if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const context = prompt.context || {};
+  state.queuedDecision = {
+    jobId: job.id, nonce: prompt.nonce, kind: context.kind || "", context,
+    previousCandidates, selected: null,
+  };
+  state.workspace = "find";
+  state.candidates = options.map(queuedCandidate);
+  state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
+  renderWorkspace(); renderSources(); renderCandidates(); renderReview();
+  setStatus("Queued artwork review · choose a Candidate Artwork card", "busy");
+}
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
   const jobs = state.jobs || [];
@@ -166,23 +230,34 @@ async function pollJobs() {
   jobsPolling = true;
   try {
     state.jobs = await api("/api/jobs"); renderQueue();
-    if (state.reviewJobId && $("workspaceDialog").open) {
+    if (state.reviewJobId) {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
       const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce;
-      if (job && key !== lastPrompt) { lastPrompt = key; renderJob(job); }
+      if (job && key !== lastPrompt && (job.state === "waiting" || $("workspaceDialog").open)) {
+        lastPrompt = key; renderJob(job);
+      }
     }
   } finally { jobsPolling = false; }
 }
 async function reviewJob(id) {
-  state.reviewJobId = id; lastPrompt = ""; dialog("Queued work");
+  state.reviewJobId = id; lastPrompt = "";
   const job = (state.jobs || []).find(item => item.id === id);
-  if (job) renderJob(job); await pollJobs();
+  if (job) renderJob(job); else dialog("Queued work");
+  await pollJobs();
 }
 function renderJob(job) {
+  const prompt = job.progress.prompt;
+  const context = prompt?.context || {}, kind = context.kind;
+  const contextualOptions = prompt ? context.options || [] : [];
+  const currentOptions = prompt ? job.progress.current?.candidates?.items || [] : [];
+  const options = currentOptions.some(option => option.image) ? currentOptions : contextualOptions;
+  if (job.state === "waiting" && prompt && options.some(option => option.image)) {
+    presentQueuedCandidates(job, prompt, options);
+    return;
+  }
   const body = dialog("Queued work · " + job.kind);
   body.append(node("p", "", job.payload.name || job.progress.message || job.state));
   if (job.error) body.append(node("p", "operation-error", job.error));
-  const prompt = job.progress.prompt;
   if (job.state !== "waiting" || !prompt) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));
     if(job.result) for(const [key,value] of Object.entries(job.result)) if(typeof value!=="object") body.append(node("p","",key.replaceAll("_"," ")+": "+value));
@@ -193,17 +268,8 @@ function renderJob(job) {
     if (["paused", "failed"].includes(job.state)) actionButton("Resume", () => queueAction("retry", job.id));
     return;
   }
-  const context = prompt.context || {}, kind = context.kind;
   body.append(node("p", "", [context.artist, context.album].filter(Boolean).join(" — ") || "Choose how to continue"));
   const decide = async value => { await queueAction("decision", job.id, String(value), prompt.nonce); lastPrompt = ""; await pollJobs(); };
-  const options = context.options || job.progress.current?.candidates?.items || [];
-  const grid = node("div", "job-options"); body.append(grid);
-  for (const [index, option] of options.entries()) {
-    const card = node("div", "job-option");
-    if (option.image) card.append(image(option.image, "", "Artwork candidate"));
-    card.append(node("p", "", [option.artist, option.title || option.name || option.source, option.resolution || (option.width ? option.width + " × " + option.height : ""), option.date, option.range_type].filter(Boolean).join(" · ")));
-    actionButton("Choose " + (index + 1), () => decide(option.number || option.index || index + 1), card); grid.append(card);
-  }
   if (kind !== "musicbrainz-results") actionButton("Use suggested", () => decide("s"));
   if (kind === "normal-picker" || kind === "local-comparison") actionButton("Keep / skip this album", () => decide("k"));
   if (kind === "fallback-picker" || context.musicbrainz) actionButton("MusicBrainz matches", () => decide("m"));

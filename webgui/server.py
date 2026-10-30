@@ -368,6 +368,14 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def track_status(id: str, key: str):
         return context.require().catalog.comp_track_status(id, key)
 
+    @app.get("/api/fallback/thumbnail")
+    def fallback_thumbnail(id: str, key: str):
+        return Response(
+            context.require().catalog.fallback_thumbnail(id, key),
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
     @app.get("/api/image/{image_id}")
     def image(image_id: str):
         source = context.require().catalog.image_source("/api/image/" + image_id)

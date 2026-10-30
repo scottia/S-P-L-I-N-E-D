@@ -17,7 +17,7 @@ const state = {
   mediaSelected: new Set(), candidateFilters: new Map(), mediaFilterLocked: false, candidateFilterLocked: false,
   fx: {artist: {}, banner: {}, album: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(),
-  embedQueue: [], listRequest: 0, selectionRequest: 0, searchRequest: 0,
+  embedQueue: [], queuedDecision: null, listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false,
 };
 const scrollPositions = new Map(), scrollSurfaceKeys = new Map(), restoringScroll = new Set();
@@ -90,6 +90,7 @@ function image(src, className = "", alt = "") {
 }
 function clear(element) { element.replaceChildren(); }
 function clearFocusCandidates() {
+  state.queuedDecision = null; state.reviewJobId = null;
   state.candidates = [];
   state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null;
   state.upscalePreview = null; state.fallbackTracks = []; state.fallbackTrack = null;
@@ -118,7 +119,10 @@ function sourceKey(value) {
   return source.replace(/[^a-z]/g, "");
 }
 function candidateKind(candidate) {
-  return String(candidate.kind || "").toLowerCase().includes("banner") ? "banner" : state.editorMode === "album" ? "cover" : "artist";
+  const kind = String(candidate.kind || "").toLowerCase();
+  if (kind.includes("banner")) return "banner";
+  if (kind.includes("cover")) return "cover";
+  return state.editorMode === "album" ? "cover" : "artist";
 }
 const MEDIA_STATUSES = [["unprocessed", "Unprocessed"], ["incomplete", "Incomplete"], ["processed", "Processed"], ["bypassed", "Bypassed"], ["partial", "Partial / Error"], ["artistComplete", "Artist Complete"], ["artistBypass", "Artist Bypass"]];
 const MEDIA_STATUS_COLORS = {all: "#eef8ff", unprocessed: "#eef8ff", incomplete: "#50b9ff", processed: "#efa54e", bypassed: "#ff5c66", partial: "#b55ce4", artistComplete: "#4cd989", artistBypass: "#4099ff"};
@@ -445,14 +449,21 @@ function renderHeroContents() {
   $("artistArtEntry").setAttribute("aria-label", "Open Artist Art Enhancements");
   $("artistArtEntry").classList.toggle("active", !!artist && state.editorMode === "artist");
   const grid = $("albumGrid"); clear(grid);
-  const compIds = new Set(state.compGroups.map(group => group.id));
+  const compById = new Map(state.compGroups.map(group => [group.id, group]));
+  const compIds = new Set(compById.keys());
   const projected = state.compGroups.filter(group => !(artist?.albums || []).some(album => album.id === group.id)).map(group => ({
     id: group.id, name: group.name, year: group.year, cover: group.cover, cover_found: !!group.cover,
     album_mbid: "", compilation: true, tracks: group.tracks.length,
     embedded: group.tracks.filter(track => track.completed).length,
     status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
   }));
-  const albums = [...(artist?.albums || []).filter(album => album.album_mbid || compIds.has(album.id)), ...projected].sort((a, b) =>
+  const indexed = (artist?.albums || []).filter(album => album.album_mbid || compIds.has(album.id)).map(album => {
+    const group = compById.get(album.id);
+    // COMP cards use their recorded embedded thumbnail, never a fallback
+    // folder sidecar from the ordinary album projection.
+    return group ? {...album, cover: group.cover || null, cover_found: !!group.cover, compilation: true} : album;
+  });
+  const albums = [...indexed, ...projected].sort((a, b) =>
     albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
     || (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
     || a.name.localeCompare(b.name));
@@ -703,23 +714,26 @@ function renderSources() {
 function renderCandidates() {
   const grid = $("candidateGrid"); clear(grid);
   const query = $("candidateSearch").value.trim().toLowerCase();
-  const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || (candidate.name + " " + candidate.source).toLowerCase().includes(query)));
+  const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || ((candidate.name || "") + " " + (candidate.source || "")).toLowerCase().includes(query)));
   $("candidateCount").textContent = state.candidates.length + (state.candidates.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
-  $("candidateHint").textContent = state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
+  $("candidateHint").textContent = state.queuedDecision ? "Queued review · preview a candidate, then choose it"
+    : state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
+  if (state.queuedDecision) renderQueuedDecisionActions(grid);
   if (!visible.length) { grid.append(node("p", "empty-copy", state.editorMode === "fallback" ? "Select a COMP track above to inspect its embedded artwork. Use LAUNCH COMP to review track artwork in queued work."
     : state.candidates.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
   for (const candidate of visible) {
     const kind = candidateKind(candidate);
-    const active = state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate;
+    const active = state.queuedDecision?.selected === candidate || state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate;
     const card = node("div", "candidate-card" + (kind === "banner" ? " banner" : "") + (active ? " active" : ""));
     const picture = node("div", "candidate-picture");
     const main = node("button", "candidate-image-button"); main.type = "button"; main.setAttribute("aria-label", "Preview " + candidate.name);
-    main.append(image(candidate.image, "", candidate.name), node("span", "candidate-source-label", candidate.source));
+    if (candidate.image) main.append(image(candidate.image, "", candidate.name));
+    main.append(node("span", "candidate-source-label", candidate.source));
     main.addEventListener("click", () => selectCandidate(candidate, kind === "banner" ? "banner" : "artist")); picture.append(main);
-    if (state.editorMode === "artist") {
+    if (state.editorMode === "artist" && !state.queuedDecision) {
       if (kind !== "banner") {
         const portrait = node("button", "candidate-radio artist" + (state.selectedPortrait === candidate ? " active" : "")); portrait.type = "button"; portrait.setAttribute("aria-label", "Preview as artist image: " + candidate.name);
         portrait.addEventListener("click", () => selectCandidate(candidate, "artist")); picture.append(portrait);
@@ -733,13 +747,30 @@ function renderCandidates() {
     if (active) picture.append(node("span", "candidate-recommended", "●"));
     card.append(picture);
     const line = node("div", "candidate-card-line"); line.append(node("strong", "", candidate.recommended ? "Recommended" : candidate.name));
-    const compare = node("button", "candidate-compare" + (state.compare.has(candidate.image) ? " active" : ""), state.compare.has(candidate.image) ? "Compare ●" : "Compare ○"); compare.type = "button";
-    compare.addEventListener("click", () => { state.compare.has(candidate.image) ? state.compare.delete(candidate.image) : state.compare.add(candidate.image); renderCandidates(); });
-    line.append(compare); card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
+    const action = state.queuedDecision
+      ? node("button", "candidate-choose", "Choose " + candidate.queueNumber)
+      : node("button", "candidate-compare" + (state.compare.has(candidate.image) ? " active" : ""), state.compare.has(candidate.image) ? "Compare ●" : "Compare ○");
+    action.type = "button";
+    action.addEventListener("click", () => {
+      if (state.queuedDecision) {
+        runAction(() => submitQueuedDecision(candidate.queueValue));
+        return;
+      }
+      if (state.compare.has(candidate.image)) state.compare.delete(candidate.image);
+      else state.compare.add(candidate.image);
+      renderCandidates();
+    });
+    line.append(action); card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
   }
 }
 function selectCandidate(candidate, target) {
   state.upscalePreview = null;
+  if (state.queuedDecision) {
+    state.queuedDecision.selected = candidate;
+    renderCandidates(); renderReview();
+    setStatus("Queued candidate " + candidate.queueNumber + " previewed · press Choose to continue");
+    return;
+  }
   if (state.editorMode === "album") state.selectedCover = candidate;
   else if (target === "banner") { state.selectedBanner = candidate; state.radioCurrent = false; state.radioBanner = true; }
   else { state.selectedPortrait = candidate; state.radioCurrent = false; state.radioArtist = true; }
@@ -777,7 +808,11 @@ function renderPanes() {
 function selectedImage() {
   const frame = $("selectedFrame"); clear(frame);
   let candidate = null, url = null, type = "Current artwork", source = "Local", quality = "Current";
-  if (state.editorMode === "album") {
+  if (state.queuedDecision?.selected) {
+    candidate = state.queuedDecision.selected; url = candidate.image;
+    type = "Queued Cover Candidate"; source = candidate.source || "Queued review"; quality = "Preview";
+    if (url) frame.append(image(url, "selected-image", candidate.name));
+  } else if (state.editorMode === "album") {
     candidate = state.selectedCover; url = state.upscalePreview?.image || candidate?.image || state.album?.cover;
     type = "Front Cover"; source = state.upscalePreview ? "Upscale preview" : candidate?.source || (url ? "Album folder" : "—");
     quality = state.upscalePreview ? "Upscale Preview" : candidate ? "Preview" : "Current";
