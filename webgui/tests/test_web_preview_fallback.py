@@ -31,8 +31,19 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn('draft.scan.shared_artist_art_dir ??= ""', operations)
         self.assertIn("delete draft.scan.sqlite_shared", operations)
         self.assertIn("presentQueuedCandidates(job, prompt, options)", operations)
+        self.assertIn("await focusQueuedAlbum(state.queuedDecision)", operations)
+        self.assertIn('\"CHOOSE & SAVE\"', operations)
+        self.assertIn('context.album || job.payload?.name', operations)
+        self.assertIn('$("fullscreenButton")', operations)
+        self.assertNotIn('$("reviewWork")', operations)
         self.assertIn("submitQueuedDecision(candidate.queueValue)", application)
+        self.assertIn('\"candidate-preview\"', application)
         self.assertIn("cover: group.cover || null", application)
+        self.assertIn("compReportLoading", application)
+        self.assertIn('status: "check-error"', application)
+        document = (static / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="fullscreenButton"', document)
+        self.assertNotIn('id="reviewWork"', document)
 
     def test_artist_report_combines_matching_tracks_across_comp_albums(self) -> None:
         with TemporaryDirectory() as directory:
@@ -42,11 +53,14 @@ class BrowserFallbackTests(unittest.TestCase):
             for folder in folders:
                 folder.mkdir()
             paths = [folder / "01 Track.mp3" for folder in folders]
+            covers = [folder / "cover.jpg" for folder in folders]
             third = folders[1] / "02 Blue.mp3"
             uncredited = folders[1] / "03 Untagged.mp3"
             other_artist = folders[1] / "04 Other.mp3"
             for path in paths:
                 path.touch()
+            for index, cover_path in enumerate(covers):
+                Image.new("RGB", (640 + index, 640 + index), "navy").save(cover_path, "JPEG")
             third.touch()
             uncredited.touch()
             other_artist.touch()
@@ -64,10 +78,10 @@ class BrowserFallbackTests(unittest.TestCase):
                            "path TEXT, title TEXT, artist_name TEXT)")
                 db.execute("CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)")
                 db.execute("INSERT INTO artists VALUES ('target', '3 Doors Down')")
-                db.executemany("INSERT INTO albums VALUES (?, ?, ?, NULL, '2003', ?, ?)", [
-                    ("one", "COMP One", str(folders[0]), "", "various"),
-                    ("two", "COMP Two", str(folders[1]), None, "target"),
-                    ("identified", "Has Release ID", str(folders[2]), "release-id", "target"),
+                db.executemany("INSERT INTO albums VALUES (?, ?, ?, ?, '2003', ?, ?)", [
+                    ("one", "COMP One", str(folders[0]), str(covers[0]), "", "various"),
+                    ("two", "COMP Two", str(folders[1]), str(covers[1]), None, "target"),
+                    ("identified", "Has Release ID", str(folders[2]), str(covers[2]), "release-id", "target"),
                 ])
                 db.executemany("INSERT INTO tracks VALUES (?, ?, ?, 'Track', ?)", [
                     ("first", "one", str(paths[0]), "3 Doors Down; Guest"),
@@ -90,7 +104,9 @@ class BrowserFallbackTests(unittest.TestCase):
             report = app.artist_comp_report("target")
             self.assertEqual([group["id"] for group in summary], ["one", "two"])
             self.assertEqual([len(group["tracks"]) for group in summary], [1, 3])
-            self.assertTrue(summary[0]["cover"].startswith("/api/fallback/thumbnail?"))
+            self.assertTrue(summary[0]["cover"].startswith("/api/image/p."))
+            self.assertEqual(app.image_bytes(summary[0]["cover"]), covers[0].read_bytes())
+            self.assertNotIn("/api/fallback/thumbnail", summary[0]["cover"])
             with Image.open(BytesIO(app.fallback_thumbnail("one", "first"))) as thumbnail:
                 self.assertEqual(thumbnail.size, (1200, 1200))
             self.assertEqual([group["id"] for group in report], ["one", "two"])
@@ -108,21 +124,26 @@ class BrowserFallbackTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "index.sqlite"
+            folder_cover = root / "cover.jpg"
+            Image.new("RGB", (500, 500), "green").save(folder_cover, "JPEG")
             with closing(connect(database)) as db:
                 db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
                 db.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY, album_name TEXT, "
                            "artist_key TEXT, cover_path TEXT, track_count INTEGER, status TEXT, "
                            "compilation INTEGER, musicbrainz_albumid TEXT)")
                 db.execute("INSERT INTO artists VALUES ('various', 'Various Artists')")
-                db.executemany("INSERT INTO albums VALUES (?, ?, 'various', NULL, 10, 'unprocessed', ?, ?)", [
-                    ("soundtrack", "American Pie 2", 1, "612d3e8c-0dae-4c17-9126-1d54e76b719d"),
-                    ("unidentified-comp", "Unknown Compilation", 1, ""),
-                    ("unidentified-album", "Unknown Album", 0, None),
+                db.executemany("INSERT INTO albums VALUES (?, ?, 'various', ?, 10, 'unprocessed', ?, ?)", [
+                    ("soundtrack", "American Pie 2", None, 1, "612d3e8c-0dae-4c17-9126-1d54e76b719d"),
+                    ("unidentified-comp", "Unknown Compilation", str(folder_cover), 1, ""),
+                    ("unidentified-album", "Unknown Album", None, 0, None),
                 ])
                 db.commit()
             app = PreviewApp(root, database, root, root)
-            self.assertEqual({item["id"] for item in app.albums("", True)},
-                             {"unidentified-comp", "unidentified-album"})
+            fallback = app.albums("", True)
+            self.assertEqual({item["id"] for item in fallback}, {"unidentified-comp", "unidentified-album"})
+            projected = next(item for item in fallback if item["id"] == "unidentified-comp")
+            self.assertEqual(app.image_bytes(projected["cover"]), folder_cover.read_bytes())
+            self.assertNotIn("/api/fallback/thumbnail", projected["cover"])
             self.assertEqual(len(app.albums("", False)), 3)
 
     def test_fallback_tracks_use_embedded_art_not_folder_cover(self) -> None:

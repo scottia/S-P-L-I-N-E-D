@@ -469,6 +469,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(item["state"], "waiting", item.get("error"))
         self.assertTrue(item["progress"]["current"]["candidates"]["items"])
         prompt = item["progress"]["prompt"]
+        self.assertEqual(prompt["context"]["album_id"], row["album_key"])
         self.queue.action("decision", job["id"], "1", prompt["nonce"])
         for _ in range(120):
             item = next(
