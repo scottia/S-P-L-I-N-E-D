@@ -1,6 +1,6 @@
 # SPLINED WebGUI and PostgreSQL
 
-The container starts the Python WebGUI server. All normal operations, configuration, provider credentials, and work review take place in a browser.
+The container starts the SPLINED WebGUI service. All normal operations, configuration, provider credentials, and work review take place in a browser.
 
 The checked-in [Compose stack](compose.yaml) builds the current source and starts PostgreSQL alongside it. Published `2.0.5` images include the Python WebGUI/PostgreSQL migration. Merging source does not replace an existing registry image; the numbered release workflow publishes a new WebGUI image from `webgui/Dockerfile` only when a release is explicitly built.
 
@@ -10,12 +10,12 @@ Use your Docker/NAS stack manager to deploy the repository's Compose definition 
 
 - `SPLINED_MUSIC_DIRECTORY`: host music directory, mounted at `/music` with write access for Live Write.
 - `SPLINED_POSTGRES_PASSWORD`: long random database password.
-- `SPLINED_WEB_TOKEN`: a different long random browser access token.
+- `SPLINED_WEB_TOKEN`: a different long random administrator enrollment and recovery token. It is required for network binding, authorizes first setup and password recovery, and is not stored in PostgreSQL.
 - `SPLINED_BIND_ADDRESS`: defaults to `127.0.0.1`; use the intended LAN bind address for another computer.
 
 Maintainers can build and start the same stack with `docker compose --env-file docker/.env -f docker/compose.yaml up -d --build`. This is deployment tooling; application use requires only the browser. Docker Desktop or your NAS manager owns start/stop/restart and stack environment values.
 
-Open `http://127.0.0.1:8080` on the server, or the configured server address. Sign in, complete **Settings**, save, then **Full Refresh Library Index**. The default is Read mode. Set **mode** to `write` when ready to permit cover, artist-art, and track-tag writes. The V/A / OST Artist Images Directory is an image directory; blank uses `<Cache Directory>/artist-art`. PostgreSQL connection values are supplied to the application through standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` variables; a complete `SPLINED_DATABASE_URL` is also supported. WebGUI does not use the native `sqlite_shared` setting.
+Open `http://127.0.0.1:8080` on the server, or the configured server address. The first network visit creates the single administrator with username, password, confirmation, and `SPLINED_WEB_TOKEN`; later logins use username and password. After enrollment, **Forgot password?** validates that same unchanged token, replaces only the WebGUI password hash, and invalidates active browser sessions. Complete **Settings**, save, then **Full Refresh Library Index**. The default is Read mode. Set **mode** to `write` when ready to permit cover, artist-art, and track-tag writes. The V/A / OST Artist Images Directory is an image directory; blank uses Persistent Cache Directory itself, while any other mounted path or folder name may be selected. PostgreSQL connection values are supplied to the application through standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` variables; a complete `SPLINED_DATABASE_URL` is also supported. WebGUI does not use the native `sqlite_shared` setting.
 
 ## Persistent storage
 

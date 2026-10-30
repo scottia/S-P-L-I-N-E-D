@@ -5224,9 +5224,9 @@ mod tests {
     }
 
     #[test]
-    fn unattended_selection_accepts_only_policy_accepted_ideal_candidates() {
+    fn unattended_selection_honors_the_upscale_below_ideal_policy() {
         let range = Range::default();
-        let config = Config::default();
+        let mut config = Config::default();
         let lower = Candidate {
             source: "itunes".to_string(),
             width: range.ideal - 1,
@@ -5240,6 +5240,8 @@ mod tests {
             ..lower.clone()
         };
 
+        assert!(candidate_is_auto_ideal(&lower, &range, &config));
+        config.output.upscale_below_ideal = false;
         assert!(!candidate_is_auto_ideal(&lower, &range, &config));
         assert!(candidate_is_auto_ideal(&ideal, &range, &config));
     }

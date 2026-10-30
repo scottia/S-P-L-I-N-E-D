@@ -9,10 +9,11 @@ from uuid import uuid4
 from io import BytesIO
 from PIL import Image
 import base64
-import hmac
+import json
 import os
 import secrets
 import threading
+import time
 import tomllib
 
 from fastapi import FastAPI, Request
@@ -26,6 +27,10 @@ from webgui.runtime import Runtime
 from webgui.services import Services
 from webgui.jobs import JobQueue
 from webgui.credentials import Credentials
+from webgui.auth import AdminAuth
+
+
+SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
 
 
 class Context:
@@ -145,6 +150,45 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     )
     sessions = {}
     sessions_lock = threading.Lock()
+    login_attempts = {}
+
+    def account_auth() -> AdminAuth:
+        if not context.runtime:
+            raise ValueError("PostgreSQL must be available before creating the WebGUI administrator")
+        return AdminAuth(context.runtime.database)
+
+    def admin_setup_required() -> bool:
+        if not access_token:
+            return False
+        try:
+            return not account_auth().account_exists()
+        except Exception:
+            return True
+
+    def auth_rate_key(request: Request, purpose: str) -> str:
+        host = request.client.host if request.client else "unknown"
+        return f"{purpose}:{host}"
+
+    def require_auth_rate(key: str) -> tuple[int, float]:
+        with sessions_lock:
+            failures, blocked_until = login_attempts.get(key, (0, 0.0))
+        if time.monotonic() < blocked_until:
+            raise PermissionError("Too many sign-in attempts; wait briefly before retrying")
+        return failures, blocked_until
+
+    def record_auth_failure(key: str, failures: int) -> None:
+        failures += 1
+        with sessions_lock:
+            login_attempts[key] = (
+                0,
+                time.monotonic() + 30,
+            ) if failures >= 5 else (failures, 0.0)
+            if len(login_attempts) > 1000:
+                login_attempts.clear()
+
+    def clear_auth_failures(key: str) -> None:
+        with sessions_lock:
+            login_attempts.pop(key, None)
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -188,12 +232,15 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 sessions[sid] = {
                     "csrf": secrets.token_urlsafe(32),
                     "authenticated": not bool(access_token),
+                    "username": "Local administrator" if not access_token else "",
                 }
             session = sessions[sid]
         request.state.session = session
         public = request.url.path in {
             "/api/status",
             "/api/login",
+            "/api/admin/setup",
+            "/api/admin/recover",
         } or not request.url.path.startswith("/api/")
         if not public and not session["authenticated"]:
             return JSONResponse({"error": "Sign in to SPLINED"}, status_code=401)
@@ -250,6 +297,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             "csrf": session["csrf"],
             "authenticated": session["authenticated"],
             "auth_required": bool(access_token),
+            "admin_setup_required": admin_setup_required(),
+            "username": session.get("username", "") if session["authenticated"] else "",
             "setup_required": not bool(
                 r and context.config_file.is_file() and r.music.is_dir()
             ),
@@ -278,10 +327,80 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.post("/api/login")
     async def login(request: Request):
         value = await request.json()
-        if not hmac.compare_digest(str(value.get("token", "")), access_token):
-            raise PermissionError("Incorrect access token")
-        request.state.session["authenticated"] = True
+        session = request.state.session
+        if not access_token:
+            session.update(authenticated=True, username="Local administrator")
+            return {"ok": True, "username": session["username"]}
+        if admin_setup_required():
+            raise PermissionError("Create the WebGUI administrator before signing in")
+        rate_key = auth_rate_key(request, "login")
+        failures, _ = require_auth_rate(rate_key)
+        username = account_auth().authenticate(
+            str(value.get("username", "")), str(value.get("password", ""))
+        )
+        if not username:
+            record_auth_failure(rate_key, failures)
+            raise PermissionError("Incorrect username or password")
+        clear_auth_failures(rate_key)
+        session.update(
+            authenticated=True,
+            username=username,
+        )
+        return {"ok": True, "username": username}
+
+    @app.post("/api/admin/setup")
+    async def setup_admin(request: Request):
+        value = await request.json()
+        rate_key = auth_rate_key(request, "setup")
+        failures, _ = require_auth_rate(rate_key)
+        try:
+            username = account_auth().setup(
+                str(value.get("username", "")),
+                str(value.get("password", "")),
+                str(value.get("confirmation", "")),
+                str(value.get("token", "")),
+                access_token,
+            )
+        except PermissionError:
+            record_auth_failure(rate_key, failures)
+            raise
+        clear_auth_failures(rate_key)
+        request.state.session.update(authenticated=True, username=username)
+        return {"ok": True, "username": username}
+
+    @app.post("/api/admin/recover")
+    async def recover_admin(request: Request):
+        if admin_setup_required():
+            raise ValueError("Create the WebGUI administrator before using password recovery")
+        value = await request.json()
+        rate_key = auth_rate_key(request, "recovery")
+        failures, _ = require_auth_rate(rate_key)
+        try:
+            username = account_auth().reset_password(
+                str(value.get("username", "")),
+                str(value.get("password", "")),
+                str(value.get("confirmation", "")),
+                str(value.get("token", "")),
+                access_token,
+            )
+        except PermissionError:
+            record_auth_failure(rate_key, failures)
+            raise
+        context.services.audit("reset-admin-password", username)
+        with sessions_lock:
+            sessions.clear()
+            login_attempts.clear()
+        request.state.session.update(authenticated=False, username="")
+        return {"ok": True, "username": username}
+
+    @app.post("/api/logout")
+    def logout(request: Request):
+        request.state.session.update(authenticated=not bool(access_token), username="")
         return {"ok": True}
+
+    @app.get("/api/settings/contract")
+    def settings_contract():
+        return json.loads(SETTINGS_UI.read_text(encoding="utf-8"))
 
     @app.get("/api/settings")
     def settings():
@@ -290,6 +409,16 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.post("/api/settings")
     def save_settings(payload: dict):
         return context.configure((payload).get("config"))
+
+    @app.get("/api/diagnostics")
+    def diagnostics():
+        context.require()
+        return context.services.diagnostics()
+
+    @app.get("/api/storage")
+    def storage():
+        context.require()
+        return context.services.storage_summary()
 
     @app.get("/api/credentials/{provider}")
     def credentials(provider: str):
@@ -368,6 +497,14 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def track_status(id: str, key: str):
         return context.require().catalog.comp_track_status(id, key)
 
+    @app.get("/api/fallback/thumbnail")
+    def fallback_thumbnail(id: str, key: str):
+        return Response(
+            context.require().catalog.fallback_thumbnail(id, key),
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
     @app.get("/api/image/{image_id}")
     def image(image_id: str):
         source = context.require().catalog.image_source("/api/image/" + image_id)
@@ -405,10 +542,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def upscale(payload: dict):
         value = payload
         value["upscale"] = True
-        return dict(
-            context.require().preview(value),
-            reason="Prepared pixels; original artwork is unchanged until written",
-        )
+        return context.require().preview(value)
 
     @app.post("/api/artwork/cover")
     def write_cover(payload: dict):

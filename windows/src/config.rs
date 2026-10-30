@@ -52,6 +52,7 @@ pub enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verbosity {
+    None,
     Error,
     Warn,
     Info,
@@ -190,7 +191,7 @@ pub struct LibraryConfig {
     pub ignored_subs: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SamplesConfig {
     pub sample_write: bool,
@@ -375,15 +376,6 @@ impl Default for LibraryConfig {
     }
 }
 
-impl Default for SamplesConfig {
-    fn default() -> Self {
-        Self {
-            sample_write: true,
-            sample_dir: String::new(),
-        }
-    }
-}
-
 impl Default for CredentialsConfig {
     fn default() -> Self {
         Self {
@@ -402,7 +394,7 @@ impl Default for OutputConfig {
             square_mode: "crop".to_string(),
             square_round_to: 16,
             embedded_thumbnail_size: 1200,
-            upscale_below_ideal: false,
+            upscale_below_ideal: true,
             upscale_max_percent: 200,
             upscale_adaptive_defaults: true,
             upscale_picture_percent: 2,
@@ -996,7 +988,7 @@ mod tests {
         assert!(config.scan.scan_library_dir.is_empty());
         assert!(config.library.music_library.is_empty());
         assert!(config.library.ignored_subs.is_empty());
-        assert!(config.samples.sample_write);
+        assert!(!config.samples.sample_write);
         assert!(config.samples.sample_dir.is_empty());
         assert_eq!(config.credentials.credential_dir, "credentials");
         assert!(!config.aisplined.enabled);
@@ -1009,6 +1001,7 @@ mod tests {
         );
         assert!(config.output.preserve_file);
         assert_eq!(config.output.embedded_thumbnail_size, 1200);
+        assert!(config.output.upscale_below_ideal);
         assert!(config.output.upscale_adaptive_defaults);
         assert_eq!(config.output.upscale_picture_percent, 2);
         assert_eq!(config.output.upscale_sharpen_percent, 4);

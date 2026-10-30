@@ -16,7 +16,6 @@ ignored_subs = []
 [scan]
 scan_library_dir = ""
 scan_mode = true
-library_scan = false
 scan_mode_timeout = 24
 cache_dir = "_cache"
 shared_artist_art_dir = "_cache/artist-art"
@@ -34,8 +33,21 @@ preserve_file = true
 square = true
 square_mode = "crop"
 square_round_to = 16
-upscale_below_ideal = false
+upscale_below_ideal = true
 upscale_max_percent = 200
+upscale_adaptive_defaults = true
+upscale_picture_percent = 2
+upscale_sharpen_percent = 4
+upscale_softness_percent = 0
+upscale_contrast_percent = 10
+upscale_exposure_percent = -5
+upscale_brightness_percent = -1
+upscale_gamma_percent = -6
+upscale_color_temperature = 0
+upscale_hue_degrees = 0
+upscale_darkness_percent = 0
+upscale_tint_percent = 0
+upscale_tint_color = "#FFB36B"
 evaluate_final_image = true
 
 [range]
@@ -130,8 +142,8 @@ allow_below_minimum_fallback = false
 primary_image_only = true
 
 [samples]
-sample_write = true
-sample_dir = "samples"
+sample_write = false
+sample_dir = ""
 
 [credentials]
 credential_dir = "credentials"
