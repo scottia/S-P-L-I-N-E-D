@@ -141,7 +141,10 @@ renderReview = function () {
   const writable = state.server?.mode === "write";
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack : !((state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+  const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
   $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !(state.selectedCover?.image || state.album?.cover);
+  $("embedBatchButton").classList.toggle("staged", staged);
+  $("embedBatchButton").title = staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
@@ -297,6 +300,16 @@ function renderQueue() {
   $("embedTab").classList.toggle("has-queued-albums", !!pending.length);
   $("removeAllStaged").disabled = !jobs.some(job => !["running", "waiting"].includes(job.state));
 };
+async function refreshCompletedAlbum(albumId) {
+  if (!albumId) return;
+  const album = await api("/api/album?id=" + encodeURIComponent(albumId));
+  if (state.album?.id === albumId) state.album = album;
+  if (state.artist?.id === album.artist_id) {
+    state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    state.compGroups = await api("/api/artist/comp-albums?id=" + encodeURIComponent(album.artist_id));
+  }
+  renderLibrary(); renderHero(); renderPanes(); renderReview();
+}
 async function refreshQueuedAlbumAfterSave() {
   if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
     const selected = state.compTrack ? {albumId: state.compTrack.albumId, key: state.compTrack.key} : null;
@@ -319,7 +332,16 @@ async function pollJobs() {
   if (jobsPolling || !state.server?.authenticated || state.server?.setup_required) return;
   jobsPolling = true;
   try {
+    const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
+    const priorStaged = new Set(state.embedQueue.map(item => item.id));
     state.jobs = await api("/api/jobs"); renderQueue();
+    const stagedChanged = priorStaged.size !== state.embedQueue.length
+      || state.embedQueue.some(item => !priorStaged.has(item.id));
+    const completedAlbums = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"
+      && priorJobs.has(job.id) && priorJobs.get(job.id).state !== "done")
+      .map(job => job.payload?.album_id).filter(Boolean);
+    for (const albumId of completedAlbums) await refreshCompletedAlbum(albumId);
+    if (stagedChanged && !completedAlbums.length) { renderHero(); renderReview(); }
     if (state.reviewJobId) {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
       const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce;
@@ -981,6 +1003,7 @@ applyPreviewEffects=function () {
       requests.push((async()=>{
         const result=await post('/api/preview/render',componentPayload(kind,url,extra));
         if (generation!==previewGeneration || !element.isConnected) return;
+        state.renderedPreview[kind==='cover'?'album':kind]=result;
         element.src=result.image;element.style.filter='none';element.style.transform='none';
       })());
     };
