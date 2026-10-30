@@ -106,6 +106,12 @@ function coverPayload() {
     {album_id: state.album.id, upscale: !!state.upscalePreview});
 }
 async function writeArtwork() {
+  if (state.queuedDecision) {
+    const candidate = state.queuedDecision.selected;
+    if (!candidate) throw new Error("Preview a queued candidate before choosing it");
+    await submitQueuedDecision(candidate.queueValue);
+    return;
+  }
   if (state.editorMode === "artist" && state.compReportVisible) {
     if (state.compTrack) await enqueueComp(state.compTrack.albumId, [state.compTrack.key]);
     return;
@@ -141,9 +147,10 @@ renderReview = function () {
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
   if (state.queuedDecision) {
     $("upscaleButton").disabled = true;
-    $("writeButton").disabled = true;
+    $("writeButton").textContent = writable ? "CHOOSE & SAVE" : "CHOOSE READ-ONLY";
+    $("writeButton").disabled = !state.queuedDecision.selected;
     $("embedBatchButton").disabled = true;
-    $("writeNotice").textContent = "Queued review · preview a Candidate Artwork card, then press its Choose button.";
+    $("writeNotice").textContent = writable ? "Live Write queued review · preview a Candidate Artwork card, then Choose & Save." : "Read-only queued review · choices are evaluated but files are not saved.";
   }
 };
 async function searchAlbum(releaseId = null) {
@@ -207,6 +214,29 @@ function clearQueuedDecision() {
   resetCandidateFilters();
   renderSources(); renderCandidates(); renderReview();
 }
+async function focusQueuedAlbum(decision) {
+  const albumId = decision?.context?.album_id;
+  if (!albumId || state.album?.id === albumId) return;
+  const request = ++state.selectionRequest;
+  const album = await api("/api/album?id=" + encodeURIComponent(albumId));
+  if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
+  let artist = state.artist;
+  if (artist?.id !== album.artist_id) {
+    artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
+  }
+  const fallback = !String(album.album_mbid || "").trim();
+  const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId)) : [];
+  if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
+  state.artist = artist; state.artistMetadata = null; state.album = album;
+  state.editorMode = fallback ? "fallback" : "album"; state.workspace = "find";
+  state.fallbackTracks = tracks; state.fallbackTrack = null; state.upscalePreview = null;
+  state.compGroups = []; state.compReportVisible = false; state.compTrack = null;
+  decision.previousCandidates = fallback ? [] : album.candidates || [];
+  markSelectedAlbum(album);
+  renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
+  loadArtistMetadata(album.artist_id);
+}
 async function submitQueuedDecision(value) {
   const decision = state.queuedDecision;
   if (!decision) throw new Error("This queued decision is no longer current");
@@ -230,7 +260,7 @@ function renderQueuedDecisionActions(host) {
   actionButton("Pause work", async () => { await queueAction("pause", decision.jobId); clearQueuedDecision(); }, actions);
   host.append(actions);
 }
-function presentQueuedCandidates(job, prompt, options) {
+async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
   const context = prompt.context || {};
@@ -241,16 +271,25 @@ function presentQueuedCandidates(job, prompt, options) {
   state.workspace = "find";
   state.candidates = options.map(queuedCandidate);
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
+  await focusQueuedAlbum(state.queuedDecision);
+  if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
-  setStatus("Queued artwork review · choose a Candidate Artwork card", "busy");
+  setStatus("Queued artwork review · preview a candidate, then choose and save", "busy");
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
   const jobs = state.jobs || [];
   if (!jobs.length) host.append(node("p", "empty-copy", "No queued work yet."));
   for (const job of jobs) {
+    const prompt = job.progress?.prompt || {}, context = prompt.context || {};
+    const title = [context.artist || job.payload?.artist, context.album || job.payload?.name]
+      .filter(Boolean).join(" — ") || ({comp: "COMP track artwork", "embed-album": "Album embedding", scan: "Artwork scan", index: "Library index"}[job.kind] || "Artwork work");
+    const kind = job.kind === "comp" ? "COMP track artwork" : job.kind === "embed-album" ? "Album track embedding"
+      : job.kind === "scan" ? "Artwork scan" : job.kind === "index" ? "Library index" : "Artwork work";
+    const detail = [kind, job.state, prompt.label || job.progress.message,
+      job.progress.total ? (job.progress.completed || 0) + "/" + job.progress.total : ""].filter(Boolean).join(" · ");
     const card = node("div", "queue-card state-" + job.state), copy = node("div", "row-copy");
-    copy.append(node("strong", "", job.payload.name || job.kind), node("small", "", job.state + (job.progress.message ? " · " + job.progress.message : "") + (job.progress.total ? " · " + (job.progress.completed || 0) + "/" + job.progress.total : "")));
+    copy.append(node("strong", "", title), node("small", "", detail));
     if (job.error) copy.append(node("p", "operation-error", job.error)); card.append(copy);
     if (job.state === "waiting") actionButton("Review", () => reviewJob(job.id), card);
     if (["failed", "paused"].includes(job.state)) actionButton("Resume", () => queueAction("retry", job.id), card);
@@ -262,9 +301,17 @@ function renderQueue() {
   state.embedQueue = pending.filter(job => job.kind === "embed-album").map(job => ({...job.payload, id: job.payload.album_id}));
   $("embedTab").classList.toggle("has-queued-albums", !!pending.length);
   $("removeAllStaged").disabled = !jobs.some(job => !["running", "waiting"].includes(job.state));
-  const waiting = jobs.filter(job => job.state === "waiting");
-  $("reviewWork").hidden = !waiting.length; $("reviewWork").textContent = "Review queued work (" + waiting.length + ")";
 };
+async function refreshQueuedAlbumAfterSave() {
+  const albumId = state.album?.id;
+  if (!albumId) return;
+  const album = await api("/api/album?id=" + encodeURIComponent(albumId));
+  if (state.album?.id !== albumId) return;
+  state.album = album;
+  if (state.artist?.id === album.artist_id) state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+  if (state.editorMode === "fallback") state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
+  renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
+}
 let jobsPolling = false, lastPrompt = "";
 async function pollJobs() {
   if (jobsPolling || !state.server?.authenticated || state.server?.setup_required) return;
@@ -275,7 +322,17 @@ async function pollJobs() {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
       const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce;
       if (job && key !== lastPrompt && (job.state === "waiting" || $("workspaceDialog").open)) {
-        lastPrompt = key; renderJob(job);
+        lastPrompt = key; await renderJob(job);
+      }
+      if (job && job.state !== state.reviewJobState) {
+        state.reviewJobState = job.state;
+        if (job.state === "done") {
+          await refreshQueuedAlbumAfterSave();
+          state.reviewJobId = null;
+          setStatus("Queued artwork saved · " + (state.album?.name || "work complete"));
+        } else if (job.state === "failed") {
+          setStatus(job.error || "Queued artwork failed", "error");
+        }
       }
     }
   } finally { jobsPolling = false; }
@@ -283,17 +340,18 @@ async function pollJobs() {
 async function reviewJob(id) {
   state.reviewJobId = id; lastPrompt = "";
   const job = (state.jobs || []).find(item => item.id === id);
-  if (job) renderJob(job); else dialog("Queued work");
+  state.reviewJobState = job?.state || "";
+  if (job) await renderJob(job); else dialog("Queued work");
   await pollJobs();
 }
-function renderJob(job) {
+async function renderJob(job) {
   const prompt = job.progress.prompt;
   const context = prompt?.context || {}, kind = context.kind;
   const contextualOptions = prompt ? context.options || [] : [];
   const currentOptions = prompt ? job.progress.current?.candidates?.items || [] : [];
   const options = currentOptions.some(option => option.image) ? currentOptions : contextualOptions;
   if (job.state === "waiting" && prompt && options.some(option => option.image)) {
-    presentQueuedCandidates(job, prompt, options);
+    await presentQueuedCandidates(job, prompt, options);
     return;
   }
   const body = dialog("Queued work · " + job.kind);
@@ -816,7 +874,26 @@ async function upscaleArtist() {
 $("startStaged").addEventListener("click", () => runAction(() => queueAction("start")));
 $("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction("pause-after")));
 $("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction("pause")));
-$("reviewWork").addEventListener("click", () => runAction(() => reviewJob(state.jobs.find(job => job.state === "waiting").id)));
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function updateFullscreenButton() {
+  $("fullscreenButton").textContent = fullscreenElement() ? "⛶ Exit Full Screen" : "⛶ Full Screen";
+}
+$("fullscreenButton").addEventListener("click", () => runAction(async () => {
+  if (fullscreenElement()) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (!exit) throw new Error("This browser cannot exit full screen from the page");
+    await exit.call(document);
+  } else {
+    const enter = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+    if (!enter) throw new Error("This browser does not support page full screen; use Add to Home Screen instead");
+    await enter.call(document.documentElement);
+  }
+  updateFullscreenButton();
+}));
+document.addEventListener("fullscreenchange", updateFullscreenButton);
+document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
 $("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
   $("applyLibraryChanges").hidden = true;
   const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});

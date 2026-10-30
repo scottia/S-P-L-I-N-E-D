@@ -61,7 +61,7 @@ const state = {
   upscalePreview: null,
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
   fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
-  compGroups: [], compReportVisible: false, compPreviewMode: false, compCollapsed: new Set(),
+  compGroups: [], compReportVisible: false, compReportLoading: false, compPreviewMode: false, compCollapsed: new Set(),
   compTrack: null, compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0, compRunIndex: -1,
   compRepairEnabled: false, compBusy: false,
   activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
@@ -69,7 +69,7 @@ const state = {
   mediaSelected: new Set(), candidateFilters: new Map(), mediaFilterLocked: false, candidateFilterLocked: false,
   fx: {artist: {}, banner: {}, album: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
-  embedQueue: [], queuedDecision: null, listRequest: 0, selectionRequest: 0, searchRequest: 0,
+  embedQueue: [], queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false,
 };
 function applyGraphicalEnhancement(value) {
@@ -158,7 +158,7 @@ function clearFocusCandidates() {
   state.upscalePreview = null; state.fallbackTracks = []; state.fallbackTrack = null;
   state.fallbackPreviewOnly = false; state.fallbackRun = false; ++state.fallbackTrackRequest;
   state.fallbackPreviewMode = false; state.fallbackReportExpanded = true; state.fallbackHelpExpanded = false;
-  state.compGroups = []; state.compReportVisible = false; state.compPreviewMode = false;
+  state.compGroups = []; state.compReportVisible = false; state.compReportLoading = false; state.compPreviewMode = false;
   state.compCollapsed.clear(); state.compTrack = null; state.compRunIndex = -1;
   ++state.compTrackRequest; ++state.compStatusRequest; ++state.compReportRequest;
   state.compare.clear();
@@ -516,8 +516,8 @@ function renderHeroContents() {
   }));
   const indexed = (artist?.albums || []).filter(album => album.album_mbid || compIds.has(album.id)).map(album => {
     const group = compById.get(album.id);
-    // COMP cards use their recorded embedded thumbnail, never a fallback
-    // folder sidecar from the ordinary album projection.
+    // COMP album cards use their indexed folder cover. Track thumbnails are
+    // separate COMP-report evidence and never replace the album-card cover.
     return group ? {...album, cover: group.cover || null, cover_found: !!group.cover, compilation: true} : album;
   });
   const albums = [...indexed, ...projected].sort((a, b) =>
@@ -529,6 +529,8 @@ function renderHeroContents() {
   if (!albums.length) { grid.append(node("p", "empty-copy", "Choose an artist to view albums.")); renderArtistCompReport(); return; }
   for (const album of albums) {
     const button = node("button", "album-card windows-card"); button.type = "button";
+    button.dataset.compAlbum = compIds.has(album.id) ? "true" : "false";
+    button.disabled = compIds.has(album.id) && state.compReportLoading;
     const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
     button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + (album.status || "unprocessed"));
     const kind = albumBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
@@ -632,6 +634,7 @@ function renderArtistCompReport() {
   const purple = tracks.filter(track => track.status === "purple").length;
   const blue = tracks.filter(track => track.status === "blue").length;
   const checking = tracks.filter(track => track.status === "checking").length;
+  const checkErrors = tracks.filter(track => track.status === "check-error").length;
   const toolbar = node("div", "fallback-toolbar");
   const preview = node("button", "fallback-preview-radio" + (state.compPreviewMode ? " active" : ""));
   preview.type = "button"; preview.title = "Preview existing embedded track art";
@@ -648,12 +651,13 @@ function renderArtistCompReport() {
   const close = node("button", "fallback-close", "Close"); close.type = "button";
   close.addEventListener("click", () => { if (state.compBusy) return; state.compReportVisible = false; state.compTrack = null; state.upscalePreview = null; state.candidates = state.artist?.local_candidates || []; renderHero(); renderCandidates(); renderReview(); });
   toolbar.append(preview, heading, repair, launch, close); report.append(toolbar);
-  report.append(node("div", "fallback-report-summary", `${state.compGroups.length} albums · ${tracks.length} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}`));
+  report.append(node("div", "fallback-report-summary", `${state.compGroups.length} albums · ${tracks.length} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
   const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
   for (const group of state.compGroups) {
     const collapsed = state.compCollapsed.has(group.id);
     const groupComplete = group.tracks.filter(track => track.completed).length;
     const albumRow = node("button", "fallback-report-album"); albumRow.type = "button";
+    albumRow.dataset.compAlbumId = group.id;
     albumRow.append(node("strong", "", (collapsed ? "▸  " : "▾  ") + group.name),
       node("span", "", `${group.tracks.length} tracks · ${groupComplete} recorded, ${group.tracks.length - groupComplete} need artwork`));
     albumRow.addEventListener("click", () => { if (collapsed) state.compCollapsed.delete(group.id); else state.compCollapsed.add(group.id); renderArtistCompReport(); });
@@ -662,7 +666,8 @@ function renderArtistCompReport() {
     for (const item of group.tracks) {
       const selected = state.compTrack?.key === item.key && state.compTrack?.albumId === group.id;
       const row = node("button", "fallback-track" + (selected ? " selected" : "")); row.type = "button";
-      row.classList.add(item.status === "purple" ? "purple" : item.status === "checking" ? "checking" : item.completed ? "complete" : "pending");
+      row.classList.add(item.status === "purple" ? "purple" : ["checking", "check-error"].includes(item.status) ? "checking" : item.completed ? "complete" : "pending");
+      if (item.status === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
       row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file));
       if (selected && state.compTrack?.image) row.append(image(state.compTrack.image, "fallback-inline-thumb", "Existing track art"));
       row.addEventListener("click", () => selectArtistCompTrack(group.id, item.key)); report.append(row);
@@ -672,27 +677,35 @@ function renderArtistCompReport() {
 
 async function openArtistCompReport(albumId = "") {
   if (!state.artist) { setStatus("Choose an Artist before opening COMP Report", "error"); return; }
+  if (state.compReportLoading) return;
   const request = ++state.compReportRequest, artistId = state.artist.id;
+  ++state.compStatusRequest; ++state.compTrackRequest;
+  state.compReportLoading = true; state.compTrack = null;
   $("compReportButton").disabled = true;
+  renderHero();
   setStatus("Loading COMP report…", "busy");
   try {
     const compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(artistId));
     if (request !== state.compReportRequest || artistId !== state.artist?.id) return;
     state.compGroups = compGroups;
-    if (!state.compGroups.length) { setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
+    state.compReportLoading = false;
+    if (!state.compGroups.length) { state.compReportVisible = false; setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
     state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
     if (albumId) state.compCollapsed.delete(albumId);
     state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();
     const report = $("fallbackReport");
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (!state.compReportVisible) return;
+      if (!state.compReportVisible || request !== state.compReportRequest) return;
       const viewport = $("overviewContent");
-      viewport.scrollTop += report.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12;
+      const target = albumId
+        ? [...report.querySelectorAll("[data-comp-album-id]")].find(row => row.dataset.compAlbumId === albumId)
+        : report;
+      viewport.scrollTop += (target || report).getBoundingClientRect().top - viewport.getBoundingClientRect().top - 12;
     }));
-    setStatus(`COMP report ready · ${state.compGroups.length} albums · ${state.compGroups.reduce((count, group) => count + group.tracks.length, 0)} matching tracks`);
+    setStatus(`COMP report loaded · ${state.compGroups.length} albums · validating recorded thumbnails`, "busy");
     probeArtistCompStatuses();
   } catch (error) {
-    if (request === state.compReportRequest) setStatus(error.message, "error");
+    if (request === state.compReportRequest) { state.compReportLoading = false; setStatus(error.message, "error"); renderHero(); }
   } finally {
     if (request === state.compReportRequest) $("compReportButton").disabled = false;
   }
@@ -702,6 +715,10 @@ async function probeArtistCompStatuses() {
   const request = ++state.compStatusRequest, artistId = state.artist?.id;
   const targets = state.compGroups.flatMap(group => group.tracks.filter(track => track.completed)
     .map(track => ({group, track})));
+  if (!targets.length) {
+    setStatus(`COMP report ready · ${state.compGroups.length} albums · no recorded thumbnails to validate`);
+    return;
+  }
   for (let offset = 0; offset < targets.length; offset += 3) {
     const batch = targets.slice(offset, offset + 3);
     const results = await Promise.allSettled(batch.map(({group, track}) =>
@@ -709,10 +726,13 @@ async function probeArtistCompStatuses() {
     if (request !== state.compStatusRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
     results.forEach((result, index) => {
       if (result.status === "fulfilled") Object.assign(batch[index].track, result.value);
-      else batch[index].track.status = "purple";
+      else Object.assign(batch[index].track, {status: "check-error", repairable: false, checkError: result.reason?.message || "Thumbnail validation failed"});
     });
     renderArtistCompReport();
   }
+  if (request !== state.compStatusRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
+  const failures = targets.filter(({track}) => track.status === "check-error").length;
+  setStatus(`COMP report ready · ${state.compGroups.length} albums · ${targets.length - failures} recorded thumbnails validated${failures ? ` · ${failures} retry needed` : ""}`, failures ? "error" : "ready");
 }
 
 async function selectArtistCompTrack(albumId, key) {
@@ -721,7 +741,7 @@ async function selectArtistCompTrack(albumId, key) {
   setStatus("Loading existing COMP track artwork…", "busy");
   try {
     const track = await api("/api/fallback/track?id=" + encodeURIComponent(albumId) + "&key=" + encodeURIComponent(key));
-    if (request !== state.compTrackRequest || artistId !== state.artist?.id) return;
+    if (request !== state.compTrackRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
     state.compTrack = {...track, albumId};
     renderArtistCompReport(); renderReview();
     setStatus(`${track.completed ? "Recorded" : "Blue"} COMP track · ${track.file}${track.image ? " · existing art available" : " · artwork needed"}`);
@@ -774,7 +794,7 @@ function renderCandidates() {
   const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || ((candidate.name || "") + " " + (candidate.source || "")).toLowerCase().includes(query)));
   $("candidateCount").textContent = state.candidates.length + (state.candidates.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
-  $("candidateHint").textContent = state.queuedDecision ? "Queued review · preview a candidate, then choose it"
+  $("candidateHint").textContent = state.queuedDecision ? "Queued review · Preview, then Choose & Save"
     : state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
@@ -784,7 +804,7 @@ function renderCandidates() {
   for (const candidate of visible) {
     const kind = candidateKind(candidate);
     const active = state.queuedDecision?.selected === candidate || state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate;
-    const card = node("div", "candidate-card" + (kind === "banner" ? " banner" : "") + (active ? " active" : ""));
+    const card = node("div", "candidate-card" + (kind === "banner" ? " banner" : "") + (state.queuedDecision ? " queued" : "") + (active ? " active" : ""));
     const picture = node("div", "candidate-picture");
     const main = node("button", "candidate-image-button"); main.type = "button"; main.setAttribute("aria-label", "Preview " + candidate.name);
     if (candidate.image) main.append(image(candidate.image, "", candidate.name));
@@ -804,15 +824,17 @@ function renderCandidates() {
     if (active) picture.append(node("span", "candidate-recommended", "●"));
     card.append(picture);
     const line = node("div", "candidate-card-line"); line.append(node("strong", "", candidate.recommended ? "Recommended" : candidate.name));
-    const action = state.queuedDecision
-      ? node("button", "candidate-choose", "Choose " + candidate.queueNumber)
-      : node("button", "candidate-compare" + (state.compare.has(candidate.image) ? " active" : ""), state.compare.has(candidate.image) ? "Compare ●" : "Compare ○");
+    if (state.queuedDecision) {
+      const preview = node("button", "candidate-preview", active ? "Previewing" : "Preview"); preview.type = "button";
+      preview.addEventListener("click", () => selectCandidate(candidate, "artist"));
+      const action = node("button", "candidate-choose", (state.server?.mode === "write" ? "Choose & Save " : "Choose Read-Only ") + candidate.queueNumber); action.type = "button";
+      action.addEventListener("click", () => runAction(() => submitQueuedDecision(candidate.queueValue)));
+      line.append(preview, action); card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
+      continue;
+    }
+    const action = node("button", "candidate-compare" + (state.compare.has(candidate.image) ? " active" : ""), state.compare.has(candidate.image) ? "Compare ●" : "Compare ○");
     action.type = "button";
     action.addEventListener("click", () => {
-      if (state.queuedDecision) {
-        runAction(() => submitQueuedDecision(candidate.queueValue));
-        return;
-      }
       if (state.compare.has(candidate.image)) state.compare.delete(candidate.image);
       else state.compare.add(candidate.image);
       renderCandidates();
@@ -825,7 +847,7 @@ function selectCandidate(candidate, target) {
   if (state.queuedDecision) {
     state.queuedDecision.selected = candidate;
     renderCandidates(); renderReview();
-    setStatus("Queued candidate " + candidate.queueNumber + " previewed · press Choose to continue");
+    setStatus("Queued candidate " + candidate.queueNumber + " previewed · " + (state.server?.mode === "write" ? "press Choose & Save" : "Read mode will not save files"));
     return;
   }
   if (state.editorMode === "album") state.selectedCover = candidate;

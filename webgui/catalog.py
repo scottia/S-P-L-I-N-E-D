@@ -271,17 +271,12 @@ class Catalog:
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2
                 + (1 if fallback_only else 0,),
             ).fetchall()
-            fallback_thumbnails = self.fallback_thumbnail_keys(db) if fallback_only else {}
         items = []
         for row in rows:
             cover = Path(row["cover_path"]) if row["cover_path"] else None
             if cover is not None and not inside(cover, self.music):
                 cover = None
             cover_url = self.image(cover)
-            if str(row["album_key"]) in fallback_thumbnails:
-                cover_url = self.fallback_thumbnail_url(
-                    str(row["album_key"]), fallback_thumbnails[str(row["album_key"])]
-                )
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -517,11 +512,15 @@ class Catalog:
             seen.add(path_key)
             key = str(row["album_key"])
             if key not in groups:
+                cover_path = str(row["cover_path"] or "").strip()
+                cover = Path(cover_path) if cover_path else None
+                if cover is not None and not inside(cover, self.music):
+                    cover = None
                 groups[key] = {
                     "id": key, "name": row["album_name"], "year": row["release_year"] or "",
-                    # A COMP card may preview a recorded embedded thumbnail,
-                    # never the fallback folder's cover sidecar.
-                    "cover": None,
+                    # The album card uses the indexed folder cover. Embedded
+                    # track art remains isolated to COMP report track previews.
+                    "cover": self.image(cover),
                     "compilation": True, "album_mbid": "", "tracks": [],
                 }
             completed_track = str(track_path).casefold() in completed
@@ -530,8 +529,6 @@ class Catalog:
                 "completed": completed_track,
                 "status": "checking" if completed_track else "blue",
             })
-            if completed_track and not groups[key]["cover"]:
-                groups[key]["cover"] = self.fallback_thumbnail_url(key, str(row["track_key"]))
         return list(groups.values())
 
     def comp_track_status(self, album_id: str, track_key: str) -> dict[str, object]:
