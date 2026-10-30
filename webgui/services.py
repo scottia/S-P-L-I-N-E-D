@@ -129,6 +129,41 @@ class Services:
                 (action, str(subject), Jsonb(details or {})),
             )
 
+    def diagnostics(self, limit=250):
+        """Return bounded, credential-free operational events for Settings."""
+        limit = max(1, min(int(limit), 500))
+        with closing(self.runtime.database.connect()) as db:
+            rows = db.execute(
+                "SELECT action,subject,details,created_at FROM web_audit ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "action": row["action"],
+                "subject": row["subject"],
+                "details": row["details"],
+                "created_at": row["created_at"].isoformat(),
+            }
+            for row in rows
+        ]
+
+    def storage_summary(self):
+        """Describe persistent WebGUI storage without walking network folders."""
+        with closing(self.runtime.database.connect()) as db:
+            row = db.execute(
+                "SELECT pg_database_size(current_database()) AS database_bytes, current_database() AS database_name"
+            ).fetchone()
+        return {
+            "database": f"PostgreSQL · {row['database_name']}",
+            "database_bytes": int(row["database_bytes"] or 0),
+            "cache": str(self.runtime.cache),
+            "artist_art": str(self.runtime.artist_art),
+            "credentials": str(self.runtime.credentials),
+            "configuration": str(self.runtime.config_file),
+            "version": core.VERSION,
+            "mode": str(self.runtime.cfg.get("mode", "read")),
+        }
+
     def album_row(self, key):
         with closing(self.runtime.database.connect()) as db:
             row = db.execute(
@@ -507,14 +542,24 @@ class Services:
     def preview(self, payload):
         source = self.catalog.image_source(str(payload.get("image", "")))
         kind = str(payload.get("kind", "cover"))
+        output = self.runtime.cfg.get("output", {})
+        ranges = self.runtime.cfg.get("range", {})
+        upscale_requested = bool(payload.get("upscale"))
+        upscale_enabled = bool(output.get("upscale_below_ideal", False))
+        ideal = int(ranges.get("ideal", 1800))
+        max_percent = int(output.get("upscale_max_percent", 200))
         image = imaging.render(
             source,
             values=payload.get("adjustments"),
             package_values=payload.get("package_adjustments"),
             fit=payload.get("fit"),
             kind=kind,
-            upscale=bool(payload.get("upscale")),
         )
+        upscaled = False
+        if upscale_requested and upscale_enabled and kind != "cover":
+            image, upscaled, _ = imaging.upscale_to_policy(
+                image, ideal, max_percent
+            )
         target = "png"
         body = imaging.encode(image)
         if kind == "cover":
@@ -538,10 +583,19 @@ class Services:
                     candidate, self.runtime.cfg, target, allow_out_of_range=True
                 )
                 width, height = info["width"], info["height"]
+                upscaled = bool(info.get("upscaled"))
             finally:
                 path.unlink(missing_ok=True)
         else:
             width, height = image.size
+        if upscaled:
+            reason = f"Prepared toward {ideal}px Ideal within the {max_percent}% ceiling; original artwork is unchanged until written"
+        elif upscale_requested and not upscale_enabled:
+            reason = "Actual source resolution preserved because Upscale Below Ideal is off in Settings"
+        elif upscale_requested:
+            reason = "Actual source resolution already meets Ideal or the configured ceiling prevents enlargement"
+        else:
+            reason = "Prepared preview; original artwork is unchanged until written"
         return {
             "image": self.catalog.image(body),
             "width": width,
@@ -549,6 +603,8 @@ class Services:
             "bytes": len(body),
             "kind": kind,
             "format": target,
+            "upscaled": upscaled,
+            "reason": reason,
         }
 
     def _atomic_artwork(self, destination, body):

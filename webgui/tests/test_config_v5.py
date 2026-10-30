@@ -7,7 +7,6 @@ from pathlib import Path
 
 import splined
 
-
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
@@ -17,6 +16,56 @@ def load_example(relative: str) -> dict:
 
 
 class ConfigV5ParityTests(unittest.TestCase):
+    def test_none_verbosity_disables_runtime_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            config["verbosity"] = "none"
+            config["scan"]["log_dir"] = str(root / "logs")
+            splined.validate_config_v5(config)
+            self.assertEqual(splined.logging_verbosity(config), "none")
+            self.assertIsNone(splined.init_debug_log(config_file, config))
+            self.assertFalse((root / "logs").exists())
+
+    def test_blank_artist_art_directory_uses_persistent_cache_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            cache = root / "preferred-images"
+            config["scan"]["cache_dir"] = str(cache)
+            config["scan"]["shared_artist_art_dir"] = ""
+            self.assertEqual(
+                splined.runtime_artist_art_dir(config_file, config),
+                cache,
+            )
+            selected = root / "my-va-and-ost-images"
+            config["scan"]["shared_artist_art_dir"] = str(selected)
+            self.assertEqual(
+                splined.runtime_artist_art_dir(config_file, config),
+                selected,
+            )
+
+    def test_optional_scan_folder_falls_back_to_music_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            library = root / "music"
+            config["library"]["music_library"] = str(library)
+            config["scan"]["scan_library_dir"] = ""
+            self.assertEqual(
+                splined.resolve_scan_root(config_file, config, None),
+                (library, library),
+            )
+            config["scan"]["scan_library_dir"] = str(root / "narrow-scan")
+            config["scan"]["scan_mode"] = False
+            self.assertEqual(
+                splined.resolve_scan_root(config_file, config, None),
+                (library, library),
+            )
+
     def test_runtime_log_redaction_removes_credentials_and_bearer_values(self) -> None:
         secret = "do-not-log-this-token"
         samples = (
@@ -42,6 +91,16 @@ class ConfigV5ParityTests(unittest.TestCase):
                 config = load_example(relative)
                 self.assertEqual(config["config_version"], 5)
                 splined.validate_config_v5(config)
+
+    def test_upscale_percentage_is_a_ceiling_not_an_all_or_nothing_gate(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["output"]["upscale_below_ideal"] = True
+        config["output"]["upscale_max_percent"] = 200
+        width, height, operations = splined.project_dimensions(600, 900, config)
+        self.assertEqual((width, height), (1200, 1800))
+        self.assertTrue(operations["upscaled"])
+        self.assertTrue(operations["upscale_limited"])
+        self.assertEqual(operations["upscale_percent"], 200)
 
     def test_fixed_provider_filenames_ignore_legacy_overrides(self) -> None:
         config = load_example("config.example.toml")

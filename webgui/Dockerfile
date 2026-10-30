@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt \
  && mkdir -p /config /_cache /_logs /credentials \
  && chown splined:splined /config /_cache /_logs /credentials
 COPY webgui /app/webgui
-COPY schema/media.sql /app/schema/media.sql
+COPY schema/media.sql schema/settings-ui.json /app/schema/
 COPY docker/config.example.toml /app/docker/config.example.toml
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 SPLINED_WEB_HOST=0.0.0.0 SPLINED_WEB_PORT=8080 SPLINED_CONFIG=/config/config.toml
 USER splined

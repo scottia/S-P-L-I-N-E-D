@@ -118,17 +118,40 @@ def framed(image, kind, fit=None):
     return canvas
 
 
+def upscale_to_policy(image, ideal=1800, max_percent=200):
+    """Enlarge proportionally toward Ideal, bounded by Config v5 percent."""
+    ideal = int(ideal)
+    max_percent = int(max_percent)
+    if ideal < 1 or not 100 <= max_percent <= 800:
+        raise ValueError("Upscale settings are outside their allowed range")
+    width, height = image.size
+    short_side = min(width, height)
+    target = min(ideal, short_side * max_percent // 100)
+    if short_side < 1 or target <= short_side:
+        return image, False, short_side
+    scale = target / short_side
+    output_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    if output_size[0] * output_size[1] > 64 * 1024 * 1024:
+        raise ValueError("Upscaled artwork exceeds the pixel limit")
+    return image.resize(output_size, Image.Resampling.LANCZOS), True, target
+
+
 def render(
-    source, *, values=None, package_values=None, fit=None, kind="cover", upscale=False
+    source,
+    *,
+    values=None,
+    package_values=None,
+    fit=None,
+    kind="cover",
+    upscale=False,
+    upscale_ideal=1800,
+    upscale_max_percent=200,
 ):
     image = framed(adjusted(source, values), kind, fit)
     if package_values:
         image = adjusted_bytes(image, package_values)
     if upscale:
-        width, height = image.size
-        if width * height * 4 > 64 * 1024 * 1024:
-            raise ValueError("Upscaled artwork exceeds the pixel limit")
-        image = image.resize((width * 2, height * 2), Image.Resampling.LANCZOS)
+        image, _, _ = upscale_to_policy(image, upscale_ideal, upscale_max_percent)
     return image
 
 

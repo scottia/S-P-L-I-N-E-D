@@ -18,7 +18,7 @@ import secrets
 import tempfile
 import sqlite3
 from threading import Lock
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from PIL import Image, ImageOps
 from mutagen import File as MutagenFile
@@ -188,6 +188,34 @@ class Catalog:
             raise ValueError("Image is outside configured artwork locations")
         return source
 
+    @staticmethod
+    def fallback_thumbnail_url(album_id: str, track_key: str) -> str:
+        return (
+            "/api/fallback/thumbnail?id="
+            + quote(str(album_id), safe="")
+            + "&key="
+            + quote(str(track_key), safe="")
+        )
+
+    @staticmethod
+    def fallback_thumbnail_keys(db) -> dict[str, str]:
+        """Return one recorded embedded-art track per fallback album."""
+        tables = {
+            str(row["name"])
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        if not {"tracks", "compilation_track_artwork"}.issubset(tables):
+            return {}
+        result: dict[str, str] = {}
+        for row in db.execute(
+            "SELECT tracks.album_key,tracks.track_key FROM tracks "
+            "JOIN compilation_track_artwork ON lower(compilation_track_artwork.track_path)=lower(tracks.path) "
+            "WHERE compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing') "
+            "ORDER BY tracks.album_key,tracks.path"
+        ):
+            result.setdefault(str(row["album_key"]), str(row["track_key"]))
+        return result
+
     def image_bytes(self,image_url: str) -> bytes:
         source=self.image_source(image_url)
         return source.read_bytes() if isinstance(source,Path) else source
@@ -243,15 +271,21 @@ class Catalog:
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2
                 + (1 if fallback_only else 0,),
             ).fetchall()
+            fallback_thumbnails = self.fallback_thumbnail_keys(db) if fallback_only else {}
         items = []
         for row in rows:
             cover = Path(row["cover_path"]) if row["cover_path"] else None
             if cover is not None and not inside(cover, self.music):
                 cover = None
+            cover_url = self.image(cover)
+            if str(row["album_key"]) in fallback_thumbnails:
+                cover_url = self.fallback_thumbnail_url(
+                    str(row["album_key"]), fallback_thumbnails[str(row["album_key"])]
+                )
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
-                "cover": self.image(cover), "tracks": row["track_count"],
+                "cover": cover_url, "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
                 "album_mbid": row["musicbrainz_albumid"] or "",
             })
@@ -407,6 +441,30 @@ class Catalog:
                             "height": opened.height, "bytes": len(artwork)}
         return {**track, **metadata}
 
+    def fallback_thumbnail(self, album_id: str, track_key: str) -> bytes:
+        """Read one recorded embedded thumbnail for a lazy fallback album card."""
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT albums.path AS album_path,albums.musicbrainz_albumid,tracks.path "
+                "FROM albums JOIN tracks ON tracks.album_key=albums.album_key "
+                "WHERE albums.album_key=? AND tracks.track_key=?",
+                (album_id, track_key),
+            ).fetchone()
+            if row is None or str(row["musicbrainz_albumid"] or "").strip():
+                raise KeyError("Recorded COMP thumbnail not found")
+            recorded = db.execute(
+                "SELECT 1 FROM compilation_track_artwork WHERE track_path=? COLLATE NOCASE "
+                "AND outcome IN ('embedded-replaced','embedded-existing')",
+                (str(row["path"]),),
+            ).fetchone()
+        folder, path = Path(row["album_path"]), Path(row["path"])
+        if not recorded or not inside(folder, self.music) or not inside(path, folder):
+            raise KeyError("Recorded COMP thumbnail not found")
+        artwork = embedded_track_image(path)
+        if not artwork:
+            raise KeyError("Recorded COMP thumbnail is unavailable")
+        return artwork
+
     def artist_comp_albums(self, artist_id: str) -> list[dict[str, object]]:
         """Return indexed COMP cards without touching every track on disk."""
         return self._artist_comp_groups(artist_id, verify_tracks=False)
@@ -459,17 +517,21 @@ class Catalog:
             seen.add(path_key)
             key = str(row["album_key"])
             if key not in groups:
-                cover = Path(row["cover_path"]) if row["cover_path"] else None
                 groups[key] = {
                     "id": key, "name": row["album_name"], "year": row["release_year"] or "",
-                    "cover": self.image(cover) if cover and inside(cover, self.music) else None,
+                    # A COMP card may preview a recorded embedded thumbnail,
+                    # never the fallback folder's cover sidecar.
+                    "cover": None,
                     "compilation": True, "album_mbid": "", "tracks": [],
                 }
+            completed_track = str(track_path).casefold() in completed
             groups[key]["tracks"].append({
                 "key": row["track_key"], "file": track_path.name, "title": row["title"],
-                "completed": str(track_path).casefold() in completed,
-                "status": "checking" if str(track_path).casefold() in completed else "blue",
+                "completed": completed_track,
+                "status": "checking" if completed_track else "blue",
             })
+            if completed_track and not groups[key]["cover"]:
+                groups[key]["cover"] = self.fallback_thumbnail_url(key, str(row["track_key"]))
         return list(groups.values())
 
     def comp_track_status(self, album_id: str, track_key: str) -> dict[str, object]:

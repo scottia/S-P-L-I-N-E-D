@@ -198,6 +198,28 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         Image.new("RGB", (20, 20), "red").save(outside)
         self.assertIsNone(self.services.catalog.image(outside))
 
+    def test_upscale_preview_honors_native_resolution_and_percentage_ceiling(self):
+        source = self.runtime.cache / "small-cover.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (600, 900), "purple").save(source)
+        image = self.services.catalog.image(source)
+        self.runtime.cfg["output"]["upscale_below_ideal"] = False
+        preserved = self.services.preview(
+            {"image": image, "kind": "cover", "upscale": True}
+        )
+        self.assertEqual((preserved["width"], preserved["height"]), (600, 900))
+        self.assertFalse(preserved["upscaled"])
+        self.assertIn("Actual source resolution preserved", preserved["reason"])
+
+        self.runtime.cfg["output"]["upscale_below_ideal"] = True
+        self.runtime.cfg["output"]["upscale_max_percent"] = 200
+        enlarged = self.services.preview(
+            {"image": image, "kind": "cover", "upscale": True}
+        )
+        self.assertEqual((enlarged["width"], enlarged["height"]), (1200, 1800))
+        self.assertTrue(enlarged["upscaled"])
+        self.assertIn("200% ceiling", enlarged["reason"])
+
     def test_staged_queue_survives_worker_restart_and_verifies_artifact(self):
         self.queue = JobQueue(self.services)
         result = self.queue.enqueue(
@@ -228,25 +250,74 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with TestClient(app) as client:
             status = client.get("/api/status").json()
             self.assertFalse(status["authenticated"])
+            self.assertTrue(status["admin_setup_required"])
             self.assertEqual(client.get("/api/artists").status_code, 401)
             self.assertEqual(
-                client.post("/api/login", json={"token": "test-access"}).status_code,
+                client.post(
+                    "/api/admin/setup",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                        "confirmation": "StrongPassword123",
+                        "token": "test-access",
+                    },
+                ).status_code,
                 403,
             )
             client.headers["X-SPLINED-CSRF"] = status["csrf"]
             self.assertEqual(
-                client.post("/api/login", json={"token": "test-access"}).status_code,
+                client.post(
+                    "/api/admin/setup",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                        "confirmation": "StrongPassword123",
+                        "token": "wrong-token",
+                    },
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/admin/setup",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                        "confirmation": "StrongPassword123",
+                        "token": "test-access",
+                    },
+                ).status_code,
                 200,
             )
+            self.assertFalse(client.get("/api/status").json()["admin_setup_required"])
             self.assertEqual(
                 client.get("/api/artists").json()[0]["name"], "Test Artist"
             )
             settings = client.get("/api/settings").json()
             settings["config"]["mode"] = "read"
+            settings["config"]["webgui_ui"] = {
+                "enhancement": {
+                    "banner_styles": {
+                        "compiled": {
+                            "name": "COMPILED",
+                            "background": "#3478FF",
+                            "frame": "#D9AD43",
+                            "letters": "#D9AD43",
+                        }
+                    }
+                }
+            }
             self.assertEqual(
                 client.post("/api/settings", json=settings).status_code, 200
             )
-            self.assertEqual(tomllib.loads(self.config.read_text())["mode"], "read")
+            stored = tomllib.loads(self.config.read_text())
+            self.assertEqual(stored["mode"], "read")
+            self.assertEqual(
+                stored["webgui_ui"]["enhancement"]["banner_styles"]["compiled"][
+                    "background"
+                ],
+                "#3478FF",
+            )
             self.assertEqual(
                 client.post("/api/artwork/cover", json=self.payload()).status_code, 403
             )
@@ -262,12 +333,64 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ],
                 "bypassed",
             )
+            diagnostics = client.get("/api/diagnostics")
+            self.assertEqual(diagnostics.status_code, 200)
+            self.assertTrue(
+                any(event["action"] == "bypass" for event in diagnostics.json())
+            )
+            storage = client.get("/api/storage")
+            self.assertEqual(storage.status_code, 200)
+            self.assertTrue(storage.json()["database"].startswith("PostgreSQL · "))
+            self.assertGreater(storage.json()["database_bytes"], 0)
+            self.assertEqual(storage.json()["configuration"], str(self.config.resolve()))
             self.assertEqual(
                 client.post(
                     "/api/bypass", headers={"Origin": "https://example.org"}, json={}
                 ).status_code,
                 403,
             )
+            recovery = {
+                "username": "administrator",
+                "password": "ReplacementPassword456",
+                "confirmation": "ReplacementPassword456",
+                "token": "wrong-token",
+            }
+            self.assertEqual(
+                client.post("/api/admin/recover", json=recovery).status_code, 403
+            )
+            recovery["token"] = "test-access"
+            self.assertEqual(
+                client.post("/api/admin/recover", json=recovery).status_code, 200
+            )
+            self.assertEqual(client.get("/api/artists").status_code, 401)
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            self.assertEqual(
+                client.post(
+                    "/api/login",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                    },
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/login",
+                    json={
+                        "username": "administrator",
+                        "password": "ReplacementPassword456",
+                    },
+                ).status_code,
+                200,
+            )
+            diagnostics = client.get("/api/diagnostics").json()
+            self.assertTrue(
+                any(event["action"] == "reset-admin-password" for event in diagnostics)
+            )
+            self.assertEqual(client.post("/api/logout").status_code, 200)
+            self.assertEqual(client.get("/api/artists").status_code, 401)
         self.runtime = Runtime(self.config, self.db)
 
     def test_credentials_mask_secrets_and_retain_blank_values(self):

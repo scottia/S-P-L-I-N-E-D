@@ -47,7 +47,7 @@ from interaction.picker_index import (
 from interaction.result_filters import order_musicbrainz_results, musicbrainz_title_match
 from splined_db_audit import connect_sqlite
 
-USER_AGENT = "SPLINED/2.0.5 (https://github.com/scottia/S-P-L-I-N-E-D)"
+USER_AGENT = "SPLINED/2.0.6 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
 MB_AUTHORIZE_URL = "https://musicbrainz.org/oauth2/authorize"
 MB_OAUTH_ENDPOINT = "https://musicbrainz.org/oauth2/token"
@@ -243,7 +243,7 @@ def runtime_artist_art_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
     configured = str(section(cfg, "scan").get("shared_artist_art_dir", "")).strip()
     if configured:
         return resolve_path(config_file, configured)
-    return runtime_cache_dir(config_file, cfg) / "artist-art"
+    return runtime_cache_dir(config_file, cfg)
 
 
 def runtime_credential_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
@@ -1602,6 +1602,7 @@ LOG_LEVELS = {
     "info": 20,
     "warning": 30,
     "error": 40,
+    "none": 100,
 }
 
 
@@ -1626,7 +1627,7 @@ def logging_verbosity(cfg: dict[str, Any]) -> str:
     verbosity = str(cfg.get("verbosity", "info")).strip().lower()
     if verbosity not in LOG_LEVELS:
         raise SplinedError(
-            "SPLINED verbosity must be one of: debug, info, warning, error."
+            "SPLINED verbosity must be one of: none, debug, info, warning, error."
         )
     return verbosity
 
@@ -1694,7 +1695,7 @@ def runtime_log(level: str, message: str) -> None:
         pass
 
 
-def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
+def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
     """Initialize the one-file-per-run diagnostic log.
 
     The historical function name is retained for compatibility with existing
@@ -1704,6 +1705,13 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
     global _RUNTIME_FAULTHANDLER_ENABLED
     global _RUNTIME_LOG_PATH, _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
     global _RUNTIME_LOG_LAST_FLUSH, _RUNTIME_VERBOSITY, _DEBUG_ENABLED
+
+    _RUNTIME_VERBOSITY = logging_verbosity(cfg)
+    _DEBUG_ENABLED = _RUNTIME_VERBOSITY == "debug"
+    if _RUNTIME_VERBOSITY == "none":
+        _close_runtime_log()
+        _RUNTIME_LOG_PATH = None
+        return None
 
     log_dir = runtime_log_dir(config_file, cfg)
     if log_dir.exists() and (log_dir.is_symlink() or not log_dir.is_dir()):
@@ -1743,9 +1751,6 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
         except OSError:
             # A stale diagnostic must not prevent SPLINED from starting.
             pass
-
-    _RUNTIME_VERBOSITY = logging_verbosity(cfg)
-    _DEBUG_ENABLED = _RUNTIME_VERBOSITY == "debug"
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     unique = f"{time.time_ns() % 1_000_000_000:09d}"
@@ -3532,7 +3537,7 @@ def output_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     if round_to < 0:
         raise SplinedError("[output].square_round_to cannot be negative.")
 
-    upscale = bool(out.get("upscale_below_ideal", False))
+    upscale = bool(out.get("upscale_below_ideal", True))
     try:
         upscale_max_percent = int(out.get("upscale_max_percent", 200) or 0)
     except (TypeError, ValueError) as exc:
@@ -3616,20 +3621,24 @@ def project_dimensions(width: int, height: int, cfg: dict[str, Any]) -> tuple[in
             operations["rounded_to"] = round_to
 
     # Ideal is a minimum quality target, not an output ceiling. Accepted
-    # artwork already at or above Ideal keeps its native resolution. Below-
-    # Ideal enlargement remains proportional and is allowed only when the
-    # requested scale is within the explicit Config v5 safety limit.
+    # artwork already at or above Ideal keeps its native resolution. The
+    # maximum percentage is an enlargement ceiling: when Ideal is farther
+    # away, enlarge as far as the ceiling instead of rejecting the resize.
+    # This matches the native Windows projection.
     short_side = min(w, h)
     if short_side < ideal and settings["upscale_below_ideal"]:
-        scale = ideal / short_side
-        requested_percent = scale * 100.0
-        operations["upscale_percent"] = requested_percent
-        operations["upscale_limited"] = (
-            requested_percent > settings["upscale_max_percent"]
+        requested_percent = ideal / short_side * 100.0
+        target_short_side = min(
+            ideal,
+            short_side * settings["upscale_max_percent"] // 100,
         )
-        if not operations["upscale_limited"]:
-            w = max(1, int(round(w * scale)))
-            h = max(1, int(round(h * scale)))
+        operations["upscale_percent"] = target_short_side / short_side * 100.0
+        operations["upscale_requested_percent"] = requested_percent
+        operations["upscale_limited"] = target_short_side < ideal
+        if target_short_side > short_side:
+            scale = target_short_side / short_side
+            w = max(1, round(w * scale))
+            h = max(1, round(h * scale))
             operations["resized"] = True
             operations["upscaled"] = True
 
@@ -4826,12 +4835,12 @@ def resolve_scan_root(
         root = override if override.is_absolute() else library_root / override
         return root, library_root
 
+    if not bool(scan.get("scan_mode", True)):
+        return library_root, library_root
+
     raw_root = str(scan.get("scan_library_dir", "")).strip()
     if not raw_root:
-        raise SplinedError(
-            "SPLINED [scan].scan_library_dir is not configured; "
-            "configure the library path in Settings."
-        )
+        return library_root, library_root
     return resolve_path(config_file, raw_root), library_root
 
 
@@ -4849,7 +4858,7 @@ def resolve_scan_root(
 
 
 APP_NAME = "SPLINED"
-VERSION = "2.0.5"
+VERSION = "2.0.6"
 CONFIG_VERSION = 5
 
 
@@ -4915,6 +4924,20 @@ def _non_negative_int(value: Any, label: str) -> int:
         raise SplinedError(f"{label} must be a non-negative integer.") from exc
     if parsed < 0:
         raise SplinedError(f"{label} cannot be negative.")
+    return parsed
+
+
+def _bounded_int(value: Any, minimum: int, maximum: int, label: str) -> int:
+    if isinstance(value, bool):
+        raise SplinedError(f"{label} must be an integer from {minimum} through {maximum}.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SplinedError(
+            f"{label} must be an integer from {minimum} through {maximum}."
+        ) from exc
+    if not minimum <= parsed <= maximum:
+        raise SplinedError(f"{label} must be from {minimum} through {maximum}.")
     return parsed
 
 
@@ -5053,6 +5076,35 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
         raise SplinedError(
             "[output].upscale_max_percent must be between 100 and 800."
         )
+    _bool_value(
+        output.get("upscale_below_ideal", True),
+        "[output].upscale_below_ideal",
+    )
+    _bool_value(
+        output.get("upscale_adaptive_defaults", True),
+        "[output].upscale_adaptive_defaults",
+    )
+    _bool_value(
+        output.get("evaluate_final_image", True),
+        "[output].evaluate_final_image",
+    )
+    for name, minimum, maximum, default in (
+        ("upscale_picture_percent", -20, 20, 2),
+        ("upscale_sharpen_percent", 0, 20, 4),
+        ("upscale_softness_percent", 0, 20, 0),
+        ("upscale_contrast_percent", -20, 20, 10),
+        ("upscale_exposure_percent", -20, 20, -5),
+        ("upscale_brightness_percent", -20, 20, -1),
+        ("upscale_gamma_percent", -20, 20, -6),
+        ("upscale_color_temperature", -100, 100, 0),
+        ("upscale_hue_degrees", -180, 180, 0),
+        ("upscale_darkness_percent", 0, 100, 0),
+        ("upscale_tint_percent", -100, 100, 0),
+    ):
+        _bounded_int(output.get(name, default), minimum, maximum, f"[output].{name}")
+    tint_color = str(output.get("upscale_tint_color", "#FFB36B")).strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", tint_color):
+        raise SplinedError("[output].upscale_tint_color must be a #RRGGBB color.")
     scan_timeout_hours(cfg)
 
 

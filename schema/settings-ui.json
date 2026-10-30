@@ -1,0 +1,152 @@
+{
+  "contract_version": 1,
+  "config_version": 5,
+  "description": "Shared, secret-free settings presentation contract for SPLINED Windows and WebGUI.",
+  "providers": [
+    "deezer",
+    "itunes",
+    "fanarttv",
+    "lastfm",
+    "musicbrainz",
+    "coverartarchive",
+    "discogs",
+    "amazon",
+    "navidrome"
+  ],
+  "sections": [
+    {
+      "id": "library",
+      "label": "Library & Files",
+      "icon": "⌂",
+      "description": "Choose the music source and persistent application directories.",
+      "fields": [
+        {"path": "library.music_library", "label": "Music Library", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
+        {"path": "scan.scan_mode", "label": "Scan Mode Enabled", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"], "help": "Enable a dedicated scan target. When disabled, SPLINED uses Music Library."},
+        {"path": "scan.scan_library_dir", "label": "Scan Folder", "type": "path", "default": "", "runtimes": ["windows", "webgui"], "help": "Optional. Used only when Scan Mode is enabled. Blank scans Music Library; a configured path may select a narrower server-visible folder."},
+        {"path": "scan.cache_dir", "label": "Persistent Cache Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Persistent downloaded artwork, staged work, and original-artwork backups."},
+        {"path": "scan.temporary_cache_dir", "label": "Temporary Cache Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Disposable downloaded and derived artwork used during active processing."},
+        {"path": "scan.shared_artist_art_dir", "label": "V/A / OST Artist Images Directory", "type": "path", "default": "", "runtimes": ["windows", "webgui"], "help": "Optional. Blank uses Persistent Cache Directory itself. Choose any persistent image directory or folder name. This is an IMAGE directory, NOT a database."},
+        {"path": "credentials.credential_dir", "label": "Provider Credential Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
+        {"path": "library.ignored_subs", "label": "Ignored Folders", "type": "list", "default": [], "runtimes": ["windows", "webgui"], "help": "Comma-separated folder names. Quotes are unnecessary for names containing spaces because this is not a shell command."},
+        {"path": "database.url", "label": "PostgreSQL Connection URL", "type": "password", "default": "", "advanced": true, "runtimes": ["webgui"], "help": "Container deployments manage this from PostgreSQL environment variables. It is never returned to the browser."}
+      ]
+    },
+    {
+      "id": "artwork",
+      "label": "Artwork & Embedding",
+      "icon": "▣",
+      "description": "Set rules for saved cover and Artist Art files and embedded track thumbnails.",
+      "fields": [
+        {"path": "output.file_name", "label": "Default Filename Stems", "type": "statement", "display": "cover · artist · banner", "default": "cover", "runtimes": ["windows", "webgui"], "help": "SPLINED uses cover for album artwork, artist for portraits, and banner for artist banners. These required defaults are shown as information rather than an editable filename."},
+        {"path": "output.file_formats", "label": "Supported Image Formats", "type": "statement", "display": "JPEG · PNG · WebP", "default": ["jpeg", "png", "webp"], "runtimes": ["windows", "webgui"], "help": "These are the only supported static artwork formats; additional formats cannot be added in Settings."},
+        {"path": "output.preserve_file", "label": "Preserve Existing cover.* / artist.* / banner.*", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.square", "label": "Square Artwork", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.square_mode", "label": "Square Mode", "type": "enum", "default": "crop", "choices": ["crop", "off"], "runtimes": ["windows", "webgui"]},
+        {"path": "output.square_round_to", "label": "Square Round-To", "type": "integer", "default": 16, "min": 0, "max": 4096, "runtimes": ["windows", "webgui"]},
+        {"path": "output.embedded_thumbnail_size", "label": "Embedded Thumbnail Preference", "type": "integer", "default": 1200, "min": 300, "max": 4000, "suffix": "px", "runtimes": ["windows", "webgui"], "help": "The saved cover retains full resolution; this sets the square image embedded in tracks."},
+        {"path": "samples.sample_write", "label": "Write Sample Cover Images", "type": "boolean", "default": false, "runtimes": ["windows", "webgui"], "help": "Off by default. When enabled, source cover samples are retained in their supported JPEG, PNG, or WebP format."},
+        {"path": "samples.sample_dir", "label": "Sample Cover Images Directory", "type": "path", "runtimes": ["windows", "webgui"], "help": "Required when Write Sample Cover Images is enabled."}
+      ]
+    },
+    {
+      "id": "enhancement",
+      "label": "Enhancement",
+      "icon": "✦",
+      "description": "Set candidate resolution goals and the default image-adjustment profile.",
+      "fields": [
+        {"path": "range.min", "label": "Minimum", "type": "integer", "default": 1200, "min": 1, "runtimes": ["windows", "webgui"]},
+        {"path": "range.ideal", "label": "Ideal", "type": "integer", "default": 1800, "min": 1, "runtimes": ["windows", "webgui"]},
+        {"path": "range.max", "label": "Maximum", "type": "integer", "default": 2400, "min": 1, "runtimes": ["windows", "webgui"]},
+        {"path": "range.ladder", "label": "Ladder", "type": "integer", "default": 3600, "min": 1, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_below_ideal", "label": "Upscale Below Ideal", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"], "help": "On by default and permits enlargement toward Ideal. Turn it off to preserve the actual source resolution."},
+        {"path": "output.upscale_max_percent", "label": "Max Upscale Percent", "type": "integer", "default": 200, "min": 100, "max": 800, "suffix": "%", "runtimes": ["windows", "webgui"], "help": "200 permits at most 2× enlargement. If Ideal needs more, SPLINED stops at the configured ceiling; native artwork at or above Ideal is never reduced."},
+        {"path": "output.upscale_adaptive_defaults", "label": "Enhancement Upscale Defaults", "type": "boolean", "default": true, "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.evaluate_final_image", "label": "Evaluate Final Image", "type": "boolean", "default": true, "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_picture_percent", "label": "Picture / Saturation", "type": "integer", "default": 2, "min": -20, "max": 20, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_sharpen_percent", "label": "Sharpen", "type": "integer", "default": 4, "min": 0, "max": 20, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_softness_percent", "label": "Softness", "type": "integer", "default": 0, "min": 0, "max": 20, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_contrast_percent", "label": "Contrast", "type": "integer", "default": 10, "min": -20, "max": 20, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_exposure_percent", "label": "Exposure", "type": "integer", "default": -5, "min": -20, "max": 20, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_brightness_percent", "label": "Brightness", "type": "integer", "default": -1, "min": -20, "max": 20, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_gamma_percent", "label": "Gamma", "type": "integer", "default": -6, "min": -20, "max": 20, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_color_temperature", "label": "Color Temperature", "type": "integer", "default": 0, "min": -100, "max": 100, "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_hue_degrees", "label": "Hue", "type": "integer", "default": 0, "min": -180, "max": 180, "suffix": "°", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_darkness_percent", "label": "Darkness", "type": "integer", "default": 0, "min": 0, "max": 100, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_tint_percent", "label": "Tint", "type": "integer", "default": 0, "min": -100, "max": 100, "suffix": "%", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.upscale_tint_color", "label": "Tint Color", "type": "color", "default": "#FFB36B", "advanced": true, "runtimes": ["windows", "webgui"]}
+      ]
+    },
+    {
+      "id": "sources",
+      "label": "Artwork Sources",
+      "icon": "◎",
+      "description": "Choose provider order, exclusions, and per-provider candidate quality policy.",
+      "fields": [
+        {"path": "sources.cover_sources", "label": "Source Priority", "type": "list", "runtimes": ["windows", "webgui"]},
+        {"path": "sources.exclude_cover_sources", "label": "Excluded Sources", "type": "list", "runtimes": ["windows", "webgui"]}
+      ],
+      "repeater": {
+        "path": "source_policies",
+        "label": "Selected Source Quality Policy",
+        "fields": [
+          {"path": "enabled", "label": "Include In Artwork Search", "type": "boolean"},
+          {"path": "strict_override", "label": "Strict Range Override", "type": "boolean"},
+          {"path": "source_override", "label": "Custom Source Policy", "type": "boolean"},
+          {"path": "minimum_range_type", "label": "Minimum Range", "type": "enum", "choices": ["BelowMinimum", "LowerRange", "Ideal", "UpperRange", "Ladder", "AboveLadder"]},
+          {"path": "allow_below_minimum_fallback", "label": "Adjacent Lower Fallback", "type": "boolean"},
+          {"path": "primary_image_only", "label": "Primary Image Only", "type": "boolean"},
+          {"path": "minimum_short_side", "label": "Minimum Short Side", "type": "optional-integer", "min": 1},
+          {"path": "maximum_short_side", "label": "Maximum Short Side", "type": "optional-integer", "min": 1},
+          {"path": "minimum_width", "label": "Minimum Width", "type": "optional-integer", "min": 1},
+          {"path": "minimum_height", "label": "Minimum Height", "type": "optional-integer", "min": 1}
+        ]
+      }
+    },
+    {
+      "id": "connections",
+      "label": "Connections",
+      "icon": "◇",
+      "description": "Manage provider credentials separately from artwork-search inclusion.",
+      "fields": [
+        {"path": "aisplined.enabled", "label": "AISPLINED Provider · Future Optional", "type": "boolean", "default": false, "future": true, "runtimes": ["windows", "webgui"], "help": "Reserved for a future optional AI companion. It remains inactive unless explicitly selected."},
+        {"path": "aisplined.endpoint", "label": "AISPLINED Endpoint", "type": "text", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "aisplined.minimum_short_side", "label": "AISPLINED Minimum Short Side", "type": "integer", "min": 1, "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "aisplined.allow_below_minimum_override", "label": "AISPLINED Below-Minimum Override", "type": "boolean", "advanced": true, "runtimes": ["windows", "webgui"]}
+      ]
+    },
+    {
+      "id": "backup",
+      "label": "Backup & Recovery",
+      "icon": "↻",
+      "description": "Export secret-free settings references and review the PostgreSQL backup boundary.",
+      "fields": [],
+      "runtimes": ["webgui"]
+    },
+    {
+      "id": "runtime",
+      "label": "Processing & Logs",
+      "icon": "▶",
+      "description": "Set processing behavior, completion history, and diagnostic storage and retention.",
+      "fields": [
+        {"path": "mode", "label": "Processing Mode", "type": "enum", "choices": ["read", "write"], "runtimes": ["windows", "webgui"]},
+        {"path": "scan.scan_mode_timeout", "label": "Processing Override Delay (Hours)", "type": "integer", "min": 0, "max": 8760, "runtimes": ["windows", "webgui"]},
+        {"path": "history.enabled", "label": "Status History Enabled", "type": "boolean", "runtimes": ["windows", "webgui"]},
+        {"path": "history.retention_days", "label": "History Retention (Days; 0 = All)", "type": "integer", "min": 0, "runtimes": ["windows", "webgui"]},
+        {"path": "scan.log_dir", "label": "Log Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Persistent destination for current-run diagnostics and retained WebGUI logs."},
+        {"path": "verbosity", "label": "Diagnostic Log Level", "type": "enum", "choices": ["none", "info", "debug", "warning", "error"], "runtimes": ["windows", "webgui"], "help": "None suppresses runtime/file logging after restart. PostgreSQL WebGUI events and native operational status remain available."},
+        {"path": "logging.retention_days", "label": "Log Retention (Days)", "type": "integer", "min": 0, "runtimes": ["windows", "webgui"]},
+        {"path": "logging.database_audit", "label": "Database Audit Log", "type": "boolean", "advanced": true, "runtimes": ["webgui"]},
+        {"path": "scan.sqlite_shared", "label": "Shared / Network SQLite", "type": "boolean", "advanced": true, "runtimes": ["windows"]},
+        {"path": "scan.windows_client_lock", "label": "Use extra .client-lock for shared SQLite", "type": "boolean", "advanced": true, "runtimes": ["windows"]}
+      ]
+    },
+    {
+      "id": "catalog",
+      "label": "Catalog Maintenance",
+      "icon": "↕",
+      "description": "Refresh the PostgreSQL catalog or import a deliberate read-only SQLite snapshot.",
+      "fields": [],
+      "runtimes": ["webgui"]
+    }
+  ]
+}
