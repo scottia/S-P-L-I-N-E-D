@@ -18,7 +18,8 @@ import secrets
 import tempfile
 import sqlite3
 from threading import Lock
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
+from uuid import UUID
 
 from PIL import Image, ImageOps
 from mutagen import File as MutagenFile
@@ -26,7 +27,7 @@ from mutagen.id3 import ID3, ID3NoHeaderError
 from mutagen.flac import Picture
 import requests
 
-from splined_artist_art import ArtistAlbum, artist_targets, local_candidates, saved_package
+from splined_artist_art import ArtistAlbum, ArtistArtTarget, artist_targets, local_candidates, saved_package
 from splined_compilation_authority_policy import replace_embedded_artwork
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
@@ -105,13 +106,47 @@ class Catalog:
     credentials: Path
     comp_thumbnail_side: int = 1200
     allow_comp_repairs: bool = False
+    cover_stem: str = "cover"
     cache: Path | None = None
     temporary_cache: Path | None = None
     artist_sources: tuple[str,...] = ("fanarttv","deezer")
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
+    portrait_cache: dict[str, Path | None] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
+
+    def album_cover_path(self, row) -> Path | None:
+        """Return indexed cover art, repairing old fallback rows on read."""
+        raw = str(row["cover_path"] or "").strip()
+        if raw:
+            indexed = Path(raw)
+            if indexed.is_file() and inside(indexed, self.music):
+                return indexed
+        keys = set(row.keys())
+        folder_value = row["path"] if "path" in keys else row["album_path"]
+        folder = Path(str(folder_value))
+        if not inside(folder, self.music) or not folder.is_dir():
+            return None
+        stem = (self.cover_stem or "cover").strip().casefold()
+        try:
+            files = [
+                candidate
+                for candidate in folder.iterdir()
+                if candidate.is_file()
+                and not candidate.is_symlink()
+                and candidate.suffix.casefold() in IMAGE_EXTENSIONS
+            ]
+        except OSError:
+            return None
+        for prefix in dict.fromkeys((stem, "cover")):
+            exact = next(
+                (candidate for candidate in files if candidate.stem.casefold() == prefix),
+                None,
+            )
+            if exact is not None:
+                return exact
+        return None
 
     def allowed_image_path(self, source: Path) -> bool:
         return (
@@ -252,7 +287,8 @@ class Catalog:
     def artists(self, query: str) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
             rows = db.execute(
-                "SELECT artists.artist_key, artists.artist_name, COUNT(albums.album_key) AS album_count, artists.status "
+                "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
+                "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
                 "WHERE artists.artist_name LIKE ? ESCAPE '\\' "
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE ",
@@ -264,45 +300,43 @@ class Catalog:
                 "name": row["artist_name"],
                 "albums": row["album_count"],
                 "status": row["status"],
-                "portrait": self.artist_thumbnail_url(str(row["artist_key"])),
+                "portrait": self.image(self.artist_thumbnail_path(row)),
             }
             for row in rows
         ]
 
-    @staticmethod
-    def artist_thumbnail_url(artist_id: str) -> str:
-        return "/api/artist/thumbnail?id=" + quote(artist_id, safe="")
+    def artist_thumbnail_path(self, artist) -> Path | None:
+        artist_id = str(artist["artist_key"])
+        if artist_id in self.portrait_cache:
+            return self.portrait_cache[artist_id]
+        direct = ArtistArtTarget(Path(str(artist["primary_path"])), "artist")
+        raw_id = str(artist["musicbrainz_artistid"] or "").strip()
+        try:
+            identity = "mbid-" + str(UUID(raw_id))
+        except ValueError:
+            digest = sha256(str(artist["artist_name"]).strip().casefold().encode("utf-8"))
+            identity = "name-" + digest.digest()[:16].hex()
+        managed = ArtistArtTarget(self.artist_art, "artist-" + identity, True)
+        portrait = saved_package((direct, managed)).portrait
+        if portrait is not None and (
+            not portrait.is_file() or not self.allowed_image_path(portrait)
+        ):
+            portrait = None
+        self.portrait_cache[artist_id] = portrait
+        return portrait
 
     def artist_thumbnail(self, artist_id: str) -> Path:
-        """Resolve saved Artist Art lazily so the full artist list stays fast."""
+        """Resolve saved Artist Art without emitting speculative 404 requests."""
         with closing(self.connect()) as db:
             artist = db.execute(
-                "SELECT artist_name,musicbrainz_artistid FROM artists WHERE artist_key=?",
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
+                "FROM artists WHERE artist_key=?",
                 (artist_id,),
             ).fetchone()
             if artist is None:
                 raise KeyError("Artist not found")
-            rows = db.execute(
-                "SELECT path,musicbrainz_albumid FROM albums WHERE artist_key=? "
-                "ORDER BY path COLLATE NOCASE",
-                (artist_id,),
-            ).fetchall()
-        targets = artist_targets(
-            [
-                ArtistAlbum(
-                    str(artist["artist_name"]),
-                    Path(row["path"]),
-                    str(row["musicbrainz_albumid"] or ""),
-                    str(artist["musicbrainz_artistid"] or ""),
-                )
-                for row in rows
-                if inside(Path(row["path"]), self.music)
-            ],
-            str(artist["artist_name"]),
-            self.artist_art,
-        )
-        portrait = saved_package(targets).portrait
-        if portrait is None or not portrait.is_file() or not self.allowed_image_path(portrait):
+        portrait = self.artist_thumbnail_path(artist)
+        if portrait is None:
             raise KeyError("Saved Artist Art is unavailable")
         return portrait
 
@@ -310,7 +344,7 @@ class Catalog:
         with closing(self.connect()) as db:
             rows = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.artist_key, "
-                "artists.artist_name, albums.cover_path, albums.track_count, "
+                "artists.artist_name, albums.path, albums.cover_path, albums.track_count, "
                 "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE (albums.album_name LIKE ? ESCAPE '\\' OR artists.artist_name LIKE ? ESCAPE '\\') "
@@ -321,9 +355,7 @@ class Catalog:
             ).fetchall()
         items = []
         for row in rows:
-            cover = Path(row["cover_path"]) if row["cover_path"] else None
-            if cover is not None and not inside(cover, self.music):
-                cover = None
+            cover = self.album_cover_path(row)
             cover_url = self.image(cover)
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
@@ -368,9 +400,7 @@ class Catalog:
             folder = Path(row["path"])
             if not inside(folder, self.music):
                 continue
-            cover = Path(row["cover_path"]) if row["cover_path"] else None
-            if cover is not None and not inside(cover, self.music):
-                cover = None
+            cover = self.album_cover_path(row)
             albums.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "tracks": row["track_count"], "status": row["status"],
@@ -424,9 +454,7 @@ class Catalog:
                                        "image": self.image(file), **image_metadata(file)})
                 except (OSError, ValueError):
                     pass
-        cover = Path(row["cover_path"]) if row["cover_path"] else None
-        if cover is not None and not inside(cover, self.music):
-            cover = None
+        cover = self.album_cover_path(row)
         return {
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -560,10 +588,7 @@ class Catalog:
             seen.add(path_key)
             key = str(row["album_key"])
             if key not in groups:
-                cover_path = str(row["cover_path"] or "").strip()
-                cover = Path(cover_path) if cover_path else None
-                if cover is not None and not inside(cover, self.music):
-                    cover = None
+                cover = self.album_cover_path(row)
                 groups[key] = {
                     "id": key, "name": row["album_name"], "year": row["release_year"] or "",
                     # The album card uses the indexed folder cover. Embedded

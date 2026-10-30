@@ -313,10 +313,10 @@ impl LibraryState {
         // The SQLite snapshot already records the chosen local cover. Publish
         // that path immediately so a restart does not depend on Navidrome
         // returning a thumbnail before the user's own cover can be shown.
-        // Missing-MBID fallback albums deliberately have no folder cover.
+        // Folder artwork is still the album-card identity for a missing-MBID
+        // COMP fallback. Track artwork remains track-scoped in COMP Report.
         let album_artwork_paths = albums
             .iter()
-            .filter(|album| !album.snapshot.album_mbid.trim().is_empty())
             .filter(|album| !album.snapshot.cover_path.trim().is_empty())
             .map(|album| {
                 (
@@ -4878,7 +4878,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_uses_indexed_local_cover_without_projecting_fallback_folder_art() {
+    fn startup_uses_indexed_local_cover_for_release_and_fallback_cards() {
         let mut release = album("release", "Alpha", "Release", "processed");
         release.album_mbid = "release-id".to_string();
         release.cover_path = r"C:\Music\Alpha\Release\cover.png".to_string();
@@ -4896,7 +4896,13 @@ mod tests {
             state.album_artwork_paths.get("release").map(String::as_str),
             Some(r"C:\Music\Alpha\Release\cover.png")
         );
-        assert!(!state.album_artwork_paths.contains_key("fallback"));
+        assert_eq!(
+            state
+                .album_artwork_paths
+                .get("fallback")
+                .map(String::as_str),
+            Some(r"C:\Music\Alpha\Compilation\cover.jpg")
+        );
     }
 
     fn application_state() -> ApplicationState {

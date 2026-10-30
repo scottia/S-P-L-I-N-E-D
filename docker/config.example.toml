@@ -155,6 +155,9 @@ retention_days = 14
 enabled = true
 retention_days = 0 # 0 keeps history forever
 
+[webgui_ui]
+animate_webp_preview = false
+
 # Reserved A:I:S:P:L:I:N:E:D companion boundary; no AI processing is enabled.
 [aisplined]
 enabled = false

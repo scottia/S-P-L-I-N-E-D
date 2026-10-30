@@ -214,7 +214,9 @@ Compilation tags. It then shows the selected Album's cached tracks, filling any
 missing rows with a read-only enumeration of that one folder, for direct
 track-level reopen while retaining the parent Album's queue and completion authority.
 Completed track-art ledger entries are green; tracks without a completed entry
-are blue. Folder-level `cover.*` files are not used or counted.
+are blue. An indexed folder-level `cover.jpg`, `cover.png`, or `cover.webp` is
+shown as the fallback Album card's identity, matching ordinary Album cards. It
+is not used as a COMP track preview, candidate, or embedded-art count.
 After a track finishes, SPLINED refreshes that fallback folder's track list
 without switching to the Albums tab. A deliberate top-level tab change clears
 the prior album focus. The Albums tab uses the Artist Overview layout for the

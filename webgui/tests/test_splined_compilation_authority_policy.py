@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 import sqlite3
 from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from mutagen.id3 import ID3, TALB, TCMP, TIT2, TPE1, TPE2, TXXX, UFID
+from mutagen.id3 import APIC, ID3, TALB, TCMP, TIT2, TPE1, TPE2, TXXX, UFID
+from PIL import Image
 
 import splined
 import splined_compilation_authority_policy as policy
@@ -36,6 +38,31 @@ class FakeResponse:
 class CompilationAuthorityPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         policy._INSTALLED = False
+
+    def test_track_write_survives_network_filesystem_metadata_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "selected.mp3"
+            untouched = Path(directory) / "other.mp3"
+            ID3().save(track)
+            ID3().save(untouched)
+            before = untouched.read_bytes()
+            artwork = BytesIO()
+            Image.new("RGB", (32, 32), "blue").save(artwork, "PNG")
+            with patch.object(
+                policy.shutil,
+                "copymode",
+                side_effect=PermissionError("Operation not permitted"),
+            ):
+                policy.replace_embedded_artwork(
+                    track,
+                    artwork.getvalue(),
+                    "png",
+                    {"width": 32, "height": 32},
+                )
+            frames = ID3(track).getall("APIC")
+            self.assertEqual(len(frames), 1)
+            self.assertEqual(frames[0].data, artwork.getvalue())
+            self.assertEqual(untouched.read_bytes(), before)
 
     def test_album_and_track_eligibility_use_local_tags_only(self) -> None:
         missing_album = SimpleNamespace(

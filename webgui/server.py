@@ -312,6 +312,9 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                     "music": str(r.music) if r else "",
                     "artist_art": str(r.artist_art) if r else "",
                     "comp_repair": bool(r and r.cfg.get("mode") == "write"),
+                    "animate_webp_preview": bool(
+                        r and r.cfg.get("webgui_ui", {}).get("animate_webp_preview", False)
+                    ),
                     "capabilities": {
                         "cover_write": True,
                         "artist_write": True,
@@ -513,8 +516,18 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         )
 
     @app.get("/api/image/{image_id}")
-    def image(image_id: str):
+    def image(image_id: str, still: bool = False):
         source = context.require().catalog.image_source("/api/image/" + image_id)
+        if still:
+            try:
+                with Image.open(source if isinstance(source, Path) else BytesIO(source)) as opened:
+                    if str(opened.format or "").casefold() == "webp" and int(getattr(opened, "n_frames", 1)) > 1:
+                        opened.seek(0)
+                        output = BytesIO()
+                        opened.convert("RGBA").save(output, format="PNG")
+                        return Response(output.getvalue(), media_type="image/png")
+            except (OSError, ValueError):
+                pass
         if isinstance(source, Path):
             if not source.is_file():
                 raise KeyError("Artwork is unavailable")

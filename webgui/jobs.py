@@ -253,6 +253,10 @@ class JobQueue:
                         )
                 except Exception as error:
                     message = core._redact_log_message(str(error))[:2000]
+                    core.runtime_log(
+                        "error",
+                        f"webgui.job failed id={job['id']} kind={job['kind']} error={message}",
+                    )
                     with closing(self.db.connect()) as db, db:
                         db.execute(
                             "UPDATE web_jobs SET state='failed',error=?,updated_at=now() WHERE id=? AND state NOT IN ('cancelled','paused')",

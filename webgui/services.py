@@ -100,6 +100,7 @@ class Services:
                 runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
             ),
             allow_comp_repairs=runtime.cfg.get("mode") == "write",
+            cover_stem=str(runtime.cfg.get("output", {}).get("file_name", "cover")),
             cache=runtime.cache,
             temporary_cache=runtime.temporary_cache,
         )
@@ -121,10 +122,16 @@ class Services:
             r.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
         )
         app.allow_comp_repairs = r.cfg.get("mode") == "write"
+        app.cover_stem = str(r.cfg.get("output", {}).get("file_name", "cover"))
         app.artist_sources = tuple(core.resolve_sources(r.cfg, None, None, []))
         app.metadata_cache.clear()
+        app.portrait_cache.clear()
 
     def audit(self, action, subject, details=None):
+        core.runtime_log(
+            "info",
+            f"webgui.audit action={action} subject={core._redact_log_message(str(subject))}",
+        )
         with closing(self.runtime.database.connect()) as db, db:
             db.raw.execute(
                 "INSERT INTO web_audit(action,subject,details) VALUES(%s,%s,%s)",
@@ -550,6 +557,29 @@ class Services:
         upscale_enabled = bool(output.get("upscale_below_ideal", False))
         ideal = int(ranges.get("ideal", 1800))
         max_percent = int(output.get("upscale_max_percent", 200))
+        source_format = ""
+        try:
+            with Image.open(source if isinstance(source, Path) else BytesIO(source)) as opened:
+                source_format = str(opened.format or "").casefold().replace("jpg", "jpeg")
+                source_width, source_height = opened.size
+                animated_webp = source_format == "webp" and int(getattr(opened, "n_frames", 1)) > 1
+        except (OSError, ValueError):
+            source_width = source_height = 0
+            animated_webp = False
+        adjustments = payload.get("adjustments") or {}
+        package_adjustments = payload.get("package_adjustments") or {}
+        fit = payload.get("fit") or {}
+        edited = any(float(value or 0) for value in adjustments.values() if isinstance(value, (int, float))) \
+            or any(float(value or 0) for value in package_adjustments.values() if isinstance(value, (int, float))) \
+            or any(float(fit.get(key, default) or default) != default for key, default in (("zoom", 1), ("x", 0), ("y", 0)))
+        if kind == "cover" and animated_webp and not edited and not upscale_requested:
+            body = source.read_bytes() if isinstance(source, Path) else source
+            return {
+                "image": self.catalog.image(body), "width": source_width,
+                "height": source_height, "bytes": len(body), "kind": kind,
+                "format": "webp", "upscaled": False,
+                "reason": "Original animated WebP preserved",
+            }
         image = imaging.render(
             source,
             values=payload.get("adjustments"),
@@ -565,9 +595,8 @@ class Services:
         target = "png"
         body = imaging.encode(image)
         if kind == "cover":
-            target = core.formats(self.runtime.cfg)[0]
-            if target == "webp":
-                target = "jpeg"
+            configured = core.formats(self.runtime.cfg)
+            target = source_format if source_format in configured else configured[0]
             directory = self.runtime.temporary_cache / "prepared-previews"
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / (uuid4().hex + ".png")
@@ -639,7 +668,8 @@ class Services:
         body = source
         stem = str(self.runtime.cfg.get("output", {}).get("file_name", "cover"))
         core.validate_filename(stem)
-        destination = Path(row["path"]) / (stem + (".png" if fmt == "png" else ".jpg"))
+        extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[fmt]
+        destination = Path(row["path"]) / (stem + extension)
         if self.runtime.cfg.get("output", {}).get("preserve_file", True):
             number = 1
             while destination.exists() and destination.read_bytes() != body:
@@ -703,6 +733,7 @@ class Services:
             written.append(path.name)
         self.audit("write-artist-art", artist_id, {"files": written})
         self.catalog.metadata_cache.pop(artist_id, None)
+        self.catalog.portrait_cache.pop(artist_id, None)
         return {"written": written}
 
     @serialized
@@ -830,7 +861,11 @@ class Services:
         body = self.catalog.image_bytes(result["image"])
         directory = self.runtime.cache / "staged-artwork"
         directory.mkdir(parents=True, exist_ok=True)
-        name = uuid4().hex + (".jpg" if result["format"] == "jpeg" else ".png")
+        name = uuid4().hex + {
+            "jpeg": ".jpg",
+            "png": ".png",
+            "webp": ".webp",
+        }[result["format"]]
         self._atomic_artwork(directory / name, body)
         return {
             "album_id": row["album_key"],
@@ -862,12 +897,13 @@ class Services:
             key not in allowed for key in requested
         ):
             raise ValueError("Choose indexed COMP tracks")
-        tracks = [core.read_track(path) for path in self.album_files(row)]
+        selected_files = [Path(allowed[key]) for key in requested]
+        tracks = [core.read_track(path) for path in selected_files]
         summary = core.Summary()
         cache = r.temporary_cache / "comp-work" / uuid4().hex
         cache.mkdir(parents=True, exist_ok=True)
         scan.run_manual_compilation_album(
-            core.AlbumDir(Path(row["path"]), self.album_files(row)),
+            core.AlbumDir(Path(row["path"]), selected_files),
             tracks,
             http=core.Http(),
             config_file=r.config_file,

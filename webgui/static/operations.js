@@ -137,7 +137,7 @@ async function writeArtwork() {
 const previewReview = renderReview;
 renderReview = function () {
   previewReview();
-  const entry = state.editorMode === "artist" && !state.compReportVisible && !state.selectedPortrait && !state.selectedBanner;
+  const entry = state.editorMode === "artist" && state.workspace !== "enhance" && !state.compReportVisible && !state.selectedPortrait && !state.selectedBanner;
   const writable = state.server?.mode === "write";
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack : !((state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
@@ -147,10 +147,10 @@ renderReview = function () {
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
   if (state.queuedDecision) {
     $("upscaleButton").disabled = true;
-    $("writeButton").textContent = writable ? "CHOOSE & SAVE" : "CHOOSE READ-ONLY";
+    $("writeButton").textContent = state.queuedDecision.jobKind === "comp" ? "EMBED Thumb" : "WRITE Cover";
     $("writeButton").disabled = !state.queuedDecision.selected;
     $("embedBatchButton").disabled = true;
-    $("writeNotice").textContent = writable ? "Live Write queued review · preview a Candidate Artwork card, then Choose & Save." : "Read-only queued review · choices are evaluated but files are not saved.";
+    $("writeNotice").textContent = writable ? "Live Write · select one candidate, then save it here." : "Read-only queued review · choices are evaluated but files are not saved.";
   }
 };
 async function searchAlbum(releaseId = null) {
@@ -216,6 +216,13 @@ function clearQueuedDecision() {
 }
 async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
+  const retainCompReport = decision?.jobKind === "comp"
+    && state.editorMode === "artist" && state.compReportVisible
+    && state.compTrack?.albumId === albumId;
+  if (retainCompReport) {
+    decision.previousCandidates = [];
+    return;
+  }
   if (!albumId || state.album?.id === albumId) return;
   const request = ++state.selectionRequest;
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
@@ -248,24 +255,12 @@ async function submitQueuedDecision(value) {
   setStatus("Queued choice " + label + " submitted · waiting for the next decision", "busy");
   await pollJobs();
 }
-function renderQueuedDecisionActions(host) {
-  const decision = state.queuedDecision;
-  if (!decision) return;
-  const actions = node("div", "queued-decision-actions");
-  actions.append(node("strong", "", [decision.context.artist, decision.context.album].filter(Boolean).join(" — ") || "Queued artwork review"));
-  if (decision.kind !== "musicbrainz-results") actionButton("Use suggested", () => submitQueuedDecision("s"), actions);
-  if (["normal-picker", "local-comparison"].includes(decision.kind)) actionButton("Keep / skip album", () => submitQueuedDecision("k"), actions);
-  if (decision.kind === "fallback-picker" || decision.context.musicbrainz) actionButton("MusicBrainz matches", () => submitQueuedDecision("m"), actions);
-  actionButton(decision.kind === "normal-picker" ? "Bypass album" : "Leave unchanged", () => submitQueuedDecision("b"), actions);
-  actionButton("Pause work", async () => { await queueAction("pause", decision.jobId); clearQueuedDecision(); }, actions);
-  host.append(actions);
-}
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
   const context = prompt.context || {};
   state.queuedDecision = {
-    jobId: job.id, nonce: prompt.nonce, kind: context.kind || "", context,
+    jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
     previousCandidates, selected: null,
   };
   state.workspace = "find";
@@ -274,7 +269,7 @@ async function presentQueuedCandidates(job, prompt, options) {
   await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
-  setStatus("Queued artwork review · preview a candidate, then choose and save", "busy");
+  setStatus("Queued artwork review · select a candidate, then save from Selected Artwork", "busy");
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
@@ -303,6 +298,13 @@ function renderQueue() {
   $("removeAllStaged").disabled = !jobs.some(job => !["running", "waiting"].includes(job.state));
 };
 async function refreshQueuedAlbumAfterSave() {
+  if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
+    const selected = state.compTrack ? {albumId: state.compTrack.albumId, key: state.compTrack.key} : null;
+    state.compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(state.artist.id));
+    if (selected) await selectArtistCompTrack(selected.albumId, selected.key);
+    else { renderHero(); renderCandidates(); renderReview(); }
+    return;
+  }
   const albumId = state.album?.id;
   if (!albumId) return;
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));

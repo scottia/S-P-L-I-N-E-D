@@ -1390,7 +1390,16 @@ def replace_embedded_artwork(
     staged = Path(staged_name)
     mime = "image/png" if image_format == "png" else "image/jpeg"
     try:
-        shutil.copy2(path, staged)
+        # NAS/CIFS/FUSE libraries can allow file replacement while rejecting
+        # chmod/utime operations.  copy2() makes those metadata calls part of
+        # the copy and turns an otherwise valid artwork write into EPERM.
+        # Copy the complete audio bytes first, then preserve the source mode
+        # only when the mounted filesystem supports it.
+        shutil.copyfile(path, staged)
+        try:
+            shutil.copymode(path, staged)
+        except OSError:
+            pass
         if suffix == ".mp3":
             _replace_id3_front(staged, data, mime)
         elif suffix in {".wav", ".aiff", ".aif"}:

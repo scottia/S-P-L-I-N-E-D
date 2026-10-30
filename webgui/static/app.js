@@ -148,7 +148,11 @@ function node(tag, className = "", text) {
   return element;
 }
 function image(src, className = "", alt = "") {
-  const element = node("img", className); element.src = src; element.alt = alt; element.loading = "lazy"; element.draggable = false; return element;
+  const element = node("img", className);
+  const dynamic = typeof src === "string" && src.startsWith("/api/image/");
+  element.src = dynamic && state.server && !state.server.animate_webp_preview
+    ? src + (src.includes("?") ? "&" : "?") + "still=1" : src;
+  element.alt = alt; element.loading = "lazy"; element.draggable = false; return element;
 }
 function clear(element) { element.replaceChildren(); }
 function clearFocusCandidates() {
@@ -650,8 +654,8 @@ function renderArtistCompReport() {
   repair.addEventListener("click", repairArtistComp);
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
   launch.disabled = !blue || state.compPreviewMode || state.compBusy; launch.addEventListener("click", launchArtistComp);
-  const close = node("button", "fallback-close", "Close"); close.type = "button";
-  close.addEventListener("click", () => { if (state.compBusy) return; state.compReportVisible = false; state.compTrack = null; state.upscalePreview = null; state.candidates = state.artist?.local_candidates || []; renderHero(); renderCandidates(); renderReview(); });
+  const close = node("button", "fallback-close", "CLOSE REPORT"); close.type = "button";
+  close.addEventListener("click", closeArtistCompReport);
   toolbar.append(preview, heading, repair, launch, close); report.append(toolbar);
   report.append(node("div", "fallback-report-summary", `${state.compGroups.length} albums · ${tracks.length} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
   const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
@@ -677,6 +681,16 @@ function renderArtistCompReport() {
   }
 }
 
+function closeArtistCompReport() {
+  if (state.compBusy) return;
+  ++state.compReportRequest; ++state.compStatusRequest; ++state.compTrackRequest;
+  state.compReportLoading = false; state.compReportVisible = false; state.compTrack = null;
+  state.upscalePreview = null; state.candidates = state.artist?.local_candidates || [];
+  $("compReportButton").textContent = "COMP Report"; $("compReportButton").disabled = false;
+  renderHero(); renderCandidates(); renderReview();
+  setStatus("COMP report closed");
+}
+
 async function openArtistCompReport(albumId = "") {
   if (!state.artist) { setStatus("Choose an Artist before opening COMP Report", "error"); return; }
   if (state.compReportLoading) return;
@@ -693,6 +707,7 @@ async function openArtistCompReport(albumId = "") {
     state.compReportLoading = false;
     if (!state.compGroups.length) { state.compReportVisible = false; setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
     state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
+    $("compReportButton").textContent = "CLOSE REPORT";
     if (albumId) state.compCollapsed.delete(albumId);
     state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();
     const report = $("fallbackReport");
@@ -796,11 +811,10 @@ function renderCandidates() {
   const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || ((candidate.name || "") + " " + (candidate.source || "")).toLowerCase().includes(query)));
   $("candidateCount").textContent = state.candidates.length + (state.candidates.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
-  $("candidateHint").textContent = state.queuedDecision ? "Queued review · Preview, then Choose & Save"
+  $("candidateHint").textContent = state.queuedDecision ? "Select a candidate to preview; save from Selected Artwork"
     : state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
-  if (state.queuedDecision) renderQueuedDecisionActions(grid);
   if (!visible.length) { grid.append(node("p", "empty-copy", state.editorMode === "fallback" ? "Select a COMP track above to inspect its embedded artwork. Use LAUNCH COMP to review track artwork in queued work."
     : state.candidates.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
   for (const candidate of visible) {
@@ -827,11 +841,7 @@ function renderCandidates() {
     card.append(picture);
     const line = node("div", "candidate-card-line"); line.append(node("strong", "", candidate.recommended ? "Recommended" : candidate.name));
     if (state.queuedDecision) {
-      const preview = node("button", "candidate-preview", active ? "Previewing" : "Preview"); preview.type = "button";
-      preview.addEventListener("click", () => selectCandidate(candidate, "artist"));
-      const action = node("button", "candidate-choose", (state.server?.mode === "write" ? "Choose & Save " : "Choose Read-Only ") + candidate.queueNumber); action.type = "button";
-      action.addEventListener("click", () => runAction(() => submitQueuedDecision(candidate.queueValue)));
-      line.append(preview, action); card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
+      card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
       continue;
     }
     const action = node("button", "candidate-compare" + (state.compare.has(candidate.image) ? " active" : ""), state.compare.has(candidate.image) ? "Compare ●" : "Compare ○");
@@ -849,7 +859,7 @@ function selectCandidate(candidate, target) {
   if (state.queuedDecision) {
     state.queuedDecision.selected = candidate;
     renderCandidates(); renderReview();
-    setStatus("Queued candidate " + candidate.queueNumber + " previewed · " + (state.server?.mode === "write" ? "press Choose & Save" : "Read mode will not save files"));
+    setStatus("Queued candidate " + candidate.queueNumber + " previewed · save from Selected Artwork");
     return;
   }
   if (state.editorMode === "album") state.selectedCover = candidate;
@@ -956,15 +966,15 @@ function selectedImage() {
   applyPreviewEffects();
 }
 function renderReview() {
-  const artistEntry = state.editorMode === "artist" && !state.compReportVisible && !state.selectedPortrait && !state.selectedBanner;
+  const artistEntry = state.editorMode === "artist" && state.workspace !== "enhance" && !state.compReportVisible && !state.selectedPortrait && !state.selectedBanner;
   const packageReady = state.editorMode === "artist" && state.workspace === "enhance" && state.radioArtist && state.radioBanner;
   if (!packageReady) state.themedPackaging = false;
   $("themedPackaging").disabled = !packageReady;
   $("themedPackaging").hidden = !packageReady;
   $("themedPackaging").classList.toggle("active", state.themedPackaging);
   $("themedPackaging").setAttribute("aria-pressed", String(state.themedPackaging));
-  $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? "EMBED Comp"
-    : state.editorMode === "artist" ? "WRITE Artist Art" : state.editorMode === "fallback" ? "EMBED Comp" : "WRITE Cover";
+  $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? "EMBED Thumb"
+    : state.editorMode === "artist" ? "WRITE Artist Art" : state.editorMode === "fallback" ? "EMBED Thumb" : "WRITE Cover";
   $("writeButton").disabled = !(artistEntry && state.artist);
   $("upscaleButton").disabled = state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image
@@ -1336,7 +1346,8 @@ document.addEventListener("pointerdown", event => {
   if (!$("albumStatusKey").hidden && !event.target.closest("#albumStatusKey, #albumStatusHelp")) closeAlbumStatusKey();
 });
 $("compReportButton").addEventListener("click", () => {
-  openArtistCompReport();
+  if (state.compReportVisible || state.compReportLoading) closeArtistCompReport();
+  else openArtistCompReport();
 });
 $("themeButton").addEventListener("click", () => {
   showDialog("Theme", ["Choose the Windows inspired workspace palette. Your choice is kept in this browser."]);

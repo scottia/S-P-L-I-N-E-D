@@ -11,9 +11,59 @@ from PIL import Image
 from mutagen.id3 import APIC, ID3
 
 from webgui.catalog import PreviewApp
+from webgui.services import Services
 
 
 class BrowserFallbackTests(unittest.TestCase):
+    def test_animated_webp_cover_is_preserved_for_write_and_staging(self) -> None:
+        class Catalog:
+            def __init__(self, source: Path):
+                self.source = source
+                self.body = b""
+
+            def image_source(self, _image: str):
+                return self.source
+
+            def image(self, body: bytes):
+                self.body = body
+                return "/api/image/test"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "candidate.webp"
+            frames = [Image.new("RGB", (40, 40), color) for color in ("red", "blue")]
+            frames[0].save(
+                source,
+                format="WEBP",
+                save_all=True,
+                append_images=frames[1:],
+                duration=80,
+                loop=0,
+            )
+            service = Services.__new__(Services)
+            service.runtime = type(
+                "Runtime",
+                (),
+                {
+                    "cfg": {
+                        "output": {
+                            "file_formats": ["jpeg", "png", "webp"],
+                            "upscale_below_ideal": True,
+                            "upscale_max_percent": 200,
+                        },
+                        "range": {"ideal": 1800},
+                    },
+                    "temporary_cache": root / "tmp",
+                },
+            )()
+            service.catalog = Catalog(source)
+            result = service.preview({"image": "candidate", "kind": "cover"})
+            self.assertEqual(result["format"], "webp")
+            self.assertEqual(service.catalog.body, source.read_bytes())
+            with Image.open(BytesIO(service.catalog.body)) as written:
+                self.assertEqual(written.format, "WEBP")
+                self.assertGreater(int(getattr(written, "n_frames", 1)), 1)
+
     def test_artist_selection_uses_summary_and_settings_hide_native_sqlite(self) -> None:
         static = Path(__file__).parents[1] / "static"
         application = (static / "app.js").read_text(encoding="utf-8")
@@ -32,12 +82,13 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("delete draft.scan.sqlite_shared", operations)
         self.assertIn("presentQueuedCandidates(job, prompt, options)", operations)
         self.assertIn("await focusQueuedAlbum(state.queuedDecision)", operations)
-        self.assertIn('\"CHOOSE & SAVE\"', operations)
+        self.assertIn('\"EMBED Thumb\"', operations)
         self.assertIn('context.album || job.payload?.name', operations)
         self.assertIn('$("fullscreenButton")', operations)
         self.assertNotIn('$("reviewWork")', operations)
-        self.assertIn("submitQueuedDecision(candidate.queueValue)", application)
-        self.assertIn('\"candidate-preview\"', application)
+        self.assertNotIn("submitQueuedDecision(candidate.queueValue)", application)
+        self.assertNotIn('node("button", "candidate-preview"', application)
+        self.assertNotIn('node("button", "candidate-choose"', application)
         self.assertIn("cover: group.cover || null", application)
         self.assertIn("compReportLoading", application)
         self.assertIn('status: "check-error"', application)
@@ -124,18 +175,21 @@ class BrowserFallbackTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "index.sqlite"
-            folder_cover = root / "cover.jpg"
-            Image.new("RGB", (500, 500), "green").save(folder_cover, "JPEG")
+            album_folders = [root / name for name in ("soundtrack", "comp", "album")]
+            for folder in album_folders:
+                folder.mkdir()
+            folder_cover = album_folders[1] / "cover.png"
+            Image.new("RGB", (500, 500), "green").save(folder_cover, "PNG")
             with closing(connect(database)) as db:
                 db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
                 db.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY, album_name TEXT, "
-                           "artist_key TEXT, cover_path TEXT, track_count INTEGER, status TEXT, "
+                           "artist_key TEXT, path TEXT, cover_path TEXT, track_count INTEGER, status TEXT, "
                            "compilation INTEGER, musicbrainz_albumid TEXT)")
                 db.execute("INSERT INTO artists VALUES ('various', 'Various Artists')")
-                db.executemany("INSERT INTO albums VALUES (?, ?, 'various', ?, 10, 'unprocessed', ?, ?)", [
-                    ("soundtrack", "American Pie 2", None, 1, "612d3e8c-0dae-4c17-9126-1d54e76b719d"),
-                    ("unidentified-comp", "Unknown Compilation", str(folder_cover), 1, ""),
-                    ("unidentified-album", "Unknown Album", None, 0, None),
+                db.executemany("INSERT INTO albums VALUES (?, ?, 'various', ?, ?, 10, 'unprocessed', ?, ?)", [
+                    ("soundtrack", "American Pie 2", str(album_folders[0]), None, 1, "612d3e8c-0dae-4c17-9126-1d54e76b719d"),
+                    ("unidentified-comp", "Unknown Compilation", str(album_folders[1]), None, 1, ""),
+                    ("unidentified-album", "Unknown Album", str(album_folders[2]), None, 0, None),
                 ])
                 db.commit()
             app = PreviewApp(root, database, root, root)

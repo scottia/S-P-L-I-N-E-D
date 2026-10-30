@@ -663,9 +663,11 @@ def inspect_album(
         }
     used_keys[key] = path_text
 
+    # Missing-MBID COMP albums still use their folder cover for album-card
+    # identity.  The COMP workflow independently reads and writes embedded
+    # artwork per track, so retaining this inventory cannot substitute the
+    # folder cover for track artwork.
     cover = cover_statistics(album, cover_name)
-    if not str(tags["album_mbid"]).strip():
-        cover = without_fallback_cover_statistics(cover, cover_name)
     previous = existing.get(key) or prior_at_path
     previous_status = (
         str(previous["status"])

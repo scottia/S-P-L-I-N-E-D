@@ -165,6 +165,16 @@ WebP source artwork is preserved by local-art policy. When better static artwork
 replaces a matching JPEG/PNG cover, SPLINED avoids accumulating numbered copies
 according to active replacement rules.
 
+## `[webgui_ui]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `animate_webp_preview` | `false` | Off displays the first still frame of an animated `cover.webp`; on plays the animation in Selected Artwork. An unedited WebP write preserves the original animation and `.webp` extension. |
+
+This is WebGUI presentation state. It does not enable animated artwork inside
+audio tags; embedded Album and COMP thumbnails remain static images at
+`output.embedded_thumbnail_size`.
+
 Embedded JPEG artwork selected as preferred source is materialized using the
 configured filename stem and canonical JPEG output policy.
 

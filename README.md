@@ -208,8 +208,10 @@ Windows **Fallback** lists only Albums without a MusicBrainz Album ID. A fallbac
 Album supports an additive checked-track queue.
 Checked tracks are processed explicitly, completed track text turns green
 immediately while unfinished tracks remain blue, and the Album stays focused so
-more tracks can be selected without returning to the library root. Folder-level
-`cover.*` files are neither candidates nor inventory counts for a Fallback Album.
+more tracks can be selected without returning to the library root. An indexed
+folder-level `cover.jpg`, `cover.png`, or `cover.webp` is displayed only as that
+Fallback Album's card identity. It is never offered as COMP track artwork and is
+not counted as an embedded track image.
 
 The MusicBrainz list uses release-group artwork only as a quick visual preview;
 its Resolution field is separate, Release-MBID-specific evidence from the best

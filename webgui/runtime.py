@@ -43,6 +43,8 @@ class Runtime:
         self.cfg = deepcopy(cfg) if cfg is not None else self.load()
         self.validate(self.cfg)
         self._ensure_cache_directories(self.cfg)
+        self.log_path = core.init_debug_log(self.config_file, self.cfg)
+        core.runtime_log("info", "webgui.runtime started database=postgresql")
         compilation.install(core)
         ranking.install(core, scan)
         self._bindings = (
@@ -215,3 +217,5 @@ class Runtime:
             core._save_cache_state,
             core.compilation_prepare_embedded,
         ) = self._bindings
+        core.runtime_log("info", "webgui.runtime stopped")
+        core._close_runtime_log()
