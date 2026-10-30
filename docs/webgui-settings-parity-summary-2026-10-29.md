@@ -8,17 +8,19 @@ tokens, database passwords, or machine-specific test values.
 
 - The settings workspace is wide, user-resizable, divided into task sections,
   and uses left-aligned radio-style Boolean controls. **Settings HELP** opens
-  the repository's `main/docs` directory. One **Advanced ON/OFF · All
+  `docs/config-v5-reference.md`. One **Advanced ON/OFF · All
   Sections** switch controls specialist fields everywhere and remains usable
   even while an unsaved required field is incomplete.
-- **Library & Files** presents the music and scan roots, persistent cache,
-  temporary cache, log and credential directories, ignored folders,
+- **Library & Files** presents the music root, selectable Scan Mode and its
+  conditional optional Scan Folder, Persistent Cache Directory, Temporary
+  Cache Directory, V/A / OST Artist Images Directory, Provider Credential
+  Directory, ignored folders,
   PostgreSQL environment ownership, and a non-recursive storage/runtime
   summary. Ignored folder names are comma-separated configuration values and
   do not need shell quotes when they contain spaces.
-- A blank V/A / OST Artist Images Directory follows the hard-coded
-  `<Cache Directory>/artist-art` rule. The subdirectory is created only when
-  first needed. It is an image directory, not a database.
+- A blank V/A / OST Artist Images Directory uses Persistent Cache Directory
+  itself. The operator may select any other persistent server-visible directory
+  or preferred folder name. It is an image directory, not a database.
 - **Artwork & Embedding** shows `cover`, `artist`, and `banner` as the required
   default filename stems and JPEG, PNG, and WebP as the supported static image
   formats. Both are informational rather than free-form inputs. Preserve,
@@ -42,9 +44,10 @@ tokens, database passwords, or machine-specific test values.
   actions with the restore file and restore action. Catalog Maintenance appears
   directly below Restore and keeps full PostgreSQL refresh and deliberate
   read-only SQLite import separate from routine incremental updates.
-- **Processing & Logs** separates processing controls from bounded WebGUI audit
-  events. It does not expose credentials. Native shared-SQLite controls are not
-  shown because WebGUI uses PostgreSQL.
+- **Processing & Logs** separates processing controls from Logging, including
+  Log Directory, diagnostic level, retention, and bounded WebGUI audit events.
+  It does not expose credentials. Native shared-SQLite controls are not shown
+  because WebGUI uses PostgreSQL.
 - The shared, secret-free presentation contract is
   `schema/settings-ui.json`. Safe settings backup includes WebGUI palette and
   enhancement state but excludes provider secrets and PostgreSQL contents.
@@ -65,9 +68,9 @@ tokens, database passwords, or machine-specific test values.
 Apply these presentation/default changes to the native Settings workspace when
 the Windows update is approved:
 
-1. Change the V/A / OST Artist Images help copy to state that blank uses the
-   hard-coded `<Cache Directory>/artist-art` subdirectory, created when needed,
-   and that it is an image directory rather than a database.
+1. Change the V/A / OST Artist Images behavior and help copy so blank uses
+   Persistent Cache Directory itself, any other directory or preferred folder
+   name may be selected, and it is an image directory rather than a database.
 2. State that ignored folder names are comma-separated and do not require
    quotes for spaces.
 3. Replace editable **Filename Stem** and **Formats** controls with fixed
@@ -82,9 +85,13 @@ the Windows update is approved:
 6. Keep Boolean controls left aligned and radio styled; make the Advanced state
    global across all settings sections and never block its toggle because an
    unrelated unsaved field is incomplete.
-7. Add an always-visible Settings Help route, compact and align Artwork Source
-   and Connection selectors/fields, and align Backup and Restore action groups.
-8. Retain the graphical Enhancement editor, provider policy editor, connection
+7. Add an always-visible Settings Help route to `docs/config-v5-reference.md`,
+   compact and align Artwork Source and Connection selectors/fields, and align
+   Backup and Restore action groups.
+8. Move Scan Mode and its conditional optional Scan Folder to Library & Files;
+   move Log Directory under Processing & Logs → Logging; use the reviewed
+   Persistent Cache, Temporary Cache, and Provider Credential names.
+9. Retain the graphical Enhancement editor, provider policy editor, connection
    testing, storage summary, backup/restore, and processing/log presentation
    already shared with the native design where applicable.
 

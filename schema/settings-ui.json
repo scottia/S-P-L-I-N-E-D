@@ -18,15 +18,15 @@
       "id": "library",
       "label": "Library & Files",
       "icon": "⌂",
-      "description": "Choose where music, disposable previews, credentials, Artist Art, and logs live.",
+      "description": "Choose the music source and persistent application directories.",
       "fields": [
         {"path": "library.music_library", "label": "Music Library", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
-        {"path": "scan.scan_library_dir", "label": "Scan Folder", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
-        {"path": "scan.cache_dir", "label": "Cache Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Persistent downloaded artwork, staged work, and original-artwork backups."},
-        {"path": "scan.shared_artist_art_dir", "label": "V/A / OST Artist Images Directory", "type": "path", "runtimes": ["windows", "webgui"], "help": "Blank uses the hard-coded <Cache Directory>/artist-art subdirectory, created only when first needed. This is an IMAGE directory, NOT a database."},
-        {"path": "scan.temporary_cache_dir", "label": "Temporary Cache", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
-        {"path": "scan.log_dir", "label": "Log Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
-        {"path": "credentials.credential_dir", "label": "Credential Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
+        {"path": "scan.scan_mode", "label": "Scan Mode Enabled", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"], "help": "Enable a dedicated scan target. When disabled, SPLINED uses Music Library."},
+        {"path": "scan.scan_library_dir", "label": "Scan Folder", "type": "path", "default": "", "runtimes": ["windows", "webgui"], "help": "Optional. Used only when Scan Mode is enabled. Blank scans Music Library; a configured path may select a narrower server-visible folder."},
+        {"path": "scan.cache_dir", "label": "Persistent Cache Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Persistent downloaded artwork, staged work, and original-artwork backups."},
+        {"path": "scan.temporary_cache_dir", "label": "Temporary Cache Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Disposable downloaded and derived artwork used during active processing."},
+        {"path": "scan.shared_artist_art_dir", "label": "V/A / OST Artist Images Directory", "type": "path", "default": "", "runtimes": ["windows", "webgui"], "help": "Optional. Blank uses Persistent Cache Directory itself. Choose any persistent image directory or folder name. This is an IMAGE directory, NOT a database."},
+        {"path": "credentials.credential_dir", "label": "Provider Credential Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"]},
         {"path": "library.ignored_subs", "label": "Ignored Folders", "type": "list", "default": [], "runtimes": ["windows", "webgui"], "help": "Comma-separated folder names. Quotes are unnecessary for names containing spaces because this is not a shell command."},
         {"path": "database.url", "label": "PostgreSQL Connection URL", "type": "password", "default": "", "advanced": true, "runtimes": ["webgui"], "help": "Container deployments manage this from PostgreSQL environment variables. It is never returned to the browser."}
       ]
@@ -39,7 +39,7 @@
       "fields": [
         {"path": "output.file_name", "label": "Default Filename Stems", "type": "statement", "display": "cover · artist · banner", "default": "cover", "runtimes": ["windows", "webgui"], "help": "SPLINED uses cover for album artwork, artist for portraits, and banner for artist banners. These required defaults are shown as information rather than an editable filename."},
         {"path": "output.file_formats", "label": "Supported Image Formats", "type": "statement", "display": "JPEG · PNG · WebP", "default": ["jpeg", "png", "webp"], "runtimes": ["windows", "webgui"], "help": "These are the only supported static artwork formats; additional formats cannot be added in Settings."},
-        {"path": "output.preserve_file", "label": "Preserve Existing cover.* / artist.*", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"]},
+        {"path": "output.preserve_file", "label": "Preserve Existing cover.* / artist.* / banner.*", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"]},
         {"path": "output.square", "label": "Square Artwork", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"]},
         {"path": "output.square_mode", "label": "Square Mode", "type": "enum", "default": "crop", "choices": ["crop", "off"], "runtimes": ["windows", "webgui"]},
         {"path": "output.square_round_to", "label": "Square Round-To", "type": "integer", "default": 16, "min": 0, "max": 4096, "runtimes": ["windows", "webgui"]},
@@ -51,7 +51,7 @@
     {
       "id": "enhancement",
       "label": "Enhancement",
-      "icon": "✨",
+      "icon": "✦",
       "description": "Set candidate resolution goals and the default image-adjustment profile.",
       "fields": [
         {"path": "range.min", "label": "Minimum", "type": "integer", "default": 1200, "min": 1, "runtimes": ["windows", "webgui"]},
@@ -126,14 +126,14 @@
       "id": "runtime",
       "label": "Processing & Logs",
       "icon": "▶",
-      "description": "Set the saved processing mode, scan behavior, history, and diagnostic retention.",
+      "description": "Set processing behavior, completion history, and diagnostic storage and retention.",
       "fields": [
         {"path": "mode", "label": "Processing Mode", "type": "enum", "choices": ["read", "write"], "runtimes": ["windows", "webgui"]},
         {"path": "scan.scan_mode_timeout", "label": "Processing Override Delay (Hours)", "type": "integer", "min": 0, "max": 8760, "runtimes": ["windows", "webgui"]},
-        {"path": "scan.scan_mode", "label": "Scan Mode Enabled", "type": "boolean", "runtimes": ["windows", "webgui"]},
         {"path": "scan.library_scan", "label": "Full Library Scan", "type": "boolean", "runtimes": ["windows", "webgui"]},
         {"path": "history.enabled", "label": "Status History Enabled", "type": "boolean", "runtimes": ["windows", "webgui"]},
         {"path": "history.retention_days", "label": "History Retention (Days; 0 = All)", "type": "integer", "min": 0, "runtimes": ["windows", "webgui"]},
+        {"path": "scan.log_dir", "label": "Log Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Persistent destination for current-run diagnostics and retained WebGUI logs."},
         {"path": "verbosity", "label": "Diagnostic Log Level", "type": "enum", "choices": ["info", "debug", "warning", "error"], "runtimes": ["windows", "webgui"]},
         {"path": "logging.retention_days", "label": "Log Retention (Days)", "type": "integer", "min": 0, "runtimes": ["windows", "webgui"]},
         {"path": "logging.database_audit", "label": "Database Audit Log", "type": "boolean", "advanced": true, "runtimes": ["webgui"]},

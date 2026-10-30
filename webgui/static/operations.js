@@ -543,16 +543,16 @@ function renderStorageSettings(host) {
     clear(summary);
     for (const [label, detail, size] of [
       ["PostgreSQL Catalog", value.database, formatStorageBytes(value.database_bytes)],
-      ["Persistent Cache", value.cache, "mounted path"],
-      ["V/A / OST Artist Images", value.artist_art, "mounted path"],
-      ["Provider Credentials", value.credentials, "protected path"],
-      ["Configuration", value.configuration, "Config v5"],
+      ["Persistent Cache Directory", value.cache, "mounted path"],
+      ["V/A / OST Artist Images Directory", value.artist_art, "mounted path"],
+      ["Provider Credential Directory", value.credentials, "protected path"],
+      ["Configuration File", value.configuration, "Config v5"],
     ]) {
       const row = node("div", "storage-row"); row.append(node("strong", "", label), node("span", "storage-path", detail || "Not configured"), node("span", "storage-size", size)); summary.append(row);
     }
     const runtime = node("div", "storage-runtime"); runtime.append(node("strong", "", "Runtime"), node("span", "", `v${value.version} · PostgreSQL · ${(value.mode || "read").toUpperCase()}`)); summary.append(runtime);
   }).catch(error => { clear(summary); summary.append(node("p", "operation-error", error.message)); });
-  settingsHelp(host, "What is included in storage usage?", "The exact catalog size comes from PostgreSQL. Cache, Artist Art, credentials, and configuration are persistent mounted paths; SPLINED does not recursively scan those network folders merely to open Settings.");
+  settingsHelp(host, "What is included in storage usage?", "The exact catalog size comes from PostgreSQL. Persistent Cache, V/A / OST Artist Images, Provider Credentials, and Configuration are mounted paths; SPLINED does not recursively scan those network folders merely to open Settings.");
 }
 function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider, rerender) {
   settingsHelp(host, "Why can a connected provider say Excluded?", "Connection credentials and artwork-search inclusion are separate. Excluded providers can still be tested under Connections but are not queried for candidate artwork.");
@@ -648,7 +648,7 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
   for (const descriptor of section.fields || []) {
     if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
     if (["scan.sqlite_shared", "scan.windows_client_lock"].includes(descriptor.path)) continue;
-    const target = descriptor.path === "verbosity" || descriptor.path.startsWith("logging.") ? logging : processing;
+    const target = descriptor.path === "scan.log_dir" || descriptor.path === "verbosity" || descriptor.path.startsWith("logging.") ? logging : processing;
     settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
   }
   const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
@@ -677,7 +677,7 @@ async function openSettings() {
       button.addEventListener("click", () => renderSection(section.id)); nav.append(button);
     }
     const helpLink = node("a", "settings-help-link", "Settings HELP");
-    helpLink.href = "https://github.com/scottia/S-P-L-I-N-E-D/tree/main/docs"; helpLink.target = "_blank"; helpLink.rel = "noopener"; nav.append(helpLink);
+    helpLink.href = "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/config-v5-reference.md"; helpLink.target = "_blank"; helpLink.rel = "noopener"; nav.append(helpLink);
     const advancedButton = node("button", "settings-advanced" + (advanced ? " active" : ""), advanced ? "Advanced ON · All Sections" : "Advanced OFF · All Sections");
     advancedButton.type = "button"; advancedButton.addEventListener("click", () => { applySettingsInputs(draft, bindings, false); advanced = !advanced; renderSection(active, true); }); nav.append(advancedButton);
     if (state.server?.auth_required) {
@@ -705,7 +705,7 @@ async function openSettings() {
   function renderSection(id, preserveDraft = false) {
     active = id; bindings = [];
     if (!preserveDraft) draft = structuredClone(saved.config);
-    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
+    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
     draft.samples ||= {}; draft.aisplined ||= {};
     const section = available.find(item => item.id === id); clear(content); renderNav();
     const header = node("header", "settings-content-header"), copy = node("div");
@@ -716,12 +716,12 @@ async function openSettings() {
     }
     content.append(header); const fields = node("div", `settings-fields settings-fields-${section.id}`); content.append(fields);
     if (["enhancement", "sources"].includes(section.id)) addSpecialSection(section, fields);
-    if (section.id === "library") settingsHelp(fields, "Which folders does SPLINED use?", "The music library is scanned read-only unless Live Write is enabled. Cache, log, credential, and V/A / OST Artist Art directories must be persistent container mounts.");
-    if (section.id === "artwork") settingsHelp(fields, "What is saved, and what is embedded?", "WRITE saves cover.* or artist.* files. EMBED Batch also stages a preference-sized square thumbnail for supported tracks; it does not shrink the saved full-resolution cover.");
+    if (section.id === "library") settingsHelp(fields, "Which folders does SPLINED use?", "Music Library is the default scan root. Scan Mode may select a narrower server-visible folder. Persistent Cache, V/A / OST Artist Images, and Provider Credential directories must use persistent server-visible storage.");
+    if (section.id === "artwork") settingsHelp(fields, "What is saved, and what is embedded?", "WRITE saves cover.*, artist.*, or banner.* files. EMBED Batch also stages a preference-sized square thumbnail for supported tracks; it does not shrink the saved full-resolution cover.");
     if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
     else {
       let displayedGroup = "";
-      const groupFor = path => section.id === "library" ? (path === "library.music_library" || path === "scan.scan_library_dir" ? "Library And Application Paths" : path === "database.url" ? "Database" : "Persistent Folders")
+      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
       for (const descriptor of section.fields || []) {
@@ -738,7 +738,16 @@ async function openSettings() {
           sampleToggle.addEventListener("change", updateSamplePath); updateSamplePath();
         }
       }
-      if (section.id === "library") renderStorageSettings(fields);
+      if (section.id === "library") {
+        const scanToggle = bindings.find(item => item.path === "scan.scan_mode")?.input;
+        const scanDirectory = bindings.find(item => item.path === "scan.scan_library_dir")?.input;
+        if (scanToggle && scanDirectory) {
+          const scanField = scanDirectory.closest(".setting-field");
+          const updateScanPath = () => { scanField.hidden = !scanToggle.checked; scanDirectory.disabled = !scanToggle.checked; scanDirectory.required = false; scanDirectory.placeholder = "Optional"; };
+          scanToggle.addEventListener("change", updateScanPath); updateScanPath();
+        }
+        renderStorageSettings(fields);
+      }
     }
     if (section.repeater) {
       fields.append(node("h4", "settings-group-heading", section.repeater.label));

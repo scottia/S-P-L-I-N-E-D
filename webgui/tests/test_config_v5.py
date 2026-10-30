@@ -16,6 +16,44 @@ def load_example(relative: str) -> dict:
 
 
 class ConfigV5ParityTests(unittest.TestCase):
+    def test_blank_artist_art_directory_uses_persistent_cache_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            cache = root / "preferred-images"
+            config["scan"]["cache_dir"] = str(cache)
+            config["scan"]["shared_artist_art_dir"] = ""
+            self.assertEqual(
+                splined.runtime_artist_art_dir(config_file, config),
+                cache,
+            )
+            selected = root / "my-va-and-ost-images"
+            config["scan"]["shared_artist_art_dir"] = str(selected)
+            self.assertEqual(
+                splined.runtime_artist_art_dir(config_file, config),
+                selected,
+            )
+
+    def test_optional_scan_folder_falls_back_to_music_library(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            library = root / "music"
+            config["library"]["music_library"] = str(library)
+            config["scan"]["scan_library_dir"] = ""
+            self.assertEqual(
+                splined.resolve_scan_root(config_file, config, None),
+                (library, library),
+            )
+            config["scan"]["scan_library_dir"] = str(root / "narrow-scan")
+            config["scan"]["scan_mode"] = False
+            self.assertEqual(
+                splined.resolve_scan_root(config_file, config, None),
+                (library, library),
+            )
+
     def test_runtime_log_redaction_removes_credentials_and_bearer_values(self) -> None:
         secret = "do-not-log-this-token"
         samples = (

@@ -76,11 +76,47 @@ class SettingsContractTests(unittest.TestCase):
         self.assertEqual(fields["output.file_name"]["type"], "statement")
         self.assertEqual(fields["output.file_name"]["display"], "cover · artist · banner")
         self.assertEqual(fields["output.file_formats"]["type"], "statement")
+        self.assertIn("banner.*", fields["output.preserve_file"]["label"])
         self.assertTrue(fields["output.upscale_below_ideal"]["default"])
         operations = (REPOSITORY / "webgui/static/operations.js").read_text(encoding="utf-8")
         self.assertIn("Settings HELP", operations)
+        self.assertIn(
+            "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/config-v5-reference.md",
+            operations,
+        )
         self.assertIn("Advanced ON · All Sections", operations)
         self.assertIn("applySettingsInputs(draft, bindings, false)", operations)
+
+    def test_webgui_library_and_logging_fields_match_reviewed_sections(self) -> None:
+        sections = {section["id"]: section for section in self.contract["sections"]}
+        library_paths = [field["path"] for field in sections["library"]["fields"]]
+        runtime_paths = [field["path"] for field in sections["runtime"]["fields"]]
+        fields = {
+            field["path"]: field
+            for section in self.contract["sections"]
+            for field in section.get("fields", [])
+        }
+        self.assertIn("scan.scan_mode", library_paths)
+        self.assertIn("scan.scan_library_dir", library_paths)
+        self.assertNotIn("scan.scan_mode", runtime_paths)
+        self.assertIn("scan.log_dir", runtime_paths)
+        self.assertFalse(fields["scan.scan_library_dir"].get("required", False))
+        self.assertEqual(fields["scan.scan_library_dir"]["default"], "")
+        self.assertEqual(fields["scan.shared_artist_art_dir"]["default"], "")
+        self.assertLess(
+            library_paths.index("scan.cache_dir"),
+            library_paths.index("scan.temporary_cache_dir"),
+        )
+        self.assertEqual(sections["enhancement"]["icon"], "✦")
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('scanDirectory.placeholder = "Optional"', operations)
+        self.assertIn('descriptor.path === "scan.log_dir"', operations)
+        self.assertIn(
+            'draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""',
+            operations,
+        )
 
     def test_windows_labels_remain_present(self) -> None:
         slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")

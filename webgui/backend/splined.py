@@ -243,7 +243,7 @@ def runtime_artist_art_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
     configured = str(section(cfg, "scan").get("shared_artist_art_dir", "")).strip()
     if configured:
         return resolve_path(config_file, configured)
-    return runtime_cache_dir(config_file, cfg) / "artist-art"
+    return runtime_cache_dir(config_file, cfg)
 
 
 def runtime_credential_dir(config_file: Path, cfg: dict[str, Any]) -> Path:
@@ -4830,12 +4830,12 @@ def resolve_scan_root(
         root = override if override.is_absolute() else library_root / override
         return root, library_root
 
+    if not bool(scan.get("scan_mode", True)):
+        return library_root, library_root
+
     raw_root = str(scan.get("scan_library_dir", "")).strip()
     if not raw_root:
-        raise SplinedError(
-            "SPLINED [scan].scan_library_dir is not configured; "
-            "configure the library path in Settings."
-        )
+        return library_root, library_root
     return resolve_path(config_file, raw_root), library_root
 
 

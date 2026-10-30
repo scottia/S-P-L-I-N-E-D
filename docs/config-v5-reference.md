@@ -1,10 +1,11 @@
-# Config v5 Reference
+# Config v5 and WebGUI Settings Reference
 
-This page documents the common Config v5 contract. The complete secret-free
-native example is [`config.example.toml`](../config.example.toml); it is also a
-field-value reference for the Windows Settings interface. Windows stores its
-live document at `data/config.toml`. The Docker example uses the same schema
-with container paths.
+This is the permanent field and behavior reference opened by **Settings HELP**
+in the SPLINED WebGUI. Browser Settings is the normal editor; Config v5 is its
+saved, validated configuration contract. The container-ready example is
+[`docker/config.example.toml`](../docker/config.example.toml). The native
+Windows application shares the same policy schema where noted but keeps its
+own SQLite catalog and interface state.
 
 Application release and configuration schema versions are separate:
 
@@ -16,10 +17,12 @@ All runtimes:        Config v5
 ## Location and path rules
 
 Config v5 is the common runtime contract, but its storage is runtime-specific.
-Python, Docker, Linux, and macOS read `config.toml`. Windows stores the same
+WebGUI reads the file selected by `SPLINED_CONFIG`, normally
+`/config/config.toml` in a container. All WebGUI paths are server-visible paths;
+they are not paths on the browser computer. Relative values resolve from the
+directory containing the active Config v5 file. Windows stores the same
 validated document at `<portable root>/data/config.toml` and interface state at
 `<portable root>/data/ui.toml`. There is no Registry authority for either file.
-Moving the complete Windows folder carries both; deleting it removes them.
 
 Packaged Windows stores the same files beneath
 `%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data`. No Registry
@@ -35,9 +38,25 @@ precreate `data`, `_cache`, `_logs`, `credentials`, or `docker_builds`. Existing
 saved absolute, mapped-drive, and UNC paths are preserved unchanged.
 
 Relative Windows runtime paths are resolved from the active portable or
-packaged state root.
-External, NAS, mapped-drive, and UNC paths remain absolute. Docker paths are
-normally absolute container paths supplied by bind mounts.
+packaged state root. External, NAS, mapped-drive, and UNC paths remain absolute.
+WebGUI container paths are normally absolute paths supplied by persistent bind
+mounts.
+
+## WebGUI Settings sections
+
+- **Library & Files**: Music Library, optional Scan Mode target, persistent and
+  temporary caches, V/A / OST Artist Images, provider credentials, ignored
+  folders, and the PostgreSQL/runtime storage summary.
+- **Artwork & Embedding**: fixed filename stems and formats, preservation,
+  square artwork, embedded thumbnail preference, and optional sample images.
+- **Enhancement**: theme palette, adjustment presets, resolution range, and
+  bounded enlargement policy.
+- **Artwork Sources**: provider order, exclusions, and selected-provider policy.
+- **Connections**: provider credentials and connection tests.
+- **Backup & Recovery**: secret-free settings/reference export and catalog
+  maintenance controls.
+- **Processing & Logs**: processing mode, completion history, Log Directory,
+  diagnostic level, retention, and bounded WebGUI events.
 
 ## General settings
 
@@ -58,20 +77,20 @@ normally absolute container paths supplied by bind mounts.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `scan_library_dir` | empty | Configured scan target |
-| `scan_mode` | `true` | Enables configured scan-directory behavior |
+| `scan_library_dir` | empty | Optional server-visible target shown when Scan Mode is enabled; blank uses `library.music_library` |
+| `scan_mode` | `true` | Reveals and enables the optional Scan Folder setting; when off, Music Library is the scan root |
 | `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
-| `cache_dir` | `"_db"` | Persistent Windows SQLite directory containing `<cache_dir>/splined.db`; the historical key name is retained for compatibility |
-| `shared_artist_art_dir` | empty | Persistent Artist-specific portrait/banner files for shared Soundtracks or Various Artists folders; blank uses the hard-coded `<cache_dir>/artist-art` subdirectory, created only when first needed |
-| `temporary_cache_dir` | `"_cache"` | Disposable downloaded/derived artwork and optional review samples; an older Config v5 file that omits it falls back to `cache_dir` |
+| `cache_dir` | WebGUI `"/_cache"`; Windows `"_db"` | **Persistent Cache Directory**. WebGUI stores downloaded artwork, staged work, and original-artwork backups here; native Windows also retains its historical SQLite-directory compatibility |
+| `temporary_cache_dir` | WebGUI `"/_cache"`; Windows `"_cache"` | **Temporary Cache Directory** for disposable downloaded and derived artwork; an older Config v5 file that omits it falls back to `cache_dir` |
+| `shared_artist_art_dir` | empty | **V/A / OST Artist Images Directory** for shared Soundtrack or Various Artists portrait/banner files; blank uses Persistent Cache Directory itself, while any other persistent server-visible directory or preferred folder name may be selected |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; native-client shared-file behavior; WebGUI uses PostgreSQL instead |
 | `windows_client_lock` | `false` | Windows-only optional `.client-lock` coordination for shared SQLite. Has no effect unless `sqlite_shared` is true; older Config v5 files default to off |
-| `log_dir` | `"_logs"` | Diagnostic log location |
+| `log_dir` | `"/_logs"` in WebGUI | **Log Directory**, edited under **Processing & Logs → Logging** |
 
-The `_db`, `_cache`, and `_logs` values above are schema defaults used to describe a
-new Rust Config model. Windows first-run Setup leaves required path choices
-unset and creates nothing until the user explicitly saves valid choices.
+Windows first-run Setup leaves required path choices unset and creates nothing
+until the user explicitly saves valid choices. WebGUI deployments normally map
+`/_cache`, `/_logs`, `/credentials`, and `/config` to persistent host storage.
 
 ### Database and temporary run cache
 
@@ -97,9 +116,9 @@ See [media database](splined-media-database.md) and the
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `file_name` | `"cover"` | Output filename stem, without path or extension |
-| `file_formats` | JPEG, PNG, WebP | Enabled formats in preference order |
-| `preserve_file` | `true` | `true` permits an Ideal existing cover to finish at local preflight; `false` continues provider discovery and permits canonical replacement |
+| `file_name` | `"cover"` | Compatibility value; WebGUI Settings displays the required `cover`, `artist`, and `banner` filename stems as fixed information |
+| `file_formats` | JPEG, PNG, WebP | Supported static formats shown as fixed information in WebGUI Settings |
+| `preserve_file` | `true` | Preserve existing `cover.*`, `artist.*`, and `banner.*`; for Albums, an Ideal existing cover may finish at local preflight |
 | `square` | `true` | Enable square output policy |
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
@@ -260,6 +279,10 @@ This is the only normal credential setting. Standard provider JSON filenames
 are resolved internally. API keys, OAuth tokens, shared secrets, and provider
 filenames do not belong in `config.toml`.
 
+WebGUI Settings labels this path **Provider Credential Directory**. It must be
+persistent and server-visible; blank secret fields preserve existing values
+and saved secrets are never returned to the browser.
+
 `credentials` is the file-backed schema default. Windows first-run Setup leaves
 the required credential location unset; the user may select a local or UNC
 directory before saving. Relative values resolve from the portable or packaged
@@ -301,7 +324,7 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `logging.retention_days` | `14` | Retention for ordinary diagnostic files; Windows keeps only its current `<configured log directory>\run` session |
-| `logging.database_audit` | `false` | Python-only per-machine SQLite activity log under `<scan.log_dir>/db-audit`; records database opens, transaction events, and write attempts without SQL values |
+| `logging.database_audit` | `false` | Optional bounded database activity diagnostics under `<scan.log_dir>/db-audit`; records database opens, transaction events, and write attempts without SQL values |
 | `history.enabled` | `true` | Enables persistent completion/status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
 
@@ -323,7 +346,7 @@ Windows also records Rust application and runtime errors in the current-run
 activity surface and configured diagnostics. The same central redaction is
 applied to those diagnostic records.
 
-Python/Docker runtime and debug records are single-line and limited to 2,048
+WebGUI runtime and debug records are single-line and limited to 2,048
 characters. Embedded newlines are escaped and an oversized record ends with a
 truncation marker. Repeated/high-cardinality picker state is summarized as
 counts; a launch records at most three sample paths plus the number omitted.
@@ -338,10 +361,9 @@ the Album update, the affected Artist aggregate, audit insert, durable commit,
 and total `Final`-to-`album_completed` time. `media_snapshot.timing` records
 SQLite picker-load milliseconds and the returned Album count. Provider timing
 errors are bounded and URL query values are redacted; credentials and tokens
-are never included. Unexpected Python exceptions are written as one bounded
-record, while fatal native interpreter/input-extension failures write a
-one-time thread stack so an abrupt TUI exit is not indistinguishable from an
-external process termination. SIGTERM is recorded explicitly.
+are never included. Unexpected WebGUI service exceptions are written as one
+bounded record. Native runtime failures retain their own bounded diagnostic
+records. SIGTERM is recorded explicitly.
 
 Each runtime database supplies processed, timeout, chosen-source, and bypass authority. The
 native Windows `splined.db` materializes those facts for
@@ -349,8 +371,8 @@ Select Media and stores completion, bypass, timeout, and source-selection state
 in that same database.
 
 WebGUI backups use consistent PostgreSQL dumps plus its config, credential,
-cache/staged-artwork, external artist-art, and music volumes. The Python
-terminal backup commands have been retired. A SQLite snapshot is not a
+cache/staged-artwork, external Artist Art, and music volumes. Retired terminal
+backup commands are not part of the WebGUI. A SQLite snapshot is not a
 PostgreSQL backup. See the [server deployment guide](../docker/README.md).
 On Windows use **Settings > Backup / Restore**. Settings, interface state, and
 credential JSON are stored in `.spl`; SQLite uses a consistent standalone
@@ -403,7 +425,7 @@ authority.
 Windows structured Settings projects controls into the Rust Config model,
 validates the complete model, atomically replaces `data/config.toml`, and
 reloads application state. Config v5 remains the sole configuration authority;
-Slint does not keep a parallel settings document. Native and Python/container
+Slint does not keep a parallel settings document. Native and WebGUI/container
 implementations also validate Config v5; use the container example for
 container-specific paths.
 
