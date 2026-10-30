@@ -289,7 +289,9 @@ function renderLibraryContents() {
       const button = node("button", "library-row"); button.type = "button";
       const orbit = node("span", "status-orbit" + (selectedMedia(artist) ? " selected" : ""), selectedMedia(artist) ? "●" : "○"); button.append(orbit);
       applyStatusPalette(button, mediaStatusKey(artist));
-      const thumb = state.artist?.id === artist.id && state.artist.portrait ? image(state.artist.portrait, "library-thumb", "") : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
+      const thumbUrl = state.artist?.id === artist.id && state.artist.portrait ? state.artist.portrait : artist.portrait;
+      const thumb = thumbUrl ? image(thumbUrl, "library-thumb", artist.name + " artist image") : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
+      if (thumbUrl) thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase())), {once: true});
       button.append(thumb);
       const copy = node("span", "row-copy"); copy.append(node("strong", "", artist.name), node("small", "", "(" + artist.albums + " Albums)")); button.append(copy, node("span", "expand-mark", state.artist?.id === artist.id ? "−" : "+"));
       button.addEventListener("click", () => chooseArtist(artist.id)); list.append(button);

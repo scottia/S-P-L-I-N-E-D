@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import splined
+from webgui.runtime import Runtime
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
@@ -16,6 +17,25 @@ def load_example(relative: str) -> dict:
 
 
 class ConfigV5ParityTests(unittest.TestCase):
+    def test_webgui_creates_separate_persistent_and_temporary_cache_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            library = root / "music"
+            library.mkdir()
+            config["library"]["music_library"] = str(library)
+            config["scan"]["cache_dir"] = str(root / "persistent")
+            config["scan"]["temporary_cache_dir"] = str(root / "temporary")
+            runtime = Runtime(config_file, object(), config)
+            try:
+                self.assertEqual(runtime.cache, root / "persistent")
+                self.assertEqual(runtime.temporary_cache, root / "temporary")
+                self.assertTrue(runtime.cache.is_dir())
+                self.assertTrue(runtime.temporary_cache.is_dir())
+            finally:
+                runtime.close()
+
     def test_none_verbosity_disables_runtime_log_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

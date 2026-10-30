@@ -16,10 +16,11 @@ scan_library_dir = ""
 scan_mode = true
 scan_mode_timeout = 24
 # PostgreSQL stores catalog, completion ledger, and queued work.
-# Cache holds downloaded images, staged work, and original-artwork backups.
+# Persistent cache holds staged work and original-artwork backups.
 cache_dir = "/_cache"
 shared_artist_art_dir = ""
-temporary_cache_dir = "/_cache"
+# Disposable previews, candidates, uploads, and COMP work live below this path.
+temporary_cache_dir = "/_cache/_tmp"
 # Per-run diagnostic logs are created under log_dir/run and pruned by retention.
 log_dir = "/_logs"
 

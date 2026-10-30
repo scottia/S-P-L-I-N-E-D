@@ -42,6 +42,7 @@ class Runtime:
         self.processing = threading.RLock()
         self.cfg = deepcopy(cfg) if cfg is not None else self.load()
         self.validate(self.cfg)
+        self._ensure_cache_directories(self.cfg)
         compilation.install(core)
         ranking.install(core, scan)
         self._bindings = (
@@ -89,6 +90,28 @@ class Runtime:
         return core.runtime_cache_dir(self.config_file, self.cfg).resolve()
 
     @property
+    def temporary_cache(self):
+        return self._temporary_cache_dir(self.cfg)
+
+    def _temporary_cache_dir(self, cfg):
+        configured = str(cfg.get("scan", {}).get("temporary_cache_dir", "")).strip()
+        if configured:
+            return core.resolve_path(self.config_file, configured).resolve()
+        return core.runtime_cache_dir(self.config_file, cfg).resolve()
+
+    def _ensure_cache_directories(self, cfg):
+        persistent = core.runtime_cache_dir(self.config_file, cfg).resolve()
+        temporary = self._temporary_cache_dir(cfg)
+        try:
+            persistent.mkdir(parents=True, exist_ok=True)
+            temporary.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            raise ValueError(
+                "Unable to create the persistent or temporary cache directory; "
+                "check the configured paths and container volume permissions"
+            ) from error
+
+    @property
     def artist_art(self):
         return core.runtime_artist_art_dir(self.config_file, self.cfg).resolve()
 
@@ -123,6 +146,7 @@ class Runtime:
         )
         if not library.is_dir():
             raise ValueError("The music library must be an existing directory")
+        self._ensure_cache_directories(cfg)
         with self.lock:
             if not self.processing.acquire(blocking=False):
                 raise ValueError(

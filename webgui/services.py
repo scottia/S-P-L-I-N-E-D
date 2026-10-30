@@ -101,6 +101,7 @@ class Services:
             ),
             allow_comp_repairs=runtime.cfg.get("mode") == "write",
             cache=runtime.cache,
+            temporary_cache=runtime.temporary_cache,
         )
         self.catalog.cache = runtime.cache
         self.catalog.artist_sources = tuple(
@@ -115,6 +116,7 @@ class Services:
         app.artist_art = r.artist_art
         app.credentials = r.credentials
         app.cache = r.cache
+        app.temporary_cache = r.temporary_cache
         app.comp_thumbnail_side = int(
             r.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
         )
@@ -566,7 +568,7 @@ class Services:
             target = core.formats(self.runtime.cfg)[0]
             if target == "webp":
                 target = "jpeg"
-            directory = self.runtime.cache / "prepared-previews"
+            directory = self.runtime.temporary_cache / "prepared-previews"
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / (uuid4().hex + ".png")
             path.write_bytes(body)
@@ -793,7 +795,7 @@ class Services:
         sources = core.resolve_sources(r.cfg, None, None, [])
         release = core.lookup_release(http, r.config_file, r.cfg, mbid)
         refs, warnings = core.discover_all(http, r.config_file, r.cfg, release, sources)
-        cache = r.cache / "web-candidates" / uuid4().hex
+        cache = r.temporary_cache / "web-candidates" / uuid4().hex
         cache.mkdir(parents=True, exist_ok=True)
         found, download_warnings = core.download_candidates(
             http, refs, sources, cache, r.cfg, clean_first=False
@@ -862,7 +864,7 @@ class Services:
             raise ValueError("Choose indexed COMP tracks")
         tracks = [core.read_track(path) for path in self.album_files(row)]
         summary = core.Summary()
-        cache = r.cache / "comp-work" / uuid4().hex
+        cache = r.temporary_cache / "comp-work" / uuid4().hex
         cache.mkdir(parents=True, exist_ok=True)
         scan.run_manual_compilation_album(
             core.AlbumDir(Path(row["path"]), self.album_files(row)),

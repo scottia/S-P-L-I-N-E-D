@@ -61,7 +61,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.cfg["library"]["music_library"] = str(self.root / "music")
         self.cfg["scan"].update(
             cache_dir=str(self.root / "cache"),
-            temporary_cache_dir=str(self.root / "cache"),
+            temporary_cache_dir=str(self.root / "temporary"),
             shared_artist_art_dir=str(self.root / "artist-art"),
             log_dir=str(self.root / "logs"),
         )
@@ -90,6 +90,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.files.append(path)
         self.cover = album / "cover.jpg"
         Image.new("RGB", (180, 180), "navy").save(self.cover)
+        self.artist_portrait = album.parent / "artist.png"
+        Image.new("RGB", (180, 180), "teal").save(self.artist_portrait)
         self.runtime = Runtime(self.config, self.db)
         self.services = Services(self.runtime)
         self.services.refresh_index()
@@ -219,6 +221,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual((enlarged["width"], enlarged["height"]), (1200, 1800))
         self.assertTrue(enlarged["upscaled"])
         self.assertIn("200% ceiling", enlarged["reason"])
+        self.assertTrue(list((self.runtime.temporary_cache / "web-images").iterdir()))
+        self.assertFalse((self.runtime.cache / "web-images").exists())
 
     def test_staged_queue_survives_worker_restart_and_verifies_artifact(self):
         self.queue = JobQueue(self.services)
@@ -290,9 +294,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 200,
             )
             self.assertFalse(client.get("/api/status").json()["admin_setup_required"])
-            self.assertEqual(
-                client.get("/api/artists").json()[0]["name"], "Test Artist"
-            )
+            artists = client.get("/api/artists").json()
+            self.assertEqual(artists[0]["name"], "Test Artist")
+            self.assertEqual(client.get(artists[0]["portrait"]).status_code, 200)
             settings = client.get("/api/settings").json()
             settings["config"]["mode"] = "read"
             settings["config"]["webgui_ui"] = {

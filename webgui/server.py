@@ -465,6 +465,13 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def artist(id: str):
         return context.require().catalog.artist(id)
 
+    @app.get("/api/artist/thumbnail")
+    def artist_thumbnail(id: str):
+        return FileResponse(
+            context.require().catalog.artist_thumbnail(id),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
     @app.get("/api/artist/metadata")
     def artist_metadata(id: str):
         return context.require().catalog.artist_metadata(id)
@@ -625,7 +632,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         from webgui.imaging import adjusted, encode
 
         image = adjusted(body)
-        directory = context.runtime.cache / "uploads"
+        directory = context.runtime.temporary_cache / "uploads"
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / (uuid4().hex + ".png")
         path.write_bytes(encode(image))

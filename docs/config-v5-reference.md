@@ -80,8 +80,8 @@ mounts.
 | `scan_library_dir` | empty | Optional server-visible target shown when Scan Mode is enabled; blank uses `library.music_library` |
 | `scan_mode` | `true` | Reveals and enables the optional Scan Folder setting; when off, Music Library is the scan root |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
-| `cache_dir` | WebGUI `"/_cache"`; Windows `"_db"` | **Persistent Cache Directory**. WebGUI stores downloaded artwork, staged work, and original-artwork backups here; native Windows also retains its historical SQLite-directory compatibility |
-| `temporary_cache_dir` | WebGUI `"/_cache"`; Windows `"_cache"` | **Temporary Cache Directory** for disposable downloaded and derived artwork; an older Config v5 file that omits it falls back to `cache_dir` |
+| `cache_dir` | WebGUI `"/_cache"`; Windows `"_db"` | **Persistent Cache Directory**. WebGUI stores staged work and original-artwork backups here; native Windows also retains its historical SQLite-directory compatibility |
+| `temporary_cache_dir` | WebGUI `"/_cache/_tmp"`; Windows `"_cache"` | **Temporary Cache Directory** for disposable previews, downloaded candidates, uploads, and COMP work; an older Config v5 file that omits it falls back to `cache_dir` |
 | `shared_artist_art_dir` | empty | **V/A / OST Artist Images Directory** for shared Soundtrack or Various Artists portrait/banner files; blank uses Persistent Cache Directory itself, while any other persistent server-visible directory or preferred folder name may be selected |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; native-client shared-file behavior; WebGUI uses PostgreSQL instead |
 | `windows_client_lock` | `false` | Windows-only optional `.client-lock` coordination for shared SQLite. Has no effect unless `sqlite_shared` is true; older Config v5 files default to off |

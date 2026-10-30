@@ -106,11 +106,20 @@ class Catalog:
     comp_thumbnail_side: int = 1200
     allow_comp_repairs: bool = False
     cache: Path | None = None
+    temporary_cache: Path | None = None
     artist_sources: tuple[str,...] = ("fanarttv","deezer")
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
+
+    def allowed_image_path(self, source: Path) -> bool:
+        return (
+            inside(source, self.music)
+            or inside(source, self.artist_art)
+            or self.cache is not None and inside(source, self.cache)
+            or self.temporary_cache is not None and inside(source, self.temporary_cache)
+        )
 
     def connect(self) -> sqlite3.Connection:
         if isinstance(self.database, Database):
@@ -126,14 +135,15 @@ class Catalog:
         if isinstance(source, Path):
             if source.suffix.casefold() not in IMAGE_EXTENSIONS or not source.is_file():
                 return None
-            if not (inside(source, self.music) or inside(source, self.artist_art) or self.cache is not None and inside(source, self.cache)):
+            if not self.allowed_image_path(source):
                 return None
             # Signed path handles do not consume the bounded in-memory preview
             # cache, so browsing a large library cannot expire its early covers.
             encoded=base64.urlsafe_b64encode(str(source.resolve()).encode('utf-8')).decode().rstrip('=')
             signature=hmac.new(self.image_key,encoded.encode(),hashlib.sha256).hexdigest()
             return '/api/image/p.'+encoded+'.'+signature
-        if self.cache is not None:
+        preview_cache = self.temporary_cache or self.cache
+        if preview_cache is not None:
             # Candidate originals must outlive repeated enhancement renders.
             # Keep generated pixels on disk, independent from the small legacy
             # fixture cache; staged jobs hold their own verified snapshot.
@@ -141,7 +151,7 @@ class Catalog:
             with Image.open(BytesIO(source)) as opened:
                 suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(opened.format)
                 if not suffix: raise ValueError('Unsupported artwork image format')
-            directory=self.cache/'web-images'
+            directory=preview_cache/'web-images'
             path=directory/(sha256(source).hexdigest()+suffix)
             try:
                 # A preview is immutable once published. Serialize the existence
@@ -184,7 +194,7 @@ class Catalog:
                 source = self.images.get(token)
         if source is None:
             raise KeyError("Image preview expired; select the artwork again")
-        if isinstance(source, Path) and not (inside(source, self.music) or inside(source, self.artist_art) or self.cache is not None and inside(source, self.cache)):
+        if isinstance(source, Path) and not self.allowed_image_path(source):
             raise ValueError("Image is outside configured artwork locations")
         return source
 
@@ -254,9 +264,47 @@ class Catalog:
                 "name": row["artist_name"],
                 "albums": row["album_count"],
                 "status": row["status"],
+                "portrait": self.artist_thumbnail_url(str(row["artist_key"])),
             }
             for row in rows
         ]
+
+    @staticmethod
+    def artist_thumbnail_url(artist_id: str) -> str:
+        return "/api/artist/thumbnail?id=" + quote(artist_id, safe="")
+
+    def artist_thumbnail(self, artist_id: str) -> Path:
+        """Resolve saved Artist Art lazily so the full artist list stays fast."""
+        with closing(self.connect()) as db:
+            artist = db.execute(
+                "SELECT artist_name,musicbrainz_artistid FROM artists WHERE artist_key=?",
+                (artist_id,),
+            ).fetchone()
+            if artist is None:
+                raise KeyError("Artist not found")
+            rows = db.execute(
+                "SELECT path,musicbrainz_albumid FROM albums WHERE artist_key=? "
+                "ORDER BY path COLLATE NOCASE",
+                (artist_id,),
+            ).fetchall()
+        targets = artist_targets(
+            [
+                ArtistAlbum(
+                    str(artist["artist_name"]),
+                    Path(row["path"]),
+                    str(row["musicbrainz_albumid"] or ""),
+                    str(artist["musicbrainz_artistid"] or ""),
+                )
+                for row in rows
+                if inside(Path(row["path"]), self.music)
+            ],
+            str(artist["artist_name"]),
+            self.artist_art,
+        )
+        portrait = saved_package(targets).portrait
+        if portrait is None or not portrait.is_file() or not self.allowed_image_path(portrait):
+            raise KeyError("Saved Artist Art is unavailable")
+        return portrait
 
     def albums(self, query: str, fallback_only: bool = False) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
