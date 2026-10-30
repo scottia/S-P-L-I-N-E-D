@@ -129,6 +129,24 @@ class Services:
                 (action, str(subject), Jsonb(details or {})),
             )
 
+    def diagnostics(self, limit=250):
+        """Return bounded, credential-free operational events for Settings."""
+        limit = max(1, min(int(limit), 500))
+        with closing(self.runtime.database.connect()) as db:
+            rows = db.execute(
+                "SELECT action,subject,details,created_at FROM web_audit ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "action": row["action"],
+                "subject": row["subject"],
+                "details": row["details"],
+                "created_at": row["created_at"].isoformat(),
+            }
+            for row in rows
+        ]
+
     def album_row(self, key):
         with closing(self.runtime.database.connect()) as db:
             row = db.execute(

@@ -38,6 +38,7 @@ async function initialize() {
   document.body.className = "authenticated";
   if (status.setup_required) { await openSettings(); setStatus("Complete library and database setup in Settings"); return; }
   const settings = await api("/api/settings");
+  applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll(); await loadLibrary(); await pollJobs();
   void runAction(checkLibraryChanges);
@@ -328,7 +329,7 @@ function settingsInput(host, descriptor, path, draft, bindings, saved) {
     input.type = "checkbox"; input.checked = Boolean(existing);
   } else {
     input.type = descriptor.type === "integer" || descriptor.type === "optional-integer" ? "number"
-      : path === "database.url" ? "password" : "text";
+      : descriptor.type === "color" ? "color" : path === "database.url" ? "password" : "text";
     input.value = Array.isArray(existing) ? existing.join(", ") : existing ?? "";
     if (descriptor.min !== undefined) input.min = descriptor.min;
     if (descriptor.max !== undefined) input.max = descriptor.max;
@@ -358,6 +359,236 @@ function applySettingsInputs(draft, bindings) {
     setSettingValue(draft, path, value);
   }
 }
+function enhancementValues(draft) {
+  return ENHANCEMENT_VALUE_FIELDS.map(([, path, fallback]) => Number(settingValue(draft, path, fallback)));
+}
+function applyEnhancementValues(draft, values) {
+  ENHANCEMENT_VALUE_FIELDS.forEach(([, path, fallback], index) => setSettingValue(draft, path, Number(values[index] ?? fallback)));
+}
+function hsvToHex(hue, saturation, value) {
+  hue = ((hue % 360) + 360) % 360; saturation = Math.max(0, Math.min(1, saturation)); value = Math.max(0, Math.min(1, value));
+  const chroma = value * saturation, x = chroma * (1 - Math.abs((hue / 60) % 2 - 1)), match = value - chroma;
+  const [red, green, blue] = hue < 60 ? [chroma, x, 0] : hue < 120 ? [x, chroma, 0]
+    : hue < 180 ? [0, chroma, x] : hue < 240 ? [0, x, chroma] : hue < 300 ? [x, 0, chroma] : [chroma, 0, x];
+  return "#" + [red, green, blue].map(channel => Math.round((channel + match) * 255).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+function enhancementPreviewFilter(values) {
+  const [picture, sharpen, softness, contrast, exposure, brightness, gamma, color, hue, darkness, tint] = values;
+  const bright = Math.max(.35, 1 + (exposure + brightness + gamma - darkness) / 120);
+  const contrastValue = Math.max(.4, 1 + (contrast + sharpen - softness) / 100);
+  const saturation = Math.max(0, 1 + (picture + Math.abs(color) * .08 + Math.abs(tint) * .05) / 60);
+  return `brightness(${bright}) contrast(${contrastValue}) saturate(${saturation}) hue-rotate(${hue + color * .25}deg)`;
+}
+function renderGraphicalEnhancement(host, draft, rerender) {
+  const graphical = normalizeGraphicalEnhancement(settingValue(draft, "webgui_ui.enhancement", {}));
+  setSettingValue(draft, "webgui_ui.enhancement", graphical);
+  const baseline = GRAPHICAL_ENHANCEMENT_DEFAULTS;
+  const panel = node("section", "graphical-enhancement");
+  const heading = node("div", "graphical-heading");
+  heading.append(node("div", "", "Theme Enhancements"), node("small", "", "Choose a swatch, then click or drag on the OLED Chroma Wheel. Save Enhancement keeps the palette and processing defaults."));
+  panel.append(heading);
+  const layout = node("div", "graphical-layout"), wheelColumn = node("div", "graphical-wheel-column"), paletteColumn = node("div", "graphical-palette-column"), previewColumn = node("div", "graphical-preview-column");
+  const wheel = node("div", "theme-wheel"); wheel.tabIndex = 0; wheel.setAttribute("role", "slider"); wheel.setAttribute("aria-label", "OLED Chroma Wheel");
+  const marker = node("span", "theme-wheel-marker"); wheel.append(marker);
+  const selectedLine = node("div", "graphical-selected-color"), selectedChip = node("span"), selectedText = node("span", "", "COMPILED background  #3478FF"); selectedLine.append(selectedChip, selectedText);
+  const hueLabel = node("label", "graphical-range-label"), hueRange = node("input"); hueRange.type = "range"; hueRange.min = "0"; hueRange.max = "359"; hueRange.value = String(graphical.wheel_hue_shift_degrees); hueLabel.append(node("span", "", `Hue Range · ${hueRange.value}°`), hueRange);
+  const brightnessLabel = node("label", "graphical-range-label"), brightnessRange = node("input"); brightnessRange.type = "range"; brightnessRange.min = "30"; brightnessRange.max = "170"; brightnessRange.value = String(graphical.wheel_brightness_percent); brightnessLabel.append(node("span", "", `Brightness · ${brightnessRange.value}%`), brightnessRange);
+  wheelColumn.append(node("h4", "", "OLED Chroma Wheel"), wheel, selectedLine, hueLabel, brightnessLabel);
+
+  let selected = null, previewBannerKey = "compiled", previewFrameKey = "complete";
+  const previewCard = node("div", "album-card windows-card graphical-album-card");
+  const previewBanner = node("span", "album-type-banner"), previewBody = node("span", "album-card-body"), previewPicture = node("span", "album-card-picture");
+  previewPicture.append(image("/assets/splined-watermark.png", "", "SPLINED album card preview"));
+  previewBody.append(previewPicture, node("strong", "", "Album Card"), node("span", "album-card-foot", "2026   ☆☆☆☆☆")); previewCard.append(previewBanner, previewBody);
+  previewColumn.append(node("h4", "", "Album card preview"), previewCard, node("small", "", "Live banner and frame preview"));
+
+  function updatePreview() {
+    const style = graphical.banner_styles[previewBannerKey], frame = graphical.frame_styles[previewFrameKey];
+    previewBanner.textContent = style.name; previewBanner.style.setProperty("--banner-bg", style.background); previewBanner.style.setProperty("--banner-ink", style.letters); previewBanner.style.borderColor = style.frame;
+    previewCard.style.setProperty("--frame-color", frame.color);
+    if (selected) { selectedChip.style.background = selected.object[selected.key]; selectedText.textContent = `${selected.label}  ${selected.object[selected.key]}`; }
+  }
+  function setColor(value) {
+    if (!selected || !/^#[0-9a-f]{6}$/i.test(value)) return;
+    selected.object[selected.key] = value.toUpperCase();
+    if (selected.bannerKey && graphical.banner_sync_frame_letters && ["frame", "letters"].includes(selected.key)) {
+      selected.object.frame = selected.object.letters = selected.object[selected.key];
+      panel.querySelectorAll(`[data-banner-key="${selected.bannerKey}"][data-color-key="frame"], [data-banner-key="${selected.bannerKey}"][data-color-key="letters"]`).forEach(input => { input.value = selected.object[input.dataset.colorKey]; });
+    }
+    updatePreview();
+  }
+  function chooseColor(object, key, label, input, bannerKey = "", frameKey = "") {
+    selected = {object, key, label, input, bannerKey, frameKey};
+    if (bannerKey) previewBannerKey = bannerKey;
+    if (frameKey) previewFrameKey = frameKey;
+    panel.querySelectorAll("input[type=color]").forEach(control => control.classList.toggle("active", control === input));
+    updatePreview();
+  }
+  function colorControl(object, key, label, bannerKey = "", frameKey = "") {
+    const input = node("input", "graphical-color-input"); input.type = "color"; input.value = object[key]; input.dataset.bannerKey = bannerKey; input.dataset.colorKey = key;
+    input.addEventListener("focus", () => chooseColor(object, key, label, input, bannerKey, frameKey));
+    input.addEventListener("click", () => chooseColor(object, key, label, input, bannerKey, frameKey));
+    input.addEventListener("input", () => { chooseColor(object, key, label, input, bannerKey, frameKey); setColor(input.value); });
+    return input;
+  }
+  const controls = node("div", "graphical-controls");
+  for (const [text, key] of [["Synchronize Banner Frame & Lettering", "banner_sync_frame_letters"], ["Random Harmony · Selected Banner", "banner_random_harmony"]]) {
+    const label = node("label", "graphical-toggle"), input = node("input"); input.type = "checkbox"; input.checked = !!graphical[key]; input.addEventListener("change", () => graphical[key] = input.checked); label.append(input, node("span", "", text)); controls.append(label);
+  }
+  paletteColumn.append(node("h4", "", "Banners · Rename And Edit Each Color"), controls);
+  const header = node("div", "palette-row palette-header"); for (const value of ["Name (10 max)", "Background", "Frame", "Letters", "Baseline"]) header.append(node("span", "", value)); paletteColumn.append(header);
+  for (const [key, style] of Object.entries(graphical.banner_styles)) {
+    const row = node("div", "palette-row"), name = node("input"); name.type = "text"; name.maxLength = 10; name.value = style.name;
+    name.addEventListener("input", () => { style.name = name.value.toUpperCase(); if (previewBannerKey === key) updatePreview(); });
+    const background = colorControl(style, "background", `${style.name} background`, key), frame = colorControl(style, "frame", `${style.name} frame`, key), letters = colorControl(style, "letters", `${style.name} letters`, key);
+    const reset = node("button", "palette-reset", "○ Reset"); reset.type = "button"; reset.addEventListener("click", () => { Object.assign(style, cloneGraphicalEnhancement(baseline.banner_styles[key])); name.value = style.name; background.value = style.background; frame.value = style.frame; letters.value = style.letters; updatePreview(); });
+    row.append(name, background, frame, letters, reset); paletteColumn.append(row);
+  }
+  paletteColumn.append(node("h4", "frame-heading", "Album Card Frames"));
+  for (const [key, style] of Object.entries(graphical.frame_styles)) {
+    const row = node("div", "frame-style-row"), color = colorControl(style, "color", style.name, "", key), reset = node("button", "palette-reset", "○ Reset"); reset.type = "button";
+    reset.addEventListener("click", () => { Object.assign(style, cloneGraphicalEnhancement(baseline.frame_styles[key])); color.value = style.color; updatePreview(); });
+    row.append(node("span", "", style.name), color, reset); paletteColumn.append(row);
+  }
+  layout.append(wheelColumn, paletteColumn, previewColumn); panel.append(layout);
+  chooseColor(graphical.banner_styles.compiled, "background", "COMPILED background", paletteColumn.querySelector('input[data-banner-key="compiled"][data-color-key="background"]'), "compiled");
+  function wheelColor(event) {
+    if (!selected) return;
+    const box = wheel.getBoundingClientRect(), x = (event.clientX - box.left) / box.width * 2 - 1, y = (event.clientY - box.top) / box.height * 2 - 1;
+    const saturation = Math.min(1, Math.hypot(x, y)), hue = (Math.atan2(y, x) * 180 / Math.PI + 360 + Number(graphical.wheel_hue_shift_degrees)) % 360;
+    const light = Math.min(1, .3 + Number(graphical.wheel_brightness_percent) / 170 * .7), value = hsvToHex(hue, saturation, light);
+    setColor(value); selected.input.value = value;
+    marker.style.left = `${(x + 1) * 50}%`; marker.style.top = `${(y + 1) * 50}%`;
+    if (selected.bannerKey && selected.key === "background" && graphical.banner_random_harmony) {
+      selected.object.frame = hsvToHex(hue + 145, .62, .86); selected.object.letters = hsvToHex(hue + 42, .72, 1);
+      panel.querySelectorAll(`[data-banner-key="${selected.bannerKey}"]`).forEach(input => input.value = selected.object[input.dataset.colorKey]);
+      updatePreview();
+    }
+  }
+  let wheelDragging = false;
+  wheel.addEventListener("pointerdown", event => { wheelDragging = true; wheel.setPointerCapture(event.pointerId); wheelColor(event); });
+  wheel.addEventListener("pointermove", event => { if (wheelDragging) wheelColor(event); });
+  for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"]) wheel.addEventListener(eventName, () => wheelDragging = false);
+  hueRange.addEventListener("input", () => { graphical.wheel_hue_shift_degrees = Number(hueRange.value); hueLabel.firstChild.textContent = `Hue Range · ${hueRange.value}°`; wheel.style.setProperty("--wheel-rotation", `${hueRange.value}deg`); });
+  brightnessRange.addEventListener("input", () => { graphical.wheel_brightness_percent = Number(brightnessRange.value); brightnessLabel.firstChild.textContent = `Brightness · ${brightnessRange.value}%`; wheel.style.setProperty("--wheel-brightness", String(Math.max(.45, brightnessRange.value / 100))); });
+
+  const defaultsPanel = node("section", "enhancement-defaults-panel"); defaultsPanel.append(node("h4", "", "Enhancement Defaults"));
+  const presetRows = node("div", "preset-rows");
+  graphical.adjustment_presets.forEach((preset, index) => {
+    const row = node("div", "preset-row"), slot = node("span", "", index ? `Custom ${"ABCD"[index - 1]}` : "Default"), name = node("input"); name.value = preset.name; name.maxLength = 32; name.addEventListener("input", () => preset.name = name.value);
+    const summary = node("small", "", preset.saved ? preset.values.join(" · ") : "Not saved yet");
+    const save = node("button", "operation-button", "Save Current"); save.type = "button"; save.addEventListener("click", () => { preset.values = enhancementValues(draft); preset.tint_color = settingValue(draft, "output.upscale_tint_color", "#FFB36B"); preset.saved = true; summary.textContent = preset.values.join(" · "); });
+    const apply = node("button", "operation-button", "Apply"); apply.type = "button"; apply.disabled = !preset.saved; apply.addEventListener("click", () => { applyEnhancementValues(draft, preset.values); setSettingValue(draft, "output.upscale_tint_color", preset.tint_color || "#FFB36B"); rerender(); });
+    row.append(slot, name, summary, save, apply); presetRows.append(row);
+  });
+  defaultsPanel.append(presetRows);
+  const suggest = node("button", "operation-button suggested-values", "Use Suggested Slider Values"); suggest.type = "button"; suggest.addEventListener("click", () => { applyEnhancementValues(draft, GRAPHICAL_ENHANCEMENT_DEFAULTS.adjustment_presets[0].values); rerender(); }); defaultsPanel.append(suggest);
+  const compare = node("div", "enhancement-compare"), current = node("div", "enhancement-preview current", "CURRENT"), adjusted = node("div", "enhancement-preview adjusted", "ADJUSTED"); compare.append(current, adjusted); defaultsPanel.append(compare);
+  const sliders = node("div", "enhancement-default-sliders");
+  ENHANCEMENT_VALUE_FIELDS.forEach(([label, path, fallback, minimum, maximum, suffix]) => {
+    const row = node("label", "enhancement-default-slider"), top = node("span"), value = node("b"), input = node("input"); input.type = "range"; input.min = minimum; input.max = maximum; input.value = settingValue(draft, path, fallback);
+    const update = () => { value.textContent = `${input.value}${suffix}`; setSettingValue(draft, path, Number(input.value)); adjusted.style.filter = enhancementPreviewFilter(enhancementValues(draft)); };
+    top.append(node("span", "", label), value); row.append(top, input); input.addEventListener("input", update); update(); sliders.append(row);
+  });
+  defaultsPanel.append(sliders); panel.append(defaultsPanel); host.append(panel);
+}
+function settingsHelp(host, summary, detail) {
+  const help = node("details", "settings-help"), heading = node("summary", "", "ⓘ  " + summary);
+  help.append(heading, node("p", "", detail)); host.append(help); return help;
+}
+function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider, rerender) {
+  settingsHelp(host, "Why can a connected provider say Excluded?", "Connection credentials and artwork-search inclusion are separate. Excluded providers can still be tested under Connections but are not queried for candidate artwork.");
+  host.append(node("h4", "settings-group-heading", "Artwork Search Order"), node("p", "settings-subcopy", "Move a provider left or right. Select a card to edit its candidate quality policy below."));
+  const configured = Array.from(settingValue(draft, "sources.cover_sources", [])), excluded = new Set(settingValue(draft, "sources.exclude_cover_sources", []));
+  const sourceInfo = new Map(SOURCES.filter(([, key]) => key).map(([label, key, icon]) => [key === "fanart" ? "fanarttv" : key, {label, icon}]));
+  const ordered = ["local", ...configured.filter(key => key !== "local")];
+  if (!ordered.includes("navidrome")) ordered.push("navidrome");
+  const strip = node("div", "settings-source-strip");
+  for (const key of ordered) {
+    const info = sourceInfo.get(key) || {label: key, icon: key}, configuredIndex = configured.indexOf(key);
+    const card = node("div", "settings-source-card" + (selectedProvider === key ? " active" : "") + (excluded.has(key) ? " excluded" : ""));
+    const choose = node("button", "source-card-main"); choose.type = "button";
+    choose.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label), node("small", "", excluded.has(key) ? "⊘ Excluded" : key === "local" ? "● Always ready" : "● Ready"));
+    choose.disabled = key === "local";
+    if (key !== "local") choose.addEventListener("click", () => { selectProvider(key); rerender(); });
+    const moves = node("div", "source-move-buttons");
+    for (const [label, delta] of [["‹", -1], ["›", 1]]) {
+      const move = node("button", "", label); move.type = "button"; move.disabled = configuredIndex < 0 || configuredIndex + delta < 0 || configuredIndex + delta >= configured.length;
+      move.addEventListener("click", () => { const next = configuredIndex + delta; [configured[configuredIndex], configured[next]] = [configured[next], configured[configuredIndex]]; setSettingValue(draft, "sources.cover_sources", configured); rerender(); }); moves.append(move);
+    }
+    card.append(choose, moves); strip.append(card);
+  }
+  host.append(strip);
+}
+async function renderConnectionSettings(host, initialProvider) {
+  settingsHelp(host, "Does Test enable artwork search?", "No. Test validates the saved provider connection. Include the provider separately under Artwork Sources.");
+  host.append(node("h4", "settings-group-heading", "Source Provider Credentials"));
+  const picker = node("label", "settings-provider-picker"), select = node("select"); picker.append(node("span", "", "Provider"));
+  for (const name of ["navidrome", "fanarttv", "lastfm", "discogs", "musicbrainz"]) { const option = node("option", "", name === "fanarttv" ? "Fanart.tv" : name[0].toUpperCase() + name.slice(1)); option.value = name; select.append(option); }
+  select.value = initialProvider; picker.append(select); host.append(picker);
+  const panel = node("div", "connection-editor"); host.append(panel);
+  async function load(provider) {
+    clear(panel); panel.append(node("p", "settings-subcopy", "Loading saved connection…"));
+    try {
+      const result = await api("/api/credentials/" + provider), inputs = {}; clear(panel);
+      for (const item of result.fields) {
+        const input = field(panel, item.name.replaceAll("_", " "), item.value, item.secret ? "password" : "text");
+        input.placeholder = item.secret && item.configured ? "Saved · leave blank to retain" : item.configured ? "Saved" : "Optional"; inputs[item.name] = input;
+      }
+      const configured = result.fields.some(item => item.configured);
+      panel.append(node("p", configured ? "connection-saved" : "settings-subcopy", configured ? "Saved" : "Not configured"));
+      const actions = node("div", "connection-actions");
+      actionButton("Reload", () => load(provider), actions);
+      actionButton("Test", async () => { const value = await post("/api/credentials/" + provider + "/test"); setStatus(value.message, value.ok ? "ready" : "error"); }, actions);
+      actionButton("Save Connection", async () => { await post("/api/credentials/" + provider, Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value]))); await load(provider); setStatus(provider + " credentials saved"); }, actions);
+      panel.append(actions);
+    } catch (error) { clear(panel); panel.append(node("p", "operation-error", error.message)); }
+  }
+  select.addEventListener("change", () => load(select.value)); await load(initialProvider);
+}
+function downloadJsonFile(name, value) {
+  const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
+  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
+}
+function renderBackupSettings(host, saved, contract, onRestored) {
+  const layout = node("div", "backup-layout"), backup = node("section", "backup-column"), restore = node("section", "backup-column");
+  backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
+  const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
+  const safe = node("button", "operation-button full-action", "Back Up Safe Settings JSON"); safe.type = "button"; safe.addEventListener("click", () => downloadJsonFile("splined-settings-safe.json", saved.config));
+  const shared = node("button", "operation-button full-action", "Download Shared Settings Contract"); shared.type = "button"; shared.addEventListener("click", () => downloadJsonFile("splined-settings-ui.json", contract)); backup.append(safe, shared);
+  settingsHelp(backup, "Will this preserve sliders, panes, and banner colors?", "Banner colors, frame colors, enhancement presets, and other WebGUI settings are included. Browser pane sizes remain device-local. Provider credentials remain in the credential volume and are not downloaded.");
+  backup.append(node("p", "settings-warning", "Back up PostgreSQL separately with a consistent pg_dump and retain the config, credentials, cache/staged-artwork, and Artist Art volumes."));
+
+  restore.append(node("h4", "", "↓ Restore"), node("p", "settings-subcopy", "Restore a safe settings JSON exported by this WebGUI. This does not replace PostgreSQL or provider credentials."));
+  const file = node("input"); file.type = "file"; file.accept = ".json,application/json"; file.className = "restore-file"; restore.append(file);
+  const button = node("button", "operation-button full-action", "Restore Selected Settings File"); button.type = "button"; button.addEventListener("click", () => runAction(async () => {
+    if (!file.files?.length) throw new Error("Choose a safe settings JSON file first");
+    const value = JSON.parse(await file.files[0].text());
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The selected file is not a SPLINED settings object");
+    const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
+  })); restore.append(button);
+  settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
+  layout.append(backup, restore); host.append(layout);
+}
+function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) {
+  const layout = node("div", "runtime-settings-layout"), processing = node("section", "runtime-column"), logging = node("section", "runtime-column");
+  processing.append(node("h4", "", "Processing")); settingsHelp(processing, "When can SPLINED change files?", "Only Live Write permits explicit WRITE and EMBED actions. Read mode keeps searching and previewing available without changing media files.");
+  logging.append(node("h4", "", "Logging"));
+  for (const descriptor of section.fields || []) {
+    if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
+    if (["scan.sqlite_shared", "scan.windows_client_lock"].includes(descriptor.path)) continue;
+    const target = descriptor.path === "verbosity" || descriptor.path.startsWith("logging.") ? logging : processing;
+    settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
+  }
+  const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
+  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
+  const events = node("pre", "diagnostic-events", "Loading events…"); logging.append(events);
+  async function load() {
+    try { const rows = await api("/api/diagnostics"); events.textContent = rows.length ? rows.map(row => `${row.created_at}  ${row.action}  ${row.subject}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded WebGUI events yet."; }
+    catch (error) { events.textContent = error.message; }
+  }
+  refresh.addEventListener("click", load); void load(); layout.append(processing, logging); host.append(layout);
+}
 async function openSettings() {
   state.reviewJobId = null;
   let saved, contract;
@@ -365,7 +596,7 @@ async function openSettings() {
   const body = dialog("Settings · WebGUI / PostgreSQL", "settings");
   const workspace = node("div", "settings-workspace"), nav = node("nav", "settings-nav"), content = node("section", "settings-content");
   workspace.append(nav, content); body.append(workspace);
-  let active = "library", advanced = false, provider = contract.providers[0], draft = null, bindings = [];
+  let active = "library", advanced = false, sourceProvider = contract.providers[0], credentialProvider = "navidrome", draft = null, bindings = [];
   const available = contract.sections.filter(section => !section.runtimes || section.runtimes.includes("webgui"));
 
   function renderNav() {
@@ -382,11 +613,10 @@ async function openSettings() {
     }
   }
   function addSpecialSection(section, fields) {
+    if (section.id === "enhancement") renderGraphicalEnhancement(fields, draft, () => renderSection(active, true));
+    if (section.id === "sources") renderSourceOrderSettings(fields, draft, sourceProvider, value => sourceProvider = value, () => renderSection(active, true));
     if (section.id === "connections") {
-      fields.append(node("h4", "settings-group-heading", "Provider Credentials"));
-      const actions = node("div", "settings-actions");
-      for (const name of ["navidrome", "fanarttv", "lastfm", "discogs", "musicbrainz"]) actionButton(name, () => editCredentials(name), actions);
-      fields.append(actions, node("p", "", "Connection tests do not automatically include a provider in artwork search. Configure inclusion under Artwork Sources."));
+      void renderConnectionSettings(fields, credentialProvider);
     }
     if (section.id === "catalog") {
       fields.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
@@ -397,17 +627,7 @@ async function openSettings() {
       actionButton("Import Catalog", async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }, fields);
     }
     if (section.id === "backup") {
-      fields.append(node("p", "settings-warning", "Back up PostgreSQL with a consistent pg_dump, then back up config, credentials, cache/staged artwork, and Artist Art volumes. The browser never packages secrets into an export."));
-      const actions = node("div", "settings-actions");
-      actionButton("Download Safe Settings JSON", async () => {
-        const blob = new Blob([JSON.stringify(saved.config, null, 2) + "\n"], {type: "application/json"});
-        const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "splined-settings-safe.json"; link.click(); URL.revokeObjectURL(link.href);
-      }, actions);
-      actionButton("Download Shared Settings Contract", async () => {
-        const blob = new Blob([JSON.stringify(contract, null, 2) + "\n"], {type: "application/json"});
-        const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "splined-settings-ui.json"; link.click(); URL.revokeObjectURL(link.href);
-      }, actions);
-      fields.append(actions, node("p", "", "The shared contract defines cross-runtime labels, defaults, ranges, and runtime ownership. It is not a credential or database backup."));
+      renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); });
     }
   }
   function renderSection(id, preserveDraft = false) {
@@ -422,24 +642,37 @@ async function openSettings() {
       save.addEventListener("click", () => runAction(async () => {
         applySettingsInputs(draft, bindings);
         saved = await post("/api/settings", {config: draft}); await sessionStatus();
+        applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
         state.enabledSources = (saved.config.sources?.cover_sources || []).filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
         renderAll(); setStatus(section.label + " settings saved"); renderSection(active);
       })); header.append(save);
     }
     content.append(header); const fields = node("div", "settings-fields"); content.append(fields);
-    for (const descriptor of section.fields || []) {
-      if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
-      settingsInput(fields, descriptor, descriptor.path, draft, bindings, saved);
+    if (["enhancement", "sources"].includes(section.id)) addSpecialSection(section, fields);
+    if (section.id === "library") settingsHelp(fields, "Which folders does SPLINED use?", "The music library is scanned read-only unless Live Write is enabled. Cache, log, credential, and V/A / OST Artist Art directories must be persistent container mounts.");
+    if (section.id === "artwork") settingsHelp(fields, "What is saved, and what is embedded?", "WRITE saves cover.* or artist.* files. EMBED Batch also stages a preference-sized square thumbnail for supported tracks; it does not shrink the saved full-resolution cover.");
+    if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
+    else {
+      let displayedGroup = "";
+      const groupFor = path => section.id === "library" ? (path === "library.music_library" || path === "scan.scan_library_dir" ? "Library And Application Paths" : path === "database.url" ? "Database" : "SPLINED File Storage")
+        : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
+        : section.id === "enhancement" ? "Resolution Range" : "";
+      for (const descriptor of section.fields || []) {
+        if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
+        const group = groupFor(descriptor.path);
+        if (group && group !== displayedGroup) { fields.append(node("h4", "settings-group-heading", group)); displayedGroup = group; }
+        settingsInput(fields, descriptor, descriptor.path, draft, bindings, saved);
+      }
     }
     if (section.repeater) {
       fields.append(node("h4", "settings-group-heading", section.repeater.label));
       const picker = node("label", "settings-provider-picker"); picker.append(node("span", "", "Artwork Provider"));
       const select = node("select");
       for (const name of contract.providers) { const option = node("option", "", name); option.value = name; select.append(option); }
-      select.value = provider; select.addEventListener("change", () => { applySettingsInputs(draft, bindings); provider = select.value; renderSection(active, true); }); picker.append(select); fields.append(picker);
-      for (const descriptor of section.repeater.fields) settingsInput(fields, descriptor, section.repeater.path + "." + provider + "." + descriptor.path, draft, bindings, saved);
+      select.value = sourceProvider; select.addEventListener("change", () => { applySettingsInputs(draft, bindings); sourceProvider = select.value; renderSection(active, true); }); picker.append(select); fields.append(picker);
+      for (const descriptor of section.repeater.fields) settingsInput(fields, descriptor, section.repeater.path + "." + sourceProvider + "." + descriptor.path, draft, bindings, saved);
     }
-    addSpecialSection(section, fields);
+    if (!["enhancement", "sources", "runtime"].includes(section.id)) addSpecialSection(section, fields);
   }
   renderSection(active);
 }

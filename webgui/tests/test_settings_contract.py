@@ -75,6 +75,23 @@ class SettingsContractTests(unittest.TestCase):
         for label in ("Upscale Below Ideal", "Max Upscale Percent", "Evaluate Final Image"):
             self.assertIn(f'label: "{label}"', slint)
 
+    def test_webgui_settings_workspace_keeps_windows_parity_sections(self) -> None:
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
+        for label in (
+            "OLED Chroma Wheel",
+            "Album Card Frames",
+            "Artwork Search Order",
+            "Source Provider Credentials",
+            "Restore Selected Settings File",
+            "WebGUI Events",
+        ):
+            self.assertIn(label, operations)
+        for key in ("compiled", "featuring", "soundtrack", "various", "artist"):
+            self.assertIn(f"{key}: {{name:", app)
+
 
 if __name__ == "__main__":
     unittest.main()

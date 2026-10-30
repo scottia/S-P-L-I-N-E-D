@@ -295,10 +295,29 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             settings = client.get("/api/settings").json()
             settings["config"]["mode"] = "read"
+            settings["config"]["webgui_ui"] = {
+                "enhancement": {
+                    "banner_styles": {
+                        "compiled": {
+                            "name": "COMPILED",
+                            "background": "#3478FF",
+                            "frame": "#D9AD43",
+                            "letters": "#D9AD43",
+                        }
+                    }
+                }
+            }
             self.assertEqual(
                 client.post("/api/settings", json=settings).status_code, 200
             )
-            self.assertEqual(tomllib.loads(self.config.read_text())["mode"], "read")
+            stored = tomllib.loads(self.config.read_text())
+            self.assertEqual(stored["mode"], "read")
+            self.assertEqual(
+                stored["webgui_ui"]["enhancement"]["banner_styles"]["compiled"][
+                    "background"
+                ],
+                "#3478FF",
+            )
             self.assertEqual(
                 client.post("/api/artwork/cover", json=self.payload()).status_code, 403
             )
@@ -313,6 +332,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "status"
                 ],
                 "bypassed",
+            )
+            diagnostics = client.get("/api/diagnostics")
+            self.assertEqual(diagnostics.status_code, 200)
+            self.assertTrue(
+                any(event["action"] == "bypass" for event in diagnostics.json())
             )
             self.assertEqual(
                 client.post(

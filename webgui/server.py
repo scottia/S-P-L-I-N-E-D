@@ -384,6 +384,11 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def save_settings(payload: dict):
         return context.configure((payload).get("config"))
 
+    @app.get("/api/diagnostics")
+    def diagnostics():
+        context.require()
+        return context.services.diagnostics()
+
     @app.get("/api/credentials/{provider}")
     def credentials(provider: str):
         context.require()
