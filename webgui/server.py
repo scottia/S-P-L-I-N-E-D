@@ -389,6 +389,11 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         context.require()
         return context.services.diagnostics()
 
+    @app.get("/api/storage")
+    def storage():
+        context.require()
+        return context.services.storage_summary()
+
     @app.get("/api/credentials/{provider}")
     def credentials(provider: str):
         context.require()

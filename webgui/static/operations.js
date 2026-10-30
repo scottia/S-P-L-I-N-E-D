@@ -318,7 +318,8 @@ function setSettingValue(object, path, value) {
   if (value === undefined) delete owner[keys.at(-1)]; else owner[keys.at(-1)] = value;
 }
 function settingsInput(host, descriptor, path, draft, bindings, saved) {
-  const label = node("label", "setting-field"); label.append(node("span", "", descriptor.label));
+  const label = node("label", "setting-field"), title = node("span", "setting-label", descriptor.label);
+  if (descriptor.future) { label.classList.add("future-setting"); title.append(node("span", "future-badge", "FUTURE")); }
   const shell = node("span", "setting-input-shell");
   const input = descriptor.type === "enum" ? node("select") : node("input");
   const existing = settingValue(draft, path, descriptor.default);
@@ -326,7 +327,7 @@ function settingsInput(host, descriptor, path, draft, bindings, saved) {
     for (const value of descriptor.choices || []) { const option = node("option", "", value); option.value = value; input.append(option); }
     input.value = existing ?? "";
   } else if (descriptor.type === "boolean") {
-    input.type = "checkbox"; input.checked = Boolean(existing);
+    input.type = "checkbox"; input.checked = Boolean(existing); label.classList.add("boolean-setting");
   } else {
     input.type = descriptor.type === "integer" || descriptor.type === "optional-integer" ? "number"
       : descriptor.type === "color" ? "color" : path === "database.url" ? "password" : "text";
@@ -334,11 +335,12 @@ function settingsInput(host, descriptor, path, draft, bindings, saved) {
     if (descriptor.min !== undefined) input.min = descriptor.min;
     if (descriptor.max !== undefined) input.max = descriptor.max;
     if (descriptor.required) input.required = true;
+    if (descriptor.type === "optional-integer") input.placeholder = "Optional";
   }
   if (saved.database_managed && path === "database.url") { input.disabled = true; input.placeholder = "Managed by server environment"; }
   shell.append(input);
   if (descriptor.suffix) shell.append(node("span", "setting-suffix", descriptor.suffix));
-  label.append(shell);
+  if (descriptor.type === "boolean") label.append(shell, title); else label.append(title, shell);
   if (descriptor.help) label.append(node("small", "", descriptor.help));
   host.append(label); bindings.push({input, descriptor, path});
   return input;
@@ -347,6 +349,7 @@ function applySettingsInputs(draft, bindings) {
   for (const {input, descriptor, path} of bindings) {
     if (input.disabled) continue;
     let value;
+    if (descriptor.type !== "boolean" && input.required && !input.value.trim()) throw new Error(descriptor.label + " is required");
     if (descriptor.type === "boolean") value = input.checked;
     else if (descriptor.type === "list") value = input.value.split(",").map(item => item.trim()).filter(Boolean);
     else if (["integer", "optional-integer"].includes(descriptor.type)) {
@@ -496,6 +499,30 @@ function settingsHelp(host, summary, detail) {
   const help = node("details", "settings-help"), heading = node("summary", "", "ⓘ  " + summary);
   help.append(heading, node("p", "", detail)); host.append(help); return help;
 }
+function formatStorageBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes < 1) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"], index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+function renderStorageSettings(host) {
+  host.append(node("h4", "settings-group-heading", "SPLINED File Storage"));
+  const summary = node("div", "storage-summary"); summary.append(node("p", "settings-subcopy", "Loading persistent WebGUI storage…")); host.append(summary);
+  void api("/api/storage").then(value => {
+    clear(summary);
+    for (const [label, detail, size] of [
+      ["PostgreSQL Catalog", value.database, formatStorageBytes(value.database_bytes)],
+      ["Persistent Cache", value.cache, "mounted path"],
+      ["V/A / OST Artist Images", value.artist_art, "mounted path"],
+      ["Provider Credentials", value.credentials, "protected path"],
+      ["Configuration", value.configuration, "Config v5"],
+    ]) {
+      const row = node("div", "storage-row"); row.append(node("strong", "", label), node("span", "storage-path", detail || "Not configured"), node("span", "storage-size", size)); summary.append(row);
+    }
+    const runtime = node("div", "storage-runtime"); runtime.append(node("strong", "", "Runtime"), node("span", "", `v${value.version} · PostgreSQL · ${(value.mode || "read").toUpperCase()}`)); summary.append(runtime);
+  }).catch(error => { clear(summary); summary.append(node("p", "operation-error", error.message)); });
+  settingsHelp(host, "What is included in storage usage?", "The exact catalog size comes from PostgreSQL. Cache, Artist Art, credentials, and configuration are persistent mounted paths; SPLINED does not recursively scan those network folders merely to open Settings.");
+}
 function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider, rerender) {
   settingsHelp(host, "Why can a connected provider say Excluded?", "Connection credentials and artwork-search inclusion are separate. Excluded providers can still be tested under Connections but are not queried for candidate artwork.");
   host.append(node("h4", "settings-group-heading", "Artwork Search Order"), node("p", "settings-subcopy", "Move a provider left or right. Select a card to edit its candidate quality policy below."));
@@ -550,6 +577,17 @@ function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
 }
+function renderCatalogMaintenance(host) {
+  const maintenance = node("section", "catalog-maintenance");
+  maintenance.append(node("h4", "", "↕ Catalog Maintenance"), node("p", "settings-subcopy", "Refresh the PostgreSQL catalog or import a deliberate read-only SQLite snapshot."));
+  maintenance.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
+  const refresh = node("button", "operation-button full-action", "Full Refresh Library Index"); refresh.type = "button";
+  refresh.addEventListener("click", () => runAction(async () => { $("workspaceDialog").close(); const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); }));
+  maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Imports a server-side snapshot into an empty PostgreSQL catalog. The source remains unchanged."));
+  const path = field(maintenance, "Snapshot path on server"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
+  importButton.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }));
+  maintenance.append(importButton); host.append(maintenance);
+}
 function renderBackupSettings(host, saved, contract, onRestored) {
   const layout = node("div", "backup-layout"), backup = node("section", "backup-column"), restore = node("section", "backup-column");
   backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
@@ -568,6 +606,7 @@ function renderBackupSettings(host, saved, contract, onRestored) {
     const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
   })); restore.append(button);
   settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
+  renderCatalogMaintenance(restore);
   layout.append(backup, restore); host.append(layout);
 }
 function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) {
@@ -597,7 +636,7 @@ async function openSettings() {
   const workspace = node("div", "settings-workspace"), nav = node("nav", "settings-nav"), content = node("section", "settings-content");
   workspace.append(nav, content); body.append(workspace);
   let active = "library", advanced = false, sourceProvider = contract.providers[0], credentialProvider = "navidrome", draft = null, bindings = [];
-  const available = contract.sections.filter(section => !section.runtimes || section.runtimes.includes("webgui"));
+  const available = contract.sections.filter(section => (!section.runtimes || section.runtimes.includes("webgui")) && section.id !== "catalog");
 
   function renderNav() {
     clear(nav); nav.append(node("div", "settings-nav-title", "SETTINGS SECTIONS"));
@@ -618,34 +657,28 @@ async function openSettings() {
     if (section.id === "connections") {
       void renderConnectionSettings(fields, credentialProvider);
     }
-    if (section.id === "catalog") {
-      fields.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
-      const actions = node("div", "settings-actions");
-      actionButton("Full Refresh Library Index", async () => { $("workspaceDialog").close(); const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); }, actions);
-      fields.append(actions, node("h4", "settings-group-heading", "Import an existing SQLite catalog"), node("p", "", "Imports a server-side snapshot into an empty PostgreSQL catalog. The source remains unchanged."));
-      const path = field(fields, "Snapshot path on server");
-      actionButton("Import Catalog", async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }, fields);
-    }
     if (section.id === "backup") {
       renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); });
     }
+  }
+  async function saveCurrentSection(section, message = section.label + " settings saved") {
+    applySettingsInputs(draft, bindings);
+    saved = await post("/api/settings", {config: draft}); await sessionStatus();
+    applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
+    state.enabledSources = (saved.config.sources?.cover_sources || []).filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
+    renderAll(); setStatus(message); renderSection(active);
   }
   function renderSection(id, preserveDraft = false) {
     active = id; bindings = [];
     if (!preserveDraft) draft = structuredClone(saved.config);
     draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
+    draft.samples ||= {}; draft.aisplined ||= {};
     const section = available.find(item => item.id === id); clear(content); renderNav();
     const header = node("header", "settings-content-header"), copy = node("div");
     copy.append(node("h3", "", section.label), node("p", "", section.description)); header.append(copy);
-    if (!["catalog", "backup"].includes(section.id)) {
+    if (section.id !== "backup") {
       const save = node("button", "", "Save " + section.label); save.type = "button";
-      save.addEventListener("click", () => runAction(async () => {
-        applySettingsInputs(draft, bindings);
-        saved = await post("/api/settings", {config: draft}); await sessionStatus();
-        applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
-        state.enabledSources = (saved.config.sources?.cover_sources || []).filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
-        renderAll(); setStatus(section.label + " settings saved"); renderSection(active);
-      })); header.append(save);
+      save.addEventListener("click", () => runAction(() => saveCurrentSection(section))); header.append(save);
     }
     content.append(header); const fields = node("div", "settings-fields"); content.append(fields);
     if (["enhancement", "sources"].includes(section.id)) addSpecialSection(section, fields);
@@ -654,7 +687,7 @@ async function openSettings() {
     if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
     else {
       let displayedGroup = "";
-      const groupFor = path => section.id === "library" ? (path === "library.music_library" || path === "scan.scan_library_dir" ? "Library And Application Paths" : path === "database.url" ? "Database" : "SPLINED File Storage")
+      const groupFor = path => section.id === "library" ? (path === "library.music_library" || path === "scan.scan_library_dir" ? "Library And Application Paths" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
       for (const descriptor of section.fields || []) {
@@ -663,6 +696,15 @@ async function openSettings() {
         if (group && group !== displayedGroup) { fields.append(node("h4", "settings-group-heading", group)); displayedGroup = group; }
         settingsInput(fields, descriptor, descriptor.path, draft, bindings, saved);
       }
+      if (section.id === "artwork") {
+        const sampleToggle = bindings.find(item => item.path === "samples.sample_write")?.input;
+        const sampleDirectory = bindings.find(item => item.path === "samples.sample_dir")?.input;
+        if (sampleToggle && sampleDirectory) {
+          const updateSamplePath = () => { sampleDirectory.disabled = !sampleToggle.checked; sampleDirectory.required = sampleToggle.checked; sampleDirectory.placeholder = sampleToggle.checked ? "Choose a persistent directory" : "Enable Artist Sample Images to set a path"; };
+          sampleToggle.addEventListener("change", updateSamplePath); updateSamplePath();
+        }
+      }
+      if (section.id === "library") renderStorageSettings(fields);
     }
     if (section.repeater) {
       fields.append(node("h4", "settings-group-heading", section.repeater.label));
@@ -671,6 +713,11 @@ async function openSettings() {
       for (const name of contract.providers) { const option = node("option", "", name); option.value = name; select.append(option); }
       select.value = sourceProvider; select.addEventListener("change", () => { applySettingsInputs(draft, bindings); sourceProvider = select.value; renderSection(active, true); }); picker.append(select); fields.append(picker);
       for (const descriptor of section.repeater.fields) settingsInput(fields, descriptor, section.repeater.path + "." + sourceProvider + "." + descriptor.path, draft, bindings, saved);
+    }
+    if (section.id === "sources") {
+      settingsHelp(fields, "What does source policy change?", "This policy applies only to the selected provider. Optional dimensions remain unset until you type a value or use the number arrows; a blank field does not impose a limit.");
+      const update = node("button", "operation-button full-action", "Update Selected Source Policy"); update.type = "button";
+      update.addEventListener("click", () => runAction(() => saveCurrentSection(section, `${sourceProvider} source policy updated`))); fields.append(update);
     }
     if (!["enhancement", "sources", "runtime"].includes(section.id)) addSpecialSection(section, fields);
   }

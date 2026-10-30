@@ -44,8 +44,8 @@
         {"path": "output.square_mode", "label": "Square Mode", "type": "enum", "default": "crop", "choices": ["crop", "off"], "runtimes": ["windows", "webgui"]},
         {"path": "output.square_round_to", "label": "Square Round-To", "type": "integer", "default": 16, "min": 0, "max": 4096, "runtimes": ["windows", "webgui"]},
         {"path": "output.embedded_thumbnail_size", "label": "Embedded Thumbnail Preference", "type": "integer", "default": 1200, "min": 300, "max": 4000, "suffix": "px", "runtimes": ["windows", "webgui"], "help": "The saved cover retains full resolution; this sets the square image embedded in tracks."},
-        {"path": "samples.sample_write", "label": "Write Sample Cover Images", "type": "boolean", "default": true, "runtimes": ["windows", "webgui"]},
-        {"path": "samples.sample_dir", "label": "Sample Images Directory", "type": "path", "runtimes": ["windows", "webgui"]}
+        {"path": "samples.sample_write", "label": "Write Artist Sample Images", "type": "boolean", "default": false, "runtimes": ["windows", "webgui"], "help": "Off by default. When enabled, choose a persistent sample directory."},
+        {"path": "samples.sample_dir", "label": "Artist Sample Images Directory", "type": "path", "runtimes": ["windows", "webgui"], "help": "Required when Artist Sample Images are enabled."}
       ]
     },
     {
@@ -108,7 +108,7 @@
       "icon": "◇",
       "description": "Manage provider credentials separately from artwork-search inclusion.",
       "fields": [
-        {"path": "aisplined.enabled", "label": "AISPLINED provider (t.b.d)", "type": "boolean", "advanced": true, "runtimes": ["windows", "webgui"]},
+        {"path": "aisplined.enabled", "label": "AISPLINED Provider · Future Optional", "type": "boolean", "default": false, "future": true, "runtimes": ["windows", "webgui"], "help": "Reserved for a future optional AI companion. It remains inactive unless explicitly selected."},
         {"path": "aisplined.endpoint", "label": "AISPLINED Endpoint", "type": "text", "advanced": true, "runtimes": ["windows", "webgui"]},
         {"path": "aisplined.minimum_short_side", "label": "AISPLINED Minimum Short Side", "type": "integer", "min": 1, "advanced": true, "runtimes": ["windows", "webgui"]},
         {"path": "aisplined.allow_below_minimum_override", "label": "AISPLINED Below-Minimum Override", "type": "boolean", "advanced": true, "runtimes": ["windows", "webgui"]}

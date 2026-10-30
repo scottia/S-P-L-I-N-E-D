@@ -141,8 +141,8 @@ allow_below_minimum_fallback = false
 primary_image_only = true
 
 [samples]
-sample_write = true
-sample_dir = "samples"
+sample_write = false
+sample_dir = ""
 
 [credentials]
 credential_dir = "/credentials"

@@ -147,6 +147,23 @@ class Services:
             for row in rows
         ]
 
+    def storage_summary(self):
+        """Describe persistent WebGUI storage without walking network folders."""
+        with closing(self.runtime.database.connect()) as db:
+            row = db.execute(
+                "SELECT pg_database_size(current_database()) AS database_bytes, current_database() AS database_name"
+            ).fetchone()
+        return {
+            "database": f"PostgreSQL · {row['database_name']}",
+            "database_bytes": int(row["database_bytes"] or 0),
+            "cache": str(self.runtime.cache),
+            "artist_art": str(self.runtime.artist_art),
+            "credentials": str(self.runtime.credentials),
+            "configuration": str(self.runtime.config_file),
+            "version": core.VERSION,
+            "mode": str(self.runtime.cfg.get("mode", "read")),
+        }
+
     def album_row(self, key):
         with closing(self.runtime.database.connect()) as db:
             row = db.execute(

@@ -338,6 +338,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertTrue(
                 any(event["action"] == "bypass" for event in diagnostics.json())
             )
+            storage = client.get("/api/storage")
+            self.assertEqual(storage.status_code, 200)
+            self.assertTrue(storage.json()["database"].startswith("PostgreSQL · "))
+            self.assertGreater(storage.json()["database_bytes"], 0)
+            self.assertEqual(storage.json()["configuration"], str(self.config.resolve()))
             self.assertEqual(
                 client.post(
                     "/api/bypass", headers={"Origin": "https://example.org"}, json={}

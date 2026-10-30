@@ -87,10 +87,27 @@ class SettingsContractTests(unittest.TestCase):
             "Source Provider Credentials",
             "Restore Selected Settings File",
             "WebGUI Events",
+            "SPLINED File Storage",
+            "Update Selected Source Policy",
+            "Catalog Maintenance",
         ):
             self.assertIn(label, operations)
         for key in ("compiled", "featuring", "soundtrack", "various", "artist"):
             self.assertIn(f"{key}: {{name:", app)
+
+    def test_webgui_samples_and_future_ai_defaults_are_explicit(self) -> None:
+        fields = {
+            field["path"]: field
+            for section in self.contract["sections"]
+            for field in section.get("fields", [])
+        }
+        self.assertFalse(fields["samples.sample_write"]["default"])
+        self.assertFalse(fields["aisplined.enabled"]["default"])
+        self.assertTrue(fields["aisplined.enabled"]["future"])
+        with (REPOSITORY / "docker/config.example.toml").open("rb") as handle:
+            docker = tomllib.load(handle)
+        self.assertFalse(docker["samples"]["sample_write"])
+        self.assertEqual(docker["samples"]["sample_dir"], "")
 
 
 if __name__ == "__main__":
