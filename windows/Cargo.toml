@@ -1,6 +1,6 @@
 [package]
 name = "splined-windows"
-version = "2.0.6"
+version = "2.0.7"
 edition = "2024"
 build = "build.rs"
 publish = false
