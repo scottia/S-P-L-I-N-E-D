@@ -89,12 +89,34 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertNotIn("submitQueuedDecision(candidate.queueValue)", application)
         self.assertNotIn('node("button", "candidate-preview"', application)
         self.assertNotIn('node("button", "candidate-choose"', application)
-        self.assertIn("cover: group.cover || null", application)
+        self.assertIn("cover: group.cover || album.cover || null", application)
+        self.assertIn("fallback_complete", application)
+        self.assertIn("normalizedColor", application)
+        self.assertIn("renderedPreview", application)
         self.assertIn("compReportLoading", application)
         self.assertIn('status: "check-error"', application)
         document = (static / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="fullscreenButton"', document)
         self.assertNotIn('id="reviewWork"', document)
+
+        self.assertLess(
+            document.index('id="bypassButton"'),
+            document.index('id="uploadArtwork"'),
+        )
+
+    def test_signed_path_handle_changes_when_saved_artwork_changes(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "artist.png"
+            Image.new("RGB", (30, 30), "red").save(source)
+            app = PreviewApp(root, root / "index.sqlite", root, root)
+            first = app.image(source)
+            Image.new("RGB", (31, 30), "blue").save(source)
+            second = app.image(source)
+            self.assertNotEqual(first, second)
+            self.assertEqual(app.image_source(second), source)
+            with self.assertRaises(ValueError):
+                app.image_source(first)
 
     def test_artist_report_combines_matching_tracks_across_comp_albums(self) -> None:
         with TemporaryDirectory() as directory:
