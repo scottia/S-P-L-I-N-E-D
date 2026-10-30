@@ -38,7 +38,7 @@ class SettingsContractTests(unittest.TestCase):
         self.assertNotIn("scan.sqlite_shared", web_paths)
         self.assertNotIn("scan.windows_client_lock", web_paths)
 
-    def test_contract_upscale_defaults_match_windows_and_docker(self) -> None:
+    def test_contract_upscale_defaults_match_webgui_docker(self) -> None:
         defaults = {
             field["path"]: field.get("default")
             for section in self.contract["sections"]
@@ -46,8 +46,6 @@ class SettingsContractTests(unittest.TestCase):
         }
         with (REPOSITORY / "docker/config.example.toml").open("rb") as handle:
             docker = tomllib.load(handle)
-        with (REPOSITORY / "windows/config.example.toml").open("rb") as handle:
-            windows = tomllib.load(handle)
         for name in (
             "upscale_below_ideal",
             "upscale_max_percent",
@@ -68,7 +66,21 @@ class SettingsContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 expected = defaults[f"output.{name}"]
                 self.assertEqual(docker["output"][name], expected)
-                self.assertEqual(windows["output"][name], expected)
+
+    def test_webgui_settings_fixed_output_labels_and_global_controls(self) -> None:
+        fields = {
+            field["path"]: field
+            for section in self.contract["sections"]
+            for field in section.get("fields", [])
+        }
+        self.assertEqual(fields["output.file_name"]["type"], "statement")
+        self.assertEqual(fields["output.file_name"]["display"], "cover · artist · banner")
+        self.assertEqual(fields["output.file_formats"]["type"], "statement")
+        self.assertTrue(fields["output.upscale_below_ideal"]["default"])
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(encoding="utf-8")
+        self.assertIn("Settings HELP", operations)
+        self.assertIn("Advanced ON · All Sections", operations)
+        self.assertIn("applySettingsInputs(draft, bindings, false)", operations)
 
     def test_windows_labels_remain_present(self) -> None:
         slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")

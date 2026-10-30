@@ -3532,7 +3532,7 @@ def output_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     if round_to < 0:
         raise SplinedError("[output].square_round_to cannot be negative.")
 
-    upscale = bool(out.get("upscale_below_ideal", False))
+    upscale = bool(out.get("upscale_below_ideal", True))
     try:
         upscale_max_percent = int(out.get("upscale_max_percent", 200) or 0)
     except (TypeError, ValueError) as exc:
@@ -5072,7 +5072,7 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
             "[output].upscale_max_percent must be between 100 and 800."
         )
     _bool_value(
-        output.get("upscale_below_ideal", False),
+        output.get("upscale_below_ideal", True),
         "[output].upscale_below_ideal",
     )
     _bool_value(

@@ -339,9 +339,15 @@ function setSettingValue(object, path, value) {
 function settingsInput(host, descriptor, path, draft, bindings, saved) {
   const label = node("label", "setting-field"), title = node("span", "setting-label", descriptor.label);
   if (descriptor.future) { label.classList.add("future-setting"); title.append(node("span", "future-badge", "FUTURE")); }
+  const existing = settingValue(draft, path, descriptor.default);
+  if (descriptor.type === "statement") {
+    label.classList.add("statement-setting");
+    label.append(title, node("span", "setting-statement", descriptor.display ?? (Array.isArray(existing) ? existing.join(" · ") : String(existing ?? ""))));
+    if (descriptor.help) label.append(node("small", "", descriptor.help));
+    host.append(label); return null;
+  }
   const shell = node("span", "setting-input-shell");
   const input = descriptor.type === "enum" ? node("select") : node("input");
-  const existing = settingValue(draft, path, descriptor.default);
   if (descriptor.type === "enum") {
     for (const value of descriptor.choices || []) { const option = node("option", "", value); option.value = value; input.append(option); }
     input.value = existing ?? "";
@@ -364,17 +370,23 @@ function settingsInput(host, descriptor, path, draft, bindings, saved) {
   host.append(label); bindings.push({input, descriptor, path});
   return input;
 }
-function applySettingsInputs(draft, bindings) {
+function applySettingsInputs(draft, bindings, strict = true) {
   for (const {input, descriptor, path} of bindings) {
     if (input.disabled) continue;
     let value;
-    if (descriptor.type !== "boolean" && input.required && !input.value.trim()) throw new Error(descriptor.label + " is required");
+    if (descriptor.type !== "boolean" && input.required && !input.value.trim()) {
+      if (strict) throw new Error(descriptor.label + " is required");
+      continue;
+    }
     if (descriptor.type === "boolean") value = input.checked;
     else if (descriptor.type === "list") value = input.value.split(",").map(item => item.trim()).filter(Boolean);
     else if (["integer", "optional-integer"].includes(descriptor.type)) {
       if (!input.value.trim() && descriptor.type === "optional-integer") value = undefined;
       else {
-        if (!input.value.trim() || !input.checkValidity()) throw new Error(descriptor.label + " is outside its allowed range");
+        if (!input.value.trim() || !input.checkValidity()) {
+          if (strict) throw new Error(descriptor.label + " is outside its allowed range");
+          continue;
+        }
         value = Number(input.value);
       }
     } else value = input.value;
@@ -612,18 +624,19 @@ function renderBackupSettings(host, saved, contract, onRestored) {
   backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
   const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
   const safe = node("button", "operation-button full-action", "Back Up Safe Settings JSON"); safe.type = "button"; safe.addEventListener("click", () => downloadJsonFile("splined-settings-safe.json", saved.config));
-  const shared = node("button", "operation-button full-action", "Download Shared Settings Contract"); shared.type = "button"; shared.addEventListener("click", () => downloadJsonFile("splined-settings-ui.json", contract)); backup.append(safe, shared);
+  const shared = node("button", "operation-button full-action", "Download Shared Settings Contract"); shared.type = "button"; shared.addEventListener("click", () => downloadJsonFile("splined-settings-ui.json", contract));
+  const backupActions = node("div", "backup-actions"); backupActions.append(safe, shared); backup.append(backupActions);
   settingsHelp(backup, "Will this preserve sliders, panes, and banner colors?", "Banner colors, frame colors, enhancement presets, and other WebGUI settings are included. Browser pane sizes remain device-local. Provider credentials remain in the credential volume and are not downloaded.");
   backup.append(node("p", "settings-warning", "Back up PostgreSQL separately with a consistent pg_dump and retain the config, credentials, cache/staged-artwork, and Artist Art volumes."));
 
   restore.append(node("h4", "", "↓ Restore"), node("p", "settings-subcopy", "Restore a safe settings JSON exported by this WebGUI. This does not replace PostgreSQL or provider credentials."));
-  const file = node("input"); file.type = "file"; file.accept = ".json,application/json"; file.className = "restore-file"; restore.append(file);
+  const restoreActions = node("div", "backup-actions"), file = node("input"); file.type = "file"; file.accept = ".json,application/json"; file.className = "restore-file"; restoreActions.append(file);
   const button = node("button", "operation-button full-action", "Restore Selected Settings File"); button.type = "button"; button.addEventListener("click", () => runAction(async () => {
     if (!file.files?.length) throw new Error("Choose a safe settings JSON file first");
     const value = JSON.parse(await file.files[0].text());
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The selected file is not a SPLINED settings object");
     const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
-  })); restore.append(button);
+  })); restoreActions.append(button); restore.append(restoreActions);
   settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
   renderCatalogMaintenance(restore);
   layout.append(backup, restore); host.append(layout);
@@ -663,8 +676,10 @@ async function openSettings() {
       const button = node("button", section.id === active ? "active" : "", section.icon + "  " + section.label); button.type = "button";
       button.addEventListener("click", () => renderSection(section.id)); nav.append(button);
     }
-    const advancedButton = node("button", "settings-advanced" + (advanced ? " active" : ""), advanced ? "Advanced ON" : "Advanced");
-    advancedButton.type = "button"; advancedButton.addEventListener("click", () => { applySettingsInputs(draft, bindings); advanced = !advanced; renderSection(active, true); }); nav.append(advancedButton);
+    const helpLink = node("a", "settings-help-link", "Settings HELP");
+    helpLink.href = "https://github.com/scottia/S-P-L-I-N-E-D/tree/main/docs"; helpLink.target = "_blank"; helpLink.rel = "noopener"; nav.append(helpLink);
+    const advancedButton = node("button", "settings-advanced" + (advanced ? " active" : ""), advanced ? "Advanced ON · All Sections" : "Advanced OFF · All Sections");
+    advancedButton.type = "button"; advancedButton.addEventListener("click", () => { applySettingsInputs(draft, bindings, false); advanced = !advanced; renderSection(active, true); }); nav.append(advancedButton);
     if (state.server?.auth_required) {
       const logout = node("button", "", "Sign out"); logout.type = "button";
       logout.addEventListener("click", () => runAction(async () => { await post("/api/logout"); $("workspaceDialog").close(); await initialize(); })); nav.append(logout);
@@ -699,7 +714,7 @@ async function openSettings() {
       const save = node("button", "", "Save " + section.label); save.type = "button";
       save.addEventListener("click", () => runAction(() => saveCurrentSection(section))); header.append(save);
     }
-    content.append(header); const fields = node("div", "settings-fields"); content.append(fields);
+    content.append(header); const fields = node("div", `settings-fields settings-fields-${section.id}`); content.append(fields);
     if (["enhancement", "sources"].includes(section.id)) addSpecialSection(section, fields);
     if (section.id === "library") settingsHelp(fields, "Which folders does SPLINED use?", "The music library is scanned read-only unless Live Write is enabled. Cache, log, credential, and V/A / OST Artist Art directories must be persistent container mounts.");
     if (section.id === "artwork") settingsHelp(fields, "What is saved, and what is embedded?", "WRITE saves cover.* or artist.* files. EMBED Batch also stages a preference-sized square thumbnail for supported tracks; it does not shrink the saved full-resolution cover.");
@@ -719,7 +734,7 @@ async function openSettings() {
         const sampleToggle = bindings.find(item => item.path === "samples.sample_write")?.input;
         const sampleDirectory = bindings.find(item => item.path === "samples.sample_dir")?.input;
         if (sampleToggle && sampleDirectory) {
-          const updateSamplePath = () => { sampleDirectory.disabled = !sampleToggle.checked; sampleDirectory.required = sampleToggle.checked; sampleDirectory.placeholder = sampleToggle.checked ? "Choose a persistent directory" : "Enable Artist Sample Images to set a path"; };
+          const updateSamplePath = () => { sampleDirectory.disabled = !sampleToggle.checked; sampleDirectory.required = sampleToggle.checked; sampleDirectory.placeholder = sampleToggle.checked ? "Choose a persistent directory" : "Enable Write Sample Cover Images to set a path"; };
           sampleToggle.addEventListener("change", updateSamplePath); updateSamplePath();
         }
       }

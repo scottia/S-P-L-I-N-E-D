@@ -63,7 +63,7 @@ normally absolute container paths supplied by bind mounts.
 | `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
 | `cache_dir` | `"_db"` | Persistent Windows SQLite directory containing `<cache_dir>/splined.db`; the historical key name is retained for compatibility |
-| `shared_artist_art_dir` | empty | Persistent Artist-specific portrait/banner files for shared Soundtracks or Various Artists folders; Windows Setup defaults to `<temporary_cache_dir>/artist-art` |
+| `shared_artist_art_dir` | empty | Persistent Artist-specific portrait/banner files for shared Soundtracks or Various Artists folders; blank uses the hard-coded `<cache_dir>/artist-art` subdirectory, created only when first needed |
 | `temporary_cache_dir` | `"_cache"` | Disposable downloaded/derived artwork and optional review samples; an older Config v5 file that omits it falls back to `cache_dir` |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; native-client shared-file behavior; WebGUI uses PostgreSQL instead |
 | `windows_client_lock` | `false` | Windows-only optional `.client-lock` coordination for shared SQLite. Has no effect unless `sqlite_shared` is true; older Config v5 files default to off |
@@ -104,7 +104,7 @@ See [media database](splined-media-database.md) and the
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
 | `embedded_thumbnail_size` | `1200` | Windows **Embedded Thumbnail Preference** and WebGUI album/COMP embedding size, a square side in pixels from 300 through 4000; the saved folder `cover.*` retains its full-resolution output. |
-| `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
+| `upscale_below_ideal` | WebGUI `true`; Windows `false` pending native parity | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
 | `upscale_max_percent` | `200` | Hard maximum enlargement relative to the original short side, valid from `100` through `800`; `200` permits 2×. If Ideal requires more, SPLINED stops at this ceiling, while artwork already above Ideal remains at native resolution. |
 | `upscale_adaptive_defaults` | `true` | Analyze exposure/contrast and apply only SPLINED's bounded correction when the source demonstrably needs it |
 | `upscale_picture_percent` | `2` | Color-intensity/saturation adjustment, `-20`–`20` percent |
