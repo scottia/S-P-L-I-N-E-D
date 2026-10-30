@@ -1,4 +1,4 @@
-name: 01. Full Release - Build Selected OS and Publish
+name: 01. Full Release - Build Selected Target and Publish
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: ""
         type: string
       platform:
-        description: "Build target; Windows or All can also build and submit a Store package."
+        description: "Release target; WebGUI / Python validates and publishes the browser/PostgreSQL container. Windows or All can also build and submit a Store package."
         required: true
         default: "Windows"
         type: choice
@@ -17,7 +17,7 @@ on:
           - "All"
           - "Windows"
           - "macOS"
-          - "Ubuntu"
+          - "WebGUI / Python"
       extended_windows_validation:
         description: "Run the full Rust/Slint Windows regression suite before packaging"
         required: false
@@ -592,11 +592,25 @@ jobs:
           - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
-  build-ubuntu:
-    name: Build Release — Ubuntu
+  build-webgui:
+    name: Validate Release — WebGUI / Python
     needs: prepare-release
-    if: ${{ inputs.platform == 'Ubuntu' || inputs.platform == 'All' }}
+    if: ${{ inputs.platform == 'WebGUI / Python' || inputs.platform == 'All' }}
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: splined_test
+          POSTGRES_PASSWORD: splined_ci_only
+          POSTGRES_DB: splined_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U splined_test -d splined_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SPLINED_TEST_DATABASE_URL: postgresql://splined_test:splined_ci_only@127.0.0.1:5432/splined_test
+      PYTHONPATH: .:webgui/backend
 
     steps:
       - name: Checkout release base
@@ -622,32 +636,72 @@ jobs:
           git checkout --detach "$RELEASE_COMMIT"
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
 
-      - name: Install stable Rust
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install WebGUI test dependencies
+        run: pip install -r webgui/requirements-test.txt
+
+      - name: Validate Python/PostgreSQL WebGUI
+        run: python -m unittest discover -s webgui/tests -v
+
+      - name: Validate browser JavaScript
+        run: node --check webgui/static/app.js && node --check webgui/static/operations.js
+
+      - name: Build and smoke-test WebGUI container
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          docker build --file webgui/Dockerfile --tag splined-webgui:release-test .
+          docker run -d --name splined-webgui-release-test --network host \
+            -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
+            -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only \
+            splined-webgui:release-test
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/api/status > /tmp/splined-status.json; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            docker logs splined-webgui-release-test
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          status = json.load(open('/tmp/splined-status.json', encoding='utf-8'))
+          assert status['database'] == 'PostgreSQL'
+          assert status['database_ready'] is True
+          assert status['auth_required'] is True
+          PY
 
-      - name: Build Ubuntu release
-        shell: bash
-        run: cargo build --locked --release
+      - name: Report WebGUI container logs
+        if: always()
+        run: docker logs splined-webgui-release-test || true
 
-      - name: Package Ubuntu release
+      - name: Package WebGUI / Python release source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-package release-assets
-          cp target/release/splined release-package/splined
-          cp release/README-LINUX.txt release-package/README-LINUX.txt
-          chmod +x release-package/splined
-          tar -czf release-assets/splined-linux-x86_64.tar.gz -C release-package splined README-LINUX.txt
+          cp -R webgui schema docker docs release-package/
+          cp config.example.toml README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/
+          tar -czf release-assets/splined-webgui-python.tar.gz -C release-package .
 
-      - name: Upload Ubuntu artifact
+      - name: Upload WebGUI / Python artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: splined-linux-x86_64
-          path: release-assets/splined-linux-x86_64.tar.gz
+          name: splined-webgui-python
+          path: release-assets/splined-webgui-python.tar.gz
           if-no-files-found: error
 
   build-macos:
@@ -713,7 +767,7 @@ jobs:
     needs:
       - prepare-release
       - build-windows
-      - build-ubuntu
+      - build-webgui
       - build-macos
     if: >-
       ${{
@@ -723,25 +777,25 @@ jobs:
           (
             inputs.platform == 'Windows' &&
             needs.build-windows.result == 'success' &&
-            needs.build-ubuntu.result == 'skipped' &&
+            needs.build-webgui.result == 'skipped' &&
             needs.build-macos.result == 'skipped'
           ) ||
           (
-            inputs.platform == 'Ubuntu' &&
+            inputs.platform == 'WebGUI / Python' &&
             needs.build-windows.result == 'skipped' &&
-            needs.build-ubuntu.result == 'success' &&
+            needs.build-webgui.result == 'success' &&
             needs.build-macos.result == 'skipped'
           ) ||
           (
             inputs.platform == 'macOS' &&
             needs.build-windows.result == 'skipped' &&
-            needs.build-ubuntu.result == 'skipped' &&
+            needs.build-webgui.result == 'skipped' &&
             needs.build-macos.result == 'success'
           ) ||
           (
             inputs.platform == 'All' &&
             needs.build-windows.result == 'success' &&
-            needs.build-ubuntu.result == 'success' &&
+            needs.build-webgui.result == 'success' &&
             needs.build-macos.result == 'success'
           )
         )
@@ -822,6 +876,10 @@ jobs:
             throw "Expected git-cliff 2.14.2; received '$($reportedVersion.Trim())'."
           }
 
+      - name: Verify WebGUI release-note classification
+        shell: pwsh
+        run: ./release/Test-ReleaseNoteClassification.ps1
+
       - name: Render incremental GitHub notes
         id: notes
         shell: pwsh
@@ -850,7 +908,7 @@ jobs:
     needs:
       - prepare-release
       - build-windows
-      - build-ubuntu
+      - build-webgui
       - build-macos
       - finalize-tag
       - generate-release-notes
@@ -861,7 +919,7 @@ jobs:
         needs.finalize-tag.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&
         (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
-        (needs.build-ubuntu.result == 'success' || needs.build-ubuntu.result == 'skipped') &&
+        (needs.build-webgui.result == 'success' || needs.build-webgui.result == 'skipped') &&
         (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
       }}
     runs-on: ubuntu-latest
@@ -882,11 +940,11 @@ jobs:
           name: splined-windows-x86_64
           path: release-assets
 
-      - name: Download Ubuntu release asset
-        if: ${{ inputs.platform == 'Ubuntu' || inputs.platform == 'All' }}
+      - name: Download WebGUI / Python release asset
+        if: ${{ inputs.platform == 'WebGUI / Python' || inputs.platform == 'All' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: splined-linux-x86_64
+          name: splined-webgui-python
           path: release-assets
 
       - name: Download macOS release asset
@@ -906,7 +964,7 @@ jobs:
           cd release-assets
           mapfile -t archives < <(find . -maxdepth 1 -type f \( -name 'splined-*.zip' -o -name 'splined-*.tar.gz' \) -printf '%f\n' | sort)
           if [ "${#archives[@]}" -eq 0 ]; then
-            echo "ERROR: No selected OS archive was produced."
+            echo "ERROR: No selected release-target archive was produced."
             exit 1
           fi
           release_files=("${archives[@]}")
@@ -1127,7 +1185,7 @@ jobs:
     needs:
       - prepare-release
       - build-windows
-      - build-ubuntu
+      - build-webgui
       - build-macos
       - finalize-tag
       - generate-release-notes
@@ -1146,7 +1204,7 @@ jobs:
           STORE_DRAFT: ${{ inputs.store_submit_draft }}
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           WINDOWS_RESULT: ${{ needs.build-windows.result }}
-          UBUNTU_RESULT: ${{ needs.build-ubuntu.result }}
+          WEBGUI_RESULT: ${{ needs.build-webgui.result }}
           MACOS_RESULT: ${{ needs.build-macos.result }}
           TAG_RESULT: ${{ needs.finalize-tag.result }}
           NOTES_RESULT: ${{ needs.generate-release-notes.result }}
@@ -1171,22 +1229,22 @@ jobs:
           case "$RELEASE_PLATFORM" in
             Windows)
               expect_result "Windows build" "$WINDOWS_RESULT" success
-              expect_result "Ubuntu build" "$UBUNTU_RESULT" skipped
+              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" skipped
               expect_result "macOS build" "$MACOS_RESULT" skipped
               ;;
-            Ubuntu)
+            "WebGUI / Python")
               expect_result "Windows build" "$WINDOWS_RESULT" skipped
-              expect_result "Ubuntu build" "$UBUNTU_RESULT" success
+              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
               expect_result "macOS build" "$MACOS_RESULT" skipped
               ;;
             macOS)
               expect_result "Windows build" "$WINDOWS_RESULT" skipped
-              expect_result "Ubuntu build" "$UBUNTU_RESULT" skipped
+              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" skipped
               expect_result "macOS build" "$MACOS_RESULT" success
               ;;
             All)
               expect_result "Windows build" "$WINDOWS_RESULT" success
-              expect_result "Ubuntu build" "$UBUNTU_RESULT" success
+              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
               expect_result "macOS build" "$MACOS_RESULT" success
               ;;
             *)
@@ -1225,7 +1283,7 @@ jobs:
             echo "## SPLINED release complete"
             echo
             echo "- Version and Git tag: \`$RELEASE_VERSION\`"
-            echo "- Selected platform: \`${{ inputs.platform }}\`"
+            echo "- Selected release target: \`${{ inputs.platform }}\`"
             echo "- GitHub Release: published"
             echo "- GHCR: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
             echo "- GHCR latest: \`ghcr.io/scottia/splined:latest\`"

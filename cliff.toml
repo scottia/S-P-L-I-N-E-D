@@ -22,8 +22,9 @@ commit_preprocessors = [
 # parser is deliberately unconditional so direct and unconventional commits
 # cannot disappear.
 commit_parsers = [
-  { message = "(?i)(store|msix|microsoft[- ]store)", group = "🛍️ Microsoft Store" },
-  { message = "(?i)(windows|winforms|gui)", group = "🪟 Windows" },
+  { message = "(?i)(\\bwebgui\\b|\\bpostgres(?:ql)?\\b|\\bpython\\b)", group = "🌐 WebGUI / Python" },
+  { message = "(?i)(\\bstore\\b|\\bmsix\\b|microsoft[- ]store)", group = "🛍️ Microsoft Store" },
+  { message = "(?i)(\\bwindows\\b|\\bwinforms\\b|\\bgui\\b)", group = "🪟 Windows" },
   { message = "(?i)(linux|ubuntu|ratatui|tui)", group = "🐧 Linux / Ubuntu" },
   { message = "(?i)(macos|darwin)", group = "🍎 macOS" },
   { message = "(?i)(docker|ghcr|container)", group = "🐳 Docker / GHCR" },

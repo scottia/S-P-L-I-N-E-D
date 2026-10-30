@@ -92,7 +92,7 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, `01. Full Release - Build Selected OS and Publish` builds the x64 Windows executable
+For maintainers, `01. Full Release - Build Selected Target and Publish` builds the x64 Windows executable
 once. The same `splined.exe` feeds the Portable ZIP
 and, when either Store mode is selected, the unsigned Store MSIX. Portable and
 selected Store validation must both succeed before the numeric release tag is

@@ -60,14 +60,14 @@ channel and does not require package identity.
 
 ## Store release and update package
 
-`01. Full Release - Build Selected OS and Publish` is the only workflow that
+`01. Full Release - Build Selected Target and Publish` is the only workflow that
 creates a release version and numeric tag. Its Store modes are both off by
 default; for Windows or All choose either **Submit Update/No Draft** or
 **Submit Draft/No Update**. The run stops before release work unless **Create
 release now** is selected. The Windows job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
-and validates both before the workflow may create the numeric tag. Ubuntu-only
-and macOS-only runs cannot select a Store mode.
+and validates both before the workflow may create the numeric tag. WebGUI /
+Python-only and macOS-only runs cannot select a Store mode.
 
 The production layout is created directly from the Partner Center manifest and
 the same version/commit-bound binaries used by the Portable ZIP. It updates
@@ -142,7 +142,7 @@ The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
 For a normal future Store update, maintainers choose **Submit Update/No Draft**
 and confirm the release in the corresponding
-`01. Full Release - Build Selected OS and Publish` run. Choose **Submit
+`01. Full Release - Build Selected Target and Publish` run. Choose **Submit
 Draft/No Update** instead when manual Partner Center review is wanted.
 After selected build QA,
 the workflow creates the numeric tag, renders GitHub notes and concise Store
