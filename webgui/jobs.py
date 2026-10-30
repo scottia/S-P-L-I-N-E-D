@@ -21,6 +21,7 @@ class JobAdapter:
         self.id = job_id
         self.events = []
         self.current = {}
+        self.context = {}
 
     def emit(self, event, payload):
         payload = dict(payload)
@@ -53,6 +54,7 @@ class JobAdapter:
 
     def read(self, prompt, context):
         nonce = uuid4().hex
+        context = {**self.context, **context}
         if context.get("kind") == "batch-summary":
             return "exit"
         self.progress({"prompt": {"nonce": nonce, "label": prompt, "context": context}})

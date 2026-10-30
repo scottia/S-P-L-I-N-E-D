@@ -846,6 +846,11 @@ class Services:
         self.runtime.require_write()
         r = self.runtime
         row = self.album_row(str(payload.get("album_id", "")))
+        adapter.context = {
+            "album_id": row["album_key"],
+            "album": row["album_name"],
+            "artist": row["artist_name"],
+        }
         if str(row["musicbrainz_albumid"] or "").strip():
             raise ValueError("This album is not a COMP fallback album")
         records = self.hydrate_tracks(row["album_key"])
@@ -896,6 +901,11 @@ class Services:
             if adapter.cancelled():
                 raise core.InteractionCancelled()
             row = self.album_row(str(album_id))
+            adapter.context = {
+                "album_id": row["album_key"],
+                "album": row["album_name"],
+                "artist": row["artist_name"],
+            }
             result = self.search_album(row["album_key"])
             candidates = result["candidates"]
             if not candidates:
