@@ -1622,7 +1622,7 @@ export component AppWindow inherits Window {
     in property <[string]> settings-override-options: ["Always Override", "1 Hour Override", "3 Hour Override", "6 Hour Override", "12 Hour Override", "1 Day Override", "1 Week Override", "1 Month Override"];
     in-out property <bool> settings-sqlite-shared: false;
     in-out property <bool> settings-windows-client-lock: false;
-    in-out property <bool> settings-sample-write: true;
+    in-out property <bool> settings-sample-write: false;
     in-out property <string> settings-sample-dir;
     in-out property <bool> settings-disable-intro-message: false;
     in-out property <bool> settings-disable-confirmation-messages: false;
@@ -1634,7 +1634,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-square-mode: "Crop";
     in-out property <string> settings-square-round-to: "16";
     in-out property <string> settings-embedded-thumbnail-size: "1200";
-    in-out property <bool> settings-upscale-below-ideal: false;
+    in-out property <bool> settings-upscale-below-ideal: true;
     in-out property <string> settings-upscale-max-percent: "200";
     in-out property <bool> settings-upscale-adaptive: true;
     in-out property <string> settings-upscale-picture: "0";
@@ -2980,6 +2980,7 @@ export component AppWindow inherits Window {
                         Text { text: "Save each section separately. Advanced reveals specialist controls in context."; color: AppTheme.secondary-foreground; font-size: 14px; }
                     }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
+                    NeonAction { width: 142px; height: 38px; label: "Settings HELP ↗"; clicked => root.open-about-link("settings-help"); }
                     NeonAction { width: 132px; height: 38px; label: root.settings-advanced-visible ? "Advanced ON" : "Advanced"; tone: root.settings-advanced-visible ? "purple" : "cyan"; clicked => { root.settings-advanced-visible = !root.settings-advanced-visible; if (!root.settings-advanced-visible && root.backup-selected-type == "Diagnostic Summary") { root.backup-selected-type = "Settings Archive"; } } }
                 }
             }
@@ -2989,7 +2990,7 @@ export component AppWindow inherits Window {
                         Text { text: "SETTINGS SECTIONS"; color: AppTheme.cyan; font-size: 13px; font-weight: 800; height: 26px; }
                         ModeTab { height: 42px; icon-text: "⌂"; label: "Library & Files"; selected: root.settings-section == "Library"; activated => { root.settings-section = "Library"; } }
                         ModeTab { height: 42px; icon-text: "🖼"; label: "Artwork & Embedding"; selected: root.settings-section == "Artwork"; activated => { root.settings-section = "Artwork"; } }
-                        ModeTab { height: 42px; icon-text: "✨"; label: "Enhancement"; selected: root.settings-section == "Enhancement"; activated => { root.settings-section = "Enhancement"; } }
+                        ModeTab { height: 42px; icon-text: "✦"; label: "Enhancement"; selected: root.settings-section == "Enhancement"; activated => { root.settings-section = "Enhancement"; } }
                         ModeTab { height: 42px; icon-text: "◎"; label: "Artwork Sources"; selected: root.settings-section == "Sources"; activated => { root.settings-section = "Sources"; } }
                         ModeTab { height: 42px; icon-text: "◇"; label: "Connections"; selected: root.settings-section == "Connections"; activated => { root.settings-section = "Connections"; } }
                         ModeTab { height: 42px; icon-text: "↕"; label: "Backup / Restore"; selected: root.settings-section == "Backup"; activated => { root.settings-section = "Backup"; root.refresh-archived-backups(); root.page-index = 2; } }
@@ -3010,16 +3011,17 @@ export component AppWindow inherits Window {
                                 SettingsHelpTip { summary: "Which folders does SPLINED use?"; detail: "The music library is read as your collection. The database directory contains splined.db, which records inventory and progress. Temporary cache holds disposable artwork and previews; logs contain diagnostics. Saving settings validates these paths and reloads the library, but does not write music files."; }
                                 Heading { text: "Library And Application Paths"; height: 27px; }
                                 PathSettingField { label: "Music Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC directory"; browse => root.browse-setting-directory("music"); }
-                                PathSettingField { label: "Scan Folder"; value <=> root.settings-scan-library; hint: "Existing local or UNC directory"; browse => root.browse-setting-directory("scan"); }
+                                SettingToggle { label: "Scan Mode Enabled"; value <=> root.settings-scan-mode; }
+                                if root.settings-scan-mode: PathSettingField { label: "Scan Folder"; value <=> root.settings-scan-library; hint: "Optional · defaults to Music Library"; browse => root.browse-setting-directory("scan"); }
+                                if root.settings-scan-mode: Text { text: "Optional alternate folder to scan while the Music Library remains the catalog authority."; color: AppTheme.secondary-foreground; font-size: 13px; height: 30px; wrap: word-wrap; }
                                 PathSettingField { label: "Database Directory *"; value <=> root.settings-database-dir; hint: "Owns splined.db"; browse => root.browse-setting-directory("database"); }
                                 HorizontalLayout { height: 36px; spacing: 8px;
                                     Text { text: "Library Index"; color: AppTheme.foreground; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
                                     NeonAction { width: 128px; height: 32px; label: "Refresh DB"; tone: "yellow"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => root.refresh-library(true); }
                                 }
                                 SettingsHelpTip { summary: "What does Refresh DB do?"; detail: "Perform a deliberate full SQLite index rebuild. One representative track defines each normal Album; unchanged tag evidence is reused and full tags are read for changed COMP/Fallback tracks. The yellow Home notice uses a separate added/changed/removed incremental update. Neither action inspects embedded art or modifies music files. Another Windows client must close the shared database first."; }
-                                PathSettingField { label: "Temporary Cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
-                                PathSettingField { label: "Log Directory *"; value <=> root.settings-log-dir; hint: "Diagnostics"; browse => root.browse-setting-directory("logs"); }
-                                PathSettingField { label: "Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
+                                PathSettingField { label: "Temporary Cache Directory *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
+                                PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
                                 SettingField { label: "Ignored Folders"; value <=> root.settings-ignored-subs; hint: "Comma-separated"; }
                                 Heading { text: "Confirmation Messages"; height: 27px; }
                                 SettingToggle { label: "Disable Intro Message"; value <=> root.settings-disable-intro-message; }
@@ -3027,14 +3029,14 @@ export component AppWindow inherits Window {
                                 Rectangle { height: 1px; background: AppTheme.border; }
                                 Heading { text: "SPLINED File Storage"; height: 27px; color: AppTheme.cyan; }
                                 HorizontalLayout { height: 28px; spacing: 8px;
-                                    Text { text: "Temporary _cache"; color: AppTheme.foreground; font-size: 14px; horizontal-stretch: 1; vertical-alignment: center; }
+                                    Text { text: "Temporary Cache Directory"; color: AppTheme.foreground; font-size: 14px; horizontal-stretch: 1; vertical-alignment: center; }
                                     Text { text: root.storage-cache-usage; color: AppTheme.yellow; font-size: 14px; vertical-alignment: center; }
                                 }
                                 HorizontalLayout { height: 28px; spacing: 8px;
                                     Text { text: "SQLite .db + journal"; color: AppTheme.foreground; font-size: 14px; horizontal-stretch: 1; vertical-alignment: center; }
                                     Text { text: root.storage-database-usage; color: AppTheme.yellow; font-size: 14px; vertical-alignment: center; }
                                 }
-                                SettingsHelpTip { summary: "What is included in storage usage?"; detail: "Temporary _cache includes disposable candidate and preview files. SQLite shows splined.db and its current journal sidecars. The values refresh while this page is open; cache cleanup removes only stale SPLINED-generated artwork, not the database, saved samples, or Artist image files."; }
+                                SettingsHelpTip { summary: "What is included in storage usage?"; detail: "Temporary Cache Directory includes disposable candidate and preview files. SQLite shows splined.db and its current journal sidecars. The values refresh while this page is open; cache cleanup removes only stale SPLINED-generated artwork, not the database, saved samples, or Artist image files."; }
                                 Rectangle { height: 1px; background: AppTheme.border; }
                                 Heading { text: "Runtime"; height: 27px; color: AppTheme.violet; }
                                 Text { text: root.version-label; color: AppTheme.foreground; font-size: 14px; height: 24px; }
@@ -3063,8 +3065,6 @@ export component AppWindow inherits Window {
                                         ComboBox { horizontal-stretch: 1; model: root.settings-override-options; current-value <=> root.settings-scan-timeout; }
                                     }
                                     SettingsHelpTip { summary: "What does Processing Override Delay do?"; detail: "It controls when a previously completed album becomes eligible for another scan. Always Override removes the waiting period. One Month is 30 days. It never writes files by itself."; }
-                                    SettingToggle { label: "Scan Mode Enabled"; value <=> root.settings-scan-mode; }
-                                    SettingToggle { label: "Full Library Scan"; value <=> root.settings-library-scan; }
                                     SettingToggle { label: "Status History Enabled"; value <=> root.settings-history-enabled; }
                                     SettingField { label: "History Retention (Days; 0 = All)"; value <=> root.settings-history-retention; hint: "14"; }
                                     SettingsHelpTip { summary: "How do run controls differ from saved settings?"; detail: "Scope and LIVE WRITE/READ below affect the next launch in this workspace. Processing Mode above is the saved default. A run begins only after you select work and press LAUNCH."; }
@@ -3105,22 +3105,23 @@ export component AppWindow inherits Window {
                     NeonPanel { horizontal-stretch: 1;
                         VerticalLayout { padding: 10px; spacing: 7px;
                             Heading { text: "Logging"; height: 32px; color: AppTheme.violet; }
+                            PathSettingField { label: "Log Directory *"; value <=> root.settings-log-dir; hint: "Persistent diagnostics"; browse => root.browse-setting-directory("logs"); }
                             HorizontalLayout { height: 25px; spacing: 8px;
                                 Label { text: "Diagnostic Log Level"; horizontal-stretch: 1; }
                                 Label { text: "Log Retention (Days)"; width: 142px; }
                             }
                             HorizontalLayout { height: 38px; spacing: 8px;
-                                ComboBox { horizontal-stretch: 1; model: ["Current", "Verbose", "Debugger", "Error"]; current-value <=> root.settings-verbosity; }
+                                ComboBox { horizontal-stretch: 1; model: ["None", "Current", "Verbose", "Debugger", "Error"]; current-value <=> root.settings-verbosity; }
                                 LineEdit { width: 142px; text <=> root.settings-log-retention; placeholder-text: "14"; }
                             }
-                            SettingsHelpTip { summary: "What does each log level show?"; detail: "Current is the in-memory run log and clears on exit. Verbose adds run decisions. Debugger includes technical debug and trace events. Error shows failures and the newest Diagnostic Summary JSON if one exists. File logging changes take effect on the next app launch."; }
-                            Text { text: root.settings-verbosity == "Current" ? "Current Run Log · Cleared When SPLINED Exits" : (root.settings-verbosity == "Error" ? "Errors And Diagnostic Summary" : (root.settings-verbosity == "Verbose" ? "Verbose Run Details" : "Debugger Events")); color: AppTheme.cyan; font-size: 14px; font-weight: 700; height: 22px; }
+                            SettingsHelpTip { summary: "What does each log level show?"; detail: "None disables file diagnostics after restart. Current is the in-memory run log and clears on exit. Verbose adds run decisions. Debugger includes technical debug and trace events. Error shows failures and the newest Diagnostic Summary JSON if one exists. File logging changes take effect on the next app launch."; }
+                            Text { text: root.settings-verbosity == "None" ? "File Diagnostics Disabled After Restart" : (root.settings-verbosity == "Current" ? "Current Run Log · Cleared When SPLINED Exits" : (root.settings-verbosity == "Error" ? "Errors And Diagnostic Summary" : (root.settings-verbosity == "Verbose" ? "Verbose Run Details" : "Debugger Events"))); color: AppTheme.cyan; font-size: 14px; font-weight: 700; height: 22px; }
                             TextEdit {
                                 vertical-stretch: 1;
                                 read-only: true;
                                 wrap: TextWrap.word-wrap;
                                 font-size: 14px;
-                                text: root.settings-verbosity == "Current" ? root.log-text : root.diagnostic-log-detail;
+                                text: root.settings-verbosity == "None" ? "No diagnostic file will be created after SPLINED restarts. Operational status remains available in the application." : (root.settings-verbosity == "Current" ? root.log-text : root.diagnostic-log-detail);
                             }
                         }
                     }
@@ -3131,16 +3132,22 @@ export component AppWindow inherits Window {
                             Heading { text: root.settings-section == "Artwork" ? "Artwork & Embedding" : "Enhancement"; color: AppTheme.violet; horizontal-stretch: 1; }
                             NeonAction { width: 72px; height: 30px; label: "Save"; tone: root.settings-section-dirty ? "active" : "cyan"; clicked => root.save-settings(); }
                         }
-                        Text { text: root.settings-section == "Artwork" ? "Set the rules for saved cover.* / artist.* files and embedded track thumbnails." : "Set candidate resolution goals and preview the default image adjustments."; color: AppTheme.secondary-foreground; font-size: 14px; height: 36px; wrap: word-wrap; }
+                        Text { text: root.settings-section == "Artwork" ? "Set the rules for saved cover.* / artist.* / banner.* files and embedded track thumbnails." : "Set candidate resolution goals and preview the default image adjustments."; color: AppTheme.secondary-foreground; font-size: 14px; height: 36px; wrap: word-wrap; }
                         ScrollView { vertical-stretch: 1;
                             VerticalLayout { spacing: 5px;
                                 if root.settings-section == "Artwork": VerticalLayout { spacing: 5px;
                                 SettingsHelpTip { summary: "What is saved, and what is embedded?"; detail: "WRITE Cover saves full-quality cover.* in an Artist Album folder. EMBED Batch also saves a chosen or upscaled full-resolution cover when staging it. Stage several Artist Albums, then Start All Staged to embed a preference-sized square in every supported track while you continue browsing. COMP fallback remains track-scoped."; }
                                 Heading { text: "Output Files"; height: 27px; }
-                                SettingField { label: "Filename Stem"; value <=> root.settings-file-name; hint: "cover"; }
-                                SettingField { label: "Formats"; value <=> root.settings-file-formats; hint: "jpeg, png, webp"; }
-                                SettingToggle { label: "Preserve Existing cover.* / artist.*"; value <=> root.settings-preserve-file; }
-                                Text { text: "On keeps existing art and uses a numbered filename. Off replaces the matching cover or Artist Art."; color: AppTheme.secondary-foreground; font-size: 13px; height: 30px; wrap: word-wrap; }
+                                HorizontalLayout { height: 34px; spacing: 8px;
+                                    Label { text: "Default Filename Stems"; width: 230px; }
+                                    Text { text: "cover · artist · banner"; color: AppTheme.secondary-foreground; vertical-alignment: center; }
+                                }
+                                HorizontalLayout { height: 34px; spacing: 8px;
+                                    Label { text: "Supported Image Formats"; width: 230px; }
+                                    Text { text: "JPEG · PNG · WebP"; color: AppTheme.secondary-foreground; vertical-alignment: center; }
+                                }
+                                SettingToggle { label: "Preserve Existing cover.* / artist.* / banner.*"; value <=> root.settings-preserve-file; }
+                                Text { text: "On keeps existing art and uses a numbered filename. Off replaces the matching Cover, Artist Art, or Banner."; color: AppTheme.secondary-foreground; font-size: 13px; height: 30px; wrap: word-wrap; }
                                 SettingToggle { label: "Play Animated cover.webp Preview"; value <=> root.settings-animate-webp-preview; }
                                 Text { text: "On previews suitable cover.webp animation once, then shows the still and blue info. Large or long animations use the still. WRITE Cover preserves WebP."; color: AppTheme.secondary-foreground; font-size: 13px; height: 50px; wrap: word-wrap; }
                                 SettingToggle { label: "Square Artwork"; value <=> root.settings-square; }
@@ -3436,7 +3443,7 @@ export component AppWindow inherits Window {
                         Text { text: "SETTINGS SECTIONS"; color: AppTheme.cyan; font-size: 13px; font-weight: 800; height: 26px; }
                         ModeTab { height: 42px; icon-text: "⌂"; label: "Library & Files"; selected: false; activated => { root.settings-section = "Library"; root.page-index = 1; } }
                         ModeTab { height: 42px; icon-text: "🖼"; label: "Artwork & Embedding"; selected: false; activated => { root.settings-section = "Artwork"; root.page-index = 1; } }
-                        ModeTab { height: 42px; icon-text: "✨"; label: "Enhancement"; selected: false; activated => { root.settings-section = "Enhancement"; root.page-index = 1; } }
+                        ModeTab { height: 42px; icon-text: "✦"; label: "Enhancement"; selected: false; activated => { root.settings-section = "Enhancement"; root.page-index = 1; } }
                         ModeTab { height: 42px; icon-text: "◎"; label: "Artwork Sources"; selected: false; activated => { root.settings-section = "Sources"; root.page-index = 1; } }
                         ModeTab { height: 42px; icon-text: "◇"; label: "Connections"; selected: false; activated => { root.settings-section = "Connections"; root.page-index = 1; } }
                         ModeTab { height: 42px; icon-text: "↕"; label: "Backup / Restore"; selected: true; activated => root.refresh-archived-backups(); }

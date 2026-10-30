@@ -5929,6 +5929,7 @@ fn override_delay_hours(value: &str) -> Result<f64, String> {
 
 fn diagnostic_level_label(verbosity: Verbosity) -> &'static str {
     match verbosity {
+        Verbosity::None => "None",
         Verbosity::Error | Verbosity::Warn => "Error",
         Verbosity::Info => "Current",
         Verbosity::Debug => "Verbose",
@@ -5938,6 +5939,7 @@ fn diagnostic_level_label(verbosity: Verbosity) -> &'static str {
 
 fn diagnostic_level_verbosity(value: &str) -> Result<Verbosity, String> {
     match value {
+        "None" => Ok(Verbosity::None),
         "Current" => Ok(Verbosity::Info),
         "Verbose" => Ok(Verbosity::Debug),
         "Debugger" => Ok(Verbosity::Trace),
@@ -13778,6 +13780,9 @@ fn bind_service_callbacks(
                 "shared-db" => Some(
                     "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/splined-media-database.md",
                 ),
+                "settings-help" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/config-v5-reference.md",
+                ),
                 _ => None,
             };
             let result = url
@@ -14417,6 +14422,7 @@ fn apply_settings_section_ui(
         "Library" => {
             config.library.music_library = ui.get_settings_music_library().trim().to_string();
             config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
+            config.scan.scan_mode = ui.get_settings_scan_mode();
             config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
             config.scan.shared_artist_art_dir =
                 ui.get_settings_shared_artist_art_dir().trim().to_string();
@@ -14425,7 +14431,6 @@ fn apply_settings_section_ui(
             }
             config.scan.temporary_cache_dir =
                 ui.get_settings_temporary_cache_dir().trim().to_string();
-            config.scan.log_dir = ui.get_settings_log_dir().trim().to_string();
             config.credentials.credential_dir = ui.get_settings_credential_dir().trim().to_string();
             config.library.ignored_subs = split_values(ui.get_settings_ignored_subs().as_str());
         }
@@ -14509,7 +14514,6 @@ fn apply_settings_section_ui(
                 ui.get_settings_verbosity().as_str(),
                 config.verbosity,
             )?;
-            config.scan.scan_mode = ui.get_settings_scan_mode();
             config.scan.library_scan = ui.get_settings_library_scan();
             config.scan.scan_mode_timeout.0 =
                 override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
@@ -14520,6 +14524,7 @@ fn apply_settings_section_ui(
                 parse_setting(&ui.get_settings_history_retention(), "History retention")?;
             config.logging.retention_days =
                 parse_setting(&ui.get_settings_log_retention(), "Log retention")?;
+            config.scan.log_dir = ui.get_settings_log_dir().trim().to_string();
         }
         "Connections" => {
             config.aisplined.enabled = ui.get_settings_ai_enabled();
@@ -24436,6 +24441,10 @@ mod tests {
     #[test]
     fn diagnostic_choices_separate_current_verbose_debugger_and_error() {
         use splined_core::config::Verbosity;
+        assert_eq!(
+            super::diagnostic_level_verbosity("None").unwrap(),
+            Verbosity::None
+        );
         assert_eq!(
             super::diagnostic_level_verbosity("Current").unwrap(),
             Verbosity::Info

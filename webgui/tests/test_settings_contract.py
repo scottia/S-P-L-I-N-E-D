@@ -99,6 +99,7 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn("scan.scan_mode", library_paths)
         self.assertIn("scan.scan_library_dir", library_paths)
         self.assertNotIn("scan.scan_mode", runtime_paths)
+        self.assertNotIn("scan.library_scan", runtime_paths)
         self.assertIn("scan.log_dir", runtime_paths)
         self.assertFalse(fields["scan.scan_library_dir"].get("required", False))
         self.assertEqual(fields["scan.scan_library_dir"]["default"], "")
@@ -108,6 +109,10 @@ class SettingsContractTests(unittest.TestCase):
             library_paths.index("scan.temporary_cache_dir"),
         )
         self.assertEqual(sections["enhancement"]["icon"], "✦")
+        self.assertEqual(
+            fields["verbosity"]["choices"],
+            ["none", "info", "debug", "warning", "error"],
+        )
         operations = (REPOSITORY / "webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
@@ -117,11 +122,16 @@ class SettingsContractTests(unittest.TestCase):
             'draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""',
             operations,
         )
+        entrypoint = (REPOSITORY / "webgui/__main__.py").read_text(encoding="utf-8")
+        self.assertIn('"none": "critical"', entrypoint)
+        self.assertIn('access_log=verbosity != "none"', entrypoint)
 
     def test_windows_labels_remain_present(self) -> None:
         slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
         for label in ("Upscale Below Ideal", "Max Upscale Percent", "Evaluate Final Image"):
             self.assertIn(f'label: "{label}"', slint)
+        self.assertIn('["None", "Current", "Verbose", "Debugger", "Error"]', slint)
+        self.assertNotIn('label: "Full Library Scan"', slint)
 
     def test_webgui_settings_workspace_keeps_windows_parity_sections(self) -> None:
         operations = (REPOSITORY / "webgui/static/operations.js").read_text(

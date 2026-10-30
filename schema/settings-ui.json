@@ -130,11 +130,10 @@
       "fields": [
         {"path": "mode", "label": "Processing Mode", "type": "enum", "choices": ["read", "write"], "runtimes": ["windows", "webgui"]},
         {"path": "scan.scan_mode_timeout", "label": "Processing Override Delay (Hours)", "type": "integer", "min": 0, "max": 8760, "runtimes": ["windows", "webgui"]},
-        {"path": "scan.library_scan", "label": "Full Library Scan", "type": "boolean", "runtimes": ["windows", "webgui"]},
         {"path": "history.enabled", "label": "Status History Enabled", "type": "boolean", "runtimes": ["windows", "webgui"]},
         {"path": "history.retention_days", "label": "History Retention (Days; 0 = All)", "type": "integer", "min": 0, "runtimes": ["windows", "webgui"]},
         {"path": "scan.log_dir", "label": "Log Directory", "type": "path", "required": true, "runtimes": ["windows", "webgui"], "help": "Persistent destination for current-run diagnostics and retained WebGUI logs."},
-        {"path": "verbosity", "label": "Diagnostic Log Level", "type": "enum", "choices": ["info", "debug", "warning", "error"], "runtimes": ["windows", "webgui"]},
+        {"path": "verbosity", "label": "Diagnostic Log Level", "type": "enum", "choices": ["none", "info", "debug", "warning", "error"], "runtimes": ["windows", "webgui"], "help": "None suppresses runtime/file logging after restart. PostgreSQL WebGUI events and native operational status remain available."},
         {"path": "logging.retention_days", "label": "Log Retention (Days)", "type": "integer", "min": 0, "runtimes": ["windows", "webgui"]},
         {"path": "logging.database_audit", "label": "Database Audit Log", "type": "boolean", "advanced": true, "runtimes": ["webgui"]},
         {"path": "scan.sqlite_shared", "label": "Shared / Network SQLite", "type": "boolean", "advanced": true, "runtimes": ["windows"]},

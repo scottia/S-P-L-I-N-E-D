@@ -1602,6 +1602,7 @@ LOG_LEVELS = {
     "info": 20,
     "warning": 30,
     "error": 40,
+    "none": 100,
 }
 
 
@@ -1626,7 +1627,7 @@ def logging_verbosity(cfg: dict[str, Any]) -> str:
     verbosity = str(cfg.get("verbosity", "info")).strip().lower()
     if verbosity not in LOG_LEVELS:
         raise SplinedError(
-            "SPLINED verbosity must be one of: debug, info, warning, error."
+            "SPLINED verbosity must be one of: none, debug, info, warning, error."
         )
     return verbosity
 
@@ -1694,7 +1695,7 @@ def runtime_log(level: str, message: str) -> None:
         pass
 
 
-def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
+def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
     """Initialize the one-file-per-run diagnostic log.
 
     The historical function name is retained for compatibility with existing
@@ -1704,6 +1705,13 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
     global _RUNTIME_FAULTHANDLER_ENABLED
     global _RUNTIME_LOG_PATH, _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
     global _RUNTIME_LOG_LAST_FLUSH, _RUNTIME_VERBOSITY, _DEBUG_ENABLED
+
+    _RUNTIME_VERBOSITY = logging_verbosity(cfg)
+    _DEBUG_ENABLED = _RUNTIME_VERBOSITY == "debug"
+    if _RUNTIME_VERBOSITY == "none":
+        _close_runtime_log()
+        _RUNTIME_LOG_PATH = None
+        return None
 
     log_dir = runtime_log_dir(config_file, cfg)
     if log_dir.exists() and (log_dir.is_symlink() or not log_dir.is_dir()):
@@ -1743,9 +1751,6 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path:
         except OSError:
             # A stale diagnostic must not prevent SPLINED from starting.
             pass
-
-    _RUNTIME_VERBOSITY = logging_verbosity(cfg)
-    _DEBUG_ENABLED = _RUNTIME_VERBOSITY == "debug"
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     unique = f"{time.time_ns() % 1_000_000_000:09d}"

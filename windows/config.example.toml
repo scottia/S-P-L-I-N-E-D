@@ -14,7 +14,6 @@ ignored_subs = []
 [scan]
 scan_library_dir = ""
 scan_mode = true
-library_scan = false
 scan_mode_timeout = 24
 cache_dir = "_db"
 temporary_cache_dir = "_cache"
@@ -35,7 +34,7 @@ square_round_to = 16
 embedded_thumbnail_size = 1200
 # Windows attempts in-memory GPU Lanczos-3 enlargement first and falls back to
 # in-memory CPU Lanczos-3. This is conventional resizing, not AI enhancement.
-upscale_below_ideal = false
+upscale_below_ideal = true
 upscale_max_percent = 200
 upscale_adaptive_defaults = true
 upscale_picture_percent = 2
@@ -142,8 +141,8 @@ allow_below_minimum_fallback = false
 primary_image_only = true
 
 [samples]
-sample_write = true
-sample_dir = "samples"
+sample_write = false
+sample_dir = ""
 
 [credentials]
 credential_dir = "credentials"

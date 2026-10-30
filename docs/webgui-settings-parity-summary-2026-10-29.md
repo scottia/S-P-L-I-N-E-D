@@ -45,7 +45,10 @@ tokens, database passwords, or machine-specific test values.
   directly below Restore and keeps full PostgreSQL refresh and deliberate
   read-only SQLite import separate from routine incremental updates.
 - **Processing & Logs** separates processing controls from Logging, including
-  Log Directory, diagnostic level, retention, and bounded WebGUI audit events.
+  Log Directory, diagnostic level (`none`, `info`, `debug`, `warning`, or
+  `error`), retention, and bounded WebGUI audit events. `none` suppresses
+  runtime/access logging after restart without removing PostgreSQL events. The
+  inactive legacy Full Library Scan toggle is no longer displayed.
   It does not expose credentials. Native shared-SQLite controls are not shown
   because WebGUI uses PostgreSQL.
 - The shared, secret-free presentation contract is
@@ -63,37 +66,29 @@ tokens, database passwords, or machine-specific test values.
   the administrator password hash, invalidates active browser sessions, and
   leaves the catalog, provider credentials, and PostgreSQL connection intact.
 
-## Native Windows parity checklist
+## Native Windows parity applied
 
-Apply these presentation/default changes to the native Settings workspace when
-the Windows update is approved:
+- Library & Files now owns Scan Mode and its conditional optional Scan Folder.
+  Processing & Logs owns Log Directory. Temporary Cache Directory and Provider
+  Credential Directory use the same reviewed names as the shared contract.
+- Artwork & Embedding displays fixed **Default Filename Stems** (`cover`,
+  `artist`, `banner`) and **Supported Image Formats** (JPEG, PNG, WebP), and its
+  preserve policy explicitly includes banner files.
+- **Write Sample Cover Images** defaults off and reveals its directory only
+  when selected. **Upscale Below Ideal** defaults on, while 200% remains the
+  default maximum and disabling the option preserves native source resolution.
+- Enhancement uses the standard section glyph. **Settings HELP** is visible in
+  the Settings header and opens `docs/config-v5-reference.md`.
+- Diagnostic logging includes `none`, which disables native diagnostic files
+  after restart without hiding operational status. The inactive Full Library
+  Scan setting is no longer displayed.
+- Existing graphical Enhancement, provider-policy, connection, storage,
+  backup/restore, and processing presentations remain intact.
 
-1. Change the V/A / OST Artist Images behavior and help copy so blank uses
-   Persistent Cache Directory itself, any other directory or preferred folder
-   name may be selected, and it is an image directory rather than a database.
-2. State that ignored folder names are comma-separated and do not require
-   quotes for spaces.
-3. Replace editable **Filename Stem** and **Formats** controls with fixed
-   **Default Filename Stems** (`cover`, `artist`, `banner`) and **Supported
-   Image Formats** (JPEG, PNG, WebP) statements, unless native configuration is
-   deliberately retaining an advanced-only override.
-4. Rename **Write Artist Sample Images** to **Write Sample Cover Images**,
-   default it off, require a persistent directory only when enabled, and use
-   the same supported-format explanation.
-5. Change **Upscale Below Ideal** to default on while keeping the explicit
-   off/native-resolution behavior and 200% default maximum.
-6. Keep Boolean controls left aligned and radio styled; make the Advanced state
-   global across all settings sections and never block its toggle because an
-   unrelated unsaved field is incomplete.
-7. Add an always-visible Settings Help route to `docs/config-v5-reference.md`,
-   compact and align Artwork Source and Connection selectors/fields, and align
-   Backup and Restore action groups.
-8. Move Scan Mode and its conditional optional Scan Folder to Library & Files;
-   move Log Directory under Processing & Logs → Logging; use the reviewed
-   Persistent Cache, Temporary Cache, and Provider Credential names.
-9. Retain the graphical Enhancement editor, provider policy editor, connection
-   testing, storage summary, backup/restore, and processing/log presentation
-   already shared with the native design where applicable.
+Windows intentionally keeps **Database Directory** as its SQLite location and
+requires a separate selectable **V/A / OST Artist Images Directory**. It does
+not inherit the WebGUI blank-directory fallback because putting images in the
+Windows SQLite directory would violate the approved database separation.
 
 Do not port WebGUI-only PostgreSQL connection, catalog import, WebGUI
 administrator authentication, browser session, or container path controls into

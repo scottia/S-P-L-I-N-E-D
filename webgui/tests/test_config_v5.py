@@ -16,6 +16,18 @@ def load_example(relative: str) -> dict:
 
 
 class ConfigV5ParityTests(unittest.TestCase):
+    def test_none_verbosity_disables_runtime_log_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            config["verbosity"] = "none"
+            config["scan"]["log_dir"] = str(root / "logs")
+            splined.validate_config_v5(config)
+            self.assertEqual(splined.logging_verbosity(config), "none")
+            self.assertIsNone(splined.init_debug_log(config_file, config))
+            self.assertFalse((root / "logs").exists())
+
     def test_blank_artist_art_directory_uses_persistent_cache_itself(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

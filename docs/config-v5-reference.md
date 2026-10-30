@@ -64,7 +64,7 @@ mounts.
 | --- | --- | --- |
 | `config_version` | `5` | Operational schema version |
 | `mode` | `"read"` | `read` evaluates; `write` may install artwork |
-| `verbosity` | `"info"` | Runtime-log threshold: `debug`, `info`, `warning`, or `error` |
+| `verbosity` | `"info"` | Runtime-log threshold: `none`, `debug`, `info`, `warning`, or `error`; `none` takes effect after restart, without removing PostgreSQL WebGUI events or native operational status |
 
 ## `[library]`
 
@@ -79,7 +79,6 @@ mounts.
 | --- | --- | --- |
 | `scan_library_dir` | empty | Optional server-visible target shown when Scan Mode is enabled; blank uses `library.music_library` |
 | `scan_mode` | `true` | Reveals and enables the optional Scan Folder setting; when off, Music Library is the scan root |
-| `library_scan` | `false` | Enables full-library scanning |
 | `scan_mode_timeout` | `24` | Hours before completed Albums are eligible again; `0` disables timeout |
 | `cache_dir` | WebGUI `"/_cache"`; Windows `"_db"` | **Persistent Cache Directory**. WebGUI stores downloaded artwork, staged work, and original-artwork backups here; native Windows also retains its historical SQLite-directory compatibility |
 | `temporary_cache_dir` | WebGUI `"/_cache"`; Windows `"_cache"` | **Temporary Cache Directory** for disposable downloaded and derived artwork; an older Config v5 file that omits it falls back to `cache_dir` |
@@ -123,7 +122,7 @@ See [media database](splined-media-database.md) and the
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
 | `embedded_thumbnail_size` | `1200` | Windows **Embedded Thumbnail Preference** and WebGUI album/COMP embedding size, a square side in pixels from 300 through 4000; the saved folder `cover.*` retains its full-resolution output. |
-| `upscale_below_ideal` | WebGUI `true`; Windows `false` pending native parity | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
+| `upscale_below_ideal` | `true` | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
 | `upscale_max_percent` | `200` | Hard maximum enlargement relative to the original short side, valid from `100` through `800`; `200` permits 2×. If Ideal requires more, SPLINED stops at this ceiling, while artwork already above Ideal remains at native resolution. |
 | `upscale_adaptive_defaults` | `true` | Analyze exposure/contrast and apply only SPLINED's bounded correction when the source demonstrably needs it |
 | `upscale_picture_percent` | `2` | Color-intensity/saturation adjustment, `-20`–`20` percent |
@@ -259,14 +258,14 @@ See [Source policies and Range Types](source-policies-range-types.md).
 
 ```toml
 [samples]
-sample_write = true
-sample_dir = "samples"
+sample_write = false
+sample_dir = ""
 ```
 
-When enabled, review samples are retained in `sample_dir`, grouped by Artist
-and Album. An empty `sample_dir` keeps the portable default beneath the
-configured temporary cache. Samples remain available for later review without
-launching another provider search.
+Sample writing defaults off. When enabled, review samples are retained in
+`sample_dir`, grouped by Artist and Album. An empty `sample_dir` keeps the
+portable default beneath the configured temporary cache. Samples remain
+available for later review without launching another provider search.
 
 ## `[credentials]`
 
