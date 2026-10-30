@@ -531,7 +531,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         if isinstance(source, Path):
             if not source.is_file():
                 raise KeyError("Artwork is unavailable")
-            return FileResponse(source)
+            return FileResponse(source, headers={"Cache-Control": "private, no-cache, must-revalidate"})
         with Image.open(BytesIO(source)) as opened:
             media_type = Image.MIME.get(opened.format, "image/png")
         return Response(source, media_type=media_type)

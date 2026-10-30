@@ -58,7 +58,7 @@ const state = {
   biographyArtistId: null, biographyExpanded: false, biographyText: "",
   libraryMode: "artists", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null,
-  upscalePreview: null,
+  upscalePreview: null, renderedPreview: {},
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
   fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
   compGroups: [], compReportVisible: false, compReportLoading: false, compPreviewMode: false, compCollapsed: new Set(),
@@ -159,7 +159,7 @@ function clearFocusCandidates() {
   state.queuedDecision = null; state.reviewJobId = null;
   state.candidates = [];
   state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null;
-  state.upscalePreview = null; state.fallbackTracks = []; state.fallbackTrack = null;
+  state.upscalePreview = null; state.renderedPreview = {}; state.fallbackTracks = []; state.fallbackTrack = null;
   state.fallbackPreviewOnly = false; state.fallbackRun = false; ++state.fallbackTrackRequest;
   state.fallbackPreviewMode = false; state.fallbackReportExpanded = true; state.fallbackHelpExpanded = false;
   state.compGroups = []; state.compReportVisible = false; state.compReportLoading = false; state.compPreviewMode = false;
@@ -171,6 +171,7 @@ function clearFocusCandidates() {
 function resetFocusAdjustments() {
   state.fx = {artist: {}, banner: {}, album: {}, current: {}, package: {}};
   state.fit = {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}};
+  state.renderedPreview = {};
   state.themedPackaging = false;
 }
 function size(bytes) {
@@ -373,6 +374,7 @@ function albumRow(album, child) {
 }
 
 function albumBannerKind(album, artist) {
+  if (album.featured) return "featuring";
   if (!album.album_mbid) return "compiled";
   if (album.soundtrack) return "soundtrack";
   if (/^\[?various artists\]?$/i.test((artist?.name || "").trim())) return "various";
@@ -380,28 +382,33 @@ function albumBannerKind(album, artist) {
 }
 function albumPresentationGroup(album, artist) {
   const kind = albumBannerKind(album, artist);
-  if (kind === "compiled") return 5;
-  if (kind === "soundtrack") return 2;
-  if (kind === "various") return 3;
-  return mediaStatusKey(album) === "unprocessed" ? 0 : 1;
+  return {artist: 0, featuring: 1, soundtrack: 2, various: 3, compiled: 4}[kind] ?? 0;
 }
 function albumCardState(album, artist) {
   const status = mediaStatusKey(album);
-  const missingCover = !album.cover_found || !album.cover;
+  const fallback = !String(album.album_mbid || "").trim();
+  const missingCover = !fallback && (!album.cover_found || !album.cover);
   const missingArtist = !artist?.portrait;
-  const unfinished = album.tracks > 0 && album.embedded < album.tracks;
+  const bypassed = status === "bypassed" || status === "artistBypass";
+  const incomplete = fallback ? album.fallback_complete === false
+    : status === "incomplete" || status === "partial" || status === "unprocessed";
+  const processed = status === "processed" || status === "artistComplete";
+  const embeddedComplete = Number(album.tracks) > 0 && Number(album.embedded) >= Number(album.tracks);
+  const fullyComplete = fallback ? album.fallback_complete === true
+    : processed && !missingCover && embeddedComplete;
+  const checkEmbedded = !fallback && processed && !embeddedComplete;
   const dots = [];
   if (missingArtist) dots.push(["#f4cc4d", "Artist artwork missing"]);
-  if (missingCover || status === "incomplete" || status === "unprocessed") dots.push(["#ff5268", missingCover ? "Album artwork missing" : "Album not complete"]);
-  if (status === "bypassed" || status === "artistBypass") dots.push(["#f4cc4d", "Bypassed"]);
-  if (status === "processed" && unfinished) dots.push(["#efa54e", "Processed; track artwork review pending"]);
-  if (status === "artistComplete" && !unfinished && !missingArtist && !missingCover) dots.push(["#32dda0", "Artwork complete"]);
+  if (bypassed) dots.push(["#f4cc4d", "Bypassed"]);
+  if (missingCover || incomplete) dots.push(["#ff5268", missingCover ? "Album artwork missing" : fallback ? "Selected Artist's COMP tracks incomplete" : "Album not complete"]);
+  if (processed && !fullyComplete) dots.push(["#efa54e", "Processed; track artwork review pending"]);
+  if ((fallback && fullyComplete) || (!fallback && processed && !missingCover && !missingArtist)) dots.push(["#32dda0", fallback ? "Selected Artist's COMP tracks complete" : "Artist and album artwork complete"]);
+  if (checkEmbedded) dots.push(["#7c4dff", "Embedded thumbnail needs attention"]);
   if (album.webp_found) dots.push(["#3478ff", "cover.webp present"]);
-  // The isolated index does not store Windows' live embedded thumbnail check.
   const frames = state.graphicalEnhancement.frame_styles;
-  const frame = status === "artistComplete" && !unfinished && !missingArtist && !missingCover ? frames.complete.color
-    : status === "processed" ? frames.in_process.color : status === "partial" ? frames.thumbnail.color : "#ff5268";
-  return {dots, frame};
+  const frame = fullyComplete ? frames.complete.color : checkEmbedded || status === "partial" ? frames.thumbnail.color
+    : processed ? frames.in_process.color : bypassed ? "#f4cc4d" : "#ff5268";
+  return {dots, frame, fullyComplete, checkEmbedded};
 }
 function renderAlbumStatusKey(albums, artist) {
   const host = $("albumStatusKey"); clear(host);
@@ -418,14 +425,15 @@ function renderAlbumStatusKey(albums, artist) {
     for (const [label, detail, color, bannerKey] of rows) {
       const row = node("div", "album-key-row");
       const swatch = node("span", "album-key-swatch", "●"); swatch.style.color = color;
+      const normalizedColor = String(color).toLowerCase();
       const count = title === "Banners" ? albums.filter(album => albumBannerKind(album, artist) === bannerKey).length
-        : title === "Album card frames" ? albums.filter(album => albumCardState(album, artist).frame.toLowerCase() === color).length
-        : albums.filter(album => albumCardState(album, artist).dots.some(([dot]) => dot.toLowerCase() === color)).length;
+        : title === "Album card frames" ? albums.filter(album => albumCardState(album, artist).frame.toLowerCase() === normalizedColor).length
+        : albums.filter(album => albumCardState(album, artist).dots.some(([dot]) => dot.toLowerCase() === normalizedColor)).length;
       row.append(swatch, node("strong", "", label), node("small", "", detail), node("b", "", String(count))); column.append(row);
     }
     columns.append(column);
   }
-  host.append(columns, node("p", "album-key-note", "Counts use this test index. Embedded thumbnail size validation and Featured credit classification are not indexed here."));
+  host.append(columns, node("p", "album-key-note", "Counts reflect the current Artist Overview. Embedded counts use the PostgreSQL catalog and refresh after queued work completes."));
 }
 
 function updateBiographyToggle() {
@@ -518,13 +526,17 @@ function renderHeroContents() {
     id: group.id, name: group.name, year: group.year, cover: group.cover, cover_found: !!group.cover,
     album_mbid: "", compilation: true, tracks: group.tracks.length,
     embedded: group.tracks.filter(track => track.completed).length,
+    fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
     status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
   }));
   const indexed = (artist?.albums || []).filter(album => album.album_mbid || compIds.has(album.id)).map(album => {
     const group = compById.get(album.id);
     // COMP album cards use their indexed folder cover. Track thumbnails are
     // separate COMP-report evidence and never replace the album-card cover.
-    return group ? {...album, cover: group.cover || null, cover_found: !!group.cover, compilation: true} : album;
+    return group ? {...album, cover: group.cover || album.cover || null,
+      cover_found: !!(group.cover || album.cover), compilation: true,
+      embedded: group.tracks.filter(track => track.completed).length,
+      fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed)} : album;
   });
   const albums = [...indexed, ...projected].sort((a, b) =>
     albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
@@ -856,6 +868,7 @@ function renderCandidates() {
 }
 function selectCandidate(candidate, target) {
   state.upscalePreview = null;
+  state.renderedPreview = {};
   if (state.queuedDecision) {
     state.queuedDecision.selected = candidate;
     renderCandidates(); renderReview();
@@ -885,12 +898,12 @@ function renderPanes() {
   $("paneGrid").classList.toggle("album-layout", isAlbum);
   $("albumEnhancePane").hidden = !isAlbum;
   $("enhanceTab").textContent = isAlbum ? "Album Art Enhancements" : "Artists Art Enhancements";
-  if (isAlbum) paneImage($("albumPane"), state.editorMode === "fallback" ? state.fallbackTrack?.image : state.upscalePreview?.image || state.selectedCover?.image || state.album?.cover,
+  if (isAlbum) paneImage($("albumPane"), state.editorMode === "fallback" ? state.fallbackTrack?.image : state.renderedPreview.album?.image || state.upscalePreview?.image || state.selectedCover?.image || state.album?.cover,
     state.editorMode === "fallback" ? "Choose a COMP track to preview its embedded image" : "Choose a cover candidate");
   else {
     packageFrame($("currentPackage"), state.artist?.banner, state.artist?.portrait);
-    paneImage($("artistPane"), state.selectedPortrait?.image || state.artist?.portrait, "Choose a blue artist candidate", true);
-    paneImage($("bannerPane"), state.selectedBanner?.image || state.artist?.banner, "Choose a pink banner candidate");
+    paneImage($("artistPane"), state.renderedPreview.artist?.image || state.selectedPortrait?.image || state.artist?.portrait, "Choose a blue artist candidate", true);
+    paneImage($("bannerPane"), state.renderedPreview.banner?.image || state.selectedBanner?.image || state.artist?.banner, "Choose a pink banner candidate");
     $("currentRadio").classList.toggle("active", state.radioCurrent);
     $("artistRadio").classList.toggle("active", state.radioArtist);
     $("bannerRadio").classList.toggle("active", state.radioBanner);
@@ -904,7 +917,7 @@ function selectedImage() {
     type = "Queued Cover Candidate"; source = candidate.source || "Queued review"; quality = "Preview";
     if (url) frame.append(image(url, "selected-image", candidate.name));
   } else if (state.editorMode === "album") {
-    candidate = state.selectedCover; url = state.upscalePreview?.image || candidate?.image || state.album?.cover;
+    candidate = state.selectedCover; url = state.renderedPreview.album?.image || state.upscalePreview?.image || candidate?.image || state.album?.cover;
     type = "Front Cover"; source = state.upscalePreview ? "Upscale preview" : candidate?.source || (url ? "Album folder" : "—");
     quality = state.upscalePreview ? "Upscale Preview" : candidate ? "Preview" : "Current";
     if (url) frame.append(image(url, "selected-image", state.album?.name + " cover"));
@@ -920,8 +933,8 @@ function selectedImage() {
     quality = state.upscalePreview ? "Upscale Preview" : "Existing";
     if (url) frame.append(image(url, "selected-image", state.compTrack.file + " embedded artwork"));
   } else if ((state.workspace === "enhance" && state.radioCurrent) || (!state.radioCurrent && state.radioArtist && state.radioBanner)) {
-    const banner = state.radioCurrent ? state.artist?.banner : state.selectedBanner?.image || state.artist?.banner;
-    const portrait = state.radioCurrent ? state.artist?.portrait : state.selectedPortrait?.image || state.artist?.portrait;
+    const banner = state.radioCurrent ? state.artist?.banner : state.renderedPreview.banner?.image || state.selectedBanner?.image || state.artist?.banner;
+    const portrait = state.radioCurrent ? state.artist?.portrait : state.renderedPreview.artist?.image || state.selectedPortrait?.image || state.artist?.portrait;
     const packageView = node("div", "selected-package");
     if (banner) packageView.append(image(banner, "banner-art", "Artist banner"));
     if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(portrait, "portrait-art", "Artist portrait")); packageView.append(mask); }
@@ -930,7 +943,8 @@ function selectedImage() {
   } else {
     const bannerOnly = state.radioBanner && !state.radioArtist;
     candidate = bannerOnly ? state.selectedBanner : state.selectedPortrait;
-    url = candidate?.image || (bannerOnly ? state.artist?.banner : state.artist?.portrait);
+    url = (bannerOnly ? state.renderedPreview.banner?.image : state.renderedPreview.artist?.image)
+      || candidate?.image || (bannerOnly ? state.artist?.banner : state.artist?.portrait);
     type = bannerOnly ? "Artist Banner" : "Artist Image"; source = candidate?.source || (url ? "Local" : "—"); quality = candidate ? "Preview" : "Current";
     if (url && bannerOnly) frame.append(image(url, "selected-image", type));
     else if (url) { const mask = node("span", "portrait-viewport"); mask.append(image(url, "selected-image portrait", type)); frame.append(mask); }
@@ -941,7 +955,9 @@ function selectedImage() {
   const existing = state.editorMode === "album" ? state.album?.cover_meta : state.editorMode === "fallback" ? state.fallbackTrack
     : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? state.compTrack
     : state.radioBanner && !state.radioArtist ? state.artist?.banner_meta : state.artist?.portrait_meta;
-  const metadata = state.upscalePreview || candidate || existing;
+  const rendered = state.editorMode === "album" ? state.renderedPreview.album
+    : state.radioBanner && !state.radioArtist ? state.renderedPreview.banner : state.renderedPreview.artist;
+  const metadata = rendered || state.upscalePreview || candidate || existing;
   $("selectedDimensions").textContent = metadata ? metadata.width + " × " + metadata.height : "—";
   $("selectedSize").textContent = metadata ? size(metadata.bytes) : "—";
   $("selectedQuality").textContent = quality;

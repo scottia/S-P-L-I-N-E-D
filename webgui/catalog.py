@@ -38,6 +38,30 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 
 
+def artist_credit_position(track_artist: str, artist: str) -> int | None:
+    """Match Windows' explicit and joined multi-artist credit rules."""
+    selected = artist.strip().casefold()
+    if not selected:
+        return None
+    explicit = [
+        credit.strip()
+        for credit in re.split(r"[\0;]", track_artist)
+        if credit.strip()
+    ]
+    for position, credit in enumerate(explicit):
+        if credit.casefold() == selected:
+            return position
+    credits = track_artist.casefold()
+    for separator in (" & ", " feat. ", " featuring ", " ft. ", " with "):
+        credits = credits.replace(separator, "\0")
+    for position, credit in enumerate(
+        item.strip() for item in re.split(r"[\0;]", credits) if item.strip()
+    ):
+        if credit == selected:
+            return position
+    return None
+
+
 def inside(path: Path, root: Path) -> bool:
     try:
         path.resolve(strict=True).relative_to(root.resolve(strict=True))
@@ -174,8 +198,11 @@ class Catalog:
                 return None
             # Signed path handles do not consume the bounded in-memory preview
             # cache, so browsing a large library cannot expire its early covers.
-            encoded=base64.urlsafe_b64encode(str(source.resolve()).encode('utf-8')).decode().rstrip('=')
-            signature=hmac.new(self.image_key,encoded.encode(),hashlib.sha256).hexdigest()
+            resolved = source.resolve()
+            stat = resolved.stat()
+            encoded=base64.urlsafe_b64encode(str(resolved).encode('utf-8')).decode().rstrip('=')
+            version=f'{stat.st_mtime_ns}:{stat.st_size}'
+            signature=hmac.new(self.image_key,(encoded+':'+version).encode(),hashlib.sha256).hexdigest()
             return '/api/image/p.'+encoded+'.'+signature
         preview_cache = self.temporary_cache or self.cache
         if preview_cache is not None:
@@ -219,11 +246,13 @@ class Catalog:
         if token.startswith('p.'):
             try:
                 _,encoded,signature=token.split('.')
-                expected=hmac.new(self.image_key,encoded.encode(),hashlib.sha256).hexdigest()
-                if not hmac.compare_digest(signature,expected): raise ValueError('Invalid artwork handle')
                 source=Path(base64.urlsafe_b64decode(encoded+'='*(-len(encoded)%4)).decode('utf-8'))
                 if source.suffix.casefold() not in IMAGE_EXTENSIONS: raise ValueError('Unsupported artwork type')
-            except (ValueError,UnicodeError): raise ValueError('Invalid artwork handle') from None
+                stat=source.stat()
+                version=f'{stat.st_mtime_ns}:{stat.st_size}'
+                expected=hmac.new(self.image_key,(encoded+':'+version).encode(),hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(signature,expected): raise ValueError('Invalid artwork handle')
+            except (OSError,ValueError,UnicodeError): raise ValueError('Invalid artwork handle') from None
         else:
             with self.lock:
                 source = self.images.get(token)
@@ -369,27 +398,43 @@ class Catalog:
     def artist(self, artist_id: str) -> dict[str, object]:
         with closing(self.connect()) as db:
             artist = db.execute(
-                "SELECT artist_key, artist_name, musicbrainz_artistid, album_count, status "
+                "SELECT artist_key, artist_name, musicbrainz_artistid, primary_path, album_count, status "
                 "FROM artists WHERE artist_key=?", (artist_id,),
             ).fetchone()
             if artist is None:
                 raise KeyError("Artist not found")
-            rows = db.execute(
+            primary_rows = db.execute(
                 "SELECT * "
                 "FROM albums WHERE artist_key=? ORDER BY album_name COLLATE NOCASE",
                 (artist_id,),
+            ).fetchall()
+            appearance_rows = db.execute(
+                "SELECT albums.*,tracks.artist_name AS appearance_credit FROM albums "
+                "JOIN tracks ON tracks.album_key=albums.album_key "
+                "WHERE albums.artist_key<>? AND TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
+                "AND lower(COALESCE(tracks.artist_name,'')) LIKE lower(?) "
+                "ORDER BY albums.album_name COLLATE NOCASE",
+                (artist_id, "%" + str(artist["artist_name"]) + "%"),
             ).fetchall()
             top_tracks = [item["title"] for item in db.execute(
                 "SELECT tracks.title FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
                 "WHERE albums.artist_key=? ORDER BY tracks.title COLLATE NOCASE LIMIT 10", (artist_id,),
             ).fetchall()]
+        featured_rows = {}
+        for row in appearance_rows:
+            if artist_credit_position(
+                str(row["appearance_credit"] or ""), str(artist["artist_name"])
+            ) is not None:
+                featured_rows.setdefault(str(row["album_key"]), row)
+        rows = [*primary_rows, *featured_rows.values()]
         targets = artist_targets(
             [ArtistAlbum(artist["artist_name"], Path(row["path"]),
                          row["musicbrainz_albumid"] or "", artist["musicbrainz_artistid"] or "")
-             for row in rows if inside(Path(row["path"]), self.music)],
+             for row in primary_rows if inside(Path(row["path"]), self.music)],
             artist["artist_name"], self.artist_art,
         )
         package = saved_package(targets)
+        portrait = self.artist_thumbnail_path(artist)
         candidates = []
         for label, path in local_candidates(targets):
             if inside(path, self.music) or inside(path, self.artist_art):
@@ -405,6 +450,7 @@ class Catalog:
                 "id": row["album_key"], "name": row["album_name"],
                 "tracks": row["track_count"], "status": row["status"],
                 "compilation": bool(row["compilation"]),
+                "featured": str(row["album_key"]) in featured_rows,
                 "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "year": row["release_year"] or "",
@@ -416,7 +462,7 @@ class Catalog:
                     or row["album_name"].casefold().endswith(" ost")
                 ),
                 "webp_found": bool(row["webp_found"]),
-                "cover_found": bool(row["cover_found"]),
+                "cover_found": cover is not None,
                 "cover": self.image(cover),
             })
         return {
@@ -424,9 +470,9 @@ class Catalog:
             "mbid": artist["musicbrainz_artistid"] or "",
             "status": artist["status"], "albums": albums,
             "top_tracks": top_tracks,
-            "portrait": self.image(package.portrait),
+            "portrait": self.image(portrait),
             "banner": self.image(package.banner),
-            "portrait_meta": image_metadata(package.portrait) if package.portrait and package.portrait.is_file() else None,
+            "portrait_meta": image_metadata(portrait) if portrait and portrait.is_file() else None,
             "banner_meta": image_metadata(package.banner) if package.banner and package.banner.is_file() else None,
             "local_candidates": candidates,
         }

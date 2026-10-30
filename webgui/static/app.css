@@ -100,6 +100,8 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .album-card-picture .album-placeholder{height:100%;width:100%;aspect-ratio:auto}
 .album-status-dots{position:absolute;right:1px;top:0;display:flex;flex-direction:column;align-items:center;gap:0;font-size:13px;line-height:15px;text-shadow:0 0 2px #000}
 .album-staged-indicator{position:absolute;left:2px;top:1px;color:#ffad32;font-size:19px;line-height:19px;text-shadow:0 0 2px #000;animation:staged-blink 1s steps(2,start) infinite}
+.candidate-toolbar #bypassButton,.candidate-toolbar #uploadArtwork{min-width:58px;text-align:center}
+.review-actions #embedBatchButton.staged{background:#59616a;border-color:#77818c;color:#e3e7eb;filter:saturate(.25)}
 @keyframes staged-blink{50%{color:#ff4b36;opacity:.45}}
 @media(prefers-reduced-motion:reduce){.album-staged-indicator{animation:none;color:#ff4b36}}
 .album-card.windows-card strong{display:block;min-height:26px;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:13px;line-height:25px;color:var(--text)}
