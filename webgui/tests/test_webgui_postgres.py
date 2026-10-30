@@ -349,15 +349,22 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).status_code,
                 403,
             )
-            self.assertEqual(client.post("/api/logout").status_code, 200)
-            self.assertEqual(client.get("/api/artists").status_code, 401)
+            recovery = {
+                "username": "administrator",
+                "password": "ReplacementPassword456",
+                "confirmation": "ReplacementPassword456",
+                "token": "wrong-token",
+            }
             self.assertEqual(
-                client.post(
-                    "/api/login",
-                    json={"username": "administrator", "password": "wrong"},
-                ).status_code,
-                403,
+                client.post("/api/admin/recover", json=recovery).status_code, 403
             )
+            recovery["token"] = "test-access"
+            self.assertEqual(
+                client.post("/api/admin/recover", json=recovery).status_code, 200
+            )
+            self.assertEqual(client.get("/api/artists").status_code, 401)
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
             self.assertEqual(
                 client.post(
                     "/api/login",
@@ -366,8 +373,24 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "password": "StrongPassword123",
                     },
                 ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/login",
+                    json={
+                        "username": "administrator",
+                        "password": "ReplacementPassword456",
+                    },
+                ).status_code,
                 200,
             )
+            diagnostics = client.get("/api/diagnostics").json()
+            self.assertTrue(
+                any(event["action"] == "reset-admin-password" for event in diagnostics)
+            )
+            self.assertEqual(client.post("/api/logout").status_code, 200)
+            self.assertEqual(client.get("/api/artists").status_code, 401)
         self.runtime = Runtime(self.config, self.db)
 
     def test_credentials_mask_secrets_and_retain_blank_values(self):

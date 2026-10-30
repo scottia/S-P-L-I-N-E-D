@@ -47,12 +47,19 @@ function showAuthentication(status) {
   document.body.className = "auth-required";
   $("adminSetupForm").hidden = !status.admin_setup_required;
   $("loginForm").hidden = status.admin_setup_required;
+  $("passwordRecoveryForm").hidden = true;
   $("authTitle").textContent = status.admin_setup_required ? "Create the SPLINED administrator" : "Sign in to SPLINED";
   $("authMessage").textContent = status.admin_setup_required
-    ? "Create the first administrator. The deployment's WebGUI token authorizes this one-time enrollment and is not stored in PostgreSQL."
+    ? "Create the first administrator. The deployment's WebGUI token authorizes enrollment and future password recovery but is not stored in PostgreSQL."
     : "Enter the saved administrator username and password.";
   $("authError").textContent = "";
   (status.admin_setup_required ? $("setupUsername") : $("loginUsername")).focus();
+}
+function showPasswordRecovery() {
+  $("adminSetupForm").hidden = true; $("loginForm").hidden = true; $("passwordRecoveryForm").hidden = false;
+  $("authTitle").textContent = "Reset the SPLINED administrator password";
+  $("authMessage").textContent = "Enter the administrator username, a new password, and the existing deployment WebGUI token. The token is validated from the container environment and is not changed or stored in PostgreSQL.";
+  $("authError").textContent = ""; $("recoveryUsername").value ||= $("loginUsername").value; $("recoveryUsername").focus();
 }
 async function submitAuthentication(path, payload) {
   $("authError").textContent = "";
@@ -61,6 +68,18 @@ async function submitAuthentication(path, payload) {
     $("setupPassword").value = ""; $("setupConfirmation").value = ""; $("setupToken").value = ""; $("loginPassword").value = "";
     await initialize();
   } catch (error) {
+    $("authError").textContent = error.message;
+  }
+}
+async function submitPasswordRecovery(payload) {
+  $("authError").textContent = "";
+  try {
+    await post("/api/admin/recover", payload);
+    $("recoveryPassword").value = ""; $("recoveryConfirmation").value = ""; $("recoveryToken").value = "";
+    const status = await sessionStatus(); showAuthentication(status); $("loginUsername").value = payload.username;
+    $("authMessage").textContent = "Administrator password reset. Sign in with the new password."; $("loginPassword").focus();
+  } catch (error) {
+    $("recoveryPassword").value = ""; $("recoveryConfirmation").value = ""; $("recoveryToken").value = "";
     $("authError").textContent = error.message;
   }
 }
@@ -820,6 +839,17 @@ $("loginForm").addEventListener("submit", event => {
   submitAuthentication("/api/login", {
     username: $("loginUsername").value,
     password: $("loginPassword").value,
+  });
+});
+$("forgotPasswordButton").addEventListener("click", showPasswordRecovery);
+$("cancelPasswordRecovery").addEventListener("click", () => showAuthentication(state.server));
+$("passwordRecoveryForm").addEventListener("submit", event => {
+  event.preventDefault();
+  submitPasswordRecovery({
+    username: $("recoveryUsername").value,
+    password: $("recoveryPassword").value,
+    confirmation: $("recoveryConfirmation").value,
+    token: $("recoveryToken").value,
   });
 });
 setInterval(() => { if (!document.hidden) runAction(pollJobs); }, 1500);

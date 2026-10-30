@@ -117,3 +117,40 @@ class AdminAuth:
                 (key,),
             )
         return str(row["username"])
+
+    def reset_password(
+        self,
+        username: str,
+        password: str,
+        confirmation: str,
+        supplied_token: str,
+        deployment_token: str,
+    ) -> str:
+        """Replace only the WebGUI password hash after token authorization."""
+        username = self.validate_username(username)
+        password = self.validate_password(password)
+        if not hmac.compare_digest(password, confirmation):
+            raise ValueError("Password confirmation does not match")
+        if not deployment_token or not hmac.compare_digest(supplied_token, deployment_token):
+            raise PermissionError("The WebGUI recovery token is incorrect")
+        salt = secrets.token_bytes(24)
+        digest = _password_hash(password, salt)
+        key = username.casefold()
+        with closing(self.database.connect()) as db, db:
+            db.execute("SELECT pg_advisory_xact_lock(?)", (741520206,))
+            row = db.execute(
+                "SELECT username FROM web_admin_accounts WHERE username_key=?",
+                (key,),
+            ).fetchone()
+            if not row:
+                raise ValueError("The WebGUI administrator username was not found")
+            db.execute(
+                "UPDATE web_admin_accounts SET password_algorithm=?,password_salt=?,password_hash=?,last_login_at=NULL WHERE username_key=?",
+                (
+                    _ALGORITHM,
+                    base64.b64encode(salt).decode("ascii"),
+                    base64.b64encode(digest).decode("ascii"),
+                    key,
+                ),
+            )
+        return str(row["username"])

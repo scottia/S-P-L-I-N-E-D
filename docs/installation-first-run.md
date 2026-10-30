@@ -151,7 +151,9 @@ according to local policy before execution.
 
 Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), open its browser
 address, and create the administrator with username, password confirmation,
-and the one-time deployment token. Later logins use username and password.
+and the deployment token. Later logins use username and password. **Forgot
+password?** validates the same unchanged deployment token, replaces only the
+WebGUI password hash, and invalidates active browser sessions.
 Complete Settings, save the server music paths, configure provider
 credentials, and refresh the library index. All artwork review and writes take
 place in the browser.

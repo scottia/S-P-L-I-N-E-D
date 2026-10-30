@@ -240,6 +240,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             "/api/status",
             "/api/login",
             "/api/admin/setup",
+            "/api/admin/recover",
         } or not request.url.path.startswith("/api/")
         if not public and not session["authenticated"]:
             return JSONResponse({"error": "Sign in to SPLINED"}, status_code=401)
@@ -365,6 +366,31 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             raise
         clear_auth_failures(rate_key)
         request.state.session.update(authenticated=True, username=username)
+        return {"ok": True, "username": username}
+
+    @app.post("/api/admin/recover")
+    async def recover_admin(request: Request):
+        if admin_setup_required():
+            raise ValueError("Create the WebGUI administrator before using password recovery")
+        value = await request.json()
+        rate_key = auth_rate_key(request, "recovery")
+        failures, _ = require_auth_rate(rate_key)
+        try:
+            username = account_auth().reset_password(
+                str(value.get("username", "")),
+                str(value.get("password", "")),
+                str(value.get("confirmation", "")),
+                str(value.get("token", "")),
+                access_token,
+            )
+        except PermissionError:
+            record_auth_failure(rate_key, failures)
+            raise
+        context.services.audit("reset-admin-password", username)
+        with sessions_lock:
+            sessions.clear()
+            login_attempts.clear()
+        request.state.session.update(authenticated=False, username="")
         return {"ok": True, "username": username}
 
     @app.post("/api/logout")

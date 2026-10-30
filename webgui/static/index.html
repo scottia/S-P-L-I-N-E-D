@@ -24,6 +24,15 @@
         <label><span>Username</span><input id="loginUsername" name="username" type="text" autocomplete="username" required></label>
         <label><span>Password</span><input id="loginPassword" name="password" type="password" autocomplete="current-password" required></label>
         <button type="submit">Sign in</button>
+        <button id="forgotPasswordButton" class="auth-secondary" type="button">Forgot password?</button>
+      </form>
+      <form id="passwordRecoveryForm" class="auth-form" hidden>
+        <label><span>Administrator username</span><input id="recoveryUsername" name="username" type="text" minlength="3" maxlength="64" autocomplete="username" required></label>
+        <label><span>New password</span><input id="recoveryPassword" name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label>
+        <label><span>Validate new password</span><input id="recoveryConfirmation" name="confirmation" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label>
+        <label><span>WebGUI recovery token</span><input id="recoveryToken" name="token" type="password" autocomplete="one-time-code" required></label>
+        <button type="submit">Reset administrator password</button>
+        <button id="cancelPasswordRecovery" class="auth-secondary" type="button">Back to sign in</button>
       </form>
       <p id="authError" class="auth-error" role="alert"></p>
     </div>
