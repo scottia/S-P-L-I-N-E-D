@@ -374,10 +374,10 @@ function albumRow(album, child) {
 }
 
 function albumBannerKind(album, artist) {
-  if (album.featured) return "featuring";
   if (!album.album_mbid) return "compiled";
   if (album.soundtrack) return "soundtrack";
-  if (/^\[?various artists\]?$/i.test((artist?.name || "").trim())) return "various";
+  if (album.various_artists) return "various";
+  if (album.featured) return "featuring";
   return "artist";
 }
 function albumPresentationGroup(album, artist) {
@@ -806,10 +806,13 @@ async function repairArtistComp() {
 
 function renderSources() {
   const strip = $("sourceStrip"); clear(strip);
+  const artistImageSources = new Set(["local", "fanart", "deezer", "lastfm", "discogs", "navidrome"]);
   for (const [label, key, icon] of SOURCES) {
     const count = state.candidates.filter(candidate => sourceKey(candidate.source) === key).length;
     const navidromeMetadata = key === "navidrome" && state.artistMetadata?.source === "Navidrome";
-    const searchable = state.editorMode === "album" ? (key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key)) : ["local", "fanart", "deezer"].includes(key) || navidromeMetadata;
+    const configured = key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key);
+    const searchable = state.editorMode === "album" ? configured
+      : artistImageSources.has(key) && (configured || navidromeMetadata);
     const button = node("button", "source-card" + (state.activeSource === key && key ? " active" : "")); button.type = "button";
     button.title = count ? "Show " + label + " candidates" : label + (searchable ? " · ready for artist search" : " · unavailable for this selection");
     button.append(icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + icon + ".svg", "", ""));
@@ -901,7 +904,8 @@ function renderPanes() {
   if (isAlbum) paneImage($("albumPane"), state.editorMode === "fallback" ? state.fallbackTrack?.image : state.renderedPreview.album?.image || state.upscalePreview?.image || state.selectedCover?.image || state.album?.cover,
     state.editorMode === "fallback" ? "Choose a COMP track to preview its embedded image" : "Choose a cover candidate");
   else {
-    packageFrame($("currentPackage"), state.artist?.banner, state.artist?.portrait);
+    packageFrame($("currentPackage"), state.selectedBanner?.image || state.artist?.banner,
+      state.selectedPortrait?.image || state.artist?.portrait);
     paneImage($("artistPane"), state.renderedPreview.artist?.image || state.selectedPortrait?.image || state.artist?.portrait, "Choose a blue artist candidate", true);
     paneImage($("bannerPane"), state.renderedPreview.banner?.image || state.selectedBanner?.image || state.artist?.banner, "Choose a pink banner candidate");
     $("currentRadio").classList.toggle("active", state.radioCurrent);
@@ -933,8 +937,8 @@ function selectedImage() {
     quality = state.upscalePreview ? "Upscale Preview" : "Existing";
     if (url) frame.append(image(url, "selected-image", state.compTrack.file + " embedded artwork"));
   } else if ((state.workspace === "enhance" && state.radioCurrent) || (!state.radioCurrent && state.radioArtist && state.radioBanner)) {
-    const banner = state.radioCurrent ? state.artist?.banner : state.renderedPreview.banner?.image || state.selectedBanner?.image || state.artist?.banner;
-    const portrait = state.radioCurrent ? state.artist?.portrait : state.renderedPreview.artist?.image || state.selectedPortrait?.image || state.artist?.portrait;
+    const banner = state.radioCurrent ? state.selectedBanner?.image || state.artist?.banner : state.renderedPreview.banner?.image || state.selectedBanner?.image || state.artist?.banner;
+    const portrait = state.radioCurrent ? state.selectedPortrait?.image || state.artist?.portrait : state.renderedPreview.artist?.image || state.selectedPortrait?.image || state.artist?.portrait;
     const packageView = node("div", "selected-package");
     if (banner) packageView.append(image(banner, "banner-art", "Artist banner"));
     if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(portrait, "portrait-art", "Artist portrait")); packageView.append(mask); }
@@ -1117,17 +1121,19 @@ async function chooseArtist(id, select = true) {
   renderAll();
   setStatus("Loading artist and existing artwork…", "busy");
   try {
-    const [artist, compGroups] = await Promise.all([
-      api("/api/artist?id=" + encodeURIComponent(id)),
-      api("/api/artist/comp-albums?id=" + encodeURIComponent(id)),
-    ]);
+    // Resolve the canonical artist and its Navidrome appearance catalog first.
+    // COMP projection then reuses that same identity instead of racing a second
+    // request that may briefly return an incomplete first-load album list.
+    const artist = await api("/api/artist?id=" + encodeURIComponent(id));
+    if (request !== state.selectionRequest) return;
+    const compGroups = await api("/api/artist/comp-albums?id=" + encodeURIComponent(artist.id));
     if (request !== state.selectionRequest) return;
     state.artist = artist; state.artistMetadata = null; state.compGroups = compGroups;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
     if (select) markSelectedArtist(artist);
     state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
-    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums"); loadArtistMetadata(id);
+    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums"); loadArtistMetadata(artist.id);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
@@ -1143,7 +1149,7 @@ async function chooseAlbum(id) {
     if (state.artist?.id !== album.artist_id) {
       const artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
       if (request !== state.selectionRequest) return;
-      state.artist = artist; state.artistMetadata = null; loadArtistMetadata(album.artist_id);
+      state.artist = artist; state.artistMetadata = null; loadArtistMetadata(artist.id);
     }
     const fallback = !String(album.album_mbid || "").trim();
     const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(id)) : [];
@@ -1182,7 +1188,7 @@ async function searchArtist() {
   const id = state.artist.id;
   const request = ++state.searchRequest;
   $("searchButton").disabled = true;
-  setStatus("Searching Fanart.tv and Deezer for " + state.artist.name + "…", "busy");
+  setStatus("Searching configured artist-image sources for " + state.artist.name + "…", "busy");
   try {
     const result = await api("/api/search/artist", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id})});
     if (request !== state.searchRequest || state.artist?.id !== id || state.editorMode !== "artist") return;
@@ -1208,7 +1214,7 @@ function enterArtistArt() {
   clearFocusCandidates(); resetFocusAdjustments();
   state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false; state.themedPackaging = false;
   renderAll();
-  searchArtist();
+  setStatus("Artist Art ready · edit the current package or press LAUNCH to search artist-image sources");
 }
 
 function showDialog(title, lines) {
@@ -1270,7 +1276,7 @@ for (const [buttonId, name] of [["findTab", "find"], ["enhanceTab", "enhance"], 
   $(buttonId).addEventListener("click", () => { state.workspace = name; renderWorkspace(); if (name === "embed") renderQueue(); setStatus(name === "embed" ? "Persistent embedding queue" : name === "enhance" ? "Artwork enhancements" : "Find & Match Artwork ready"); });
 }
 $("searchButton").addEventListener("click", () => state.editorMode === "fallback" ? runAction(launchFallback)
-  : state.editorMode === "artist" ? runAction(launchArtist) : runAction(searchAlbum));
+  : state.editorMode === "artist" ? runAction(state.workspace === "enhance" ? searchArtist : launchArtist) : runAction(searchAlbum));
 $("artistArtEntry").addEventListener("click", () => {
   if (state.editorMode === "fallback") {
     const key = state.fallbackTrack?.key || state.fallbackTracks[0]?.key;
@@ -1285,7 +1291,9 @@ $("compareButton").addEventListener("click", () => {
 });
 $("upscaleButton").addEventListener("click", async () => {
   if (state.editorMode === "artist" && !state.compReportVisible) {
-    state.workspace = "enhance"; renderWorkspace(); setStatus("Enhancement layout preview · no upscale processing"); return;
+    state.workspace = "enhance"; renderWorkspace();
+    await runAction(upscaleArtist);
+    return;
   }
   const source = state.editorMode === "fallback" ? state.fallbackTrack?.image
     : state.editorMode === "artist" && state.compReportVisible ? state.compTrack?.image

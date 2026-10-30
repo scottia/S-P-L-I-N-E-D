@@ -11,6 +11,7 @@ from hashlib import sha256
 from html import unescape
 from io import BytesIO
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -18,8 +19,9 @@ import secrets
 import tempfile
 import sqlite3
 from threading import Lock
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import UUID
+import unicodedata
 
 from PIL import Image, ImageOps
 from mutagen import File as MutagenFile
@@ -36,6 +38,7 @@ from webgui.database import Database
 ASSETS = Path(__file__).with_name("static")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
+LOGGER = logging.getLogger("uvicorn.error")
 
 
 def artist_credit_position(track_artist: str, artist: str) -> int | None:
@@ -60,6 +63,24 @@ def artist_credit_position(track_artist: str, artist: str) -> int | None:
         if credit == selected:
             return position
     return None
+
+
+def normalized_artist_identity(value: str) -> str:
+    """Collapse invisible/tag-only differences without merging distinct MBIDs."""
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    visible = "".join(
+        character for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+    return "".join(character.casefold() for character in visible if character.isalnum())
+
+
+def normalized_album_identity(value: str) -> str:
+    return "".join(
+        character.casefold()
+        for character in unicodedata.normalize("NFKC", str(value or ""))
+        if character.isalnum()
+    )
 
 
 def inside(path: Path, root: Path) -> bool:
@@ -133,9 +154,10 @@ class Catalog:
     cover_stem: str = "cover"
     cache: Path | None = None
     temporary_cache: Path | None = None
-    artist_sources: tuple[str,...] = ("fanarttv","deezer")
+    artist_sources: tuple[str, ...] = ("fanarttv", "deezer", "lastfm", "discogs")
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
+    appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     portrait_cache: dict[str, Path | None] = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
@@ -180,6 +202,10 @@ class Catalog:
             or self.temporary_cache is not None and inside(source, self.temporary_cache)
         )
 
+    @staticmethod
+    def supported_image_path(source: Path) -> bool:
+        return source.suffix.casefold() in IMAGE_EXTENSIONS
+
     def connect(self) -> sqlite3.Connection:
         if isinstance(self.database, Database):
             return self.database.connect()
@@ -192,7 +218,7 @@ class Catalog:
         if source is None:
             return None
         if isinstance(source, Path):
-            if source.suffix.casefold() not in IMAGE_EXTENSIONS or not source.is_file():
+            if not self.supported_image_path(source) or not source.is_file():
                 return None
             if not self.allowed_image_path(source):
                 return None
@@ -203,7 +229,12 @@ class Catalog:
             encoded=base64.urlsafe_b64encode(str(resolved).encode('utf-8')).decode().rstrip('=')
             version=f'{stat.st_mtime_ns}:{stat.st_size}'
             signature=hmac.new(self.image_key,(encoded+':'+version).encode(),hashlib.sha256).hexdigest()
-            return '/api/image/p.'+encoded+'.'+signature
+            # The version changes the browser URL when the file changes.  It is
+            # signed with the path, but validation deliberately does not stat
+            # the file again: a live write may replace the same allowed path
+            # after a job has captured its handle.
+            version_token=base64.urlsafe_b64encode(version.encode()).decode().rstrip('=')
+            return '/api/image/p.'+encoded+'.'+version_token+'.'+signature
         preview_cache = self.temporary_cache or self.cache
         if preview_cache is not None:
             # Candidate originals must outlive repeated enhancement renders.
@@ -245,11 +276,10 @@ class Catalog:
         token=image_url.removeprefix('/api/image/')
         if token.startswith('p.'):
             try:
-                _,encoded,signature=token.split('.')
+                _,encoded,version_token,signature=token.split('.')
                 source=Path(base64.urlsafe_b64decode(encoded+'='*(-len(encoded)%4)).decode('utf-8'))
-                if source.suffix.casefold() not in IMAGE_EXTENSIONS: raise ValueError('Unsupported artwork type')
-                stat=source.stat()
-                version=f'{stat.st_mtime_ns}:{stat.st_size}'
+                if not self.supported_image_path(source): raise ValueError('Unsupported artwork type')
+                version=base64.urlsafe_b64decode(version_token+'='*(-len(version_token)%4)).decode('ascii')
                 expected=hmac.new(self.image_key,(encoded+':'+version).encode(),hashlib.sha256).hexdigest()
                 if not hmac.compare_digest(signature,expected): raise ValueError('Invalid artwork handle')
             except (OSError,ValueError,UnicodeError): raise ValueError('Invalid artwork handle') from None
@@ -294,6 +324,383 @@ class Catalog:
         source=self.image_source(image_url)
         return source.read_bytes() if isinstance(source,Path) else source
 
+    @staticmethod
+    def _aggregate_artist_status(rows) -> str:
+        statuses = {str(row["status"] or "unprocessed").casefold() for row in rows}
+        if statuses == {"processed"}:
+            return "processed"
+        if "partial" in statuses or "error" in statuses or len(statuses) > 1:
+            return "partial"
+        return next(iter(statuses), "unprocessed")
+
+    @staticmethod
+    def _canonical_artist_row(rows):
+        return max(
+            rows,
+            key=lambda row: (
+                # A tagged MusicBrainz identity is the stable authority even
+                # when a legacy name-only duplicate currently owns more album
+                # rows.  The aliases below still contribute every album.
+                bool(str(row["musicbrainz_artistid"] or "").strip()),
+                int(row["album_count"] or 0),
+                str(row["artist_key"]),
+            ),
+        )
+
+    @staticmethod
+    def _artist_groups(rows):
+        """Merge an untagged duplicate into one same-name MBID identity.
+
+        Two different non-empty MBIDs remain distinct even when their display
+        names match.  This removes the common 19-album/1-album split without
+        collapsing genuinely different artists that share a name.
+        """
+        by_name: dict[str, list] = {}
+        for row in rows:
+            by_name.setdefault(normalized_artist_identity(row["artist_name"]), []).append(row)
+        groups = []
+        for name_rows in by_name.values():
+            by_mbid: dict[str, list] = {}
+            blank = []
+            for row in name_rows:
+                mbid = str(row["musicbrainz_artistid"] or "").strip().casefold()
+                (by_mbid.setdefault(mbid, []) if mbid else blank).append(row)
+            if len(by_mbid) <= 1:
+                groups.append(name_rows)
+            else:
+                groups.extend(by_mbid.values())
+                if blank:
+                    groups.append(blank)
+        return groups
+
+    def _artist_identity_rows(self, db, artist_id: str):
+        try:
+            selected = db.execute(
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,album_count,status "
+                "FROM artists WHERE artist_key=?",
+                (artist_id,),
+            ).fetchone()
+            candidates = db.execute(
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,album_count,status "
+                "FROM artists"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Small read-only SQLite fixtures predate the full catalog schema.
+            selected = db.execute(
+                "SELECT artist_key,artist_name,'' AS musicbrainz_artistid,'' AS primary_path,"
+                "0 AS album_count,'unprocessed' AS status FROM artists WHERE artist_key=?",
+                (artist_id,),
+            ).fetchone()
+            candidates = db.execute(
+                "SELECT artist_key,artist_name,'' AS musicbrainz_artistid,'' AS primary_path,"
+                "0 AS album_count,'unprocessed' AS status FROM artists"
+            ).fetchall()
+        if selected is None:
+            raise KeyError("Artist not found")
+        identity = normalized_artist_identity(selected["artist_name"])
+        selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
+        candidates = [
+            row for row in candidates
+            if normalized_artist_identity(row["artist_name"]) == identity
+            or bool(selected_mbid) and str(row["musicbrainz_artistid"] or "").strip().casefold()
+            == selected_mbid
+        ]
+        nonempty = {
+            str(row["musicbrainz_artistid"] or "").strip().casefold()
+            for row in candidates if str(row["musicbrainz_artistid"] or "").strip()
+        }
+        if selected_mbid:
+            aliases = [
+                row for row in candidates
+                if not str(row["musicbrainz_artistid"] or "").strip()
+                or str(row["musicbrainz_artistid"] or "").strip().casefold() == selected_mbid
+            ]
+        elif len(nonempty) <= 1:
+            aliases = candidates
+        else:
+            aliases = [row for row in candidates if not str(row["musicbrainz_artistid"] or "").strip()]
+        return self._canonical_artist_row(aliases), aliases
+
+    @staticmethod
+    def _navidrome_auth_query(credential: dict[str, object]) -> dict[str, str]:
+        query = {"v": "1.16.1", "c": "SPLINED-webgui", "f": "json"}
+        if credential.get("auth_method") == "api_key" and credential.get("api_key"):
+            query["apiKey"] = str(credential["api_key"])
+        else:
+            salt = secrets.token_hex(6)
+            password = str(credential.get("password") or "")
+            query.update({
+                "u": str(credential.get("username") or ""),
+                "s": salt,
+                "t": hashlib.md5((password + salt).encode(), usedforsecurity=False).hexdigest(),
+            })
+        return query
+
+    def _navidrome_call(self, credential, method: str, parameters: dict[str, str]):
+        base = str(credential.get("server_url") or "").rstrip("/")
+        if urlsplit(base).scheme not in {"http", "https"}:
+            raise ValueError("Invalid Navidrome URL")
+        response = requests.get(
+            base + "/rest/" + method + ".view",
+            params={**self._navidrome_auth_query(credential), **parameters},
+            timeout=15,
+            allow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise ValueError("Navidrome did not return library metadata")
+        envelope = response.json().get("subsonic-response", {})
+        if envelope.get("status") != "ok":
+            raise ValueError("Navidrome did not return library metadata")
+        return envelope
+
+    @staticmethod
+    def _navidrome_song_has_artist(song, artist_id: str, artist_name: str) -> bool:
+        artist_id = artist_id.strip().casefold()
+        artist_name = normalized_artist_identity(artist_name)
+        if artist_id and str(song.get("artistId") or "").strip().casefold() == artist_id:
+            return True
+        if normalized_artist_identity(song.get("artist", "")) == artist_name:
+            return True
+        artists = song.get("artists") or []
+        if isinstance(artists, dict):
+            artists = [artists]
+        return any(
+            isinstance(item, dict) and (
+                artist_id and str(item.get("id") or "").strip().casefold() == artist_id
+                or normalized_artist_identity(item.get("name", "")) == artist_name
+            )
+            for item in artists
+        )
+
+    def _navidrome_thumbnail_path(self, artist) -> Path | None:
+        directory = self.cache / "navidrome-thumbnails" if self.cache is not None else None
+        if directory is None:
+            return None
+        identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+        path = directory / "artists" / ("web-v1-" + identity + ".png")
+        return path if path.is_file() else None
+
+    def _cache_navidrome_thumbnail(self, artist, credential, remote_artist) -> Path | None:
+        cached = self._navidrome_thumbnail_path(artist)
+        if cached is not None:
+            return cached
+        cover_id = str(remote_artist.get("coverArt") or "").strip()
+        directory = self.cache / "navidrome-thumbnails" if self.cache is not None else None
+        if not cover_id or directory is None:
+            return None
+        base = str(credential.get("server_url") or "").rstrip("/")
+        response = requests.get(
+            base + "/rest/getCoverArt.view",
+            params={**self._navidrome_auth_query(credential), "id": cover_id, "size": "192"},
+            timeout=20,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        if len(response.content) > 8 * 1024 * 1024:
+            raise ValueError("Navidrome artist thumbnail exceeds 8 MB")
+        with Image.open(BytesIO(response.content)) as opened:
+            opened.verify()
+        directory = directory / "artists"
+        directory.mkdir(parents=True, exist_ok=True)
+        identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+        path = directory / ("web-v1-" + identity + ".png")
+        descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
+        try:
+            os.close(descriptor)
+            with Image.open(BytesIO(response.content)) as opened:
+                opened.convert("RGBA").save(temporary, format="PNG", optimize=True)
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        for row_id in list(self.portrait_cache):
+            self.portrait_cache.pop(row_id, None)
+        return path
+
+    def _stored_artist_appearances(self, db, artist_id: str) -> dict[str, object]:
+        try:
+            rows = db.execute(
+                "SELECT album_key,featured,navidrome_album_id,song_paths_json "
+                "FROM artist_album_appearances WHERE artist_key=?",
+                (artist_id,),
+            ).fetchall()
+        except Exception:
+            # SQLite fixtures intentionally do not carry the WebGUI-only table.
+            if isinstance(self.database, Database):
+                raise
+            return {"album_keys": set(), "featured_album_keys": set(), "song_paths": {}}
+        return {
+            "album_keys": {str(row["album_key"]) for row in rows},
+            "featured_album_keys": {str(row["album_key"]) for row in rows if bool(row["featured"])},
+            "song_paths": {
+                str(row["album_key"]): json.loads(str(row["song_paths_json"] or "[]"))
+                for row in rows
+            },
+        }
+
+    def _artist_appearance_context(self, artist, aliases, db) -> dict[str, object]:
+        canonical_id = str(artist["artist_key"])
+        with self.lock:
+            cached = self.appearance_cache.get(canonical_id)
+        if cached is not None:
+            return cached
+        stored = self._stored_artist_appearances(db, canonical_id)
+        credential_path = self.credentials / "navidrome.json"
+        if not credential_path.is_file():
+            return stored
+        try:
+            credential = json.loads(credential_path.read_text(encoding="utf-8"))
+            matches = []
+            artist_catalog = self._navidrome_call(credential, "getArtists", {})
+            indexes = artist_catalog.get("artists", {}).get("index", [])
+            if isinstance(indexes, dict):
+                indexes = [indexes]
+            for index in indexes:
+                values = index.get("artist", []) if isinstance(index, dict) else []
+                matches.extend([values] if isinstance(values, dict) else values)
+            if not matches:
+                search = self._navidrome_call(
+                    credential,
+                    "search3",
+                    {"query": str(artist["artist_name"]), "artistCount": "20", "albumCount": "0", "songCount": "0"},
+                )
+                values = search.get("searchResult3", {}).get("artist", [])
+                matches = [values] if isinstance(values, dict) else values
+            remote_artist = next(
+                (item for item in matches if isinstance(item, dict)
+                 and normalized_artist_identity(item.get("name", ""))
+                 == normalized_artist_identity(artist["artist_name"])),
+                None,
+            )
+            if remote_artist is None:
+                LOGGER.info(
+                    "Artist appearance catalog has no exact Navidrome identity: artist=%s",
+                    str(artist["artist_name"]),
+                )
+                return stored
+            remote_id = str(remote_artist.get("id") or "")
+            all_albums = db.execute(
+                "SELECT albums.*,artists.artist_name FROM albums "
+                "JOIN artists ON artists.artist_key=albums.artist_key"
+            ).fetchall()
+            by_relative_path = {}
+            for row in all_albums:
+                try:
+                    relative = Path(str(row["path"])).resolve().relative_to(self.music.resolve())
+                except (OSError, ValueError):
+                    continue
+                key = str(relative).replace("\\", "/").strip("/").casefold()
+                by_relative_path[key] = row
+            song_paths: dict[str, set[str]] = {}
+            remote_album_ids: dict[str, str] = {}
+            genres: set[str] = set()
+            roles: set[str] = set()
+            for page in range(20):
+                envelope = self._navidrome_call(
+                    credential,
+                    "search3",
+                    {"query": str(artist["artist_name"]), "artistCount": "0", "albumCount": "0",
+                     "songCount": "500", "songOffset": str(page * 500)},
+                )
+                songs = envelope.get("searchResult3", {}).get("song", [])
+                if isinstance(songs, dict):
+                    songs = [songs]
+                for song in songs:
+                    if not isinstance(song, dict) or not self._navidrome_song_has_artist(
+                        song, remote_id, str(artist["artist_name"])
+                    ):
+                        continue
+                    raw_path = str(song.get("path") or "").replace("\\", "/").strip("/")
+                    parent = raw_path.rsplit("/", 1)[0].casefold() if "/" in raw_path else ""
+                    row = by_relative_path.get(parent)
+                    if row is None and parent:
+                        matches_by_path = [
+                            candidate for path, candidate in by_relative_path.items()
+                            if parent.endswith("/" + path) or path.endswith("/" + parent)
+                        ]
+                        row = matches_by_path[0] if len(matches_by_path) == 1 else None
+                    if row is None:
+                        title = normalized_album_identity(song.get("album", ""))
+                        album_artist = normalized_artist_identity(song.get("albumArtist", ""))
+                        year = str(song.get("year") or "").strip()
+                        candidates = [
+                            candidate for candidate in all_albums
+                            if normalized_album_identity(candidate["album_name"]) == title
+                            and (not album_artist or normalized_artist_identity(candidate["artist_name"]) == album_artist)
+                            and (not year or not str(candidate["release_year"] or "").strip()
+                                 or str(candidate["release_year"]).strip() == year)
+                        ]
+                        row = candidates[0] if len(candidates) == 1 else None
+                    if row is None:
+                        continue
+                    key = str(row["album_key"])
+                    song_paths.setdefault(key, set()).add(raw_path)
+                    remote_album_ids[key] = str(song.get("albumId") or "")
+                    genre = str(song.get("genre") or "").strip()
+                    if genre:
+                        genres.add(genre)
+                    for item in song.get("genres") or []:
+                        if isinstance(item, dict) and item.get("name"):
+                            genres.add(str(item["name"]))
+                    for item in song.get("artists") or []:
+                        if not isinstance(item, dict):
+                            continue
+                        if str(item.get("id") or "").casefold() != remote_id.casefold() \
+                                and normalized_artist_identity(item.get("name", "")) != normalized_artist_identity(artist["artist_name"]):
+                            continue
+                        for role in item.get("roles") or []:
+                            value = str(role.get("name") if isinstance(role, dict) else role).strip()
+                            if value:
+                                roles.add(value)
+                        if item.get("role"):
+                            roles.add(str(item["role"]))
+                if len(songs) < 500:
+                    break
+            alias_ids = {str(row["artist_key"]) for row in aliases}
+            featured = {
+                key for key in song_paths
+                if next((str(row["artist_key"]) for row in all_albums if str(row["album_key"]) == key), "") not in alias_ids
+            }
+            context = {
+                "album_keys": set(song_paths),
+                "featured_album_keys": featured,
+                "song_paths": {key: sorted(paths) for key, paths in song_paths.items()},
+                "genres": sorted(genres),
+                "roles": sorted(roles),
+                "navidrome_artist_id": remote_id,
+            }
+            try:
+                self._cache_navidrome_thumbnail(artist, credential, remote_artist)
+            except (OSError, ValueError, requests.RequestException):
+                pass
+            if isinstance(self.database, Database):
+                db.execute("DELETE FROM artist_album_appearances WHERE artist_key=?", (canonical_id,))
+                for key in sorted(song_paths):
+                    db.execute(
+                        "INSERT INTO artist_album_appearances"
+                        "(artist_key,album_key,navidrome_album_id,featured,song_paths_json) VALUES(?,?,?,?,?)",
+                        (canonical_id, key, remote_album_ids.get(key, ""), int(key in featured),
+                         json.dumps(context["song_paths"][key])),
+                    )
+                db.commit()
+            with self.lock:
+                self.appearance_cache[canonical_id] = context
+            LOGGER.info(
+                "Artist appearance catalog ready: artist=%s albums=%d featured=%d comp_paths=%d",
+                str(artist["artist_name"]),
+                len(context["album_keys"]),
+                len(context["featured_album_keys"]),
+                sum(len(paths) for paths in context["song_paths"].values()),
+            )
+            return context
+        except (OSError, ValueError, KeyError, TypeError, requests.RequestException, json.JSONDecodeError) as error:
+            # Never log credential-bearing request URLs or exception text.
+            LOGGER.warning(
+                "Artist appearance catalog unavailable: artist=%s error=%s; using stored projection",
+                str(artist["artist_name"]),
+                type(error).__name__,
+            )
+            return stored
+
     def upscale_preview(self, image_url: str) -> dict[str, object]:
         source = self.image_source(image_url)
         with Image.open(source if isinstance(source, Path) else BytesIO(source)) as opened:
@@ -323,16 +730,22 @@ class Catalog:
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
             ).fetchall()
-        return [
-            {
-                "id": row["artist_key"],
-                "name": row["artist_name"],
-                "albums": row["album_count"],
-                "status": row["status"],
-                "portrait": self.image(self.artist_thumbnail_path(row)),
-            }
-            for row in rows
-        ]
+        result = []
+        for group in self._artist_groups(rows):
+            canonical = self._canonical_artist_row(group)
+            portrait = None
+            for row in [canonical, *(item for item in group if item is not canonical)]:
+                portrait = self.artist_thumbnail_path(row)
+                if portrait is not None:
+                    break
+            result.append({
+                "id": canonical["artist_key"],
+                "name": canonical["artist_name"],
+                "albums": sum(int(row["album_count"] or 0) for row in group),
+                "status": self._aggregate_artist_status(group),
+                "portrait": self.image(portrait),
+            })
+        return sorted(result, key=lambda item: normalized_artist_identity(item["name"]))
 
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
@@ -347,6 +760,8 @@ class Catalog:
             identity = "name-" + digest.digest()[:16].hex()
         managed = ArtistArtTarget(self.artist_art, "artist-" + identity, True)
         portrait = saved_package((direct, managed)).portrait
+        if portrait is None:
+            portrait = self._navidrome_thumbnail_path(artist)
         if portrait is not None and (
             not portrait.is_file() or not self.allowed_image_path(portrait)
         ):
@@ -397,36 +812,36 @@ class Catalog:
 
     def artist(self, artist_id: str) -> dict[str, object]:
         with closing(self.connect()) as db:
-            artist = db.execute(
-                "SELECT artist_key, artist_name, musicbrainz_artistid, primary_path, album_count, status "
-                "FROM artists WHERE artist_key=?", (artist_id,),
-            ).fetchone()
-            if artist is None:
-                raise KeyError("Artist not found")
+            artist, aliases = self._artist_identity_rows(db, artist_id)
+            alias_ids = [str(row["artist_key"]) for row in aliases]
+            placeholders = ",".join("?" for _ in alias_ids)
             primary_rows = db.execute(
-                "SELECT * "
-                "FROM albums WHERE artist_key=? ORDER BY album_name COLLATE NOCASE",
-                (artist_id,),
+                "SELECT albums.*,artists.artist_name AS album_artist "
+                "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
+                f"WHERE albums.artist_key IN ({placeholders}) ORDER BY albums.album_name COLLATE NOCASE",
+                tuple(alias_ids),
             ).fetchall()
-            appearance_rows = db.execute(
-                "SELECT albums.*,tracks.artist_name AS appearance_credit FROM albums "
-                "JOIN tracks ON tracks.album_key=albums.album_key "
-                "WHERE albums.artist_key<>? AND TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
-                "AND lower(COALESCE(tracks.artist_name,'')) LIKE lower(?) "
-                "ORDER BY albums.album_name COLLATE NOCASE",
-                (artist_id, "%" + str(artist["artist_name"]) + "%"),
-            ).fetchall()
+            appearance = self._artist_appearance_context(artist, aliases, db)
+            appearance_keys = set(appearance.get("album_keys", set()))
+            if appearance_keys:
+                appearance_placeholders = ",".join("?" for _ in appearance_keys)
+                appearance_rows = db.execute(
+                    "SELECT albums.*,artists.artist_name AS album_artist "
+                    "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
+                    f"WHERE albums.album_key IN ({appearance_placeholders}) "
+                    "AND TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''",
+                    tuple(sorted(appearance_keys)),
+                ).fetchall()
+            else:
+                appearance_rows = []
             top_tracks = [item["title"] for item in db.execute(
                 "SELECT tracks.title FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                "WHERE albums.artist_key=? ORDER BY tracks.title COLLATE NOCASE LIMIT 10", (artist_id,),
+                f"WHERE albums.artist_key IN ({placeholders}) ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
+                tuple(alias_ids),
             ).fetchall()]
-        featured_rows = {}
-        for row in appearance_rows:
-            if artist_credit_position(
-                str(row["appearance_credit"] or ""), str(artist["artist_name"])
-            ) is not None:
-                featured_rows.setdefault(str(row["album_key"]), row)
-        rows = [*primary_rows, *featured_rows.values()]
+        featured_keys = set(appearance.get("featured_album_keys", set()))
+        primary_keys = {str(row["album_key"]) for row in primary_rows}
+        rows = [*primary_rows, *(row for row in appearance_rows if str(row["album_key"]) not in primary_keys)]
         targets = artist_targets(
             [ArtistAlbum(artist["artist_name"], Path(row["path"]),
                          row["musicbrainz_albumid"] or "", artist["musicbrainz_artistid"] or "")
@@ -450,7 +865,10 @@ class Catalog:
                 "id": row["album_key"], "name": row["album_name"],
                 "tracks": row["track_count"], "status": row["status"],
                 "compilation": bool(row["compilation"]),
-                "featured": str(row["album_key"]) in featured_rows,
+                "featured": str(row["album_key"]) in featured_keys,
+                "album_artist": row["album_artist"] or "",
+                "various_artists": normalized_artist_identity(row["album_artist"] or "")
+                    == "variousartists",
                 "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "year": row["release_year"] or "",
@@ -466,10 +884,12 @@ class Catalog:
                 "cover": self.image(cover),
             })
         return {
-            "id": artist_id, "name": artist["artist_name"],
+            "id": artist["artist_key"], "name": artist["artist_name"],
             "mbid": artist["musicbrainz_artistid"] or "",
-            "status": artist["status"], "albums": albums,
+            "status": self._aggregate_artist_status(aliases), "albums": albums,
             "top_tracks": top_tracks,
+            "genres": list(appearance.get("genres", [])),
+            "roles": list(appearance.get("roles", [])),
             "portrait": self.image(portrait),
             "banner": self.image(package.banner),
             "portrait_meta": image_metadata(portrait) if portrait and portrait.is_file() else None,
@@ -592,10 +1012,17 @@ class Catalog:
 
     def _artist_comp_groups(self, artist_id: str, *, verify_tracks: bool) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
-            artist = db.execute("SELECT artist_name FROM artists WHERE artist_key=?", (artist_id,)).fetchone()
-            if artist is None:
-                raise KeyError("Artist not found")
+            artist, aliases = self._artist_identity_rows(db, artist_id)
             name = str(artist["artist_name"]).strip()
+            alias_ids = [str(row["artist_key"]) for row in aliases]
+            placeholders = ",".join("?" for _ in alias_ids)
+            appearance = self._artist_appearance_context(artist, aliases, db)
+            appearance_ids = sorted(set(appearance.get("album_keys", set())))
+            appearance_clause = ""
+            if appearance_ids:
+                appearance_clause = (
+                    "OR albums.album_key IN (" + ",".join("?" for _ in appearance_ids) + ") "
+                )
             rows = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.path AS album_path, "
                 "albums.cover_path, albums.release_year, albums.artist_key, tracks.track_key, tracks.path, "
@@ -603,9 +1030,10 @@ class Catalog:
                 "JOIN tracks ON tracks.album_key=albums.album_key "
                 "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
                 "AND (instr(lower(COALESCE(tracks.artist_name,'')), lower(?))>0 "
-                "OR (albums.artist_key=? AND TRIM(COALESCE(tracks.artist_name,''))='')) "
+                f"OR (albums.artist_key IN ({placeholders}) AND TRIM(COALESCE(tracks.artist_name,''))='') "
+                f"{appearance_clause}) "
                 "ORDER BY albums.album_name COLLATE NOCASE, tracks.path COLLATE NOCASE",
-                (name, artist_id),
+                (name, *alias_ids, *appearance_ids),
             ).fetchall()
             has_ledger = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'"
@@ -616,10 +1044,22 @@ class Catalog:
             )} if has_ledger else set()
         groups: dict[str, dict[str, object]] = {}
         seen: set[str] = set()
+        appearance_paths = appearance.get("song_paths", {})
         for row in rows:
             credits = str(row["artist_name"] or "").replace("\0", ";")
+            row_path = str(row["path"]).replace("\\", "/").strip("/").casefold()
+            expected_paths = [
+                str(value).replace("\\", "/").strip("/").casefold()
+                for value in appearance_paths.get(str(row["album_key"]), [])
+            ]
+            appearance_match = any(
+                row_path == expected or row_path.endswith("/" + expected)
+                or expected.endswith("/" + row_path)
+                for expected in expected_paths if expected
+            )
             if not (any(credit.strip().casefold() == name.casefold() for credit in credits.split(";"))
-                    or not credits.strip() and row["artist_key"] == artist_id):
+                    or not credits.strip() and row["artist_key"] in alias_ids
+                    or appearance_match):
                 continue
             folder, track_path = Path(row["album_path"]), Path(row["path"])
             if verify_tracks and (

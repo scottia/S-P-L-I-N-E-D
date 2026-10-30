@@ -79,10 +79,33 @@ class _ProfileHttp:
         raise AssertionError(f"Unexpected request: {url}")
 
 
+class _AdditionalProviderHttp:
+    def __init__(self):
+        self.headers = {}
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        if url == "https://ws.audioscrobbler.com/2.0/":
+            return _Response({"artist": {"name": "3 Doors Down", "image": [
+                {"size": "extralarge", "#text": "https://lastfm.freetls.fastly.net/i/u/artist.png"}
+            ]}})
+        if url == "https://api.discogs.com/database/search":
+            return _Response({"results": [
+                {"title": "3 Doors Down", "cover_image": "https://i.discogs.com/artist.jpg"},
+                {"title": "Wrong Artist", "cover_image": "https://i.discogs.com/wrong.jpg"},
+            ]})
+        if url.endswith("artist.png") or url.endswith("artist.jpg"):
+            return _Response(content=_png("purple"))
+        raise AssertionError(f"Unexpected request: {url}")
+
+
 class ArtistSearchTests(unittest.TestCase):
     def test_image_downloads_are_limited_to_provider_hosts(self):
         self.assertTrue(_allowed_image_url("https://assets.fanart.tv/art.png"))
         self.assertTrue(_allowed_image_url("https://e-cdns-images.dzcdn.net/art.jpg"))
+        self.assertTrue(_allowed_image_url("https://lastfm.freetls.fastly.net/i/u/art.jpg"))
+        self.assertTrue(_allowed_image_url("https://i.discogs.com/art.jpg"))
         self.assertFalse(_allowed_image_url("https://fanart.tv.evil.example/art.png"))
         self.assertFalse(_allowed_image_url("http://assets.fanart.tv/art.png"))
 
@@ -117,6 +140,32 @@ class ArtistSearchTests(unittest.TestCase):
             self.assertEqual([label for label, _ in found], ["Deezer portrait"])
             self.assertEqual(len(warnings), 1)
             self.assertTrue(warnings[0].startswith("Fanart.tv:"))
+
+    def test_configured_lastfm_and_discogs_artist_images_are_included(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            credentials = Path(temporary)
+            (credentials / "lastfm.json").write_text(
+                json.dumps({"api_key": "lastfm-secret"}), encoding="utf-8"
+            )
+            (credentials / "discogs.json").write_text(
+                json.dumps({"token": "discogs-secret"}), encoding="utf-8"
+            )
+            http = _AdditionalProviderHttp()
+            found, warnings = discover_artist_images(
+                "3 Doors Down", "", credentials, http=http,
+                enabled=("lastfm", "discogs"),
+            )
+            self.assertEqual(
+                [label for label, _ in found],
+                ["Last.fm portrait", "Discogs portrait"],
+            )
+            self.assertEqual(warnings, [])
+            discogs = next(call for call in http.calls if call[0].endswith("database/search"))
+            self.assertEqual(
+                discogs[1]["headers"]["Authorization"],
+                "Discogs token=discogs-secret",
+            )
+            self.assertNotIn("wrong.jpg", [url for url, _ in http.calls])
 
     def test_profile_matches_musicbrainz_then_uses_lastfm_when_navidrome_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -125,6 +125,7 @@ class Services:
         app.cover_stem = str(r.cfg.get("output", {}).get("file_name", "cover"))
         app.artist_sources = tuple(core.resolve_sources(r.cfg, None, None, []))
         app.metadata_cache.clear()
+        app.appearance_cache.clear()
         app.portrait_cache.clear()
 
     def audit(self, action, subject, details=None):
@@ -421,6 +422,11 @@ class Services:
             "changed_albums": changed_albums,
             "removed_albums": len(stale),
         }
+        # Artist appearances come from the refreshed catalog plus Navidrome.
+        # Never retain an empty or partial artist projection across a refresh.
+        self.catalog.appearance_cache.clear()
+        self.catalog.metadata_cache.clear()
+        self.catalog.portrait_cache.clear()
         self.audit("index-refresh", str(root), result)
         return result
 

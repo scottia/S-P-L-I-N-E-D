@@ -75,6 +75,11 @@ class BrowserFallbackTests(unittest.TestCase):
         )[0]
         self.assertIn("/api/artist/comp-albums", choose_artist)
         self.assertNotIn("/api/artist/comp-report", choose_artist)
+        self.assertNotIn("Promise.all", choose_artist)
+        self.assertLess(
+            choose_artist.index('api("/api/artist?id="'),
+            choose_artist.index('api("/api/artist/comp-albums?id="'),
+        )
         self.assertIn("/api/artist/comp-report", open_report)
 
         operations = (static / "operations.js").read_text(encoding="utf-8")
@@ -84,6 +89,8 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("await focusQueuedAlbum(state.queuedDecision)", operations)
         self.assertIn('\"EMBED Thumb\"', operations)
         self.assertIn('context.album || job.payload?.name', operations)
+        self.assertIn('["embed-album", "comp"].includes(job.kind)', operations)
+        self.assertIn('state.workspace === "enhance" && state.radioCurrent', operations)
         self.assertIn('$("fullscreenButton")', operations)
         self.assertNotIn('$("reviewWork")', operations)
         self.assertNotIn("submitQueuedDecision(candidate.queueValue)", application)
@@ -94,6 +101,11 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("normalizedColor", application)
         self.assertIn("renderedPreview", application)
         self.assertIn("compReportLoading", application)
+        enter_artist_art = application.split("function enterArtistArt", 1)[1].split(
+            "function showDialog", 1
+        )[0]
+        self.assertNotIn("searchArtist", enter_artist_art)
+        self.assertIn('state.workspace === "enhance" ? searchArtist : launchArtist', application)
         self.assertIn('status: "check-error"', application)
         document = (static / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="fullscreenButton"', document)
@@ -115,8 +127,10 @@ class BrowserFallbackTests(unittest.TestCase):
             second = app.image(source)
             self.assertNotEqual(first, second)
             self.assertEqual(app.image_source(second), source)
-            with self.assertRaises(ValueError):
-                app.image_source(first)
+            # A queued job may still hold the earlier signed URL after a
+            # same-path artwork write. The old handle remains authorized for
+            # that allowed path while new browser renders receive a new URL.
+            self.assertEqual(app.image_source(first), source)
 
     def test_artist_report_combines_matching_tracks_across_comp_albums(self) -> None:
         with TemporaryDirectory() as directory:

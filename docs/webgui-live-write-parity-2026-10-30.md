@@ -1,7 +1,7 @@
 # WebGUI live-write parity — 2026-10-30
 
-This update was reconciled onto release 2.0.9 before promotion through `dev`
-to `main`.
+This update was reconciled through release 2.0.11 before promotion through
+`dev` to `main`.
 
 ## Corrected behavior
 
@@ -29,6 +29,27 @@ to `main`.
 - WebGUI runtime and failed-job events are written through the configured,
   redacted runtime logger as well as the bounded PostgreSQL audit history.
 
+## Artist identity and appearance hotfix
+
+- Artist identities and aliases are canonicalized into one Media Library row.
+  A MusicBrainz identity wins over a legacy name-only duplicate while every
+  compatible alias still contributes its indexed appearances.
+- Artist Overview now publishes the complete Artist, Featured, Soundtrack,
+  Various Artist, and COMP appearance projection on the first selection. The
+  projection is persisted in PostgreSQL and reused if Navidrome is temporarily
+  unavailable; an explicit catalog refresh invalidates it.
+- The COMP summary loads only after the canonical Artist response, removing the
+  first-click race that could show primary albums alone until the Artist was
+  selected again.
+- Catalog indexing and scan-maintenance jobs no longer appear as green Album
+  Track Embedding work. The embedding queue renders only album and COMP jobs.
+- Versioned artwork handles tolerate an atomic replacement at the same allowed
+  path, preventing a successful EMBED Batch stage from reporting an invalid
+  artwork handle.
+- Existing Artist Art packages can be filtered, fitted, upscaled, and written
+  directly. **LAUNCH** is the deliberate artist-image search action and covers
+  Local Files, Fanart.tv, Navidrome, Deezer, Last.fm, and Discogs.
+
 ## Native Windows alignment
 
 Windows now publishes an indexed fallback folder cover into its Album card
@@ -37,8 +58,8 @@ remain track-scoped.
 
 ## Validation
 
-- WebGUI/Python: 151 tests passed; 15 environment-dependent PostgreSQL tests
+- WebGUI/Python: 155 tests passed; 15 environment-dependent PostgreSQL tests
   skipped when no test database was configured.
 - JavaScript: `app.js` and `operations.js` syntax checks passed.
-- Windows/Rust: the fallback-card identity test passed after compiling the
-  current 2.0.9 native source.
+- This hotfix changes only WebGUI/Python, its PostgreSQL migration, browser
+  interface, tests, and documentation. Native Windows source is unchanged.

@@ -125,13 +125,25 @@ async function writeArtwork() {
     state.album = await api("/api/album?id=" + encodeURIComponent(state.album.id));
     renderHero(); renderReview(); setStatus("Cover written · " + state.album.name); return;
   }
-  if (!state.selectedPortrait && !state.selectedBanner) { enterArtistArt(); return; }
+  const editingCurrentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent;
+  if (!state.selectedPortrait && !state.selectedBanner && !editingCurrentPackage) { enterArtistArt(); return; }
   const components = [];
-  if (state.radioArtist && (state.selectedPortrait?.image || state.artist.portrait)) components.push(componentPayload("artist", state.selectedPortrait?.image || state.artist.portrait));
-  if (state.radioBanner && (state.selectedBanner?.image || state.artist.banner)) components.push(componentPayload("banner", state.selectedBanner?.image || state.artist.banner));
+  if (editingCurrentPackage) {
+    const adjustments = state.fx.current || {}, fit = state.fit.current || {zoom: 1, x: 0, y: 0};
+    const portrait = state.selectedPortrait?.image || state.artist.portrait;
+    const banner = state.selectedBanner?.image || state.artist.banner;
+    if (portrait) components.push(componentPayload("artist", portrait, {adjustments, fit}));
+    if (banner) components.push(componentPayload("banner", banner, {adjustments, fit}));
+  } else {
+    if (state.radioArtist && (state.selectedPortrait?.image || state.artist.portrait)) components.push(componentPayload("artist", state.selectedPortrait?.image || state.artist.portrait));
+    if (state.radioBanner && (state.selectedBanner?.image || state.artist.banner)) components.push(componentPayload("banner", state.selectedBanner?.image || state.artist.banner));
+  }
   if (!components.length) throw new Error("Choose the artist image or banner radio before writing");
   const result = await post("/api/artwork/artist", {artist_id: state.artist.id, components});
   state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+  state.selectedPortrait = null; state.selectedBanner = null; state.renderedPreview = {};
+  state.fx.current = {}; state.fx.artist = {}; state.fx.banner = {};
+  state.fit.artist = {zoom: 1, x: 0, y: 0}; state.fit.banner = {zoom: 1, x: 0, y: 0};
   renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
 }
 const previewReview = renderReview;
@@ -139,8 +151,10 @@ renderReview = function () {
   previewReview();
   const entry = state.editorMode === "artist" && state.workspace !== "enhance" && !state.compReportVisible && !state.selectedPortrait && !state.selectedBanner;
   const writable = state.server?.mode === "write";
+  const currentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent
+    && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
-    : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack : !((state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+    : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
   $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
@@ -276,7 +290,10 @@ async function presentQueuedCandidates(job, prompt, options) {
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
-  const jobs = state.jobs || [];
+  // Catalog indexing is application maintenance, not album embedding. Keep it
+  // in status/diagnostics so a completed 3,885-album refresh can never look
+  // like 3,885 tracks were embedded with the currently selected cover.
+  const jobs = (state.jobs || []).filter(job => ["embed-album", "comp"].includes(job.kind));
   if (!jobs.length) host.append(node("p", "empty-copy", "No queued work yet."));
   for (const job of jobs) {
     const prompt = job.progress?.prompt || {}, context = prompt.context || {};
@@ -884,15 +901,22 @@ async function chooseMusicBrainz() {
   });
 }
 async function upscaleArtist() {
-  const components = state.radioBanner ? ["banner"] : ["artist"];
+  const components = state.radioCurrent
+    ? [["artist", state.selectedPortrait?.image || state.artist?.portrait], ["banner", state.selectedBanner?.image || state.artist?.banner]].filter(([, source]) => !!source).map(([kind]) => kind)
+    : state.radioArtist && state.radioBanner ? ["artist", "banner"]
+    : state.radioBanner ? ["banner"] : ["artist"];
   for (const kind of components) {
     const source = kind === "banner" ? state.selectedBanner?.image || state.artist?.banner : state.selectedPortrait?.image || state.artist?.portrait;
     if (!source) throw new Error("Choose artist artwork before upscaling");
-    const result = await post("/api/preview/upscale", componentPayload(kind, source, {package_adjustments:{}}));
+    const extra = state.radioCurrent
+      ? {adjustments: state.fx.current || {}, package_adjustments: {}, fit: {zoom: 1, x: 0, y: 0}}
+      : {package_adjustments: {}};
+    const result = await post("/api/preview/upscale", componentPayload(kind, source, extra));
     const candidate = {...result, name: "Upscaled " + kind, source: "Prepared", kind};
     if (kind === "banner") state.selectedBanner = candidate; else state.selectedPortrait = candidate;
     state.fx[kind] = {}; state.fit[kind] = {zoom: 1, x: 0, y: 0};
   }
+  if (state.radioCurrent) state.fx.current = {};
   renderPanes(); renderReview(); setStatus("Upscaled artwork ready to write");
 }
 $("startStaged").addEventListener("click", () => runAction(() => queueAction("start")));
