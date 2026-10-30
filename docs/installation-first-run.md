@@ -150,7 +150,9 @@ according to local policy before execution.
 ## WebGUI / Python
 
 Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), open its browser
-address, and complete Settings. Save the server music paths, configure provider
+address, and create the administrator with username, password confirmation,
+and the one-time deployment token. Later logins use username and password.
+Complete Settings, save the server music paths, configure provider
 credentials, and refresh the library index. All artwork review and writes take
 place in the browser.
 

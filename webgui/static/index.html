@@ -3,9 +3,31 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>S.P.L.I.N.E.D. · Artwork Workspace</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/assets/splined-dashboard-icon.png">
   <link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script><script src="/operations.js" defer></script>
 </head>
-<body>
+<body class="auth-pending">
+  <section id="authScreen" class="auth-screen" aria-labelledby="authTitle">
+    <div class="auth-card">
+      <div class="auth-brand"><img src="/assets/splined-app-icon.png" alt=""><div><img src="/assets/splined-slogan.svg" alt="S.P.L.I.N.E.D."><p>Secure artwork workspace</p></div></div>
+      <h1 id="authTitle">Sign in to SPLINED</h1>
+      <p id="authMessage">Checking WebGUI access…</p>
+      <form id="adminSetupForm" class="auth-form" hidden>
+        <label><span>Administrator username</span><input id="setupUsername" name="username" type="text" minlength="3" maxlength="64" autocomplete="username" required></label>
+        <label><span>Password</span><input id="setupPassword" name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label>
+        <label><span>Validate password</span><input id="setupConfirmation" name="confirmation" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label>
+        <label><span>WebGUI setup token</span><input id="setupToken" name="token" type="password" autocomplete="one-time-code" required></label>
+        <button type="submit">Create administrator</button>
+      </form>
+      <form id="loginForm" class="auth-form" hidden>
+        <label><span>Username</span><input id="loginUsername" name="username" type="text" autocomplete="username" required></label>
+        <label><span>Password</span><input id="loginPassword" name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Sign in</button>
+      </form>
+      <p id="authError" class="auth-error" role="alert"></p>
+    </div>
+  </section>
   <header class="app-header">
     <div class="brand" aria-label="S.P.L.I.N.E.D."><img class="brand-icon" src="/assets/splined-app-icon.png" alt=""><div class="brand-type"><strong><span>S</span><span>:</span><span>P</span><span>:</span><span>L</span><span>:</span><span>I</span><span>:</span><span>N</span><span>:</span><span>E</span><span>:</span><span>D</span></strong><img src="/assets/splined-slogan.svg" alt="Searchable. Focused. Linked. Identified. Normalized. Enriched. Defined."></div></div>
     <div id="status" class="status" role="status" aria-live="polite"><span id="statusText">Loading library…</span><span class="status-progress"></span></div>

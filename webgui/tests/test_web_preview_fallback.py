@@ -28,8 +28,8 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("/api/artist/comp-report", open_report)
 
         operations = (static / "operations.js").read_text(encoding="utf-8")
-        self.assertIn('cfg.scan.shared_artist_art_dir ??= ""', operations)
-        self.assertIn('keys.join(".") === "scan.sqlite_shared"', operations)
+        self.assertIn('draft.scan.shared_artist_art_dir ??= ""', operations)
+        self.assertIn("delete draft.scan.sqlite_shared", operations)
         self.assertIn("presentQueuedCandidates(job, prompt, options)", operations)
         self.assertIn("submitQueuedDecision(candidate.queueValue)", application)
         self.assertIn("cover: group.cover || null", application)

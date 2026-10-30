@@ -19,8 +19,9 @@ function field(host, title, value = "", type = "text") {
   else input.type = type;
   input.value = value; label.append(input); host.append(label); return input;
 }
-function dialog(title) {
+function dialog(title, kind = "") {
   $("dialogTitle").textContent = title; clear($("dialogBody"));
+  $("workspaceDialog").classList.toggle("settings-dialog", kind === "settings");
   if (!$("workspaceDialog").open) $("workspaceDialog").showModal();
   return $("dialogBody");
 }
@@ -31,16 +32,36 @@ async function sessionStatus() {
 async function initialize() {
   const status = await sessionStatus();
   if (!status.authenticated) {
-    const body = dialog("Sign in to SPLINED");
-    const token = field(body, "WebGUI access token", "", "password");
-    actionButton("Sign in", async () => { await post("/api/login", {token: token.value}); $("workspaceDialog").close(); await initialize(); });
+    showAuthentication(status);
     return;
   }
+  document.body.className = "authenticated";
   if (status.setup_required) { await openSettings(); setStatus("Complete library and database setup in Settings"); return; }
   const settings = await api("/api/settings");
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll(); await loadLibrary(); await pollJobs();
   void runAction(checkLibraryChanges);
+}
+function showAuthentication(status) {
+  document.body.className = "auth-required";
+  $("adminSetupForm").hidden = !status.admin_setup_required;
+  $("loginForm").hidden = status.admin_setup_required;
+  $("authTitle").textContent = status.admin_setup_required ? "Create the SPLINED administrator" : "Sign in to SPLINED";
+  $("authMessage").textContent = status.admin_setup_required
+    ? "Create the first administrator. The deployment's WebGUI token authorizes this one-time enrollment and is not stored in PostgreSQL."
+    : "Enter the saved administrator username and password.";
+  $("authError").textContent = "";
+  (status.admin_setup_required ? $("setupUsername") : $("loginUsername")).focus();
+}
+async function submitAuthentication(path, payload) {
+  $("authError").textContent = "";
+  try {
+    await post(path, payload);
+    $("setupPassword").value = ""; $("setupConfirmation").value = ""; $("setupToken").value = ""; $("loginPassword").value = "";
+    await initialize();
+  } catch (error) {
+    $("authError").textContent = error.message;
+  }
 }
 async function checkLibraryChanges() {
   const changes = await api("/api/library/changes");
@@ -282,55 +303,145 @@ function renderJob(job) {
   }
   actionButton("Pause work", () => queueAction("pause", job.id));
 }
+function settingValue(object, path, fallback = undefined) {
+  let value = object;
+  for (const key of path.split(".")) {
+    if (!value || typeof value !== "object" || !(key in value)) return fallback;
+    value = value[key];
+  }
+  return value;
+}
+function setSettingValue(object, path, value) {
+  const keys = path.split("."); let owner = object;
+  for (const key of keys.slice(0, -1)) owner = owner[key] ||= {};
+  if (value === undefined) delete owner[keys.at(-1)]; else owner[keys.at(-1)] = value;
+}
+function settingsInput(host, descriptor, path, draft, bindings, saved) {
+  const label = node("label", "setting-field"); label.append(node("span", "", descriptor.label));
+  const shell = node("span", "setting-input-shell");
+  const input = descriptor.type === "enum" ? node("select") : node("input");
+  const existing = settingValue(draft, path, descriptor.default);
+  if (descriptor.type === "enum") {
+    for (const value of descriptor.choices || []) { const option = node("option", "", value); option.value = value; input.append(option); }
+    input.value = existing ?? "";
+  } else if (descriptor.type === "boolean") {
+    input.type = "checkbox"; input.checked = Boolean(existing);
+  } else {
+    input.type = descriptor.type === "integer" || descriptor.type === "optional-integer" ? "number"
+      : path === "database.url" ? "password" : "text";
+    input.value = Array.isArray(existing) ? existing.join(", ") : existing ?? "";
+    if (descriptor.min !== undefined) input.min = descriptor.min;
+    if (descriptor.max !== undefined) input.max = descriptor.max;
+    if (descriptor.required) input.required = true;
+  }
+  if (saved.database_managed && path === "database.url") { input.disabled = true; input.placeholder = "Managed by server environment"; }
+  shell.append(input);
+  if (descriptor.suffix) shell.append(node("span", "setting-suffix", descriptor.suffix));
+  label.append(shell);
+  if (descriptor.help) label.append(node("small", "", descriptor.help));
+  host.append(label); bindings.push({input, descriptor, path});
+  return input;
+}
+function applySettingsInputs(draft, bindings) {
+  for (const {input, descriptor, path} of bindings) {
+    if (input.disabled) continue;
+    let value;
+    if (descriptor.type === "boolean") value = input.checked;
+    else if (descriptor.type === "list") value = input.value.split(",").map(item => item.trim()).filter(Boolean);
+    else if (["integer", "optional-integer"].includes(descriptor.type)) {
+      if (!input.value.trim() && descriptor.type === "optional-integer") value = undefined;
+      else {
+        if (!input.value.trim() || !input.checkValidity()) throw new Error(descriptor.label + " is outside its allowed range");
+        value = Number(input.value);
+      }
+    } else value = input.value;
+    setSettingValue(draft, path, value);
+  }
+}
 async function openSettings() {
   state.reviewJobId = null;
-  const saved = await api("/api/settings"), cfg = saved.config, body = dialog("Settings · Python / PostgreSQL");
-  cfg.scan ||= {};
-  cfg.scan.shared_artist_art_dir ??= "";
-  // This switch controls shared SQLite files in native clients. WebGUI owns
-  // a PostgreSQL catalog, so never carry the native-only mode into a save.
-  cfg.scan.sqlite_shared = false;
-  body.append(node("p", "", "Set paths on the server. Live Write permits artwork and track-tag writes. Secrets already saved are retained when left blank."));
-  const inputs = [];
-  function section(parent, object, path = []) {
-    for (const [name, value] of Object.entries(object)) {
-      const keys = [...path, name];
-      if (keys.join(".") === "scan.sqlite_shared") continue;
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        const details = node("details", "settings-section"); details.open = ["library", "database", "output"].includes(name);
-        details.append(node("summary", "", name.replaceAll("_", " "))); parent.append(details); section(details, value, keys);
-      } else {
-        const type = name === "mode" && !path.length ? "mode" : typeof value === "boolean" ? "checkbox" : typeof value === "number" ? "number" : name === "url" && path[0] === "database" ? "password" : "text";
-        const settingName = keys.join(".") === "scan.shared_artist_art_dir"
-          ? "V/A / OST Artist Images Directory"
-          : keys.join(".") === "scan.cache_dir" ? "Cache Directory"
-          : name === "mode" ? "Mode: read or write (Live Write)" : name.replaceAll("_", " ");
-        const input = field(parent, settingName, Array.isArray(value) ? JSON.stringify(value) : value, type);
-        if (keys.join(".") === "scan.shared_artist_art_dir") {
-          input.placeholder = "Blank uses <Cache Directory>/artist-art";
-          input.title = "Persistent portraits and banners for V/A, OST, and other shared artist folders";
-        }
-        if (type === "checkbox") input.checked = value;
-        if (saved.database_managed && path[0] === "database") { input.disabled = true; input.placeholder = "Managed by server environment"; }
-        inputs.push({input, keys, original: value});
-      }
+  let saved, contract;
+  [saved, contract] = await Promise.all([api("/api/settings"), api("/api/settings/contract")]);
+  const body = dialog("Settings · WebGUI / PostgreSQL", "settings");
+  const workspace = node("div", "settings-workspace"), nav = node("nav", "settings-nav"), content = node("section", "settings-content");
+  workspace.append(nav, content); body.append(workspace);
+  let active = "library", advanced = false, provider = contract.providers[0], draft = null, bindings = [];
+  const available = contract.sections.filter(section => !section.runtimes || section.runtimes.includes("webgui"));
+
+  function renderNav() {
+    clear(nav); nav.append(node("div", "settings-nav-title", "SETTINGS SECTIONS"));
+    for (const section of available) {
+      const button = node("button", section.id === active ? "active" : "", section.icon + "  " + section.label); button.type = "button";
+      button.addEventListener("click", () => renderSection(section.id)); nav.append(button);
+    }
+    const advancedButton = node("button", "settings-advanced" + (advanced ? " active" : ""), advanced ? "Advanced ON" : "Advanced");
+    advancedButton.type = "button"; advancedButton.addEventListener("click", () => { applySettingsInputs(draft, bindings); advanced = !advanced; renderSection(active, true); }); nav.append(advancedButton);
+    if (state.server?.auth_required) {
+      const logout = node("button", "", "Sign out"); logout.type = "button";
+      logout.addEventListener("click", () => runAction(async () => { await post("/api/logout"); $("workspaceDialog").close(); await initialize(); })); nav.append(logout);
     }
   }
-  section(body, cfg);
-  actionButton("Save Settings", async () => {
-    for (const {input, keys, original} of inputs) {
-      let owner = cfg; for (const key of keys.slice(0, -1)) owner = owner[key];
-      owner[keys.at(-1)] = typeof original === "boolean" ? input.checked : typeof original === "number" ? Number(input.value) : Array.isArray(original) ? JSON.parse(input.value) : input.value;
+  function addSpecialSection(section, fields) {
+    if (section.id === "connections") {
+      fields.append(node("h4", "settings-group-heading", "Provider Credentials"));
+      const actions = node("div", "settings-actions");
+      for (const name of ["navidrome", "fanarttv", "lastfm", "discogs", "musicbrainz"]) actionButton(name, () => editCredentials(name), actions);
+      fields.append(actions, node("p", "", "Connection tests do not automatically include a provider in artwork search. Configure inclusion under Artwork Sources."));
     }
-    await post("/api/settings", {config: cfg}); await sessionStatus();
-    state.enabledSources = (cfg.sources?.cover_sources || []).filter(key=>!cfg.sources?.exclude_cover_sources?.includes(key) && cfg.source_policies?.[key]?.enabled!==false); renderAll(); setStatus("Settings saved");
-  });
-  actionButton("Full Refresh Library Index", async () => { const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); });
-  actionButton("Provider Credentials", credentialsMenu);
-  const migration = node("details", "settings-section"); migration.append(node("summary", "", "Import an existing SQLite catalog")); body.append(migration);
-  migration.append(node("p", "", "Imports a server-side snapshot into an empty PostgreSQL catalog. Paths must match the configured server library. The source remains unchanged."));
-  const path = field(migration, "Snapshot path on server");
-  actionButton("Import Catalog", async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }, migration);
+    if (section.id === "catalog") {
+      fields.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
+      const actions = node("div", "settings-actions");
+      actionButton("Full Refresh Library Index", async () => { $("workspaceDialog").close(); const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); }, actions);
+      fields.append(actions, node("h4", "settings-group-heading", "Import an existing SQLite catalog"), node("p", "", "Imports a server-side snapshot into an empty PostgreSQL catalog. The source remains unchanged."));
+      const path = field(fields, "Snapshot path on server");
+      actionButton("Import Catalog", async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }, fields);
+    }
+    if (section.id === "backup") {
+      fields.append(node("p", "settings-warning", "Back up PostgreSQL with a consistent pg_dump, then back up config, credentials, cache/staged artwork, and Artist Art volumes. The browser never packages secrets into an export."));
+      const actions = node("div", "settings-actions");
+      actionButton("Download Safe Settings JSON", async () => {
+        const blob = new Blob([JSON.stringify(saved.config, null, 2) + "\n"], {type: "application/json"});
+        const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "splined-settings-safe.json"; link.click(); URL.revokeObjectURL(link.href);
+      }, actions);
+      actionButton("Download Shared Settings Contract", async () => {
+        const blob = new Blob([JSON.stringify(contract, null, 2) + "\n"], {type: "application/json"});
+        const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "splined-settings-ui.json"; link.click(); URL.revokeObjectURL(link.href);
+      }, actions);
+      fields.append(actions, node("p", "", "The shared contract defines cross-runtime labels, defaults, ranges, and runtime ownership. It is not a credential or database backup."));
+    }
+  }
+  function renderSection(id, preserveDraft = false) {
+    active = id; bindings = [];
+    if (!preserveDraft) draft = structuredClone(saved.config);
+    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
+    const section = available.find(item => item.id === id); clear(content); renderNav();
+    const header = node("header", "settings-content-header"), copy = node("div");
+    copy.append(node("h3", "", section.label), node("p", "", section.description)); header.append(copy);
+    if (!["catalog", "backup"].includes(section.id)) {
+      const save = node("button", "", "Save " + section.label); save.type = "button";
+      save.addEventListener("click", () => runAction(async () => {
+        applySettingsInputs(draft, bindings);
+        saved = await post("/api/settings", {config: draft}); await sessionStatus();
+        state.enabledSources = (saved.config.sources?.cover_sources || []).filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
+        renderAll(); setStatus(section.label + " settings saved"); renderSection(active);
+      })); header.append(save);
+    }
+    content.append(header); const fields = node("div", "settings-fields"); content.append(fields);
+    for (const descriptor of section.fields || []) {
+      if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
+      settingsInput(fields, descriptor, descriptor.path, draft, bindings, saved);
+    }
+    if (section.repeater) {
+      fields.append(node("h4", "settings-group-heading", section.repeater.label));
+      const picker = node("label", "settings-provider-picker"); picker.append(node("span", "", "Artwork Provider"));
+      const select = node("select");
+      for (const name of contract.providers) { const option = node("option", "", name); option.value = name; select.append(option); }
+      select.value = provider; select.addEventListener("change", () => { applySettingsInputs(draft, bindings); provider = select.value; renderSection(active, true); }); picker.append(select); fields.append(picker);
+      for (const descriptor of section.repeater.fields) settingsInput(fields, descriptor, section.repeater.path + "." + provider + "." + descriptor.path, draft, bindings, saved);
+    }
+    addSpecialSection(section, fields);
+  }
+  renderSection(active);
 }
 async function credentialsMenu() {
   const body = dialog("Provider Credentials");
@@ -415,8 +526,24 @@ $("uploadArtwork").addEventListener("click", () => {
     state.candidates.unshift(candidate); renderCandidates(); selectCandidate(candidate, candidate.kind === "cover" ? "album" : candidate.kind);
   })); input.click();
 });
+$("adminSetupForm").addEventListener("submit", event => {
+  event.preventDefault();
+  submitAuthentication("/api/admin/setup", {
+    username: $("setupUsername").value,
+    password: $("setupPassword").value,
+    confirmation: $("setupConfirmation").value,
+    token: $("setupToken").value,
+  });
+});
+$("loginForm").addEventListener("submit", event => {
+  event.preventDefault();
+  submitAuthentication("/api/login", {
+    username: $("loginUsername").value,
+    password: $("loginPassword").value,
+  });
+});
 setInterval(() => { if (!document.hidden) runAction(pollJobs); }, 1500);
-runAction(initialize);
+initialize().catch(error => { document.body.className = "auth-required"; $("authError").textContent = error.message; });
 
 async function repairFallback() {
   if (!state.album || !state.artist) return;

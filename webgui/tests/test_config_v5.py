@@ -7,7 +7,6 @@ from pathlib import Path
 
 import splined
 
-
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
@@ -42,6 +41,16 @@ class ConfigV5ParityTests(unittest.TestCase):
                 config = load_example(relative)
                 self.assertEqual(config["config_version"], 5)
                 splined.validate_config_v5(config)
+
+    def test_upscale_percentage_is_a_ceiling_not_an_all_or_nothing_gate(self) -> None:
+        config = load_example("docker/config.example.toml")
+        config["output"]["upscale_below_ideal"] = True
+        config["output"]["upscale_max_percent"] = 200
+        width, height, operations = splined.project_dimensions(600, 900, config)
+        self.assertEqual((width, height), (1200, 1800))
+        self.assertTrue(operations["upscaled"])
+        self.assertTrue(operations["upscale_limited"])
+        self.assertEqual(operations["upscale_percent"], 200)
 
     def test_fixed_provider_filenames_ignore_legacy_overrides(self) -> None:
         config = load_example("config.example.toml")

@@ -1,0 +1,80 @@
+"""Shared settings presentation contract and cross-runtime parity guards."""
+
+from __future__ import annotations
+
+import json
+import tomllib
+import unittest
+from pathlib import Path
+
+REPOSITORY = Path(__file__).resolve().parents[2]
+
+
+class SettingsContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.contract = json.loads(
+            (REPOSITORY / "schema/settings-ui.json").read_text(encoding="utf-8")
+        )
+
+    def test_contract_is_config_v5_and_has_unique_sections(self) -> None:
+        self.assertEqual(self.contract["config_version"], 5)
+        section_ids = [section["id"] for section in self.contract["sections"]]
+        self.assertEqual(len(section_ids), len(set(section_ids)))
+        self.assertIn("enhancement", section_ids)
+        self.assertIn("catalog", section_ids)
+
+    def test_webgui_exposes_native_upscale_policy_without_sqlite_controls(self) -> None:
+        web_paths = {
+            field["path"]
+            for section in self.contract["sections"]
+            if not section.get("runtimes") or "webgui" in section["runtimes"]
+            for field in section.get("fields", [])
+            if not field.get("runtimes") or "webgui" in field["runtimes"]
+        }
+        self.assertIn("output.upscale_below_ideal", web_paths)
+        self.assertIn("output.upscale_max_percent", web_paths)
+        self.assertIn("database.url", web_paths)
+        self.assertNotIn("scan.sqlite_shared", web_paths)
+        self.assertNotIn("scan.windows_client_lock", web_paths)
+
+    def test_contract_upscale_defaults_match_windows_and_docker(self) -> None:
+        defaults = {
+            field["path"]: field.get("default")
+            for section in self.contract["sections"]
+            for field in section.get("fields", [])
+        }
+        with (REPOSITORY / "docker/config.example.toml").open("rb") as handle:
+            docker = tomllib.load(handle)
+        with (REPOSITORY / "windows/config.example.toml").open("rb") as handle:
+            windows = tomllib.load(handle)
+        for name in (
+            "upscale_below_ideal",
+            "upscale_max_percent",
+            "upscale_adaptive_defaults",
+            "upscale_picture_percent",
+            "upscale_sharpen_percent",
+            "upscale_softness_percent",
+            "upscale_contrast_percent",
+            "upscale_exposure_percent",
+            "upscale_brightness_percent",
+            "upscale_gamma_percent",
+            "upscale_color_temperature",
+            "upscale_hue_degrees",
+            "upscale_darkness_percent",
+            "upscale_tint_percent",
+            "upscale_tint_color",
+        ):
+            with self.subTest(name=name):
+                expected = defaults[f"output.{name}"]
+                self.assertEqual(docker["output"][name], expected)
+                self.assertEqual(windows["output"][name], expected)
+
+    def test_windows_labels_remain_present(self) -> None:
+        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        for label in ("Upscale Below Ideal", "Max Upscale Percent", "Evaluate Final Image"):
+            self.assertIn(f'label: "{label}"', slint)
+
+
+if __name__ == "__main__":
+    unittest.main()

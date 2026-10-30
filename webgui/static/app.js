@@ -1270,6 +1270,7 @@ $("settingsButton").addEventListener("click", () => runAction(openSettings));
 $("helpButton").addEventListener("click", () => {
   showDialog("SPLINED WebGUI", ["Use Settings to configure your library, PostgreSQL catalog, artwork policy, and provider credentials. Refresh the library index after adding music.", "LAUNCH searches the selected albums, or the current artist when no albums are selected. Review queued decisions in the browser. Artist Art opens portrait and banner search. WRITE saves prepared artwork; EMBED Batch saves the cover and stages track embedding without changing your current view.", "Live Write enables music and tag changes. Read mode supports searching and previewing. The queue and completion ledger persist in PostgreSQL."]);
   const link=node("a","guide-link","Open WebGUI guide");link.href="/guide";link.target="_blank";link.rel="noopener";$("dialogBody").append(link);
+  const icon=node("a","guide-link","Save SPLINED dashboard icon");icon.href="/assets/splined-dashboard-icon.png";icon.download="splined-dashboard-icon.png";$("dialogBody").append(icon);
 });
 $("closeDialog").addEventListener("click", () => $("workspaceDialog").close());
 

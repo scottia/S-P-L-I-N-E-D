@@ -507,14 +507,24 @@ class Services:
     def preview(self, payload):
         source = self.catalog.image_source(str(payload.get("image", "")))
         kind = str(payload.get("kind", "cover"))
+        output = self.runtime.cfg.get("output", {})
+        ranges = self.runtime.cfg.get("range", {})
+        upscale_requested = bool(payload.get("upscale"))
+        upscale_enabled = bool(output.get("upscale_below_ideal", False))
+        ideal = int(ranges.get("ideal", 1800))
+        max_percent = int(output.get("upscale_max_percent", 200))
         image = imaging.render(
             source,
             values=payload.get("adjustments"),
             package_values=payload.get("package_adjustments"),
             fit=payload.get("fit"),
             kind=kind,
-            upscale=bool(payload.get("upscale")),
         )
+        upscaled = False
+        if upscale_requested and upscale_enabled and kind != "cover":
+            image, upscaled, _ = imaging.upscale_to_policy(
+                image, ideal, max_percent
+            )
         target = "png"
         body = imaging.encode(image)
         if kind == "cover":
@@ -538,10 +548,19 @@ class Services:
                     candidate, self.runtime.cfg, target, allow_out_of_range=True
                 )
                 width, height = info["width"], info["height"]
+                upscaled = bool(info.get("upscaled"))
             finally:
                 path.unlink(missing_ok=True)
         else:
             width, height = image.size
+        if upscaled:
+            reason = f"Prepared toward {ideal}px Ideal within the {max_percent}% ceiling; original artwork is unchanged until written"
+        elif upscale_requested and not upscale_enabled:
+            reason = "Actual source resolution preserved because Upscale Below Ideal is off in Settings"
+        elif upscale_requested:
+            reason = "Actual source resolution already meets Ideal or the configured ceiling prevents enlargement"
+        else:
+            reason = "Prepared preview; original artwork is unchanged until written"
         return {
             "image": self.catalog.image(body),
             "width": width,
@@ -549,6 +568,8 @@ class Services:
             "bytes": len(body),
             "kind": kind,
             "format": target,
+            "upscaled": upscaled,
+            "reason": reason,
         }
 
     def _atomic_artwork(self, destination, body):

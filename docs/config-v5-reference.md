@@ -105,16 +105,20 @@ See [media database](splined-media-database.md) and the
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
 | `embedded_thumbnail_size` | `1200` | Windows **Embedded Thumbnail Preference** and WebGUI album/COMP embedding size, a square side in pixels from 300 through 4000; the saved folder `cover.*` retains its full-resolution output. |
 | `upscale_below_ideal` | `false` | Permit ordinary SPLINED enlargement of validated sources up to Ideal; accepted sources at or above Ideal retain native resolution and are never downscaled by this option |
-| `upscale_max_percent` | `200` | Hard maximum enlargement relative to the original short side, valid from `100` through `800`; `200` permits 2×. A requested enlargement above this limit is not performed, while artwork already above Ideal remains at native resolution. |
+| `upscale_max_percent` | `200` | Hard maximum enlargement relative to the original short side, valid from `100` through `800`; `200` permits 2×. If Ideal requires more, SPLINED stops at this ceiling, while artwork already above Ideal remains at native resolution. |
 | `upscale_adaptive_defaults` | `true` | Analyze exposure/contrast and apply only SPLINED's bounded correction when the source demonstrably needs it |
-| `upscale_picture_percent` | `0` | Color-intensity/saturation adjustment, `-20`–`20` percent |
-| `upscale_sharpen_percent` | `0` | Explicit artwork-profile sharpening, `0`–`20`; the default pipeline never sharpens |
+| `upscale_picture_percent` | `2` | Color-intensity/saturation adjustment, `-20`–`20` percent |
+| `upscale_sharpen_percent` | `4` | Explicit artwork-profile sharpening, `0`–`20` |
 | `upscale_softness_percent` | `0` | Explicit edge-softening adjustment, `0`–`20` percent |
-| `upscale_contrast_percent` | `0` | Explicit artwork-profile contrast override, `-20`–`20` percent |
-| `upscale_exposure_percent` | `0` | Explicit artwork-profile exposure override, `-20`–`20` percent |
-| `upscale_brightness_percent` | `0` | Explicit artwork-profile brightness override, `-20`–`20` percent |
-| `upscale_gamma_percent` | `0` | Gamma correction, `-20`–`20` percent |
+| `upscale_contrast_percent` | `10` | Explicit artwork-profile contrast override, `-20`–`20` percent |
+| `upscale_exposure_percent` | `-5` | Explicit artwork-profile exposure override, `-20`–`20` percent |
+| `upscale_brightness_percent` | `-1` | Explicit artwork-profile brightness override, `-20`–`20` percent |
+| `upscale_gamma_percent` | `-6` | Gamma correction, `-20`–`20` percent |
 | `upscale_color_temperature` | `0` | Explicit artwork-profile color correction, `-100` Cool through `100` Warm |
+| `upscale_hue_degrees` | `0` | Hue rotation, `-180` through `180` degrees |
+| `upscale_darkness_percent` | `0` | Darkness adjustment, `0`–`100` percent |
+| `upscale_tint_percent` | `0` | Signed tint strength, `-100`–`100` percent |
+| `upscale_tint_color` | `"#FFB36B"` | Tint color in `#RRGGBB` form |
 | `evaluate_final_image` | `true` | Rank the image SPLINED would actually write |
 
 Upscaling preserves aspect ratio. By default it does not sharpen. Before enlargement,

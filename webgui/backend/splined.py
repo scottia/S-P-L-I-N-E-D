@@ -3616,20 +3616,24 @@ def project_dimensions(width: int, height: int, cfg: dict[str, Any]) -> tuple[in
             operations["rounded_to"] = round_to
 
     # Ideal is a minimum quality target, not an output ceiling. Accepted
-    # artwork already at or above Ideal keeps its native resolution. Below-
-    # Ideal enlargement remains proportional and is allowed only when the
-    # requested scale is within the explicit Config v5 safety limit.
+    # artwork already at or above Ideal keeps its native resolution. The
+    # maximum percentage is an enlargement ceiling: when Ideal is farther
+    # away, enlarge as far as the ceiling instead of rejecting the resize.
+    # This matches the native Windows projection.
     short_side = min(w, h)
     if short_side < ideal and settings["upscale_below_ideal"]:
-        scale = ideal / short_side
-        requested_percent = scale * 100.0
-        operations["upscale_percent"] = requested_percent
-        operations["upscale_limited"] = (
-            requested_percent > settings["upscale_max_percent"]
+        requested_percent = ideal / short_side * 100.0
+        target_short_side = min(
+            ideal,
+            short_side * settings["upscale_max_percent"] // 100,
         )
-        if not operations["upscale_limited"]:
-            w = max(1, int(round(w * scale)))
-            h = max(1, int(round(h * scale)))
+        operations["upscale_percent"] = target_short_side / short_side * 100.0
+        operations["upscale_requested_percent"] = requested_percent
+        operations["upscale_limited"] = target_short_side < ideal
+        if target_short_side > short_side:
+            scale = target_short_side / short_side
+            w = max(1, round(w * scale))
+            h = max(1, round(h * scale))
             operations["resized"] = True
             operations["upscaled"] = True
 
@@ -4918,6 +4922,20 @@ def _non_negative_int(value: Any, label: str) -> int:
     return parsed
 
 
+def _bounded_int(value: Any, minimum: int, maximum: int, label: str) -> int:
+    if isinstance(value, bool):
+        raise SplinedError(f"{label} must be an integer from {minimum} through {maximum}.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SplinedError(
+            f"{label} must be an integer from {minimum} through {maximum}."
+        ) from exc
+    if not minimum <= parsed <= maximum:
+        raise SplinedError(f"{label} must be from {minimum} through {maximum}.")
+    return parsed
+
+
 def _validate_aisplined_table(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SplinedError(f"{label} must be a TOML table.")
@@ -5053,6 +5071,35 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
         raise SplinedError(
             "[output].upscale_max_percent must be between 100 and 800."
         )
+    _bool_value(
+        output.get("upscale_below_ideal", False),
+        "[output].upscale_below_ideal",
+    )
+    _bool_value(
+        output.get("upscale_adaptive_defaults", True),
+        "[output].upscale_adaptive_defaults",
+    )
+    _bool_value(
+        output.get("evaluate_final_image", True),
+        "[output].evaluate_final_image",
+    )
+    for name, minimum, maximum, default in (
+        ("upscale_picture_percent", -20, 20, 2),
+        ("upscale_sharpen_percent", 0, 20, 4),
+        ("upscale_softness_percent", 0, 20, 0),
+        ("upscale_contrast_percent", -20, 20, 10),
+        ("upscale_exposure_percent", -20, 20, -5),
+        ("upscale_brightness_percent", -20, 20, -1),
+        ("upscale_gamma_percent", -20, 20, -6),
+        ("upscale_color_temperature", -100, 100, 0),
+        ("upscale_hue_degrees", -180, 180, 0),
+        ("upscale_darkness_percent", 0, 100, 0),
+        ("upscale_tint_percent", -100, 100, 0),
+    ):
+        _bounded_int(output.get(name, default), minimum, maximum, f"[output].{name}")
+    tint_color = str(output.get("upscale_tint_color", "#FFB36B")).strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", tint_color):
+        raise SplinedError("[output].upscale_tint_color must be a #RRGGBB color.")
     scan_timeout_hours(cfg)
 
 

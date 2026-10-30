@@ -36,6 +36,19 @@ square_mode = "crop"
 square_round_to = 16
 upscale_below_ideal = false
 upscale_max_percent = 200
+upscale_adaptive_defaults = true
+upscale_picture_percent = 2
+upscale_sharpen_percent = 4
+upscale_softness_percent = 0
+upscale_contrast_percent = 10
+upscale_exposure_percent = -5
+upscale_brightness_percent = -1
+upscale_gamma_percent = -6
+upscale_color_temperature = 0
+upscale_hue_degrees = 0
+upscale_darkness_percent = 0
+upscale_tint_percent = 0
+upscale_tint_color = "#FFB36B"
 evaluate_final_image = true
 
 [range]

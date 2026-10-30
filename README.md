@@ -143,7 +143,9 @@ The application release and Config v5 schema are separate version concepts.
 ## 🗃️ Library catalog
 
 WebGUI stores its catalog, completion ledger, and queued work in PostgreSQL.
-Use browser **Settings** to configure paths and refresh the index. Existing
+The first network visit uses the deployment token to enroll one administrator;
+later visits use its username and password. Use browser **Settings** to
+configure paths and refresh the index. Existing
 SQLite snapshots can be explicitly imported into an empty server catalog.
 Windows retains its SQLite database at `<scan.cache_dir>/splined.db`; it does
 not share the live PostgreSQL store. See the [WebGUI guide](docs/browser-workspace-guide.md).
