@@ -210,6 +210,99 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(len(featured), 1)
         self.assertTrue(featured[0]["featured"])
 
+    def test_artist_comp_report_is_scoped_while_full_fallback_keeps_every_track(self):
+        comp = self.root / "music" / "Various Artists" / "Billboard Fixture"
+        other_album = self.root / "music" / "Other Artist" / "Other Release"
+        comp.mkdir(parents=True)
+        other_album.mkdir(parents=True)
+
+        def write_track(path, *, title, artist, albumartist, album, album_mbid="", artist_mbid=""):
+            sf.write(path, np.zeros((4410, 2)), 44100)
+            audio = FLAC(path)
+            values = {
+                "title": title,
+                "artist": artist,
+                "albumartist": albumartist,
+                "album": album,
+            }
+            if album_mbid:
+                values["musicbrainz_albumid"] = album_mbid
+            if artist_mbid:
+                values["musicbrainz_artistid"] = artist_mbid
+            if albumartist == "Various Artists":
+                values["musicbrainz_albumartistid"] = "89ad4ac3-39f7-470e-963a-56509c546377"
+            for key, value in values.items():
+                audio[key] = value
+            audio.save()
+
+        target_path = comp / "01 Test Artist - Target.flac"
+        other_path = comp / "02 Other Artist - Other.flac"
+        featured_path = comp / "03 Various Artists feat Test Artist.flac"
+        write_track(
+            target_path,
+            title="Target",
+            artist="test artist",
+            albumartist="Various Artists",
+            album="Billboard Fixture",
+            artist_mbid="22222222-2222-4222-8222-222222222222",
+        )
+        write_track(
+            other_path,
+            title="Other",
+            artist="Other Artist",
+            albumartist="Various Artists",
+            album="Billboard Fixture",
+            artist_mbid="77777777-7777-4777-8777-777777777777",
+        )
+        write_track(
+            featured_path,
+            title="Featured Target",
+            artist="Various Artists feat. Test Artist",
+            albumartist="Various Artists",
+            album="Billboard Fixture",
+            artist_mbid="22222222-2222-4222-8222-222222222222",
+        )
+        write_track(
+            other_album / "01 Other.flac",
+            title="Other Release Track",
+            artist="Other Artist",
+            albumartist="Other Artist",
+            album="Other Release",
+            album_mbid="66666666-6666-4666-8666-666666666666",
+            artist_mbid="77777777-7777-4777-8777-777777777777",
+        )
+        Image.new("RGB", (180, 180), "purple").save(comp / "cover.jpg")
+        self.services.refresh_index()
+
+        with closing(self.db.connect()) as db:
+            comp_row = db.execute(
+                "SELECT album_key FROM albums WHERE path=?", (str(comp),)
+            ).fetchone()
+            other_artist = db.execute(
+                "SELECT artist_key FROM artists WHERE artist_name='Other Artist'"
+            ).fetchone()
+
+        first = self.services.comp_report(self.row["artist_key"])
+        repeated = self.services.comp_report(self.row["artist_key"])
+        other = self.services.comp_report(other_artist["artist_key"])
+        full = self.services.catalog.fallback_tracks(comp_row["album_key"])
+
+        self.assertEqual([group["id"] for group in first], [comp_row["album_key"]])
+        self.assertEqual(
+            {track["file"] for track in first[0]["tracks"]},
+            {target_path.name, featured_path.name},
+        )
+        self.assertEqual(
+            [track["key"] for track in repeated[0]["tracks"]],
+            [track["key"] for track in first[0]["tracks"]],
+        )
+        self.assertEqual(
+            {track["file"] for track in other[0]["tracks"]}, {other_path.name}
+        )
+        self.assertEqual({track["file"] for track in full}, {
+            target_path.name, other_path.name, featured_path.name,
+        })
+
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
         self.runtime.cfg["mode"] = "read"

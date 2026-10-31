@@ -187,6 +187,7 @@ class BrowserFallbackTests(unittest.TestCase):
                 )
             summary = app.artist_comp_albums("target")
             report = app.artist_comp_report("target")
+            full_fallback = app.fallback_tracks("two")
             self.assertEqual([group["id"] for group in summary], ["one", "two"])
             self.assertEqual([len(group["tracks"]) for group in summary], [1, 3])
             self.assertTrue(summary[0]["cover"].startswith("/api/image/p."))
@@ -198,6 +199,10 @@ class BrowserFallbackTests(unittest.TestCase):
             self.assertEqual([group["tracks"][0]["completed"] for group in report], [True, True])
             self.assertFalse(report[1]["tracks"][1]["completed"])
             self.assertEqual({track["key"] for track in report[1]["tracks"]}, {"second", "blue", "untagged"})
+            self.assertEqual(
+                {track["key"] for track in full_fallback},
+                {"second", "blue", "untagged", "other"},
+            )
             self.assertEqual(app.comp_track_status("one", "first")["status"], "green")
             self.assertEqual(app.comp_track_status("two", "second")["status"], "purple")
             self.assertEqual(app.comp_track_status("two", "blue")["status"], "blue")
