@@ -1,5 +1,9 @@
 # WebGUI Settings Review and Windows Parity Summary
 
+> **Historical validation record.** This page records a dated settings review,
+> not the current settings reference. Use the
+> [Config v5 reference](config-v5-reference.md) and current source.
+
 This document records the reviewed WebGUI/PostgreSQL settings workspace and the
 remaining native Windows parity work. It contains no credentials, recovery
 tokens, database passwords, or machine-specific test values.

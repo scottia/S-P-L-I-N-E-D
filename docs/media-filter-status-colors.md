@@ -1,16 +1,17 @@
-# Select Media and Status Colors
+# Windows Select Media and Status Colors
 
-Select Media is the operational library workspace. Text filters, Album Status
-filters, selection controls, scan scope, and Launch all operate on one resident
-Artist/Album model. Filtering changes visibility only; it does not rewrite
-history, bypass, timeout, credentials, or source policy.
+This page owns the detailed Windows Select Media contract. Text filters, Album
+Status filters, selection controls, scan scope, and Launch all operate on one
+resident Artist/Album model. Filtering changes visibility only; it does not
+rewrite history, bypass, timeout, credentials, or source policy.
 
-The Windows GUI and WebGUI interfaces share the same semantic
-colors, although their storage and presentation implementations differ.
+WebGUI reuses some color meanings but has a separate PostgreSQL projection and
+browser workflow. Use the [WebGUI guide](browser-workspace-guide.md) for its
+actual controls and state transitions; this page does not establish parity.
 
-## Python/Docker inventory authority
+## Windows inventory authority
 
-The Python/Docker TUI loads the complete Artist/Album read model from:
+The native Rust application loads the complete Artist/Album read model from:
 
 ```text
 <scan.cache_dir>/splined.db
@@ -246,8 +247,8 @@ Auto Scan [SELECTED]
 
 `[SELECTED]` queues only Albums explicitly selected by the operator. `[ALL]`
 queues every White/Unprocessed Album plus explicit selections in other eligible
-states. This is the same scope rule used by Python; it does not reinterpret the
-visible Folder Status filters as a launch queue.
+states. This does not reinterpret the visible Folder Status filters as a launch
+queue.
 
 Launch defines mutation mode:
 

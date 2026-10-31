@@ -1,5 +1,10 @@
 # Windows and WebGUI function audit
 
+> **Historical migration audit.** This page records a pre-release comparison at
+> the source baseline named below. It is not current user guidance or a parity
+> guarantee. Use the [Windows guide](windows-guide.md), [WebGUI
+> guide](browser-workspace-guide.md), and current source.
+
 Source baseline: Windows 2.0.4 local work through `1ea2d74`, followed by the Python WebGUI/PostgreSQL migration. This describes source behavior before a new packaged release. The existing published 2.0.4 container predates the migration.
 
 | Workflow | Windows | WebGUI |

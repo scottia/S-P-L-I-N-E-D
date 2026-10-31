@@ -1,8 +1,8 @@
 # Credentials and Provider Setup
 
 All supported S:P:L:I:N:E:D runtimes use Config v5 and the same
-credential-directory contract. Python/Docker `config.toml` and Windows'
-portable `data/config.toml` record stores only the directory:
+credential-directory contract. WebGUI `config.toml` and Windows portable
+`data/config.toml` store only the directory:
 
 ```toml
 [credentials]

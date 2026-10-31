@@ -1,5 +1,9 @@
 # Windows source audit — 2026-10-17
 
+> **Historical source audit.** Findings, local state, and test counts below
+> describe the named audit date. They do not supersede the current
+> [Windows guide](windows-guide.md) or source.
+
 ## Scope
 
 This audit covered the Rust/Slint Windows executable end to end: portable startup, SQLite projection, library selection, Artist Overview, fallback-compilation processing, MusicBrainz identity/results, provider discovery, artwork preview/write routing, Navidrome enrichment, image caching, settings/layout persistence, backup/update boundaries, and runtime/debug logging. The Python implementation and shared policy fixtures were run as the cross-runtime authority for compilation behavior.

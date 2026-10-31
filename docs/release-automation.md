@@ -34,6 +34,8 @@ with Windows and macOS. GitHub release notes classify explicit `webgui`,
 `python`, and `postgres` commits under **WebGUI / Python** before evaluating
 the separate Microsoft Store and Windows categories. A release fixture guards
 against classifying `restore` as Store or `webgui` as generic Windows GUI work.
+The [Docker deployment guide](../docker/README.md) owns the distinction between
+the source-built Compose stack and the separately published GHCR image.
 
 Validate changes locally on PC, push the tested source to `dev`, then merge
 the `dev` pull request into `main`. Validation runs on pull requests, so pushing

@@ -35,7 +35,7 @@ not a current build or runtime option.
       Setup and prevents the ordinary workspace from presenting as ready.
 - [x] Pre-save first run creates no `data`, database, temporary cache, log,
       credential, or obsolete bootstrap directories.
-- [x] Explicit **Save and Continue** validates the Rust Config model, creates
+- [x] Explicit **Save & Open Settings** validates the Rust Config model, creates
       only the configured application-owned directories, atomically writes
       Config v5, writes UI state separately, and then loads the database.
 - [x] Normal Settings uses structured Slint controls backed directly by the

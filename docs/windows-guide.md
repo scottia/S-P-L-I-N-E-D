@@ -7,9 +7,13 @@ there is no managed frontend, application DLL bridge, or helper process.
 The Slint interface uses the native graphical artwork workspace: a branded app
 bar, graphical Media Library, switchable Find & Match, Edit, Upscale/Enhance,
 and Advanced modes, dominant Selected Artwork preview, and horizontally
-scrollable candidate/source strips. The presentation remains a projection of
-the same Rust-owned state restored by the
-[1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md).
+scrollable candidate/source strips. The presentation projects Rust-owned
+application state; it is not an independent behavior authority.
+
+This page is the Windows user guide. Source builds and packaging belong in the
+[Windows source/build guide](../windows/README.md), release publication belongs
+in [release automation](release-automation.md), and dated audits are historical
+evidence rather than operating instructions.
 
 ## First run and state
 

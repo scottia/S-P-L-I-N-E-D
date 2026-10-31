@@ -1,5 +1,9 @@
 # Windows Rust/Slint graphical workspace QA
 
+> **Historical QA record.** The checks below document the reviewed graphical
+> redesign at that point in development. Use the current Windows source and
+> [Windows guide](windows-guide.md) for present behavior.
+
 This record covers the package-defined graphical Artwork Workspace implemented
 by the native Rust/Slint application. The numbered implementation references
 map to real application states rather than independent mock screens:
