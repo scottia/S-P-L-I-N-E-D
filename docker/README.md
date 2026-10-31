@@ -2,7 +2,7 @@
 
 The container starts the SPLINED WebGUI service. All normal operations, configuration, provider credentials, and work review take place in a browser.
 
-The checked-in [Compose stack](compose.yaml) builds the current source and starts PostgreSQL alongside it. Published `2.0.5` images include the Python WebGUI/PostgreSQL migration. Merging source does not replace an existing registry image; the numbered release workflow publishes a new WebGUI image from `webgui/Dockerfile` only when a release is explicitly built.
+The checked-in [Compose stack](compose.yaml) builds the current source and starts PostgreSQL alongside it. Published WebGUI images use the Python/PostgreSQL architecture described here. Merging source does not replace an existing registry image; the numbered release workflow publishes a new WebGUI image from `webgui/Dockerfile` only when a release is explicitly built.
 
 ## Deploy
 

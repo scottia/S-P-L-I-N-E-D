@@ -8,400 +8,73 @@
 </p>
 
 ---
-## 🎨 What is S:P:L:I:N:E:D?
 
-**S:P:L:I:N:E:D** is a utility for finding and managing Album artwork in a
-music library.
+## What SPLINED does
 
-It checks the Album, asks several artwork sources for possible covers, compares
-the results, and selects artwork against the configured size, shape, source,
-and output policy.
+**S:P:L:I:N:E:D** helps people with organized music libraries find, review,
+and manage album and artist artwork. It combines local and embedded images with
+results from configured artwork providers, checks the actual image, and applies
+the selected identity, size, shape, source, and output policies before proposing
+a result.
 
-Use **Read** mode to review what SPLINED would choose or **Write** mode to save
-the selected artwork into the Album folder.
+SPLINED is designed for deliberate library maintenance. **Read** mode lets you
+inspect decisions without writing artwork into the music library. **Write** mode
+enables explicit cover, artist-art, or embedded-track changes after review.
 
----
+## Important capabilities
 
-## ✨ Highlights
+- Uses MusicBrainz and local tags to keep artwork tied to the intended release.
+- Compares real image dimensions and evaluates local or embedded artwork before
+  unnecessary replacement.
+- Supports configurable source priority, resolution ranges, fitment, retention,
+  and output behavior through Config v5.
+- Handles ordinary album covers, artist portraits and banners, and reviewed
+  per-track artwork for albums without a release ID.
+- Keeps durable catalog and work state appropriate to each runtime, including
+  resumable review and embedding work where the interface supports it.
 
-- 🎯 **Chooses one best cover** from available candidates
-- 🧠 **Uses MusicBrainz Album information** to confirm the release
-- 🖼️ **Checks real image dimensions**, not only provider metadata
-- 📐 **Protects geometry** with aspect-ratio-aware crop/resize safety
-- 🗂️ **Evaluates local and embedded artwork** before replacement
-- 🛡️ **Preserves WebP source artwork** while allowing a static JPEG companion
-- 👀 **Read mode** evaluates without modifying Album folders
-- ✍️ **Write mode** can install the selected artwork
-- 🧪 **Sample output** writes one selected image per Album for review
-- 🧭 **Persistent history and bypass state** live in PostgreSQL for WebGUI and SQLite for Windows
-- 🗃️ **Tag-identified Select Media database** provides stable Album authority, physical Artist-folder grouping, and persistent startup state
-- ⚙️ **Config driven** — library, scan, cache, credential, and output paths remain configurable
-- 🪟 **Portable Windows settings** — `data/config.toml` and `data/ui.toml` move with the application folder
-- 💾 **Purpose-specific backup files** — Windows separates settings (`.spl`), consistent database snapshots (`.sqlite`), and secret-free diagnostics (`.json`) with independent schedules; WebGUI uses PostgreSQL dumps and persistent volume backups
-- 🐳 **Docker image** provides a Linux/server deployment path
-- 🌐 **WebGUI** provides browser artwork review, settings, provider credentials, actual artwork/tag writes, and a persistent PostgreSQL queue
-- 📦 **Portable releases** separate replaceable program files from explicitly selected persistent data
+The Windows application and Ubuntu WebGUI are separate implementations. They
+share policy concepts, but they do not promise identical interfaces or use one
+shared live database.
 
----
+## Install and get started
 
-## 📦 Installation
-
-Choose the installation method that matches where SPLINED will run.
-
-Windows users can choose **[Microsoft Store — Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US)**
-for Windows-managed installation and updates, or the portable Windows ZIP for
-no-install/direct use. Both are current supported Windows distribution channels.
-
-| Install type | Intended use | Installation files |
+| Platform | Application and state | Start here |
 | --- | --- | --- |
-| **Microsoft Store** | Managed Windows installation and updates | [Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US) · [Store guide](docs/windows-store.md) |
-| **Windows Portable** | No-install/direct Windows distribution with portable-root state | [`release/README-WINDOWS.txt`](release/README-WINDOWS.txt) |
-| **Linux Portable** | Native Linux installation | [`release/README-LINUX.txt`](release/README-LINUX.txt) |
-| **macOS Portable** | Native macOS installation | [`release/README-MACOS.txt`](release/README-MACOS.txt) |
-| **Docker** | Linux servers, NAS, and container deployments | [`docker/README.md`](docker/README.md) · [`webgui/Dockerfile`](webgui/Dockerfile) |
+| **Windows** | Native Rust/Slint application, distributed through Microsoft Store or as a portable ZIP; persistent catalog in SQLite | [Installation and first run](docs/installation-first-run.md) · [Windows guide](docs/windows-guide.md) · [Store channel](docs/windows-store.md) |
+| **Ubuntu WebGUI** | Python/browser application deployed with Docker; PostgreSQL owns its catalog and persistent queue | [Docker deployment](docker/README.md) · [WebGUI guide](docs/browser-workspace-guide.md) |
+| **Native Linux/macOS** | Separate root Rust command-line implementation; availability follows the source and artifacts published for a release | [Installation guide](docs/installation-first-run.md) · [Linux notes](release/README-LINUX.txt) · [macOS notes](release/README-MACOS.txt) |
 
-Portable users should download the appropriate archive from the
-[latest GitHub release](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest),
-extract it into the final application directory, and run `splined.exe` on
-Windows or `./splined` on Linux/macOS.
+Choose the guide for the runtime you will actually use. Configure its view of
+the music library, persistent state, cache, and provider credentials. Keep those
+paths outside source control. Build or refresh the catalog, then use Read mode
+with a small selection to confirm identity, candidate order, and destinations.
+Enable Write only after the proposed results match your policy.
 
-Docker image:
+References to **PC** in maintainer documentation mean the development
+workstation. PC is not a SPLINED platform, media server role, or separate
+product.
 
-```text
-ghcr.io/scottia/splined:latest
-```
+## Safety and documentation
 
-Docker users should start with the [Docker installation guide](docker/README.md)
-for Compose, persistent mounts, container paths, and usage.
+Write mode changes files in album directories and can replace embedded artwork.
+Back up or snapshot the music library before enabling it. Also preserve the
+runtime's configuration, credential directory, and persistent database. Windows
+uses SQLite; WebGUI uses PostgreSQL and its mounted persistent files. They must
+be backed up and restored with their own platform procedures.
 
----
-
-## 📚 Documentation
-
-The documentation under [`docs/`](docs/README.md) describes the current
-supported release. Historical changes remain in
-[GitHub Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases).
-
-Start with:
+Detailed behavior lives in the authoritative guides instead of this summary:
 
 - [Documentation home](docs/README.md)
-- [Installation and first run](docs/installation-first-run.md)
-- [Windows guide](docs/windows-guide.md)
 - [Config v5 reference](docs/config-v5-reference.md)
-- [WebGUI guide](docs/browser-workspace-guide.md)
-- [SPLINED media database](docs/splined-media-database.md)
-
-Windows opens the [Windows guide](docs/windows-guide.md) from **Help > Help**
-and from the Help button in its About dialog.
-
-The Windows application includes a single Launch surface, resizable panel
-presets, spectrum panel framing, a warm-cream Light theme, multicolor wordmark,
-portable settings, and separate settings/SQLite/diagnostic backup schedules.
-
-The x64 Windows portable application is one native Cargo-built Rust executable
-with a Slint presentation layer. `splined.exe` links directly to the
-authoritative Rust application and processing backend; there is one normal
-application process and no managed host or application DLL bridge. **Check for
-Updates** is
-channel-aware: Portable compares numeric semantic release versions from GitHub
-and remains notification-only/manual replacement, while an installed Store
-package uses Microsoft Store package APIs and Store-managed installation. A
-different build commit at the installed version is not an update. Both channels
-leave configured external resources untouched.
-See
-[Windows upgrade](docs/installation-first-run.md#windows-upgrade).
-
-For maintainers, `01. Full Release - Build Selected Target and Publish` builds the Windows executable
-once and uses that same binary for the Portable ZIP and, when selected, the
-unsigned Microsoft Store submission package. Both must validate before the
-numeric tag is created; the selected Store path then stages a draft or submits
-the validated package and generated Store Highlights. Exact-tag recovery uses
-`02. Store Recovery - Tagged Draft or Update` or
-`03. GHCR Recovery - Existing Published Release`. GitHub notes and Store Highlights are
-rendered with one git-cliff 2.14.2 policy: GitHub notes are incremental, while
-Store Highlights include every customer-facing change since the last package
-actually published by Microsoft Store. See the
-[release automation guide](docs/release-automation.md).
-
----
-
-## 🧩 Source implementation layout
-
-SPLINED keeps its supported implementations separate:
-
-- [`windows/`](windows/README.md) contains the current Windows GUI, its Config
-  v5 processing core, and the reproducible Windows build.
-- Root [`Cargo.toml`](Cargo.toml), [`Cargo.lock`](Cargo.lock), and [`src/`](src/)
-  remain the native command-line implementation used by Linux and macOS.
-- [`webgui/`](webgui/) is the supported Python server and browser interface.
-  PostgreSQL owns its catalog and persistent work queue.
-
-The application release and Config v5 schema are separate version concepts.
-
----
-
-## 🗃️ Library catalog
-
-WebGUI stores its catalog, completion ledger, and queued work in PostgreSQL.
-The first network visit uses the deployment token to enroll one administrator;
-later visits use its username and password. The same unchanged token authorizes
-**Forgot password?** recovery without exposing or replacing PostgreSQL data. Use browser **Settings** to
-configure paths and refresh the index. Existing
-SQLite snapshots can be explicitly imported into an empty server catalog.
-Windows retains its SQLite database at `<scan.cache_dir>/splined.db`; it does
-not share the live PostgreSQL store. See the [WebGUI guide](docs/browser-workspace-guide.md).
-
-Windows derives the same filename from its browsable **SQL Database
-Directory**. Its separate **Temporary Run Cache** holds downloaded and derived
-candidate images and may remain local even when SQLite is shared over UNC. The
-Rust core owns SQLite access and supplies the side-by-side GUI with a compact JSON
-projection; the GUI does not maintain a second database or recursively rebuild
-Select Media before first paint. Set `[scan].sqlite_shared = true` only when
-the same physical database is intentionally opened through multiple OS or
-network filesystem views. SQLite shared-file settings apply to the native clients. WebGUI owns a separate PostgreSQL catalog. Raw UNC cache paths are
-supported without requiring a persistent mapped drive.
-
-A library refresh inventories Artist/Album folders and reads one
-representative audio file per Album (Mutagen in Python, Lofty in Rust). The
-native Windows build saves resumable SQLite checkpoints before publishing its picker; WebGUI records its inventory in PostgreSQL.
-
-Artist and Album SQL identity is based on MusicBrainz/tag values; filesystem
-paths are stored only as current locations and are not SQL identity indexes.
-The visible Artist Picker is intentionally folder-based: every Album is grouped
-under the first physical directory below the configured library root. Tagged
-Album Artist identity remains artwork/search authority, but it does not move a
-solo Album into `[Soundtracks]` or duplicate an OST/Various Artists Album under
-each credited performer.
-
-Warm launches load the complete picker and stable Album Status from SQLite.
-There is no Artist-by-Artist background validation and no color change merely
-because an Artist was opened. External tagger/filesystem changes
-are reconciled after the explicit Refresh action.
-
-See [SPLINED media database](docs/splined-media-database.md).
-
-When a selected Album has no MusicBrainz Album/Release ID, the ordinary scan
-automatically routes that Album to per-track embedded-artwork decisions,
-regardless of its Compilation tag. The
-yellow warning remains visible before launch. SPLINED searches the local SQL
-cache first, then combines the tagged Recording lookup with bounded
-release-first Artist/Track discovery after a local miss. Every discovered
-release is resolved back to its actual Recording and track Artist IDs before
-the operator reviews the merged MusicBrainz list. A chosen release enters the
-same artwork-source preview and approval path used by every Album; Escape
-returns to the cached MusicBrainz choices without another request. The current
-release is green, inspected alternatives are blue, and reselecting either
-restores cached source results without rerunning artwork providers. Each match
-also exposes a direct Cover Art Archive URL for Artwork-pane preview. This path
-replaces only operator-approved embedded track artwork. LIVE
-WRITE progress is durable per track: an interrupted compilation is blue
-`Incomplete` in the picker even if the operator leaves before the first
-approval, and the next scan returns to the interrupted track while skipping
-already verified writes. Selecting the fallback Album never previews or offers
-its folder cover as track artwork. No folder-level `cover.*` is created,
-changed, or removed for this compilation path. Explicitly reopening a checked
-track keeps its embedded image as a local comparison while still loading
-MusicBrainz releases and provider results for higher-resolution choices. See
-[Source policies and range types](docs/source-policies-range-types.md).
-
-Windows **Fallback** lists only Albums without a MusicBrainz Album ID. A fallback
-Album supports an additive checked-track queue.
-Checked tracks are processed explicitly, completed track text turns green
-immediately while unfinished tracks remain blue, and the Album stays focused so
-more tracks can be selected without returning to the library root. An indexed
-folder-level `cover.jpg`, `cover.png`, or `cover.webp` is displayed only as that
-Fallback Album's card identity. It is never offered as COMP track artwork and is
-not counted as an embedded track image.
-
-The MusicBrainz list uses release-group artwork only as a quick visual preview;
-its Resolution field is separate, Release-MBID-specific evidence from the best
-candidate returned by enabled SPLINED sources. See
-[WebGUI MusicBrainz review](docs/browser-workspace-guide.md#artwork-workflow).
-
-MusicBrainz is available in Artwork Source Priority as release authority backed
-by Cover Art Archive image bytes. Amazon Store artwork is also available as an
-opt-in, credential-free source; SPLINED normalizes accepted
-`m.media-amazon.com/images/I/` primary-image URLs to the untransformed original
-before download and preview.
-
----
-
-## 📏 Artwork size defaults
-
-SPLINED prefers artwork near a practical target rather than simply choosing the
-largest file.
-
-| Setting | Size |
-| --- | ---: |
-| Minimum | 1200 px |
-| Ideal | 1800 px |
-| Maximum | 2400 px |
-| Ladder | 3600 px |
-
-The selected acceptable image closest to the **1800 px ideal** wins first.
-Shape, source history, approval state, original source quality, and output
-safety also participate.
-
----
-
-## 🔎 Artwork sources
-
-Current provider support includes:
-
-- 🍎 iTunes / Apple artwork
-- 🎨 Fanart.tv
-- 🎧 Last.fm
-- 🧠 MusicBrainz / Cover Art Archive release-group artwork
-- 💿 Cover Art Archive
-- 🔵 Deezer
-- 🟠 Discogs
-- 🛒 Amazon Store original primary images (opt-in)
-- 🟢 Navidrome / OpenSubsonic current-server artwork and library enrichment
-
-Sources can be reordered, enabled, or excluded. Source priority breaks otherwise
-equal scoring decisions.
-
-The Windows replacement workspace projects that authoritative Config v5 order
-into a mouse-scrollable, drag-reorderable source strip. Navidrome is
-supplemental enrichment only: MusicBrainz remains release authority and
-`splined.db` remains media/workflow authority.
-
----
-
-## 🚦 Read vs Write
-
-### 👀 Read
-
-Read mode can search providers, evaluate artwork, build transient candidate
-files, and save samples, but it does **not** modify artwork inside Album folders
-or persist a no-cover Album as processed merely because a candidate was found.
-
-### ✍️ Write
-
-Write mode performs the same selection process and may save selected artwork
-into the Album directory. Existing artwork can be preserved, retained, or
-replaced according to current policy and the operational picker.
-
----
-
-## 🧪 Samples
-
-When enabled, each resolved Album receives one sample named:
-
-```text
-<artists>.<album>.sample.jpg
-```
-
-Samples live under the configured temporary run-cache sample directory and are recreated for
-the current operational scan.
-
----
-
-## 🛡️ Existing artwork and persistent bypass
-
-SPLINED evaluates existing local and embedded artwork before remote replacement.
-When a local cover is retained, no unnecessary replacement is written.
-
-The operational picker can save a persistent Album bypass. Bypass state remains
-under persistent history authority until explicitly removed. During Windows
-source review, **Bypass Album** becomes **NO Bypass** for an Album with an
-active saved bypass; confirming it removes that authority without closing the
-current results.
-
----
-
-## ⚙️ Configuration
-
-All supported runtimes use **Config v5**:
-
-- [Native Config v5 example and Windows field reference](config.example.toml)
-- [Docker Config v5 example](docker/config.example.toml)
-- [Config v5 reference](docs/config-v5-reference.md)
-
-The portable Windows GUI stores Config v5 in `data/config.toml`, stores
-interface state in `data/ui.toml`, and presents its fields through **File >
-Settings...**. The Microsoft Store installation stores those two Windows-owned
-files in the package's per-user LocalState directory because its installation
-directory is read-only. SQL database, temporary run cache, log, credential, and
-other configured paths remain editable and are not silently relocated. Native
-portable paths may be application-relative. Docker uses container-specific
-absolute paths while preserving the schema.
-
----
-
-## ▶️ Native Linux/macOS command-line usage
-
-Show help and configured directories:
-
-```text
-splined --help
-```
-
-Scan the configured directory:
-
-```text
-splined --scan-dir
-```
-
-WebGUI users open the browser interface and use **Settings**, **LAUNCH**,
-**WRITE**, and the persistent embedding queue. No terminal commands are needed
-for application use. See the [WebGUI guide](docs/browser-workspace-guide.md).
-
-A bare native invocation scans the caller's current directory recursively.
-Windows portable users launch `splined.exe`; its desktop workflow always uses
-the saved portable Config v5 paths and is independent of process CWD.
-
----
-
-## 🔐 Credentials
-
-Provider credentials are normal provider JSON files under the configured
-credential directory. SPLINED applies restrictive user-only filesystem
-protection where the selected storage supports it. Additional encryption at
-rest may be supplied by the operating system, cloud storage, NAS, or encrypted
-volume.
-
-Credential files contain sensitive information and should **never** be
-committed to GitHub.
-
-Navidrome uses the fixed `navidrome.json` credential contract with an absolute
-server URL and exactly one OpenSubsonic authentication method: a dedicated API
-key (preferred) or a Navidrome username/password. Password mode sends a fresh
-salted challenge on every request rather than the password itself. See the
-[provider credential guide](docs/credentials-providers.md).
-
----
-
-## 🧭 Project status
-
-The current stable version is identified by the
-[latest GitHub release tag](https://github.com/scottia/S-P-L-I-N-E-D/releases/latest).
-
-Artwork discovery, MusicBrainz-assisted resolution, candidate evaluation,
-local/embedded comparison, Read/Write scanning, samples, persistent
-history/bypass, credential handling, Docker packaging, and portable foundations
-are implemented.
-
----
-
-## ⚠️ Use safely
-
-Write mode changes files in Album directories. Test against a copy, staging
-library, backup, or snapshot first.
-
-On Windows, open **Settings > Backup / Restore** to create separate timestamped
-settings (`.spl`), SQLite (`.sqlite`), and diagnostics (`.json`) files. Each type
-has its own Off/Daily/Weekly/Monthly schedule, and `.spl` or `.sqlite` files can
-be restored independently. On Python/file-backed runtimes, use the selective
-unprotected `.spl` CLI above or
-preserve Config v5, the credential directory, and
-`<scan.cache_dir>/splined.db`. The database contains durable completion,
-bypass, timeout, source-selection, and compilation-progress state. Diagnostic
-logs and temporary run-cache candidate/sample data remain disposable.
-
----
-
-## 📄 License
+- [Artwork and COMP source policy](docs/source-policies-range-types.md)
+- [Persistent state and database boundaries](docs/splined-media-database.md)
+- [Credentials and provider setup](docs/credentials-providers.md)
+- [Support](SUPPORT.md) and [security reporting](SECURITY.md)
+- [Release history](https://github.com/scottia/S-P-L-I-N-E-D/releases) and
+  [maintainer release procedures](docs/release-automation.md)
+
+## License
 
 SPLINED is licensed under the [GNU General Public License v3](LICENSE).
 
