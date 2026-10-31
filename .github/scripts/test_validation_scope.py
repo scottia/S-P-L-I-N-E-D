@@ -94,9 +94,30 @@ class ValidationScopeTests(unittest.TestCase):
         self.assertTrue(result["ubuntu_webgui"])
         self.assertTrue(result["windows"])
 
-    def test_rejected_boundary_cannot_select_validation(self):
-        with self.assertRaisesRegex(ValueError, "must succeed"):
-            select_lanes({"allowed": False})
+    def test_validation_selection_is_independent_of_authorization(self):
+        result = select_lanes(
+            {
+                "allowed": False,
+                "categories": ["windows"],
+                "validations": ["windows"],
+                "classified_paths": {"windows/src/main.rs": "windows"},
+            }
+        )
+        self.assertTrue(result["windows"])
+        self.assertFalse(result["ubuntu_webgui"])
+
+    def test_trusted_boundary_workflow_selects_infrastructure_and_consumers(self):
+        result = select_lanes(
+            boundary(
+                categories=["shared-contract"],
+                validations=["root-native-other", "ubuntu-webgui", "windows"],
+                paths=[".github/workflows/boundary.yml"],
+            )
+        )
+        self.assertTrue(result["infrastructure"])
+        self.assertTrue(result["root_native"])
+        self.assertTrue(result["ubuntu_webgui"])
+        self.assertTrue(result["windows"])
 
     def test_outputs_account_for_every_lane(self):
         lines = github_outputs(
@@ -111,20 +132,30 @@ class ValidationScopeTests(unittest.TestCase):
         self.assertIn("boundary_json", keys)
         self.assertIn("selection_json", keys)
 
-    def test_workflow_keeps_stable_gate_and_read_only_permissions(self):
-        workflow = (Path(__file__).parents[1] / "workflows" / "validate.yml").read_text(
+    def test_workflows_separate_unprivileged_validation_from_trusted_control(self):
+        workflow_root = Path(__file__).parents[1] / "workflows"
+        validation = (workflow_root / "validate.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("name: Safeguard / boundary authorization", workflow)
-        self.assertIn("name: Safeguard / final validation gate", workflow)
-        self.assertIn("if: ${{ always() }}", workflow)
-        self.assertIn("permissions:\n  contents: read\n  pull-requests: read", workflow)
-        self.assertNotIn("pull_request_target", workflow)
-        self.assertNotIn("allow-unsafe-pr-checkout", workflow)
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertIn('test "$(git -C trusted-base rev-parse HEAD)" = "$BASE_SHA"', workflow)
-        self.assertIn('test "$(git -C proposal-data rev-parse HEAD)" = "$HEAD_SHA"', workflow)
-        self.assertIn('git -C proposal-data cat-file -e "$BASE_SHA^{commit}"', workflow)
+        trusted = (workflow_root / "boundary.yml").read_text(encoding="utf-8")
+
+        self.assertIn("pull_request:", validation)
+        self.assertNotIn("pull_request_target", validation)
+        self.assertIn("permissions:\n  contents: read", validation)
+        self.assertNotIn("statuses: write", validation)
+        self.assertIn("name: Validation / scope selection", validation)
+        self.assertNotIn("Safeguard / final validation gate", validation)
+
+        self.assertIn("pull_request_target:", trusted)
+        self.assertIn("workflow_run:", trusted)
+        self.assertIn("ref: ${{ github.workflow_sha }}", trusted)
+        self.assertIn("name: Safeguard / trusted boundary evaluation", trusted)
+        self.assertIn("name: Safeguard / trusted boundary decision", trusted)
+        self.assertIn("statuses: write", trusted)
+        self.assertIn("permissions: {}", trusted)
+        self.assertNotIn("allow-unsafe-pr-checkout", trusted)
+        self.assertNotIn("actions/download-artifact", trusted)
+        self.assertNotIn("actions/cache", trusted)
 
 
 if __name__ == "__main__":

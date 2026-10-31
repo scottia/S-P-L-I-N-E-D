@@ -3,23 +3,20 @@ name: Validate supported runtimes
 on:
   pull_request:
     branches: [dev, main]
-    types: [opened, synchronize, reopened, edited, ready_for_review, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: validation-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: true
 
 jobs:
-  boundary:
-    name: Safeguard / boundary authorization
+  scope:
+    name: Validation / scope selection
     runs-on: ubuntu-latest
     outputs:
-      boundary_json: ${{ steps.scope.outputs.boundary_json }}
-      selection_json: ${{ steps.scope.outputs.selection_json }}
       infrastructure: ${{ steps.scope.outputs.infrastructure }}
       root_native: ${{ steps.scope.outputs.root_native }}
       windows: ${{ steps.scope.outputs.windows }}
@@ -27,56 +24,57 @@ jobs:
       release_contract: ${{ steps.scope.outputs.release_contract }}
       documentation: ${{ steps.scope.outputs.documentation }}
     steps:
-      - name: Check out the trusted base revision
+      - name: Check out target-base validation code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
           persist-credentials: false
-          path: trusted-base
-      - name: Check out proposed files as data only
+          path: validation-base
+      - name: Check out the proposed revision for data and application tests
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
           path: proposal-data
-      - name: Verify authorization and select validation from trusted code
+      - name: Select consumers independently of authorization
         id: scope
         env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_PATH: ${{ github.event_path }}
-          REPOSITORY: ${{ github.repository }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          test "$(git -C trusted-base rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C validation-base rev-parse HEAD)" = "$BASE_SHA"
           test "$(git -C proposal-data rev-parse HEAD)" = "$HEAD_SHA"
-          git -C proposal-data cat-file -e "$BASE_SHA^{commit}"
-          test -f trusted-base/.github/boundaries/check_boundary.py
-          test -f trusted-base/.github/boundaries/policy.json
-          test -f trusted-base/.github/scripts/trusted_boundary_adapter.py
-          test -f trusted-base/.github/scripts/validation_scope.py
-          test -f trusted-base/.github/scripts/final_validation_gate.py
-          python3 trusted-base/.github/scripts/trusted_boundary_adapter.py \
-            --event "$EVENT_PATH" \
-            --repository "$REPOSITORY" \
-            --git-repository proposal-data \
-            --trusted-root trusted-base \
-            --output "$RUNNER_TEMP/boundary.json"
-          python3 trusted-base/.github/scripts/validation_scope.py \
+          git -C proposal-data fetch --no-tags ../validation-base "$BASE_SHA"
+          test -f validation-base/.github/boundaries/check_boundary.py
+          test -f validation-base/.github/scripts/validation_scope.py
+          set +e
+          python3 validation-base/.github/boundaries/check_boundary.py \
+            --repository proposal-data \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --json > "$RUNNER_TEMP/boundary.json"
+          checker_code=$?
+          set -e
+          if [ "$checker_code" -ne 0 ] && [ "$checker_code" -ne 2 ]; then
+            exit "$checker_code"
+          fi
+          python3 validation-base/.github/scripts/validation_scope.py \
             "$RUNNER_TEMP/boundary.json" \
             --github-output "$GITHUB_OUTPUT"
 
   infrastructure:
     name: Validation / safeguard infrastructure
-    needs: boundary
-    if: needs.boundary.outputs.infrastructure == 'true'
+    needs: scope
+    if: needs.scope.outputs.infrastructure == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Test proposed safeguard implementation without credentials
@@ -86,12 +84,13 @@ jobs:
 
   root_native:
     name: Validation / root-native Rust
-    needs: boundary
-    if: needs.boundary.outputs.root_native == 'true'
+    needs: scope
+    if: needs.scope.outputs.root_native == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Install stable Rust
@@ -101,12 +100,13 @@ jobs:
 
   windows:
     name: Validation / Windows native
-    needs: boundary
-    if: needs.boundary.outputs.windows == 'true'
+    needs: scope
+    if: needs.scope.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Install pinned Windows Rust
@@ -124,8 +124,8 @@ jobs:
 
   ubuntu_webgui:
     name: Validation / Ubuntu WebGUI
-    needs: boundary
-    if: needs.boundary.outputs.ubuntu_webgui == 'true'
+    needs: scope
+    if: needs.scope.outputs.ubuntu_webgui == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -144,6 +144,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -172,12 +173,13 @@ jobs:
 
   release_contract:
     name: Validation / release contracts
-    needs: boundary
-    if: needs.boundary.outputs.release_contract == 'true'
+    needs: scope
+    if: needs.scope.outputs.release_contract == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - name: Install stable Rust
@@ -191,56 +193,29 @@ jobs:
 
   documentation:
     name: Validation / documentation contract
-    needs: boundary
-    if: needs.boundary.outputs.documentation == 'true'
+    needs: scope
+    if: needs.scope.outputs.documentation == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out target base for local diff data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: validation-base
+      - name: Check out proposed documentation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
+          path: proposal-data
       - name: Check authorized documentation diff
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: git diff --check "$BASE_SHA...$HEAD_SHA"
-
-  final_gate:
-    name: Safeguard / final validation gate
-    if: ${{ always() }}
-    needs:
-      - boundary
-      - infrastructure
-      - root_native
-      - windows
-      - ubuntu_webgui
-      - release_contract
-      - documentation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out the trusted base revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-          path: trusted-base
-      - name: Require explicit success for every selected validation
-        env:
-          BOUNDARY_JSON: ${{ needs.boundary.outputs.boundary_json }}
-          SELECTION_JSON: ${{ needs.boundary.outputs.selection_json }}
-          BOUNDARY_JOB_RESULT: ${{ needs.boundary.result }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          RESULTS_JSON: >-
-            {"infrastructure":"${{ needs.infrastructure.result }}","root_native":"${{ needs.root_native.result }}","windows":"${{ needs.windows.result }}","ubuntu_webgui":"${{ needs.ubuntu_webgui.result }}","release_contract":"${{ needs.release_contract.result }}","documentation":"${{ needs.documentation.result }}"}
         run: |
-          set -euo pipefail
-          test -f trusted-base/.github/scripts/final_validation_gate.py
-          python3 trusted-base/.github/scripts/final_validation_gate.py \
-            --boundary-json "$BOUNDARY_JSON" \
-            --selection-json "$SELECTION_JSON" \
-            --results-json "$RESULTS_JSON" \
-            --boundary-job-result "$BOUNDARY_JOB_RESULT" \
-            --base "$BASE_SHA" \
-            --head "$HEAD_SHA"
+          git -C proposal-data fetch --no-tags ../validation-base "$BASE_SHA"
+          git -C proposal-data diff --check "$BASE_SHA...$HEAD_SHA"

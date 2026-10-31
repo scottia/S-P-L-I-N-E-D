@@ -21,17 +21,17 @@ LANES = (
 
 def is_validation_infrastructure(path: str) -> bool:
     return (
-        path == ".github/workflows/validate.yml"
+        path in {
+            ".github/workflows/boundary.yml",
+            ".github/workflows/validate.yml",
+        }
         or path.startswith(".github/scripts/")
         or path.startswith(".github/boundaries/")
     )
 
 
 def select_lanes(boundary: Mapping[str, object]) -> dict[str, bool]:
-    """Map authorized policy validations to their actual CI consumers."""
-
-    if boundary.get("allowed") is not True:
-        raise ValueError("Boundary authorization must succeed before validation selection")
+    """Map classified policy validations to consumers, independent of authorization."""
 
     categories = {str(value) for value in boundary.get("categories", [])}
     validations = {str(value) for value in boundary.get("validations", [])}
