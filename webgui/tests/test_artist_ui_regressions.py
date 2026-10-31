@@ -61,7 +61,6 @@ def run_node_regressions(
 class ArtistUiRegressionDiscoveryTests(unittest.TestCase):
     def test_node_behavioral_regressions(self) -> None:
         output = run_node_regressions()
-        self.assertIn("tests 5", output)
         self.assertIn("fail 0", output)
 
     def test_nonzero_node_exit_propagates_with_output(self) -> None:

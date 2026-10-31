@@ -149,7 +149,8 @@ class JobQueue:
         with closing(self.db.connect()) as db, db:
             if action == "start":
                 db.execute(
-                    "UPDATE web_jobs SET state='queued',error='',updated_at=now() WHERE state IN ('staged','paused')"
+                    "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                    "error='',updated_at=now() WHERE state='staged'"
                 )
             elif action == "pause-after":
                 db.execute(
@@ -164,7 +165,8 @@ class JobQueue:
                     raise ValueError("This decision is no longer current")
             elif action == "retry":
                 db.execute(
-                    "UPDATE web_jobs SET state='queued',error='',updated_at=now() WHERE id=? AND state IN ('failed','paused')",
+                    "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                    "error='',updated_at=now() WHERE id=? AND state IN ('failed','paused')",
                     (job_id,),
                 )
             elif action in {"pause", "cancel"}:

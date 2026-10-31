@@ -366,11 +366,14 @@ class Services:
                     artist.pop("status", None)
                 self._upsert(db, "artists", artist, "artist_key")
                 self._upsert(db, "albums", row, "album_key")
-            # Missing-ID COMP albums need every track identity in PostgreSQL.
-            # Build that detail during an explicit index refresh so ordinary
-            # artist navigation never turns into a library-wide filesystem scan.
-            if not str(row["musicbrainz_albumid"] or "").strip():
-                self.hydrate_tracks(row["album_key"])
+            # Exact track credits are the local authority for Featured and
+            # COMP appearances. Build them during the explicit index refresh
+            # so ordinary Artist navigation remains PostgreSQL-only. Identified
+            # releases do not need the separate embedded-art scan here.
+            fallback = not str(row["musicbrainz_albumid"] or "").strip()
+            self.hydrate_tracks(
+                row["album_key"], refresh_embedding_stats=fallback
+            )
             if progress:
                 progress(
                     {
@@ -430,7 +433,7 @@ class Services:
         self.audit("index-refresh", str(root), result)
         return result
 
-    def hydrate_tracks(self, album_id):
+    def hydrate_tracks(self, album_id, *, refresh_embedding_stats=True):
         row = self.album_row(album_id)
         files = self.album_files(row)
         with closing(self.runtime.database.connect()) as db:
@@ -454,7 +457,8 @@ class Services:
                         "DELETE FROM tracks WHERE album_key=? AND path=?",
                         (album_id, path),
                     )
-        self.refresh_embedding_stats(row)
+        if refresh_embedding_stats:
+            self.refresh_embedding_stats(row)
         return records
 
     def refresh_embedding_stats(self, row):
@@ -469,13 +473,19 @@ class Services:
         return count
 
     def comp_report(self, artist_id):
+        album_ids = self.catalog.artist_comp_album_ids(artist_id)
+        if not album_ids:
+            return self.catalog.artist_comp_report(artist_id)
+        placeholders = ",".join("?" for _ in album_ids)
         with closing(self.runtime.database.connect()) as db:
             albums = list(
                 db.execute(
                     "SELECT albums.album_key,albums.track_count,count(tracks.track_key) AS indexed_track_count "
                     "FROM albums LEFT JOIN tracks ON tracks.album_key=albums.album_key "
                     "WHERE trim(coalesce(albums.musicbrainz_albumid,''))='' "
-                    "GROUP BY albums.album_key,albums.track_count"
+                    f"AND albums.album_key IN ({placeholders}) "
+                    "GROUP BY albums.album_key,albums.track_count",
+                    tuple(album_ids),
                 )
             )
         pending = [
@@ -486,7 +496,7 @@ class Services:
             "COMP report requested for artist %s; %d of %d fallback albums require track indexing",
             artist_id,
             len(pending),
-            len(albums),
+            len(album_ids),
         )
         for row in pending:
             self.hydrate_tracks(row["album_key"])
@@ -934,14 +944,19 @@ class Services:
                 album_ids = [
                     row["album_key"]
                     for row in db.execute(
-                        "SELECT album_key FROM albums WHERE artist_key=? AND trim(coalesce(musicbrainz_albumid,''))<>'' AND bypassed=0",
+                        "SELECT album_key FROM albums WHERE artist_key=? "
+                        "AND trim(coalesce(musicbrainz_albumid,''))<>'' "
+                        "AND bypassed=0 AND lower(coalesce(status,''))<>'timeout' "
+                        "AND NOT (lower(coalesce(status,''))='processed' AND cover_found<>0 "
+                        "AND embedded_tracks>=track_count)",
                         (payload["artist_id"],),
                     )
                 ]
         if not isinstance(album_ids, list) or not album_ids:
             raise ValueError("Choose albums to process")
-        completed = 0
-        for album_id in album_ids:
+        reviewed = 0
+        adapter.progress({"completed": 0, "total": len(album_ids), "message": "Ready"})
+        for position, album_id in enumerate(album_ids, 1):
             if adapter.cancelled():
                 raise core.InteractionCancelled()
             row = self.album_row(str(album_id))
@@ -953,6 +968,7 @@ class Services:
             result = self.search_album(row["album_key"])
             candidates = result["candidates"]
             if not candidates:
+                adapter.progress({"completed": position, "total": len(album_ids), "message": row["album_name"]})
                 continue
             items = [dict(item, index=n) for n, item in enumerate(candidates, 1)]
             adapter.emit("candidates", {"items": items})
@@ -967,8 +983,10 @@ class Services:
             )
             if answer == "b":
                 self.bypass(row["album_key"], True)
+                adapter.progress({"completed": position, "total": len(album_ids), "message": row["album_name"]})
                 continue
             if answer in {"k", "__batch_return__"}:
+                adapter.progress({"completed": position, "total": len(album_ids), "message": row["album_name"]})
                 continue
             if answer == "__cancel__":
                 raise core.InteractionCancelled()
@@ -980,21 +998,22 @@ class Services:
             elif answer.isdigit() and 1 <= int(answer) <= len(candidates):
                 candidate = candidates[int(answer) - 1]
             else:
+                adapter.progress({"completed": position, "total": len(album_ids), "message": row["album_name"]})
                 continue
             if self.runtime.cfg.get("mode") == "write":
                 self.write_cover(
                     {"album_id": row["album_key"], "image": candidate["image"]}
                 )
-            completed += 1
+            reviewed += 1
             adapter.progress(
                 {
-                    "completed": completed,
+                    "completed": position,
                     "total": len(album_ids),
                     "message": row["album_name"],
                 }
             )
         return {
-            "reviewed": completed,
+            "reviewed": reviewed,
             "total": len(album_ids),
             "mode": self.runtime.cfg.get("mode", "read"),
         }

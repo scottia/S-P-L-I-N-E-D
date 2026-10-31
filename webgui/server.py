@@ -472,6 +472,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def artist(id: str):
         return context.require().catalog.artist(id)
 
+    @app.get("/api/artist/overview")
+    def artist_overview(id: str):
+        catalog = context.require().catalog
+        artist = catalog.artist(id)
+        return {"artist": artist, "comp_albums": catalog.artist_comp_albums(str(artist["id"]))}
+
     @app.get("/api/artist/thumbnail")
     def artist_thumbnail(id: str):
         return FileResponse(
@@ -480,8 +486,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         )
 
     @app.get("/api/artist/metadata")
-    def artist_metadata(id: str):
-        return context.require().catalog.artist_metadata(id)
+    def artist_metadata(id: str, refresh: bool = False):
+        return context.require().catalog.artist_metadata(id, refresh=refresh)
 
     @app.get("/api/artist/comp-report")
     def comp_report(id: str):

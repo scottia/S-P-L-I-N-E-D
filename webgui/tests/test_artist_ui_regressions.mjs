@@ -40,6 +40,21 @@ const writeArtworkFunction = between(
   "async function writeArtwork",
   "const previewReview",
 );
+const launchArtistFunction = between(
+  operationsSource,
+  "async function launchArtist",
+  "async function enqueueComp",
+);
+const stageAlbumFunction = between(
+  operationsSource,
+  "async function stageAlbum",
+  "async function queueAction",
+);
+const artistMetadataFunction = between(
+  appSource,
+  "async function loadArtistMetadata",
+  "async function searchArtist",
+);
 
 function queuedContext({groups, album, artistResponse}) {
   const originalArtist = {id: "projected-artist", albums: []};
@@ -110,6 +125,7 @@ test("lazy thumbnail hydration updates matching artists and rerenders", async ()
       listRequest: 4,
       libraryMode: "artists",
       artists: [{id: "artist-1", portrait: null}, {id: "artist-2", portrait: "local"}],
+      artist: {id: "artist-1", portrait: null},
     },
     api: async () => [
       {id: "artist-1", portrait: "/api/artist/thumbnail?id=artist-1"},
@@ -121,7 +137,109 @@ test("lazy thumbnail hydration updates matching artists and rerenders", async ()
   await context.hydrateArtistThumbnails(4);
 
   assert.equal(context.state.artists[0].portrait, "/api/artist/thumbnail?id=artist-1");
+  assert.equal(context.state.artist.portrait, "/api/artist/thumbnail?id=artist-1");
   assert.equal(context.state.artists[1].portrait, "local");
+  assert.equal(renders, 1);
+});
+
+test("Artist LAUNCH submits every selected eligible release and preserves selection", async () => {
+  const calls = [];
+  const selected = new Set(["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
+  const context = load(launchArtistFunction, {
+    state: {
+      artist: {id: "artist-1", portrait: "artist", albums: [
+        {id: "own", album_mbid: "release-own", status: "incomplete", tracks: 2, embedded: 0, cover: "cover", cover_found: true},
+        {id: "featured", album_mbid: "release-featured", status: "unprocessed", tracks: 1, embedded: 0, cover: "cover", cover_found: true, featured: true},
+        {id: "complete", album_mbid: "release-complete", status: "processed", tracks: 2, embedded: 2, cover: "cover", cover_found: true},
+        {id: "bypassed", album_mbid: "release-bypassed", status: "bypassed", tracks: 1, embedded: 0},
+        {id: "timeout", album_mbid: "release-timeout", status: "timeout", tracks: 1, embedded: 0},
+        {id: "comp", album_mbid: "", status: "incomplete", tracks: 1, embedded: 0},
+      ]},
+      mediaSelected: selected,
+    },
+    post: async (path, payload) => { calls.push([path, payload]); return {id: "job-1"}; },
+    reviewJob: async () => {},
+    artistAlbumEligible: album => !!album.album_mbid && !["bypassed", "timeout"].includes(album.status)
+      && !(album.status === "processed" && album.cover_found && album.embedded >= album.tracks),
+  });
+
+  await context.launchArtist();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "/api/jobs");
+  assert.equal(calls[0][1].kind, "scan");
+  assert.deepEqual([...calls[0][1].payload.album_ids], ["own", "featured"]);
+  assert.deepEqual([...selected], ["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
+});
+
+test("successful EMBED Batch staging clears stale candidates and review selection only", async () => {
+  const artist = {id: "artist-1"};
+  const album = {id: "album-1", name: "Album", cover: "cover"};
+  const embedQueue = [{id: "persistent-job"}];
+  const state = {
+    artist, album, embedQueue,
+    candidates: [{image: "candidate"}], selectedCover: {image: "candidate"},
+    upscalePreview: {image: "upscale"}, renderedPreview: {album: {image: "rendered"}},
+    compare: new Set(["candidate"]), reviewCleared: false,
+  };
+  const context = load(stageAlbumFunction, {
+    state,
+    post: async () => ({id: "job-1", already_queued: false}),
+    coverPayload: () => ({album_id: album.id, image: album.cover}),
+    pollJobs: async () => {}, renderHero() {}, renderReview() {}, renderSources() {}, renderCandidates() {}, renderPanes() {},
+    resetCandidateFilters() {}, setStatus() {},
+  });
+
+  await context.stageAlbum();
+
+  assert.equal(state.artist, artist);
+  assert.equal(state.album, album);
+  assert.equal(state.embedQueue, embedQueue);
+  assert.equal(state.candidates.length, 0);
+  assert.equal(state.selectedCover, null);
+  assert.equal(state.upscalePreview, null);
+  assert.equal(Object.keys(state.renderedPreview).length, 0);
+  assert.equal(state.compare.size, 0);
+  assert.equal(state.reviewCleared, true);
+});
+
+test("queued Album review exposes SKIP ALBUM and submits k without pausing the batch", async () => {
+  assert.match(operationsSource, /async function skipQueuedAlbum\(\)/);
+  const skipSource = between(operationsSource, "async function skipQueuedAlbum", "async function enqueueComp");
+  const calls = [];
+  const state = {queuedDecision: {jobId: "scan-1", jobKind: "scan", nonce: "nonce-1"}};
+  const context = load(skipSource, {
+    state,
+    submitQueuedDecision: async value => { calls.push(value); },
+  });
+  await context.skipQueuedAlbum();
+  assert.deepEqual(calls, ["k"]);
+  assert.doesNotMatch(skipSource, /pause|cancel/);
+  assert.match(appSource, /state\.queuedDecision[^\n]+skipQueuedAlbum/);
+});
+
+test("background Artist metadata refreshes Featured and COMP projections without losing focus", async () => {
+  let renders = 0;
+  const state = {
+    artist: {id: "artist-1", albums: [{id: "old"}]},
+    artistMetadata: null,
+    compGroups: [],
+  };
+  const context = load(artistMetadataFunction, {
+    state,
+    api: async () => ({
+      biography: "Biography", similar: [],
+      artist: {id: "artist-1", albums: [{id: "own"}, {id: "featured", featured: true}]},
+      comp_albums: [{id: "comp", tracks: [{key: "track"}]}],
+    }),
+    renderHero: () => { renders += 1; }, renderSources() {}, renderLibrary() {},
+  });
+
+  await context.loadArtistMetadata("artist-1");
+
+  assert.deepEqual(state.artist.albums.map(album => album.id), ["own", "featured"]);
+  assert.deepEqual(state.compGroups.map(group => group.id), ["comp"]);
+  assert.equal(state.artistMetadata.biography, "Biography");
   assert.equal(renders, 1);
 });
 
