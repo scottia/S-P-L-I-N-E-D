@@ -350,7 +350,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertFalse(client.get("/api/status").json()["admin_setup_required"])
             artists = client.get("/api/artists").json()
             self.assertEqual(artists[0]["name"], "Test Artist")
-            self.assertEqual(client.get(artists[0]["portrait"]).status_code, 200)
+            self.assertIsNone(artists[0]["portrait"])
+            thumbnails = client.get("/api/artists/thumbnails").json()
+            portrait = next(
+                item["portrait"]
+                for item in thumbnails
+                if item["id"] == artists[0]["id"]
+            )
+            self.assertEqual(client.get(portrait).status_code, 200)
             settings = client.get("/api/settings").json()
             settings["config"]["mode"] = "read"
             settings["config"]["webgui_ui"] = {

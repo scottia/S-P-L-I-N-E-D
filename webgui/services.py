@@ -366,11 +366,14 @@ class Services:
                     artist.pop("status", None)
                 self._upsert(db, "artists", artist, "artist_key")
                 self._upsert(db, "albums", row, "album_key")
-            # Missing-ID COMP albums need every track identity in PostgreSQL.
-            # Build that detail during an explicit index refresh so ordinary
-            # artist navigation never turns into a library-wide filesystem scan.
-            if not str(row["musicbrainz_albumid"] or "").strip():
-                self.hydrate_tracks(row["album_key"])
+            # Exact track credits are the local authority for Featured and
+            # COMP appearances. Build them during the explicit index refresh
+            # so ordinary Artist navigation remains PostgreSQL-only. Identified
+            # releases do not need the separate embedded-art scan here.
+            fallback = not str(row["musicbrainz_albumid"] or "").strip()
+            self.hydrate_tracks(
+                row["album_key"], refresh_embedding_stats=fallback
+            )
             if progress:
                 progress(
                     {
@@ -430,7 +433,7 @@ class Services:
         self.audit("index-refresh", str(root), result)
         return result
 
-    def hydrate_tracks(self, album_id):
+    def hydrate_tracks(self, album_id, *, refresh_embedding_stats=True):
         row = self.album_row(album_id)
         files = self.album_files(row)
         with closing(self.runtime.database.connect()) as db:
@@ -454,7 +457,8 @@ class Services:
                         "DELETE FROM tracks WHERE album_key=? AND path=?",
                         (album_id, path),
                     )
-        self.refresh_embedding_stats(row)
+        if refresh_embedding_stats:
+            self.refresh_embedding_stats(row)
         return records
 
     def refresh_embedding_stats(self, row):
