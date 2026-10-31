@@ -33,6 +33,30 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             "mbid:aerosmith",
         )
 
+    def test_conflicting_musicbrainz_ids_merge_when_library_path_is_identical(self):
+        rows = [
+            {
+                "artist_key": "mbid:correct",
+                "artist_name": "Aerosmith",
+                "musicbrainz_artistid": "3d2b98e5-556f-4451-a3ff-c50ea18d57cb",
+                "primary_path": "N:/media/music/Aerosmith",
+                "album_count": 19,
+            },
+            {
+                "artist_key": "mbid:stray-tag",
+                "artist_name": "Aerosmith",
+                "musicbrainz_artistid": "8e045c17-6447-471f-8169-50b7129f0cbb",
+                "primary_path": "N:/media/music/Aerosmith",
+                "album_count": 1,
+            },
+        ]
+        groups = PreviewApp._artist_groups(rows)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(
+            PreviewApp._canonical_artist_row(groups[0])["artist_key"],
+            "mbid:correct",
+        )
+
     def test_first_load_merges_duplicate_identity_and_projects_every_album_class(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

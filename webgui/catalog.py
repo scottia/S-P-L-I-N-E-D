@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import secrets
 import tempfile
+import time
 import sqlite3
 from threading import Lock
 from urllib.parse import quote, urlsplit
@@ -158,7 +159,13 @@ class Catalog:
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
-    portrait_cache: dict[str, Path | None] = field(default_factory=dict)
+    portrait_cache: dict[str, Path] = field(default_factory=dict)
+    portrait_retry_at: dict[str, float] = field(default_factory=dict)
+    portrait_failures: dict[str, int] = field(default_factory=dict)
+    navidrome_artist_directory: dict[str, dict[str, object]] = field(default_factory=dict)
+    navidrome_directory_retry_at: float = 0.0
+    navidrome_directory_failures: int = 0
+    navidrome_directory_loading: bool = False
     lock: Lock = field(default_factory=Lock)
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
 
@@ -302,6 +309,10 @@ class Catalog:
         )
 
     @staticmethod
+    def artist_thumbnail_url(artist_id: str) -> str:
+        return "/api/artist/thumbnail?id=" + quote(str(artist_id), safe="")
+
+    @staticmethod
     def fallback_thumbnail_keys(db) -> dict[str, str]:
         """Return one recorded embedded-art track per fallback album."""
         tables = {
@@ -349,11 +360,13 @@ class Catalog:
 
     @staticmethod
     def _artist_groups(rows):
-        """Merge an untagged duplicate into one same-name MBID identity.
+        """Merge aliases without collapsing distinct same-name artists.
 
-        Two different non-empty MBIDs remain distinct even when their display
-        names match.  This removes the common 19-album/1-album split without
-        collapsing genuinely different artists that share a name.
+        Two different non-empty MBIDs normally remain distinct.  When every
+        row has the same non-empty primary library path, however, the path and
+        display name are stronger local evidence than a stray tag MBID.  This
+        removes the common 19-album/1-album split while keeping genuinely
+        different same-name artists separate.
         """
         by_name: dict[str, list] = {}
         for row in rows:
@@ -365,7 +378,13 @@ class Catalog:
             for row in name_rows:
                 mbid = str(row["musicbrainz_artistid"] or "").strip().casefold()
                 (by_mbid.setdefault(mbid, []) if mbid else blank).append(row)
-            if len(by_mbid) <= 1:
+            paths = [
+                str(row["primary_path"] or "").replace("\\", "/").rstrip("/").casefold()
+                if "primary_path" in row.keys() else ""
+                for row in name_rows
+            ]
+            same_primary_path = bool(paths) and all(paths) and len(set(paths)) == 1
+            if len(by_mbid) <= 1 or same_primary_path:
                 groups.append(name_rows)
             else:
                 groups.extend(by_mbid.values())
@@ -376,12 +395,14 @@ class Catalog:
     def _artist_identity_rows(self, db, artist_id: str):
         try:
             selected = db.execute(
-                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,album_count,status "
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,"
+                "(SELECT COUNT(*) FROM albums WHERE albums.artist_key=artists.artist_key) AS album_count,status "
                 "FROM artists WHERE artist_key=?",
                 (artist_id,),
             ).fetchone()
             candidates = db.execute(
-                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,album_count,status "
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,"
+                "(SELECT COUNT(*) FROM albums WHERE albums.artist_key=artists.artist_key) AS album_count,status "
                 "FROM artists"
             ).fetchall()
         except sqlite3.OperationalError:
@@ -399,6 +420,7 @@ class Catalog:
             raise KeyError("Artist not found")
         identity = normalized_artist_identity(selected["artist_name"])
         selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
+        selected_path = str(selected["primary_path"] or "").replace("\\", "/").rstrip("/").casefold()
         candidates = [
             row for row in candidates
             if normalized_artist_identity(row["artist_name"]) == identity
@@ -414,6 +436,7 @@ class Catalog:
                 row for row in candidates
                 if not str(row["musicbrainz_artistid"] or "").strip()
                 or str(row["musicbrainz_artistid"] or "").strip().casefold() == selected_mbid
+                or bool(selected_path) and str(row["primary_path"] or "").replace("\\", "/").rstrip("/").casefold() == selected_path
             ]
         elif len(nonempty) <= 1:
             aliases = candidates
@@ -515,6 +538,45 @@ class Catalog:
         for row_id in list(self.portrait_cache):
             self.portrait_cache.pop(row_id, None)
         return path
+
+    def _navidrome_artists_by_name(self) -> dict[str, dict[str, object]]:
+        """Load Navidrome's artist directory with bounded, recoverable retries."""
+        credential_path = self.credentials / "navidrome.json"
+        if not credential_path.is_file():
+            with self.lock:
+                return dict(self.navidrome_artist_directory)
+        now = time.monotonic()
+        with self.lock:
+            if self.navidrome_directory_loading or now < self.navidrome_directory_retry_at:
+                return dict(self.navidrome_artist_directory)
+            self.navidrome_directory_loading = True
+        try:
+            credential = json.loads(credential_path.read_text(encoding="utf-8"))
+            envelope = self._navidrome_call(credential, "getArtists", {})
+            indexes = envelope.get("artists", {}).get("index", [])
+            if isinstance(indexes, dict):
+                indexes = [indexes]
+            directory: dict[str, dict[str, object]] = {}
+            for index in indexes:
+                values = index.get("artist", []) if isinstance(index, dict) else []
+                values = [values] if isinstance(values, dict) else values
+                for remote in values:
+                    if not isinstance(remote, dict) or not str(remote.get("coverArt") or "").strip():
+                        continue
+                    directory.setdefault(normalized_artist_identity(remote.get("name", "")), remote)
+        except (OSError, ValueError, KeyError, TypeError, requests.RequestException, json.JSONDecodeError):
+            with self.lock:
+                self.navidrome_directory_failures += 1
+                delay = min(300.0, 5.0 * (2 ** min(self.navidrome_directory_failures - 1, 6)))
+                self.navidrome_directory_retry_at = time.monotonic() + delay
+                self.navidrome_directory_loading = False
+                return dict(self.navidrome_artist_directory)
+        with self.lock:
+            self.navidrome_artist_directory = directory
+            self.navidrome_directory_failures = 0
+            self.navidrome_directory_retry_at = time.monotonic() + (300.0 if directory else 30.0)
+            self.navidrome_directory_loading = False
+            return dict(directory)
 
     def _stored_artist_appearances(self, db, artist_id: str) -> dict[str, object]:
         try:
@@ -738,14 +800,28 @@ class Catalog:
                 portrait = self.artist_thumbnail_path(row)
                 if portrait is not None:
                     break
+            portrait_url = self.image(portrait)
             result.append({
                 "id": canonical["artist_key"],
                 "name": canonical["artist_name"],
                 "albums": sum(int(row["album_count"] or 0) for row in group),
                 "status": self._aggregate_artist_status(group),
-                "portrait": self.image(portrait),
+                "portrait": portrait_url,
             })
         return sorted(result, key=lambda item: normalized_artist_identity(item["name"]))
+
+    def artist_thumbnails(self) -> list[dict[str, str]]:
+        """Return local thumbnails immediately and Navidrome fallbacks lazily."""
+        artists = self.artists("")
+        remote_artists = self._navidrome_artists_by_name()
+        result = []
+        for artist in artists:
+            portrait = str(artist.get("portrait") or "")
+            if not portrait and normalized_artist_identity(artist["name"]) in remote_artists:
+                portrait = self.artist_thumbnail_url(artist["id"])
+            if portrait:
+                result.append({"id": str(artist["id"]), "portrait": portrait})
+        return result
 
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
@@ -766,7 +842,13 @@ class Catalog:
             not portrait.is_file() or not self.allowed_image_path(portrait)
         ):
             portrait = None
-        self.portrait_cache[artist_id] = portrait
+        # Cache only a real file.  A missing portrait is not stable: Artist
+        # Art may be written by this WebGUI or the Windows application while
+        # the server remains open.
+        if portrait is not None:
+            self.portrait_cache[artist_id] = portrait
+        else:
+            self.portrait_cache.pop(artist_id, None)
         return portrait
 
     def artist_thumbnail(self, artist_id: str) -> Path:
@@ -780,6 +862,33 @@ class Catalog:
             if artist is None:
                 raise KeyError("Artist not found")
         portrait = self.artist_thumbnail_path(artist)
+        if portrait is None:
+            now = time.monotonic()
+            with self.lock:
+                if now < self.portrait_retry_at.get(str(artist["artist_key"]), 0.0):
+                    raise KeyError("Saved Artist Art is unavailable")
+            remote = self._navidrome_artists_by_name().get(
+                normalized_artist_identity(artist["artist_name"])
+            )
+            credential_path = self.credentials / "navidrome.json"
+            if remote is not None and credential_path.is_file():
+                artist_key = str(artist["artist_key"])
+                try:
+                    credential = json.loads(credential_path.read_text(encoding="utf-8"))
+                    portrait = self._cache_navidrome_thumbnail(artist, credential, remote)
+                except (OSError, ValueError, KeyError, TypeError, requests.RequestException, json.JSONDecodeError):
+                    portrait = None
+                with self.lock:
+                    if portrait is not None:
+                        self.portrait_cache[artist_key] = portrait
+                        self.portrait_retry_at.pop(artist_key, None)
+                        self.portrait_failures.pop(artist_key, None)
+                    else:
+                        self.portrait_cache.pop(artist_key, None)
+                        failures = self.portrait_failures.get(artist_key, 0) + 1
+                        self.portrait_failures[artist_key] = failures
+                        delay = min(300.0, 5.0 * (2 ** min(failures - 1, 6)))
+                        self.portrait_retry_at[artist_key] = time.monotonic() + delay
         if portrait is None:
             raise KeyError("Saved Artist Art is unavailable")
         return portrait
