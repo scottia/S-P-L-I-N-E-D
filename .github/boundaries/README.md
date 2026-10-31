@@ -35,6 +35,20 @@ release file in the same change is rejected even if every category is passed
 on the command line. This prevents a policy modification from authorizing an
 unrelated edit in the same proposal.
 
+The single future path `.github/workflows/boundary.yml` is classified as
+`shared-contract`, following the existing CI/workflow convention. That exact
+classification is not approval to implement or activate the workflow. It
+requires explicit `shared-contract` authorization and selects Windows,
+Ubuntu-WebGUI, and root-native validation; neither `windows` nor
+`ubuntu-webgui` authorization permits it. No other new workflow path is
+classified by this addition.
+
+That future workflow is enforcement infrastructure. Its implementation needs
+an isolated review and a trusted bootstrap into the base branch before it can
+evaluate later proposals. The proposed workflow cannot approve its own
+introduction, and later integration must treat it as protected enforcement
+infrastructure rather than ordinary application code.
+
 This initial policy is a bootstrap case because the recorded baseline does not
 contain it. Local bootstrap review may pass `--policy-file`, but the bootstrap
 change must contain only `.github/boundaries/**`. After the policy is accepted,

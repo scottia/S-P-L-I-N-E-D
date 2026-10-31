@@ -98,6 +98,51 @@ class BoundaryCheckerTests(unittest.TestCase):
             ["root-native-other", "ubuntu-webgui", "windows"],
         )
 
+    def test_trusted_boundary_workflow_requires_shared_authorization(self):
+        changes = [Change("A", ".github/workflows/boundary.yml")]
+        for authorization in ([], ["windows"], ["ubuntu-webgui"]):
+            with self.subTest(authorization=authorization):
+                rejected = evaluate(self.policy, changes, authorization)
+                self.assertFalse(rejected["allowed"])
+                self.assertIn(
+                    "Missing scope authorization: shared-contract",
+                    rejected["errors"],
+                )
+
+        allowed = evaluate(self.policy, changes, ["shared-contract"])
+        self.assertTrue(allowed["allowed"])
+        self.assertEqual(allowed["categories"], ["shared-contract"])
+        self.assertEqual(
+            allowed["classified_paths"],
+            {".github/workflows/boundary.yml": "shared-contract"},
+        )
+        self.assertEqual(
+            allowed["validations"],
+            ["root-native-other", "ubuntu-webgui", "windows"],
+        )
+
+    def test_trusted_boundary_workflow_rule_is_exact(self):
+        document = json.loads((HERE / "policy.json").read_text(encoding="utf-8"))
+        patterns = {
+            pattern
+            for rule in document["rules"]
+            for pattern in rule["patterns"]
+            if pattern.startswith(".github/workflows/")
+        }
+        self.assertIn(".github/workflows/boundary.yml", patterns)
+        self.assertNotIn(".github/workflows/**", patterns)
+
+        arbitrary = evaluate(
+            self.policy,
+            [Change("A", ".github/workflows/unreviewed.yml")],
+            ["shared-contract"],
+        )
+        self.assertFalse(arbitrary["allowed"])
+        self.assertIn(
+            "Unclassified path: .github/workflows/unreviewed.yml",
+            arbitrary["errors"],
+        )
+
     def test_cross_boundary_rename_is_rejected_even_when_both_sides_are_authorized(self):
         result = evaluate(
             self.policy,

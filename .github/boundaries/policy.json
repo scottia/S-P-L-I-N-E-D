@@ -41,6 +41,7 @@
     {
       "category": "shared-contract",
       "patterns": [
+        ".github/workflows/boundary.yml",
         ".github/workflows/validate.yml",
         ".github/scripts/**",
         ".github/CODEOWNERS",
