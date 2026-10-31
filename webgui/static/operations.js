@@ -41,7 +41,6 @@ async function initialize() {
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll(); await loadLibrary(); await pollJobs();
-  void runAction(checkLibraryChanges);
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";
@@ -187,9 +186,14 @@ async function searchAlbum(releaseId = null) {
 };
 async function launchArtist() {
   if (!state.artist) return;
-  const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && album.album_mbid));
-  const result = await post("/api/jobs", {kind: "scan", payload: ids.length ? {album_ids: ids} : {artist_id: state.artist.id}});
+  const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && artistAlbumEligible(album)));
+  if (!ids.length) throw new Error("Select at least one unfinished, eligible Album for this Artist");
+  const result = await post("/api/jobs", {kind: "scan", payload: {album_ids: ids}});
   await reviewJob(result.id);
+}
+async function skipQueuedAlbum() {
+  if (state.queuedDecision?.jobKind !== "scan") throw new Error("No Album scan is waiting to be skipped");
+  await submitQueuedDecision("k");
 }
 async function enqueueComp(albumId, keys) {
   const result = await post("/api/jobs", {kind: "comp", payload: {album_id: albumId, track_keys: keys}});
@@ -209,7 +213,13 @@ async function launchArtistComp() {
 };
 async function stageAlbum() {
   const result = await post("/api/jobs", {kind: "embed-album", payload: coverPayload()});
-  await pollJobs(); renderHero(); renderReview();
+  await pollJobs();
+  if (!result.already_queued) {
+    state.candidates = []; state.selectedCover = null; state.upscalePreview = null;
+    state.renderedPreview = {}; state.compare.clear(); state.reviewCleared = true;
+    resetCandidateFilters(); renderSources(); renderCandidates(); renderPanes();
+  }
+  renderHero(); renderReview();
   setStatus(result.already_queued ? "Album is already staged" : "Cover written and album staged · " + state.album.name);
 };
 async function queueAction(action, id = null, value = null, nonce = null) {
@@ -262,7 +272,7 @@ async function focusQueuedAlbum(decision) {
   state.fallbackTracks = tracks; state.fallbackTrack = null; state.upscalePreview = null;
   state.compGroups = []; state.compReportVisible = false; state.compTrack = null;
   decision.previousCandidates = fallback ? [] : album.candidates || [];
-  markSelectedAlbum(album);
+  if (decision.jobKind !== "scan") markSelectedAlbum(album);
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
   loadArtistMetadata(album.artist_id);
 }
@@ -298,7 +308,7 @@ function renderQueue() {
   // Catalog indexing is application maintenance, not album embedding. Keep it
   // in status/diagnostics so a completed 3,885-album refresh can never look
   // like 3,885 tracks were embedded with the currently selected cover.
-  const jobs = (state.jobs || []).filter(job => ["embed-album", "comp"].includes(job.kind));
+  const jobs = (state.jobs || []).filter(job => ["embed-album", "comp", "scan"].includes(job.kind));
   if (!jobs.length) host.append(node("p", "empty-copy", "No queued work yet."));
   for (const job of jobs) {
     const prompt = job.progress?.prompt || {}, context = prompt.context || {};
@@ -306,12 +316,15 @@ function renderQueue() {
       .filter(Boolean).join(" — ") || ({comp: "COMP track artwork", "embed-album": "Album embedding", scan: "Artwork scan", index: "Library index"}[job.kind] || "Artwork work");
     const kind = job.kind === "comp" ? "COMP track artwork" : job.kind === "embed-album" ? "Album track embedding"
       : job.kind === "scan" ? "Artwork scan" : job.kind === "index" ? "Library index" : "Artwork work";
-    const detail = [kind, job.state, prompt.label || job.progress.message,
+    const stateLabel = job.state === "staged" ? "Staged — not started" : job.state === "done" ? "Completed" : job.state;
+    const detail = [kind, stateLabel, prompt.label || job.progress.message,
       job.progress.total ? (job.progress.completed || 0) + "/" + job.progress.total : ""].filter(Boolean).join(" · ");
     const card = node("div", "queue-card state-" + job.state), copy = node("div", "row-copy");
     copy.append(node("strong", "", title), node("small", "", detail));
+    if (job.state === "done" && job.kind === "embed-album") copy.append(node("p", "operation-success", `Completed write · ${job.result?.tracks ?? job.payload?.tracks ?? 0} tracks verified`));
+    if (job.state === "done" && job.kind === "scan") copy.append(node("p", "operation-success", `${job.result?.reviewed ?? 0} Albums reviewed · batch complete`));
     if (job.error) copy.append(node("p", "operation-error", job.error)); card.append(copy);
-    if (job.state === "waiting") actionButton("Review", () => reviewJob(job.id), card);
+    if (["staged", "waiting", "done", "failed"].includes(job.state)) actionButton("Review", () => reviewJob(job.id), card);
     if (["failed", "paused"].includes(job.state)) actionButton("Resume", () => queueAction("retry", job.id), card);
     if (["running", "waiting", "queued"].includes(job.state)) actionButton("Pause", () => queueAction("pause", job.id), card);
     else actionButton("Remove", () => queueAction("remove", job.id), card);
@@ -375,7 +388,9 @@ async function pollJobs() {
         if (job.state === "done") {
           await refreshQueuedAlbumAfterSave();
           state.reviewJobId = null;
-          setStatus("Queued artwork saved · " + (state.album?.name || "work complete"));
+          if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
+          else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
+          else setStatus("COMP track artwork work complete · " + (state.album?.name || job.payload?.name || "Album"));
         } else if (job.state === "failed") {
           setStatus(job.error || "Queued artwork failed", "error");
         }

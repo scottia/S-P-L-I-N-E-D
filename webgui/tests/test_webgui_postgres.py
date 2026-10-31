@@ -186,6 +186,30 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(changes["count"], 1)
         self.assertEqual(changes["changed"], 1)
 
+    def test_postgres_track_credit_projects_featured_album_for_selected_artist(self):
+        folder = self.root / "music" / "Album Owner" / "Guest Release"
+        folder.mkdir(parents=True)
+        path = folder / "guest.flac"
+        sf.write(path, np.zeros((4410, 2)), 44100)
+        audio = FLAC(path)
+        for key, value in {
+            "title": "Guest Track",
+            "artist": "Album Owner feat. Test Artist",
+            "albumartist": "Album Owner",
+            "album": "Guest Release",
+            "musicbrainz_albumid": "99999999-9999-4999-8999-999999999999",
+            "musicbrainz_artistid": "88888888-8888-4888-8888-888888888888",
+        }.items():
+            audio[key] = value
+        audio.save()
+        Image.new("RGB", (180, 180), "purple").save(folder / "cover.jpg")
+        self.services.refresh_index()
+
+        artist = self.services.catalog.artist(self.row["artist_key"])
+        featured = [album for album in artist["albums"] if album["name"] == "Guest Release"]
+        self.assertEqual(len(featured), 1)
+        self.assertTrue(featured[0]["featured"])
+
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
         self.runtime.cfg["mode"] = "read"
@@ -247,6 +271,36 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verification"):
             self.services.embed_album(staged)
         self.assertEqual(self.files[0].read_bytes(), before)
+
+    def test_queue_start_leaves_paused_work_paused_and_retry_clears_stale_review(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        queue = self.queue
+        self.queue = None
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress,decision,error) VALUES"
+                "('staged-work','embed-album','staged','{}','{}',NULL,''),"
+                "('paused-work','embed-album','paused','{}',"
+                "'{\"prompt\":{\"nonce\":\"stale\"}}',"
+                "'{\"nonce\":\"stale\",\"value\":\"1\"}','old failure')"
+            )
+        queue.action("start")
+        with closing(self.db.connect()) as db:
+            staged = db.execute("SELECT state FROM web_jobs WHERE id='staged-work'").fetchone()
+            paused = db.execute("SELECT state FROM web_jobs WHERE id='paused-work'").fetchone()
+        self.assertEqual(staged["state"], "queued")
+        self.assertEqual(paused["state"], "paused")
+
+        queue.action("retry", "paused-work")
+        with closing(self.db.connect()) as db:
+            retried = db.execute(
+                "SELECT state,progress,decision,error FROM web_jobs WHERE id='paused-work'"
+            ).fetchone()
+        self.assertEqual(retried["state"], "queued")
+        self.assertNotIn("prompt", retried["progress"])
+        self.assertIsNone(retried["decision"])
+        self.assertEqual(retried["error"], "")
 
     def test_browser_auth_csrf_real_settings_and_bypass(self):
         self.runtime.close()  # API owns its runtime for this test.

@@ -73,13 +73,11 @@ class BrowserFallbackTests(unittest.TestCase):
         open_report = application.split("async function openArtistCompReport", 1)[1].split(
             "async function probeArtistCompStatuses", 1
         )[0]
-        self.assertIn("/api/artist/comp-albums", choose_artist)
+        self.assertIn("/api/artist/overview", choose_artist)
         self.assertNotIn("/api/artist/comp-report", choose_artist)
         self.assertNotIn("Promise.all", choose_artist)
-        self.assertLess(
-            choose_artist.index('api("/api/artist?id="'),
-            choose_artist.index('api("/api/artist/comp-albums?id="'),
-        )
+        self.assertNotIn('/api/artist?id=', choose_artist)
+        self.assertNotIn('/api/artist/comp-albums?id=', choose_artist)
         self.assertIn("/api/artist/comp-report", open_report)
 
         operations = (static / "operations.js").read_text(encoding="utf-8")
@@ -89,7 +87,7 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("await focusQueuedAlbum(state.queuedDecision)", operations)
         self.assertIn('\"EMBED Thumb\"', operations)
         self.assertIn('context.album || job.payload?.name', operations)
-        self.assertIn('["embed-album", "comp"].includes(job.kind)', operations)
+        self.assertIn('["embed-album", "comp", "scan"].includes(job.kind)', operations)
         self.assertIn('state.workspace === "enhance" && state.radioCurrent', operations)
         self.assertIn('$("fullscreenButton")', operations)
         self.assertNotIn('$("reviewWork")', operations)
